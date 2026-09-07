@@ -1,0 +1,91 @@
+# Dedicated-host deployment
+
+Octomus is a single-operator, single-repository service for a dedicated Linux VM. Codex and repository verification commands run with the service account's full host permissions. Task clones separate mutable work; they are not a sandbox. Keep unrelated production credentials and services off this host.
+
+## Install
+
+Build on the target architecture or another compatible Linux host:
+
+```bash
+make package
+```
+
+Install the package contents in `/opt/octomus` so that the binary is `/opt/octomus/octomus-agent` and static assets are `/opt/octomus/web/build`. Create an `octomus` OS account with a home directory at `/var/lib/octomus`, and make its home and target repository writable by that account. The application directory can remain administrator-owned.
+
+Install `git`, `gh`, and Codex for that account. Authenticate Codex and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well.
+
+Create `/etc/octomus/agent.env`, readable only by the administrator and service account, with a fresh random token:
+
+```text
+OCTOMUS_TOKEN=<output of openssl rand -hex 32>
+```
+
+Do not use the literal placeholder. Use `chmod 600` and assign ownership appropriately. The service refuses tokens shorter than 32 characters. The token is an operator capability; it is not passed to child commands.
+
+Copy [deploy/octomus-agent.service](../deploy/octomus-agent.service) to `/etc/systemd/system/`, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now octomus-agent
+sudo systemctl status octomus-agent
+```
+
+The unit uses `KillMode=control-group` so crashes and restarts cannot leave old task processes running alongside recovered work. Do not change that to `process`. The service additionally kills each owned process group on normal cancellation or timeouts. Escaped processes on this intentionally unsandboxed host remain an operator responsibility.
+
+## Private access
+
+The default listener is `127.0.0.1:4200`. Access it over an SSH tunnel:
+
+```bash
+ssh -N -L 4200:127.0.0.1:4200 your-host
+```
+
+Open `http://127.0.0.1:4200` locally. If using a reverse proxy instead, provide TLS and an operator-controlled access boundary. The bearer token is still required. No CORS access is enabled. `/healthz` exposes only liveness and version; all operational data and controls require authentication.
+
+The dashboard starts paused. Configure the repository, explicit role routes, verification commands and host-appropriate limits, then run **Check connection** before enabling continuous work.
+
+## Controls and recovery
+
+- **Pause:** prevents new work. Running discovery and tasks finish their current workflow, including publication. To stop a running task, use its **Cancel task** control. Publication already in progress is allowed to reconcile.
+- **Run a cycle:** enables operation and makes the next planning cycle due. The current queue finishes first.
+- **Retry task:** retries blocked or failed work within the configured retry budget. It retains the original target, model routes, verification contract and workspace. Updated time, storage, daily-session and repair limits can be applied to the retry. Resume operation if the service is paused.
+- **Source/branch conflict:** inspect the preserved workspace and changed remote state. Cancel the stale task and rediscover against the current source. Octomus does not blindly rebase or overwrite external changes.
+- **Restart:** initialized in-flight tasks are queued for bounded automatic recovery. Partial workspace initialization or exhausted retry budgets are blocked. The last executor can resume, interrupted review work gets a fresh review, and a recorded publication checkpoint reconciles GitHub without another model call. Completed PR delivery remains recorded even if the PR has since been closed.
+- **Model or authentication errors:** correct the host's account setup or explicit routes. There is no hidden fallback. Existing task route snapshots remain unchanged; cancel and rediscover if a task needs a different route.
+- **Repair/verification limits:** unresolved work stays blocked and is never treated as clean. Review evidence and the workspace remain available for inspection.
+
+Repository identity and branch policy cannot change while unresolved tasks exist. Configuration edits require the service to be paused with no active tasks or cycle. Operator API changes are the only application path for modifying policy; repository/model output is never parsed as configuration.
+
+## Limits and retention
+
+Defaults are visible in the dashboard and [configuration example](configuration.example.json): nine discovery agents, two simultaneous tasks, a 30-minute cycle interval, five accepted tasks per cycle, four repair rounds, two no-progress rounds, and 150 Codex turn admissions per UTC day. Reused repair turns count against the daily budget too.
+
+The workspace budget is an **admission limit**, checked before launching model work. Active commands can grow beyond it; set host disk and process limits appropriate to the repository. The MVP does not estimate dollar spend or interrupt a provider's in-flight token billing. Use account-level spending limits as appropriate.
+
+Published task workspaces and successful/idle discovery workspaces are removed after the configured retention period (14 days by default). Task identity, decisions, review records and publication associations remain in SQLite. Failed, interrupted or cancelled workspaces are preserved for inspection and may require deliberate operator cleanup after resolution. Activity events are capped at the configured count. Command output is drained and bounded; raw app-server tool arguments and output streams are not stored in the dashboard event log. Codex's own transcript storage is separate, under the service account's Codex home; configure its host retention separately.
+
+Logs: `journalctl -u octomus-agent`. Task errors and session metadata also appear in the dashboard. Known credential patterns and values from token/secret/password/API-key environment variables are redacted from dashboard JSON and summaries. Keep secrets out of project documentation and task prompts; this redaction is not a secret-detection guarantee.
+
+## Backup and upgrade
+
+Pause and stop the service before a file-copy backup:
+
+```bash
+sudo systemctl stop octomus-agent
+```
+
+Back up `/var/lib/octomus/.octomus` in full, the service account's Codex home (for resumable threads), and the target repository. Protect backups as sensitive operator data. Keep `.octomus/state.db`, its WAL files if present, task workspaces, and Codex thread state together. Do not copy only the SQLite database while it is being written.
+
+Replace the binary/assets with a tested package and restart. State is persisted in SQLite with WAL and full synchronous writes. A file lock prevents two processes from operating on the same state directory. The initial MVP schema is created automatically; future incompatible schema changes will need explicit migrations.
+
+Rotate the dashboard token by updating the environment file and restarting the service. Existing browser tokens stop working immediately after restart.
+
+## CLI
+
+```text
+octomus-agent [--data-dir PATH] [--listen IP:PORT] [--assets PATH]
+octomus-agent --print-config
+octomus-agent --data-dir PATH --doctor
+```
+
+Environment equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`, `OCTOMUS_ASSETS`, `OCTOMUS_TOKEN`. The read-only `--doctor` check takes the same state lock as the service; stop the service first, or use **Check connection** in the running dashboard.

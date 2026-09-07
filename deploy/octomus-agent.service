@@ -1,0 +1,23 @@
+[Unit]
+Description=Octomus Agent — continuous repository improvement
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=octomus
+Group=octomus
+WorkingDirectory=/opt/octomus
+EnvironmentFile=/etc/octomus/agent.env
+Environment=PATH=/var/lib/octomus/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/octomus/octomus-agent --data-dir /var/lib/octomus/.octomus --assets /opt/octomus/web/build --listen 127.0.0.1:4200
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

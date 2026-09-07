@@ -1,0 +1,45 @@
+name: MVP checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked
+      - run: npm ci --prefix web
+      - run: npm run check --prefix web
+      - run: npm run format:check --prefix web
+      - run: npm run build --prefix web
+      - run: python3 tests/e2e.py
+      - run: npx --prefix web playwright install --with-deps chromium
+      - run: npm test --prefix web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-evidence
+          path: web/test-results
+          retention-days: 7

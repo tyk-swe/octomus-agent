@@ -1,0 +1,148 @@
+export type Route = { model: string; effort: string };
+export type Config = {
+  repository: string;
+  github_repo: string;
+  default_branch: string;
+  branch_prefix: string;
+  codex_binary: string;
+  roles: Record<string, Route>;
+  tiers: Record<string, Route>;
+  categories: string[];
+  verification_commands: string[];
+  discovery_agents: number;
+  execution_concurrency: number;
+  cycle_interval_seconds: number;
+  maintenance_every_cycles: number;
+  large_pr_lines: number;
+  long_lived_pr_days: number;
+  max_tasks_per_cycle: number;
+  max_repair_rounds: number;
+  max_no_progress_rounds: number;
+  max_retries: number;
+  session_timeout_seconds: number;
+  task_timeout_seconds: number;
+  command_timeout_seconds: number;
+  max_sessions_per_day: number;
+  max_workspace_bytes: number;
+  retain_completed_days: number;
+  retain_events: number;
+};
+export type TaskRow = {
+  id: string;
+  cycle_id: string;
+  title: string;
+  category: string;
+  tier: string;
+  target: string;
+  branch: string;
+  status: string;
+  pr_url: string | null;
+  pr_number: number | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+export type Proposal = {
+  id: string;
+  title: string;
+  problem: string;
+  benefit: string;
+  scope: string;
+  target: string;
+  tier: string;
+  evidence: string[];
+  dependencies: string[];
+  prompt: string;
+  category: string;
+  decision: string;
+  reason: string;
+};
+export type Session = {
+  id: string;
+  role: string;
+  route: Route;
+  status: string;
+  started_at: string;
+  summary: string;
+};
+export type ReviewRound = {
+  session_id: string;
+  revision: string;
+  comparison_base: string;
+  created_at: string;
+  result: {
+    completed: boolean;
+    summary: string;
+    findings: { title: string; file: string; detail: string; priority: string }[];
+  };
+};
+export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
+  proposal: Proposal;
+  route: Route;
+  source_revision: string;
+  comparison_base: string;
+  workspace: string;
+  output_commit: string | null;
+  execution_session: string | null;
+  repair_session: string | null;
+  sessions: Session[];
+  reviews: ReviewRound[];
+  attempts: number;
+  verification: {
+    command: string;
+    success: boolean;
+    output: string;
+    revision: string;
+    created_at: string;
+  }[];
+};
+export type PR = {
+  number: number;
+  title: string;
+  branch: string;
+  head: string;
+  base: string;
+  url: string;
+  body: string;
+  state: string;
+  changed_lines: number;
+  created_at: string;
+  owned: boolean;
+};
+export type Cycle = {
+  id: string;
+  number: number;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  proposals: Proposal[];
+  error: string | null;
+  sessions: Session[];
+  assessments: unknown[];
+  grounding: {
+    revision: string;
+    prs: PR[];
+    maintenance_due: boolean;
+    maintenance_targets: string[];
+  } | null;
+};
+export type Event = { id: number; at: string; entity_id: string; kind: string; message: string };
+export type Snapshot = {
+  status: string;
+  control: { paused: boolean; cycle_number: number; next_cycle_at: number; error: string | null };
+  repository: string;
+  configured: boolean;
+  active_tasks: number;
+  cycle_active: boolean;
+  sessions_today: number;
+  session_limit: number;
+  tasks: TaskRow[];
+  cycles: Cycle[];
+  prs: PR[];
+  events: Event[];
+};
+export type Model = {
+  model: string;
+  displayName: string;
+  supportedReasoningEfforts: { reasoningEffort: string }[];
+};

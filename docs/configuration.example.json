@@ -1,0 +1,76 @@
+{
+  "repository": "",
+  "github_repo": "",
+  "default_branch": "main",
+  "branch_prefix": "octomus/",
+  "codex_binary": "codex",
+  "roles": {
+    "code_reviewer": {
+      "model": "",
+      "effort": ""
+    },
+    "discovery": {
+      "model": "",
+      "effort": ""
+    },
+    "orchestrator": {
+      "model": "",
+      "effort": ""
+    },
+    "proposal_reviewer": {
+      "model": "",
+      "effort": ""
+    }
+  },
+  "tiers": {
+    "L": {
+      "model": "gpt-6-astra",
+      "effort": "medium"
+    },
+    "M": {
+      "model": "gpt-6-astra",
+      "effort": "low"
+    },
+    "S": {
+      "model": "gpt-5.6-luna",
+      "effort": "max"
+    },
+    "XL": {
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "XS": {
+      "model": "gpt-5.6-luna",
+      "effort": "xhigh"
+    }
+  },
+  "categories": [
+    "features",
+    "correctness",
+    "performance",
+    "ux-dx",
+    "refactoring",
+    "simplification",
+    "tests",
+    "dependencies",
+    "documentation"
+  ],
+  "verification_commands": [],
+  "discovery_agents": 9,
+  "execution_concurrency": 2,
+  "cycle_interval_seconds": 1800,
+  "maintenance_every_cycles": 3,
+  "large_pr_lines": 1000,
+  "long_lived_pr_days": 7,
+  "max_tasks_per_cycle": 5,
+  "max_repair_rounds": 4,
+  "max_no_progress_rounds": 2,
+  "max_retries": 2,
+  "session_timeout_seconds": 1800,
+  "task_timeout_seconds": 14400,
+  "command_timeout_seconds": 600,
+  "max_sessions_per_day": 150,
+  "max_workspace_bytes": 20000000000,
+  "retain_completed_days": 14,
+  "retain_events": 10000
+}

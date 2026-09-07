@@ -1,0 +1,15 @@
+/target/
+/.octomus/
+/web/node_modules/
+/web/.svelte-kit/
+/web/build/
+/web/test-results/
+/web/playwright-report/
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+/dist/
+__pycache__/

@@ -1,0 +1,163 @@
+use crate::model::{Event, now};
+use anyhow::Result;
+use rusqlite::{Connection, params};
+use serde::{Serialize, de::DeserializeOwned};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
+
+#[derive(Clone)]
+pub struct Store(Arc<Mutex<Connection>>);
+impl Store {
+    pub fn open(path: &Path) -> Result<Self> {
+        let c = Connection::open(path)?;
+        c.busy_timeout(std::time::Duration::from_secs(5))?;
+        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL); CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, sessions INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS cap_activity AFTER INSERT ON events BEGIN DELETE FROM events WHERE id <= NEW.id - COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'), '$.retain_events'),10000); END;")?;
+        Ok(Self(Arc::new(Mutex::new(c))))
+    }
+    pub fn put<T: Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
+        self.0.lock().unwrap().execute("INSERT INTO records VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",params![kind,id,serde_json::to_string(value)?])?;
+        Ok(())
+    }
+    pub fn commit_plan(
+        &self,
+        cycle: &crate::model::Cycle,
+        tasks: &[crate::model::Task],
+    ) -> Result<()> {
+        let mut connection = self.0.lock().unwrap();
+        let transaction = connection.transaction()?;
+        transaction.execute("INSERT INTO records VALUES ('cycle',?1,?2) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data", params![cycle.id, serde_json::to_string(cycle)?])?;
+        for task in tasks {
+            transaction.execute(
+                "INSERT INTO records VALUES ('task',?1,?2)",
+                params![task.id, serde_json::to_string(task)?],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+    pub fn get<T: DeserializeOwned>(&self, kind: &str, id: &str) -> Result<Option<T>> {
+        let c = self.0.lock().unwrap();
+        let mut s = c.prepare("SELECT data FROM records WHERE kind=?1 AND id=?2")?;
+        let mut rows = s.query(params![kind, id])?;
+        Ok(match rows.next()? {
+            Some(r) => Some(serde_json::from_str(&r.get::<_, String>(0)?)?),
+            None => None,
+        })
+    }
+    pub fn list<T: DeserializeOwned>(&self, kind: &str) -> Result<Vec<T>> {
+        let c = self.0.lock().unwrap();
+        let mut s = c.prepare("SELECT data FROM records WHERE kind=?1 ORDER BY rowid DESC")?;
+        let rows = s.query_map([kind], |r| r.get::<_, String>(0))?;
+        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+    pub fn remove(&self, kind: &str, id: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "DELETE FROM records WHERE kind=?1 AND id=?2",
+            params![kind, id],
+        )?;
+        Ok(())
+    }
+    pub fn event(&self, entity: &str, kind: &str, message: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)",
+            params![now(), entity, kind, redact(message)],
+        )?;
+        Ok(())
+    }
+    pub fn events(&self, entity: Option<&str>) -> Result<Vec<Event>> {
+        let c = self.0.lock().unwrap();
+        let mut s=c.prepare("SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1) ORDER BY id DESC LIMIT 200")?;
+        Ok(s.query_map([entity], |r| {
+            Ok(Event {
+                id: r.get(0)?,
+                at: r.get(1)?,
+                entity_id: r.get(2)?,
+                kind: r.get(3)?,
+                message: r.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    pub fn prune_events(&self, retain: usize) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
+            [retain as i64],
+        )?;
+        Ok(())
+    }
+    pub fn reserve_session(&self, limit: u64) -> Result<()> {
+        let day = chrono::Utc::now().format("%F").to_string();
+        let c = self.0.lock().unwrap();
+        let changed=c.execute("INSERT INTO usage(day,sessions) VALUES (?1,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1 WHERE sessions < ?2",params![day,limit.min(i64::MAX as u64) as i64])?;
+        anyhow::ensure!(
+            changed == 1,
+            "Daily session budget exhausted; increase the configured limit or wait until UTC midnight"
+        );
+        Ok(())
+    }
+    pub fn sessions_today(&self) -> Result<u64> {
+        let c = self.0.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT sessions FROM usage WHERE day=?1",
+            [chrono::Utc::now().format("%F").to_string()],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as u64)
+    }
+}
+pub fn redact(input: &str) -> String {
+    use std::sync::LazyLock;
+    static TOKEN: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+|(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]{10,}|[a-z]+://[^\s/@]+:[^\s/@]+@").unwrap()
+    });
+    let mut s = TOKEN.replace_all(input, "[redacted]").into_owned();
+    static SECRETS: LazyLock<Vec<String>> = LazyLock::new(|| {
+        std::env::vars()
+            .filter(|(key, value)| {
+                value.len() >= 8
+                    && ["TOKEN", "SECRET", "PASSWORD", "API_KEY"]
+                        .iter()
+                        .any(|p| key.contains(p))
+            })
+            .map(|(_, value)| value)
+            .collect()
+    });
+    for value in SECRETS.iter() {
+        s = s.replace(value, "[redacted]");
+    }
+    s.chars().take(16384).collect()
+}
+pub fn redact_json(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => *text = redact(text),
+        serde_json::Value::Array(values) => values.iter_mut().for_each(redact_json),
+        serde_json::Value::Object(values) => values.values_mut().for_each(redact_json),
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn durable_and_budget_atomic() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("state.db");
+        {
+            let s = Store::open(&p).unwrap();
+            s.put("x", "a", &vec![1, 2]).unwrap();
+            s.reserve_session(1).unwrap();
+            assert!(s.reserve_session(1).is_err());
+        }
+        assert_eq!(
+            Store::open(&p).unwrap().get::<Vec<i32>>("x", "a").unwrap(),
+            Some(vec![1, 2])
+        );
+    }
+    #[test]
+    fn redacts_tokens() {
+        assert!(!redact("Bearer secretkey123 ghp_abcdefghijklmnop").contains("secretkey"));
+    }
+}
