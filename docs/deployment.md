@@ -7,10 +7,11 @@ Octomus is a single-operator, single-repository service for a dedicated Linux VM
 Build on the target architecture or another compatible Linux host:
 
 ```bash
+npm ci --prefix web
 make package
 ```
 
-Install the package contents in `/opt/octomus` so that the binary is `/opt/octomus/octomus-agent` and static assets are `/opt/octomus/web/build`. Create an `octomus` OS account with a home directory at `/var/lib/octomus`, and make its home and target repository writable by that account. The application directory can remain administrator-owned.
+Install `target/release/octomus-agent` (or the executable from a checksum-verified release archive) as `/usr/local/bin/octomus-agent`. The dashboard is embedded. Public release installation remains pending; see [distribution](distribution.md). Create an `octomus` OS account with a home directory at `/var/lib/octomus`, and make its home and target repository writable by that account. The binary must remain administrator-owned. The supplied unit expects `/srv/projects/octomus-agent` to exist. If using another target path (including the README example `/srv/projects/project`), change `ReadWritePaths` in a systemd override before starting.
 
 Install `git`, `gh`, and Codex for that account. Pin Codex CLI **0.153.4**, the tested protocol version. Authenticate Codex and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well. Ensure the unit's PATH includes their actual locations (including `/var/lib/octomus/.cargo/bin` when using rustup); a systemd service does not load the interactive shell's profile.
 
@@ -21,6 +22,23 @@ OCTOMUS_TOKEN=<output of openssl rand -hex 32>
 ```
 
 Do not use the literal placeholder. Use `chmod 600` and assign ownership appropriately. The service refuses tokens shorter than 32 characters. The token is an operator capability; it is not passed to child commands.
+
+The unit makes system paths read-only and permits persistent writes only below
+`/var/lib/octomus` and `/srv/projects/octomus-agent`. Codex state and tool caches
+must live in the service home. Install tools as the administrator before starting;
+NoNewPrivileges prevents verification commands from acquiring sudo privileges.
+PrivateTmp gives workers temporary storage without sharing the host's `/tmp`.
+These restrictions do not isolate agents from the service user's credentials.
+See the [threat model](threat-model.md).
+
+Create `/etc/octomus` and the checkout directory before starting. For a different
+checkout, use `sudo systemctl edit octomus-agent` with:
+
+```ini
+[Service]
+ReadWritePaths=
+ReadWritePaths=/var/lib/octomus /srv/projects/project
+```
 
 Copy [deploy/octomus-agent.service](../deploy/octomus-agent.service) to `/etc/systemd/system/`, then:
 
@@ -47,6 +65,7 @@ The dashboard starts paused. Configure the repository, explicit role routes, ver
 ## Controls and recovery
 
 - **Pause:** prevents new work. Running discovery and tasks finish their current workflow, including publication. To stop a running task, use its **Cancel task** control. Publication already in progress is allowed to reconcile.
+- **Run an audit:** requires paused operation and no active work. It spends planning admissions, records all decisions, creates no tasks and leaves any existing queue paused. Resume and cycle requests return a conflict while the audit is active. Restart marks interrupted audits without replaying them.
 - **Run a cycle:** enables operation and makes the next planning cycle due. The current queue finishes first.
 - **Retry task:** retries blocked or failed work within the configured retry budget. It retains the original target, model routes, verification contract and workspace. Updated time, storage, daily-session and repair limits can be applied to the retry. Resume operation if the service is paused.
 - **Source/branch conflict:** inspect the preserved workspace and changed remote state. Cancel the stale task and rediscover against the current source. Octomus does not blindly rebase or overwrite external changes.
@@ -76,7 +95,7 @@ sudo systemctl stop octomus-agent
 
 Back up `/var/lib/octomus/.octomus` in full, the service account's Codex home (for resumable threads), and the target repository. Protect backups as sensitive operator data. Keep `.octomus/state.db`, its WAL files if present, task workspaces, and Codex thread state together. Do not copy only the SQLite database while it is being written.
 
-Replace the binary/assets with a tested package and restart. State is persisted in SQLite with WAL and full synchronous writes. A file lock prevents two processes from operating on the same state directory. The initial MVP schema is created automatically; future incompatible schema changes will need explicit migrations.
+Replace the binary with a tested package and restart. State is persisted in SQLite with WAL and full synchronous writes. A file lock prevents two processes from operating on the same state directory. The initial MVP schema is created automatically; future incompatible schema changes will need explicit migrations.
 
 Rotate the dashboard token by updating the environment file and restarting the service. Existing browser tokens stop working immediately after restart.
 
@@ -87,8 +106,23 @@ octomus-agent [--data-dir PATH] [--listen IP:PORT] [--assets PATH]
 octomus-agent --print-config
 octomus-agent --data-dir PATH --usage-report
 octomus-agent --data-dir PATH --doctor
+octomus-agent --data-dir PATH --doctor --audit
 ```
 
-Environment equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`, `OCTOMUS_ASSETS`, `OCTOMUS_TOKEN`. The read-only `--doctor` check takes the same state lock as the service; stop the service first, or use **Check connection** in the running dashboard.
+Environment equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`, `OCTOMUS_ASSETS`, `OCTOMUS_TOKEN`. `--assets`/`OCTOMUS_ASSETS` explicitly replaces embedded serving with a directory containing `200.html`; the default needs no asset files. `--doctor --audit` (or **Check audit connection**) checks only planning prerequisites. The `--doctor` check takes the same state lock as the service; stop the service first, or use **Check connection** in the running dashboard.
 
 `--doctor` reports installed/tested Codex versions and warns on a mismatch. Correct a mismatch before live commissioning. `--usage-report` opens existing SQLite state read-only, works alongside the service, and needs neither a token nor dashboard assets. It exports admission counts and saved cycle/task evidence, not provider billing. Historical usage without ledger entries is marked unattributed. See [Week 1](week-1.md) and [cost methodology](cost.md). Admission records are retained with the state database; include their growth in disk monitoring and backups.
+
+## HTTP interface additions
+
+`POST /api/control/audit` runs one audit; authentication and JSON content type are
+required. Conflicting active work returns 409; invalid configuration returns 400.
+`POST /api/doctor?mode=audit` checks planning prerequisites; omitted mode retains
+full execution checking. `GET /api/state` includes `audit_configured`,
+`active_cycle_mode` (audit/execution/null) and cycle `mode`. During an audit,
+status is `auditing` even though execution is paused. Older cycles load as
+`execution`. Usage-report cycle rows also include `mode`; existing fields remain.
+
+Successful/idle audit clones follow normal cycle retention. Cleanup runs during
+enabled, idle scheduling; a service used only for paused audits still requires
+operator monitoring of retained disk usage. No automatic replay occurs on resume.

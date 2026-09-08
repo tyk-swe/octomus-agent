@@ -258,12 +258,23 @@ impl Codex {
     }
 }
 pub fn validate_routes(config: &Config, models: &[Value]) -> Result<()> {
-    for route in config
-        .roles
-        .values()
-        .chain(config.tiers.values())
-        .chain(std::iter::once(&config.repair_route))
-    {
+    validate_routes_for(config, models, false)
+}
+pub fn validate_routes_for(config: &Config, models: &[Value], audit: bool) -> Result<()> {
+    let routes: Vec<_> = if audit {
+        ["orchestrator", "discovery", "proposal_reviewer"]
+            .iter()
+            .map(|role| &config.roles[*role])
+            .collect()
+    } else {
+        config
+            .roles
+            .values()
+            .chain(config.tiers.values())
+            .chain(std::iter::once(&config.repair_route))
+            .collect()
+    };
+    for route in routes {
         let m = models
             .iter()
             .find(|m| m["model"].as_str() == Some(&route.model))

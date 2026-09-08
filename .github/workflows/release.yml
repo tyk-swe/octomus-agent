@@ -1,0 +1,101 @@
+name: Release packages
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build
+        required: true
+      notes:
+        description: Optional release notes replacing generated notes
+        required: false
+permissions:
+  contents: read
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Validate tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, tomllib
+          with open('Cargo.toml', 'rb') as f:
+              version = tomllib.load(f)['package']['version']
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Tag must match Cargo.toml version'
+          PY
+      - run: npm ci --prefix web
+      - run: make build
+      - name: Package and smoke test
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          ./scripts/package.sh "$RELEASE_TAG" "$RELEASE_TARGET" target/release/octomus-agent
+          python3 tests/distribution.py --package "dist/octomus-agent-$RELEASE_TAG-$RELEASE_TARGET.tar.gz"
+          ./scripts/package-crate.sh
+          python3 tests/crate.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.target }}
+          path: dist/*.tar.gz
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: dist
+      - name: Publish verified packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          printf '%s\n' "$RELEASE_NOTES" > /tmp/octomus-release-notes.md
+          options=(--verify-tag)
+          if [[ "$RELEASE_TAG" == *-* ]]; then options+=(--prerelease); fi
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            options+=(--notes-file /tmp/octomus-release-notes.md)
+          else
+            options+=(--generate-notes)
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            if [[ -z "$RELEASE_NOTES" ]]; then
+              echo 'Release already exists; supply notes to update its description. Assets will not be replaced.' >&2
+              exit 1
+            fi
+            gh release edit "$RELEASE_TAG" --notes-file /tmp/octomus-release-notes.md
+          else
+            gh release create "$RELEASE_TAG" "${options[@]}" ./*.tar.gz SHA256SUMS
+          fi

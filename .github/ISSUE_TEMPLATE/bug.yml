@@ -1,0 +1,25 @@
+name: Bug report
+description: Reproduce incorrect service or dashboard behavior
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "For security vulnerabilities, email mail@mail.tyk.sh privately. Review all evidence for secrets before sharing."
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      description: Octomus commit/version, OS/architecture and Codex CLI version. No credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps, expected result and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Include relevant error text and reproducible fixture details when possible.

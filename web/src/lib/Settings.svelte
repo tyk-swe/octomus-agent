@@ -177,12 +177,12 @@
       busy = false;
     }
   }
-  async function doctor() {
+  async function doctor(mode: 'execution' | 'audit') {
     busy = true;
     error = '';
     message = '';
     try {
-      const result = await api<{ message: string }>('/doctor', 'POST');
+      const result = await api<{ message: string }>(`/doctor?mode=${mode}`, 'POST');
       message = result.message;
     } catch (e) {
       error = (e as Error).message;
@@ -197,8 +197,11 @@
 
 <div class="settings-actions">
   <p class="muted">Configure once. Keep the work moving.</p>
-  <button class="button" onclick={doctor} disabled={busy}
+  <button class="button" onclick={() => doctor('execution')} disabled={busy}
     ><Icon name="shield" size={16} /> Check connection</button
+  >
+  <button class="button" onclick={() => doctor('audit')} disabled={busy}
+    >Check audit connection</button
   >
 </div>
 {#if !editable}<div class="notice">

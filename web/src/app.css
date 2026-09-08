@@ -1051,6 +1051,25 @@ nav button b {
   font-size: 11px;
   outline: none;
 }
+.proposal-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 18px 24px;
+  margin: 20px 0;
+}
+.proposal-controls .cycle-picker {
+  flex: 1 1 240px;
+  max-width: 340px;
+}
+.cycle-picker select {
+  margin-top: 8px;
+}
+.decision-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .proposal-list {
   display: grid;
 }
@@ -1202,7 +1221,8 @@ label small {
   line-height: 1.7;
 }
 input,
-textarea {
+textarea,
+select {
   border: 1px solid #dfe7d5;
   border-radius: 6px;
   background: #fff;

@@ -1,0 +1,15 @@
+name: Backend request
+description: Describe a concrete need for another agent runtime
+labels: [backend]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: Runtime and operator need
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Protocol and capability evidence
+      description: Link public documentation for model/effort selection, sessions, review, cancellation and unattended operation. Codex is currently the only backend; the runner seam has not shipped.

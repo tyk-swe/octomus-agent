@@ -5,6 +5,12 @@ edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
 description = "Continuous, reviewed repository improvement through Codex"
+repository = "https://github.com/tyk-swe/octomus-agent"
+homepage = "https://github.com/tyk-swe/octomus-agent"
+readme = "README.md"
+keywords = ["codex", "automation", "github", "agent", "code-review"]
+categories = ["development-tools", "command-line-utilities"]
+include = ["/src/**", "/tests/*.rs", "/build.rs", "/Cargo.toml", "/Cargo.lock", "/web/build/**", "/README.md", "/LICENSE", "/SECURITY.md", "/CHANGELOG.md", "/CONTRIBUTING.md", "/CODE_OF_CONDUCT.md", "/AGENTS.md", "/PRD.md", "/docs/**", "/deploy/**"]
 
 [dependencies]
 anyhow = "1"
@@ -14,6 +20,9 @@ clap = { version = "4", features = ["derive", "env"] }
 fs2 = "0.4"
 futures = "0.3"
 libc = "0.2"
+include_dir = "0.7"
+mime_guess = "2"
+percent-encoding = "2"
 regex = "1"
 rusqlite = { version = "0.38", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

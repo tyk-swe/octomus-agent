@@ -25,7 +25,7 @@ prerequisites with `npx --prefix web playwright install --with-deps chromium`.
 - `make check`: Rust formatting/clippy, Svelte/TypeScript and Prettier checks.
 - `make test`: Rust tests, debug binary, dashboard build, integration and browser tests.
 - `make build`: production binary and dashboard.
-- Focused integration: `cargo build --locked`, `npm run build --prefix web`, then
+- Focused integration: `npm run build --prefix web`, `cargo build --locked`, then
   `python3 tests/e2e.py`. These tests use fixtures, not live accounts or model calls.
 
 Run relevant behavior tests while editing and the full checks before delivery.

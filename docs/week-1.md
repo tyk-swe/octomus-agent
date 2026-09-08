@@ -35,7 +35,7 @@ The September 14 runner-seam gate is not automatically extended.
   registries, with necessary host DNS/time services. Test actual login, clone,
   dependency installation and runtime access through that policy.
 - [ ] `octomus` service account with home `/var/lib/octomus`; target checkout at
-  `/srv/projects/octomus-agent`; installed application at `/opt/octomus`.
+  `/srv/projects/octomus-agent`; installed binary at `/usr/local/bin/octomus-agent`.
 - [ ] Git, gh, Codex CLI **0.153.4**, Rust/rustfmt/clippy, C compiler, Node 22.12+,
   npm and Python 3 installed for the service account. Install Playwright Chromium
   and system dependencies when running full browser coverage.
@@ -74,12 +74,13 @@ if a default is unavailable, choose an available route explicitly before running
 Record the saved configuration, CLI version and catalog in private evidence.
 Availability in one account is not evidence of universal availability.
 
-Enter the five verification commands from [the launch checklist](../todo.md#4-configure-your-project).
-Add browser coverage after its prerequisites are installed. Run **Check connection**
+Enter the verification command from [the operator checklist](operations.md#4-configure-your-project).
+Install browser prerequisites before full coverage. Dashboard embedding requires the
+web build before Cargo, so use the documented Make targets. Run **Check connection**
 while the service is running, or stop it and run:
 
 ```bash
-sudo -u octomus /opt/octomus/octomus-agent --data-dir /var/lib/octomus/.octomus --doctor
+sudo -u octomus /usr/local/bin/octomus-agent --data-dir /var/lib/octomus/.octomus --doctor
 ```
 
 Doctor reports installed/tested versions, a warning on mismatch, and validates
@@ -110,7 +111,7 @@ mismatch and correct the host/configuration before enabling cycles.
 The report can run alongside the service without a token or dashboard assets:
 
 ```bash
-sudo -u octomus /opt/octomus/octomus-agent --data-dir /var/lib/octomus/.octomus --usage-report > week-1-usage.json
+sudo -u octomus /usr/local/bin/octomus-agent --data-dir /var/lib/octomus/.octomus --usage-report > week-1-usage.json
 ```
 
 It opens existing SQLite state read-only and takes a consistent snapshot. Save

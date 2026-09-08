@@ -1,13 +1,13 @@
-# Your launch checklist
+# Operator checklist
 
-The MVP implementation and automated tests are included. Your remaining work is to provision the host, connect your accounts, configure the target project, and validate the first real cycle.
+Use this checklist to commission and operate a dedicated host. Repository tests establish behavior with fixtures; they do not validate live accounts, model quality or installation time. Record real evidence in [Week 1](week-1.md) and [Week 2](week-2.md).
 
 ## 1. Prepare the host
 
 - [ ] Use a dedicated Linux VM for Octomus. Agents execute without a sandbox and have the service account's host permissions.
 - [ ] Create the `octomus` service account with home directory `/var/lib/octomus` if using the supplied systemd unit.
-- [ ] Install Git, GitHub CLI, Codex CLI with app-server support, and your target project's build tools. Building Octomus requires Rust 1.88+, Node.js 22.12+, npm, and a C compiler. Its integration tests also require Python 3.
-- [ ] Clone the repository you want Octomus to improve into a persistent path writable by the service account, such as `/srv/projects/octomus-agent`. Keep this checkout separate from the installed application in `/opt/octomus`.
+- [ ] Install Git, GitHub CLI, Codex CLI 0.153.4, and your target project's build tools. Building Octomus requires Rust 1.88+, Node.js 22.12+, npm, and a C compiler. Its integration tests also require Python 3.
+- [ ] Clone the repository you want Octomus to improve into a persistent path writable by the service account, such as `/srv/projects/octomus-agent`. Keep this checkout separate from the installed binary at `/usr/local/bin/octomus-agent`.
 
 ## 2. Connect your accounts
 
@@ -28,12 +28,13 @@ gh auth setup-git
 ```bash
 git clone https://github.com/tyk-swe/octomus-agent.git
 cd octomus-agent
+npm ci --prefix web
 make package
 ```
 
-- [ ] Install the contents of `dist/octomus-agent/` into `/opt/octomus/`.
+- [ ] Install `target/release/octomus-agent` into `/usr/local/bin/octomus-agent`, or use a checksum-verified published release. The dashboard is embedded; no separate assets are needed. Release/crates.io publication remains pending.
 - [ ] Generate a random operator token with `openssl rand -hex 32`. Store it as `OCTOMUS_TOKEN` in `/etc/octomus/agent.env`, with permissions restricted to the appropriate administrator/service account. Keep a copy in your password manager for dashboard login.
-- [ ] Install [the systemd unit](deploy/octomus-agent.service), following [the deployment guide](docs/deployment.md). Keep `KillMode=control-group` so restarts terminate old task processes.
+- [ ] Install [the systemd unit](../deploy/octomus-agent.service), following [the deployment guide](deployment.md). Keep `KillMode=control-group` so restarts terminate old task processes.
 - [ ] Start the service and confirm `systemctl status octomus-agent` reports it running. Check `journalctl -u octomus-agent` if startup fails.
 - [ ] Access the private dashboard through an SSH tunnel, then sign in using your operator token:
 
@@ -52,20 +53,22 @@ Open **http://127.0.0.1:4200**. The first launch is paused.
 - [ ] Enter meaningful verification commands for the target project. For Octomus itself, useful commands include:
 
 ```bash
-cargo test --locked
-cargo clippy --all-targets --locked -- -D warnings
-cargo fmt --check
-npm ci --prefix web && npm run check --prefix web && npm run build --prefix web
-cargo build --locked && python3 tests/e2e.py
+npm ci --prefix web && make check && make test
 ```
 
-Each line is a separate dashboard verification command. Add `npm test --prefix web` when browser coverage is needed, after installing Playwright Chromium and its system dependencies on the host. All configured commands must pass on the reviewed revision before publication.
+Install Rust/rustfmt/clippy, Python 3, Node 22.12+ and Playwright Chromium/system
+prerequisites first. The dashboard is built before Rust so cold clones can embed
+it. This is one verification command; all configured commands must pass on the
+reviewed revision before publication. Measure cold timings before changing limits.
 
-- [ ] Choose enabled improvement categories, maintenance cadence, and resource/time limits appropriate to your host and account. Start with one concurrent task, one accepted task per cycle and a six-hour cycle interval for the initial live run. See the [Week 1 log](docs/week-1.md). Discovery still requires 8–10 agents.
-- [ ] Set your account's spending limit and Octomus's daily session budget. The session budget counts admissions; it is not a dollar-spend cap.
+- [ ] Choose enabled improvement categories, maintenance cadence, and resource/time limits appropriate to your host and account. Start with one concurrent task, one accepted task per cycle and a six-hour cycle interval for the initial live run. See the [Week 1 log](week-1.md). Discovery still requires 8–10 agents.
+- [ ] Confirm Week 1 uses existing subscription allowance only and paid overage is disabled. Set the daily session budget, recognizing that admissions are not an allowance or dollar-spend cap.
 - [ ] Save configuration and run **Check connection**. Correct any reported configuration, authentication, or route errors.
 
 ## 5. Validate the first real cycle
+
+- [ ] While paused with no active work, run **Check audit connection**, then **Run an audit**. Audits need the three planning-role routes but no verification commands. Inspect every decision and both assessments. Confirm the queue is unchanged and operation remains paused. An audit does not sandbox agents or guarantee absence of malicious external effects.
+- [ ] For execution, configure the code reviewer, execution tiers, repair route and verification commands, then use **Check connection**. Audit results are recommendations; an executing cycle plans afresh.
 
 - [ ] Select **Run a cycle**. This also enables subsequent continuous cycles.
 - [ ] Confirm discovery reads the repository and existing owned PRs, and proposal decisions include reasons.
@@ -78,6 +81,6 @@ Each line is a separate dashboard verification command. Add `npm test --prefix w
 
 - [ ] Leave the system running once you are satisfied with the first live results; increase throughput only as needed.
 - [ ] Monitor blocked/failed tasks, model usage, host disk capacity, and the value of generated PRs.
-- [ ] Set up protected backups of the state directory, task workspaces, and the service account's Codex thread state using the [backup procedure](docs/deployment.md#backup-and-upgrade).
+- [ ] Set up protected backups of the state directory, task workspaces, and the service account's Codex thread state using the [backup procedure](deployment.md#backup-and-upgrade).
 - [ ] Review retention settings, including Codex's separate transcript storage. Unresolved workspaces are intentionally preserved and can require deliberate cleanup.
 - [ ] Continue reviewing and merging useful PRs yourself. Application upgrades and production deployments remain your responsibility; Octomus delivers PRs.

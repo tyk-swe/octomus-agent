@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Runtime {
     pub tasks: HashMap<String, CancellationToken>,
     pub cycle: Option<CancellationToken>,
+    pub cycle_mode: Option<CycleMode>,
     pub last_retention_at: i64,
 }
 #[derive(Clone)]
@@ -95,7 +96,14 @@ impl App {
         Ok(())
     }
     pub async fn doctor(&self, c: &Config) -> Result<Value> {
-        c.validate(true)?;
+        self.doctor_for(c, CycleMode::Execution).await
+    }
+    pub async fn doctor_for(&self, c: &Config, mode: CycleMode) -> Result<Value> {
+        if mode == CycleMode::Audit {
+            c.validate_audit()?;
+        } else {
+            c.validate(true)?;
+        }
         let cancel = self.shutdown.child_token();
         let installed = crate::process::run(
             &c.codex_binary,
@@ -120,9 +128,9 @@ impl App {
             "Codex authentication is missing; run codex login as the service user"
         );
         let models = cx.models().await?;
-        codex::validate_routes(c, &models)?;
+        codex::validate_routes_for(c, &models, mode == CycleMode::Audit)?;
         Ok(
-            json!({"ok":true,"models":models,"codex_version":installed,"tested_codex_version":codex::TESTED_VERSION,"warnings":warning.iter().collect::<Vec<_>>(),"message":format!("Repository, GitHub authentication, and all model/effort routes are available.{}", warning.map(|w| format!(" Warning: {w}")).unwrap_or_default())}),
+            json!({"ok":true,"mode":mode,"models":models,"codex_version":installed,"tested_codex_version":codex::TESTED_VERSION,"warnings":warning.iter().collect::<Vec<_>>(),"message":format!("Repository, GitHub authentication, and {} model/effort routes are available.{}", if mode == CycleMode::Audit { "planning" } else { "all" }, warning.map(|w| format!(" Warning: {w}")).unwrap_or_default())}),
         )
     }
     pub async fn run(self) {
@@ -255,14 +263,20 @@ impl App {
             && chrono::Utc::now().timestamp() >= control.next_cycle_at
         {
             let cancel = self.shutdown.child_token();
-            self.runtime.lock().unwrap().cycle = Some(cancel.clone());
+            {
+                let mut rt = self.runtime.lock().unwrap();
+                rt.cycle = Some(cancel.clone());
+                rt.cycle_mode = Some(CycleMode::Execution);
+            }
             control.cycle_number += 1;
             control.next_cycle_at =
                 chrono::Utc::now().timestamp() + c.cycle_interval_seconds as i64;
             self.store.put("settings", "control", &control)?;
             let app = self.clone();
             tokio::spawn(async move {
-                let result = app.cycle(&c, control.cycle_number, &cancel).await;
+                let result = app
+                    .cycle(&c, control.cycle_number, CycleMode::Execution, &cancel)
+                    .await;
                 let _gate = app.gate.lock().await;
                 if let Ok(mut ctl) = app.control() {
                     ctl.error = result.err().map(|e| redact(&format!("{e:#}")));
@@ -270,9 +284,43 @@ impl App {
                         chrono::Utc::now().timestamp() + c.cycle_interval_seconds as i64;
                     let _ = app.store.put("settings", "control", &ctl);
                 }
-                app.runtime.lock().unwrap().cycle = None;
+                let mut rt = app.runtime.lock().unwrap();
+                rt.cycle = None;
+                rt.cycle_mode = None;
             });
         }
+        Ok(())
+    }
+    // Caller holds the scheduler gate; audits never unpause the execution queue.
+    pub fn start_audit(&self) -> Result<()> {
+        let c = self.config()?;
+        c.validate_audit()?;
+        let mut control = self.control()?;
+        let mut rt = self.runtime.lock().unwrap();
+        ensure!(
+            control.paused && rt.tasks.is_empty() && rt.cycle.is_none(),
+            "Pause and wait for active work before running an audit"
+        );
+        control.cycle_number += 1;
+        control.error = None;
+        self.store.put("settings", "control", &control)?;
+        let cancel = self.shutdown.child_token();
+        rt.cycle = Some(cancel.clone());
+        rt.cycle_mode = Some(CycleMode::Audit);
+        let app = self.clone();
+        tokio::spawn(async move {
+            let result = app
+                .cycle(&c, control.cycle_number, CycleMode::Audit, &cancel)
+                .await;
+            let _gate = app.gate.lock().await;
+            if let Ok(mut ctl) = app.control() {
+                ctl.error = result.err().map(|e| redact(&format!("{e:#}")));
+                let _ = app.store.put("settings", "control", &ctl);
+            }
+            let mut rt = app.runtime.lock().unwrap();
+            rt.cycle = None;
+            rt.cycle_mode = None;
+        });
         Ok(())
     }
     async fn budget(
@@ -364,8 +412,15 @@ impl App {
         );
         Ok((session, answer))
     }
-    async fn cycle(&self, c: &Config, number: u64, cancel: &CancellationToken) -> Result<()> {
+    async fn cycle(
+        &self,
+        c: &Config,
+        number: u64,
+        mode: CycleMode,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
         let mut cycle = Cycle {
+            mode,
             id: id(),
             number,
             status: "running".into(),
@@ -395,7 +450,7 @@ impl App {
         result
     }
     async fn plan(&self, c: &Config, cycle: &mut Cycle, cancel: &CancellationToken) -> Result<()> {
-        self.doctor(c).await?;
+        self.doctor_for(c, cycle.mode).await?;
         git::fetch(c, cancel).await?;
         let revision = git::remote_revision(c, &c.default_branch, cancel)
             .await?
@@ -550,6 +605,10 @@ impl App {
         validate_proposals(c, &proposals, cycle.grounding.as_ref().unwrap(), &history)?;
         cycle.proposals = proposals;
         self.store.put("cycle", &cycle.id, cycle)?;
+        if cycle.mode == CycleMode::Audit {
+            // Recommendations retain their decisions, but never become an executable queue.
+            return Ok(());
+        }
         // Persist the complete plan before dispatch. The scheduler cannot start it until this cycle exits.
         let ids: HashMap<_, _> = cycle
             .proposals

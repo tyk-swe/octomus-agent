@@ -257,6 +257,103 @@ def scenario(mode):
             service.log.close()
 
 
+def audit_scenario(mode):
+    import sqlite3
+    with tempfile.TemporaryDirectory(prefix='octomus-audit-') as tmp:
+        root = Path(tmp)
+        setup(root)
+        service = Service(root)
+        try:
+            service.start()
+            queued_before = []
+            if mode == 'queued':
+                service.configure()
+                service.wait(service.terminal_task, 'initial fixture delivery')
+                service.request('/control/pause', 'POST')
+                service.stop()
+                with sqlite3.connect(root / '.octomus/state.db') as db:
+                    identity, raw = db.execute("SELECT id,data FROM records WHERE kind='task'").fetchone()
+                    task = json.loads(raw)
+                    task['status'] = 'queued'
+                    task['proposal']['title'] = 'Earlier queued work'
+                    db.execute("UPDATE records SET data=? WHERE kind='task' AND id=?", (json.dumps(task), identity))
+                service.start()
+                queued_before = service.request('/state')['tasks']
+            c = service.request('/config')
+            c.update(repository=str(root / 'checkout'), github_repo='fixture/project', verification_commands=[], command_timeout_seconds=10, session_timeout_seconds=30, task_timeout_seconds=120)
+            for role in ['orchestrator', 'discovery', 'proposal_reviewer']:
+                c['roles'][role] = {'model': 'gpt-6-astra', 'effort': 'medium'}
+            c['roles']['code_reviewer'] = {'model': 'unavailable', 'effort': 'high'}
+            c['repair_route'] = {'model': 'unavailable', 'effort': 'high'}
+            if mode == 'budget':
+                c['max_sessions_per_day'] = 2
+            service.request('/config', 'PUT', c)
+            assert service.request('/doctor?mode=audit', 'POST')['mode'] == 'audit'
+            try:
+                service.request('/doctor', 'POST')
+                raise AssertionError('Execution doctor accepted missing verification')
+            except urllib.error.HTTPError as e:
+                assert e.code == 400
+            marker = {'idle': 'idle', 'malformed': 'audit-malformed', 'failed': 'failed-start'}.get(mode, 'audit-decisions')
+            (root / marker).touch()
+            if mode not in ['failed']:
+                (root / 'audit-hold').touch()
+            publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
+            baseline_revision = git('rev-parse', 'main', cwd=root / 'remote.git')
+            baseline_refs = git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git')
+            service.request('/control/audit', 'POST')
+            if mode != 'failed':
+                service.wait(lambda: (root / 'audit-entered').exists(), 'audit started')
+                state = service.request('/state')
+                assert state['status'] == 'auditing' and state['control']['paused']
+                for action in ['audit', 'resume', 'cycle']:
+                    try:
+                        service.request('/control/' + action, 'POST')
+                        raise AssertionError('Conflicting control accepted')
+                    except urllib.error.HTTPError as e:
+                        assert e.code == 409
+                if mode == 'interrupted':
+                    service.stop(crash=True)
+                (root / 'audit-hold').unlink()
+                if mode == 'interrupted':
+                    service.start()
+            expected = 'interrupted' if mode == 'interrupted' else 'failed' if mode in ['budget', 'malformed', 'failed'] else 'idle' if mode == 'idle' else 'completed'
+            def completed_audit():
+                state = service.request('/state')
+                return state if state['cycles'] and not state['cycle_active'] and state['cycles'][0]['status'] == expected else None
+            state = service.wait(completed_audit, 'audit completion')
+            cycle = state['cycles'][0]
+            assert cycle['mode'] == 'audit' and state['control']['paused']
+            assert state['tasks'] == queued_before
+            if mode in ['accepted', 'queued']:
+                assert {p['decision'] for p in cycle['proposals']} == {'accepted', 'rejected', 'deferred'}
+                assert all(p['reason'] for p in cycle['proposals']) and len(cycle['assessments']) == 2
+            report = usage_report(root)
+            row = next(c for c in report['cycles'] if c['id'] == cycle['id'])
+            assert row['mode'] == 'audit' and row['task_admissions'] == 0
+            if mode in ['accepted', 'idle', 'queued']:
+                assert row['planning_admissions'] == 13
+            service.stop()
+            service.start()
+            time.sleep(1.2)
+            assert service.request('/state')['tasks'] == queued_before
+            current_publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
+            assert current_publications == publications
+            assert git('rev-parse', 'main', cwd=root / 'remote.git') == baseline_revision
+            assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
+            if mode == 'accepted':
+                service.stop()
+                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor', '--audit'], env=service.env, capture_output=True, text=True, check=True)
+                assert json.loads(diagnostic.stdout)['mode'] == 'audit'
+            print(f'PASS audit-{mode}: durable decisions, paused queue, no publication')
+        finally:
+            service.stop()
+            service.log.close()
+
+
 if __name__ == '__main__':
     for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']:
         scenario(mode)
+
+    for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']:
+        audit_scenario(mode)

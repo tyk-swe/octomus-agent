@@ -13,8 +13,12 @@ struct Args {
     data_dir: PathBuf,
     #[arg(long, env = "OCTOMUS_LISTEN", default_value = "127.0.0.1:4200")]
     listen: SocketAddr,
-    #[arg(long, env = "OCTOMUS_ASSETS", default_value = "web/build")]
-    assets: PathBuf,
+    #[arg(
+        long,
+        env = "OCTOMUS_ASSETS",
+        help = "Override the embedded dashboard with a build directory"
+    )]
+    assets: Option<PathBuf>,
     #[arg(long, help = "Print configuration defaults and exit")]
     print_config: bool,
     #[arg(
@@ -22,6 +26,12 @@ struct Args {
         help = "Validate saved repository, authentication and model routes, then exit"
     )]
     doctor: bool,
+    #[arg(
+        long,
+        requires = "doctor",
+        help = "Check only audit prerequisites with --doctor"
+    )]
+    audit: bool,
     #[arg(long, conflicts_with_all = ["doctor", "print_config"], help = "Export a read-only JSON usage report from saved state and exit")]
     usage_report: bool,
 }
@@ -67,7 +77,17 @@ async fn main() -> Result<()> {
     if args.doctor {
         println!(
             "{}",
-            serde_json::to_string_pretty(&app.doctor(&app.config()?).await?)?
+            serde_json::to_string_pretty(
+                &app.doctor_for(
+                    &app.config()?,
+                    if args.audit {
+                        octomus_agent::model::CycleMode::Audit
+                    } else {
+                        octomus_agent::model::CycleMode::Execution
+                    }
+                )
+                .await?
+            )?
         );
         return Ok(());
     }
@@ -76,10 +96,18 @@ async fn main() -> Result<()> {
         token.len() >= 32,
         "OCTOMUS_TOKEN must contain at least 32 characters"
     );
-    ensure!(
-        args.assets.join("200.html").exists(),
-        "Dashboard assets missing. Run npm ci and npm run build in web/, or set --assets"
-    );
+    if let Some(assets) = &args.assets {
+        ensure!(
+            assets.join("200.html").is_file(),
+            "Dashboard override missing 200.html; build the dashboard or correct --assets"
+        );
+    }
+    if !args.listen.ip().is_loopback() {
+        tracing::warn!(
+            "Non-loopback listener {} exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.",
+            args.listen
+        );
+    }
     app.recover()?;
     let worker = tokio::spawn(app.clone().run());
     let listener = tokio::net::TcpListener::bind(args.listen).await?;

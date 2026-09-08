@@ -24,10 +24,10 @@ What is missing for a public release:
 - **Live proof.** The launch checklist still says "validate the first real cycle". No cycle has run against a real Codex runtime or a real GitHub repository.
 - **Route reality.** Tier defaults (`gpt-5.6-luna` xhigh/max, `gpt-6-astra` low/medium/high) and the configurable repair default (`gpt-6-astra` medium) have not been checked against a real model catalog. If any pair is absent, `Check connection` fails for every first-time user.
 - **AGENTS.md — prepared.** Repository structure, verification commands, conventions and worker boundaries are now recorded; live grounding remains unvalidated.
-- **Distribution.** Build-from-source only: Rust 1.88, Node 22, npm, Python 3, Codex CLI, gh. No tagged release, no binaries, no install script.
-- **Community files.** No SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, issue or PR templates, CODEOWNERS, Discussions.
+- **Distribution — repository implementation prepared.** Embedded dashboard, installer, Linux release workflow and Cargo packaging are implemented; tagged/public releases and crates.io publication remain pending. See [Week 2](week-2.md).
+- **Community files — prepared.** Security/contribution/conduct policies, changelog, issue and PR templates, CODEOWNERS and label definitions are implemented. Applying labels, enabling Discussions and confirming private-report delivery remain owner actions.
 - **Cost story.** A cycle spends 13 sessions (1 grounding + 9 discovery + 2 adversarial + 1 consolidation) before any task runs. Each task admits 2 to 10 more without retries (one executor, up to five reviews and four repairs). At the default 30-minute interval, idle cycles alone reach the daily budget of 150. Nobody can tell what a day costs.
-- **Security narrative.** The design is deliberately unsandboxed. That is defensible, but only if the threat model is written before the comment thread writes it for you.
+- **Security narrative — prepared.** The [threat model](threat-model.md) documents deliberately unsandboxed execution and residual risks. Hardened systemd settings still need validation on the owner’s VM.
 
 ## 2. What "big" realistically means
 
@@ -102,6 +102,14 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 
 ## 6. Week 2, Sep 15 to 21: make it installable and trustworthy
 
+**Implementation status:** repository work is implemented and validation is recorded
+in [Week 2](week-2.md). Audit mode, embedded assets, installer/release packaging,
+security controls and community/operator documentation are included. Publication,
+GitHub settings, real media and fresh-VM acceptance remain pending. The runner seam
+is not implemented without the September 14 live gate; optional Sigstore is deferred.
+Private security/conduct reports use mail@mail.tyk.sh with a three-business-day
+acknowledgement target. Shipped defaults await measured evidence.
+
 **Distribution.**
 
 - Embed `web/build` into the binary (`rust-embed` or `include_dir`) so the release is one file. Keep `--assets` as an override for development.
@@ -112,7 +120,7 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 **Security posture, written before anyone asks.**
 
 - `SECURITY.md`: private disclosure address, response time, supported versions.
-- `docs/threat-model.md`: trust boundaries; what an agent can do (everything the service user can); prompt injection through repository content is in scope and not mitigated by design; the operator token is a capability with no rate limit and must stay behind an SSH tunnel; the dashboard is single-operator; what the `redact` filter does and does not guarantee. State plainly that the sandbox is the VM, and that a process sandbox would not change what a push-capable agent can do to the repository.
+- `docs/threat-model.md`: trust boundaries; what an agent can do (everything the service user can); prompt injection through repository content is in scope and not mitigated by design; the operator token is a capability with only bounded failed-authentication backoff, not comprehensive rate limiting and must stay behind an SSH tunnel; the dashboard is single-operator; what the `redact` filter does and does not guarantee. State plainly that the sandbox is the VM, and that a process sandbox would not change what a push-capable agent can do to the repository.
 - Add a small backoff on repeated 401s to the API, and a startup warning if `--listen` is not loopback.
 - CI additions: `cargo audit` (or `cargo deny`), `npm audit --audit-level=high`, and the Playwright suite already in the Makefile.
 
@@ -125,7 +133,7 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 
 - `CONTRIBUTING.md` (dev setup, `make check`, `make test`, how fixtures work, what a good PR looks like), `CODE_OF_CONDUCT.md` (Contributor Covenant), `CHANGELOG.md` (Keep a Changelog format), `CODEOWNERS`, issue templates (bug, blocked task with redacted task JSON, backend request, proposal quality report), a PR template, labels including `good first issue` and `backend`. Enable Discussions.
 - README rewrite for a reader's first ten minutes: one paragraph of what and why, the 10-second GIF, install in one command, first cycle, how it decides (the adversarial loop and the fresh-reviewer vs persistent-repair rule), what a day costs, security in three sentences with a link to the threat model, roadmap, then everything else behind links. Replace the synthetic screenshot with a real one.
-- Move the operator checklist from `todo.md` into `docs/operations.md` written for an operator, and delete `todo.md`. It currently reads as a note to the author.
+- Move the operator checklist from `todo.md` into `docs/operations.md` written for an operator, and delete `todo.md`. The operator migration is implemented; external commissioning remains pending.
 
 **Exit criterion.** A fresh Ubuntu 24.04 VM reaches its first running cycle within 10 minutes following only the README, with no step that says "see the source".
 

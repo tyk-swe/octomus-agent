@@ -114,6 +114,12 @@ impl Default for Config {
 }
 impl Config {
     pub fn validate(&self, ready: bool) -> Result<()> {
+        self.validate_mode(ready, false)
+    }
+    pub fn validate_audit(&self) -> Result<()> {
+        self.validate_mode(true, true)
+    }
+    fn validate_mode(&self, ready: bool, audit: bool) -> Result<()> {
         ensure!(
             (8..=10).contains(&self.discovery_agents),
             "Discovery requires 8–10 agents"
@@ -189,7 +195,7 @@ impl Config {
                 route.model.len() <= 100 && route.effort.len() <= 20,
                 "Invalid route"
             );
-            if ready {
+            if ready && !audit {
                 ensure!(
                     !route.model.is_empty() && !route.effort.is_empty(),
                     "Set the model and effort for every role, tier, and repair route"
@@ -205,6 +211,13 @@ impl Config {
             "Invalid executable or verification commands"
         );
         if ready {
+            for role in ["orchestrator", "discovery", "proposal_reviewer"] {
+                let route = &self.roles[role];
+                ensure!(
+                    !route.model.is_empty() && !route.effort.is_empty(),
+                    "Set the model and effort for every planning role"
+                );
+            }
             ensure!(
                 self.repository.is_absolute() && self.repository.join(".git").exists(),
                 "Repository must be an absolute path to a Git checkout"
@@ -218,7 +231,7 @@ impl Config {
                 "GitHub repository must be owner/name"
             );
             ensure!(
-                !self.verification_commands.is_empty(),
+                audit || !self.verification_commands.is_empty(),
                 "Set at least one meaningful repository verification command"
             );
         }

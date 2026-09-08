@@ -182,7 +182,7 @@ async fn private_api_enforces_auth_content_type_and_configuration_rules() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(&temp.path().join("state.db")).unwrap();
     let app = App::new(store, temp.path().into());
-    let router = api::router(app.clone(), TOKEN, temp.path().into());
+    let router = api::router(app.clone(), TOKEN, Some(temp.path().into()));
     let response = router
         .clone()
         .oneshot(
@@ -277,4 +277,155 @@ async fn cancellation_kills_the_command_process_group() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("Child process survived cancellation");
+}
+
+#[test]
+fn audit_readiness_requires_only_planning_routes_and_no_verification() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join(".git")).unwrap();
+    let mut c = Config {
+        repository: temp.path().into(),
+        github_repo: "fixture/project".into(),
+        ..Config::default()
+    };
+    for role in ["orchestrator", "discovery", "proposal_reviewer"] {
+        c.roles.insert(role.into(), Route::new("available", "low"));
+    }
+    let catalog =
+        vec![json!({"model":"available","supportedReasoningEfforts":[{"reasoningEffort":"low"}]})];
+    c.validate_audit().unwrap();
+    assert!(c.validate(true).is_err());
+    octomus_agent::codex::validate_routes_for(&c, &catalog, true).unwrap();
+    assert!(octomus_agent::codex::validate_routes(&c, &catalog).is_err());
+    c.roles.get_mut("discovery").unwrap().effort = "max".into();
+    assert!(octomus_agent::codex::validate_routes_for(&c, &catalog, true).is_err());
+    c.roles.get_mut("discovery").unwrap().model.clear();
+    assert!(c.validate_audit().is_err());
+}
+
+#[tokio::test]
+async fn embedded_dashboard_and_overrides_preserve_http_boundaries() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = App::new(
+        Store::open(&temp.path().join("state.db")).unwrap(),
+        temp.path().into(),
+    );
+    let router = api::router(app.clone(), TOKEN, None);
+    for (uri, status, mime) in [
+        ("/", StatusCode::OK, "text/html"),
+        ("/proposals", StatusCode::OK, "text/html"),
+        ("/favicon.svg", StatusCode::OK, "image/svg+xml"),
+        ("/_app/missing.js", StatusCode::NOT_FOUND, ""),
+        ("/%2e%2e/Cargo.toml", StatusCode::BAD_REQUEST, ""),
+        ("/api/missing", StatusCode::NOT_FOUND, "application/json"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{uri}");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        if !mime.is_empty() {
+            assert!(
+                response.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with(mime)
+            );
+        }
+    }
+    let head = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert!(to_bytes(head.into_body(), 100000).await.unwrap().is_empty());
+    std::fs::write(temp.path().join("200.html"), "override dashboard").unwrap();
+    let response = api::router(app, TOKEN, Some(temp.path().into()))
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        to_bytes(response.into_body(), 100000).await.unwrap(),
+        "override dashboard"
+    );
+}
+
+#[tokio::test]
+async fn valid_authentication_bypasses_pending_failure_delay_and_audit_controls_conflict() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = App::new(
+        Store::open(&temp.path().join("state.db")).unwrap(),
+        temp.path().into(),
+    );
+    let router = api::router(app.clone(), TOKEN, None);
+    let bad = tokio::spawn(
+        router.clone().oneshot(
+            Request::builder()
+                .uri("/api/state")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    );
+    tokio::task::yield_now().await;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/state")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !bad.is_finished(),
+        "Valid tokens must not wait on an unauthenticated request"
+    );
+    assert_eq!(
+        bad.await.unwrap().unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    app.runtime.lock().unwrap().cycle = Some(CancellationToken::new());
+    app.runtime.lock().unwrap().cycle_mode = Some(octomus_agent::model::CycleMode::Audit);
+    for action in ["audit", "cycle", "resume"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/control/{action}"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+}
+
+#[test]
+fn legacy_cycles_default_to_execution_without_rewriting_evidence() {
+    use octomus_agent::model::{Cycle, CycleMode};
+    let old = json!({"id":"legacy","number":7,"status":"completed","started_at":"2026-09-08T00:00:00Z","completed_at":"2026-09-08T00:05:00Z","grounding":null,"proposals":[],"assessments":[],"sessions":[],"error":null});
+    let cycle: Cycle = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(cycle.mode, CycleMode::Execution);
+    let mut upgraded = serde_json::to_value(cycle).unwrap();
+    assert_eq!(
+        upgraded.as_object_mut().unwrap().remove("mode"),
+        Some(json!("execution"))
+    );
+    assert_eq!(upgraded, old);
 }

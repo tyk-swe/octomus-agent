@@ -77,7 +77,7 @@ pub fn usage_report(path: &Path) -> Result<Value> {
         let decisions = ["accepted", "rejected", "deferred", "candidate"].map(|decision| {
             (decision, cycle.proposals.iter().filter(|p| p.decision == decision).count())
         }).into_iter().collect::<BTreeMap<_, _>>();
-        json!({"id":cycle.id,"number":cycle.number,"status":cycle.status,
+        json!({"id":cycle.id,"mode":cycle.mode,"number":cycle.number,"status":cycle.status,
             "started_at":cycle.started_at,"completed_at":cycle.completed_at,"wall_seconds":wall_seconds,
             "planning_admissions":planning,"task_admissions":task,
             "recorded_completed_sessions":cycle.sessions.iter().filter(|s| s.status == "completed").count(),

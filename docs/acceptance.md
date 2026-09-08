@@ -23,3 +23,20 @@ This maps the PRD to implementation and automated evidence. Integration tests ru
 Additional checks cover concurrent daily-budget admission, cancelled process-group cleanup, API authentication/content-type enforcement, stale remote branch preservation, and default-branch dependency rejection.
 
 A real host must pass **Check connection** and an initial authenticated cycle before unattended commissioning. Automated fixtures cannot validate live model availability, quality of generated improvements, GitHub entitlements, or a target project's verification commands. These are operational acceptance checks, not replaced by the passing local suite.
+
+## Week 2 repository coverage
+
+- Audit scenarios cover accepted/rejected/deferred and empty plans, malformed
+  consolidation, exhausted budgets, failed starts, interruptions and existing
+  paused queues. No audit dispatch or publication is allowed; execution behavior
+  remains covered by the original delivery scenarios.
+- Rust tests exercise audit readiness, conflicting controls, embedded assets,
+  auth backoff and legacy state loading. Usage reports distinguish cycle modes.
+- Desktop/mobile tests cover audit progress and filtered decisions using synthetic
+  responses; these images remain fixture evidence.
+- Distribution tests start the copied executable without external dashboard assets,
+  load SPA scripts, check override/listener errors, and verify installer success
+  and failure paths against local release fixtures.
+- CI prepares native x86_64/aarch64 release smoke tests and exercises hardened
+  systemd write paths/process cleanup on disposable hosts. Actual workflow runs
+  and fresh-owner-VM acceptance must be recorded separately in [Week 2](week-2.md).

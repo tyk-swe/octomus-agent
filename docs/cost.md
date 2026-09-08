@@ -13,7 +13,7 @@ unavailable. A missing charge measurement is **unavailable**, not zero.
 `octomus-agent --data-dir PATH --usage-report` exports a read-only JSON snapshot.
 Its schema version is 1. `daily` includes the original daily budget counter,
 attributed admissions and historical unattributed admissions. `cycles` includes
-planning wall time (not subsequent task execution), status, proposal counts,
+planning wall time (not subsequent task execution), mode (audit/execution), status, proposal counts,
 planning admissions and task admissions associated with that cycle. `tasks`
 includes execution tier, saved routes, admissions, status and PR URL. `tiers`
 counts observed tasks and their admissions. `admissions` retains each reservation's
@@ -35,6 +35,7 @@ allowance, raw transcripts or prices; capture account observations separately.
 
 With nine discovery agents, a fully completed planning pass normally admits
 13 sessions: one grounding, nine discovery, two adversaries and one consolidation.
+An audit uses the same planning admissions and queues no tasks; it is not free.
 A task with no retries admits two turns when the first review is clean; four
 repair rounds raise this to ten (one executor, five reviewers, four repair turns).
 Failed starts and retries alter these counts. These are workflow calculations,

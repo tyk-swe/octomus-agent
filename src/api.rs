@@ -1,7 +1,7 @@
 use crate::{
     config::Config,
     engine::App,
-    model::{Cycle, Status, Task},
+    model::{Cycle, CycleMode, Status, Task},
     store::redact,
 };
 use axum::{
@@ -15,7 +15,11 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use subtle::ConstantTimeEq;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -23,6 +27,26 @@ use tower_http::services::{ServeDir, ServeFile};
 pub struct Api {
     pub app: App,
     pub token_hash: Arc<[u8; 32]>,
+    failures: Arc<Mutex<AuthFailures>>,
+}
+#[derive(Default)]
+struct AuthFailures {
+    count: u32,
+    last: Option<Instant>,
+}
+impl AuthFailures {
+    fn delay(&mut self, now: Instant) -> Duration {
+        if self
+            .last
+            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(60))
+        {
+            self.count = 0;
+        }
+        let delay = Duration::from_millis((100u64 << self.count.min(4)).min(1000));
+        self.count = self.count.saturating_add(1);
+        self.last = Some(now);
+        delay
+    }
 }
 pub struct ApiError(pub StatusCode, pub String);
 impl From<anyhow::Error> for ApiError {
@@ -36,9 +60,10 @@ impl IntoResponse for ApiError {
     }
 }
 type Result<T> = std::result::Result<T, ApiError>;
-pub fn router(app: App, token: &str, assets: PathBuf) -> Router {
+pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
     let state = Api {
         app,
+        failures: Arc::default(),
         token_hash: Arc::new(Sha256::digest(token.as_bytes()).into()),
     };
     let api = Router::new()
@@ -50,17 +75,26 @@ pub fn router(app: App, token: &str, assets: PathBuf) -> Router {
         .route("/doctor", post(doctor))
         .route("/models", get(models))
         .route("/events", get(events))
+        .fallback(|| async {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"Unknown API route"})),
+            )
+        })
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .with_state(state.clone());
-    Router::new()
-        .nest("/api", api)
-        .route(
-            "/healthz",
-            get(|| async { Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION")})) }),
-        )
-        .fallback_service(
+    let router = Router::new().nest("/api", api).route(
+        "/healthz",
+        get(|| async { Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION")})) }),
+    );
+    let router = if let Some(assets) = assets {
+        router.fallback_service(
             ServeDir::new(&assets).not_found_service(ServeFile::new(assets.join("200.html"))),
         )
+    } else {
+        router.fallback(crate::assets::serve)
+    };
+    router
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
         .layer(middleware::from_fn(headers))
 }
@@ -86,6 +120,8 @@ async fn authenticate(State(s): State<Api>, req: Request, next: Next) -> Respons
         .unwrap_or("");
     let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
     if !bool::from(digest.ct_eq(s.token_hash.as_ref())) {
+        let delay = s.failures.lock().unwrap().delay(Instant::now());
+        tokio::time::sleep(delay).await;
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error":"Enter the operator access token to connect."})),
@@ -132,7 +168,9 @@ async fn state_view(State(s): State<Api>) -> Result<Json<Value>> {
     let cycles = s.app.store.list::<Cycle>("cycle")?;
     let config = s.app.config()?;
     let rt = s.app.runtime.lock().unwrap();
-    let status = if c.paused {
+    let status = if rt.cycle_mode == Some(CycleMode::Audit) {
+        "auditing"
+    } else if c.paused {
         "paused"
     } else if c.error.is_some() {
         "unhealthy"
@@ -143,7 +181,7 @@ async fn state_view(State(s): State<Api>) -> Result<Json<Value>> {
     };
     // Configuration and complete task details are fetched separately to keep polling inexpensive.
     Ok(Json(
-        json!({"status":status,"control":c,"repository":config.github_repo,"configured":config.validate(true).is_ok(),"active_tasks":rt.tasks.len(),"cycle_active":rt.cycle.is_some(),"sessions_today":s.app.store.sessions_today()?,"session_limit":config.max_sessions_per_day,"tasks":tasks.iter().take(300).map(|t|json!({"id":t.id,"cycle_id":t.cycle_id,"title":t.proposal.title,"category":t.proposal.category,"tier":t.proposal.tier,"target":t.proposal.target,"branch":t.branch,"status":t.status,"pr_url":t.pr_url,"pr_number":t.pr_number,"error":t.error,"created_at":t.created_at,"updated_at":t.updated_at})).collect::<Vec<_>>(),"cycles":cycles.into_iter().take(20).collect::<Vec<_>>(),"prs":s.app.store.get::<Value>("settings","prs")?.unwrap_or(json!([])),"events":s.app.store.events(None)?}),
+        json!({"status":status,"control":c,"repository":config.github_repo,"configured":config.validate(true).is_ok(),"audit_configured":config.validate_audit().is_ok(),"active_cycle_mode":rt.cycle_mode,"active_tasks":rt.tasks.len(),"cycle_active":rt.cycle.is_some(),"sessions_today":s.app.store.sessions_today()?,"session_limit":config.max_sessions_per_day,"tasks":tasks.iter().take(300).map(|t|json!({"id":t.id,"cycle_id":t.cycle_id,"title":t.proposal.title,"category":t.proposal.category,"tier":t.proposal.tier,"target":t.proposal.target,"branch":t.branch,"status":t.status,"pr_url":t.pr_url,"pr_number":t.pr_number,"error":t.error,"created_at":t.created_at,"updated_at":t.updated_at})).collect::<Vec<_>>(),"cycles":cycles.into_iter().take(20).collect::<Vec<_>>(),"prs":s.app.store.get::<Value>("settings","prs")?.unwrap_or(json!([])),"events":s.app.store.events(None)?}),
     ))
 }
 async fn task(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Task>> {
@@ -187,7 +225,20 @@ async fn save_config(State(s): State<Api>, Json(c): Json<Config>) -> Result<Json
 async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Json<Value>> {
     let _gate = s.app.gate.lock().await;
     let mut c = s.app.control()?;
+    let rt = s.app.runtime.lock().unwrap();
+    if (action == "audit" && (!c.paused || !rt.tasks.is_empty() || rt.cycle.is_some()))
+        || (matches!(action.as_str(), "resume" | "cycle")
+            && rt.cycle_mode == Some(CycleMode::Audit))
+    {
+        return Err(ApiError(StatusCode::CONFLICT, "Audits require paused operation with no active work; wait for the audit to finish before resuming.".into()));
+    }
+    drop(rt);
     match action.as_str() {
+        "audit" => {
+            s.app.start_audit()?;
+            s.app.store.event("system", "operator", "audit")?;
+            return Ok(Json(json!(s.app.control()?)));
+        }
         "pause" => c.paused = true,
         "resume" => {
             s.app.config()?.validate(true)?;
@@ -275,8 +326,13 @@ async fn task_action(
     s.app.store.event(&id, "operator", &action)?;
     Ok(Json(json!({"ok":true})))
 }
-async fn doctor(State(s): State<Api>) -> Result<Json<Value>> {
-    Ok(Json(s.app.doctor(&s.app.config()?).await?))
+#[derive(Default, Deserialize)]
+struct DoctorQuery {
+    #[serde(default)]
+    mode: CycleMode,
+}
+async fn doctor(State(s): State<Api>, Query(q): Query<DoctorQuery>) -> Result<Json<Value>> {
+    Ok(Json(s.app.doctor_for(&s.app.config()?, q.mode).await?))
 }
 async fn models(State(s): State<Api>) -> Result<Json<Value>> {
     let mut cx = crate::codex::Codex::connect(
@@ -295,4 +351,21 @@ struct EventQuery {
 }
 async fn events(State(s): State<Api>, Query(q): Query<EventQuery>) -> Result<Json<Value>> {
     Ok(Json(json!(s.app.store.events(q.entity.as_deref())?)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn authentication_backoff_is_bounded_and_expires() {
+        let mut failures = AuthFailures::default();
+        let now = Instant::now();
+        for expected in [100, 200, 400, 800, 1000, 1000] {
+            assert_eq!(failures.delay(now), Duration::from_millis(expected));
+        }
+        assert_eq!(
+            failures.delay(now + Duration::from_secs(60)),
+            Duration::from_millis(100)
+        );
+    }
 }

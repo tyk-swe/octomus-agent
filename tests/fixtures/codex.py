@@ -35,6 +35,8 @@ def proposals():
         if (root / 'dependencies').exists():
             second['dependencies'] = [first['id']]
         return [first, second]
+    if (root / 'audit-decisions').exists():
+        return [first, {**first, 'id': 'd0-rejected', 'title': 'Unnecessary rewrite', 'decision': 'rejected', 'reason': 'No measured benefit; both adversaries reject it.'}, {**first, 'id': 'd0-deferred', 'title': 'Later improvement', 'decision': 'deferred', 'reason': 'Wait for evidence from operation.'}]
     return [first]
 
 for line in sys.stdin:
@@ -77,6 +79,10 @@ for line in sys.stdin:
         with (root / 'protocol.jsonl').open('a') as log:
             log.write(json.dumps({'thread': identity, 'prompt': prompt, 'cwd': str(cwd), 'model': params['model'], 'effort': params['effort'], 'sandbox': params['sandboxPolicy'], 'approval': params['approvalPolicy']}) + '\n')
         if prompt.startswith('Ground this repository'):
+            if (root / 'audit-hold').exists():
+                (root / 'audit-entered').touch()
+                while (root / 'audit-hold').exists():
+                    time.sleep(0.05)
             answer = {'context': 'Small fixture with a feature contract in README.md.'}
         elif prompt.startswith('Discover worthwhile'):
             answer = {'proposals': [] if (root / 'idle').exists() or 'IDs prefixed d0-' not in prompt else proposals()}
@@ -84,6 +90,8 @@ for line in sys.stdin:
             answer = {'assessments': [] if (root / 'idle').exists() else [{'id': p['id'], 'decision': 'accepted', 'reason': 'Concrete and useful.'} for p in proposals()]}
         elif prompt.startswith('Act as final orchestrator'):
             answer = {'proposals': [] if (root / 'idle').exists() else proposals()}
+            if (root / 'audit-malformed').exists():
+                answer = {'proposals': []}
         elif prompt.startswith('Implement this accepted task'):
             (cwd / feature_file).write_text('needs repair\n')
             answer = 'Implemented feature.txt. Relevant verification is pending.'

@@ -1,0 +1,23 @@
+name: Proposal quality report
+description: Explain an incorrect acceptance, rejection or missed opportunity
+labels: [proposal-quality]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Version, audit or execution cycle, and exact planning routes
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Redacted proposal, adversarial assessments and final reason
+      description: Include concrete source evidence only when you have permission to share it. Do not include secrets or raw transcripts.
+    validations:
+      required: true
+  - type: textarea
+    id: expectation
+    attributes:
+      label: Expected decision and supporting evidence
+    validations:
+      required: true

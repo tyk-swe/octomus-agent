@@ -147,8 +147,17 @@ pub struct Grounding {
     pub maintenance_due: bool,
     pub maintenance_targets: Vec<String>,
 }
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CycleMode {
+    #[default]
+    Execution,
+    Audit,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cycle {
+    #[serde(default)]
+    pub mode: CycleMode,
     pub id: String,
     pub number: u64,
     pub status: String,

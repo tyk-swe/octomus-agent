@@ -111,6 +111,7 @@ export type PR = {
   owned: boolean;
 };
 export type Cycle = {
+  mode: 'execution' | 'audit';
   id: string;
   number: number;
   status: string;
@@ -133,6 +134,8 @@ export type Snapshot = {
   control: { paused: boolean; cycle_number: number; next_cycle_at: number; error: string | null };
   repository: string;
   configured: boolean;
+  audit_configured: boolean;
+  active_cycle_mode: 'execution' | 'audit' | null;
   active_tasks: number;
   cycle_active: boolean;
   sessions_today: number;

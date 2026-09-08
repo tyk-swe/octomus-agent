@@ -75,3 +75,70 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test('one-shot audit progress, decisions and paused controls', async ({ page }, testInfo) => {
+  let running = false;
+  let finished = false;
+  await page.route('**/api/state', async (route) => {
+    const response = await route.fetch();
+    const state = await response.json();
+    state.configured = false;
+    state.audit_configured = true;
+    state.active_tasks = 0;
+    state.control.paused = true;
+    state.status = running ? 'auditing' : 'paused';
+    state.cycle_active = running;
+    state.active_cycle_mode = running ? 'audit' : null;
+    if (running || finished) {
+      const cycle = structuredClone(state.cycles[0]);
+      cycle.id = 'audit-fixture';
+      cycle.number = 2;
+      cycle.mode = 'audit';
+      cycle.status = running ? 'running' : 'completed';
+      cycle.proposals = finished
+        ? ['accepted', 'rejected', 'deferred'].map((decision, index) => ({
+            ...cycle.proposals[0],
+            id: `audit-${index}`,
+            title: `Audit ${decision} recommendation`,
+            decision,
+            reason: `${decision}: both adversaries considered the concrete evidence.`
+          }))
+        : [];
+      state.cycles.unshift(cycle);
+    }
+    await route.fulfill({ response, json: state });
+  });
+  await page.route('**/api/control/audit', async (route) => {
+    expect(route.request().method()).toBe('POST');
+    running = true;
+    await route.fulfill({ json: { paused: true } });
+  });
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await expect(page.getByRole('button', { name: 'Run a cycle' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Run an audit' }).click();
+  await expect(page.getByRole('heading', { name: 'Worth doing. Before doing.' })).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('Audit in progress');
+  await expect(page.getByRole('button', { name: 'Resume', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Run an audit' })).toBeDisabled();
+  running = false;
+  finished = true;
+  await expect(page.getByRole('heading', { name: 'Audit rejected recommendation' })).toBeVisible({
+    timeout: 10000
+  });
+  await page.getByLabel('Cycle', { exact: true }).selectOption('audit-fixture');
+  await expect(page.getByLabel('Decision counts')).toContainText('rejected: 1');
+  await page.getByRole('button', { name: 'rejected', exact: true }).click();
+  await expect(
+    page.getByText('rejected: both adversaries considered the concrete evidence.')
+  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Audit accepted recommendation' })).toHaveCount(0);
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({
+    path: `test-results/${testInfo.project.name}-audit-fixture.png`,
+    fullPage: true
+  });
+});

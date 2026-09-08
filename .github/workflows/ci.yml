@@ -1,7 +1,13 @@
-name: MVP checks
+name: Repository checks
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
 permissions:
   contents: read
 jobs:
@@ -10,6 +16,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -26,17 +34,18 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
-      - run: cargo build --locked
       - run: npm ci --prefix web
-      - run: npm run check --prefix web
-      - run: npm run format:check --prefix web
-      - run: npm run build --prefix web
-      - run: python3 tests/e2e.py
+      - run: shellcheck install.sh scripts/*.sh
+      - run: make check
+      - run: cargo install cargo-audit --locked
+      - run: make audit
       - run: npx --prefix web playwright install --with-deps chromium
-      - run: npm test --prefix web
+      - run: make test
+      - run: make package
+      - run: python3 tests/distribution.py --package "dist/octomus-agent-v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-x86_64-unknown-linux-gnu.tar.gz"
+      - run: ./scripts/package-crate.sh
+      - run: python3 tests/crate.py
+      - run: sudo python3 tests/systemd.py
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

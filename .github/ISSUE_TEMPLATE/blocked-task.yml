@@ -1,0 +1,24 @@
+name: Blocked task
+description: Diagnose a blocked or interrupted task
+labels: [blocked-task]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Version, configured route and blocked reason
+      description: Include the Octomus/Codex versions and exact model/effort. Omit credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Manually reviewed, redacted task JSON
+      description: Fetch the task from the authenticated API. Remove private source, prompts, paths and secrets as needed; automatic redaction is incomplete. Never attach raw transcripts.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: recovery
+    attributes:
+      label: Verification and recovery attempts
+      description: What was run, whether the workspace is preserved, and what changed on retry.

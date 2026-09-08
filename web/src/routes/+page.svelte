@@ -16,6 +16,7 @@
     search = $state(''),
     filter = $state('all'),
     proposalFilter = $state('all'),
+    proposalCycle = $state('all'),
     selected = $state<string | null>(null),
     mobileOpen = $state(false),
     lastUpdated = $state('');
@@ -37,7 +38,8 @@
   );
   let proposals = $derived(
     (data?.cycles ?? [])
-      .flatMap((c) => c.proposals.map((p) => ({ ...p, cycle: c.number })))
+      .filter((c) => proposalCycle === 'all' || c.id === proposalCycle)
+      .flatMap((c) => c.proposals.map((p) => ({ ...p, cycle: c.number, mode: c.mode })))
       .filter(
         (p) =>
           (proposalFilter === 'all' || p.decision === proposalFilter) &&
@@ -98,6 +100,11 @@
     try {
       await api(`/control/${action}`, 'POST');
       await refresh();
+      if (action === 'audit') {
+        proposalCycle = 'all';
+        proposalFilter = 'all';
+        await navigate('proposals');
+      }
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -266,7 +273,7 @@
           {#if view !== 'settings'}<div class="actions">
               <button
                 class="button"
-                disabled={busy || !data.configured}
+                disabled={busy || !data.configured || data.active_cycle_mode === 'audit'}
                 onclick={() => control(data?.control.paused ? 'resume' : 'pause')}
                 ><Icon name={data.control.paused ? 'play' : 'pause'} size={16} />{data.control
                   .paused
@@ -277,6 +284,16 @@
                 disabled={busy || !data.configured || data.cycle_active}
                 onclick={() => control('cycle')}
                 ><Icon name="refresh" size={16} />Run a cycle</button
+              >
+              <button
+                class="button"
+                disabled={busy ||
+                  !data.audit_configured ||
+                  !data.control.paused ||
+                  data.cycle_active ||
+                  data.active_tasks > 0}
+                onclick={() => control('audit')}
+                ><Icon name="proposals" size={16} />Run an audit</button
               >
             </div>{/if}
         </div>
@@ -298,6 +315,12 @@
               onclick={() => navigate('settings')}>Inspect configuration</button
             >
           </div>{/if}
+        {#if data.active_cycle_mode === 'audit'}
+          <div class="notice" role="status">
+            <Icon name="proposals" />Audit in progress. Execution stays paused; recommendations will
+            not be queued.
+          </div>
+        {/if}
         {#if view === 'overview'}
           {#if !data.configured}<section class="onboarding">
               <div>
@@ -498,6 +521,31 @@
               </div>{/if}
           </section>
         {:else if view === 'proposals'}
+          <p class="muted">
+            Audits record recommendations without queuing work. A later execution cycle plans
+            afresh.
+          </p>
+          <div class="proposal-controls">
+            <div class="cycle-picker">
+              <label for="proposal-cycle">Cycle</label>
+              <select id="proposal-cycle" bind:value={proposalCycle}>
+                <option value="all">All recent cycles</option>
+                {#each data.cycles as cycle}<option value={cycle.id}
+                    >{cycle.mode === 'audit' ? 'Audit' : 'Execution'} #{cycle.number} · {cycle.status}</option
+                  >{/each}
+              </select>
+            </div>
+            <div class="decision-counts" role="group" aria-label="Decision counts">
+              {#each ['accepted', 'rejected', 'deferred', 'candidate'] as decision}
+                <span class={'badge ' + decision}
+                  >{decision}: {data.cycles
+                    .filter((c) => proposalCycle === 'all' || c.id === proposalCycle)
+                    .flatMap((c) => c.proposals)
+                    .filter((p) => p.decision === decision).length}</span
+                >
+              {/each}
+            </div>
+          </div>
           <section class="panel">
             <div class="list-toolbar">
               <div class="filter-tabs" aria-label="Proposal filters">
@@ -513,7 +561,7 @@
                   <div class="row-between">
                     <div class="proposal-meta">
                       <span class={'badge ' + p.decision}>{p.decision}</span><span
-                        >Cycle {p.cycle}</span
+                        >{p.mode === 'audit' ? 'Audit' : 'Execution'} #{p.cycle}</span
                       ><span class="tier">{p.tier}</span>
                     </div>
                     <span class="category">{p.category}</span>

@@ -1,99 +1,191 @@
 # Octomus Agent
 
-**When the project builds itself.**
-
-Octomus continuously discovers useful improvements in a repository, challenges the ideas, implements accepted work through Codex, and delivers reviewed pull requests. It can also keep improving existing Octomus PRs. When there is nothing worthwhile to do, it idles.
-
-A Rust service owns the workflow and durable state. A SvelteKit dashboard provides configuration, progress, and operator controls. One process serves the production dashboard and API; there is no Node server to operate.
+Octomus finds useful improvements in a repository, challenges them with two
+independent reviewers, and delivers verified pull requests through Codex. It can
+reject every proposal and do nothing. Think **Dependabot, with features**: you
+choose the repository and boundaries; it discovers the work. Delivery stops at a
+PR for you to review and merge.
 
 ![Octomus dashboard](docs/dashboard.png)
 
-*Dashboard shown with synthetic browser-test data.*
+*This image uses synthetic browser-test data. Real operating screenshots and the
+10-second demo GIF are pending live commissioning.*
 
-## What the MVP does
+## First ten minutes
 
-- Grounds planning in the default branch, recorded work, and open `octomus/*` PRs.
-- Runs 8–10 complementary discovery sessions, two independent proposal reviews, and final orchestrator consolidation.
-- Routes XS/S/M/L/XL tasks to the exact configured model and reasoning effort. Unsupported routes stop visibly.
-- Gives every task its own Codex thread and `.octomus/tasks/<thread-id>/workspace` checkout.
-- Uses a fresh reviewer for every review round, with one persistent repair thread per task using its saved configurable route.
-- Runs configured verification on the reviewed revision before creating or updating a GitHub PR.
-- Preserves interrupted work, reconciles publication, serializes branch writers, and enforces operating limits.
-- Provides private dashboard access, task cancellation/retry, pause/resume, maintenance settings, and inspection of review and verification evidence.
+**Release preparation:** binaries and the crates.io package have not been
+published yet. The release installer below becomes usable after publication;
+use the source-build alternative today. The ten-minute fresh-VM target remains
+unvalidated. See [release evidence](docs/week-2.md).
 
-Delivery ends at a PR. The service does not merge, deploy, or perform production migrations. The execution model is deliberately **unsandboxed**, intended for a dedicated Linux VM and a single operator.
+Use a dedicated Ubuntu 24.04 VM (x86_64 or aarch64), an existing paid Codex account,
+and a dedicated GitHub identity with access restricted to the target repository.
+Do not use your workstation or put unrelated credentials on the VM. Account
+creation, owner-approved authentication and VM provisioning must already be
+arranged; login is performed by you.
 
-## Quick start
+### 1. Install the tools and application
 
-Requirements: Linux, Rust 1.88+ with Cargo, Node.js 22.12+ for building the dashboard, Git, GitHub CLI (`gh`), and an authenticated Codex CLI with app-server support. Python 3 is needed only for the integration tests. The protocol was checked against Codex CLI **0.153.4**.
+As the VM administrator, install Git, gh, curl and OpenSSL. This npm-based Codex
+installation uses Node 22 from [NodeSource](https://github.com/nodesource/distributions)
+and the pinned [Codex release](https://github.com/openai/codex/releases/tag/rust-v0.153.4).
+Octomus's binary itself does not require Node or Rust at runtime.
 
 ```bash
-cargo build --release --locked
-npm ci --prefix web
-npm run build --prefix web
+sudo apt-get update
+sudo apt-get install -y git gh curl ca-certificates openssl
+curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/octomus-node22.sh
+sudo bash /tmp/octomus-node22.sh
+sudo apt-get install -y nodejs
+sudo npm install -g @openai/codex@0.153.4
+```
 
+After Octomus releases are published, install the latest stable binary in one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tyk-swe/octomus-agent/main/install.sh | sh
+```
+
+The installer verifies the downloaded archive against release SHA-256 checksums
+and installs to `/usr/local/bin`. To select a version, download the script and run
+`sh install.sh v0.1.0`; an alternate writable absolute destination is supported
+through `INSTALL_DIR`. Checksums detect corruption; they are not independent
+signatures against a compromised release account.
+
+**Source-build alternative, available now:** add Rust 1.88+ and a C compiler,
+then build the dashboard before Rust. Python is only needed for repository tests.
+
+```bash
+sudo apt-get install -y build-essential
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/octomus-rustup.sh
+sh /tmp/octomus-rustup.sh -y --profile minimal
+. "$HOME/.cargo/env"
+git clone https://github.com/tyk-swe/octomus-agent.git
+cd octomus-agent
+npm ci --prefix web
+make build
+sudo install -m 755 target/release/octomus-agent /usr/local/bin/octomus-agent
+```
+
+`cargo install octomus-agent --locked` will be another option after crates.io
+publication. The crate includes the built dashboard; end users won't need npm to
+build that package. See [distribution](docs/distribution.md) for release preparation.
+
+### 2. Connect as the service user
+
+Create a dedicated account without sudo access and a persistent checkout location:
+
+```bash
+sudo useradd --create-home --home-dir /var/lib/octomus --shell /bin/bash octomus
+sudo install -d -o octomus -g octomus /srv/projects
+sudo -iu octomus
+codex login
+gh auth login
+gh auth setup-git
+```
+
+Use the dedicated identity and repository-restricted authentication arrangement,
+not an unrelated personal credential. As this same user, replace the sample
+repository identity and clone it. Configure Git identity if your project requires it.
+
+```bash
+git clone https://github.com/OWNER/REPOSITORY.git /srv/projects/project
 export OCTOMUS_TOKEN="$(openssl rand -hex 32)"
-./target/release/octomus-agent
+printf '%s\n' "$OCTOMUS_TOKEN"
 ```
 
-Open **http://127.0.0.1:4200** and enter the value of `OCTOMUS_TOKEN`. The token remains in the browser tab's memory; refreshing the page requires signing in again. The service starts paused with an empty configuration.
-
-In **Configuration**:
-
-1. Enter the absolute path of a Git checkout and its `owner/repository` GitHub name. Its `origin` must point to that repository using SSH or credential-free HTTPS.
-2. Choose models and efforts for the orchestrator, discovery agents, proposal reviewers, and code reviewer. These roles intentionally have no invented defaults. **Load available models** reads the installed runtime's catalog.
-3. Enter meaningful verification commands, one per line. All commands must pass before publication. Keep credentials in the host's authentication/environment, not these fields.
-4. Save, then **Check connection** to validate repository settings, GitHub/Codex authentication, and every model route.
-5. Select **Run a cycle**. This enables continuous operation; **Pause** prevents new tasks and cycles while in-flight work finishes.
-
-Authenticate `codex login` and `gh auth login` as the same OS account that runs Octomus. SSH Git access must also work without an interactive prompt. Configure GitHub's Git credential helper if using HTTPS (`gh auth setup-git`).
-
-The default execution routes are:
-
-| Tier | Model | Reasoning |
-| --- | --- | --- |
-| XS | `gpt-5.6-luna` | `xhigh` |
-| S | `gpt-5.6-luna` | `max` |
-| M | `gpt-6-astra` | `low` |
-| L | `gpt-6-astra` | `medium` |
-| XL | `gpt-6-astra` | `high` |
-
-Repair defaults to `gpt-6-astra` / `medium` and is configurable in **Configuration**. Existing tasks retain their saved repair route when settings change. Availability depends on the installed Codex runtime and account. Octomus never substitutes routes silently.
-
-## Development and verification
+Save this token in your password manager; it grants operator access. Confirm paid
+overage is disabled for the Week 1 subscription-only run. Then start the service:
 
 ```bash
-# Production build and Rust tests
-cargo test --locked
-cargo clippy --all-targets --locked -- -D warnings
-cargo fmt --check
-npm ci --prefix web
-npm run check --prefix web
-npm run build --prefix web
-
-# Real Git + SQLite + service integration; deterministic external peers
-cargo build --locked
-python3 tests/e2e.py
-
-# Browser tests against the Rust server, including mobile and accessibility
-npx --prefix web playwright install chromium
-npm test --prefix web
+octomus-agent --data-dir /var/lib/octomus/.octomus
 ```
 
-The integration suite never invokes a real model or writes to GitHub. It exercises the complete workflow with protocol-compatible Codex/GitHub fixtures and actual local Git repositories. A real authenticated repository smoke run is still required when commissioning a host; fixture tests cannot establish model quality, account entitlements, or network reliability.
+From your own computer, forward the dashboard port (replace `your-vm` with the
+VM's SSH destination):
 
-For UI development, run the Rust service with built assets, then `npm run dev --prefix web`. Vite proxies `/api` to port 4200. The production build is static and is served by Rust.
+```bash
+ssh -N -L 4200:127.0.0.1:4200 your-vm
+```
 
-## Deployment and operations
+Open **http://127.0.0.1:4200**, enter your saved token, and keep the service running
+in the VM terminal. It starts paused. Refreshing the page requires the token again.
 
-Use the [dedicated-host deployment guide](docs/deployment.md) for systemd, private remote access, backups, recovery, and upgrade instructions. `make package` builds a Linux release directory and archive under `dist/`.
+### 3. Run an audit, then a cycle
 
-- [Your launch checklist](todo.md)
-- [Week 1 commissioning and live log](docs/week-1.md)
-- [Cost and usage methodology](docs/cost.md)
-- [Architecture and operational contract](docs/architecture.md)
-- [PRD acceptance coverage](docs/acceptance.md)
-- [Default configuration](docs/configuration.example.json)
-- [Product requirements](PRD.md)
+In **Configuration**, enter `/srv/projects/project`, `OWNER/REPOSITORY`, the default
+branch, and an owned branch prefix. For this repository use `tyk/`; the general
+product default is `octomus/`.
 
-Apache-2.0 licensed. See [LICENSE](LICENSE).
+Use **Load available models** and select the exact model and effort for the
+orchestrator, discovery agents and proposal reviewers. Save, then **Check audit
+connection**. Unsupported routes fail visibly; explicitly select available routes
+instead of expecting a fallback. Correct any CLI version warning before live work.
+
+Select **Run an audit** while paused and idle. It runs one planning pass, retains
+accepted/rejected/deferred decisions, queues nothing, and leaves execution paused.
+Read the **Proposals** view, select the audit and inspect its reasons. With nine
+discovery agents, a completed pass normally consumes 13 session admissions; it is
+not free. Audit agents still run unsandboxed.
+
+For an executing cycle, install your target project's build/test tools, choose the
+code reviewer, five execution tier routes and repair route, and enter meaningful
+verification commands (one shell command per line). For Octomus itself, install
+Rust/rustfmt/clippy, Node 22.12+, Python 3 and Playwright prerequisites, then use:
+
+```bash
+npm ci --prefix web && make check && make test
+```
+
+Start conservatively: one concurrent task, one task per cycle and a 21,600-second
+interval. This is the initial dogfood profile, not a measured replacement for
+shipped defaults. Save and **Check connection**, then **Run a cycle**. This enables
+ongoing cycles as well. Inspect the task's review/verification evidence and PR;
+only you decide to merge it. A cycle with no worthwhile work is a valid outcome.
+
+**Pause** stops new work; active tasks may finish and publish. Use **Cancel task**
+to stop an individual task, or stop the service to terminate its workers. Audits
+cannot start alongside active work. For durable service setup, follow
+[deployment](docs/deployment.md) and the [operator checklist](docs/operations.md).
+
+## How it decides
+
+Grounding inspects code, AGENTS.md, history and existing owned PRs. Eight to ten
+discovery agents explore complementary areas; two independent adversaries
+challenge their proposals. The orchestrator records a reason for every decision.
+An execution cycle queues accepted work; an audit only records recommendations.
+A later execution cycle plans afresh, rather than executing an old audit result.
+
+Each task has its own execution thread and checkout. Every code review uses a
+**fresh reviewer** and the **complete accumulated diff**. Repairs use one
+**persistent repair thread** per task. Configured verification must pass on the
+reviewed revision before Rust publishes or updates a PR. Interrupted work and
+publication are reconciled from durable state. See [architecture](docs/architecture.md).
+
+## What a day costs
+
+**Live cost measurements are pending.** Session admissions are not dollars or a
+subscription-allowance cap. Default idle planning normally uses 13 admissions per
+completed cycle, and the shipped daily limit is 150; retries and tasks consume
+more. Week 1 uses existing subscription allowance only, with no paid overage.
+[Cost methodology and measurement tables](docs/cost.md) distinguish observations,
+unavailable attribution, subscription fees and incremental charges.
+
+## Security
+
+The dedicated VM is the sandbox: Codex and verification commands have the service
+user's permissions, and repository prompt injection is not prevented by design.
+Keep the single-operator dashboard on loopback behind SSH, with a random private
+token and repository-restricted GitHub authentication. Read the
+[threat model](docs/threat-model.md) before running work; report vulnerabilities
+privately to **mail@mail.tyk.sh** using [SECURITY.md](SECURITY.md).
+
+## Roadmap and contributing
+
+v0.1 is Codex-only, single-operator and single-repository. The runner seam is
+conditional on completing the Week 1 evidence gate by September 14; it has not
+shipped. Future work includes another backend, multi-repository operation and
+an audit integration for CI. See [release plan](docs/release-plan.md),
+[contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md),
+[configuration example](docs/configuration.example.json), and
+[acceptance coverage](docs/acceptance.md). License: [Apache-2.0](LICENSE).

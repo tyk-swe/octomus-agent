@@ -13,7 +13,7 @@ Rust / Axum service
  └─ Git + GitHub CLI publication coordination
 ```
 
-The dashboard polls authoritative Rust state and never schedules work itself. The production server serves the compiled dashboard directly. No database service, message broker, Docker runtime, or sandbox backend is required.
+The dashboard polls authoritative Rust state and never schedules work itself. The production server serves the dashboard embedded in the executable; `--assets` explicitly overrides it with a filesystem build. No database service, message broker, Docker runtime, or sandbox backend is required.
 
 ## Code map
 
@@ -40,7 +40,17 @@ Semantic value, overlapping ideas, and conflicting assessments are judged by the
 
 Maintenance is prioritized at the configured cadence for the main project and PRs above the size/age thresholds. It follows the same proposal and delivery gates as feature work.
 
-The complete accepted queue and successful cycle are committed in one SQLite transaction. Incomplete discovery cannot become executable work after a restart.
+Execution cycles commit the complete accepted queue and successful cycle in one
+SQLite transaction. Incomplete discovery cannot become executable work after a restart.
+Audits reuse planning and validation but persist decisions without dispatching tasks.
+They require paused operation without active work and leave existing queued tasks
+untouched. Resume/cycle requests conflict while an audit is active. Audit readiness
+requires only the three planning-role routes, repository and authentication; normal
+execution still requires all routes and meaningful verification. Cycles carry an
+`audit` or `execution` mode, defaulting older records to `execution`. Both modes use
+the same cycle numbering and maintenance cadence. Interrupted audits are recorded
+and never automatically replayed. Audit clones remain subject to admission limits,
+unsandboxed agent behavior and the normal cycle retention policy.
 
 ## Tasks and dependencies
 
@@ -81,3 +91,6 @@ SQLite uses full synchronous writes and WAL. Only one service may hold the state
 Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. The additive admissions table is created on startup. Older daily counts remain intact and are reported as unattributed, without invented historical ledger entries. Configuration and task snapshots without `repair_route` retain the previous Astra-medium route through deserialization defaults.
 
 `--usage-report` opens an existing database read-only and reads one transaction snapshot without taking the service lock or initializing/migrating state. It exports metadata rather than raw prompts/transcripts or credentials. Admissions are not provider charges; see [cost methodology](cost.md). Keep a full state backup before upgrading; older binaries do not understand newly saved configuration fields.
+
+For deployment trust boundaries, authentication backoff and redaction limitations,
+see the [threat model](threat-model.md).
