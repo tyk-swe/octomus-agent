@@ -1,6 +1,8 @@
 # Octomus Agent: thirty days to public
 
-Prepared Monday 2026-09-08. Public launch Tuesday 2026-10-06, Show HN at 13:00 UTC (22:00 KST).
+Prepared Tuesday 2026-09-08. Public launch Tuesday 2026-10-06, Show HN at 13:00 UTC (22:00 KST).
+
+Week 0 decisions and research are recorded in [the decision record](week-0.md), with a [launch issue draft](launch-issue.md) ready for the owner to post. Scope, launch timing, reply hours, and metrics are adopted. Employer clearance, public-name clearance, reservations, bot setup, calendar booking, and leave remain pending; Week 0 is not yet complete.
 
 This plan takes the repository from "MVP with passing fixtures" to a public release that a stranger can install in ten minutes, that survives a hostile Hacker News thread, and that arrives with proof it works. The order matters: truth first, then installability and trust, then story, then a freeze.
 
@@ -47,32 +49,32 @@ Three product moves widen the funnel more than any marketing:
 
 1. **Single binary.** Embed the built dashboard in the executable so install is one file, no Node at runtime.
 2. **Audit mode.** Run one grounding, discovery, and challenge pass without executing anything, and show the accepted/rejected proposals with reasons. This costs 13 sessions once, needs no verification commands, and produces the most shareable artifact the product has: "here is what Octomus thinks of my repo."
-3. **A runner seam.** Codex app-server stays the only backend at v0.1.0, but the boundary the engine calls (`connect`, `models`, `start`, `turn`) becomes a trait so a second backend is a contribution-sized task. The first question in the thread will be "does it work with X". The answer should be "here is the issue, here is the trait, 300 lines".
+3. **A runner seam, conditional on Week 1.** Codex app-server stays the only backend at v0.1.0. If Week 1 meets its exit criteria by Sep 14, extract the boundary the engine calls (`connect`, `models`, `start`, `turn`) into a trait so a second backend is a contribution-sized task. Otherwise this is the first post-launch milestone. Launch answers about other backends must reflect whether the trait actually shipped.
 
 ## 3. Calendar
 
 | Phase | Dates | Theme | Exit criterion |
 | --- | --- | --- | --- |
-| Week 0 | Mon Sep 8 | Decisions | Employer clearance, name, date, scope, metrics decided |
+| Week 0 | Tue Sep 8 | Decisions | Employer clearance, name/reservations, bot setup, date/hours and bookings, scope, metrics resolved |
 | Week 1 | Sep 9 to Sep 14 | Make it true | 5 consecutive days of real cycles on this repo, 3 Octomus PRs merged, cost per day known |
 | Week 2 | Sep 15 to Sep 21 | Make it installable and trustworthy | Fresh Ubuntu 24.04 VM to first cycle in 10 minutes using only the README |
 | Week 3 | Sep 22 to Sep 28 | Make it legible, private beta | rc.1 running at 3+ external operators, all launch copy and video done |
 | Week 4 | Sep 29 to Oct 5 | Freeze and rehearse | v0.1.0 tagged, repo public, full install rehearsed from the public release |
-| Launch | Tue Oct 6 | Ship | Show HN posted 13:00 UTC, every comment answered within 2 hours for 12 hours |
+| Launch | Tue Oct 6 | Ship | Show HN posted 13:00 UTC; target replies within 2 hours during 13:00–21:00 UTC coverage; resume Oct 7 at 01:00 UTC |
 | Follow-through | Oct 7 to Oct 20 | Keep it alive | v0.1.1 within 72 h, follow-up post on day 7 |
 
-Chuseok falls on Sep 24 to 26 with a likely substitute holiday on Mon Sep 28. That five-day block sits inside Week 3 and is the deep-work window for the video, the post, and the landing page. Mon Oct 5 is likely a substitute holiday for National Foundation Day and is the rehearsal day. Confirm both against the official calendar.
+The [official 2026 calendar announcement](https://www.kasi.re.kr/kor/post/newsMaterial/32031) lists the Chuseok break as Sep 24 to 27, including Sunday; Sep 28 is not part of that announced holiday break. Use that four-day block inside Week 3 for the video, the post, and the landing page, with Sep 28 available for follow-up work subject to the owner's schedule. Mon Oct 5 is a substitute holiday for National Foundation Day and remains the rehearsal day.
 
-## 4. Week 0, Monday Sep 8: decisions
+## 4. Week 0, Tuesday Sep 8: decisions
 
-Everything below is a decision only the owner can make. Make them today so the weeks do not stall on them.
+The owner adopted the decisions below on 2026-09-08. The [Week 0 decision record](week-0.md) contains dated research, source links, and the remaining owner checklist. This work covers documents and research only; external setup remains pending.
 
-- **Employer clearance.** This is a personal project by a Cloudflare principal engineer. Confirm the open-source and IP policy allows publishing it, and whether a disclaimer is required. Add a copyright line to LICENSE or a NOTICE file.
-- **Name.** Check `octomus` on GitHub (org name), crates.io, npm, a domain (`octomus.dev` or `.sh`), and an X handle. Run a quick trademark search. Reserve what is free today.
-- **Launch date and hours.** Tue Oct 6, Show HN at 13:00 UTC, which is 22:00 KST. Block Tue evening through Wed 06:00 KST for replies, and take Wed Oct 7 off work.
-- **Scope of v0.1.0.** Codex-only backend. Single binary and audit mode in. Runner seam in if Week 1 finishes on time, otherwise the first post-launch milestone.
-- **Bot identity.** Create a dedicated GitHub account (for example `octomus-bot`) so PRs on the public repo visibly come from Octomus, not from you. Use a fine-grained token scoped to the target repository only.
-- **Metrics.** Adopt the table in section 2 or replace it. Write it into the launch issue so the numbers are honest afterwards.
+- **Employer clearance — pending.** Confirm the open-source/IP policy allows publishing, the exact copyright holder, and any required disclaimer. Defer LICENSE/NOTICE changes until these facts are supplied.
+- **Name — provisional.** Keep Octomus and the existing repository/package names. Research found an existing collaboration platform, an occupied GitHub username, and a registered `octomus.dev`; other availability and trademark clearance remain unresolved. The owner must resolve public-name clearance and reservations; nothing has been reserved by this work.
+- **Launch date and hours — adopted; bookings pending.** Tue Oct 6, Show HN at 13:00 UTC / 22:00 KST. Cover replies until Wed Oct 7 at 06:00 KST, rest until 10:00 KST, then resume. Calendar booking and Oct 7 leave are owner actions still pending.
+- **Scope of v0.1.0 — adopted.** Codex-only backend. Single binary with embedded dashboard and audit mode in. Runner seam in only if Week 1 meets all exit criteria by Sep 14, otherwise the first post-launch milestone.
+- **Bot identity — pending.** A dedicated identity should visibly author PRs; `octomus-bot` is an unreserved candidate. A separate bot added as a repository collaborator cannot simply use the proposed fine-grained token under [GitHub's documented limitations](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#fine-grained-personal-access-tokens-limitations). Resolve a supported repository-restricted authentication arrangement before setup; see the decision record.
+- **Metrics — adopted.** Preserve every target in section 2. They are copied verbatim into the [launch issue draft](launch-issue.md), with blank actual-results fields. The issue has not been posted.
 
 ## 5. Week 1, Sep 9 to 14: make it true
 
@@ -86,7 +88,7 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 
 **Days 1 to 6: dogfood on this repository.**
 
-- Point Octomus at `tyk-swe/octomus-agent` with prefix `octomus/` and the verification commands from the launch checklist. Start with one concurrent task, one task per cycle, cycle interval 6 hours.
+- Point Octomus at `tyk-swe/octomus-agent` with prefix `tyk/` and the verification commands from the launch checklist. Branches created by Codex also use `tyk/`. Start with one concurrent task, one task per cycle, cycle interval 6 hours.
 - Each morning: read every proposal decision and reason, merge the PRs that deserve it, cancel and note the ones that do not. Keep a log: cycle wall time, sessions used, blocked reasons, dollars spent (from the OpenAI usage page), proposals accepted vs rejected, PRs merged.
 - Fix what breaks. Expected breakage, in order of likelihood: app-server protocol drift against the pinned 0.153.4 semantics; an interactive request from Codex that blocks a task; `command_timeout_seconds` 600 exceeded by a cold `cargo clippy` in a fresh clone (every task and every discovery agent is a full clone, so consider a shared `CARGO_TARGET_DIR` or sccache in the ops doc); `session_timeout_seconds` 1800 too short for an L or XL executor; disk growth from 9 discovery clones per cycle.
 - Add `AGENTS.md` describing the repository for agents (structure, build, test, conventions, what not to touch). Octomus reads it on every grounding pass, and its presence tells visitors the project is agent-native.
@@ -113,7 +115,7 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 **Product moves.**
 
 - Audit mode: a control that runs grounding, discovery, and challenge, records the cycle with every decision and reason, and queues nothing. Dashboard: a "Run an audit" button beside "Run a cycle", and a proposals view that reads well as a screenshot.
-- Runner seam: extract the four calls the engine makes into a trait with the Codex implementation behind it. No second backend yet.
+- Runner seam, only if Week 1 met all exit criteria by Sep 14: extract the four calls the engine makes into a trait with the Codex implementation behind it. Otherwise defer to the first post-launch milestone. No second backend yet.
 
 **Community files and docs.**
 
@@ -125,13 +127,13 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 
 ## 7. Week 3, Sep 22 to 28: make it legible, private beta
 
-**Private beta, Mon Sep 22.**
+**Private beta, Tue Sep 22.**
 
 - Tag `v0.1.0-rc.1`. Invite 5 to 10 operators: Rust people you trust, colleagues if policy allows, two or three from the Korean developer community. Give them the release, the README, and one ask: report time-to-first-cycle, the first blocked task, and the first PR they merged.
 - Fix beta findings as they arrive. Week 3 is a bugfix week as much as an assets week.
 - Ask each operator for one sentence you may quote, and a link to a merged PR you may cite.
 
-**Assets, Chuseok block Sep 24 to 28.**
+**Assets, Chuseok block Sep 24 to 27; follow-up Sep 28.**
 
 - **Demo video, 75 to 90 seconds.** Install command, dashboard opens paused, configure, run an audit, scroll the proposals with rejection reasons, run a cycle, land on the PR in GitHub with verification evidence in the body. Cut a 10-second GIF for the README and social.
 - **Launch post.** Title candidate: "Octomus: a repository that files its own pull requests". Structure: the problem (task-driven agents need a task), the loop (9 discovery agents, 2 adversaries, consolidation), why the reviewer is always fresh and the repair thread is persistent, why delivery stops at a PR, why the host is the sandbox, real numbers from Week 1 (proposals seen, accepted, merged, cost per day), and the best rejected proposals with their reasons. The rejections will be the most-quoted part.
@@ -143,13 +145,13 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 
 ## 8. Week 4, Sep 29 to Oct 5: freeze and rehearse
 
-- **Code freeze Mon Sep 29.** Only beta bugfixes merge. Every merge goes through the full `make check` and `make test`.
+- **Code freeze Tue Sep 29.** Only beta bugfixes merge. Every merge goes through the full `make check` and `make test`.
 - **Repository public Thu Oct 1, quietly.** No announcements. This lets links resolve, lets you see the README as a stranger does, and means star velocity on launch day is measured from a live repository rather than a brand-new one.
 - **Tag `v0.1.0` Mon Oct 5.** Release notes written by hand, not generated. Confirm binaries, checksums, and the install script from the public URL.
 - **Full rehearsal on Oct 5.** Fresh VM, public install script, first audit, first cycle, first PR. Fix any friction and re-tag if needed.
 - **Prepared answers.** Write the reply to each of these before launch so you are pasting, not composing, at 02:00 KST:
   1. "Unsandboxed means prompt injection is remote code execution." Yes, by design; the VM is the boundary; here is the threat model; a process sandbox would not change what a push-capable agent can do.
-  2. "Why Codex only?" It is what shipped and was tested; here is the runner trait and the issue for the next backend.
+  2. "Why Codex only?" It is what shipped and was tested; link the runner trait if it shipped, otherwise its first post-launch milestone, along with the issue for the next backend.
   3. "What does it cost?" The table from `docs/cost.md`.
   4. "This will drown maintainers in AI PRs." It never merges, it is paused on install, two adversaries reject weak ideas, idle is a valid cycle outcome, and every rejection reason is recorded.
   5. "Why Rust?" One long-lived process, process-group ownership of every child, SQLite with full-sync WAL, one binary.
@@ -168,16 +170,16 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 | 20:00 | 11:00 | Publish the launch post on the landing page or blog. Push the README GIF. |
 | 21:30 | 12:30 | Post GeekNews (Korean evening traffic). |
 | 22:00 | 13:00 | Show HN. Post the first comment immediately. Post the X thread linking the HN thread. |
-| 22:00 to 04:00 | 13:00 to 19:00 | Reply to every HN comment and every GitHub issue within 2 hours. Fix trivial README issues live. Do not push code. |
+| 22:00 Tue to 06:00 Wed | 13:00 to 21:00 Tue | Target replies to every HN comment and GitHub issue within 2 hours during this shift. Fix trivial README issues live. Do not push code. |
 | 23:00 | 14:00 | Reddit r/rust and r/ChatGPTCoding. |
-| 04:00 | 19:00 | Sleep. |
-| 10:00 Wed | 01:00 Wed | Second shift: HN, issues, Discussions. Submit This Week in Rust. Send Console/Changelog/TLDR tips with the HN link. |
+| 06:00 Wed | 21:00 Tue | Sleep until 10:00 KST; replies pause during this four-hour rest gap. |
+| 10:00 Wed | 01:00 Wed | Second shift: handle the overnight backlog on HN, issues, Discussions. Submit This Week in Rust. Send Console/Changelog/TLDR tips with the HN link. |
 
 ## 10. Follow-through, Oct 7 to 20
 
 - **v0.1.1 within 72 hours** with the top three fixes from the thread. A release three days after launch is the strongest signal a project is alive.
 - **Day 7 post**: what the thread taught you, the numbers, what changed. Post it to HN as a normal submission, not a Show HN.
-- **Open the flagship issues on launch day** so contributors have somewhere to go: second backend behind the runner trait, multi-repository support, audit mode as a GitHub Action or comment, a Docker image for the service (the PRD excludes Docker as a sandbox, not as packaging).
+- **Open the flagship issues on launch day** so contributors have somewhere to go: runner seam first if deferred, second backend dependent on that trait, multi-repository support, audit mode as a GitHub Action or comment, a Docker image for the service (the PRD excludes Docker as a sandbox, not as packaging).
 - **Recruit one co-maintainer** from the beta or the thread by Oct 20. Give them triage rights first.
 
 ## 11. Risks
@@ -190,8 +192,8 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 | "AI slop PRs" backlash | Medium | Reputation with maintainers | PR-only, paused by default, rejections public, merge rate published |
 | Codex app-server protocol drift on a new CLI release | Medium | Silent breakage for new installs | Pin the tested Codex version in docs and in `--doctor`, with a clear message on mismatch |
 | Single-maintainer bandwidth in launch week | High | Slow replies, stalled fixes | Freeze in Week 4, days off booked, prepared answers, co-maintainer recruited |
-| Name or trademark conflict | Low | Forced rename after launch | Week 0 check |
-| Employer policy | Low | Cannot publish | Week 0 clearance |
+| Name or trademark conflict | Unresolved; existing adjacent brand use found | Forced rename after launch | Keep name provisional; complete owner name review and reservations recorded in Week 0 |
+| Employer policy | Unresolved | Cannot publish | Owner clearance, copyright holder, and disclaimer remain pending in Week 0 |
 
 ## 12. Cut order if behind
 
