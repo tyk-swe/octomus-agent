@@ -44,6 +44,6 @@ loading of saved configuration and task snapshots when adding fields.
   Fixtures and generated build artifacts are not live evidence.
 - Keep secrets, raw Codex transcripts and private billing screenshots out of Git.
   Record redacted observations and evidence references instead.
-- Do not mark release gates complete without real evidence. Week 1 operation needs
+- Do not claim live validation without real evidence. Live operation needs
   the owner's dedicated VM and bot; the development workspace is not that VM.
 - Defer LICENSE/NOTICE ownership edits until the owner supplies cleared facts.

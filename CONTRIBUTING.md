@@ -56,5 +56,4 @@ migrate production systems, edit live `.octomus/` state, or commit credentials,
 raw transcripts or private billing images. Codex-created branches use `tyk/`.
 License/NOTICE ownership changes await owner-cleared facts.
 
-Backend requests are welcome, but v0.1 is Codex-only. The runner seam remains
-conditional on the Week 1 evidence gate; do not claim it exists before it ships.
+Backend requests are welcome; Codex is currently the only backend.

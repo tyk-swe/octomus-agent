@@ -22,4 +22,4 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Operator checklist moved to `docs/operations.md`; README starts with installation
   and first-run guidance.
 
-Publication and live release gates remain pending; this is not a released version.
+Publication remains pending; this is not a released version.

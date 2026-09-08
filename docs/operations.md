@@ -1,6 +1,6 @@
 # Operator checklist
 
-Use this checklist to commission and operate a dedicated host. Repository tests establish behavior with fixtures; they do not validate live accounts, model quality or installation time. Record real evidence in [Week 1](week-1.md) and [Week 2](week-2.md).
+Use this checklist to commission and operate a dedicated host. Repository tests establish behavior with fixtures; they do not validate live accounts, model quality or installation time. Record live validation results with the tested revision, host, date and private evidence references. See [cost methodology](cost.md) for usage measurements.
 
 ## 1. Prepare the host
 
@@ -61,8 +61,8 @@ prerequisites first. The dashboard is built before Rust so cold clones can embed
 it. This is one verification command; all configured commands must pass on the
 reviewed revision before publication. Measure cold timings before changing limits.
 
-- [ ] Choose enabled improvement categories, maintenance cadence, and resource/time limits appropriate to your host and account. Start with one concurrent task, one accepted task per cycle and a six-hour cycle interval for the initial live run. See the [Week 1 log](week-1.md). Discovery still requires 8–10 agents.
-- [ ] Confirm Week 1 uses existing subscription allowance only and paid overage is disabled. Set the daily session budget, recognizing that admissions are not an allowance or dollar-spend cap.
+- [ ] Choose enabled improvement categories, maintenance cadence, and resource/time limits appropriate to your host and account. Start with one concurrent task, one accepted task per cycle and a six-hour cycle interval for the initial live run. Discovery still requires 8–10 agents.
+- [ ] Confirm operation uses existing subscription allowance only and paid overage is disabled. Set the daily session budget, recognizing that admissions are not an allowance or dollar-spend cap.
 - [ ] Save configuration and run **Check connection**. Correct any reported configuration, authentication, or route errors.
 
 ## 5. Validate the first real cycle

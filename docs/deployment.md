@@ -111,7 +111,7 @@ octomus-agent --data-dir PATH --doctor --audit
 
 Environment equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`, `OCTOMUS_ASSETS`, `OCTOMUS_TOKEN`. `--assets`/`OCTOMUS_ASSETS` explicitly replaces embedded serving with a directory containing `200.html`; the default needs no asset files. `--doctor --audit` (or **Check audit connection**) checks only planning prerequisites. The `--doctor` check takes the same state lock as the service; stop the service first, or use **Check connection** in the running dashboard.
 
-`--doctor` reports installed/tested Codex versions and warns on a mismatch. Correct a mismatch before live commissioning. `--usage-report` opens existing SQLite state read-only, works alongside the service, and needs neither a token nor dashboard assets. It exports admission counts and saved cycle/task evidence, not provider billing. Historical usage without ledger entries is marked unattributed. See [Week 1](week-1.md) and [cost methodology](cost.md). Admission records are retained with the state database; include their growth in disk monitoring and backups.
+`--doctor` reports installed/tested Codex versions and warns on a mismatch. Correct a mismatch before live commissioning. `--usage-report` opens existing SQLite state read-only, works alongside the service, and needs neither a token nor dashboard assets. It exports admission counts and saved cycle/task evidence, not provider billing. Historical usage without ledger entries is marked unattributed. See the [operator checklist](operations.md) and [cost methodology](cost.md). Admission records are retained with the state database; include their growth in disk monitoring and backups.
 
 ## HTTP interface additions
 

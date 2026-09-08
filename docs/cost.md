@@ -1,12 +1,13 @@
 # Cost and usage
 
 **Live measurements are pending.** No day-price or per-task dollar claim has been
-validated. Repository preparation and fixture tests do not satisfy the live gate.
+validated. Repository preparation and fixture tests do not establish live usage
+or billing evidence.
 
-Week 1 uses existing Codex subscription allowance only, with no paid overage.
-The owner accepted real usage measurements, the subscription fee and verified
-incremental charges as the cost criterion when per-task dollar attribution is
-unavailable. A missing charge measurement is **unavailable**, not zero.
+Use existing Codex subscription allowance only, with no paid overage.
+Record real usage measurements, the subscription fee and verified incremental
+charges when per-task dollar attribution is unavailable. A missing charge
+measurement is **unavailable**, not zero.
 
 ## What is counted
 
@@ -41,8 +42,9 @@ repair rounds raise this to ten (one executor, five reviewers, four repair turns
 Failed starts and retries alter these counts. These are workflow calculations,
 not measured provider consumption or dollar prices.
 
-The proposed six-hour dogfood cadence allows at most four starts in a rolling
-24 hours when planning takes nonzero time; queue processing may reduce this.
+The conservative six-hour cadence in the [operator checklist](operations.md)
+allows at most four starts in a rolling 24 hours when planning takes nonzero time;
+queue processing may reduce this.
 Four completed planning passes imply 52 planning admissions, before task work.
 Shipped defaults remain 30 minutes, two concurrent tasks, five tasks per cycle
 and 150 daily admissions until live validation supports changing them. At those
@@ -52,7 +54,9 @@ from this admission limit.
 
 ## Measurement table
 
-Fill this from the [Week 1 log](week-1.md), report exports and owner account evidence.
+Fill this from daily operating logs, report exports and owner account evidence.
+Keep logs in UTC with cycle IDs, durations, admission counts, proposal outcomes,
+blocked-task resolutions and PR links. Store raw account evidence privately.
 Separate idle planning, task-only work and whole-day totals. Group task results by
 tier **and exact saved route**, with sample counts and completed/blocked outcomes.
 Do not force unnecessary L/XL work to populate a table.
@@ -65,8 +69,8 @@ Do not force unnecessary L/XL work to populate a table.
 | M task | 0 | Unmeasured | Unavailable | Unavailable |
 | L task | 0 | Unmeasured | Unavailable | Unavailable |
 | XL task | 0 | Unmeasured | Unavailable | Unavailable |
-| Day at dogfood profile | 0 | Unmeasured | Unavailable | Unavailable |
-| Day at final shipped defaults | 0 | Unmeasured | Unavailable | Unavailable |
+| Day at conservative profile | 0 | Unmeasured | Unavailable | Unavailable |
+| Day at shipped defaults | 0 | Unmeasured | Unavailable | Unavailable |
 
 | Billing fact | Observed value / evidence |
 | --- | --- |

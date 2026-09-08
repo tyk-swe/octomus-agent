@@ -26,7 +26,7 @@ documentation. It never packages live state or separate runtime dashboard files.
 The installer validates a single matching SHA-256 entry before extracting only
 the executable, then replaces the destination binary. Set an absolute writable
 `INSTALL_DIR` to avoid sudo. Downloads and checksums come from the same release;
-Sigstore signing is deferred.
+Release archives do not include Sigstore signatures.
 
 ## GitHub release workflow
 

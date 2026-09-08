@@ -8,15 +8,14 @@ PR for you to review and merge.
 
 ![Octomus dashboard](docs/dashboard.png)
 
-*This image uses synthetic browser-test data. Real operating screenshots and the
-10-second demo GIF are pending live commissioning.*
+*This image uses synthetic browser-test data.*
 
-## First ten minutes
+## Getting started
 
 **Release preparation:** binaries and the crates.io package have not been
 published yet. The release installer below becomes usable after publication;
-use the source-build alternative today. The ten-minute fresh-VM target remains
-unvalidated. See [release evidence](docs/week-2.md).
+use the source-build alternative today. See [distribution](docs/distribution.md)
+for packaging and publication instructions.
 
 Use a dedicated Ubuntu 24.04 VM (x86_64 or aarch64), an existing paid Codex account,
 and a dedicated GitHub identity with access restricted to the target repository.
@@ -95,7 +94,7 @@ printf '%s\n' "$OCTOMUS_TOKEN"
 ```
 
 Save this token in your password manager; it grants operator access. Confirm paid
-overage is disabled for the Week 1 subscription-only run. Then start the service:
+overage is disabled for subscription-only operation. Then start the service:
 
 ```bash
 octomus-agent --data-dir /var/lib/octomus/.octomus
@@ -138,7 +137,7 @@ npm ci --prefix web && make check && make test
 ```
 
 Start conservatively: one concurrent task, one task per cycle and a 21,600-second
-interval. This is the initial dogfood profile, not a measured replacement for
+interval. This is a conservative starting profile, not a measured replacement for
 shipped defaults. Save and **Check connection**, then **Run a cycle**. This enables
 ongoing cycles as well. Inspect the task's review/verification evidence and PR;
 only you decide to merge it. A cycle with no worthwhile work is a valid outcome.
@@ -167,7 +166,7 @@ publication are reconciled from durable state. See [architecture](docs/architect
 **Live cost measurements are pending.** Session admissions are not dollars or a
 subscription-allowance cap. Default idle planning normally uses 13 admissions per
 completed cycle, and the shipped daily limit is 150; retries and tasks consume
-more. Week 1 uses existing subscription allowance only, with no paid overage.
+more. Use existing subscription allowance only, with no paid overage.
 [Cost methodology and measurement tables](docs/cost.md) distinguish observations,
 unavailable attribution, subscription fees and incremental charges.
 
@@ -180,12 +179,9 @@ token and repository-restricted GitHub authentication. Read the
 [threat model](docs/threat-model.md) before running work; report vulnerabilities
 privately to **mail@mail.tyk.sh** using [SECURITY.md](SECURITY.md).
 
-## Roadmap and contributing
+## Contributing
 
-v0.1 is Codex-only, single-operator and single-repository. The runner seam is
-conditional on completing the Week 1 evidence gate by September 14; it has not
-shipped. Future work includes another backend, multi-repository operation and
-an audit integration for CI. See [release plan](docs/release-plan.md),
+Octomus is Codex-only, single-operator and single-repository. See
 [contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md),
 [configuration example](docs/configuration.example.json), and
 [acceptance coverage](docs/acceptance.md). License: [Apache-2.0](LICENSE).
