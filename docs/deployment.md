@@ -12,7 +12,7 @@ make package
 
 Install the package contents in `/opt/octomus` so that the binary is `/opt/octomus/octomus-agent` and static assets are `/opt/octomus/web/build`. Create an `octomus` OS account with a home directory at `/var/lib/octomus`, and make its home and target repository writable by that account. The application directory can remain administrator-owned.
 
-Install `git`, `gh`, and Codex for that account. Authenticate Codex and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well.
+Install `git`, `gh`, and Codex for that account. Pin Codex CLI **0.153.4**, the tested protocol version. Authenticate Codex and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well. Ensure the unit's PATH includes their actual locations (including `/var/lib/octomus/.cargo/bin` when using rustup); a systemd service does not load the interactive shell's profile.
 
 Create `/etc/octomus/agent.env`, readable only by the administrator and service account, with a fresh random token:
 
@@ -85,7 +85,10 @@ Rotate the dashboard token by updating the environment file and restarting the s
 ```text
 octomus-agent [--data-dir PATH] [--listen IP:PORT] [--assets PATH]
 octomus-agent --print-config
+octomus-agent --data-dir PATH --usage-report
 octomus-agent --data-dir PATH --doctor
 ```
 
 Environment equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`, `OCTOMUS_ASSETS`, `OCTOMUS_TOKEN`. The read-only `--doctor` check takes the same state lock as the service; stop the service first, or use **Check connection** in the running dashboard.
+
+`--doctor` reports installed/tested Codex versions and warns on a mismatch. Correct a mismatch before live commissioning. `--usage-report` opens existing SQLite state read-only, works alongside the service, and needs neither a token nor dashboard assets. It exports admission counts and saved cycle/task evidence, not provider billing. Historical usage without ledger entries is marked unattributed. See [Week 1](week-1.md) and [cost methodology](cost.md). Admission records are retained with the state database; include their growth in disk monitoring and backups.

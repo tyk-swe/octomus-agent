@@ -12,6 +12,14 @@ use tokio::process::{ChildStdin, ChildStdout};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
 
+pub const TESTED_VERSION: &str = "0.153.4";
+
+pub fn version_warning(installed: &str) -> Option<String> {
+    (installed.trim() != format!("codex-cli {TESTED_VERSION}")).then(|| {
+        format!("Codex version mismatch: installed {installed}; tested codex-cli {TESTED_VERSION}. Pin the tested CLI before live commissioning; protocol compatibility is unverified.")
+    })
+}
+
 pub struct Codex {
     _child: GroupChild,
     input: ChildStdin,
@@ -254,13 +262,16 @@ pub fn validate_routes(config: &Config, models: &[Value]) -> Result<()> {
         .roles
         .values()
         .chain(config.tiers.values())
-        .chain(std::iter::once(&crate::config::repair_route()))
+        .chain(std::iter::once(&config.repair_route))
     {
         let m = models
             .iter()
             .find(|m| m["model"].as_str() == Some(&route.model))
             .with_context(|| {
-                format!("Model {} is unavailable in this Codex runtime", route.model)
+                format!(
+                    "Model route {} / {} is unavailable in this Codex runtime",
+                    route.model, route.effort
+                )
             })?;
         ensure!(
             m["supportedReasoningEfforts"].as_array().is_some_and(|a| a

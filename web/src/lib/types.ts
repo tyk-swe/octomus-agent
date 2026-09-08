@@ -7,6 +7,7 @@ export type Config = {
   codex_binary: string;
   roles: Record<string, Route>;
   tiers: Record<string, Route>;
+  repair_route: Route;
   categories: string[];
   verification_commands: string[];
   discovery_agents: number;

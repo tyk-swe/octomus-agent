@@ -7,7 +7,7 @@ SvelteKit static dashboard
           │ same-origin JSON API + bearer token
           ▼
 Rust / Axum service
- ├─ SQLite state, event log, daily admission counter
+ ├─ SQLite state, event log, daily admission counter and ledger
  ├─ one scheduler, configured task concurrency, branch writer locks
  ├─ Codex app-server subprocesses over newline-delimited JSON RPC
  └─ Git + GitHub CLI publication coordination
@@ -21,7 +21,8 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 | --- | --- |
 | `src/config.rs` | Defaults, explicit role routes, exact tier mapping, input validation |
 | `src/model.rs` | Task, cycle, proposal, session, review, verification and PR records |
-| `src/store.rs` | SQLite WAL persistence, atomic plan commit, event retention, session budget, redaction |
+| `src/store.rs` | SQLite WAL persistence, atomic plan commit, event retention, atomic admission counter/ledger, redaction |
+| `src/report.rs` | Read-only snapshot export of daily usage, cycles, tasks and admission routes |
 | `src/codex.rs` | App-server handshake, model catalog, thread start/resume, correlated RPC/events, structured results |
 | `src/process.rs` | Bounded output capture, timeouts, cancellation and process-group ownership |
 | `src/git.rs` | Source snapshots, owned PR context, immutable review commits, revision leases, idempotent delivery |
@@ -53,7 +54,7 @@ Code-dependent default-branch proposals must be consolidated into a cohesive tas
 
 The executor's changes are committed locally. Review uses a fixed comparison base: the original default revision for new work, or the merge base with the default branch for existing PR work. Every review round examines the entire accumulated diff against that base.
 
-A reviewer is always a fresh Codex thread. A repair thread starts separately with `gpt-6-astra` / `medium` and is resumed for subsequent repair turns. Interrupted, failed, missing, malformed, or explicitly incomplete results never count as clean reviews. Rounds and their revisions are recorded.
+A reviewer is always a fresh Codex thread. A repair thread starts separately with the task’s saved configurable repair route (default `gpt-6-astra` / `medium`) and is resumed for subsequent repair turns. Interrupted, failed, missing, malformed, or explicitly incomplete results never count as clean reviews. Rounds and their revisions are recorded.
 
 Configured shell verification runs after a completed clean review. Every command must pass on exactly the reviewed revision; worktree or HEAD changes during review or verification block publication. Commands run from the assigned workspace with Bash `pipefail`. Net-empty changes are not publishable, even if an executor made commits.
 
@@ -74,3 +75,9 @@ Repository content and agent outputs are never deserialized into operating confi
 Because execution is deliberately unsandboxed, prompts and application policy are **not a host security boundary**. A process with the service user's permissions can exercise those permissions. Use the dedicated-host deployment model described in the PRD.
 
 SQLite uses full synchronous writes and WAL. Only one service may hold the state-directory lock. Restart recovery preserves workspace/session identities and retries initialized interrupted tasks within the retry limit. A deployment supervisor must terminate old processes before recovery; the supplied systemd unit uses control-group termination.
+
+## Usage records and upgrades
+
+Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. The additive admissions table is created on startup. Older daily counts remain intact and are reported as unattributed, without invented historical ledger entries. Configuration and task snapshots without `repair_route` retain the previous Astra-medium route through deserialization defaults.
+
+`--usage-report` opens an existing database read-only and reads one transaction snapshot without taking the service lock or initializing/migrating state. It exports metadata rather than raw prompts/transcripts or credentials. Admissions are not provider charges; see [cost methodology](cost.md). Keep a full state backup before upgrading; older binaries do not understand newly saved configuration fields.

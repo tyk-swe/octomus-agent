@@ -8,7 +8,7 @@ This plan takes the repository from "MVP with passing fixtures" to a public rele
 
 ## 1. Where it stands today
 
-Verified on this checkout on 2026-09-08:
+Baseline verified on 2026-09-08 before Week 1 preparation; current preparation checks are recorded in [Week 1](week-1.md#repository-validation):
 
 | Area | State |
 | --- | --- |
@@ -22,11 +22,11 @@ Verified on this checkout on 2026-09-08:
 What is missing for a public release:
 
 - **Live proof.** The launch checklist still says "validate the first real cycle". No cycle has run against a real Codex runtime or a real GitHub repository.
-- **Route reality.** Tier defaults (`gpt-5.6-luna` xhigh/max, `gpt-6-astra` low/medium/high) and the hard-coded repair route (`gpt-6-astra` medium) have not been checked against a real model catalog. If any pair is absent, `Check connection` fails for every first-time user.
-- **AGENTS.md.** The grounding prompt asks agents to read it; the repository has none.
+- **Route reality.** Tier defaults (`gpt-5.6-luna` xhigh/max, `gpt-6-astra` low/medium/high) and the configurable repair default (`gpt-6-astra` medium) have not been checked against a real model catalog. If any pair is absent, `Check connection` fails for every first-time user.
+- **AGENTS.md — prepared.** Repository structure, verification commands, conventions and worker boundaries are now recorded; live grounding remains unvalidated.
 - **Distribution.** Build-from-source only: Rust 1.88, Node 22, npm, Python 3, Codex CLI, gh. No tagged release, no binaries, no install script.
 - **Community files.** No SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, issue or PR templates, CODEOWNERS, Discussions.
-- **Cost story.** A cycle spends 13 sessions (1 grounding + 9 discovery + 2 adversarial + 1 consolidation) before any task runs. Each task spends 2 to 9 more. At the default 30-minute interval, idle cycles alone reach the daily budget of 150. Nobody can tell what a day costs.
+- **Cost story.** A cycle spends 13 sessions (1 grounding + 9 discovery + 2 adversarial + 1 consolidation) before any task runs. Each task admits 2 to 10 more without retries (one executor, up to five reviews and four repairs). At the default 30-minute interval, idle cycles alone reach the daily budget of 150. Nobody can tell what a day costs.
 - **Security narrative.** The design is deliberately unsandboxed. That is defensible, but only if the threat model is written before the comment thread writes it for you.
 
 ## 2. What "big" realistically means
@@ -56,7 +56,7 @@ Three product moves widen the funnel more than any marketing:
 | Phase | Dates | Theme | Exit criterion |
 | --- | --- | --- | --- |
 | Week 0 | Tue Sep 8 | Decisions | Employer clearance, name/reservations, bot setup, date/hours and bookings, scope, metrics resolved |
-| Week 1 | Sep 9 to Sep 14 | Make it true | 5 consecutive days of real cycles on this repo, 3 Octomus PRs merged, cost per day known |
+| Week 1 | Sep 9 to Sep 14 | Make it true | 5 consecutive days of real cycles on this repo, 3 Octomus PRs merged, daily usage and subscription/charge evidence recorded |
 | Week 2 | Sep 15 to Sep 21 | Make it installable and trustworthy | Fresh Ubuntu 24.04 VM to first cycle in 10 minutes using only the README |
 | Week 3 | Sep 22 to Sep 28 | Make it legible, private beta | rc.1 running at 3+ external operators, all launch copy and video done |
 | Week 4 | Sep 29 to Oct 5 | Freeze and rehearse | v0.1.0 tagged, repo public, full install rehearsed from the public release |
@@ -80,21 +80,25 @@ The owner adopted the decisions below on 2026-09-08. The [Week 0 decision record
 
 The README says "when the project builds itself." Week 1 makes that sentence true and produces the numbers the launch post needs.
 
+**Implementation status:** repository preparation is implemented: configurable repair routes, configured-tier prompts, CLI version diagnostics, durable admission accounting, read-only usage reports and `AGENTS.md`. The [commissioning record](week-1.md) and [cost methodology](cost.md) are ready. Live commissioning, five consecutive days, three owner-merged PRs, measured usage and screenshots remain pending. No exit gate is complete.
+
+**Owner decisions for execution:** the owner provisions the dedicated VM, supplies the dedicated bot with repository-restricted authentication, and performs login and PR review/merges. Use existing Codex subscription allowance only; never enable paid overage. The cost gate accepts real admissions, allowance consumption where observable, subscription fee and verified incremental charges. Per-task dollars unavailable from the provider must be marked unavailable, not estimated or presented as zero. If commissioning slips, record the actual five-day window; the September 14 runner-seam deadline stays unchanged.
+
 **Day 1: live validation.**
 
 - Provision a dedicated VM on the Proxmox host. Nothing else on it: no other credentials, no access to the workstation's GPUs or storage, egress limited to GitHub, OpenAI, and package registries.
 - Install Git, gh, Codex CLI, Rust, Node, Python. Run `codex login` and `gh auth login` as the `octomus` service account.
-- Run `octomus-agent --doctor`. Confirm the model catalog contains every default route with its exact effort. If a route is missing, fix the defaults and make the repair route configurable before anything else. This is the highest-probability first-run failure in the whole plan.
+- Run `octomus-agent --doctor`. Confirm the model catalog contains every default route with its exact effort. Repair is now configurable. If a route is missing, configure an available route explicitly before running; change shipped defaults only from live catalog evidence. This is the highest-probability first-run failure in the whole plan.
 
 **Days 1 to 6: dogfood on this repository.**
 
 - Point Octomus at `tyk-swe/octomus-agent` with prefix `tyk/` and the verification commands from the launch checklist. Branches created by Codex also use `tyk/`. Start with one concurrent task, one task per cycle, cycle interval 6 hours.
-- Each morning: read every proposal decision and reason, merge the PRs that deserve it, cancel and note the ones that do not. Keep a log: cycle wall time, sessions used, blocked reasons, dollars spent (from the OpenAI usage page), proposals accepted vs rejected, PRs merged.
+- Each morning: read every proposal decision and reason, merge the PRs that deserve it, cancel and note the ones that do not. Keep a log: cycle wall time, sessions used, blocked reasons, subscription allowance observations and verified incremental charges (from the actual account’s usage/billing evidence), proposals accepted vs rejected, PRs merged.
 - Fix what breaks. Expected breakage, in order of likelihood: app-server protocol drift against the pinned 0.153.4 semantics; an interactive request from Codex that blocks a task; `command_timeout_seconds` 600 exceeded by a cold `cargo clippy` in a fresh clone (every task and every discovery agent is a full clone, so consider a shared `CARGO_TARGET_DIR` or sccache in the ops doc); `session_timeout_seconds` 1800 too short for an L or XL executor; disk growth from 9 discovery clones per cycle.
 - Add `AGENTS.md` describing the repository for agents (structure, build, test, conventions, what not to touch). Octomus reads it on every grounding pass, and its presence tells visitors the project is agent-native.
-- Write `docs/cost.md` from the log: sessions and dollars per idle cycle, per task by tier, per day at the shipped defaults. Retune defaults from the data (cycle interval, timeouts, tasks per cycle) so a first-time user's first day costs what the README says it costs.
+- Fill `docs/cost.md` from the log: admissions and available billing evidence per idle cycle, per observed task tier/route, and per day at the shipped defaults. Include sample counts, subscription fee and unavailable attribution explicitly. Retune defaults from the data (cycle interval, timeouts, tasks per cycle) so a first-time user's first day costs what the README says it costs.
 
-**Exit criteria.** Five consecutive days of real cycles with no unexplained blocked task. At least three Octomus PRs merged into `main` by you. A cost table with real numbers. Screenshots of real cycles, saved for Week 3.
+**Exit criteria.** Five consecutive days of real cycles with no unexplained blocked task. At least three Octomus PRs merged into `main` by you. A usage/cost table with real measurements under the subscription criterion above. Screenshots of real cycles, saved for Week 3.
 
 ## 6. Week 2, Sep 15 to 21: make it installable and trustworthy
 
@@ -186,7 +190,7 @@ The README says "when the project builds itself." Week 1 makes that sentence tru
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| Default routes or the hard-coded repair route do not exist in the public Codex catalog | High | Every first run fails | Day 1 of Week 1 verifies the catalog; repair route becomes configurable; defaults follow what the catalog offers |
+| Default routes or the configured repair route do not exist in the public Codex catalog | High | Every first run fails | Day 1 of Week 1 verifies the catalog; repair route is configurable; validate it explicitly; defaults follow what the catalog offers |
 | Cost shock from 13 sessions per cycle at a 30-minute interval | High | Bad first-day story, refunds, angry posts | Ship defaults from measured data; publish `docs/cost.md`; audit mode as the cheap first run |
 | Security backlash, as with OpenClaw | High | The thread becomes about risk, not value | Threat model and hardened unit ship first; README leads with "dedicated VM"; no "it is safe" claims anywhere |
 | "AI slop PRs" backlash | Medium | Reputation with maintainers | PR-only, paused by default, rejections public, merge rate published |

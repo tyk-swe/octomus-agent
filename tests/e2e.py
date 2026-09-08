@@ -69,7 +69,17 @@ class Service:
             config['verification_commands'] = ['false']
         for role in config['roles']:
             config['roles'][role] = {'model': 'gpt-6-astra', 'effort': 'medium'}
+        if (self.root / 'custom-route').exists():
+            config['repair_route'] = {'model': 'gpt-5.6-luna', 'effort': 'high'}
+            config['tiers']['M'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}
         self.request('/config', 'PUT', config)
+        diagnostic = self.request('/doctor', 'POST')
+        assert diagnostic['codex_version'] == 'codex-cli 0.153.4'
+        assert diagnostic['tested_codex_version'] == '0.153.4' and diagnostic['warnings'] == []
+        (self.root / 'version').write_text('0.0.0-fixture')
+        diagnostic = self.request('/doctor', 'POST')
+        assert 'mismatch' in diagnostic['message'] and len(diagnostic['warnings']) == 1
+        (self.root / 'version').unlink()
         self.request('/control/cycle', 'POST')
 
     def terminal_task(self):
@@ -111,6 +121,14 @@ def existing_pr(root):
     (root / 'prs.json').write_text(json.dumps([{'number': 42, 'title': 'An existing improvement', 'body': 'Existing context.\n<!-- octomus:task:earlier -->', 'head': {'ref': 'octomus/existing', 'sha': head, 'repo': {'full_name': 'fixture/project'}}, 'base': {'ref': 'main'}, 'html_url': 'https://github.com/fixture/project/pull/42', 'state': 'open', 'merged_at': None, 'additions': 2000, 'deletions': 0, 'created_at': '2026-08-01T00:00:00Z'}]))
 
 
+def usage_report(root):
+    # Runs concurrently with the service lock, with no token or dashboard assets.
+    report = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--usage-report'], text=True))
+    assert sum(d['admissions'] for d in report['daily']) == len(report['admissions'])
+    assert all(d['unattributed_admissions'] == 0 for d in report['daily'])
+    return report
+
+
 def scenario(mode):
     with tempfile.TemporaryDirectory(prefix=f'octomus-{mode}-') as tmp:
         root = Path(tmp)
@@ -125,9 +143,22 @@ def scenario(mode):
         try:
             service.start()
             service.configure()
+            if mode == 'failed-start':
+                service.wait(lambda: (s := service.request('/state'))['cycles'] and s['cycles'][0]['status'] == 'failed', 'failed cycle start')
+                report = usage_report(root)
+                assert len(report['admissions']) == 1
+                assert report['cycles'][0]['planning_admissions'] == 1
+                assert report['cycles'][0]['recorded_completed_sessions'] == 0
+                assert not (root / 'publications.jsonl').exists()
+                print('PASS failed-start: admission retained without completed session')
+                return
             if mode == 'idle':
                 service.wait(lambda: (s := service.request('/state'))['cycles'] and s['cycles'][0]['status'] == 'idle', 'idle cycle')
                 assert not service.request('/state')['tasks']
+                report = usage_report(root)
+                assert len(report['admissions']) == 13
+                assert report['cycles'][0]['planning_admissions'] == 13
+                assert report['tasks'] == []
                 print('PASS idle: all discovery/review roles complete without creating work')
                 return
             if mode in ['interrupt-publication', 'closed-after-publication']:
@@ -153,9 +184,29 @@ def scenario(mode):
                     prerequisite = next(t for t in all_tasks if not t['proposal']['dependencies'])
                     assert followup['source_revision'] == prerequisite['output_commit']
                     assert (Path(followup['workspace']) / 'feature.txt').read_text().strip() == 'fixed'
-            if mode in ['malformed-review', 'incomplete-review', 'remote-conflict', 'failed-verification']:
+            if mode in ['malformed-review', 'incomplete-review', 'remote-conflict', 'failed-verification', 'interactive']:
                 assert task['status'] == 'blocked', task
                 assert not (root / 'publications.jsonl').exists(), 'Unresolved work must not publish'
+                if mode == 'interactive':
+                    assert 'interactive input' in task['error']
+                    # A retry retains the saved route despite an operator configuration change.
+                    service.request('/control/pause', 'POST')
+                    service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'paused task')
+                    config = service.request('/config')
+                    config['repair_route'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}
+                    service.request('/config', 'PUT', config)
+                    (root / 'interactive').unlink()
+                    service.request(f'/tasks/{task["id"]}/retry', 'POST')
+                    service.request('/control/resume', 'POST')
+                    task = service.wait(service.terminal_task, 'retried delivery')
+                    assert task['status'] == 'published', task['error']
+                    assert task['config']['repair_route'] == {'model': 'gpt-6-astra', 'effort': 'medium'}
+                    assert all(s['route'] == task['config']['repair_route'] for s in task['sessions'] if s['role'] == 'repair')
+                    report = usage_report(root)
+                    assert sum(a['role'] == 'executor' for a in report['admissions']) == 2
+                    assert len(report['admissions']) == 20
+                    print('PASS interactive: blocked promptly; retry retains routes and counts another admission')
+                    return
                 if mode == 'malformed-review':
                     assert 'Unparseable review' in task['error'], task['error']
                 if mode == 'remote-conflict':
@@ -167,7 +218,7 @@ def scenario(mode):
             assert len({r['session_id'] for r in task['reviews']}) == 3
             assert all(r['comparison_base'] == task['default_revision'] for r in task['reviews'])
             repairs = [s for s in task['sessions'] if s['role'] == 'repair']
-            assert len(repairs) == 1 and repairs[0]['route'] == {'model': 'gpt-6-astra', 'effort': 'medium'}
+            assert len(repairs) == 1 and repairs[0]['route'] == task['config']['repair_route']
             assert task['workspace'].endswith(f'tasks/{task["execution_session"]}/workspace')
             assert task['verification'][-1]['success']
             assert task['verification'][-1]['revision'] == task['output_commit']
@@ -183,6 +234,23 @@ def scenario(mode):
             assert len([p for p in protocol if p['prompt'].startswith('Adversarial proposal')]) == 2
             assert len({p['thread'] for p in protocol if p['prompt'].startswith('Repair actionable')}) == (2 if mode in ['parallel', 'dependencies'] else 1)
             assert all(p['sandbox'] == {'type': 'dangerFullAccess'} and p['approval'] == 'never' for p in protocol)
+            report = usage_report(root)
+            expected_tasks = 2 if mode in ['parallel', 'dependencies'] else 1
+            assert len(report['admissions']) == 13 + 6 * expected_tasks
+            assert sum(a['role'] == 'repair' for a in report['admissions']) == 2 * expected_tasks
+            assert report['cycles'][0]['planning_admissions'] == 13
+            assert report['cycles'][0]['task_admissions'] == 6 * expected_tasks
+            if mode == 'custom-route':
+                assert repairs[0]['route'] == {'model': 'gpt-5.6-luna', 'effort': 'high'}
+                consolidation = next(p['prompt'] for p in protocol if p['prompt'].startswith('Act as final'))
+                assert '"M":{"model":"gpt-5.6-luna","effort":"low"}' in consolidation
+                assert 'XS luna xhigh' not in consolidation
+            if mode == 'normal':
+                service.stop()
+                (root / 'version').write_text('0.0.0-fixture')
+                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor'], env=service.env, capture_output=True, text=True, check=True)
+                assert json.loads(diagnostic.stdout)['warnings']
+                assert 'mismatch' in diagnostic.stderr
             print(f'PASS {mode}: complete reviewed delivery with no duplicate PRs')
         finally:
             service.stop()
@@ -190,5 +258,5 @@ def scenario(mode):
 
 
 if __name__ == '__main__':
-    for mode in ['normal', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']:
+    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']:
         scenario(mode)

@@ -16,7 +16,7 @@ A Rust service owns the workflow and durable state. A SvelteKit dashboard provid
 - Runs 8–10 complementary discovery sessions, two independent proposal reviews, and final orchestrator consolidation.
 - Routes XS/S/M/L/XL tasks to the exact configured model and reasoning effort. Unsupported routes stop visibly.
 - Gives every task its own Codex thread and `.octomus/tasks/<thread-id>/workspace` checkout.
-- Uses a fresh reviewer for every review round, with one persistent Astra-medium repair thread per task.
+- Uses a fresh reviewer for every review round, with one persistent repair thread per task using its saved configurable route.
 - Runs configured verification on the reviewed revision before creating or updating a GitHub PR.
 - Preserves interrupted work, reconciles publication, serializes branch writers, and enforces operating limits.
 - Provides private dashboard access, task cancellation/retry, pause/resume, maintenance settings, and inspection of review and verification evidence.
@@ -58,7 +58,7 @@ The default execution routes are:
 | L | `gpt-6-astra` | `medium` |
 | XL | `gpt-6-astra` | `high` |
 
-Repair always uses `gpt-6-astra` / `medium`. Availability depends on the installed Codex runtime and account. Octomus never substitutes routes silently.
+Repair defaults to `gpt-6-astra` / `medium` and is configurable in **Configuration**. Existing tasks retain their saved repair route when settings change. Availability depends on the installed Codex runtime and account. Octomus never substitutes routes silently.
 
 ## Development and verification
 
@@ -89,6 +89,8 @@ For UI development, run the Rust service with built assets, then `npm run dev --
 Use the [dedicated-host deployment guide](docs/deployment.md) for systemd, private remote access, backups, recovery, and upgrade instructions. `make package` builds a Linux release directory and archive under `dist/`.
 
 - [Your launch checklist](todo.md)
+- [Week 1 commissioning and live log](docs/week-1.md)
+- [Cost and usage methodology](docs/cost.md)
 - [Architecture and operational contract](docs/architecture.md)
 - [PRD acceptance coverage](docs/acceptance.md)
 - [Default configuration](docs/configuration.example.json)

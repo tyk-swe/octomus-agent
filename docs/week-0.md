@@ -13,7 +13,7 @@ Recorded Tuesday, 2026-09-08. This is the owner-approved documentation and resea
 | Bot identity | Pending | Use a dedicated GitHub identity; `octomus-bot` is an unreserved candidate. Resolve the authentication limitation below before creating credentials. |
 | Metrics | Adopted | Preserve all section 2 targets in the [launch issue draft](launch-issue.md). Actual results remain blank until measured. |
 
-The Week 1 gate is five consecutive days of real cycles with no unexplained blocked task, at least three Octomus PRs merged into `main` by the owner, a cost table with real numbers, and saved screenshots. Scope adoption does not mean those features or exit criteria are already complete.
+The Week 1 gate is five consecutive days of real cycles with no unexplained blocked task, at least three Octomus PRs merged into `main` by the owner, a cost table with real numbers, and saved screenshots. The owner subsequently adopted subscription-only usage and the measured-usage cost criterion described in [Week 1](week-1.md) and the [release plan](release-plan.md#5-week-1-sep-9-to-14-make-it-true). Scope adoption does not mean those features or exit criteria are already complete.
 
 ## Name research
 

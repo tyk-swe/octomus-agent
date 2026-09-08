@@ -33,7 +33,7 @@ impl Route {
         }
     }
 }
-pub fn repair_route() -> Route {
+pub fn default_repair_route() -> Route {
     Route::new("gpt-6-astra", "medium")
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +46,7 @@ pub struct Config {
     pub codex_binary: String,
     pub roles: BTreeMap<String, Route>,
     pub tiers: BTreeMap<String, Route>,
+    pub repair_route: Route,
     pub categories: Vec<String>,
     pub verification_commands: Vec<String>,
     pub discovery_agents: usize,
@@ -88,6 +89,7 @@ impl Default for Config {
             .into_iter()
             .map(|(t, m, e)| (t.into(), Route::new(m, e)))
             .collect(),
+            repair_route: default_repair_route(),
             categories: CATEGORIES.map(String::from).to_vec(),
             verification_commands: vec![],
             discovery_agents: 9,
@@ -177,7 +179,12 @@ impl Config {
                     .all(|r| self.tiers.contains_key(*r)),
             "Configure all five execution tiers"
         );
-        for route in self.roles.values().chain(self.tiers.values()) {
+        for route in self
+            .roles
+            .values()
+            .chain(self.tiers.values())
+            .chain(std::iter::once(&self.repair_route))
+        {
             ensure!(
                 route.model.len() <= 100 && route.effort.len() <= 20,
                 "Invalid route"
@@ -185,7 +192,7 @@ impl Config {
             if ready {
                 ensure!(
                     !route.model.is_empty() && !route.effort.is_empty(),
-                    "Set the model and effort for every role"
+                    "Set the model and effort for every role, tier, and repair route"
                 );
             }
         }

@@ -60,10 +60,16 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await navigate('Configuration');
   await page.getByLabel('Orchestrator model', { exact: true }).fill('gpt-6-astra');
   await page.getByLabel('Orchestrator reasoning effort', { exact: true }).fill('medium');
+  await page.getByLabel('Repair model', { exact: true }).fill('gpt-5.6-luna');
+  await page.getByLabel('Repair reasoning effort', { exact: true }).fill('high');
   await page.getByRole('button', { name: 'Save configuration' }).click();
   await expect(page.getByRole('status')).toHaveText('Configuration saved.');
   await page.waitForTimeout(4500); // Ensure state polling never overwrites an operator's draft.
   await expect(page.getByLabel('Orchestrator model', { exact: true })).toHaveValue('gpt-6-astra');
+  await expect(page.getByLabel('Repair model', { exact: true })).toHaveValue('gpt-5.6-luna');
+  await navigate('Overview');
+  await navigate('Configuration');
+  await expect(page.getByLabel('Repair reasoning effort', { exact: true })).toHaveValue('high');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await navigate('Overview');
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();

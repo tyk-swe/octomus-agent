@@ -207,7 +207,7 @@ Run regular maintenance alongside feature and improvement discovery as described
 | Code reviewer | Review the completed change set and subsequent repairs. | **Fresh review context on every round.** |
 | Repair agent | Address actionable review findings. | **Fresh at the first repair round, then reused for subsequent repairs of that task.** |
 
-The repair agent uses **`gpt-6-astra` with `medium` reasoning effort**. Its context is separate from the original implementation session.
+The repair agent uses the task’s saved configurable repair route, defaulting to **`gpt-6-astra` with `medium` reasoning effort**. Its context is separate from the original implementation session.
 
 A fresh reviewer and a persistent repair session serve different purposes and must not be collapsed into one continuing conversation.
 
@@ -218,7 +218,7 @@ After each task finishes, start a fresh code-review session through Codex app-se
 The lifecycle is:
 
 1. Review the task's complete current change set in a fresh context.
-2. When actionable findings exist, start a fresh repair session using `gpt-6-astra` at `medium` effort.
+2. When actionable findings exist, start a fresh repair session using the task’s saved repair route.
 3. Have the repair agent address the findings and rerun relevant verification.
 4. Start another fresh review against the full updated change set, including the repairs—not merely the latest fix commit.
 5. Send additional actionable findings back to the **same repair session** that handled the first round.
@@ -332,7 +332,7 @@ These are operating requirements for a 24/7 product, not a mandate for distribut
 | AC-03 | Discovery produces weak or overlapping ideas. | The orchestrator and two adversarial reviewers assess them; rejected work is not executed; duplicates are consolidated. |
 | AC-04 | An accepted task becomes executable. | It has a refined prompt, a target, a complexity tier, and the requested model/effort route. |
 | AC-05 | Multiple tasks execute. | Each receives a separate Codex session and workspace; conflicting branch writers do not race. |
-| AC-06 | A task produces review findings. | A fresh Astra-medium repair session handles the first repair; subsequent rounds reuse that session while every review starts fresh. |
+| AC-06 | A task produces review findings. | A fresh repair session using the task’s saved route handles the first repair; subsequent rounds reuse that session while every review starts fresh. |
 | AC-07 | A repair changes previously implemented code. | The next review examines the complete updated task change set, not only the latest patch. |
 | AC-08 | Review or verification does not complete successfully. | The task is not represented as clean or published as completed work. |
 | AC-09 | A reviewed task originated from the default branch. | Octomus creates and pushes an owned branch and opens a new PR. |

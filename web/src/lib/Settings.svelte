@@ -291,8 +291,28 @@
               aria-label={tier + ' model'}
             /><input bind:value={route.effort} aria-label={tier + ' effort'} />
           </div>{/each}
+        <div class="route-grid">
+          <label for="model-repair">Repair</label>
+          <input
+            id="model-repair"
+            list="models"
+            bind:value={config.repair_route.model}
+            aria-label="Repair model"
+          />
+          <input
+            list="efforts-repair"
+            bind:value={config.repair_route.effort}
+            aria-label="Repair reasoning effort"
+          />
+          <datalist id="efforts-repair">
+            {#each models.find((m) => m.model === config?.repair_route.model)?.supportedReasoningEfforts ?? [] as effort}
+              <option value={effort.reasoningEffort}></option>
+            {/each}
+          </datalist>
+        </div>
         <div class="inline-note">
-          <Icon name="shield" size={16} /> Repair sessions always use gpt-6-astra · medium.
+          <Icon name="shield" size={16} /> Each task keeps its saved repair route and reuses one repair
+          thread across rounds.
         </div>
         <label class="executable">Codex executable<input bind:value={config.codex_binary} /></label>
       </section>

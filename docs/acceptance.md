@@ -9,7 +9,7 @@ This maps the PRD to implementation and automated evidence. Integration tests ru
 | AC-03 | Both adversarial assessments and the final orchestrator decision are durable; proposal validation rejects duplicate accepted titles, missing context and invalid dependency graphs. |
 | AC-04 | Each queued task has a refined prompt, target, tier and snapshot of its exact route; unsupported effort test verifies no fallback. |
 | AC-05 | Parallel integration scenario publishes two independent tasks with distinct execution identities/workspaces; dependent same-branch scenario verifies ordered delivery. |
-| AC-06 | Integration suite requires three different reviewer thread IDs and one reused Astra-medium repair thread per task. |
+| AC-06 | Integration suite requires three different reviewer thread IDs and one reused repair thread per task using its saved configurable route; custom-route and retry scenarios verify route preservation. |
 | AC-07 | Every recorded review uses the same full comparison base, including after both repairs. |
 | AC-08 | Malformed review, incomplete review and failed verification scenarios remain blocked without publication. |
 | AC-09 | Default-branch workflow pushes an owned branch and creates one PR; the default revision remains untouched. |

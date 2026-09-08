@@ -1,6 +1,6 @@
 use crate::{
     codex::{self, Codex},
-    config::{Config, repair_route},
+    config::{Config, Route},
     git,
     model::*,
     store::{Store, redact},
@@ -97,6 +97,18 @@ impl App {
     pub async fn doctor(&self, c: &Config) -> Result<Value> {
         c.validate(true)?;
         let cancel = self.shutdown.child_token();
+        let installed = crate::process::run(
+            &c.codex_binary,
+            &["--version"],
+            &self.data_dir,
+            c.command_timeout_seconds.min(60),
+            &cancel,
+        )
+        .await?;
+        let warning = codex::version_warning(&installed);
+        if let Some(warning) = &warning {
+            tracing::warn!("{warning}");
+        }
         git::validate_remote(c, &cancel).await?;
         let mut cx =
             Codex::connect(c, &self.data_dir, self.store.clone(), "system", cancel).await?;
@@ -110,7 +122,7 @@ impl App {
         let models = cx.models().await?;
         codex::validate_routes(c, &models)?;
         Ok(
-            json!({"ok":true,"models":models,"message":"Repository, GitHub authentication, and all model/effort routes are available."}),
+            json!({"ok":true,"models":models,"codex_version":installed,"tested_codex_version":codex::TESTED_VERSION,"warnings":warning.iter().collect::<Vec<_>>(),"message":format!("Repository, GitHub authentication, and all model/effort routes are available.{}", warning.map(|w| format!(" Warning: {w}")).unwrap_or_default())}),
         )
     }
     pub async fn run(self) {
@@ -263,14 +275,24 @@ impl App {
         }
         Ok(())
     }
-    async fn budget(&self, c: &Config) -> Result<()> {
+    async fn budget(
+        &self,
+        c: &Config,
+        cycle_id: &str,
+        task_id: Option<&str>,
+        role: &str,
+        route: &Route,
+    ) -> Result<()> {
         let dir = self.data_dir.clone();
         let size = tokio::task::spawn_blocking(move || directory_size(&dir)).await??;
         ensure!(
             size < c.max_workspace_bytes,
             "Workspace storage limit reached ({size} bytes). Resolve retained tasks or increase the limit"
         );
-        self.store.reserve_session(c.max_sessions_per_day)
+        self.store.reserve_session(
+            c.max_sessions_per_day,
+            &crate::store::Admission::new(cycle_id, task_id, role, route),
+        )
     }
     // All arguments belong to a single bounded role invocation; keep this local helper explicit.
     #[allow(clippy::too_many_arguments)]
@@ -284,7 +306,8 @@ impl App {
         schema: Value,
         cancel: &CancellationToken,
     ) -> Result<(Session, String)> {
-        self.budget(c).await?;
+        self.budget(c, &cycle.id, None, label, &c.roles[role])
+            .await?;
         let workspace = self
             .data_dir
             .join("cycles")
@@ -497,10 +520,11 @@ impl App {
             self.store.put("cycle", &cycle.id, cycle)?;
         }
         let prompt = format!(
-            "Act as final orchestrator: assess all candidates yourself and resolve BOTH adversarial reviews explicitly in each decision reason, especially disagreements. Deduplicate overlapping proposals; retain a candidate ID for merged work, mark absorbed IDs rejected and reference the surviving ID. Return every original candidate exactly once, accepted/rejected/deferred with reasons. Accept at most {} cohesive tasks, dependency-aware, with a polished self-contained implementation prompt including objective, evidence, target, boundaries, required outcomes and proportionate verification. Keep priorities within {:?}. Avoid work already in history, including failed unresolved tasks. Only listed owned PR branches or '{}' are eligible targets. Dependencies must refer only to other accepted candidate IDs on the SAME existing owned PR branch. On main, combine code-dependent pieces into one cohesive task or defer dependent work until its prerequisite PR is merged. Multiple accepted changes to one existing branch must declare a dependency order. No cycles. Tiers: XS luna xhigh, S luna max, M astra low, L astra medium, XL astra high. Do not change operating policy. Candidates: {candidates}. Reviews: {}. Grounding: {ground}. Context: {context}",
+            "Act as final orchestrator: assess all candidates yourself and resolve BOTH adversarial reviews explicitly in each decision reason, especially disagreements. Deduplicate overlapping proposals; retain a candidate ID for merged work, mark absorbed IDs rejected and reference the surviving ID. Return every original candidate exactly once, accepted/rejected/deferred with reasons. Accept at most {} cohesive tasks, dependency-aware, with a polished self-contained implementation prompt including objective, evidence, target, boundaries, required outcomes and proportionate verification. Keep priorities within {:?}. Avoid work already in history, including failed unresolved tasks. Only listed owned PR branches or '{}' are eligible targets. Dependencies must refer only to other accepted candidate IDs on the SAME existing owned PR branch. On main, combine code-dependent pieces into one cohesive task or defer dependent work until its prerequisite PR is merged. Multiple accepted changes to one existing branch must declare a dependency order. No cycles. Configured execution tiers: {}. Do not change operating policy. Candidates: {candidates}. Reviews: {}. Grounding: {ground}. Context: {context}",
             c.max_tasks_per_cycle,
             c.categories,
             c.default_branch,
+            serde_json::to_string(&c.tiers)?,
             serde_json::to_string(&cycle.assessments)?
         );
         let (session, answer) = self
@@ -664,7 +688,8 @@ impl App {
                     "Target PR is no longer eligible"
                 );
             }
-            self.budget(&c).await?;
+            self.budget(&c, &t.cycle_id, Some(&t.id), "executor", &t.route)
+                .await?;
             let session = cx.start(&t.route, &self.data_dir, None).await?;
             let workspace = self.data_dir.join("tasks").join(&session).join("workspace");
             t.workspace = workspace.to_string_lossy().into_owned();
@@ -710,7 +735,8 @@ impl App {
         {
             let thread = t.execution_session.clone().unwrap();
             if t.attempts > 0 {
-                self.budget(&c).await?;
+                self.budget(&c, &t.cycle_id, Some(&t.id), "executor", &t.route)
+                    .await?;
             }
             cx.start(&t.route, &workspace, Some(&thread)).await?;
             t.sessions
@@ -761,7 +787,8 @@ impl App {
             );
             self.transition(t, Status::Reviewing)?;
             let route = &c.roles["code_reviewer"];
-            self.budget(&c).await?;
+            self.budget(&c, &t.cycle_id, Some(&t.id), "reviewer", route)
+                .await?;
             let thread = cx.start(route, &workspace, None).await?;
             t.sessions.push(Session {
                 id: thread.clone(),
@@ -876,8 +903,9 @@ impl App {
                 "Repairs made no progress; workspace preserved"
             );
             self.transition(t, Status::Repairing)?;
-            self.budget(&c).await?;
-            let route = repair_route();
+            let route = c.repair_route.clone();
+            self.budget(&c, &t.cycle_id, Some(&t.id), "repair", &route)
+                .await?;
             let thread = cx
                 .start(&route, &workspace, t.repair_session.as_deref())
                 .await?;

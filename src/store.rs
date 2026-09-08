@@ -1,11 +1,39 @@
 use crate::model::{Event, now};
 use anyhow::Result;
 use rusqlite::{Connection, params};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+
+/// A budget admission, not a completed turn or a provider charge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Admission {
+    pub id: String,
+    pub at: String,
+    pub cycle_id: String,
+    pub task_id: Option<String>,
+    pub role: String,
+    pub route: crate::config::Route,
+}
+impl Admission {
+    pub fn new(
+        cycle_id: &str,
+        task_id: Option<&str>,
+        role: &str,
+        route: &crate::config::Route,
+    ) -> Self {
+        Self {
+            id: crate::model::id(),
+            at: now(),
+            cycle_id: cycle_id.into(),
+            task_id: task_id.map(str::to_owned),
+            role: role.into(),
+            route: route.clone(),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Store(Arc<Mutex<Connection>>);
@@ -13,7 +41,7 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let c = Connection::open(path)?;
         c.busy_timeout(std::time::Duration::from_secs(5))?;
-        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL); CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, sessions INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS cap_activity AFTER INSERT ON events BEGIN DELETE FROM events WHERE id <= NEW.id - COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'), '$.retain_events'),10000); END;")?;
+        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL); CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, sessions INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS admissions (id TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS admissions_day ON admissions(day); CREATE TRIGGER IF NOT EXISTS cap_activity AFTER INSERT ON events BEGIN DELETE FROM events WHERE id <= NEW.id - COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'), '$.retain_events'),10000); END;")?;
         Ok(Self(Arc::new(Mutex::new(c))))
     }
     pub fn put<T: Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
@@ -87,14 +115,30 @@ impl Store {
         )?;
         Ok(())
     }
-    pub fn reserve_session(&self, limit: u64) -> Result<()> {
-        let day = chrono::Utc::now().format("%F").to_string();
-        let c = self.0.lock().unwrap();
-        let changed=c.execute("INSERT INTO usage(day,sessions) VALUES (?1,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1 WHERE sessions < ?2",params![day,limit.min(i64::MAX as u64) as i64])?;
+    pub fn reserve_session(&self, limit: u64, admission: &Admission) -> Result<()> {
+        anyhow::ensure!(limit > 0, "Daily session budget must be positive");
+        // Derive both timestamps from the same instant, including across UTC midnight.
+        let day = chrono::DateTime::parse_from_rfc3339(&admission.at)?
+            .with_timezone(&chrono::Utc)
+            .format("%F")
+            .to_string();
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed=tx.execute("INSERT INTO usage(day,sessions) VALUES (?1,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1 WHERE sessions < ?2",params![day,limit.min(i64::MAX as u64) as i64])?;
         anyhow::ensure!(
             changed == 1,
             "Daily session budget exhausted; increase the configured limit or wait until UTC midnight"
         );
+        tx.execute(
+            "INSERT INTO admissions(id,at,day,data) VALUES (?1,?2,?3,?4)",
+            params![
+                admission.id,
+                admission.at,
+                day,
+                serde_json::to_string(admission)?
+            ],
+        )?;
+        tx.commit()?;
         Ok(())
     }
     pub fn sessions_today(&self) -> Result<u64> {
@@ -148,8 +192,28 @@ mod tests {
         {
             let s = Store::open(&p).unwrap();
             s.put("x", "a", &vec![1, 2]).unwrap();
-            s.reserve_session(1).unwrap();
-            assert!(s.reserve_session(1).is_err());
+            s.reserve_session(
+                1,
+                &Admission::new(
+                    "test-cycle",
+                    None,
+                    "grounding",
+                    &crate::config::Route::new("test", "low"),
+                ),
+            )
+            .unwrap();
+            assert!(
+                s.reserve_session(
+                    1,
+                    &Admission::new(
+                        "test-cycle",
+                        None,
+                        "grounding",
+                        &crate::config::Route::new("test", "low")
+                    )
+                )
+                .is_err()
+            );
         }
         assert_eq!(
             Store::open(&p).unwrap().get::<Vec<i32>>("x", "a").unwrap(),

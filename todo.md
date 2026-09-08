@@ -21,7 +21,7 @@ gh auth setup-git
 
 - [ ] Confirm GitHub access can fetch and push branches and create/update PRs in the target repository. If using SSH, configure working non-interactive SSH credentials; the HTTPS credential helper is then optional.
 - [ ] Confirm the repository's `origin` uses SSH or credential-free HTTPS and points to the intended GitHub repository.
-- [ ] Confirm your Codex account exposes the models and reasoning efforts you plan to use. Repair requires `gpt-6-astra` with `medium`; unsupported routes are blocked rather than silently replaced.
+- [ ] Confirm your Codex account exposes the models and reasoning efforts you plan to use. Repair defaults to `gpt-6-astra` with `medium` and can be configured explicitly; unsupported routes are blocked rather than silently replaced.
 
 ## 3. Build and install
 
@@ -61,7 +61,7 @@ cargo build --locked && python3 tests/e2e.py
 
 Each line is a separate dashboard verification command. Add `npm test --prefix web` when browser coverage is needed, after installing Playwright Chromium and its system dependencies on the host. All configured commands must pass on the reviewed revision before publication.
 
-- [ ] Choose enabled improvement categories, maintenance cadence, and resource/time limits appropriate to your host and account. Start with one concurrent task and one accepted task per cycle for the initial live run. Discovery still requires 8–10 agents.
+- [ ] Choose enabled improvement categories, maintenance cadence, and resource/time limits appropriate to your host and account. Start with one concurrent task, one accepted task per cycle and a six-hour cycle interval for the initial live run. See the [Week 1 log](docs/week-1.md). Discovery still requires 8–10 agents.
 - [ ] Set your account's spending limit and Octomus's daily session budget. The session budget counts admissions; it is not a dollar-spend cap.
 - [ ] Save configuration and run **Check connection**. Correct any reported configuration, authentication, or route errors.
 

@@ -5,4 +5,5 @@ pub mod engine;
 pub mod git;
 pub mod model;
 pub mod process;
+pub mod report;
 pub mod store;

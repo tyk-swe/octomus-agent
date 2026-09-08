@@ -105,6 +105,43 @@ fn unsupported_effort_never_falls_back() {
     assert!(error.to_string().contains("max"));
     assert_eq!(c.tiers["S"].effort, "max");
 }
+
+#[test]
+fn repair_routes_are_backward_compatible_and_validated() {
+    let mut old = serde_json::to_value(Config::default()).unwrap();
+    old.as_object_mut().unwrap().remove("repair_route");
+    let mut config: Config = serde_json::from_value(old).unwrap();
+    assert_eq!(config.repair_route, Route::new("gpt-6-astra", "medium"));
+    for route in config.roles.values_mut().chain(config.tiers.values_mut()) {
+        *route = Route::new("available", "low");
+    }
+    let catalog =
+        vec![json!({"model":"available","supportedReasoningEfforts":[{"reasoningEffort":"low"}]})];
+    let error = octomus_agent::codex::validate_routes(&config, &catalog).unwrap_err();
+    assert!(error.to_string().contains("gpt-6-astra / medium"));
+    config.repair_route = Route::new("available", "high");
+    assert!(
+        octomus_agent::codex::validate_routes(&config, &catalog)
+            .unwrap_err()
+            .to_string()
+            .contains("available / high")
+    );
+    config.repair_route.effort = "low".into();
+    octomus_agent::codex::validate_routes(&config, &catalog).unwrap();
+    let saved: Config = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+    assert_eq!(saved.repair_route, config.repair_route);
+    config.repair_route.model = "x".repeat(101);
+    assert!(config.validate(false).is_err());
+}
+
+#[test]
+fn codex_version_diagnostics_do_not_accept_prefix_matches() {
+    use octomus_agent::codex::version_warning;
+    assert!(version_warning("codex-cli 0.153.4\n").is_none());
+    for version in ["codex-cli 0.153.40", "codex-cli 0.153.4-dev", "unknown"] {
+        assert!(version_warning(version).unwrap().contains("mismatch"));
+    }
+}
 #[test]
 fn daily_admission_budget_is_atomic_under_concurrency() {
     let temp = tempfile::tempdir().unwrap();
@@ -112,7 +149,19 @@ fn daily_admission_budget_is_atomic_under_concurrency() {
     let handles: Vec<_> = (0..20)
         .map(|_| {
             let store = store.clone();
-            std::thread::spawn(move || store.reserve_session(5).is_ok())
+            std::thread::spawn(move || {
+                store
+                    .reserve_session(
+                        5,
+                        &octomus_agent::store::Admission::new(
+                            "cycle",
+                            None,
+                            "grounding",
+                            &Route::new("fixture", "low"),
+                        ),
+                    )
+                    .is_ok()
+            })
         })
         .collect();
     assert_eq!(
@@ -124,6 +173,9 @@ fn daily_admission_budget_is_atomic_under_concurrency() {
         5
     );
     assert_eq!(store.sessions_today().unwrap(), 5);
+    let report = octomus_agent::report::usage_report(&temp.path().join("state.db")).unwrap();
+    assert_eq!(report["admissions"].as_array().unwrap().len(), 5);
+    assert_eq!(report["daily"][0]["unattributed_admissions"], 0);
 }
 #[tokio::test]
 async fn private_api_enforces_auth_content_type_and_configuration_rules() {

@@ -22,10 +22,13 @@ struct Args {
         help = "Validate saved repository, authentication and model routes, then exit"
     )]
     doctor: bool,
+    #[arg(long, conflicts_with_all = ["doctor", "print_config"], help = "Export a read-only JSON usage report from saved state and exit")]
+    usage_report: bool,
 }
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "octomus_agent=info,tower_http=info".into()),
@@ -36,6 +39,15 @@ async fn main() -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(&octomus_agent::config::Config::default())?
+        );
+        return Ok(());
+    }
+    if args.usage_report {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&octomus_agent::report::usage_report(
+                &args.data_dir.join("state.db")
+            )?)?
         );
         return Ok(());
     }
