@@ -243,9 +243,18 @@ def scenario(mode):
                     prerequisite = next(t for t in all_tasks if not t['proposal']['dependencies'])
                     assert followup['source_revision'] == prerequisite['output_commit']
                     assert (Path(followup['workspace']) / 'feature.txt').read_text().strip() == 'fixed'
-            if mode in ['malformed-review', 'incomplete-review', 'remote-conflict', 'failed-verification', 'interactive']:
+            if mode in ['malformed-review', 'incomplete-review', 'remote-conflict', 'failed-verification', 'interactive', 'main-conflict']:
                 assert task['status'] == 'blocked', task
                 assert not (root / 'publications.jsonl').exists(), 'Unresolved work must not publish'
+                if mode == 'main-conflict':
+                    # The rebase conflicted: nothing rebased, the workspace is intact and main is untouched.
+                    external = (root / 'external-revision').read_text()
+                    assert 'conflicted' in task['error'] and external in task['error'], task['error']
+                    assert task['output_commit'] is None and task['reconciliations'] == [] and task['reviews'] == []
+                    assert git('rev-parse', 'HEAD', cwd=task['workspace']) != task['source_revision']
+                    assert git('status', '--porcelain', cwd=task['workspace']) == '' and not (Path(task['workspace']) / '.git/rebase-merge').exists()
+                    assert git('rev-parse', 'main', cwd=root / 'remote.git') == external
+                    assert not any(p['prompt'].startswith('Perform a fresh code review') for p in map(json.loads, (root / 'protocol.jsonl').read_text().splitlines()))
                 blocked = service.wait(lambda: service.notification('task_blocked', task['id']), 'blocked notification')
                 assert blocked['detail']['error'] == task['error']
                 assert service.notification('task_published') is None
@@ -279,9 +288,23 @@ def scenario(mode):
             published = service.wait(lambda: service.notification('task_published', task['id']), 'publication notification')
             assert published['detail']['pr_url'] == task['pr_url'] and published['detail']['title'] == task['proposal']['title']
             assert {n['event'] for n in service.notifications} <= {'task_published', 'task_blocked'}
-            assert len(task['reviews']) == 3, task['reviews']
-            assert len({r['session_id'] for r in task['reviews']}) == 3
-            assert all(r['comparison_base'] == task['default_revision'] for r in task['reviews'])
+            reviews = 4 if mode == 'main-moved-late' else 3
+            assert len(task['reviews']) == reviews, task['reviews']
+            assert len({r['session_id'] for r in task['reviews']}) == reviews
+            if mode in ['main-moved', 'main-moved-late']:
+                external = (root / 'external-revision').read_text()
+                stage = 'pre_review' if mode == 'main-moved' else 'pre_publication'
+                assert [(r['stage'], r['to']) for r in task['reconciliations']] == [(stage, external)], task['reconciliations']
+                assert task['default_revision'] == external and task['source_revision'] == external and task['comparison_base'] == external
+                rebased = task['reviews'] if mode == 'main-moved' else task['reviews'][3:]
+                assert all(r['comparison_base'] == external for r in rebased)
+                assert all(r['comparison_base'] == task['reconciliations'][0]['from'] for r in task['reviews'][:0 if mode == 'main-moved' else 3])
+                assert git('merge-base', '--is-ancestor', external, task['output_commit'], cwd=root / 'remote.git') == ''
+                assert (Path(task['workspace']) / 'external.txt').read_text() == 'external\n'
+                assert any(e['kind'] == 'reconciliation' for e in service.request(f'/events?entity={task["id"]}'))
+            else:
+                assert task['reconciliations'] == []
+                assert all(r['comparison_base'] == task['default_revision'] for r in task['reviews'])
             repairs = [s for s in task['sessions'] if s['role'] == 'repair']
             assert len(repairs) == 1 and repairs[0]['route'] == task['config']['repair_route']
             assert task['workspace'].endswith(f'tasks/{task["execution_session"]}/workspace')
@@ -322,10 +345,11 @@ def scenario(mode):
             assert not any(GUIDANCE in p['prompt'] for p in protocol if p['prompt'].startswith(('Implement this accepted task', 'Perform a fresh code review', 'Repair actionable')))
             report = usage_report(root)
             expected_tasks = 2 if mode in ['parallel', 'dependencies'] else 1
-            assert len(report['admissions']) == 13 + 6 * expected_tasks
+            extra_review = 1 if mode == 'main-moved-late' else 0
+            assert len(report['admissions']) == 13 + 6 * expected_tasks + extra_review
             assert sum(a['role'] == 'repair' for a in report['admissions']) == 2 * expected_tasks
             assert report['cycles'][0]['planning_admissions'] == 13
-            assert report['cycles'][0]['task_admissions'] == 6 * expected_tasks
+            assert report['cycles'][0]['task_admissions'] == 6 * expected_tasks + extra_review
             if mode == 'custom-route':
                 assert repairs[0]['route'] == {'model': 'gpt-5.6-luna', 'effort': 'high'}
                 consolidation = next(p['prompt'] for p in protocol if p['prompt'].startswith('Act as final'))
@@ -479,7 +503,7 @@ def audit_scenario(mode):
 
 if __name__ == '__main__':
     import sys
-    modes = ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'existing-pr-feedback', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']
+    modes = ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'existing-pr-feedback', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'main-moved', 'main-moved-late', 'main-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']
     # Optional focused run while developing: python3 tests/e2e.py normal failed-verification audit-accepted
     selected = sys.argv[1:]
     for mode in [m for m in modes if not selected or m in selected]:

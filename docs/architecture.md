@@ -61,7 +61,9 @@ unsandboxed agent behavior and the normal cycle retention policy.
 
 A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies. Its initial app-server thread identity determines `.octomus/tasks/<thread-id>/workspace`. Each task uses an independent Git clone. Review and repair threads work in that same task clone.
 
-Independent tasks can run concurrently. Existing PR branch writers are serialized. Dependent tasks on the same existing PR wait for their prerequisites to publish; the source revision is advanced only to a recorded prerequisite output and its ancestry is checked. External branch movement blocks stale work.
+Independent tasks can run concurrently. Existing PR branch writers are serialized. Dependent tasks on the same existing PR wait for their prerequisites to publish; the source revision is advanced only to a recorded prerequisite output and its ancestry is checked. External movement of an existing owned branch blocks stale work.
+
+Movement of the default branch is reconciled rather than blocked, within `max_reconciliations` rebases per task. A task that has not started adopts the new revision and its prompt records the move. Unpublished new-branch work is rebased onto the moved revision from the trusted configured checkout before each review round and again after a clean review; a rebase after a clean review forces one extra fresh review that does not count as a repair round. Existing-PR work keeps its merge-base comparison and only refreshes the recorded default revision; pushed work is never rebased. Every reconciliation is recorded on the task with its stage and revisions. A conflicting rebase is aborted, the previous HEAD is restored and the task blocks with the workspace preserved.
 
 Code-dependent default-branch proposals must be consolidated into a cohesive task or deferred until the prerequisite PR has merged. Merely publishing a separate PR does not make its code available on the default branch. Octomus does not auto-merge or implicitly create stacked PRs.
 

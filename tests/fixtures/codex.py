@@ -28,6 +28,20 @@ def proposal():
         'decision': 'accepted', 'reason': 'Both independent reviews accept the concrete feature; no duplicates.'
     }
 
+def move_main(marker):
+    """External work lands on the remote default branch exactly once for the given scenario marker."""
+    if not (root / marker).exists() or (root / 'external-revision').exists():
+        return
+    import subprocess
+    checkout = root / 'checkout'
+    name = 'feature.txt' if marker == 'main-conflict' else 'external.txt'
+    (checkout / name).write_text('external\n')
+    run = lambda *args: subprocess.check_output(['/usr/bin/git', *args], cwd=checkout, text=True).strip()
+    run('add', name)
+    run('-c', 'user.name=External', '-c', 'user.email=external@example.com', 'commit', '-m', 'External work on main')
+    run('push', 'origin', 'main')
+    (root / 'external-revision').write_text(run('rev-parse', 'HEAD'))
+
 def proposals():
     first = proposal()
     if (root / 'parallel').exists() or (root / 'dependencies').exists():
@@ -95,6 +109,8 @@ for line in sys.stdin:
                 answer = {'proposals': []}
         elif prompt.startswith('Implement this accepted task'):
             (cwd / feature_file).write_text('needs repair\n')
+            move_main('main-moved')
+            move_main('main-conflict')
             answer = 'Implemented feature.txt. Relevant verification is pending.'
         elif prompt.startswith('Perform a fresh code review'):
             if (root / 'malformed-review').exists():
@@ -111,6 +127,7 @@ for line in sys.stdin:
                     commit = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, '-c', 'user.name=External', '-c', 'user.email=external@example.com', 'commit-tree', tree, '-p', parent, '-m', 'External work'], text=True).strip()
                     subprocess.check_call(['/usr/bin/git', '--git-dir', remote, 'update-ref', f'refs/heads/{branch}', commit])
                     (root / 'external-revision').write_text(commit)
+                move_main('main-moved-late')
                 answer = {'completed': True, 'summary': 'Reviewed the complete diff; no actionable findings remain.', 'findings': []}
             else:
                 answer = {'completed': True, 'summary': 'The output contract is incomplete.', 'findings': [{'title': 'Complete the output', 'file': 'feature.txt:1', 'detail': 'Must contain fixed.', 'priority': 'P1'}]}

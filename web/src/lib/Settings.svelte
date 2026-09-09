@@ -94,6 +94,13 @@
       max: 10
     },
     {
+      key: 'max_reconciliations',
+      label: 'Default-branch reconciliations',
+      help: 'Rebases of unpublished work when the default branch moves · 0 blocks instead',
+      min: 0,
+      max: 10
+    },
+    {
       key: 'session_timeout_seconds',
       label: 'Session timeout (seconds)',
       help: 'Maximum duration of a Codex turn',

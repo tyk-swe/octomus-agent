@@ -72,6 +72,7 @@
   "max_repair_rounds": 4,
   "max_no_progress_rounds": 2,
   "max_retries": 2,
+  "max_reconciliations": 3,
   "session_timeout_seconds": 1800,
   "task_timeout_seconds": 14400,
   "command_timeout_seconds": 600,

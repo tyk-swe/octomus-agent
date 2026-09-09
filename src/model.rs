@@ -99,6 +99,17 @@ pub struct Session {
     pub started_at: String,
     pub summary: String,
 }
+/// A recorded response to default-branch movement. Stages: `initialization` adopted the
+/// new revision before any work, `pre_review` and `pre_publication` rebased unpublished
+/// work (the latter forcing an extra fresh review), `default_refresh` only updated the
+/// recorded default revision for existing-PR work.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Reconciliation {
+    pub stage: String,
+    pub from: String,
+    pub to: String,
+    pub at: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -124,6 +135,27 @@ pub struct Task {
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub reconciliations: Vec<Reconciliation>,
+}
+impl Task {
+    /// Review rounds that count against the repair limit. A rebase after a clean review
+    /// forces one extra fresh review that is not a repair round.
+    pub fn review_rounds(&self) -> usize {
+        self.reviews.len().saturating_sub(
+            self.reconciliations
+                .iter()
+                .filter(|r| r.stage == "pre_publication")
+                .count(),
+        )
+    }
+    /// Rebases performed so far, bounded by the configured reconciliation limit.
+    pub fn rebases(&self) -> usize {
+        self.reconciliations
+            .iter()
+            .filter(|r| r.stage == "pre_review" || r.stage == "pre_publication")
+            .count()
+    }
 }
 /// A review or issue comment recorded on an owned PR: evidence for planning, never instruction.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

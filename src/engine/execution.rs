@@ -15,9 +15,24 @@ impl App {
         task.error = None;
         self.save_task(task)?;
         if task.output_commit.is_some() {
-            self.transition(task, Status::Publishing)?;
-            let p = git::publish(task, cancel).await?;
-            return self.published(task, p);
+            // Never rebase work that already reached the remote; only refresh the recorded context.
+            let pushed = task.pr_number.is_some()
+                || git::remote_revision(&config, &task.branch, cancel)
+                    .await?
+                    .is_some();
+            let rebase = if pushed {
+                None
+            } else {
+                Some("pre_publication")
+            };
+            if self.reconcile_default_branch(task, rebase, cancel).await? {
+                task.output_commit = None;
+                self.save_task(task)?;
+            } else {
+                self.transition(task, Status::Publishing)?;
+                let p = git::publish(task, cancel).await?;
+                return self.published(task, p);
+            }
         }
         let mut client = Codex::connect(
             &config,
@@ -46,7 +61,8 @@ impl App {
         let mut previous = String::new();
         let mut no_progress = 0;
         loop {
-            let revision = git::snapshot(&config, &workspace, &task.proposal.title, cancel).await?;
+            let mut revision =
+                git::snapshot(&config, &workspace, &task.proposal.title, cancel).await?;
             ensure!(
                 revision != task.source_revision
                     && !git::git(
@@ -59,8 +75,15 @@ impl App {
                     .is_empty(),
                 "Executor produced no net changes; task cannot be published"
             );
+            // Rebase before reviewing so the review covers the code that will be published.
+            if self
+                .reconcile_default_branch(task, Some("pre_review"), cancel)
+                .await?
+            {
+                revision = git::git(&config, &workspace, &["rev-parse", "HEAD"], cancel).await?;
+            }
             ensure!(
-                task.reviews.len() < config.max_repair_rounds + 1,
+                task.review_rounds() < config.max_repair_rounds + 1,
                 "Review/repair round limit exhausted; unresolved work is preserved"
             );
             let review = self
@@ -71,14 +94,11 @@ impl App {
                 verification_errors = self.verify_revision(task, &revision, cancel).await?;
                 if verification_errors.is_empty() {
                     // Main movement changes the integration context; never silently publish an obsolete review.
-                    if task.pr_number.is_none() {
-                        ensure!(
-                            git::remote_revision(&config, &config.default_branch, cancel)
-                                .await?
-                                .as_deref()
-                                == Some(&task.source_revision),
-                            "Default branch moved during execution; preserve and reconcile before publication"
-                        );
+                    if self
+                        .reconcile_default_branch(task, Some("pre_publication"), cancel)
+                        .await?
+                    {
+                        continue;
                     }
                     task.output_commit = Some(revision);
                     self.transition(task, Status::Publishing)?;
@@ -87,7 +107,7 @@ impl App {
                 }
             }
             ensure!(
-                task.reviews.len() <= config.max_repair_rounds,
+                task.review_rounds() <= config.max_repair_rounds,
                 "Repair limit exhausted; unresolved findings or verification failures remain"
             );
             if previous == revision {
@@ -115,7 +135,19 @@ impl App {
         let current = git::remote_revision(&config, &task.proposal.target, cancel)
             .await?
             .context("Task target disappeared")?;
-        if current != task.source_revision {
+        if current != task.source_revision && task.pr_number.is_none() {
+            // New default-branch work has no workspace yet: adopt the moved revision outright.
+            ensure!(
+                config.max_reconciliations > 0,
+                "Source changed outside the declared dependency chain. Cancel this stale task and rediscover against the new revision"
+            );
+            let from = std::mem::replace(&mut task.source_revision, current.clone());
+            task.default_revision = current.clone();
+            task.proposal.prompt.push_str(&format!(
+                "\nThe default branch moved to {current} after planning. Inspect the current code first; if this improvement is already present, make no changes and say so."
+            ));
+            self.record_reconciliation(task, "initialization", &from, &current)?;
+        } else if current != task.source_revision {
             let mut dependency_outputs = Vec::new();
             for identity in &task.proposal.dependencies {
                 let dependency: Task = self
@@ -150,13 +182,10 @@ impl App {
             task.proposal.prompt.push_str(&format!("\nPrerequisite work is now present in the target branch at {}. Inspect its accumulated diff before implementing this follow-up.", task.source_revision));
             self.save_task(task)?;
         }
-        ensure!(
-            git::remote_revision(&config, &config.default_branch, cancel)
-                .await?
-                .as_deref()
-                == Some(&task.default_revision),
-            "Default branch changed after planning; cancel and rediscover against the new context"
-        );
+        if task.pr_number.is_some() {
+            // Existing-PR work keeps its merge-base comparison; only the recorded context moves.
+            self.reconcile_default_branch(task, None, cancel).await?;
+        }
         if let Some(n) = task.pr_number {
             let p = git::pr(&config, n, cancel).await?;
             ensure!(
@@ -202,6 +231,74 @@ impl App {
         };
         self.save_task(task)?;
         Ok(())
+    }
+
+    /// Responds to default-branch movement since the recorded context. Existing-PR work and
+    /// pushed work only refresh the recorded revision (`rebase` is ignored); unpublished new-branch
+    /// work is rebased onto the moved revision with the given stage. Returns true after a rebase,
+    /// which always requires a fresh review before publication.
+    async fn reconcile_default_branch(
+        &self,
+        task: &mut Task,
+        rebase: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<bool> {
+        let config = task.config.clone();
+        git::fetch(&config, cancel).await?;
+        let current = git::remote_revision(&config, &config.default_branch, cancel)
+            .await?
+            .context("Default branch missing on remote")?;
+        if current == task.default_revision {
+            return Ok(false);
+        }
+        ensure!(
+            config.max_reconciliations > 0,
+            "Default branch moved during execution; preserve and reconcile before publication"
+        );
+        let from = task.default_revision.clone();
+        let Some(stage) = rebase.filter(|_| task.pr_number.is_none()) else {
+            task.default_revision = current.clone();
+            self.record_reconciliation(task, "default_refresh", &from, &current)?;
+            return Ok(false);
+        };
+        ensure!(
+            task.rebases() < config.max_reconciliations,
+            "Reconciliation limit ({}) reached; the default branch keeps moving. Inspect the workspace, then retry or cancel",
+            config.max_reconciliations
+        );
+        let workspace = PathBuf::from(&task.workspace);
+        let head = git::rebase_onto(&config, &workspace, &current, cancel).await?;
+        task.source_revision = current.clone();
+        task.default_revision = current.clone();
+        task.comparison_base = current.clone();
+        self.record_reconciliation(task, stage, &from, &current)?;
+        self.store.event(
+            &task.id,
+            "reconciliation",
+            &format!("Rebased onto {current} at {head}; a fresh review and verification follow"),
+        )?;
+        Ok(true)
+    }
+
+    fn record_reconciliation(
+        &self,
+        task: &mut Task,
+        stage: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<()> {
+        task.reconciliations.push(Reconciliation {
+            stage: stage.into(),
+            from: from.into(),
+            to: to.into(),
+            at: now(),
+        });
+        self.save_task(task)?;
+        self.store.event(
+            &task.id,
+            "reconciliation",
+            &format!("Default branch moved from {from} to {to}: {stage}"),
+        )
     }
 
     async fn run_executor(

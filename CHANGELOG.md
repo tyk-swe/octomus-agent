@@ -22,10 +22,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - PR feedback in grounding: review decisions, check-run status, mergeability and
   recent comments of owned PRs are recorded, shown in the dashboard and prioritized
   as feedback targets during discovery and consolidation.
+- Default-branch reconciliation: unpublished new-branch work is rebased onto a moved
+  default branch (bounded by `max_reconciliations`) and re-reviewed instead of
+  blocking; existing-PR work refreshes its recorded context; conflicts still block.
 
 ### Changed
 
 - Dashboard builds precede Rust builds; `--assets` is an explicit override.
+- A task whose default branch moved before execution adopts the new revision instead
+  of failing with "cancel and rediscover"; set `max_reconciliations` to 0 to restore
+  the previous blocking behavior.
 - Operator checklist moved to `docs/operations.md`; README starts with installation
   and first-run guidance.
 

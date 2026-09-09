@@ -22,6 +22,7 @@ export type Config = {
   max_repair_rounds: number;
   max_no_progress_rounds: number;
   max_retries: number;
+  max_reconciliations: number;
   session_timeout_seconds: number;
   task_timeout_seconds: number;
   command_timeout_seconds: number;
@@ -79,17 +80,20 @@ export type ReviewRound = {
     findings: { title: string; file: string; detail: string; priority: string }[];
   };
 };
+export type Reconciliation = { stage: string; from: string; to: string; at: string };
 export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   proposal: Proposal;
   route: Route;
   source_revision: string;
   comparison_base: string;
+  default_revision: string;
   workspace: string;
   output_commit: string | null;
   execution_session: string | null;
   repair_session: string | null;
   sessions: Session[];
   reviews: ReviewRound[];
+  reconciliations: Reconciliation[];
   attempts: number;
   verification: {
     command: string;

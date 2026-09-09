@@ -163,7 +163,9 @@ A later execution cycle plans afresh, rather than executing an old audit result.
 Each task has its own execution thread and checkout. Every code review uses a
 **fresh reviewer** and the **complete accumulated diff**. Repairs use one
 **persistent repair thread** per task. Configured verification must pass on the
-reviewed revision before Rust publishes or updates a PR. Interrupted work and
+reviewed revision before Rust publishes or updates a PR. When the default branch
+moves during a task, unpublished work is rebased onto it (a bounded number of
+times) and reviewed and verified again; conflicts block with the workspace kept. Interrupted work and
 publication are reconciled from durable state. See [architecture](docs/architecture.md).
 
 ## What a day costs

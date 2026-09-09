@@ -118,6 +118,49 @@ fn pr_feedback_is_summarized_and_bounded() {
 }
 
 #[test]
+fn reconciliations_load_from_legacy_tasks_and_count_only_extra_reviews() {
+    use octomus_agent::model::{Reconciliation, ReviewRound, Task};
+    let review = |revision: &str| ReviewRound {
+        session_id: "s".into(),
+        revision: revision.into(),
+        comparison_base: "a".repeat(40),
+        result: octomus_agent::model::Review {
+            completed: true,
+            summary: "clean".into(),
+            findings: vec![],
+        },
+        created_at: "2026-01-01T00:00:00Z".into(),
+    };
+    let mut legacy = json!({
+        "id":"t","cycle_id":"c","proposal":proposal("t"),"status":"queued","route":Route::new("m","low"),
+        "config":Config::default(),"source_revision":"a".repeat(40),"comparison_base":"","default_revision":"a".repeat(40),
+        "branch":"octomus/t","workspace":"","execution_session":null,"repair_session":null,"sessions":[],"reviews":[],
+        "verification":[],"output_commit":null,"pr_number":null,"pr_url":null,"attempts":0,"error":null,
+        "created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
+    });
+    let mut task: Task = serde_json::from_value(legacy.clone()).unwrap();
+    assert!(task.reconciliations.is_empty() && task.review_rounds() == 0 && task.rebases() == 0);
+    task.reviews = vec![review("1"), review("2"), review("3")];
+    let entry = |stage: &str| Reconciliation {
+        stage: stage.into(),
+        from: "a".repeat(40),
+        to: "b".repeat(40),
+        at: "2026-01-01T00:00:00Z".into(),
+    };
+    task.reconciliations = vec![
+        entry("initialization"),
+        entry("pre_review"),
+        entry("default_refresh"),
+    ];
+    assert_eq!((task.review_rounds(), task.rebases()), (3, 1));
+    task.reconciliations.push(entry("pre_publication"));
+    assert_eq!((task.review_rounds(), task.rebases()), (2, 2));
+    legacy["reconciliations"] = serde_json::to_value(&task.reconciliations).unwrap();
+    let saved: Task = serde_json::from_value(legacy).unwrap();
+    assert_eq!(saved.reconciliations, task.reconciliations);
+}
+
+#[test]
 fn proposal_dependencies_require_delivered_code_and_no_cycles() {
     let c = Config::default();
     let g = grounding();

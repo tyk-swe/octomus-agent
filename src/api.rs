@@ -314,6 +314,7 @@ async fn task_action(
             t.config.session_timeout_seconds = config.session_timeout_seconds;
             t.config.max_sessions_per_day = config.max_sessions_per_day;
             t.config.max_workspace_bytes = config.max_workspace_bytes;
+            t.config.max_reconciliations = config.max_reconciliations;
             s.app.save_task(&mut t)?;
         }
         _ => {

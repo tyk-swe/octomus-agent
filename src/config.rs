@@ -61,6 +61,7 @@ pub struct Config {
     pub max_repair_rounds: usize,
     pub max_no_progress_rounds: usize,
     pub max_retries: usize,
+    pub max_reconciliations: usize,
     pub session_timeout_seconds: u64,
     pub task_timeout_seconds: u64,
     pub command_timeout_seconds: u64,
@@ -106,6 +107,7 @@ impl Default for Config {
             max_repair_rounds: 4,
             max_no_progress_rounds: 2,
             max_retries: 2,
+            max_reconciliations: 3,
             session_timeout_seconds: 1800,
             task_timeout_seconds: 14400,
             command_timeout_seconds: 600,
@@ -141,6 +143,10 @@ impl Config {
             "Repair limits must be positive (at most 20 rounds)"
         );
         ensure!(self.max_retries <= 10, "Retry limit must be at most 10");
+        ensure!(
+            self.max_reconciliations <= 10,
+            "Reconciliation limit must be at most 10"
+        );
         ensure!(
             (30..=604800).contains(&self.cycle_interval_seconds)
                 && (1..=10000).contains(&self.maintenance_every_cycles),
@@ -283,6 +289,18 @@ mod tests {
         };
         c.validate(false).unwrap();
         c.operator_guidance = "x".repeat(4001);
+        assert!(c.validate(false).is_err());
+    }
+    #[test]
+    fn reconciliation_limit_defaults_and_bounds() {
+        let legacy: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.max_reconciliations, 3);
+        let mut c = Config {
+            max_reconciliations: 0,
+            ..Config::default()
+        };
+        c.validate(false).unwrap();
+        c.max_reconciliations = 11;
         assert!(c.validate(false).is_err());
     }
     #[test]

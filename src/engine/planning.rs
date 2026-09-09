@@ -452,6 +452,7 @@ impl App {
                 error: None,
                 created_at: now(),
                 updated_at: now(),
+                reconciliations: vec![],
             });
         }
         // Commit the successful cycle and its complete queue as one durable transaction.

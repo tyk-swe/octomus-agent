@@ -128,6 +128,74 @@ pub async fn snapshot(
     }
     git(c, path, &["rev-parse", "HEAD"], cancel).await
 }
+/// Rebases the detached workspace HEAD onto a moved default-branch revision. A conflict
+/// aborts the rebase, restores the previous HEAD and fails so the workspace stays inspectable.
+pub async fn rebase_onto(
+    c: &Config,
+    workspace: &Path,
+    revision: &str,
+    cancel: &CancellationToken,
+) -> Result<String> {
+    ensure!(
+        clean(c, workspace, cancel).await?,
+        "Workspace must be clean before reconciliation"
+    );
+    let before = git(c, workspace, &["rev-parse", "HEAD"], cancel).await?;
+    // The trusted configured checkout already fetched the remote; take the revision from it.
+    git(
+        c,
+        workspace,
+        &[
+            "fetch",
+            "--no-tags",
+            c.repository.to_str().context("Non UTF-8 repository path")?,
+            &format!("refs/remotes/origin/{}", c.default_branch),
+        ],
+        cancel,
+    )
+    .await?;
+    ensure!(
+        git(c, workspace, &["rev-parse", "FETCH_HEAD"], cancel).await? == revision,
+        "Default branch moved again during reconciliation; retry"
+    );
+    let rebase = git(
+        c,
+        workspace,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "rebase.autoStash=false",
+            "rebase",
+            revision,
+        ],
+        cancel,
+    )
+    .await;
+    if let Err(error) = rebase {
+        let _ = git(c, workspace, &["rebase", "--abort"], cancel).await;
+        ensure!(
+            git(c, workspace, &["rev-parse", "HEAD"], cancel).await? == before
+                && clean(c, workspace, cancel).await?,
+            "Rebase abort left the workspace inconsistent; inspect before retrying"
+        );
+        anyhow::bail!(
+            "Rebase onto the moved default branch {revision} conflicted; workspace preserved at {before}: {error:#}"
+        );
+    }
+    ensure!(
+        clean(c, workspace, cancel).await?,
+        "Rebase left uncommitted changes"
+    );
+    git(
+        c,
+        workspace,
+        &["merge-base", "--is-ancestor", revision, "HEAD"],
+        cancel,
+    )
+    .await?;
+    git(c, workspace, &["rev-parse", "HEAD"], cancel).await
+}
 pub async fn clean(c: &Config, path: &Path, cancel: &CancellationToken) -> Result<bool> {
     Ok(git(c, path, &["status", "--porcelain"], cancel)
         .await?

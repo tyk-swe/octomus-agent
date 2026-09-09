@@ -115,6 +115,17 @@
             <dt>Operator retries</dt>
             <dd>{task.attempts}</dd>
           </div>
+          {#if task.reconciliations?.length}
+            <div class="full">
+              <dt>Default-branch reconciliations</dt>
+              <dd>
+                {#each task.reconciliations as r}<div>
+                    {r.stage.replace('_', ' ')} · <code>{r.from.slice(0, 8)}</code> →
+                    <code>{r.to.slice(0, 8)}</code>
+                  </div>{/each}
+              </dd>
+            </div>
+          {/if}
         </dl>
         <h3>Execution prompt</h3>
         <pre class="prompt">{task.proposal.prompt}</pre>
