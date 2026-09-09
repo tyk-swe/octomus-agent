@@ -226,7 +226,7 @@ impl Config {
         );
         ensure!(
             crate::notify::valid_url(&self.notification_url),
-            "Notification URL must be empty or an http(s) URL of at most 2048 characters without credentials"
+            "Notification URL must be empty or an http(s) URL of at most 2048 characters without user information"
         );
         if ready {
             for role in ["orchestrator", "discovery", "proposal_reviewer"] {

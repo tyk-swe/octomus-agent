@@ -243,9 +243,19 @@ def scenario(mode):
                     prerequisite = next(t for t in all_tasks if not t['proposal']['dependencies'])
                     assert followup['source_revision'] == prerequisite['output_commit']
                     assert (Path(followup['workspace']) / 'feature.txt').read_text().strip() == 'fixed'
-            if mode in ['malformed-review', 'incomplete-review', 'remote-conflict', 'failed-verification', 'interactive', 'main-conflict']:
+            if mode in ['malformed-review', 'incomplete-review', 'remote-conflict', 'failed-verification', 'interactive', 'main-conflict', 'main-absorbed']:
                 assert task['status'] == 'blocked', task
                 assert not (root / 'publications.jsonl').exists(), 'Unresolved work must not publish'
+                if mode == 'main-absorbed':
+                    # The rebase dropped the executor's patch because main already carried it: nothing to publish.
+                    external = (root / 'external-revision').read_text()
+                    assert 'no net changes against the moved default branch' in task['error'], task['error']
+                    assert [(r['stage'], r['to']) for r in task['reconciliations']] == [('pre_review', external)]
+                    assert task['output_commit'] is None and task['reviews'] == []
+                    assert git('rev-parse', 'HEAD', cwd=task['workspace']) == external == task['source_revision']
+                    assert git('rev-parse', 'main', cwd=root / 'remote.git') == external
+                    assert git('for-each-ref', 'refs/heads', cwd=root / 'remote.git').count('\n') == 0, 'No branch may be pushed'
+                    assert not any(p['prompt'].startswith('Perform a fresh code review') for p in map(json.loads, (root / 'protocol.jsonl').read_text().splitlines()))
                 if mode == 'main-conflict':
                     # The rebase conflicted: nothing rebased, the workspace is intact and main is untouched.
                     external = (root / 'external-revision').read_text()
@@ -503,7 +513,7 @@ def audit_scenario(mode):
 
 if __name__ == '__main__':
     import sys
-    modes = ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'existing-pr-feedback', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'main-moved', 'main-moved-late', 'main-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']
+    modes = ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'existing-pr-feedback', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'main-moved', 'main-moved-late', 'main-conflict', 'main-absorbed', 'idle', 'interrupt-publication', 'closed-after-publication']
     # Optional focused run while developing: python3 tests/e2e.py normal failed-verification audit-accepted
     selected = sys.argv[1:]
     for mode in [m for m in modes if not selected or m in selected]:

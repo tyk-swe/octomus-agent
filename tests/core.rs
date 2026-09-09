@@ -73,6 +73,21 @@ fn pr_feedback_is_summarized_and_bounded() {
         review_decision(&[json!({"user":{"login":"a"},"state":"DISMISSED"})]),
         "none"
     );
+    // A later comment-only review neither approves nor withdraws an earlier decision.
+    assert_eq!(
+        review_decision(&[
+            json!({"user":{"login":"a"},"state":"CHANGES_REQUESTED"}),
+            json!({"user":{"login":"a"},"state":"COMMENTED"}),
+        ]),
+        "changes_requested"
+    );
+    assert_eq!(
+        review_decision(&[
+            json!({"user":{"login":"a"},"state":"APPROVED"}),
+            json!({"user":{"login":"a"},"state":"COMMENTED"}),
+        ]),
+        "approved"
+    );
     assert_eq!(ci_status(&[]), ("none".into(), vec![]));
     assert_eq!(
         ci_status(&[
@@ -84,6 +99,10 @@ fn pr_feedback_is_summarized_and_bounded() {
     assert_eq!(
         ci_status(&[json!({"name":"lint","status":"queued"})]).0,
         "pending"
+    );
+    assert_eq!(
+        ci_status(&[json!({"name":"old","status":"completed","conclusion":"stale"})]),
+        ("failure".into(), vec!["old".into()])
     );
     assert_eq!(
         ci_status(&[json!({"name":"lint","status":"completed","conclusion":"success"})]).0,

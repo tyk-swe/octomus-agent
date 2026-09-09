@@ -63,6 +63,14 @@ impl App {
         loop {
             let mut revision =
                 git::snapshot(&config, &workspace, &task.proposal.title, cancel).await?;
+            // Rebase before reviewing so the review covers the code that will be published.
+            if self
+                .reconcile_default_branch(task, Some("pre_review"), cancel)
+                .await?
+            {
+                revision = git::git(&config, &workspace, &["rev-parse", "HEAD"], cancel).await?;
+            }
+            // Checked after any rebase: a moved default branch may already contain the change.
             ensure!(
                 revision != task.source_revision
                     && !git::git(
@@ -73,15 +81,12 @@ impl App {
                     )
                     .await?
                     .is_empty(),
-                "Executor produced no net changes; task cannot be published"
+                if task.rebases() > 0 {
+                    "Executor produced no net changes against the moved default branch; the improvement may already be present. Task cannot be published"
+                } else {
+                    "Executor produced no net changes; task cannot be published"
+                }
             );
-            // Rebase before reviewing so the review covers the code that will be published.
-            if self
-                .reconcile_default_branch(task, Some("pre_review"), cancel)
-                .await?
-            {
-                revision = git::git(&config, &workspace, &["rev-parse", "HEAD"], cancel).await?;
-            }
             ensure!(
                 task.review_rounds() < config.max_repair_rounds + 1,
                 "Review/repair round limit exhausted; unresolved work is preserved"

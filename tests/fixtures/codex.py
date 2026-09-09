@@ -34,8 +34,9 @@ def move_main(marker):
         return
     import subprocess
     checkout = root / 'checkout'
-    name = 'feature.txt' if marker == 'main-conflict' else 'external.txt'
-    (checkout / name).write_text('external\n')
+    # main-conflict lands a different feature.txt; main-absorbed lands the executor's exact patch.
+    name = 'feature.txt' if marker in ['main-conflict', 'main-absorbed'] else 'external.txt'
+    (checkout / name).write_text('needs repair\n' if marker == 'main-absorbed' else 'external\n')
     run = lambda *args: subprocess.check_output(['/usr/bin/git', *args], cwd=checkout, text=True).strip()
     run('add', name)
     run('-c', 'user.name=External', '-c', 'user.email=external@example.com', 'commit', '-m', 'External work on main')
@@ -111,6 +112,7 @@ for line in sys.stdin:
             (cwd / feature_file).write_text('needs repair\n')
             move_main('main-moved')
             move_main('main-conflict')
+            move_main('main-absorbed')
             answer = 'Implemented feature.txt. Relevant verification is pending.'
         elif prompt.startswith('Perform a fresh code review'):
             if (root / 'malformed-review').exists():

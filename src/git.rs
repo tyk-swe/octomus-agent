@@ -173,10 +173,13 @@ pub async fn rebase_onto(
     )
     .await;
     if let Err(error) = rebase {
-        let _ = git(c, workspace, &["rebase", "--abort"], cancel).await;
+        // Cleanup must run even when the task token was cancelled mid-rebase; the command
+        // timeout still bounds it.
+        let cleanup = CancellationToken::new();
+        let _ = git(c, workspace, &["rebase", "--abort"], &cleanup).await;
         ensure!(
-            git(c, workspace, &["rev-parse", "HEAD"], cancel).await? == before
-                && clean(c, workspace, cancel).await?,
+            git(c, workspace, &["rev-parse", "HEAD"], &cleanup).await? == before
+                && clean(c, workspace, &cleanup).await?,
             "Rebase abort left the workspace inconsistent; inspect before retrying"
         );
         anyhow::bail!(
@@ -274,7 +277,8 @@ async fn feedback(c: &Config, pr: &mut PullRequest, cancel: &CancellationToken) 
     pr.comments = comments(&review_comments, &issue_comments);
     Ok(())
 }
-/// Latest non-pending, non-dismissed state per reviewer; requested changes outrank approval.
+/// Latest actionable state per reviewer; requested changes outrank approval. A comment-only
+/// review neither approves nor withdraws an earlier decision, so it counts only on its own.
 pub fn review_decision(reviews: &[Value]) -> String {
     let mut latest: BTreeMap<&str, &str> = BTreeMap::new();
     for review in reviews {
@@ -283,8 +287,14 @@ pub fn review_decision(reviews: &[Value]) -> String {
         else {
             continue;
         };
-        if !matches!(state, "PENDING" | "DISMISSED") {
-            latest.insert(login, state);
+        match state {
+            "APPROVED" | "CHANGES_REQUESTED" => {
+                latest.insert(login, state);
+            }
+            "COMMENTED" => {
+                latest.entry(login).or_insert(state);
+            }
+            _ => {}
         }
     }
     for (state, decision) in [
@@ -315,6 +325,7 @@ pub fn ci_status(check_runs: &[Value]) -> (String, Vec<String>) {
                             | "cancelled"
                             | "action_required"
                             | "startup_failure"
+                            | "stale"
                     )
                 })
         })

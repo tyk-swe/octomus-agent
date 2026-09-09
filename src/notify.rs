@@ -9,12 +9,22 @@ use tokio_util::sync::CancellationToken;
 
 pub const DELIVERY_TIMEOUT_SECONDS: u64 = 10;
 
+/// Empty, or an http(s) URL of bounded length whose authority carries no user information.
 pub fn valid_url(url: &str) -> bool {
-    url.is_empty()
-        || (url.len() <= 2048
-            && (url.starts_with("https://") || url.starts_with("http://"))
-            && !url.chars().any(|c| c.is_whitespace() || c.is_control())
-            && crate::store::redact(url) == url)
+    if url.is_empty() {
+        return true;
+    }
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    url.len() <= 2048
+        && !authority.is_empty()
+        && !authority.contains('@')
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 pub fn payload(event: &str, repository: &str, detail: Value) -> Value {
@@ -134,8 +144,13 @@ mod tests {
         assert!(valid_url(""));
         assert!(valid_url("https://127.0.0.1:1/hook"));
         assert!(valid_url("http://ntfy.internal/octomus"));
+        assert!(valid_url("https://host"));
+        assert!(valid_url("https://host/hook?token=1"));
         assert!(!valid_url("ftp://x"));
+        assert!(!valid_url("https://"));
         assert!(!valid_url("https://u:p@host/hook"));
+        assert!(!valid_url("https://user@example.com/hook"));
+        assert!(!valid_url("http://@host/x"));
         assert!(!valid_url("https://host/hook with space"));
         assert!(!valid_url(&format!("https://h/{}", "a".repeat(2048))));
     }
