@@ -174,6 +174,24 @@ def scenario(mode):
                 task = service.wait(service.terminal_task, 'recovered publication')
                 assert task['status'] == 'published', task['error']
             task = service.wait(service.terminal_task, 'task completion')
+            if mode == 'failed-executor-start':
+                assert task['status'] == 'blocked' and task['execution_session'] is None, task
+                assert 'Fixture failed start' in task['error'], task['error']
+                report = usage_report(root)
+                assert sum(a['role'] == 'executor' for a in report['admissions']) == 1
+                assert not (root / 'publications.jsonl').exists()
+                service.request('/control/pause', 'POST')
+                service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'failed executor stopped')
+                (root / mode).unlink()
+                service.request(f'/tasks/{task["id"]}/retry', 'POST')
+                service.request('/control/resume', 'POST')
+                task = service.wait(service.terminal_task, 'executor initialization retry')
+                assert task['status'] == 'published', task['error']
+                report = usage_report(root)
+                assert sum(a['role'] == 'executor' for a in report['admissions']) == 2, report
+                assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+                print('PASS failed-executor-start: retry initialization reserves exactly one new admission')
+                return
             if mode in ['parallel', 'dependencies']:
                 service.wait(lambda: len([t for t in service.request('/state')['tasks'] if t['status'] == 'published']) == 2, 'both tasks delivered')
                 all_tasks = [service.request(f'/tasks/{t["id"]}') for t in service.request('/state')['tasks']]
@@ -252,6 +270,45 @@ def scenario(mode):
                 assert json.loads(diagnostic.stdout)['warnings']
                 assert 'mismatch' in diagnostic.stderr
             print(f'PASS {mode}: complete reviewed delivery with no duplicate PRs')
+        finally:
+            service.stop()
+            service.log.close()
+
+
+def missing_session_scenario(role):
+    import sqlite3
+    with tempfile.TemporaryDirectory(prefix=f'octomus-missing-{role}-') as tmp:
+        root = Path(tmp)
+        setup(root)
+        marker = root / ('interactive' if role == 'executor' else 'interactive-repair')
+        marker.touch()
+        service = Service(root)
+        try:
+            service.start()
+            service.configure()
+            task = service.wait(service.terminal_task, f'{role} interrupted')
+            assert task['status'] == 'blocked' and 'interactive input' in task['error'], task
+            service.request('/control/pause', 'POST')
+            service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'paused task')
+            service.stop()
+            thread = task['execution_session' if role == 'executor' else 'repair_session']
+            assert thread and any(s['id'] == thread for s in task['sessions'])
+            task['sessions'] = [s for s in task['sessions'] if s['id'] != thread]
+            # Corrupt only this stopped, temporary fixture's saved task snapshot.
+            with sqlite3.connect(root / '.octomus/state.db') as db:
+                db.execute("UPDATE records SET data=? WHERE kind='task' AND id=?", (json.dumps(task), task['id']))
+            marker.unlink()
+            service.start()
+            service.request(f'/tasks/{task["id"]}/retry', 'POST')
+            service.request('/control/resume', 'POST')
+            task = service.wait(service.terminal_task, 'missing session blocked')
+            assert task['status'] == 'blocked', task
+            assert f'missing its {role} session record' in task['error'], task['error']
+            assert thread in task['error'] and task['id'] in task['error']
+            service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'runtime task released')
+            assert Path(task['workspace']).is_dir()
+            assert not (root / 'publications.jsonl').exists()
+            print(f'PASS missing-{role}-session: blocked with context, runtime released, no publication')
         finally:
             service.stop()
             service.log.close()
@@ -352,8 +409,11 @@ def audit_scenario(mode):
 
 
 if __name__ == '__main__':
-    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']:
+    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']:
         scenario(mode)
+
+    for role in ['executor', 'repair']:
+        missing_session_scenario(role)
 
     for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']:
         audit_scenario(mode)

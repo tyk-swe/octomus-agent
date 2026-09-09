@@ -51,7 +51,8 @@ for line in sys.stdin:
     elif method == 'model/list':
         result = {'data': [{'model': m, 'displayName': m, 'supportedReasoningEfforts': [{'reasoningEffort': e} for e in ['low', 'medium', 'high', 'xhigh', 'max']]} for m in ['gpt-6-astra', 'gpt-5.6-luna']], 'nextCursor': None}
     elif method in ['thread/start', 'thread/resume']:
-        if (root / 'failed-start').exists():
+        executor_start_failed = (root / 'failed-executor-start').exists() and method == 'thread/start' and Path(params['cwd']) == root / '.octomus'
+        if (root / 'failed-start').exists() or executor_start_failed:
             emit({'id': request['id'], 'error': {'code': -32000, 'message': 'Fixture failed start'}})
             continue
         identity = params.get('threadId') or str(uuid.uuid4())
@@ -66,7 +67,7 @@ for line in sys.stdin:
         file = threads / f'{identity}.json'
         thread = json.loads(file.read_text())
         prompt = params['input'][0]['text']
-        if (root / 'interactive').exists() and prompt.startswith('Implement this accepted'):
+        if ((root / 'interactive').exists() and prompt.startswith('Implement this accepted')) or ((root / 'interactive-repair').exists() and prompt.startswith('Repair actionable')):
             emit({'id': 'interactive-1', 'method': 'item/tool/requestUserInput', 'params': {'threadId': identity}})
             reply = json.loads(next(sys.stdin))
             assert reply['id'] == 'interactive-1' and 'error' in reply

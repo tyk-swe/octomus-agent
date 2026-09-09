@@ -26,7 +26,9 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 | `src/codex.rs` | App-server handshake, model catalog, thread start/resume, correlated RPC/events, structured results |
 | `src/process.rs` | Bounded output capture, timeouts, cancellation and process-group ownership |
 | `src/git.rs` | Source snapshots, owned PR context, immutable review commits, revision leases, idempotent delivery |
-| `src/engine.rs` | Grounding, discovery, proposal challenges, task scheduling, review/repair, recovery, retention |
+| `src/engine.rs` | Application state, scheduling, recovery, readiness, admission limits and retention |
+| `src/engine/planning.rs` | Grounding, discovery, proposal challenges, consolidation and atomic queue creation |
+| `src/engine/execution.rs` | Workspace initialization, executor turns, review/repair, verification and publication |
 | `src/api.rs` | Operator authentication, configuration, observation and controls |
 | `web/src` | Responsive Svelte/TypeScript dashboard |
 
