@@ -15,6 +15,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Dependency audits, distribution/audit coverage and community contribution files.
 - Configurable repair routes, CLI version diagnostics, durable admission accounting
   and read-only usage reports for live commissioning preparation.
+- Operator guidance: optional configuration text injected into grounding, discovery,
+  adversarial review and consolidation prompts as authoritative operator policy.
 
 ### Changed
 

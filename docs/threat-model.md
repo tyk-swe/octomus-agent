@@ -27,6 +27,10 @@ and checks branch ownership, reviewed revisions, verification and remote leases.
 Those workflow checks do not prevent a malicious process from directly using the
 service user's credentials or changing files it can access.
 
+Operator guidance saved in configuration is appended to planning prompts as
+authoritative policy. It is prompt text: it steers planning agents but is not a
+security boundary, and an injected instruction can still contradict it.
+
 An audit runs planning only: the orchestrator queues no tasks and invokes no
 publication operation. It still spends model allowance, fetches repositories,
 creates clones and invokes unsandboxed agents. Planning worktree checks detect

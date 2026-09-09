@@ -17,6 +17,7 @@ import urllib.request
 PROJECT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'target/debug/octomus-agent')))
 TOKEN = 'fixture-operator-token-with-at-least-32-characters'
+GUIDANCE = 'Fixture guidance: prefer minimal, well-verified changes.'
 
 
 def git(*args, cwd):
@@ -64,7 +65,7 @@ class Service:
 
     def configure(self):
         config = self.request('/config')
-        config.update(repository=str(self.root / 'checkout'), github_repo='fixture/project', cycle_interval_seconds=3600, verification_commands=['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], session_timeout_seconds=30, task_timeout_seconds=120, command_timeout_seconds=10)
+        config.update(repository=str(self.root / 'checkout'), github_repo='fixture/project', cycle_interval_seconds=3600, verification_commands=['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], session_timeout_seconds=30, task_timeout_seconds=120, command_timeout_seconds=10, operator_guidance=GUIDANCE)
         if (self.root / 'failed-verification').exists():
             config['verification_commands'] = ['false']
         for role in config['roles']:
@@ -252,6 +253,10 @@ def scenario(mode):
             assert len([p for p in protocol if p['prompt'].startswith('Adversarial proposal')]) == 2
             assert len({p['thread'] for p in protocol if p['prompt'].startswith('Repair actionable')}) == (2 if mode in ['parallel', 'dependencies'] else 1)
             assert all(p['sandbox'] == {'type': 'dangerFullAccess'} and p['approval'] == 'never' for p in protocol)
+            # Operator guidance reaches every planning role as authoritative policy, but never the workers directly.
+            planning = [p['prompt'] for p in protocol if p['prompt'].startswith(('Ground this repository', 'Discover worthwhile', 'Adversarial proposal', 'Act as final orchestrator'))]
+            assert len(planning) == 13 and all('Operator guidance (authoritative operator policy' in p and GUIDANCE in p for p in planning)
+            assert not any(GUIDANCE in p['prompt'] for p in protocol if p['prompt'].startswith(('Implement this accepted task', 'Perform a fresh code review', 'Repair actionable')))
             report = usage_report(root)
             expected_tasks = 2 if mode in ['parallel', 'dependencies'] else 1
             assert len(report['admissions']) == 13 + 6 * expected_tasks
@@ -409,8 +414,14 @@ def audit_scenario(mode):
 
 
 if __name__ == '__main__':
-    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']:
+    import sys
+    modes = ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']
+    # Optional focused run while developing: python3 tests/e2e.py normal failed-verification
+    selected = sys.argv[1:]
+    for mode in [m for m in modes if not selected or m in selected]:
         scenario(mode)
+    if selected:
+        sys.exit(0)
 
     for role in ['executor', 'repair']:
         missing_session_scenario(role)

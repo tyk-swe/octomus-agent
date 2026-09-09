@@ -10,6 +10,7 @@ export type Config = {
   repair_route: Route;
   categories: string[];
   verification_commands: string[];
+  operator_guidance: string;
   discovery_agents: number;
   execution_concurrency: number;
   cycle_interval_seconds: number;

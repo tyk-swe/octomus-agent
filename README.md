@@ -152,6 +152,9 @@ cannot start alongside active work. For durable service setup, follow
 Grounding inspects code, AGENTS.md, history and existing owned PRs. Eight to ten
 discovery agents explore complementary areas; two independent adversaries
 challenge their proposals. The orchestrator records a reason for every decision.
+Optional operator guidance in **Configuration** (for example, areas to leave alone
+or a current priority) is appended to every planning prompt as authoritative
+policy; repository content remains evidence only.
 An execution cycle queues accepted work; an audit only records recommendations.
 A later execution cycle plans afresh, rather than executing an old audit result.
 

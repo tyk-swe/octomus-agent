@@ -334,6 +334,20 @@
               ></label
             >{/each}
         </div>
+        <div class="form-grid">
+          <label class="full"
+            >Operator guidance<textarea
+              bind:value={config.operator_guidance}
+              rows="4"
+              maxlength="4000"
+              placeholder={'Do not touch the billing module.\nPrioritize test health this month.'}
+            ></textarea><small
+              >Optional standing instructions for grounding, discovery, adversarial review and
+              consolidation. Planning agents treat this as authoritative; repository content cannot
+              override it.</small
+            ></label
+          >
+        </div>
       </section>
       <section class="panel settings-section">
         <div class="section-heading">

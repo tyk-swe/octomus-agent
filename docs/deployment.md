@@ -60,7 +60,7 @@ ssh -N -L 4200:127.0.0.1:4200 your-host
 
 Open `http://127.0.0.1:4200` locally. If using a reverse proxy instead, provide TLS and an operator-controlled access boundary. The bearer token is still required. No CORS access is enabled. `/healthz` exposes only liveness and version; all operational data and controls require authentication.
 
-The dashboard starts paused. Configure the repository, explicit role routes, verification commands and host-appropriate limits, then run **Check connection** before enabling continuous work.
+The dashboard starts paused. Configure the repository, explicit role routes, verification commands and host-appropriate limits, then run **Check connection** before enabling continuous work. Optional operator guidance (up to 4000 characters) steers planning, for example excluded modules or a current priority; it is injected into planning prompts as authoritative policy.
 
 ## Controls and recovery
 

@@ -61,6 +61,7 @@ prerequisites first. The dashboard is built before Rust so cold clones can embed
 it. This is one verification command; all configured commands must pass on the
 reviewed revision before publication. Measure cold timings before changing limits.
 
+- [ ] Optionally enter operator guidance: short standing instructions for planning, such as areas to leave alone or a current priority. Keep it concise; it is appended to every planning prompt.
 - [ ] Choose enabled improvement categories, maintenance cadence, and resource/time limits appropriate to your host and account. Start with one concurrent task, one accepted task per cycle and a six-hour cycle interval for the initial live run. Discovery still requires 8–10 agents.
 - [ ] Confirm operation uses existing subscription allowance only and paid overage is disabled. Set the daily session budget, recognizing that admissions are not an allowance or dollar-spend cap.
 - [ ] Save configuration and run **Check connection**. Correct any reported configuration, authentication, or route errors.

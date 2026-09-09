@@ -49,6 +49,7 @@ pub struct Config {
     pub repair_route: Route,
     pub categories: Vec<String>,
     pub verification_commands: Vec<String>,
+    pub operator_guidance: String,
     pub discovery_agents: usize,
     pub execution_concurrency: usize,
     pub cycle_interval_seconds: u64,
@@ -92,6 +93,7 @@ impl Default for Config {
             repair_route: default_repair_route(),
             categories: CATEGORIES.map(String::from).to_vec(),
             verification_commands: vec![],
+            operator_guidance: String::new(),
             discovery_agents: 9,
             execution_concurrency: 2,
             cycle_interval_seconds: 1800,
@@ -210,6 +212,10 @@ impl Config {
                     .all(|c| !c.trim().is_empty() && c.len() <= 4096),
             "Invalid executable or verification commands"
         );
+        ensure!(
+            self.operator_guidance.chars().count() <= 4000,
+            "Operator guidance must be at most 4000 characters"
+        );
         if ready {
             for role in ["orchestrator", "discovery", "proposal_reviewer"] {
                 let route = &self.roles[role];
@@ -260,6 +266,18 @@ mod tests {
         assert!(c.validate(true).is_err());
         assert_eq!(c.tiers["XS"], Route::new("gpt-5.6-luna", "xhigh"));
         assert_eq!(c.tiers["XL"], Route::new("gpt-6-astra", "high"));
+    }
+    #[test]
+    fn operator_guidance_is_bounded_and_optional() {
+        let legacy: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.operator_guidance, "");
+        let mut c = Config {
+            operator_guidance: "Prefer small, well-verified changes.".into(),
+            ..Config::default()
+        };
+        c.validate(false).unwrap();
+        c.operator_guidance = "x".repeat(4001);
+        assert!(c.validate(false).is_err());
     }
     #[test]
     fn branch_validation() {

@@ -38,6 +38,8 @@ Each cycle records the remote default-branch revision, open prefixed PRs, their 
 
 The standard cycle runs nine discovery agents (configurable from eight to ten), followed by two adversarial reviewers and orchestrator consolidation. The final result must account for every original proposal ID, with a decision and reason. Accepted work needs project evidence, benefit, scope, a self-contained prompt, a supported tier, and an eligible target. Unknown dependencies, dependency cycles, duplicate accepted titles, and unowned targets are rejected by the core.
 
+Optional operator guidance (free text saved in configuration) is appended to the grounding, discovery, adversarial review and consolidation prompts as authoritative operator policy. It is the operator's steering channel; repository files, PR text and comments remain evidence only. It is prompt text, not a security boundary, and executor, review and repair prompts receive only what consolidation carried into each task prompt.
+
 Semantic value, overlapping ideas, and conflicting assessments are judged by the proposal reviewers and orchestrator; their results are recorded. The core cannot independently prove an idea's product value. Returning an empty task set is a successful idle cycle.
 
 Maintenance is prioritized at the configured cadence for the main project and PRs above the size/age thresholds. It follows the same proposal and delivery gates as feature work.
