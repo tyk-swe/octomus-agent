@@ -5,6 +5,7 @@ pub mod config;
 pub mod engine;
 pub mod git;
 pub mod model;
+pub mod notify;
 pub mod process;
 pub mod report;
 pub mod store;

@@ -10,6 +10,7 @@ GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
 - `src/codex.rs`: app-server protocol, exact model routes, unattended requests.
 - `src/config.rs`, `src/model.rs`, `src/store.rs`: policy, durable records, SQLite.
 - `src/report.rs`: read-only usage reporting; `src/api.rs`: authenticated controls.
+- `src/notify.rs`: best-effort webhook notifications through `curl`.
 - `src/git.rs`, `src/process.rs`: Git/GitHub publication and owned process groups.
 - `web/src`: dashboard, shared TypeScript types, settings and task evidence.
 - `tests/core.rs`, `tests/usage.rs`: Rust behavior tests; `tests/e2e.py` and

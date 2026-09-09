@@ -3,6 +3,7 @@
 No network writes, real Codex turns, credentials, or spending. Run after cargo build + web build.
 """
 import contextlib
+import http.server
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -33,6 +35,33 @@ class Service:
             sock.bind(('127.0.0.1', 0))
             self.port = sock.getsockname()[1]
         self.env = {**os.environ, 'OCTOMUS_TOKEN': TOKEN, 'OCTOMUS_FIXTURE': str(root), 'PATH': f'{root / "bin"}:{os.environ["PATH"]}'}
+        # A local webhook receiver: every configured notification lands here as parsed JSON.
+        self.notifications = []
+        service = self
+
+        class Receiver(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+                assert self.headers.get('Content-Type') == 'application/json' and TOKEN.encode() not in body
+                service.notifications.append(json.loads(body))
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self.receiver = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Receiver)
+        threading.Thread(target=self.receiver.serve_forever, daemon=True).start()
+        self.notification_url = f'http://127.0.0.1:{self.receiver.server_address[1]}/hook'
+
+    def notification(self, event):
+        return next((n for n in self.notifications if n['event'] == event), None)
+
+    def close(self):
+        self.stop()
+        self.log.close()
+        self.receiver.shutdown()
+        self.receiver.server_close()
 
     def start(self):
         self.process = subprocess.Popen([str(BINARY), '--data-dir', str(self.root / '.octomus'), '--listen', f'127.0.0.1:{self.port}', '--assets', str(PROJECT / 'web/build')], env=self.env, stdout=self.log, stderr=self.log)
@@ -65,7 +94,7 @@ class Service:
 
     def configure(self):
         config = self.request('/config')
-        config.update(repository=str(self.root / 'checkout'), github_repo='fixture/project', cycle_interval_seconds=3600, verification_commands=['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], session_timeout_seconds=30, task_timeout_seconds=120, command_timeout_seconds=10, operator_guidance=GUIDANCE)
+        config.update(repository=str(self.root / 'checkout'), github_repo='fixture/project', cycle_interval_seconds=3600, verification_commands=['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], session_timeout_seconds=30, task_timeout_seconds=120, command_timeout_seconds=10, operator_guidance=GUIDANCE, notification_url=self.notification_url)
         if (self.root / 'failed-verification').exists():
             config['verification_commands'] = ['false']
         for role in config['roles']:
@@ -146,6 +175,8 @@ def scenario(mode):
             service.configure()
             if mode == 'failed-start':
                 service.wait(lambda: (s := service.request('/state'))['cycles'] and s['cycles'][0]['status'] == 'failed', 'failed cycle start')
+                failed = service.wait(lambda: service.notification('cycle_failed'), 'cycle failure notification')
+                assert 'Fixture failed start' in failed['detail']['error'] and failed['repository'] == 'fixture/project'
                 report = usage_report(root)
                 assert len(report['admissions']) == 1
                 assert report['cycles'][0]['planning_admissions'] == 1
@@ -206,6 +237,9 @@ def scenario(mode):
             if mode in ['malformed-review', 'incomplete-review', 'remote-conflict', 'failed-verification', 'interactive']:
                 assert task['status'] == 'blocked', task
                 assert not (root / 'publications.jsonl').exists(), 'Unresolved work must not publish'
+                blocked = service.wait(lambda: service.notification('task_blocked'), 'blocked notification')
+                assert blocked['detail']['task_id'] == task['id'] and blocked['detail']['error'] == task['error']
+                assert service.notification('task_published') is None
                 if mode == 'interactive':
                     assert 'interactive input' in task['error']
                     # A retry retains the saved route despite an operator configuration change.
@@ -233,6 +267,9 @@ def scenario(mode):
                 print(f'PASS {mode}: blocked, never published, workspace retained')
                 return
             assert task['status'] == 'published', task['error']
+            published = service.wait(lambda: service.notification('task_published'), 'publication notification')
+            assert published['detail']['pr_url'] == task['pr_url'] and published['detail']['title'] == task['proposal']['title']
+            assert {n['event'] for n in service.notifications} <= {'task_published', 'task_blocked'}
             assert len(task['reviews']) == 3, task['reviews']
             assert len({r['session_id'] for r in task['reviews']}) == 3
             assert all(r['comparison_base'] == task['default_revision'] for r in task['reviews'])
@@ -276,8 +313,7 @@ def scenario(mode):
                 assert 'mismatch' in diagnostic.stderr
             print(f'PASS {mode}: complete reviewed delivery with no duplicate PRs')
         finally:
-            service.stop()
-            service.log.close()
+            service.close()
 
 
 def missing_session_scenario(role):
@@ -315,8 +351,7 @@ def missing_session_scenario(role):
             assert not (root / 'publications.jsonl').exists()
             print(f'PASS missing-{role}-session: blocked with context, runtime released, no publication')
         finally:
-            service.stop()
-            service.log.close()
+            service.close()
 
 
 def audit_scenario(mode):
@@ -342,7 +377,7 @@ def audit_scenario(mode):
                 service.start()
                 queued_before = service.request('/state')['tasks']
             c = service.request('/config')
-            c.update(repository=str(root / 'checkout'), github_repo='fixture/project', verification_commands=[], command_timeout_seconds=10, session_timeout_seconds=30, task_timeout_seconds=120)
+            c.update(repository=str(root / 'checkout'), github_repo='fixture/project', verification_commands=[], command_timeout_seconds=10, session_timeout_seconds=30, task_timeout_seconds=120, notification_url=service.notification_url)
             for role in ['orchestrator', 'discovery', 'proposal_reviewer']:
                 c['roles'][role] = {'model': 'gpt-6-astra', 'effort': 'medium'}
             c['roles']['code_reviewer'] = {'model': 'unavailable', 'effort': 'high'}
@@ -390,6 +425,10 @@ def audit_scenario(mode):
             if mode in ['accepted', 'queued']:
                 assert {p['decision'] for p in cycle['proposals']} == {'accepted', 'rejected', 'deferred'}
                 assert all(p['reason'] for p in cycle['proposals']) and len(cycle['assessments']) == 2
+                completed = service.wait(lambda: service.notification('audit_completed'), 'audit notification')
+                assert completed['detail']['cycle_id'] == cycle['id'] and (completed['detail']['accepted'], completed['detail']['rejected'], completed['detail']['deferred']) == (1, 1, 1)
+            if mode in ['budget', 'malformed', 'failed']:
+                assert service.wait(lambda: service.notification('audit_failed'), 'audit failure notification')['detail']['error'] == cycle['error']
             report = usage_report(root)
             row = next(c for c in report['cycles'] if c['id'] == cycle['id'])
             assert row['mode'] == 'audit' and row['task_admissions'] == 0
@@ -409,22 +448,21 @@ def audit_scenario(mode):
                 assert json.loads(diagnostic.stdout)['mode'] == 'audit'
             print(f'PASS audit-{mode}: durable decisions, paused queue, no publication')
         finally:
-            service.stop()
-            service.log.close()
+            service.close()
 
 
 if __name__ == '__main__':
     import sys
     modes = ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']
-    # Optional focused run while developing: python3 tests/e2e.py normal failed-verification
+    # Optional focused run while developing: python3 tests/e2e.py normal failed-verification audit-accepted
     selected = sys.argv[1:]
     for mode in [m for m in modes if not selected or m in selected]:
         scenario(mode)
-    if selected:
-        sys.exit(0)
 
     for role in ['executor', 'repair']:
-        missing_session_scenario(role)
+        if not selected or f'missing-{role}' in selected:
+            missing_session_scenario(role)
 
     for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']:
-        audit_scenario(mode)
+        if not selected or f'audit-{mode}' in selected:
+            audit_scenario(mode)

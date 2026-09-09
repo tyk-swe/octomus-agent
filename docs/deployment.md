@@ -13,7 +13,7 @@ make package
 
 Install `target/release/octomus-agent` (or the executable from a checksum-verified release archive) as `/usr/local/bin/octomus-agent`. The dashboard is embedded. Public release installation remains pending; see [distribution](distribution.md). Create an `octomus` OS account with a home directory at `/var/lib/octomus`, and make its home and target repository writable by that account. The binary must remain administrator-owned. The supplied unit expects `/srv/projects/octomus-agent` to exist. If using another target path (including the README example `/srv/projects/project`), change `ReadWritePaths` in a systemd override before starting.
 
-Install `git`, `gh`, and Codex for that account. Pin Codex CLI **0.153.4**, the tested protocol version. Authenticate Codex and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well. Ensure the unit's PATH includes their actual locations (including `/var/lib/octomus/.cargo/bin` when using rustup); a systemd service does not load the interactive shell's profile.
+Install `git`, `gh`, `curl` (used only for optional outbound notifications), and Codex for that account. Pin Codex CLI **0.153.4**, the tested protocol version. Authenticate Codex and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well. Ensure the unit's PATH includes their actual locations (including `/var/lib/octomus/.cargo/bin` when using rustup); a systemd service does not load the interactive shell's profile.
 
 Create `/etc/octomus/agent.env`, readable only by the administrator and service account, with a fresh random token:
 
@@ -61,6 +61,28 @@ ssh -N -L 4200:127.0.0.1:4200 your-host
 Open `http://127.0.0.1:4200` locally. If using a reverse proxy instead, provide TLS and an operator-controlled access boundary. The bearer token is still required. No CORS access is enabled. `/healthz` exposes only liveness and version; all operational data and controls require authentication.
 
 The dashboard starts paused. Configure the repository, explicit role routes, verification commands and host-appropriate limits, then run **Check connection** before enabling continuous work. Optional operator guidance (up to 4000 characters) steers planning, for example excluded modules or a current priority; it is injected into planning prompts as authoritative policy.
+
+## Notifications
+
+An optional **Notification URL** in configuration receives one JSON POST per
+operator-relevant event so an unattended host can reach you without an open
+dashboard. Events: `task_published`, `task_blocked`, `cycle_failed`,
+`audit_completed`, `audit_failed` and `service_paused` (the scheduler paused
+itself after an error). Each body has the shape:
+
+```json
+{"event":"task_published","at":"2026-09-09T12:00:00Z","repository":"owner/project",
+ "detail":{"task_id":"…","title":"…","branch":"octomus/…","pr_url":"https://github.com/…","pr_number":12,"error":null}}
+```
+
+Delivery uses the host's `curl` with a 10-second timeout, no redirects and one
+retry after five seconds. It is best effort: a final failure is recorded as a
+`notification` event in the activity log and never pauses or blocks work. Bodies
+pass through the same redaction as dashboard JSON and never include the
+operator token; the destination must be an `http(s)` URL without embedded
+credentials. Point it at a receiver you control (ntfy, a chat relay, a small
+webhook service) and allow that egress in the VM's network policy. Leave it empty
+to disable.
 
 ## Controls and recovery
 

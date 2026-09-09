@@ -83,7 +83,12 @@ agents from other data belonging to the service user. Do not grant that account
 sudo privileges. PrivateTmp does not disable temporary-file execution.
 
 Restrict egress using operator-managed VM/network policy and verify real login,
-clone and registry access. No application egress allowlist is enforced. Session
+clone and registry access. No application egress allowlist is enforced. The
+optional notification URL is an additional outbound destination chosen by the
+operator: it receives redacted task titles, error text, branch names and PR URLs
+over plain `curl` POSTs, never the operator token. Its receiver sees that
+summary, so treat it as operator-private and use HTTPS off-host. Delivery
+failures are logged and never change control state. Session
 admission limits are not dollar or subscription-allowance caps. Disk limits are
 checked before admission, not continuous filesystem quotas. Exhaustion, service
 compromise, credential misuse and malicious dependency code remain possible.

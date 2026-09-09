@@ -153,6 +153,7 @@ impl App {
                             control.paused = true;
                             let _ = self.store.put("settings", "control", &control);
                         }
+                        self.notify("service_paused", json!({"error": redact(&message)}));
                     }
                 }
             }
@@ -270,6 +271,12 @@ impl App {
                     let _ = app.store.event(&task.id, "error", &error);
                 }
                 app.runtime.lock().unwrap().tasks.remove(&task.id);
+                let detail = json!({"task_id":task.id,"title":task.proposal.title,"branch":task.branch,"pr_url":task.pr_url,"pr_number":task.pr_number,"error":task.error});
+                match task.status {
+                    Status::Published => app.notify("task_published", detail),
+                    Status::Blocked => app.notify("task_blocked", detail),
+                    _ => {}
+                }
             });
         }
         // Finish the current queue before the next planning cycle, so grounding includes its results.

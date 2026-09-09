@@ -6,7 +6,7 @@ Use this checklist to commission and operate a dedicated host. Repository tests 
 
 - [ ] Use a dedicated Linux VM for Octomus. Agents execute without a sandbox and have the service account's host permissions.
 - [ ] Create the `octomus` service account with home directory `/var/lib/octomus` if using the supplied systemd unit.
-- [ ] Install Git, GitHub CLI, Codex CLI 0.153.4, and your target project's build tools. Building Octomus requires Rust 1.88+, Node.js 22.12+, npm, and a C compiler. Its integration tests also require Python 3.
+- [ ] Install Git, GitHub CLI, curl (for optional outbound notifications), Codex CLI 0.153.4, and your target project's build tools. Building Octomus requires Rust 1.88+, Node.js 22.12+, npm, and a C compiler. Its integration tests also require Python 3.
 - [ ] Clone the repository you want Octomus to improve into a persistent path writable by the service account, such as `/srv/projects/octomus-agent`. Keep this checkout separate from the installed binary at `/usr/local/bin/octomus-agent`.
 
 ## 2. Connect your accounts
@@ -61,6 +61,7 @@ prerequisites first. The dashboard is built before Rust so cold clones can embed
 it. This is one verification command; all configured commands must pass on the
 reviewed revision before publication. Measure cold timings before changing limits.
 
+- [ ] Optionally set a notification URL that you control. Published and blocked tasks, failed cycles, completed audits and error pauses are posted there as JSON so you need not keep the dashboard open.
 - [ ] Optionally enter operator guidance: short standing instructions for planning, such as areas to leave alone or a current priority. Keep it concise; it is appended to every planning prompt.
 - [ ] Choose enabled improvement categories, maintenance cadence, and resource/time limits appropriate to your host and account. Start with one concurrent task, one accepted task per cycle and a six-hour cycle interval for the initial live run. Discovery still requires 8–10 agents.
 - [ ] Confirm operation uses existing subscription allowance only and paid overage is disabled. Set the daily session budget, recognizing that admissions are not an allowance or dollar-spend cap.

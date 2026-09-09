@@ -61,6 +61,7 @@
   ],
   "verification_commands": [],
   "operator_guidance": "",
+  "notification_url": "",
   "discovery_agents": 9,
   "execution_concurrency": 2,
   "cycle_interval_seconds": 1800,

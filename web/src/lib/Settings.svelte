@@ -250,6 +250,18 @@
               publication.</small
             ></label
           >
+          <label class="full"
+            >Notification URL<input
+              type="url"
+              bind:value={config.notification_url}
+              maxlength="2048"
+              placeholder="https://ntfy.example.com/octomus"
+            /><small
+              >Optional. Receives one JSON POST per published or blocked task, failed cycle,
+              completed audit and error pause. Best effort with one retry; never includes the
+              operator token.</small
+            ></label
+          >
         </div>
       </section>
       <section class="panel settings-section">

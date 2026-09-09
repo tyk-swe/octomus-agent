@@ -50,6 +50,7 @@ pub struct Config {
     pub categories: Vec<String>,
     pub verification_commands: Vec<String>,
     pub operator_guidance: String,
+    pub notification_url: String,
     pub discovery_agents: usize,
     pub execution_concurrency: usize,
     pub cycle_interval_seconds: u64,
@@ -94,6 +95,7 @@ impl Default for Config {
             categories: CATEGORIES.map(String::from).to_vec(),
             verification_commands: vec![],
             operator_guidance: String::new(),
+            notification_url: String::new(),
             discovery_agents: 9,
             execution_concurrency: 2,
             cycle_interval_seconds: 1800,
@@ -216,6 +218,10 @@ impl Config {
             self.operator_guidance.chars().count() <= 4000,
             "Operator guidance must be at most 4000 characters"
         );
+        ensure!(
+            crate::notify::valid_url(&self.notification_url),
+            "Notification URL must be empty or an http(s) URL of at most 2048 characters without credentials"
+        );
         if ready {
             for role in ["orchestrator", "discovery", "proposal_reviewer"] {
                 let route = &self.roles[role];
@@ -277,6 +283,18 @@ mod tests {
         };
         c.validate(false).unwrap();
         c.operator_guidance = "x".repeat(4001);
+        assert!(c.validate(false).is_err());
+    }
+    #[test]
+    fn notification_url_is_optional_and_validated() {
+        let legacy: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.notification_url, "");
+        let mut c = Config {
+            notification_url: "https://127.0.0.1:1/hook".into(),
+            ..Config::default()
+        };
+        c.validate(false).unwrap();
+        c.notification_url = "https://user:secret@example.com/hook".into();
         assert!(c.validate(false).is_err());
     }
     #[test]

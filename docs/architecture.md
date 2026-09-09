@@ -25,6 +25,7 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 | `src/report.rs` | Read-only snapshot export of daily usage, cycles, tasks and admission routes |
 | `src/codex.rs` | App-server handshake, model catalog, thread start/resume, correlated RPC/events, structured results |
 | `src/process.rs` | Bounded output capture, timeouts, cancellation and process-group ownership |
+| `src/notify.rs` | Best-effort redacted JSON webhook delivery for operator-relevant events |
 | `src/git.rs` | Source snapshots, owned PR context, immutable review commits, revision leases, idempotent delivery |
 | `src/engine.rs` | Application state, scheduling, recovery, readiness, admission limits and retention |
 | `src/engine/planning.rs` | Grounding, discovery, proposal challenges, consolidation and atomic queue creation |

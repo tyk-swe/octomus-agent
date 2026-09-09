@@ -111,6 +111,28 @@ impl App {
         .into();
         cycle.error = result.as_ref().err().map(|e| redact(&format!("{e:#}")));
         self.store.put("cycle", &cycle.id, &cycle)?;
+        let detail = json!({"cycle_id":cycle.id,"number":cycle.number,"mode":cycle.mode,"status":cycle.status,"error":cycle.error});
+        if cycle.error.is_some() {
+            self.notify(
+                if mode == CycleMode::Audit {
+                    "audit_failed"
+                } else {
+                    "cycle_failed"
+                },
+                detail,
+            );
+        } else if mode == CycleMode::Audit {
+            let mut detail = detail;
+            for decision in ["accepted", "rejected", "deferred"] {
+                detail[decision] = cycle
+                    .proposals
+                    .iter()
+                    .filter(|p| p.decision == decision)
+                    .count()
+                    .into();
+            }
+            self.notify("audit_completed", detail);
+        }
         result
     }
     async fn plan(

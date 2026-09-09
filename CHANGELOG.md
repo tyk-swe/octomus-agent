@@ -17,6 +17,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and read-only usage reports for live commissioning preparation.
 - Operator guidance: optional configuration text injected into grounding, discovery,
   adversarial review and consolidation prompts as authoritative operator policy.
+- Outbound notifications: an optional webhook URL receives redacted JSON events for
+  published/blocked tasks, failed cycles, audits and error pauses via `curl`.
 
 ### Changed
 
