@@ -4,7 +4,7 @@ This maps the PRD to implementation and automated evidence. Integration tests ru
 
 | PRD | Implementation / evidence |
 | --- | --- |
-| AC-01 | Recorded grounding includes current default revision and all open prefixed PRs; existing-PR integration scenario preserves earlier work. |
+| AC-01 | Recorded grounding includes current default revision and all open prefixed PRs; existing-PR integration scenario preserves earlier work. The feedback scenario records requested changes, a failing check, conflicts and redacted comments for an owned PR and names it as a feedback target in discovery and consolidation prompts. |
 | AC-02 | Configured 8–10 independent discovery sessions; integration suite asserts nine complementary prompts and separate workspaces. |
 | AC-03 | Both adversarial assessments and the final orchestrator decision are durable; proposal validation rejects duplicate accepted titles, missing context and invalid dependency graphs. |
 | AC-04 | Each queued task has a refined prompt, target, tier and snapshot of its exact route; unsupported effort test verifies no fallback. |
@@ -20,7 +20,7 @@ This maps the PRD to implementation and automated evidence. Integration tests ru
 | AC-14 | Crash after GitHub's creation side effect automatically reconciles the PR; a second scenario closes that PR before restart and verifies no duplicate is created. |
 | AC-15 | Rust controls app-server JSON RPC; SvelteKit builds into served assets; every fixture turn asserts no-sandbox/never-approve settings. Dedicated-host systemd packaging is included. |
 
-Additional checks cover concurrent daily-budget admission, cancelled process-group cleanup, API authentication/content-type enforcement, stale remote branch preservation, and default-branch dependency rejection.
+Additional checks cover concurrent daily-budget admission, cancelled process-group cleanup, API authentication/content-type enforcement, stale remote branch preservation, default-branch dependency rejection, operator guidance reaching every planning turn and no worker turn, and webhook notifications for published/blocked tasks, failed cycles and audits delivered to a local receiver.
 
 A real host must pass **Check connection** and an initial authenticated cycle before unattended commissioning. Automated fixtures cannot validate live model availability, quality of generated improvements, GitHub entitlements, or a target project's verification commands. These are operational acceptance checks, not replaced by the passing local suite.
 

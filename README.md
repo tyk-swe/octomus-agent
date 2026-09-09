@@ -149,7 +149,9 @@ cannot start alongside active work. For durable service setup, follow
 
 ## How it decides
 
-Grounding inspects code, AGENTS.md, history and existing owned PRs. Eight to ten
+Grounding inspects code, AGENTS.md, history and existing owned PRs, including
+their review state, check results, mergeability and recent comments, so
+requested changes, red CI or conflicts on an Octomus PR become work. Eight to ten
 discovery agents explore complementary areas; two independent adversaries
 challenge their proposals. The orchestrator records a reason for every decision.
 Optional operator guidance in **Configuration** (for example, areas to leave alone

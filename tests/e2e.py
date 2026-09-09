@@ -54,8 +54,8 @@ class Service:
         threading.Thread(target=self.receiver.serve_forever, daemon=True).start()
         self.notification_url = f'http://127.0.0.1:{self.receiver.server_address[1]}/hook'
 
-    def notification(self, event):
-        return next((n for n in self.notifications if n['event'] == event), None)
+    def notification(self, event, task_id=None):
+        return next((n for n in self.notifications if n['event'] == event and (task_id is None or n['detail']['task_id'] == task_id)), None)
 
     def close(self):
         self.stop()
@@ -148,7 +148,16 @@ def existing_pr(root):
     head = git('rev-parse', 'HEAD', cwd=checkout)
     git('checkout', 'main', cwd=checkout)
     (root / 'target').write_text('octomus/existing')
-    (root / 'prs.json').write_text(json.dumps([{'number': 42, 'title': 'An existing improvement', 'body': 'Existing context.\n<!-- octomus:task:earlier -->', 'head': {'ref': 'octomus/existing', 'sha': head, 'repo': {'full_name': 'fixture/project'}}, 'base': {'ref': 'main'}, 'html_url': 'https://github.com/fixture/project/pull/42', 'state': 'open', 'merged_at': None, 'additions': 2000, 'deletions': 0, 'created_at': '2026-08-01T00:00:00Z'}]))
+    pr = {'number': 42, 'title': 'An existing improvement', 'body': 'Existing context.\n<!-- octomus:task:earlier -->', 'head': {'ref': 'octomus/existing', 'sha': head, 'repo': {'full_name': 'fixture/project'}}, 'base': {'ref': 'main'}, 'html_url': 'https://github.com/fixture/project/pull/42', 'state': 'open', 'merged_at': None, 'additions': 2000, 'deletions': 0, 'created_at': '2026-08-01T00:00:00Z'}
+    if (root / 'existing-pr-feedback').exists():
+        # A maintainer asked for changes, one check is red and the branch conflicts with main.
+        pr.update(mergeable=False, mergeable_state='dirty')
+        (root / 'feedback.json').write_text(json.dumps({'42': {
+            'reviews': [{'user': {'login': 'maintainer'}, 'state': 'COMMENTED'}, {'user': {'login': 'maintainer'}, 'state': 'CHANGES_REQUESTED'}],
+            'review_comments': [{'user': {'login': 'maintainer'}, 'created_at': '2026-08-02T00:00:00Z', 'path': 'earlier.txt', 'body': 'Please also cover feature.txt. Token ghp_abcdefghijklmnop must not leak.'}],
+            'issue_comments': [{'user': {'login': 'maintainer'}, 'created_at': '2026-08-03T00:00:00Z', 'body': 'CI is red on this branch.'}],
+            'check_runs': [{'name': 'unit', 'status': 'completed', 'conclusion': 'failure'}, {'name': 'lint', 'status': 'completed', 'conclusion': 'success'}]}}))
+    (root / 'prs.json').write_text(json.dumps([pr]))
 
 
 def usage_report(root):
@@ -163,10 +172,10 @@ def scenario(mode):
     with tempfile.TemporaryDirectory(prefix=f'octomus-{mode}-') as tmp:
         root = Path(tmp)
         setup(root)
-        if mode in ['existing-pr', 'remote-conflict', 'dependencies']:
-            existing_pr(root)
         if mode != 'normal':
             (root / mode).touch()
+        if mode in ['existing-pr', 'existing-pr-feedback', 'remote-conflict', 'dependencies']:
+            existing_pr(root)
         if mode == 'closed-after-publication':
             (root / 'interrupt-publication').touch()
         service = Service(root)
@@ -237,8 +246,8 @@ def scenario(mode):
             if mode in ['malformed-review', 'incomplete-review', 'remote-conflict', 'failed-verification', 'interactive']:
                 assert task['status'] == 'blocked', task
                 assert not (root / 'publications.jsonl').exists(), 'Unresolved work must not publish'
-                blocked = service.wait(lambda: service.notification('task_blocked'), 'blocked notification')
-                assert blocked['detail']['task_id'] == task['id'] and blocked['detail']['error'] == task['error']
+                blocked = service.wait(lambda: service.notification('task_blocked', task['id']), 'blocked notification')
+                assert blocked['detail']['error'] == task['error']
                 assert service.notification('task_published') is None
                 if mode == 'interactive':
                     assert 'interactive input' in task['error']
@@ -267,7 +276,7 @@ def scenario(mode):
                 print(f'PASS {mode}: blocked, never published, workspace retained')
                 return
             assert task['status'] == 'published', task['error']
-            published = service.wait(lambda: service.notification('task_published'), 'publication notification')
+            published = service.wait(lambda: service.notification('task_published', task['id']), 'publication notification')
             assert published['detail']['pr_url'] == task['pr_url'] and published['detail']['title'] == task['proposal']['title']
             assert {n['event'] for n in service.notifications} <= {'task_published', 'task_blocked'}
             assert len(task['reviews']) == 3, task['reviews']
@@ -279,14 +288,31 @@ def scenario(mode):
             assert task['verification'][-1]['success']
             assert task['verification'][-1]['revision'] == task['output_commit']
             assert len(json.loads((root / 'prs.json').read_text())) == (2 if mode == 'parallel' else 1)
-            if mode in ['existing-pr', 'dependencies']:
+            if mode in ['existing-pr', 'existing-pr-feedback', 'dependencies']:
                 assert task['pr_number'] == 42 and task['branch'] == 'octomus/existing'
                 assert (Path(task['workspace']) / 'earlier.txt').exists()
                 assert json.loads((root / 'publications.jsonl').read_text().splitlines()[0])['action'] == 'edit'
+                grounded = service.request('/state')['cycles'][-1]['grounding']
+                pr = grounded['prs'][0]
+                if mode == 'existing-pr-feedback':
+                    assert (pr['review_decision'], pr['ci'], pr['failing_checks'], pr['mergeable']) == ('changes_requested', 'failure', ['unit'], 'conflicts'), pr
+                    assert [c['author'] for c in pr['comments']] == ['maintainer', 'maintainer'] and pr['comments'][0]['path'] == 'earlier.txt'
+                    assert 'ghp_abc' not in json.dumps(pr['comments']) and '[redacted]' in pr['comments'][0]['body']
+                    assert grounded['feedback_targets'] == ['octomus/existing']
+                    assert service.request('/state')['prs'][0]['review_decision'] == 'changes_requested'
+                else:
+                    assert (pr['review_decision'], pr['ci'], pr['mergeable'], pr['comments']) == ('none', 'none', 'unknown', [])
+                    assert grounded['feedback_targets'] == []
+                # Feedback is fetched for owned PRs only, once per grounding.
+                requests = (root / 'feedback-requests.jsonl').read_text().splitlines()
+                assert sum('/reviews' in r for r in requests) == 1 and sum('/check-runs' in r for r in requests) == 1
             assert len((root / 'publications.jsonl').read_text().splitlines()) == (2 if mode in ['parallel', 'dependencies'] else 1)
             assert git('rev-parse', 'main', cwd=root / 'remote.git') == task['default_revision'], 'Default branch must never be pushed'
             protocol = [json.loads(line) for line in (root / 'protocol.jsonl').read_text().splitlines()]
             assert len([p for p in protocol if p['prompt'].startswith('Discover worthwhile')]) == 9
+            expected_feedback = '["octomus/existing"]' if mode == 'existing-pr-feedback' else '[]'
+            assert all(f'Feedback targets (owned PRs with requested changes, failing checks or merge conflicts): {expected_feedback}.' in p['prompt'] for p in protocol if p['prompt'].startswith('Discover worthwhile'))
+            assert f'resolves recorded feedback on {expected_feedback}' in next(p['prompt'] for p in protocol if p['prompt'].startswith('Act as final'))
             assert len([p for p in protocol if p['prompt'].startswith('Adversarial proposal')]) == 2
             assert len({p['thread'] for p in protocol if p['prompt'].startswith('Repair actionable')}) == (2 if mode in ['parallel', 'dependencies'] else 1)
             assert all(p['sandbox'] == {'type': 'dangerFullAccess'} and p['approval'] == 'never' for p in protocol)
@@ -453,7 +479,7 @@ def audit_scenario(mode):
 
 if __name__ == '__main__':
     import sys
-    modes = ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']
+    modes = ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'existing-pr-feedback', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']
     # Optional focused run while developing: python3 tests/e2e.py normal failed-verification audit-accepted
     selected = sys.argv[1:]
     for mode in [m for m in modes if not selected or m in selected]:

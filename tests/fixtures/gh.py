@@ -25,10 +25,21 @@ if args[:2] == ['auth', 'status']:
     print('Authenticated fixture operator')
 elif args[0] == 'api':
     route = args[-1]
-    if '?' in route:
+    parts = route.split('?')[0].split('/')
+    feedback = json.loads((root / 'feedback.json').read_text()) if (root / 'feedback.json').exists() else {}
+    with (root / 'feedback-requests.jsonl').open('a') as log:
+        log.write(route + '\n')
+    if parts[-1] == 'check-runs':
+        pr = next((p for p in prs if refresh(p)['head']['sha'] == parts[-2]), None)
+        runs = feedback.get(str(pr['number']), {}).get('check_runs', []) if pr else []
+        print(json.dumps({'total_count': len(runs), 'check_runs': runs}))
+    elif parts[-1] in ['reviews', 'comments'] and parts[-3] in ['pulls', 'issues']:
+        kind = 'reviews' if parts[-1] == 'reviews' else 'review_comments' if parts[-3] == 'pulls' else 'issue_comments'
+        print(json.dumps(feedback.get(parts[-2], {}).get(kind, [])))
+    elif '?' in route:
         print(json.dumps([refresh(p) for p in prs if p['state'] == 'open' or 'state=all' in route]))
     else:
-        number = int(route.split('/')[-1])
+        number = int(parts[-1])
         print(json.dumps(refresh(next(p for p in prs if p['number'] == number))))
 elif args[:2] == ['pr', 'create']:
     branch = arg('--head')

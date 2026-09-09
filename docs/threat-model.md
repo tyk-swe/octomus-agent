@@ -27,6 +27,12 @@ and checks branch ownership, reviewed revisions, verification and remote leases.
 Those workflow checks do not prevent a malicious process from directly using the
 service user's credentials or changing files it can access.
 
+Review and issue comments on owned PRs are fetched into grounding as bounded,
+redacted evidence (30 most recent, 2000 characters each). Anyone who can comment
+on the repository can therefore place text in planning prompts; prompts label it
+as evidence only, but this is prompt guidance, not containment. Accepted work
+still passes the same review, verification and PR-only publication gates.
+
 Operator guidance saved in configuration is appended to planning prompts as
 authoritative policy. It is prompt text: it steers planning agents but is not a
 security boundary, and an injected instruction can still contradict it.

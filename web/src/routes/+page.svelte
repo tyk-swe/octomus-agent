@@ -620,6 +620,26 @@
                 <div>
                   <h3>{pr.title}<span class="pr-number">#{pr.number}</span></h3>
                   <p><code>{pr.branch}</code><span>→</span><code>{pr.base}</code></p>
+                  {#if pr.owned && (pr.review_decision || pr.ci || pr.mergeable || pr.comments?.length)}
+                    <p class="pr-feedback">
+                      {#if pr.review_decision === 'changes_requested'}<span class="badge blocked"
+                          >Changes requested</span
+                        >{:else if pr.review_decision === 'approved'}<span class="badge published"
+                          >Approved</span
+                        >{/if}
+                      {#if pr.ci === 'failure'}<span
+                          class="badge failed"
+                          title={(pr.failing_checks ?? []).join(', ')}>CI failing</span
+                        >{:else if pr.ci === 'pending'}<span class="badge running">CI pending</span
+                        >{:else if pr.ci === 'success'}<span class="badge clean">CI passing</span
+                        >{/if}
+                      {#if pr.mergeable === 'conflicts'}<span class="badge blocked">Conflicts</span
+                        >{/if}
+                      {#if pr.comments?.length}<span class="badge"
+                          >{pr.comments.length} comment{pr.comments.length === 1 ? '' : 's'}</span
+                        >{/if}
+                    </p>
+                  {/if}
                 </div>
                 <span class={'badge ' + (pr.owned ? 'published' : 'queued')}
                   >{pr.owned ? 'Octomus owned' : 'Context only'}</span

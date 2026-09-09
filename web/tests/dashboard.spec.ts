@@ -57,6 +57,9 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await expect(
     page.getByRole('link', { name: /Explain the local development workflow/ })
   ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/12');
+  await expect(page.getByText('Changes requested', { exact: true })).toBeVisible();
+  await expect(page.getByText('CI failing', { exact: true })).toBeVisible();
+  await expect(page.getByText('1 comment', { exact: true })).toBeVisible();
   await navigate('Configuration');
   await page.getByLabel('Orchestrator model', { exact: true }).fill('gpt-6-astra');
   await page.getByLabel('Orchestrator reasoning effort', { exact: true }).fill('medium');

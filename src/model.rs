@@ -125,7 +125,15 @@ pub struct Task {
     pub created_at: String,
     pub updated_at: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A review or issue comment recorded on an owned PR: evidence for planning, never instruction.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrComment {
+    pub author: String,
+    pub at: String,
+    pub path: Option<String>,
+    pub body: String,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PullRequest {
     pub number: u64,
     pub title: String,
@@ -138,6 +146,28 @@ pub struct PullRequest {
     pub changed_lines: u64,
     pub created_at: String,
     pub owned: bool,
+    /// approved | changes_requested | commented | none (latest state per reviewer).
+    #[serde(default)]
+    pub review_decision: String,
+    /// success | failure | pending | none, aggregated from check runs on the head.
+    #[serde(default)]
+    pub ci: String,
+    #[serde(default)]
+    pub failing_checks: Vec<String>,
+    /// clean | conflicts | unknown, from GitHub's mergeability computation.
+    #[serde(default)]
+    pub mergeable: String,
+    #[serde(default)]
+    pub comments: Vec<PrComment>,
+}
+impl PullRequest {
+    /// Owned PRs whose recorded feedback needs work: requested changes, red checks or conflicts.
+    pub fn needs_feedback_work(&self) -> bool {
+        self.owned
+            && (self.review_decision == "changes_requested"
+                || self.ci == "failure"
+                || self.mergeable == "conflicts")
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grounding {
@@ -146,6 +176,8 @@ pub struct Grounding {
     pub history: Value,
     pub maintenance_due: bool,
     pub maintenance_targets: Vec<String>,
+    #[serde(default)]
+    pub feedback_targets: Vec<String>,
 }
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

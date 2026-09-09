@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 mod execution;
 mod planning;
 
-pub use planning::validate_proposals;
+pub use planning::{feedback_targets, validate_proposals};
 
 #[derive(Default)]
 pub struct Runtime {

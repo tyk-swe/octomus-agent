@@ -99,6 +99,7 @@ export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
     created_at: string;
   }[];
 };
+export type PrComment = { author: string; at: string; path: string | null; body: string };
 export type PR = {
   number: number;
   title: string;
@@ -111,6 +112,12 @@ export type PR = {
   changed_lines: number;
   created_at: string;
   owned: boolean;
+  // Feedback fields are absent on records saved before they existed.
+  review_decision?: string;
+  ci?: string;
+  failing_checks?: string[];
+  mergeable?: string;
+  comments?: PrComment[];
 };
 export type Cycle = {
   mode: 'execution' | 'audit';
@@ -128,6 +135,7 @@ export type Cycle = {
     prs: PR[];
     maintenance_due: boolean;
     maintenance_targets: string[];
+    feedback_targets?: string[];
   } | null;
 };
 export type Event = { id: number; at: string; entity_id: string; kind: string; message: string };

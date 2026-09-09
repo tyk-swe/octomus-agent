@@ -1,12 +1,18 @@
 use crate::{
     config::Config,
-    model::{PullRequest, Task},
+    model::{PrComment, PullRequest, Task},
     process,
+    store::redact,
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 use tokio_util::sync::CancellationToken;
+
+/// Recorded PR comments are bounded evidence: newest first, per-comment and per-PR caps.
+pub const MAX_COMMENTS: usize = 30;
+pub const MAX_COMMENT_CHARS: usize = 2000;
+pub const MAX_COMMENT_BYTES_PER_PR: usize = 24 * 1024;
 
 pub async fn git(
     c: &Config,
@@ -155,11 +161,132 @@ pub async fn prs(c: &Config, cancel: &CancellationToken) -> Result<Vec<PullReque
                     cancel,
                 )
                 .await?;
-                prs.push(parse_pr(&serde_json::from_str(&detail)?, c)?);
+                let mut pr = parse_pr(&serde_json::from_str(&detail)?, c)?;
+                if pr.owned {
+                    feedback(c, &mut pr, cancel).await?;
+                }
+                prs.push(pr);
             }
         }
     }
     Ok(prs)
+}
+async fn paginated(c: &Config, route: &str, cancel: &CancellationToken) -> Result<Vec<Value>> {
+    let out = gh(c, &["api", "--paginate", route], cancel).await?;
+    let mut items = vec![];
+    for page in serde_json::Deserializer::from_str(&out).into_iter::<Value>() {
+        match page? {
+            Value::Array(values) => items.extend(values),
+            // check-runs pages are objects wrapping the array.
+            Value::Object(mut object) => {
+                if let Some(Value::Array(values)) = object.remove("check_runs") {
+                    items.extend(values);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(items)
+}
+/// Records reviews, check runs and comments for an owned PR so planning can act on them.
+async fn feedback(c: &Config, pr: &mut PullRequest, cancel: &CancellationToken) -> Result<()> {
+    let repo = &c.github_repo;
+    let n = pr.number;
+    let reviews = paginated(c, &format!("repos/{repo}/pulls/{n}/reviews"), cancel).await?;
+    pr.review_decision = review_decision(&reviews);
+    let runs = paginated(
+        c,
+        &format!("repos/{repo}/commits/{}/check-runs", pr.head),
+        cancel,
+    )
+    .await?;
+    (pr.ci, pr.failing_checks) = ci_status(&runs);
+    let review_comments = paginated(c, &format!("repos/{repo}/pulls/{n}/comments"), cancel).await?;
+    let issue_comments = paginated(c, &format!("repos/{repo}/issues/{n}/comments"), cancel).await?;
+    pr.comments = comments(&review_comments, &issue_comments);
+    Ok(())
+}
+/// Latest non-pending, non-dismissed state per reviewer; requested changes outrank approval.
+pub fn review_decision(reviews: &[Value]) -> String {
+    let mut latest: BTreeMap<&str, &str> = BTreeMap::new();
+    for review in reviews {
+        let (Some(login), Some(state)) =
+            (review["user"]["login"].as_str(), review["state"].as_str())
+        else {
+            continue;
+        };
+        if !matches!(state, "PENDING" | "DISMISSED") {
+            latest.insert(login, state);
+        }
+    }
+    for (state, decision) in [
+        ("CHANGES_REQUESTED", "changes_requested"),
+        ("APPROVED", "approved"),
+        ("COMMENTED", "commented"),
+    ] {
+        if latest.values().any(|s| *s == state) {
+            return decision.into();
+        }
+    }
+    "none".into()
+}
+/// Aggregates check runs on the head commit; any incomplete run is pending, any failed run fails.
+pub fn ci_status(check_runs: &[Value]) -> (String, Vec<String>) {
+    if check_runs.is_empty() {
+        return ("none".into(), vec![]);
+    }
+    let failing: Vec<String> = check_runs
+        .iter()
+        .filter(|run| {
+            run["status"] == "completed"
+                && run["conclusion"].as_str().is_some_and(|c| {
+                    matches!(
+                        c,
+                        "failure"
+                            | "timed_out"
+                            | "cancelled"
+                            | "action_required"
+                            | "startup_failure"
+                    )
+                })
+        })
+        .map(|run| run["name"].as_str().unwrap_or("unnamed check").to_owned())
+        .collect();
+    if !failing.is_empty() {
+        return ("failure".into(), failing);
+    }
+    if check_runs.iter().any(|run| run["status"] != "completed") {
+        return ("pending".into(), vec![]);
+    }
+    ("success".into(), vec![])
+}
+/// Merges review and issue comments, newest last, bounded and redacted.
+pub fn comments(review: &[Value], issue: &[Value]) -> Vec<PrComment> {
+    let mut all: Vec<PrComment> = review
+        .iter()
+        .chain(issue)
+        .map(|c| PrComment {
+            author: c["user"]["login"].as_str().unwrap_or("").to_owned(),
+            at: c["created_at"].as_str().unwrap_or("").to_owned(),
+            path: c["path"].as_str().map(str::to_owned),
+            body: redact(c["body"].as_str().unwrap_or(""))
+                .chars()
+                .take(MAX_COMMENT_CHARS)
+                .collect(),
+        })
+        .collect();
+    all.sort_by(|a, b| a.at.cmp(&b.at));
+    let mut kept: Vec<PrComment> = vec![];
+    let mut bytes = 0;
+    for comment in all.into_iter().rev().take(MAX_COMMENTS) {
+        bytes += comment.body.len();
+        if bytes > MAX_COMMENT_BYTES_PER_PR {
+            break;
+        }
+        kept.push(comment);
+    }
+    kept.reverse();
+    kept
 }
 pub async fn pr(c: &Config, number: u64, cancel: &CancellationToken) -> Result<PullRequest> {
     let out = gh(
@@ -194,6 +321,13 @@ fn parse_pr(p: &Value, c: &Config) -> Result<PullRequest> {
                 .as_str()
                 .is_some_and(|r| r.eq_ignore_ascii_case(&c.github_repo))
             && body.contains("<!-- octomus:task:"),
+        mergeable: match (&p["mergeable"], p["mergeable_state"].as_str()) {
+            (Value::Bool(false), _) | (_, Some("dirty")) => "conflicts",
+            (Value::Bool(true), _) => "clean",
+            _ => "unknown",
+        }
+        .into(),
+        ..PullRequest::default()
     })
 }
 async fn publication_pr(

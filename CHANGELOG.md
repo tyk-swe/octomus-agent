@@ -19,6 +19,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   adversarial review and consolidation prompts as authoritative operator policy.
 - Outbound notifications: an optional webhook URL receives redacted JSON events for
   published/blocked tasks, failed cycles, audits and error pauses via `curl`.
+- PR feedback in grounding: review decisions, check-run status, mergeability and
+  recent comments of owned PRs are recorded, shown in the dashboard and prioritized
+  as feedback targets during discovery and consolidation.
 
 ### Changed
 

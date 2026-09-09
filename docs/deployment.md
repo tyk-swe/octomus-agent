@@ -62,6 +62,15 @@ Open `http://127.0.0.1:4200` locally. If using a reverse proxy instead, provide 
 
 The dashboard starts paused. Configure the repository, explicit role routes, verification commands and host-appropriate limits, then run **Check connection** before enabling continuous work. Optional operator guidance (up to 4000 characters) steers planning, for example excluded modules or a current priority; it is injected into planning prompts as authoritative policy.
 
+## Pull-request feedback
+
+Grounding fetches reviews, check runs and comments for every owned open PR through
+`gh api` (four additional calls per owned PR per cycle). PRs with requested
+changes, failing checks or merge conflicts appear as feedback targets in the
+dashboard's pull-request view and in planning prompts, so the next cycle can
+propose work that addresses them. Octomus still never merges; it can only update
+its own PR branches through the normal review and verification lifecycle.
+
 ## Notifications
 
 An optional **Notification URL** in configuration receives one JSON POST per

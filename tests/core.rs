@@ -48,11 +48,73 @@ fn grounding() -> Grounding {
             changed_lines: 2000,
             created_at: "2026-01-01T00:00:00Z".into(),
             owned: true,
+            ..PullRequest::default()
         }],
         history: json!([]),
         maintenance_due: true,
         maintenance_targets: vec!["octomus/existing".into()],
+        feedback_targets: vec![],
     }
+}
+
+#[test]
+fn pr_feedback_is_summarized_and_bounded() {
+    use octomus_agent::git::{ci_status, comments, review_decision};
+    let reviews = vec![
+        json!({"user":{"login":"a"},"state":"COMMENTED"}),
+        json!({"user":{"login":"a"},"state":"CHANGES_REQUESTED"}),
+        json!({"user":{"login":"b"},"state":"APPROVED"}),
+        json!({"user":{"login":"c"},"state":"PENDING"}),
+    ];
+    assert_eq!(review_decision(&reviews), "changes_requested");
+    assert_eq!(review_decision(&reviews[..1]), "commented");
+    assert_eq!(review_decision(&reviews[2..]), "approved");
+    assert_eq!(
+        review_decision(&[json!({"user":{"login":"a"},"state":"DISMISSED"})]),
+        "none"
+    );
+    assert_eq!(ci_status(&[]), ("none".into(), vec![]));
+    assert_eq!(
+        ci_status(&[
+            json!({"name":"unit","status":"completed","conclusion":"failure"}),
+            json!({"name":"lint","status":"in_progress","conclusion":null}),
+        ]),
+        ("failure".into(), vec!["unit".into()])
+    );
+    assert_eq!(
+        ci_status(&[json!({"name":"lint","status":"queued"})]).0,
+        "pending"
+    );
+    assert_eq!(
+        ci_status(&[json!({"name":"lint","status":"completed","conclusion":"success"})]).0,
+        "success"
+    );
+    let review_comments: Vec<Value> = (0..40)
+        .map(|i| {
+            json!({"user":{"login":"r"},"created_at":format!("2026-01-01T00:00:{i:02}Z"),"path":"a.rs","body":format!("review {i} ghp_abcdefghijklmnop")})
+        })
+        .collect();
+    let issue = vec![
+        json!({"user":{"login":"m"},"created_at":"2026-01-02T00:00:00Z","body":"x".repeat(5000)}),
+    ];
+    let kept = comments(&review_comments, &issue);
+    assert_eq!(kept.len(), octomus_agent::git::MAX_COMMENTS);
+    assert_eq!(kept.last().unwrap().author, "m");
+    assert_eq!(
+        kept.last().unwrap().body.len(),
+        octomus_agent::git::MAX_COMMENT_CHARS
+    );
+    assert!(kept.iter().all(|c| !c.body.contains("ghp_abc")));
+    assert_eq!(kept[0].path.as_deref(), Some("a.rs"));
+    let mut pr = grounding().prs.remove(0);
+    assert!(octomus_agent::engine::feedback_targets(std::slice::from_ref(&pr)).is_empty());
+    pr.ci = "failure".into();
+    assert_eq!(
+        octomus_agent::engine::feedback_targets(std::slice::from_ref(&pr)),
+        vec!["octomus/existing".to_string()]
+    );
+    pr.owned = false;
+    assert!(octomus_agent::engine::feedback_targets(&[pr]).is_empty());
 }
 
 #[test]

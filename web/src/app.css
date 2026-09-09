@@ -1181,6 +1181,9 @@ details p {
 .pr-row code {
   font-size: 10px;
 }
+.pr-feedback {
+  gap: 6px;
+}
 .pr-row > svg {
   color: #5d694f;
 }
