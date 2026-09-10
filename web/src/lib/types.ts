@@ -1,10 +1,18 @@
-export type Route = { model: string; effort: string };
+export type Backend = 'codex' | 'opencode';
+export type Route = {
+  backend: Backend;
+  model: string;
+  effort: string;
+  provider?: string | null;
+  variant?: string | null;
+};
 export type Config = {
   repository: string;
   github_repo: string;
   default_branch: string;
   branch_prefix: string;
   codex_binary: string;
+  opencode_binary: string;
   roles: Record<string, Route>;
   tiers: Record<string, Route>;
   repair_route: Route;
@@ -146,7 +154,14 @@ export type Snapshot = {
   events: Event[];
 };
 export type Model = {
+  backend: Backend;
+  provider: string | null;
+  provider_name: string | null;
   model: string;
-  displayName: string;
-  supportedReasoningEfforts: { reasoningEffort: string }[];
+  display_name: string;
+  efforts: string[];
+  variants: string[];
+  available: boolean;
+  unavailable_reason: string | null;
 };
+export type ModelCatalog = { binary: string; models: Model[]; loaded: boolean; error?: string };

@@ -1,14 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './api';
-  import type { Config, Model } from './types';
+  import type { Backend, Config, Model, ModelCatalog, Route } from './types';
+  import RouteEditor from './RouteEditor.svelte';
   import Icon from './Icon.svelte';
   let { editable, onsaved }: { editable: boolean; onsaved: () => void } = $props();
   let config = $state<Config | null>(null),
     error = $state(''),
     message = $state(''),
     busy = $state(false),
-    models = $state<Model[]>([]),
+    catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
     commands = $state('');
   const categories = [
     'features',
@@ -96,7 +97,7 @@
     {
       key: 'session_timeout_seconds',
       label: 'Session timeout (seconds)',
-      help: 'Maximum duration of a Codex turn',
+      help: 'Maximum duration of an agent turn',
       min: 10
     },
     {
@@ -165,14 +166,24 @@
       busy = false;
     }
   }
-  async function catalog() {
+  function routeCatalog(route: Route) {
+    const backend = route.backend ?? 'codex';
+    const entry = catalogs[backend];
+    return entry?.binary === config?.[`${backend}_binary`] ? entry : undefined;
+  }
+  async function catalog(backend: Backend) {
+    if (!config) return;
+    const binary = config[`${backend}_binary`];
     busy = true;
     error = '';
+    message = '';
     try {
-      models = await api<Model[]>('/models');
-      message = `${models.length} models available. Routes are never silently substituted.`;
+      const models = await api<Model[]>('/model-catalog', 'POST', { backend, binary });
+      catalogs[backend] = { binary, models, loaded: true };
+      message = `${models.filter((model) => model.available).length} ${backend === 'codex' ? 'Codex' : 'OpenCode'} models available. Routes are never silently substituted.`;
     } catch (e) {
       error = (e as Error).message;
+      catalogs[backend] = { binary, models: [], loaded: false, error };
     } finally {
       busy = false;
     }
@@ -258,66 +269,50 @@
             <h2>Models & reasoning</h2>
             <p>Explicit routes for every role. No automatic substitutions.</p>
           </div>
-          <button type="button" class="button small" onclick={catalog}>Load available models</button
+        </div>
+        <div class="form-grid">
+          <label>Codex executable<input bind:value={config.codex_binary} /></label>
+          <label
+            >OpenCode executable<input
+              aria-label="OpenCode executable"
+              aria-describedby="opencode-executable-help"
+              bind:value={config.opencode_binary}
+            /><small id="opencode-executable-help"
+              >Uses the service user's configured providers and login.</small
+            ></label
           >
         </div>
-        <datalist id="models"
-          >{#each models as model}<option value={model.model}>{model.displayName}</option
-            >{/each}</datalist
-        >
-        <div class="route-grid route-labels">
-          <span>Agent role</span><span>Model</span><span>Reasoning effort</span>
+        <div class="catalog-actions">
+          <button type="button" class="button small" onclick={() => catalog('codex')}
+            >Load Codex models</button
+          >
+          <button type="button" class="button small" onclick={() => catalog('opencode')}
+            >Load OpenCode models</button
+          >
         </div>
-        {#each Object.entries(config.roles) as [role, route]}<div class="route-grid">
-            <label for={'model-' + role}>{names[role]}</label><input
-              id={'model-' + role}
-              list="models"
-              bind:value={route.model}
-              placeholder="Select a model"
-              aria-label={names[role] + ' model'}
-            /><input
-              list={'efforts-' + role}
-              bind:value={route.effort}
-              placeholder="Select effort"
-              aria-label={names[role] + ' reasoning effort'}
-            /><datalist id={'efforts-' + role}
-              >{#each models.find((m) => m.model === route.model)?.supportedReasoningEfforts ?? [] as effort}<option
-                  value={effort.reasoningEffort}
-                ></option>{/each}</datalist
-            >
-          </div>{/each}
-        <div class="divider"></div>
-        {#each Object.entries(config.tiers) as [tier, route]}<div class="route-grid">
-            <span><b class="tier">{tier}</b> Execution</span><input
-              list="models"
-              bind:value={route.model}
-              aria-label={tier + ' model'}
-            /><input bind:value={route.effort} aria-label={tier + ' effort'} />
-          </div>{/each}
-        <div class="route-grid">
-          <label for="model-repair">Repair</label>
-          <input
-            id="model-repair"
-            list="models"
-            bind:value={config.repair_route.model}
-            aria-label="Repair model"
+        {#each Object.keys(config.roles) as role}
+          <RouteEditor
+            name={names[role]}
+            bind:route={config.roles[role]}
+            catalog={routeCatalog(config.roles[role])}
           />
-          <input
-            list="efforts-repair"
-            bind:value={config.repair_route.effort}
-            aria-label="Repair reasoning effort"
+        {/each}
+        {#each Object.keys(config.tiers) as tier}
+          <RouteEditor
+            name={tier + ' execution'}
+            bind:route={config.tiers[tier]}
+            catalog={routeCatalog(config.tiers[tier])}
           />
-          <datalist id="efforts-repair">
-            {#each models.find((m) => m.model === config?.repair_route.model)?.supportedReasoningEfforts ?? [] as effort}
-              <option value={effort.reasoningEffort}></option>
-            {/each}
-          </datalist>
-        </div>
+        {/each}
+        <RouteEditor
+          name="Repair"
+          bind:route={config.repair_route}
+          catalog={routeCatalog(config.repair_route)}
+        />
         <div class="inline-note">
           <Icon name="shield" size={16} /> Each task keeps its saved repair route and reuses one repair
           thread across rounds.
         </div>
-        <label class="executable">Codex executable<input bind:value={config.codex_binary} /></label>
       </section>
       <section class="panel settings-section">
         <div class="section-heading">
@@ -370,3 +365,15 @@
     <span class="spinner"></span>
     <p>Loading configuration…</p>
   </div>{/if}
+
+<style>
+  .catalog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 20px 24px;
+  }
+  .catalog-actions button {
+    scroll-margin-block: 100px;
+  }
+</style>

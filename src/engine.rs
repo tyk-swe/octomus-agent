@@ -1,8 +1,9 @@
 use crate::{
-    codex::{self, Codex},
+    codex,
     config::{Config, Route},
     git,
     model::*,
+    runner::{Runner, validate_route},
     store::{Store, redact},
 };
 use anyhow::{Result, ensure};
@@ -110,33 +111,56 @@ impl App {
             c.validate(true)?;
         }
         let cancel = self.shutdown.child_token();
-        let installed = crate::process::run(
-            &c.codex_binary,
-            &["--version"],
-            &self.data_dir,
-            c.command_timeout_seconds.min(60),
-            &cancel,
-        )
-        .await?;
-        let warning = codex::version_warning(&installed);
-        if let Some(warning) = &warning {
-            tracing::warn!("{warning}");
-        }
         git::validate_remote(c, &cancel).await?;
-        let mut cx =
-            Codex::connect(c, &self.data_dir, self.store.clone(), "system", cancel).await?;
-        let account = cx
-            .rpc("account/read", json!({"refreshToken":false}))
-            .await?;
-        ensure!(
-            account["requiresOpenaiAuth"] == false || !account["account"].is_null(),
-            "Codex authentication is missing; run codex login as the service user"
-        );
-        let models = cx.models().await?;
-        codex::validate_routes_for(c, &models, mode == CycleMode::Audit)?;
-        Ok(
-            json!({"ok":true,"mode":mode,"models":models,"codex_version":installed,"tested_codex_version":codex::TESTED_VERSION,"warnings":warning.iter().collect::<Vec<_>>(),"message":format!("Repository, GitHub authentication, and {} model/effort routes are available.{}", if mode == CycleMode::Audit { "planning" } else { "all" }, warning.map(|w| format!(" Warning: {w}")).unwrap_or_default())}),
-        )
+        let routes = c.routes_for(mode == CycleMode::Audit);
+        let backends = routes
+            .iter()
+            .map(|(_, route)| route.backend)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut diagnostics = vec![];
+        let mut models = vec![];
+        let mut warnings = vec![];
+        let mut errors = vec![];
+        for backend in backends {
+            let check = async {
+                let mut client = Runner::connect(
+                    backend,
+                    c,
+                    &self.data_dir,
+                    self.store.clone(),
+                    "system",
+                    cancel.clone(),
+                )
+                .await?;
+                let diagnostic = client.diagnostics(c, &self.data_dir, &cancel).await?;
+                let catalog = client.models(&self.data_dir).await?;
+                for (name, route) in routes.iter().filter(|(_, route)| route.backend == backend) {
+                    if let Err(error) = validate_route(route, &catalog) {
+                        errors.push(format!("{name}: {error}"));
+                    }
+                }
+                if let Some(warning) = diagnostic["warning"].as_str() {
+                    tracing::warn!("{warning}");
+                    warnings.push(warning.to_owned());
+                }
+                models.extend(catalog);
+                diagnostics.push(diagnostic);
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            if let Err(error) = check {
+                errors.push(format!("{backend}: {error:#}"));
+            }
+        }
+        ensure!(errors.is_empty(), "{}", errors.join("; "));
+        let mut result = json!({"ok":true,"mode":mode,"models":models,"backends":diagnostics,"warnings":warnings,
+            "message":format!("Repository, GitHub authentication, and {} model routes are available.{}", if mode == CycleMode::Audit { "planning" } else { "all" },
+                if warnings.is_empty() { String::new() } else { format!(" Warning: {}", warnings.join(" ")) })});
+        if let Some(diagnostic) = diagnostics.iter().find(|d| d["backend"] == "codex") {
+            result["codex_version"] = diagnostic["version"].clone();
+            result["tested_codex_version"] = codex::TESTED_VERSION.into();
+        }
+        Ok(result)
     }
     pub async fn run(self) {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -238,11 +262,24 @@ impl App {
             self.transition(&mut task, Status::Executing)?;
             let app = self.clone();
             tokio::spawn(async move {
-                let result = tokio::time::timeout(
-                    Duration::from_secs(task.config.task_timeout_seconds),
-                    app.execute(&mut task, &cancel),
-                )
-                .await;
+                let mut timed_out = false;
+                let result = {
+                    let limit = Duration::from_secs(task.config.task_timeout_seconds);
+                    let execute = app.execute(&mut task, &cancel);
+                    tokio::pin!(execute);
+                    match tokio::time::timeout(limit, &mut execute).await {
+                        Ok(result) => Ok(result),
+                        Err(error) => {
+                            timed_out = !cancel.is_cancelled();
+                            cancel.cancel();
+                            // Let runner abort handlers stop their own detached shell groups.
+                            // The cancelled token prevents new turns and publication commands.
+                            let _ =
+                                tokio::time::timeout(Duration::from_secs(8), &mut execute).await;
+                            Err(error)
+                        }
+                    }
+                };
                 let error = match result {
                     Ok(Ok(())) => None,
                     Ok(Err(e)) => Some(format!("{e:#}")),
@@ -259,6 +296,7 @@ impl App {
                         }
                     }
                     let status = if cancel.is_cancelled()
+                        && !timed_out
                         && !app.shutdown.is_cancelled()
                         && task.output_commit.is_none()
                     {

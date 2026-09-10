@@ -10,6 +10,7 @@ Rust / Axum service
  ├─ SQLite state, event log, daily admission counter and ledger
  ├─ one scheduler, configured task concurrency, branch writer locks
  ├─ Codex app-server subprocesses over newline-delimited JSON RPC
+ ├─ owned OpenCode HTTP/SSE servers on loopback
  └─ Git + GitHub CLI publication coordination
 ```
 
@@ -23,6 +24,8 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 | `src/model.rs` | Task, cycle, proposal, session, review, verification and PR records |
 | `src/store.rs` | SQLite WAL persistence, atomic plan commit, event retention, atomic admission counter/ledger, redaction |
 | `src/report.rs` | Read-only snapshot export of daily usage, cycles, tasks and admission routes |
+| `src/runner.rs`, `src/opencode.rs` | Runner-neutral catalog/dispatch and owned OpenCode HTTP/SSE sessions |
+| `src/schemas.rs` | Shared structured output schemas and validation |
 | `src/codex.rs` | App-server handshake, model catalog, thread start/resume, correlated RPC/events, structured results |
 | `src/process.rs` | Bounded output capture, timeouts, cancellation and process-group ownership |
 | `src/git.rs` | Source snapshots, owned PR context, immutable review commits, revision leases, idempotent delivery |
@@ -34,7 +37,7 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 
 ## Planning
 
-Each cycle records the remote default-branch revision, open prefixed PRs, their heads and accumulated scope, maintenance targets, and task history. The orchestrator inspects the repository and PR diffs. Each discovery and proposal-review role has a separate clone and Codex thread. Planning sessions are instructed to inspect rather than mutate, and their worktree/HEAD must remain unchanged.
+Each cycle records the remote default-branch revision, open prefixed PRs, their heads and accumulated scope, maintenance targets, and task history. The orchestrator inspects the repository and PR diffs. Each discovery and proposal-review role has a separate clone and runner session. Planning sessions are instructed to inspect rather than mutate, and their worktree/HEAD must remain unchanged.
 
 The standard cycle runs nine discovery agents (configurable from eight to ten), followed by two adversarial reviewers and orchestrator consolidation. The final result must account for every original proposal ID, with a decision and reason. Accepted work needs project evidence, benefit, scope, a self-contained prompt, a supported tier, and an eligible target. Unknown dependencies, dependency cycles, duplicate accepted titles, and unowned targets are rejected by the core.
 
@@ -56,7 +59,7 @@ unsandboxed agent behavior and the normal cycle retention policy.
 
 ## Tasks and dependencies
 
-A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies. Its initial app-server thread identity determines `.octomus/tasks/<thread-id>/workspace`. Each task uses an independent Git clone. Review and repair threads work in that same task clone.
+A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies. New workspaces use `.octomus/tasks/<task-id>/workspace` and are cloned before a runner session is created. Existing saved workspace paths, including legacy Codex thread-based paths, are retained. Native runner session IDs are recorded separately and never used to name new directories. Each task uses an independent Git clone. Review and repair threads work in that same task clone.
 
 Independent tasks can run concurrently. Existing PR branch writers are serialized. Dependent tasks on the same existing PR wait for their prerequisites to publish; the source revision is advanced only to a recorded prerequisite output and its ancestry is checked. External branch movement blocks stale work.
 
@@ -66,7 +69,7 @@ Code-dependent default-branch proposals must be consolidated into a cohesive tas
 
 The executor's changes are committed locally. Review uses a fixed comparison base: the original default revision for new work, or the merge base with the default branch for existing PR work. Every review round examines the entire accumulated diff against that base.
 
-A reviewer is always a fresh Codex thread. A repair thread starts separately with the task’s saved configurable repair route (default `gpt-6-astra` / `medium`) and is resumed for subsequent repair turns. Interrupted, failed, missing, malformed, or explicitly incomplete results never count as clean reviews. Rounds and their revisions are recorded.
+A reviewer is always a fresh session on its configured runner. A repair thread starts separately with the task’s saved configurable repair route (default `gpt-6-astra` / `medium`) and is resumed for subsequent repair turns. Interrupted, failed, missing, malformed, or explicitly incomplete results never count as clean reviews. Rounds and their revisions are recorded.
 
 Configured shell verification runs after a completed clean review. Every command must pass on exactly the reviewed revision; worktree or HEAD changes during review or verification block publication. Commands run from the assigned workspace with Bash `pipefail`. Net-empty changes are not publishable, even if an executor made commits.
 
@@ -80,6 +83,16 @@ Before retrying a publication, the service searches all matching PR states, incl
 
 [Codex app-server documentation](https://developers.openai.com/codex/app-server) and the bindings generated by installed CLI 0.153.4 informed the integration. The client uses `initialize`, `model/list`, `account/read`, `thread/start`, `thread/resume`, and `turn/start`, correlating completion events with thread and turn IDs. Structured schemas constrain proposal/review responses. A role uses `approvalPolicy: never` and `danger-full-access`; returned model, effort and sandbox settings must match.
 
+OpenCode 1.18.30 is the HTTP/SSE protocol baseline. Each task owns lazily started
+servers for its selected backends; planning invocations own separate clients.
+OpenCode binds to loopback with per-process Basic authentication and uses existing
+service-user provider configuration. The adapter supplies temporary worker policy,
+disables project configuration overrides, automatic sharing, updates, helper
+agents, automatic compaction, formatters and LSP processes. It checks session
+workspace/model/variant/permissions on creation and resumption, correlates message
+identities, and validates native structured results before accepting evidence.
+See [model routing](model-routing.md) for setup and API details.
+
 Unexpected interactive requests fail visibly. RPCs, turns, whole tasks, command output and admission counts are bounded. No model turns are started by the automated test fixtures or dashboard's model-catalog check.
 
 Repository content and agent outputs are never deserialized into operating configuration. API access requires the operator token, which is excluded from child-process environment variables. JSON is redacted before being returned to the dashboard, and rendered as text rather than trusted HTML.
@@ -90,7 +103,7 @@ SQLite uses full synchronous writes and WAL. Only one service may hold the state
 
 ## Usage records and upgrades
 
-Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. The additive admissions table is created on startup. Older daily counts remain intact and are reported as unattributed, without invented historical ledger entries. Configuration and task snapshots without `repair_route` retain the previous Astra-medium route through deserialization defaults.
+Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. The additive admissions table is created on startup. Older daily counts remain intact and are reported as unattributed, without invented historical ledger entries. Configuration and task snapshots without `repair_route` retain the previous Astra-medium route through deserialization defaults. Routes without a backend load as Codex, including historical session/admission records. Missing `opencode_binary` defaults to `opencode`; no database rewrite or workspace migration is needed. Newly saved routes carry their backend and any OpenCode provider/variant.
 
 `--usage-report` opens an existing database read-only and reads one transaction snapshot without taking the service lock or initializing/migrating state. It exports metadata rather than raw prompts/transcripts or credentials. Admissions are not provider charges; see [cost methodology](cost.md). Keep a full state backup before upgrading; older binaries do not understand newly saved configuration fields.
 

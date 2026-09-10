@@ -2,6 +2,38 @@ import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 const token = 'browser-test-operator-token-32-characters';
 
+const codexModels = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
+  backend: 'codex',
+  provider: null,
+  provider_name: null,
+  model,
+  display_name: model,
+  efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+  variants: [],
+  available: true,
+  unavailable_reason: null
+}));
+const opencodeModels = [
+  { provider: 'fixture', model: 'fixture-model', variants: ['low', 'high'] },
+  { provider: 'fixture', model: 'plain-model', variants: [] },
+  { provider: 'alternate', model: 'fixture-model', variants: ['deep'] }
+].map((model) => ({
+  backend: 'opencode',
+  provider_name: model.provider,
+  display_name: model.model,
+  efforts: [],
+  available: true,
+  unavailable_reason: null,
+  ...model
+}));
+
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/model-catalog', async (route) => {
+    const { backend } = route.request().postDataJSON();
+    await route.fulfill({ json: backend === 'codex' ? codexModels : opencodeModels });
+  });
+});
+
 test('private dashboard, navigation, task evidence, configuration, and mobile layout', async ({
   page
 }, testInfo) => {
@@ -58,10 +90,13 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
     page.getByRole('link', { name: /Explain the local development workflow/ })
   ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/12');
   await navigate('Configuration');
+  await page.getByLabel('Orchestrator runner').selectOption('codex');
+  await page.getByLabel('Repair runner').selectOption('codex');
+  await page.getByRole('button', { name: 'Load Codex models' }).click();
   await page.getByLabel('Orchestrator model', { exact: true }).fill('gpt-6-astra');
-  await page.getByLabel('Orchestrator reasoning effort', { exact: true }).fill('medium');
+  await page.getByLabel('Orchestrator reasoning effort', { exact: true }).selectOption('medium');
   await page.getByLabel('Repair model', { exact: true }).fill('gpt-5.6-luna');
-  await page.getByLabel('Repair reasoning effort', { exact: true }).fill('high');
+  await page.getByLabel('Repair reasoning effort', { exact: true }).selectOption('high');
   await page.getByRole('button', { name: 'Save configuration' }).click();
   await expect(page.getByRole('status')).toHaveText('Configuration saved.');
   await page.waitForTimeout(4500); // Ensure state polling never overwrites an operator's draft.
@@ -139,6 +174,92 @@ test('one-shot audit progress, decisions and paused controls', async ({ page }, 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({
     path: `test-results/${testInfo.project.name}-audit-fixture.png`,
+    fullPage: true
+  });
+});
+
+test('model routing across all roles, provider variants, draft catalogs and unavailable selections', async ({
+  page
+}, testInfo) => {
+  let catalogState: 'normal' | 'removed' | 'error' = 'normal';
+  const drafts: { backend: string; binary: string }[] = [];
+  await page.route('**/api/model-catalog', async (route) => {
+    drafts.push(route.request().postDataJSON());
+    if (catalogState === 'error') {
+      await route.fulfill({ status: 400, json: { error: 'OpenCode catalog is unavailable' } });
+    } else {
+      await route.fulfill({ json: catalogState === 'normal' ? opencodeModels : [] });
+    }
+  });
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  async function navigate(name: string) {
+    if (testInfo.project.name === 'mobile')
+      await page.getByRole('button', { name: 'Toggle navigation' }).click();
+    await page.getByRole('navigation').getByRole('button', { name, exact: true }).click();
+  }
+  await navigate('Configuration');
+  await page.getByLabel('OpenCode executable', { exact: true }).fill('/draft/opencode');
+  await page.getByRole('button', { name: 'Load OpenCode models' }).click();
+  expect(drafts).toEqual([{ backend: 'opencode', binary: '/draft/opencode' }]);
+  const names = [
+    'Orchestrator',
+    'Discovery agents',
+    'Proposal reviewers',
+    'Code reviewer',
+    'XS execution',
+    'S execution',
+    'M execution',
+    'L execution',
+    'XL execution',
+    'Repair'
+  ];
+  for (const name of names) {
+    await page.getByLabel(name + ' runner', { exact: true }).selectOption('opencode');
+    await page.getByLabel(name + ' provider', { exact: true }).selectOption('fixture');
+    await page.getByLabel(name + ' model', { exact: true }).fill('fixture-model');
+    await page.getByLabel(name + ' variant', { exact: true }).selectOption('high');
+    await expect(page.getByLabel(name + ' reasoning effort', { exact: true })).toHaveCount(0);
+  }
+  await page.getByLabel('XS execution model', { exact: true }).fill('plain-model');
+  await expect(page.getByLabel('XS execution variant', { exact: true })).toHaveValue('');
+  await expect(
+    page.getByLabel('XS execution variant', { exact: true }).locator('option')
+  ).toHaveCount(1);
+  await page.getByLabel('Repair provider', { exact: true }).selectOption('alternate');
+  await expect(page.getByLabel('Repair model', { exact: true })).toHaveValue('');
+  await page.getByLabel('Repair model', { exact: true }).fill('fixture-model');
+  await page.getByLabel('Repair variant', { exact: true }).selectOption('deep');
+  await expect(
+    page.getByLabel('Repair variant', { exact: true }).locator('option[value="high"]')
+  ).toHaveCount(0);
+
+  catalogState = 'removed';
+  await page.getByRole('button', { name: 'Load OpenCode models' }).click();
+  await expect(page.getByRole('group', { name: 'Repair route', exact: true })).toContainText(
+    'not in the loaded catalog'
+  );
+  await expect(page.getByLabel('Repair variant', { exact: true })).toHaveValue('deep');
+  catalogState = 'error';
+  await page.getByRole('button', { name: 'Load OpenCode models' }).click();
+  await expect(page.getByRole('alert')).toContainText('catalog is unavailable');
+  await page.waitForTimeout(4500);
+  await expect(page.getByLabel('Repair model', { exact: true })).toHaveValue('fixture-model');
+  await expect(page.getByLabel('Repair variant', { exact: true })).toHaveValue('deep');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByRole('status')).toHaveText('Configuration saved.');
+  await navigate('Overview');
+  await navigate('Configuration');
+  for (const name of names)
+    await expect(page.getByLabel(name + ' runner', { exact: true })).toHaveValue('opencode');
+  await expect(page.getByLabel('Repair provider', { exact: true })).toHaveValue('alternate');
+  await expect(page.getByLabel('Repair variant', { exact: true })).toHaveValue('deep');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  await page.screenshot({
+    path: `test-results/${testInfo.project.name}-model-routes.png`,
     fullPage: true
   });
 });

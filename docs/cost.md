@@ -18,12 +18,13 @@ planning wall time (not subsequent task execution), mode (audit/execution), stat
 planning admissions and task admissions associated with that cycle. `tasks`
 includes execution tier, saved routes, admissions, status and PR URL. `tiers`
 counts observed tasks and their admissions. `admissions` retains each reservation's
-UTC timestamp, cycle, optional task, role and exact route.
+UTC timestamp, cycle, optional task, role and exact route, including the runner
+and any OpenCode provider/variant. Legacy routes are reported as Codex.
 
 An **admission** reserves budget before starting work. Failed thread starts,
 failed clone setup and interrupted attempts can consume admissions without a
 completed provider turn. Each repair turn and retried executor reserves again,
-even if the Codex thread is reused. The daily counter and ledger entry commit
+even if the runner session is reused. The daily counter and ledger entry commit
 atomically. Existing counters from before this ledger remain unattributed.
 
 `recorded_completed_sessions` counts persisted thread records, not turns: repeated

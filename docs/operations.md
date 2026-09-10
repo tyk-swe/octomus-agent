@@ -48,7 +48,7 @@ Open **http://127.0.0.1:4200**. The first launch is paused.
 
 - [ ] Set the absolute repository path, GitHub `owner/repository`, and default branch. To improve this project, the GitHub value is `tyk-swe/octomus-agent` and the default branch is `main`.
 - [ ] Set the owned branch prefix. For this repository, use **`tyk/`** to match your branch naming instruction; the product's initial default is `octomus/`.
-- [ ] Use **Load available models**, then explicitly choose a model and effort for all four roles: orchestrator, discovery, proposal reviewers, and code reviewer.
+- [ ] Use **Load Codex models** or **Load OpenCode models**, then choose a runner, model, and supported effort/variant for all four roles: orchestrator, discovery, proposal reviewers, and code reviewer. OpenCode also requires a provider configured as the service user; see [model routing](model-routing.md).
 - [ ] Verify the five execution tier routes. If your runtime does not support a route, configure an available replacement explicitly before starting work.
 - [ ] Enter meaningful verification commands for the target project. For Octomus itself, useful commands include:
 
@@ -81,6 +81,6 @@ reviewed revision before publication. Measure cold timings before changing limit
 
 - [ ] Leave the system running once you are satisfied with the first live results; increase throughput only as needed.
 - [ ] Monitor blocked/failed tasks, model usage, host disk capacity, and the value of generated PRs.
-- [ ] Set up protected backups of the state directory, task workspaces, and the service account's Codex thread state using the [backup procedure](deployment.md#backup-and-upgrade).
+- [ ] Set up protected backups of the state directory, task workspaces, and the service account's selected runner session state (Codex home and/or OpenCode data directory) using the [backup procedure](deployment.md#backup-and-upgrade).
 - [ ] Review retention settings, including Codex's separate transcript storage. Unresolved workspaces are intentionally preserved and can require deliberate cleanup.
 - [ ] Continue reviewing and merging useful PRs yourself. Application upgrades and production deployments remain your responsibility; Octomus delivers PRs.

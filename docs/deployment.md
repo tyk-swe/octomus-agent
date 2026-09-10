@@ -77,11 +77,11 @@ Repository identity and branch policy cannot change while unresolved tasks exist
 
 ## Limits and retention
 
-Defaults are visible in the dashboard and [configuration example](configuration.example.json): nine discovery agents, two simultaneous tasks, a 30-minute cycle interval, five accepted tasks per cycle, four repair rounds, two no-progress rounds, and 150 Codex turn admissions per UTC day. Reused repair turns count against the daily budget too.
+Defaults are visible in the dashboard and [configuration example](configuration.example.json): nine discovery agents, two simultaneous tasks, a 30-minute cycle interval, five accepted tasks per cycle, four repair rounds, two no-progress rounds, and 150 agent turn admissions per UTC day. Reused repair turns count against the daily budget too.
 
 The workspace budget is an **admission limit**, checked before launching model work. Active commands can grow beyond it; set host disk and process limits appropriate to the repository. The MVP does not estimate dollar spend or interrupt a provider's in-flight token billing. Use account-level spending limits as appropriate.
 
-Published task workspaces and successful/idle discovery workspaces are removed after the configured retention period (14 days by default). Task identity, decisions, review records and publication associations remain in SQLite. Failed, interrupted or cancelled workspaces are preserved for inspection and may require deliberate operator cleanup after resolution. Activity events are capped at the configured count. Command output is drained and bounded; raw app-server tool arguments and output streams are not stored in the dashboard event log. Codex's own transcript storage is separate, under the service account's Codex home; configure its host retention separately.
+Published task workspaces and successful/idle discovery workspaces are removed after the configured retention period (14 days by default). Task identity, decisions, review records and publication associations remain in SQLite. Failed, interrupted or cancelled workspaces are preserved for inspection and may require deliberate operator cleanup after resolution. Activity events are capped at the configured count. Command output is drained and bounded; raw app-server tool arguments and output streams are not stored in the dashboard event log. Runner transcript storage is separate: Codex uses the service account's Codex home, and OpenCode uses its data directory. Configure host retention for the selected runners separately.
 
 Logs: `journalctl -u octomus-agent`. Task errors and session metadata also appear in the dashboard. Known credential patterns and values from token/secret/password/API-key environment variables are redacted from dashboard JSON and summaries. Keep secrets out of project documentation and task prompts; this redaction is not a secret-detection guarantee.
 
@@ -93,7 +93,7 @@ Pause and stop the service before a file-copy backup:
 sudo systemctl stop octomus-agent
 ```
 
-Back up `/var/lib/octomus/.octomus` in full, the service account's Codex home (for resumable threads), and the target repository. Protect backups as sensitive operator data. Keep `.octomus/state.db`, its WAL files if present, task workspaces, and Codex thread state together. Do not copy only the SQLite database while it is being written.
+Back up `/var/lib/octomus/.octomus` in full, the service account's selected runner session stores (Codex home and/or OpenCode data directory), and the target repository. Protect backups as sensitive operator data. Keep `.octomus/state.db`, its WAL files if present, task workspaces, and runner session state together. OpenCode sessions normally live under the service user's XDG data directory; retain that directory when using OpenCode. Do not copy only the SQLite database while it is being written.
 
 Replace the binary with a tested package and restart. State is persisted in SQLite with WAL and full synchronous writes. A file lock prevents two processes from operating on the same state directory. The initial MVP schema is created automatically; future incompatible schema changes will need explicit migrations.
 

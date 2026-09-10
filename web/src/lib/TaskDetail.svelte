@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, relative, safeUrl } from './api';
+  import { routeLabel } from './routes';
   import type { Task, Event } from './types';
   import Icon from './Icon.svelte';
   let { id, onclose, onaction }: { id: string; onclose: () => void; onaction: () => void } =
@@ -64,8 +65,7 @@
       <h2 id="task-title">{task.proposal.title}</h2>
       <p>
         <span class="tier">{task.proposal.tier}</span>
-        {task.route.model} <span class="dot-separator">·</span>
-        {task.route.effort}
+        {routeLabel(task.route)}
       </p>
     </div>
     <div class="tabs" role="tablist" aria-label="Task information">
@@ -129,7 +129,7 @@
               <h3>{session.role}</h3>
               <span class={'badge ' + session.status}>{session.status}</span>
             </div>
-            <p>{session.route.model} · {session.route.effort}</p>
+            <p>{routeLabel(session.route)}</p>
             <code>{session.id}</code><small>{relative(session.started_at)}</small
             >{#if session.id === task.repair_session}<div class="inline-note">
                 This repair context is reused across rounds.

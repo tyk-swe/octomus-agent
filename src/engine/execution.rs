@@ -1,12 +1,7 @@
 use super::App;
-use crate::{
-    codex::{self, Codex},
-    git,
-    model::*,
-    store::redact,
-};
+use crate::{git, model::*, runner::Runners, schemas, store::redact};
 use anyhow::{Context, Result, bail, ensure};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 impl App {
@@ -19,15 +14,10 @@ impl App {
             let p = git::publish(task, cancel).await?;
             return self.published(task, p);
         }
-        let mut client = Codex::connect(
-            &config,
-            &self.data_dir,
-            self.store.clone(),
-            &task.id,
-            cancel.clone(),
-        )
-        .await?;
-        codex::validate_routes(&config, &client.models().await?)?;
+        let mut client = Runners::new(&config, self.store.clone(), &task.id, cancel.clone());
+        client
+            .validate_routes(&config, &self.data_dir, false)
+            .await?;
         // Initialization reserves the first executor admission, including on retries.
         let admission_reserved = task.execution_session.is_none();
         if admission_reserved {
@@ -107,7 +97,7 @@ impl App {
     async fn initialize_task(
         &self,
         task: &mut Task,
-        client: &mut Codex,
+        client: &mut Runners,
         cancel: &CancellationToken,
     ) -> Result<()> {
         let config = task.config.clone();
@@ -172,9 +162,44 @@ impl App {
             &task.route,
         )
         .await?;
-        let session = client.start(&task.route, &self.data_dir, None).await?;
-        let workspace = self.data_dir.join("tasks").join(&session).join("workspace");
-        task.workspace = workspace.to_string_lossy().into_owned();
+        uuid::Uuid::parse_str(&task.id).context("Invalid task workspace identity")?;
+        let workspace = self.data_dir.join("tasks").join(&task.id).join("workspace");
+        if task.workspace.is_empty() {
+            task.workspace = workspace.to_string_lossy().into_owned();
+            self.save_task(task)?;
+            git::clone_at(&config, &workspace, &task.source_revision, cancel).await?;
+            task.comparison_base = if task.pr_number.is_some() {
+                let base = git::remote_revision(&config, &config.default_branch, cancel)
+                    .await?
+                    .context("Default branch missing")?;
+                git::git(
+                    &config,
+                    &workspace,
+                    &["merge-base", &base, &task.source_revision],
+                    cancel,
+                )
+                .await?
+            } else {
+                task.source_revision.clone()
+            };
+            self.save_task(task)?;
+        } else {
+            // A failed runner start can be retried in a fully initialized clone. Partial clones
+            // and edits made before a session was recorded are preserved for operator inspection.
+            ensure!(
+                Path::new(&task.workspace) == workspace
+                    && !task.comparison_base.is_empty()
+                    && workspace.join(".git").exists(),
+                "Workspace initialization was interrupted; cancel and rediscover rather than overwrite partial files"
+            );
+            ensure!(
+                git::clean(&config, &workspace, cancel).await?
+                    && git::git(&config, &workspace, &["rev-parse", "HEAD"], cancel).await?
+                        == task.source_revision,
+                "Workspace changed before executor session creation; preserve and inspect before retrying"
+            );
+        }
+        let session = client.start(&task.route, &workspace, None).await?;
         task.execution_session = Some(session.clone());
         task.sessions.push(Session {
             id: session,
@@ -185,29 +210,13 @@ impl App {
             summary: String::new(),
         });
         self.save_task(task)?;
-        git::clone_at(&config, &workspace, &task.source_revision, cancel).await?;
-        task.comparison_base = if task.pr_number.is_some() {
-            let base = git::remote_revision(&config, &config.default_branch, cancel)
-                .await?
-                .context("Default branch missing")?;
-            git::git(
-                &config,
-                &workspace,
-                &["merge-base", &base, &task.source_revision],
-                cancel,
-            )
-            .await?
-        } else {
-            task.source_revision.clone()
-        };
-        self.save_task(task)?;
         Ok(())
     }
 
     async fn run_executor(
         &self,
         task: &mut Task,
-        client: &mut Codex,
+        client: &mut Runners,
         admission_reserved: bool,
     ) -> Result<()> {
         let config = task.config.clone();
@@ -261,7 +270,7 @@ impl App {
     async fn review_revision(
         &self,
         task: &mut Task,
-        client: &mut Codex,
+        client: &mut Runners,
         revision: &str,
         cancel: &CancellationToken,
     ) -> Result<Review> {
@@ -291,7 +300,7 @@ impl App {
                 route,
                 &workspace,
                 &prompt,
-                Some(codex::review_schema()),
+                Some(schemas::review_schema()),
             )
             .await?;
         session_mut(task, &thread, "reviewer")?.summary = redact(&answer);
@@ -368,7 +377,7 @@ impl App {
     async fn repair(
         &self,
         task: &mut Task,
-        client: &mut Codex,
+        client: &mut Runners,
         review: &Review,
         verification_errors: &[String],
     ) -> Result<()> {

@@ -1,7 +1,7 @@
 # Octomus Agent
 
 Octomus finds useful improvements in a repository, challenges them with two
-independent reviewers, and delivers verified pull requests through Codex. It can
+independent reviewers, and delivers verified pull requests through Codex or OpenCode. It can
 reject every proposal and do nothing. Think **Dependabot, with features**: you
 choose the repository and boundaries; it discovers the work. Delivery stops at a
 PR for you to review and merge.
@@ -17,7 +17,8 @@ published yet. The release installer below becomes usable after publication;
 use the source-build alternative today. See [distribution](docs/distribution.md)
 for packaging and publication instructions.
 
-Use a dedicated Ubuntu 24.04 VM (x86_64 or aarch64), an existing paid Codex account,
+Use a dedicated Ubuntu 24.04 VM (x86_64 or aarch64), configured access to the
+models you select through Codex or OpenCode,
 and a dedicated GitHub identity with access restricted to the target repository.
 Do not use your workstation or put unrelated credentials on the VM. Account
 creation, owner-approved authentication and VM provisioning must already be
@@ -28,7 +29,10 @@ arranged; login is performed by you.
 As the VM administrator, install Git, gh, curl and OpenSSL. This npm-based Codex
 installation uses Node 22 from [NodeSource](https://github.com/nodesource/distributions)
 and the pinned [Codex release](https://github.com/openai/codex/releases/tag/rust-v0.153.4).
-Octomus's binary itself does not require Node or Rust at runtime.
+Install the runners you intend to use. The Codex setup below is optional for an
+OpenCode-only installation. For OpenCode, install the pinned
+[1.18.30 release](https://github.com/anomalyco/opencode/releases/tag/v1.18.30)
+for your platform. Octomus's binary itself does not require Node or Rust at runtime.
 
 ```bash
 sudo apt-get update
@@ -83,6 +87,11 @@ gh auth login
 gh auth setup-git
 ```
 
+If using OpenCode, run `opencode auth login` as this same service user and configure
+its providers in the user-level OpenCode configuration. Skip `codex login` when no
+Codex routes are selected. Octomus reads those provider settings and credentials;
+it does not manage provider logins in the dashboard.
+
 Use the dedicated identity and repository-restricted authentication arrangement,
 not an unrelated personal credential. As this same user, replace the sample
 repository identity and clone it. Configure Git identity if your project requires it.
@@ -116,10 +125,19 @@ In **Configuration**, enter `/srv/projects/project`, `OWNER/REPOSITORY`, the def
 branch, and an owned branch prefix. For this repository use `tyk/`; the general
 product default is `octomus/`.
 
-Use **Load available models** and select the exact model and effort for the
-orchestrator, discovery agents and proposal reviewers. Save, then **Check audit
-connection**. Unsupported routes fail visibly; explicitly select available routes
-instead of expecting a fallback. Correct any CLI version warning before live work.
+Set the executable paths, then use **Load Codex models** or **Load OpenCode models**.
+For each role, choose a runner and model. Codex requires reasoning effort; OpenCode
+requires a provider and offers the model's supported variants, including **Provider
+default**. The same selectors apply to all execution tiers and repair. Catalog
+checks use the executable paths currently entered, without saving or making model
+calls. Custom providers configured for the OpenCode service user appear in its
+catalog; models must support text and tool calling.
+
+Configure the orchestrator, discovery agents and proposal reviewers. Save, then
+**Check audit connection**. Unsupported routes fail visibly; explicitly select available routes
+instead of expecting a fallback. Correct any CLI version warning before live work. Existing saved model IDs stay
+visible when a catalog changes or cannot be loaded. See [model routing](docs/model-routing.md)
+for JSON examples and runner behavior.
 
 Select **Run an audit** while paused and idle. It runs one planning pass, retains
 accepted/rejected/deferred decisions, queues nothing, and leaves execution paused.

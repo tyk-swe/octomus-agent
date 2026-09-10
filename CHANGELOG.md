@@ -7,6 +7,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Per-route Codex/OpenCode selection, locally managed OpenCode servers, and guided
+  provider/model/effort/variant configuration with compatible saved task loading.
+
 - One-shot audits with durable proposal decisions and no task dispatch.
 - Embedded dashboard, Linux x86_64/aarch64 release packaging, checksum-verifying
   installer and Cargo package metadata/assets.
@@ -17,6 +20,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and read-only usage reports for live commissioning preparation.
 
 ### Changed
+
+- New workspace directories use Octomus task IDs; existing saved paths and native
+  session identities remain valid for recovery.
 
 - Dashboard builds precede Rust builds; `--assets` is an explicit override.
 - Operator checklist moved to `docs/operations.md`; README starts with installation

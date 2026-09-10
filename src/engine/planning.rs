@@ -1,11 +1,5 @@
 use super::App;
-use crate::{
-    codex::{self, Codex},
-    config::Config,
-    git,
-    model::*,
-    store::redact,
-};
+use crate::{config::Config, git, model::*, runner::Runners, schemas, store::redact};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -34,19 +28,12 @@ impl App {
             .join("workspace");
         git::clone_at(config, &workspace, &grounding(cycle)?.revision, cancel).await?;
         let route = &config.roles[role];
-        let mut client = Codex::connect(
-            config,
-            &self.data_dir,
-            self.store.clone(),
-            &cycle.id,
-            cancel.clone(),
-        )
-        .await?;
+        let mut client = Runners::new(config, self.store.clone(), &cycle.id, cancel.clone());
         let id = client.start(route, &workspace, None).await?;
         self.store.event(
             &cycle.id,
             "session_started",
-            &format!("{label}: {id} · {} / {}", route.model, route.effort),
+            &format!("{label}: {id} · {route}"),
         )?;
         let mut session = Session {
             id,
@@ -211,7 +198,7 @@ impl App {
                 "grounding",
                 "orchestrator",
                 &ground_prompt,
-                codex::object(json!({"context":codex::string()})),
+                schemas::object(json!({"context":schemas::string()})),
                 cancel,
             )
             .await?;
@@ -258,7 +245,7 @@ impl App {
                 label,
                 "discovery",
                 prompt,
-                codex::proposal_schema(),
+                schemas::proposal_schema(),
                 cancel,
             )
         }))
@@ -287,8 +274,8 @@ impl App {
         cancel: &CancellationToken,
     ) -> Result<()> {
         let candidates = serde_json::to_string(&cycle.proposals)?;
-        let schema = codex::object(
-            json!({"assessments":codex::array(codex::object(json!({"id":codex::string(),"decision":codex::string(),"reason":codex::string()})))}),
+        let schema = schemas::object(
+            json!({"assessments":schemas::array(schemas::object(json!({"id":schemas::string(),"decision":schemas::string(),"reason":schemas::string()})))}),
         );
         let prompts = [
             format!(
@@ -358,7 +345,7 @@ impl App {
                 "consolidation",
                 "orchestrator",
                 &prompt,
-                codex::proposal_schema(),
+                schemas::proposal_schema(),
                 cancel,
             )
             .await?;

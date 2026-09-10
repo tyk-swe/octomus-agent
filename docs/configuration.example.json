@@ -7,46 +7,56 @@
   "roles": {
     "code_reviewer": {
       "model": "",
-      "effort": ""
+      "effort": "",
+      "backend": "codex"
     },
     "discovery": {
       "model": "",
-      "effort": ""
+      "effort": "",
+      "backend": "codex"
     },
     "orchestrator": {
       "model": "",
-      "effort": ""
+      "effort": "",
+      "backend": "codex"
     },
     "proposal_reviewer": {
       "model": "",
-      "effort": ""
+      "effort": "",
+      "backend": "codex"
     }
   },
   "tiers": {
     "L": {
       "model": "gpt-6-astra",
-      "effort": "medium"
+      "effort": "medium",
+      "backend": "codex"
     },
     "M": {
       "model": "gpt-6-astra",
-      "effort": "low"
+      "effort": "low",
+      "backend": "codex"
     },
     "S": {
       "model": "gpt-5.6-luna",
-      "effort": "max"
+      "effort": "max",
+      "backend": "codex"
     },
     "XL": {
       "model": "gpt-6-astra",
-      "effort": "high"
+      "effort": "high",
+      "backend": "codex"
     },
     "XS": {
       "model": "gpt-5.6-luna",
-      "effort": "xhigh"
+      "effort": "xhigh",
+      "backend": "codex"
     }
   },
   "repair_route": {
     "model": "gpt-6-astra",
-    "effort": "medium"
+    "effort": "medium",
+    "backend": "codex"
   },
   "categories": [
     "features",
@@ -76,5 +86,6 @@
   "max_sessions_per_day": 150,
   "max_workspace_bytes": 20000000000,
   "retain_completed_days": 14,
-  "retain_events": 10000
+  "retain_events": 10000,
+  "opencode_binary": "opencode"
 }

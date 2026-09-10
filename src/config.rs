@@ -19,17 +19,101 @@ pub const ROLES: [&str; 4] = [
     "proposal_reviewer",
     "code_reviewer",
 ];
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum Backend {
+    #[default]
+    Codex,
+    Opencode,
+}
+impl std::fmt::Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Codex => "Codex",
+            Self::Opencode => "OpenCode",
+        })
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
+    #[serde(default)]
+    pub backend: Backend,
     pub model: String,
+    #[serde(default)]
     pub effort: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
 }
 impl Route {
     pub fn new(model: &str, effort: &str) -> Self {
         Self {
+            backend: Backend::Codex,
             model: model.into(),
             effort: effort.into(),
+            provider: None,
+            variant: None,
+        }
+    }
+    pub fn validate(&self, ready: bool) -> Result<()> {
+        let valid =
+            |s: &str, max| s.len() <= max && s.trim() == s && !s.chars().any(char::is_control);
+        ensure!(
+            valid(
+                &self.model,
+                if self.backend == Backend::Codex {
+                    100
+                } else {
+                    512
+                }
+            ) && valid(&self.effort, 20)
+                && self.provider.as_deref().is_none_or(|s| valid(s, 100))
+                && self
+                    .variant
+                    .as_deref()
+                    .is_none_or(|s| !s.is_empty() && valid(s, 100)),
+            "Invalid model route"
+        );
+        match self.backend {
+            Backend::Codex => {
+                ensure!(
+                    self.provider.is_none() && self.variant.is_none(),
+                    "Codex routes use reasoning effort, not an OpenCode provider or variant"
+                );
+                ensure!(
+                    !ready || (!self.model.is_empty() && !self.effort.is_empty()),
+                    "Set the Codex model and effort for every required route"
+                );
+            }
+            Backend::Opencode => {
+                ensure!(
+                    self.effort.is_empty(),
+                    "OpenCode routes use a variant, not Codex reasoning effort"
+                );
+                ensure!(
+                    !ready
+                        || (!self.model.is_empty()
+                            && self.provider.as_deref().is_some_and(|s| !s.is_empty())),
+                    "Set the OpenCode provider and model for every required route"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+impl std::fmt::Display for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.backend {
+            Backend::Codex => write!(f, "Codex · {} / {}", self.model, self.effort),
+            Backend::Opencode => write!(
+                f,
+                "OpenCode · {}/{} / {}",
+                self.provider.as_deref().unwrap_or(""),
+                self.model,
+                self.variant.as_deref().unwrap_or("provider default")
+            ),
         }
     }
 }
@@ -44,6 +128,7 @@ pub struct Config {
     pub default_branch: String,
     pub branch_prefix: String,
     pub codex_binary: String,
+    pub opencode_binary: String,
     pub roles: BTreeMap<String, Route>,
     pub tiers: BTreeMap<String, Route>,
     pub repair_route: Route,
@@ -75,6 +160,7 @@ impl Default for Config {
             default_branch: "main".into(),
             branch_prefix: "octomus/".into(),
             codex_binary: "codex".into(),
+            opencode_binary: "opencode".into(),
             roles: ROLES
                 .into_iter()
                 .map(|r| (r.into(), Route::new("", "")))
@@ -113,6 +199,21 @@ impl Default for Config {
     }
 }
 impl Config {
+    pub fn binary(&self, backend: Backend) -> &str {
+        match backend {
+            Backend::Codex => &self.codex_binary,
+            Backend::Opencode => &self.opencode_binary,
+        }
+    }
+    pub fn routes_for(&self, audit: bool) -> Vec<(&str, &Route)> {
+        self.roles
+            .iter()
+            .filter(|(role, _)| !audit || role.as_str() != "code_reviewer")
+            .chain(self.tiers.iter().filter(|_| !audit))
+            .map(|(name, route)| (name.as_str(), route))
+            .chain((!audit).then_some(("repair", &self.repair_route)))
+            .collect()
+    }
     pub fn validate(&self, ready: bool) -> Result<()> {
         self.validate_mode(ready, false)
     }
@@ -191,32 +292,26 @@ impl Config {
             .chain(self.tiers.values())
             .chain(std::iter::once(&self.repair_route))
         {
+            route.validate(false)?;
+        }
+        for binary in [&self.codex_binary, &self.opencode_binary] {
             ensure!(
-                route.model.len() <= 100 && route.effort.len() <= 20,
-                "Invalid route"
+                binary.len() <= 4096 && !binary.chars().any(char::is_control),
+                "Invalid runner executable path"
             );
-            if ready && !audit {
-                ensure!(
-                    !route.model.is_empty() && !route.effort.is_empty(),
-                    "Set the model and effort for every role, tier, and repair route"
-                );
-            }
         }
         ensure!(
-            !self.codex_binary.is_empty()
-                && self
-                    .verification_commands
-                    .iter()
-                    .all(|c| !c.trim().is_empty() && c.len() <= 4096),
+            self.verification_commands
+                .iter()
+                .all(|c| !c.trim().is_empty() && c.len() <= 4096),
             "Invalid executable or verification commands"
         );
         if ready {
-            for role in ["orchestrator", "discovery", "proposal_reviewer"] {
-                let route = &self.roles[role];
-                ensure!(
-                    !route.model.is_empty() && !route.effort.is_empty(),
-                    "Set the model and effort for every planning role"
-                );
+            for (name, route) in self.routes_for(audit) {
+                route
+                    .validate(true)
+                    .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+                validate_binary(self.binary(route.backend))?;
             }
             ensure!(
                 self.repository.is_absolute() && self.repository.join(".git").exists(),
@@ -237,6 +332,13 @@ impl Config {
         }
         Ok(())
     }
+}
+pub fn validate_binary(binary: &str) -> Result<()> {
+    ensure!(
+        !binary.trim().is_empty() && binary.len() <= 4096 && !binary.chars().any(char::is_control),
+        "Set a valid runner executable path"
+    );
+    Ok(())
 }
 pub fn valid_branch(s: &str) -> bool {
     !s.is_empty()

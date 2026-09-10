@@ -68,9 +68,9 @@ class Service:
         if (self.root / 'failed-verification').exists():
             config['verification_commands'] = ['false']
         for role in config['roles']:
-            config['roles'][role] = {'model': 'gpt-6-astra', 'effort': 'medium'}
+            config['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
         if (self.root / 'custom-route').exists():
-            config['repair_route'] = {'model': 'gpt-5.6-luna', 'effort': 'high'}
+            config['repair_route'] = {'backend': 'codex', 'model': 'gpt-5.6-luna', 'effort': 'high'}
             config['tiers']['M'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}
         self.request('/config', 'PUT', config)
         diagnostic = self.request('/doctor', 'POST')
@@ -91,10 +91,11 @@ class Service:
 
 def setup(root):
     (root / 'bin').mkdir()
-    for name in ['codex', 'gh', 'git']:
+    for name in ['codex', 'opencode', 'gh', 'git']:
         dest = root / 'bin' / name
         shutil.copy(PROJECT / 'tests/fixtures' / f'{name}.py', dest)
         dest.chmod(0o755)
+    shutil.copy(PROJECT / 'tests/fixtures/worker.py', root / 'bin/worker.py')
     (root / 'checkout').mkdir()
     git('init', '--bare', str(root / 'remote.git'), cwd=root)
     git('init', '-b', 'main', cwd=root / 'checkout')
@@ -218,7 +219,7 @@ def scenario(mode):
                     service.request('/control/resume', 'POST')
                     task = service.wait(service.terminal_task, 'retried delivery')
                     assert task['status'] == 'published', task['error']
-                    assert task['config']['repair_route'] == {'model': 'gpt-6-astra', 'effort': 'medium'}
+                    assert task['config']['repair_route'] == {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
                     assert all(s['route'] == task['config']['repair_route'] for s in task['sessions'] if s['role'] == 'repair')
                     report = usage_report(root)
                     assert sum(a['role'] == 'executor' for a in report['admissions']) == 2
@@ -237,7 +238,7 @@ def scenario(mode):
             assert all(r['comparison_base'] == task['default_revision'] for r in task['reviews'])
             repairs = [s for s in task['sessions'] if s['role'] == 'repair']
             assert len(repairs) == 1 and repairs[0]['route'] == task['config']['repair_route']
-            assert task['workspace'].endswith(f'tasks/{task["execution_session"]}/workspace')
+            assert task['workspace'].endswith(f'tasks/{task["id"]}/workspace')
             assert task['verification'][-1]['success']
             assert task['verification'][-1]['revision'] == task['output_commit']
             assert len(json.loads((root / 'prs.json').read_text())) == (2 if mode == 'parallel' else 1)
@@ -259,9 +260,9 @@ def scenario(mode):
             assert report['cycles'][0]['planning_admissions'] == 13
             assert report['cycles'][0]['task_admissions'] == 6 * expected_tasks
             if mode == 'custom-route':
-                assert repairs[0]['route'] == {'model': 'gpt-5.6-luna', 'effort': 'high'}
+                assert repairs[0]['route'] == {'backend': 'codex', 'model': 'gpt-5.6-luna', 'effort': 'high'}
                 consolidation = next(p['prompt'] for p in protocol if p['prompt'].startswith('Act as final'))
-                assert '"M":{"model":"gpt-5.6-luna","effort":"low"}' in consolidation
+                assert '"M":{"backend":"codex","model":"gpt-5.6-luna","effort":"low"}' in consolidation
                 assert 'XS luna xhigh' not in consolidation
             if mode == 'normal':
                 service.stop()
@@ -339,7 +340,7 @@ def audit_scenario(mode):
             c = service.request('/config')
             c.update(repository=str(root / 'checkout'), github_repo='fixture/project', verification_commands=[], command_timeout_seconds=10, session_timeout_seconds=30, task_timeout_seconds=120)
             for role in ['orchestrator', 'discovery', 'proposal_reviewer']:
-                c['roles'][role] = {'model': 'gpt-6-astra', 'effort': 'medium'}
+                c['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
             c['roles']['code_reviewer'] = {'model': 'unavailable', 'effort': 'high'}
             c['repair_route'] = {'model': 'unavailable', 'effort': 'high'}
             if mode == 'budget':

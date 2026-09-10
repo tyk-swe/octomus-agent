@@ -1,5 +1,5 @@
 use crate::{
-    config::Config,
+    config::{Backend, Config, validate_binary},
     engine::App,
     model::{Cycle, CycleMode, Status, Task},
     store::redact,
@@ -74,6 +74,7 @@ pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
         .route("/control/{action}", post(control))
         .route("/doctor", post(doctor))
         .route("/models", get(models))
+        .route("/model-catalog", post(model_catalog))
         .route("/events", get(events))
         .fallback(|| async {
             (
@@ -344,6 +345,33 @@ async fn models(State(s): State<Api>) -> Result<Json<Value>> {
     )
     .await?;
     Ok(Json(json!(cx.models().await?)))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogRequest {
+    backend: Backend,
+    binary: String,
+}
+async fn model_catalog(
+    State(s): State<Api>,
+    Json(request): Json<CatalogRequest>,
+) -> Result<Json<Vec<crate::runner::Model>>> {
+    validate_binary(&request.binary)?;
+    let mut config = s.app.config()?;
+    match request.backend {
+        Backend::Codex => config.codex_binary = request.binary,
+        Backend::Opencode => config.opencode_binary = request.binary,
+    }
+    let mut client = crate::runner::Runner::connect(
+        request.backend,
+        &config,
+        &s.app.data_dir,
+        s.app.store.clone(),
+        "system",
+        s.app.shutdown.child_token(),
+    )
+    .await?;
+    Ok(Json(client.models(&s.app.data_dir).await?))
 }
 #[derive(Deserialize)]
 struct EventQuery {

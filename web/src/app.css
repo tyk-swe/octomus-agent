@@ -1243,29 +1243,6 @@ input:disabled,
 textarea:disabled {
   background: #fafbf7;
 }
-.route-grid {
-  display: grid;
-  grid-template-columns: 1.15fr 1.5fr 0.8fr;
-  gap: 14px;
-  align-items: center;
-  margin: 10px 24px;
-  font-size: 12px;
-  color: #556b45;
-}
-.route-labels {
-  color: #5a6949;
-  font-size: 10px;
-  margin-bottom: 17px;
-}
-.route-grid input {
-  font-size: 11px;
-}
-.route-grid .tier {
-  margin-right: 6px;
-}
-.route-grid datalist {
-  display: none;
-}
 .divider {
   height: 1px;
   background: #edf1e6;
@@ -1281,10 +1258,6 @@ textarea:disabled {
   padding: 12px;
   background: #f8faf3;
   border-radius: 6px;
-}
-.executable {
-  margin: 22px 24px 0;
-  max-width: 420px;
 }
 .category-options {
   display: flex;
@@ -1831,14 +1804,6 @@ pre {
   .search-box {
     max-width: none;
   }
-  .route-grid {
-    grid-template-columns: 1fr 1.3fr 0.7fr;
-    gap: 9px;
-  }
-  .route-grid input {
-    padding: 8px;
-    font-size: 10px;
-  }
   .login-layout {
     gap: 5vw;
   }
@@ -2083,32 +2048,6 @@ pre {
     gap: 15px;
   }
   .settings-actions > p {
-    font-size: 11px;
-  }
-  .route-grid {
-    margin-inline: 20px;
-    grid-template-columns: 1fr 1.3fr;
-    gap: 8px;
-  }
-  .route-grid > input:last-of-type {
-    grid-column: 2;
-  }
-  .route-labels {
-    display: none;
-  }
-  .route-grid label,
-  .route-grid > span {
-    font-size: 10px;
-    grid-row: span 2;
-  }
-  .route-grid:not(.route-labels) {
-    padding-bottom: 12px;
-    border-bottom: 1px solid #edf2e5;
-  }
-  .route-grid:last-of-type {
-    border: 0;
-  }
-  .route-grid input {
     font-size: 11px;
   }
   .settings-section .section-heading .button {
