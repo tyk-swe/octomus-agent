@@ -36,7 +36,49 @@ pub fn command(binary: &str, cwd: &Path) -> Command {
         .env("GIT_TERMINAL_PROMPT", "0");
     c
 }
-async fn bounded_read(mut r: impl AsyncRead + Unpin) -> std::io::Result<String> {
+pub const DIAGNOSTIC_LIMIT: usize = 262_144;
+pub const MACHINE_LIMIT: usize = 16 * 1024 * 1024;
+#[derive(Debug, Clone, Copy)]
+pub enum CaptureMode {
+    Diagnostic,
+    Machine,
+}
+#[derive(Debug)]
+pub struct Captured {
+    pub bytes: Vec<u8>,
+    pub truncated: bool,
+}
+impl Captured {
+    fn preview(&self) -> String {
+        let text = String::from_utf8_lossy(&self.bytes);
+        if self.truncated {
+            format!("{text}\n[diagnostic output truncated]")
+        } else {
+            text.into_owned()
+        }
+    }
+}
+#[derive(Debug)]
+pub struct ProcessOutput {
+    pub status: std::process::ExitStatus,
+    pub stdout: Captured,
+    pub stderr: Captured,
+}
+#[derive(Debug)]
+pub struct OutputTooLarge {
+    pub limit: usize,
+}
+impl std::fmt::Display for OutputTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Machine output exceeds {} bytes; complete output was not captured",
+            self.limit
+        )
+    }
+}
+impl std::error::Error for OutputTooLarge {}
+async fn bounded_read(mut r: impl AsyncRead + Unpin, limit: usize) -> std::io::Result<Captured> {
     let mut kept = Vec::new();
     let mut buf = [0; 8192];
     let mut truncated = false;
@@ -45,23 +87,23 @@ async fn bounded_read(mut r: impl AsyncRead + Unpin) -> std::io::Result<String> 
         if n == 0 {
             break;
         }
-        let remaining = 262144usize.saturating_sub(kept.len());
+        let remaining = limit.saturating_sub(kept.len());
         truncated |= n > remaining;
         kept.extend_from_slice(&buf[..n.min(remaining)]);
     }
-    let mut text = String::from_utf8_lossy(&kept).into_owned();
-    if truncated {
-        text.push_str("\n[output truncated at 262144 bytes]");
-    }
-    Ok(text)
+    Ok(Captured {
+        bytes: kept,
+        truncated,
+    })
 }
-pub async fn run(
+pub async fn capture(
     binary: &str,
     args: &[&str],
     cwd: &Path,
     seconds: u64,
     cancel: &CancellationToken,
-) -> Result<String> {
+    mode: CaptureMode,
+) -> Result<ProcessOutput> {
     anyhow::ensure!(!cancel.is_cancelled(), "Operation cancelled");
     let mut child = GroupChild::new(
         command(binary, cwd)
@@ -71,19 +113,75 @@ pub async fn run(
     );
     let stdout = child.0.stdout.take().unwrap();
     let stderr = child.0.stderr.take().unwrap();
-    let future = async {
-        let (status, out, err) =
-            tokio::join!(child.0.wait(), bounded_read(stdout), bounded_read(stderr));
-        let status = status?;
-        let out = out?;
-        let err = err?;
-        if !status.success() {
-            bail!(
-                "{binary} exited with {status}: {}",
-                crate::store::redact(&format!("{out}\n{err}"))
-            );
-        }
-        Ok(out.trim().to_owned())
+    let limit = match mode {
+        CaptureMode::Diagnostic => DIAGNOSTIC_LIMIT,
+        CaptureMode::Machine => MACHINE_LIMIT,
     };
-    tokio::select! { result=tokio::time::timeout(Duration::from_secs(seconds),future)=>result.context("Command timed out")?, _=cancel.cancelled()=>bail!("Operation cancelled") }
+    let future = async {
+        let (status, out, err) = tokio::join!(
+            child.0.wait(),
+            bounded_read(stdout, limit),
+            bounded_read(stderr, DIAGNOSTIC_LIMIT)
+        );
+        Ok(ProcessOutput {
+            status: status?,
+            stdout: out?,
+            stderr: err?,
+        })
+    };
+    tokio::select! {
+        result=tokio::time::timeout(Duration::from_secs(seconds),future)=>result.context("Command timed out")?,
+        _=cancel.cancelled()=>bail!("Operation cancelled")
+    }
+}
+async fn checked(
+    binary: &str,
+    args: &[&str],
+    cwd: &Path,
+    seconds: u64,
+    cancel: &CancellationToken,
+    mode: CaptureMode,
+) -> Result<String> {
+    let output = capture(binary, args, cwd, seconds, cancel, mode).await?;
+    if !output.status.success() {
+        bail!(
+            "{binary} exited with {}: {}",
+            output.status,
+            crate::store::redact(&format!(
+                "{}\n{}",
+                output.stdout.preview(),
+                output.stderr.preview()
+            ))
+        );
+    }
+    match mode {
+        CaptureMode::Diagnostic => Ok(output.stdout.preview().trim().to_owned()),
+        CaptureMode::Machine => {
+            if output.stdout.truncated {
+                return Err(OutputTooLarge {
+                    limit: MACHINE_LIMIT,
+                }
+                .into());
+            }
+            String::from_utf8(output.stdout.bytes).context("Machine output is not valid UTF-8")
+        }
+    }
+}
+pub async fn run(
+    binary: &str,
+    args: &[&str],
+    cwd: &Path,
+    seconds: u64,
+    cancel: &CancellationToken,
+) -> Result<String> {
+    checked(binary, args, cwd, seconds, cancel, CaptureMode::Diagnostic).await
+}
+pub async fn run_machine(
+    binary: &str,
+    args: &[&str],
+    cwd: &Path,
+    seconds: u64,
+    cancel: &CancellationToken,
+) -> Result<String> {
+    checked(binary, args, cwd, seconds, cancel, CaptureMode::Machine).await
 }

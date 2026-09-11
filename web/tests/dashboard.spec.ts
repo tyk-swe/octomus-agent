@@ -47,7 +47,7 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await page.getByLabel('Operator access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Run a cycle' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Run once' })).toBeDisabled();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(
@@ -130,18 +130,57 @@ test('one-shot audit progress, decisions and paused controls', async ({ page }, 
       cycle.number = 2;
       cycle.mode = 'audit';
       cycle.status = running ? 'running' : 'completed';
-      cycle.proposals = finished
-        ? ['accepted', 'rejected', 'deferred'].map((decision, index) => ({
-            ...cycle.proposals[0],
-            id: `audit-${index}`,
-            title: `Audit ${decision} recommendation`,
-            decision,
-            reason: `${decision}: both adversaries considered the concrete evidence.`
-          }))
-        : [];
+      cycle.decisions = { accepted: 1, rejected: 1, deferred: 1 };
       state.cycles.unshift(cycle);
     }
     await route.fulfill({ response, json: state });
+  });
+  await page.route('**/api/cycles?*', async (route) => {
+    const response = await route.fetch();
+    const result = await response.json();
+    if (running || finished)
+      result.items.unshift({
+        ...result.items[0],
+        id: 'audit-fixture',
+        number: 2,
+        mode: 'audit',
+        status: running ? 'running' : 'completed'
+      });
+    await route.fulfill({ response, json: result });
+  });
+  await page.route('**/api/proposals?*', async (route) => {
+    const response = await route.fetch();
+    const result = await response.json();
+    if (running || finished) {
+      const seed = result.items[0] ?? {
+        target: 'main',
+        tier: 'M',
+        category: 'features',
+        problem: 'Concrete evidence',
+        scope: 'Small scope',
+        benefit: 'Useful',
+        evidence: [],
+        dependencies: [],
+        prompt: ''
+      };
+      const status = new URL(route.request().url()).searchParams.get('status');
+      result.items = finished
+        ? ['accepted', 'rejected', 'deferred']
+            .filter((d) => status === 'all' || d === status)
+            .map((decision, index) => ({
+              ...seed,
+              id: `audit-${index}`,
+              cycle_id: 'audit-fixture',
+              cycle: 2,
+              mode: 'audit',
+              title: `Audit ${decision} recommendation`,
+              decision,
+              reason: `${decision}: both adversaries considered the concrete evidence.`
+            }))
+        : [];
+      result.counts = { accepted: 1, rejected: 1, deferred: 1 };
+    }
+    await route.fulfill({ response, json: result });
   });
   await page.route('**/api/control/audit', async (route) => {
     expect(route.request().method()).toBe('POST');
@@ -151,11 +190,11 @@ test('one-shot audit progress, decisions and paused controls', async ({ page }, 
   await page.goto('/');
   await page.getByLabel('Operator access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
-  await expect(page.getByRole('button', { name: 'Run a cycle' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Run once' })).toBeDisabled();
   await page.getByRole('button', { name: 'Run an audit' }).click();
   await expect(page.getByRole('heading', { name: 'Worth doing. Before doing.' })).toBeVisible();
   await expect(page.getByRole('status')).toContainText('Audit in progress');
-  await expect(page.getByRole('button', { name: 'Resume', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Start continuous', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Run an audit' })).toBeDisabled();
   running = false;
   finished = true;
@@ -262,4 +301,322 @@ test('model routing across all roles, provider variants, draft catalogs and unav
     path: `test-results/${testInfo.project.name}-model-routes.png`,
     fullPage: true
   });
+});
+
+test('task detail polling does not overlap or apply a response after close', async ({
+  page
+}, testInfo) => {
+  let reads = 0;
+  let release: (() => void) | undefined;
+  await page.route('**/api/tasks/task-reviewed', async (route) => {
+    reads++;
+    if (reads === 1)
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    try {
+      const response = await route.fetch();
+      await route.fulfill({ response });
+    } catch {
+      /* closing aborts the outstanding request */
+    }
+  });
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Task queue', exact: true })
+    .click();
+  await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+  await expect.poll(() => reads).toBe(1);
+  await page.waitForTimeout(4500);
+  expect(reads).toBe(1);
+  await page.getByRole('button', { name: 'Close task details' }).click();
+  release?.();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+  await expect(
+    page
+      .getByRole('dialog')
+      .getByRole('heading', { name: 'Explain the local development workflow' })
+  ).toBeVisible();
+  expect(reads).toBe(2);
+});
+
+test('expanded proposal evidence survives summary polling by cycle and proposal identity', async ({
+  page
+}, testInfo) => {
+  let reads = 0;
+  let detailReads = 0;
+  let otherCycle = false;
+  let revision = 1;
+  let instructions = 'Execution prompt';
+  let evidencePrefix = 'Evidence';
+  let problem = 'Full problem evidence. '.repeat(120) + 'Problem ending';
+  let reason = 'Full decision rationale. '.repeat(120) + 'Reason ending';
+  await page.route('**/api/proposals?*', async (route) => {
+    const response = await route.fetch();
+    const result = await response.json();
+    reads++;
+    result.items = [
+      {
+        ...result.items[0],
+        id: 'shared-proposal-id',
+        cycle_id: otherCycle ? 'other-cycle' : 'first-cycle',
+        title: otherCycle ? 'Another cycle proposal' : 'Expanded proposal',
+        content_revision: revision,
+        problem: problem.slice(0, 2000),
+        reason: reason.slice(0, 2000),
+        prompt: '',
+        evidence: []
+      }
+    ];
+    await route.fulfill({ response, json: result });
+  });
+  await page.route('**/api/proposals/*/shared-proposal-id', async (route) => {
+    detailReads++;
+    const cycle = route.request().url().includes('/first-cycle/') ? 'first' : 'other';
+    await route.fulfill({
+      json: {
+        content_revision: revision,
+        problem,
+        reason,
+        prompt: `${instructions} for ${cycle} cycle`,
+        evidence: [`${evidencePrefix} for ${cycle} cycle`]
+      }
+    });
+  });
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Proposals', exact: true })
+    .click();
+  await page.getByText('Scope, evidence & execution prompt', { exact: true }).click();
+  await expect(page.getByText('Execution prompt for first cycle', { exact: true })).toBeVisible();
+  await expect(page.getByText(problem, { exact: true })).toBeVisible();
+  await expect(page.getByText(reason, { exact: true })).toBeVisible();
+  const initialReads = reads;
+  await expect.poll(() => reads).toBeGreaterThan(initialReads);
+  await expect(page.getByText(problem, { exact: true })).toBeVisible();
+  await expect(page.getByText(reason, { exact: true })).toBeVisible();
+  await expect(page.getByText('Execution prompt for first cycle', { exact: true })).toBeVisible();
+  await expect(page.getByText('Evidence for first cycle', { exact: true })).toBeVisible();
+  await page.getByText('Scope, evidence & execution prompt', { exact: true }).click();
+  await page.getByText('Scope, evidence & execution prompt', { exact: true }).click();
+  await expect(page.getByText(problem, { exact: true })).toBeVisible();
+  await expect(page.getByText(reason, { exact: true })).toBeVisible();
+  expect(detailReads).toBe(1);
+  problem += ' Updated problem beyond the summary prefix';
+  reason += ' Updated reason beyond the summary prefix';
+  revision++;
+  await expect(page.getByText(problem, { exact: true })).toBeVisible({ timeout: 10000 });
+  await expect(page.getByText(reason, { exact: true })).toBeVisible();
+  expect(detailReads).toBe(2);
+  instructions = 'Consolidated execution prompt';
+  evidencePrefix = 'Fresh consolidated evidence';
+  revision++;
+  await expect(
+    page.getByText('Consolidated execution prompt for first cycle', { exact: true })
+  ).toBeVisible({ timeout: 10000 });
+  await expect(
+    page.getByText('Fresh consolidated evidence for first cycle', { exact: true })
+  ).toBeVisible();
+  await expect(page.getByText('Execution prompt for first cycle', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Evidence for first cycle', { exact: true })).toHaveCount(0);
+  expect(detailReads).toBe(3);
+  otherCycle = true;
+  revision = 1;
+  instructions = 'Execution prompt';
+  evidencePrefix = 'Evidence';
+  await expect(page.getByRole('heading', { name: 'Another cycle proposal' })).toBeVisible({
+    timeout: 10000
+  });
+  await expect(page.locator('.proposal-card details')).not.toHaveAttribute('open', '');
+  await page.getByText('Scope, evidence & execution prompt', { exact: true }).click();
+  await expect(page.getByText('Execution prompt for other cycle', { exact: true })).toBeVisible();
+  await expect(page.getByText('Execution prompt for first cycle', { exact: true })).toHaveCount(0);
+});
+
+test('proposal revision changes replace pending detail and ignore late stale responses', async ({
+  page
+}, testInfo) => {
+  let revision = 1;
+  let reads = 0;
+  let detailReads = 0;
+  let release: (() => void) | undefined;
+  await page.route('**/api/proposals?*', async (route) => {
+    const response = await route.fetch();
+    const result = await response.json();
+    reads++;
+    result.items = [
+      {
+        ...result.items[0],
+        id: 'slow-proposal',
+        cycle_id: 'slow-cycle',
+        content_revision: revision,
+        prompt: '',
+        evidence: []
+      }
+    ];
+    await route.fulfill({ response, json: result });
+  });
+  await page.route('**/api/proposals/slow-cycle/slow-proposal', async (route) => {
+    detailReads++;
+    const requestedRevision = revision;
+    if (requestedRevision === 1)
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    await route.fulfill({
+      json: {
+        content_revision: requestedRevision,
+        prompt:
+          requestedRevision === 1 ? 'Stale draft instructions' : 'Fresh consolidated instructions',
+        evidence: [requestedRevision === 1 ? 'Stale draft evidence' : 'Fresh consolidated evidence']
+      }
+    });
+  });
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Proposals', exact: true })
+    .click();
+  const toggle = page.getByText('Scope, evidence & execution prompt', { exact: true });
+  await toggle.click();
+  await expect.poll(() => detailReads).toBe(1);
+  await toggle.click();
+  await toggle.click();
+  const initialReads = reads;
+  await expect.poll(() => reads).toBeGreaterThan(initialReads);
+  expect(detailReads).toBe(1);
+  revision = 2;
+  await expect(page.getByText('Fresh consolidated instructions', { exact: true })).toBeVisible({
+    timeout: 10000
+  });
+  expect(detailReads).toBe(2);
+  const staleResponse = page.waitForResponse('**/api/proposals/slow-cycle/slow-proposal');
+  release?.();
+  await (await staleResponse).finished();
+  const refreshedReads = reads;
+  await expect.poll(() => reads).toBeGreaterThan(refreshedReads);
+  await expect(page.getByText('Fresh consolidated instructions', { exact: true })).toBeVisible();
+  await expect(page.getByText('Fresh consolidated evidence', { exact: true })).toBeVisible();
+  await expect(page.getByText('Stale draft instructions', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Stale draft evidence', { exact: true })).toHaveCount(0);
+  expect(detailReads).toBe(2);
+});
+
+test('loaded older cycles and their actions survive background refresh', async ({
+  page
+}, testInfo) => {
+  let newest = 102;
+  let archived = false;
+  await page.route('**/api/cycles?*', async (route) => {
+    const before = Number(new URL(route.request().url()).searchParams.get('before') ?? newest + 1);
+    const cycles = Array.from({ length: newest }, (_, i) => ({
+      id: `history-${newest - i}`,
+      number: newest - i,
+      mode: 'execution',
+      status: 'completed',
+      started_at: '2026-09-10T00:00:00Z',
+      completed_at: '2026-09-10T00:01:00Z',
+      error: null,
+      session_count: 0,
+      decisions: {},
+      lifecycle: newest - i === 1 && archived ? { archived_at: '2026-09-10T00:00:00Z' } : {}
+    })).filter((cycle) => cycle.number < before);
+    const items = cycles.slice(0, 100);
+    await route.fulfill({
+      json: {
+        items,
+        next_cursor: cycles.length > 100 ? items.at(-1)?.number : null,
+        counts: {}
+      }
+    });
+  });
+  await page.route('**/api/cycles/history-1/archive', async (route) => {
+    archived = true;
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Proposals', exact: true })
+    .click();
+  const picker = page.getByLabel('Cycle', { exact: true });
+  await expect(picker.locator('option')).toHaveCount(101);
+  await page.getByRole('button', { name: 'Load older cycles' }).click();
+  await expect(picker.locator('option')).toHaveCount(103);
+  await picker.selectOption('history-1');
+  newest = 103;
+  await expect(picker.locator('option[value="history-103"]')).toHaveCount(1, { timeout: 10000 });
+  await expect(picker.locator('option')).toHaveCount(104);
+  await expect(picker).toHaveValue('history-1');
+  await expect(page.getByRole('button', { name: 'Load older cycles' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Archive cycle', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Discard cycle workspaces' })).toBeVisible();
+  await expect(picker).toHaveValue('history-1');
+});
+
+test('slow history requests survive polling while filter changes replace them', async ({
+  page
+}, testInfo) => {
+  let reads = 0;
+  let release: (() => void) | undefined;
+  await page.route('**/api/tasks?*', async (route) => {
+    const response = await route.fetch();
+    const query = new URL(route.request().url()).searchParams.get('q');
+    reads++;
+    if (!query) await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (query === 'documentation')
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    await route.fulfill({ response });
+  });
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Task queue', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: /Explain the local development workflow/ })
+  ).toBeVisible({ timeout: 10000 });
+  expect(reads).toBe(1);
+  await page.getByLabel('Search work').fill('documentation');
+  await expect.poll(() => !!release).toBe(true);
+  await page.getByLabel('Search work').fill('setup');
+  await expect(
+    page.getByRole('button', { name: /Complete the repository setup flow/ })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: /Explain the local development workflow/ })
+  ).toHaveCount(0);
+  release?.();
+  await page.waitForTimeout(200);
+  await expect(
+    page.getByRole('button', { name: /Complete the repository setup flow/ })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: /Explain the local development workflow/ })
+  ).toHaveCount(0);
 });

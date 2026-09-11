@@ -156,8 +156,9 @@ npm ci --prefix web && make check && make test
 
 Start conservatively: one concurrent task, one task per cycle and a 21,600-second
 interval. This is a conservative starting profile, not a measured replacement for
-shipped defaults. Save and **Check connection**, then **Run a cycle**. This enables
-ongoing cycles as well. Inspect the task's review/verification evidence and PR;
+shipped defaults. Save and **Check connection**, then **Run once**. It drains the
+existing queue, plans one cycle, finishes its accepted tasks, and pauses. Use
+**Start continuous** to enable ongoing scheduling. Inspect the task's review/verification evidence and PR;
 only you decide to merge it. A cycle with no worthwhile work is a valid outcome.
 
 **Pause** stops new work; active tasks may finish and publish. Use **Cancel task**

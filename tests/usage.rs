@@ -21,6 +21,16 @@ fn admission_and_counter_commit_together_across_days_and_restarts() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("state.db");
     let store = Store::open(&path).unwrap();
+    store
+        .put(
+            "settings",
+            "config",
+            &octomus_agent::config::Config {
+                max_sessions_per_day: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
     let first = admission("2026-09-09T23:59:59Z");
     store.reserve_session(2, &first).unwrap();
     // A failed ledger insert must roll back the counter increment too.

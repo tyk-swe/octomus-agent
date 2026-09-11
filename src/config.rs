@@ -149,6 +149,7 @@ pub struct Config {
     pub command_timeout_seconds: u64,
     pub max_sessions_per_day: u64,
     pub max_workspace_bytes: u64,
+    pub runner_storage_paths: BTreeMap<String, PathBuf>,
     pub retain_completed_days: u64,
     pub retain_events: usize,
 }
@@ -193,6 +194,7 @@ impl Default for Config {
             command_timeout_seconds: 600,
             max_sessions_per_day: 150,
             max_workspace_bytes: 20_000_000_000,
+            runner_storage_paths: BTreeMap::new(),
             retain_completed_days: 14,
             retain_events: 10000,
         }
@@ -293,6 +295,12 @@ impl Config {
             .chain(std::iter::once(&self.repair_route))
         {
             route.validate(false)?;
+        }
+        for (backend, path) in &self.runner_storage_paths {
+            ensure!(
+                ["codex", "opencode"].contains(&backend.as_str()) && path.is_absolute(),
+                "Runner storage measurement requires an absolute path for Codex or OpenCode"
+            );
         }
         for binary in [&self.codex_binary, &self.opencode_binary] {
             ensure!(

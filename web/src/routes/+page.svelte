@@ -1,7 +1,15 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { api, ApiError, setToken, relative, safeUrl } from '$lib/api';
-  import type { Snapshot, TaskRow } from '$lib/types';
+  import type {
+    Snapshot,
+    TaskRow,
+    Page,
+    ProposalRow,
+    PrObservation,
+    CycleSummary,
+    ProposalDetail
+  } from '$lib/types';
   import Icon from '$lib/Icon.svelte';
   import Settings from '$lib/Settings.svelte';
   import TaskDetail from '$lib/TaskDetail.svelte';
@@ -28,34 +36,149 @@
     { id: 'settings', label: 'Configuration', icon: 'settings' }
   ];
   const activeStatuses = ['executing', 'reviewing', 'repairing', 'verifying', 'publishing'];
-  let filtered = $derived(
-    (data?.tasks ?? []).filter(
-      (t) =>
-        (filter === 'all' ||
-          (filter === 'active' ? activeStatuses.includes(t.status) : t.status === filter)) &&
-        `${t.title} ${t.branch} ${t.category}`.toLowerCase().includes(search.toLowerCase())
-    )
-  );
-  let proposals = $derived(
-    (data?.cycles ?? [])
-      .filter((c) => proposalCycle === 'all' || c.id === proposalCycle)
-      .flatMap((c) => c.proposals.map((p) => ({ ...p, cycle: c.number, mode: c.mode })))
-      .filter(
-        (p) =>
-          (proposalFilter === 'all' || p.decision === proposalFilter) &&
-          `${p.title} ${p.problem}`.toLowerCase().includes(search.toLowerCase())
-      )
-  );
+  let filtered = $state<TaskRow[]>([]);
+  let proposals = $state<ProposalRow[]>([]);
+  let prRows = $state<PrObservation[]>([]);
+  let cycleRows = $state<CycleSummary[]>([]);
+  let cycleCursor = $state<number | null>(null);
+  let cycleRequest = Promise.resolve();
+  let decisionCounts = $state<Record<string, number>>({});
+  let listBefore = $state<number | null>(null);
+  let listNext = $state<number | null>(null);
+  let previousPages = $state<(number | null)[]>([]);
+  let listRefresh = $state(0);
+  let listLoading = $state(false);
+  let listGeneration = 0;
+  let listRequest: AbortController | null = null;
+  let lastScope = '';
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
-  let attention = $derived(
-    data?.tasks.filter((t) => ['failed', 'blocked'].includes(t.status)) ?? []
-  );
+  let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
   let latestCycle = $derived(data?.cycles[0]);
+  $effect(() => {
+    const scope = `${connected}:${view}:${search}:${filter}:${proposalFilter}:${proposalCycle}`;
+    const before = listBefore;
+    const refreshNumber = listRefresh;
+    const changed = scope !== lastScope;
+    if (changed) {
+      lastScope = scope;
+      listBefore = null;
+      previousPages = [];
+    }
+    if (!connected || !['queue', 'proposals', 'prs'].includes(view)) return;
+    const timer = setTimeout(() => loadList(changed ? null : before), 100);
+    void refreshNumber;
+    return () => {
+      clearTimeout(timer);
+      listRequest?.abort();
+    };
+  });
+  async function loadList(before: number | null) {
+    const current = ++listGeneration;
+    listRequest?.abort();
+    const controller = new AbortController();
+    listRequest = controller;
+    listLoading = true;
+    try {
+      const params = new URLSearchParams({ limit: '50', q: search });
+      if (before !== null) params.set('before', String(before));
+      let endpoint = 'tasks';
+      if (view === 'queue') params.set('status', filter);
+      if (view === 'proposals') {
+        endpoint = 'proposals';
+        params.set('status', proposalFilter);
+        params.set('cycle', proposalCycle);
+      }
+      if (view === 'prs') {
+        endpoint = 'prs';
+        params.set('status', filter);
+      }
+      const page = await api<Page<TaskRow | ProposalRow | PrObservation>>(
+        `/${endpoint}?${params}`,
+        'GET',
+        undefined,
+        controller.signal
+      );
+      if (current !== listGeneration || controller.signal.aborted) return;
+      if (view === 'queue') filtered = page.items as TaskRow[];
+      if (view === 'proposals') {
+        proposals = (page.items as ProposalRow[]).map((summary) => {
+          const previous = proposals.find(
+            (p) => p.cycle_id === summary.cycle_id && p.id === summary.id
+          );
+          if (!previous) return summary;
+          // Keep fetched detail separate from the truncated polling summary.
+          const detailChanged = previous.content_revision !== summary.content_revision;
+          Object.assign(previous, summary);
+          if (detailChanged) {
+            previous.detail = undefined;
+            if (previous.detailRequested) void loadProposal(previous);
+          }
+          return previous;
+        });
+        decisionCounts = page.counts;
+      }
+      if (view === 'prs') prRows = page.items as PrObservation[];
+      listNext = page.next_cursor;
+    } catch (e) {
+      if (!controller.signal.aborted) error = (e as Error).message;
+    } finally {
+      if (current === listGeneration) listLoading = false;
+    }
+  }
+  function loadCycles(more = false) {
+    const request = cycleRequest.then(async () => {
+      if (more && cycleCursor === null) return;
+      let before = more ? cycleCursor : null;
+      const oldest = more ? undefined : cycleRows.at(-1)?.id;
+      const rows: CycleSummary[] = [];
+      do {
+        const params = new URLSearchParams({ limit: '100' });
+        if (before !== null) params.set('before', String(before));
+        const page = await api<Page<CycleSummary>>(`/cycles?${params}`);
+        rows.push(...page.items);
+        before = page.next_cursor;
+      } while (!more && before !== null && oldest && !rows.some((c) => c.id === oldest));
+      cycleRows = more ? [...cycleRows, ...rows] : rows;
+      cycleCursor = before;
+    });
+    cycleRequest = request.catch(() => {});
+    return request;
+  }
+  async function loadProposal(p: ProposalRow) {
+    p.detailRequested = true;
+    const revision = p.content_revision;
+    if (p.detail || p.detailLoading === revision) return;
+    p.detailLoading = revision;
+    try {
+      const detail = await api<ProposalDetail>(
+        `/proposals/${encodeURIComponent(p.cycle_id)}/${encodeURIComponent(p.id)}`
+      );
+      // A response for an older summary must not overwrite newer evidence.
+      if (p.content_revision === revision && detail.content_revision === revision) {
+        p.detail = detail;
+      }
+    } catch (e) {
+      if (p.content_revision === revision) error = (e as Error).message;
+    } finally {
+      if (p.detailLoading === revision) p.detailLoading = undefined;
+    }
+  }
+  async function cycleAction(value: string) {
+    try {
+      await api(`/cycles/${proposalCycle}/${value}`, 'POST');
+      await loadCycles();
+      await refresh();
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
   async function refresh() {
     if (!connected || refreshing) return;
     refreshing = true;
     try {
       data = await api<Snapshot>('/state');
+      if (!listLoading) listRefresh++;
+      if (view === 'proposals') await loadCycles();
       connectionError = '';
       lastUpdated = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch (e) {
@@ -85,11 +208,22 @@
   }
   onMount(() => {
     const timer = setInterval(refresh, 4000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      listRequest?.abort();
+    };
   });
   async function navigate(id: string) {
     view = id;
     search = '';
+    filter = 'all';
+    if (id === 'proposals') {
+      try {
+        await loadCycles();
+      } catch (e) {
+        error = (e as Error).message;
+      }
+    }
     mobileOpen = false;
     await tick();
     window.scrollTo(0, 0);
@@ -205,8 +339,8 @@
             class:active={view === item.id}
             onclick={() => navigate(item.id)}
             ><Icon name={item.icon} size={19} /><span>{item.label}</span
-            >{#if item.id === 'queue' && data.tasks.some((t) => t.status === 'queued')}<b
-                >{data.tasks.filter((t) => t.status === 'queued').length}</b
+            >{#if item.id === 'queue' && (data.counts.queued ?? 0) > 0}<b
+                >{data.counts.queued ?? 0}</b
               >{/if}</button
           >{/each}
       </nav>
@@ -277,13 +411,16 @@
                 onclick={() => control(data?.control.paused ? 'resume' : 'pause')}
                 ><Icon name={data.control.paused ? 'play' : 'pause'} size={16} />{data.control
                   .paused
-                  ? 'Resume'
+                  ? 'Start continuous'
                   : 'Pause'}</button
               ><button
                 class="button primary"
-                disabled={busy || !data.configured || data.cycle_active}
-                onclick={() => control('cycle')}
-                ><Icon name="refresh" size={16} />Run a cycle</button
+                disabled={busy ||
+                  !data.configured ||
+                  data.cycle_active ||
+                  !data.control.paused ||
+                  data.active_tasks > 0}
+                onclick={() => control('cycle')}><Icon name="refresh" size={16} />Run once</button
               >
               <button
                 class="button"
@@ -321,6 +458,18 @@
             not be queued.
           </div>
         {/if}
+        <div class="notice" aria-label="Operating mode" aria-live="polite">
+          <span
+            >{data.control.mode === 'run_once'
+              ? 'Run once'
+              : data.control.mode === 'continuous'
+                ? 'Continuous operation'
+                : 'New work paused'} · {data.active_tasks} active tasks{data.control.paused &&
+            data.active_tasks > 0
+              ? ' · active workflows may publish'
+              : ''}</span
+          >
+        </div>
         {#if view === 'overview'}
           {#if !data.configured}<section class="onboarding">
               <div>
@@ -361,26 +510,70 @@
             <article class="stat">
               <div class="stat-label">Active tasks<Icon name="code" size={17} /></div>
               <strong>{data.active_tasks.toString().padStart(2, '0')}</strong><small
-                >{data.tasks.filter((t) => t.status === 'queued').length} waiting in the queue</small
+                >{data.counts.queued ?? 0} waiting in the queue</small
               >
             </article>
             <article class="stat">
               <div class="stat-label">Published improvements<Icon name="prs" size={17} /></div>
-              <strong>{published.length.toString().padStart(2, '0')}</strong><small
-                >Delivered as reviewed pull requests</small
+              <strong>{(data.counts.published ?? 0).toString().padStart(2, '0')}</strong><small
+                >{data.merged_prs} PRs merged by maintainers</small
               >
             </article>
             <article class="stat">
               <div class="stat-label">Needs attention<Icon name="alert" size={17} /></div>
-              <strong class:warning-number={attention.length > 0}
-                >{attention.length.toString().padStart(2, '0')}</strong
+              <strong class:warning-number={attentionCount > 0}
+                >{attentionCount.toString().padStart(2, '0')}</strong
               ><small
-                >{attention.length
+                >{attentionCount
                   ? 'Work preserved for inspection'
                   : 'No blocked or failed tasks'}</small
               >
             </article>
           </div>
+          <section class="panel">
+            <div class="section-heading">
+              <div>
+                <h2>Operating evidence</h2>
+                <p>Current limits and retained storage.</p>
+              </div>
+              <Icon name="activity" />
+            </div>
+            <div class="operating-summary muted">
+              {#if data.storage}<p>
+                  Application storage: {(data.storage.application_bytes / 1e9).toFixed(2)} GB / {(
+                    data.storage_limit / 1e9
+                  ).toFixed(2)} GB admission limit. Measured {relative(data.storage.measured_at)}.
+                </p>
+                <p>
+                  Task workspaces: {(data.storage.task_bytes / 1e9).toFixed(2)} GB · Planning clones:
+                  {(data.storage.planning_bytes / 1e9).toFixed(2)} GB.
+                </p>
+                <p>
+                  {data.storage.runner_transcripts.message} · {data.storage.runner_transcripts
+                    .status}.
+                </p>
+                {#each Object.entries(data.storage.runner_transcripts.runners ?? {}) as [backend, usage]}<p
+                  >
+                    {backend} storage: {usage.bytes === null
+                      ? 'Unavailable'
+                      : `${(usage.bytes / 1e9).toFixed(2)} GB`}
+                  </p>{/each}{:else}<p>
+                  Storage measurement pending. This limit controls admission, not disk growth during
+                  active work.
+                </p>{/if}
+            </div>
+            {#if attentionCount}<div class="section-heading">
+                <h3>Work needing attention</h3>
+                <button
+                  class="text-button"
+                  onclick={async () => {
+                    await navigate('queue');
+                    filter = 'attention';
+                  }}>View all unresolved work</button
+                >
+              </div>
+              {@render taskList(data.attention_tasks)}{/if}
+          </section>
           <section class="panel cycle-panel">
             <div class="section-heading">
               <div class="row-title">
@@ -419,9 +612,7 @@
                 <div>
                   <h2>
                     Work in motion <span class="count"
-                      >{data.tasks.filter(
-                        (t) => activeStatuses.includes(t.status) || t.status === 'queued'
-                      ).length}</span
+                      >{data.active_tasks + (data.counts.queued ?? 0)}</span
                     >
                   </h2>
                   <p>Good changes, one focused task at a time.</p>
@@ -430,9 +621,9 @@
                   >View queue<Icon name="arrow" size={15} /></button
                 >
               </div>
-              {#if data.tasks.length}{@render taskList(
+              {#if data.active_tasks > 0 || (data.counts.queued ?? 0) > 0}{@render taskList(
                   data.tasks
-                    .filter((t) => t.status !== 'published' && t.status !== 'cancelled')
+                    .filter((t) => activeStatuses.includes(t.status) || t.status === 'queued')
                     .slice(0, 5)
                 )}{:else}<div class="empty work-empty">
                   <div class="empty-illustration">
@@ -499,7 +690,7 @@
           <section class="panel">
             <div class="list-toolbar">
               <div class="filter-tabs" aria-label="Task filters">
-                {#each ['all', 'active', 'queued', 'published', 'blocked', 'cancelled'] as state}<button
+                {#each ['all', 'active', 'queued', 'published', 'attention', 'blocked', 'cancelled'] as state}<button
                     class:active={filter === state}
                     onclick={() => (filter = state)}>{state}</button
                   >{/each}
@@ -525,24 +716,31 @@
             Audits record recommendations without queuing work. A later execution cycle plans
             afresh.
           </p>
+          <div class="actions">
+            {#if cycleCursor !== null}<button class="button" onclick={() => loadCycles(true)}
+                >Load older cycles</button
+              >{/if}
+            {#if proposalCycle !== 'all' && cycleRows.find((c) => c.id === proposalCycle)?.status !== 'running'}
+              <button class="button" onclick={() => cycleAction('archive')}>Archive cycle</button>
+              {#if cycleRows.find((c) => c.id === proposalCycle)?.lifecycle.archived_at}<button
+                  class="button danger"
+                  onclick={() => cycleAction('discard')}>Discard cycle workspaces</button
+                >{/if}
+            {/if}
+          </div>
           <div class="proposal-controls">
             <div class="cycle-picker">
               <label for="proposal-cycle">Cycle</label>
               <select id="proposal-cycle" bind:value={proposalCycle}>
-                <option value="all">All recent cycles</option>
-                {#each data.cycles as cycle}<option value={cycle.id}
+                <option value="all">All cycles</option>
+                {#each cycleRows as cycle}<option value={cycle.id}
                     >{cycle.mode === 'audit' ? 'Audit' : 'Execution'} #{cycle.number} · {cycle.status}</option
                   >{/each}
               </select>
             </div>
             <div class="decision-counts" role="group" aria-label="Decision counts">
               {#each ['accepted', 'rejected', 'deferred', 'candidate'] as decision}
-                <span class={'badge ' + decision}
-                  >{decision}: {data.cycles
-                    .filter((c) => proposalCycle === 'all' || c.id === proposalCycle)
-                    .flatMap((c) => c.proposals)
-                    .filter((p) => p.decision === decision).length}</span
-                >
+                <span class={'badge ' + decision}>{decision}: {decisionCounts[decision] ?? 0}</span>
               {/each}
             </div>
           </div>
@@ -557,7 +755,9 @@
               {@render searchBox()}
             </div>
             <div class="proposal-list">
-              {#each proposals as p}<article class="proposal-card">
+              {#each proposals as p (JSON.stringify([p.cycle_id, p.id]))}<article
+                  class="proposal-card"
+                >
                   <div class="row-between">
                     <div class="proposal-meta">
                       <span class={'badge ' + p.decision}>{p.decision}</span><span
@@ -567,18 +767,27 @@
                     <span class="category">{p.category}</span>
                   </div>
                   <h2>{p.title}</h2>
-                  <p>{p.problem}</p>
+                  <p>{p.detail?.problem ?? p.problem}</p>
                   <div class="decision-reason">
                     <Icon name="shield" size={17} />
-                    <p>{p.reason}</p>
+                    <p>{p.detail?.reason ?? p.reason}</p>
                   </div>
-                  <details>
+                  <details
+                    ontoggle={(event) => {
+                      if (event.currentTarget.open) loadProposal(p);
+                    }}
+                  >
                     <summary>Scope, evidence & execution prompt</summary>
-                    <p>{p.benefit}</p>
-                    <p>{p.scope}</p>
-                    {#each p.evidence as evidence}<p class="evidence">{evidence}</p>{/each}
-                    <pre class="prompt">{p.prompt}</pre>
-                    <small>Dependencies: {p.dependencies.join(', ') || 'None'}</small>
+                    <p>{p.detail?.benefit ?? p.benefit}</p>
+                    <p>{p.detail?.scope ?? p.scope}</p>
+                    {#each p.detail?.evidence ?? p.evidence as evidence}<p class="evidence">
+                        {evidence}
+                      </p>{/each}
+                    <pre class="prompt">{p.detail?.prompt ?? p.prompt}</pre>
+                    <small
+                      >Dependencies: {(p.detail?.dependencies ?? p.dependencies).join(', ') ||
+                        'None'}</small
+                    >
                   </details>
                   <div class="proposal-target">
                     <Icon name="branch" size={14} /><code>{p.target}</code>
@@ -603,15 +812,27 @@
               >Octomus publishes reviewed pull requests. Merge decisions stay with you.</span
             >
           </div>
+          <div class="list-toolbar">
+            <div class="filter-tabs" aria-label="PR filters">
+              {#each ['all', 'open', 'merged', 'closed'] as state}<button
+                  class:active={filter === state}
+                  onclick={() => (filter = state)}>{state}</button
+                >{/each}
+            </div>
+            {@render searchBox()}
+          </div>
           <section class="panel">
             <div class="section-heading">
               <div>
-                <h2>Open branch work</h2>
-                <p>Refreshed when the repository is grounded.</p>
+                <h2>PR outcomes</h2>
+                <p>
+                  Observed every five minutes. Delivery and maintainer acceptance are recorded
+                  separately.
+                </p>
               </div>
-              <span class="count">{data.prs.length}</span>
+              <span class="count">{prRows.length}</span>
             </div>
-            {#each data.prs as pr}<a
+            {#each prRows as observed}{@const pr = observed.pr}<a
                 class="pr-row"
                 href={safeUrl(pr.url)}
                 target="_blank"
@@ -622,7 +843,9 @@
                   <p><code>{pr.branch}</code><span>→</span><code>{pr.base}</code></p>
                 </div>
                 <span class={'badge ' + (pr.owned ? 'published' : 'queued')}
-                  >{pr.owned ? 'Octomus owned' : 'Context only'}</span
+                  >{pr.state}{observed.external_head_movement
+                    ? ' · external head change'
+                    : ''}</span
                 ><Icon name="external" size={16} /></a
               >{:else}<div class="empty">
                 <Icon name="prs" size={34} />
@@ -641,6 +864,27 @@
             editable={data.control.paused && !data.active_tasks && !data.cycle_active}
             onsaved={refresh}
           />{/if}
+        {#if ['queue', 'proposals', 'prs'].includes(view)}
+          <div class="actions" aria-label="History pagination">
+            <button
+              class="button"
+              disabled={listLoading || previousPages.length === 0}
+              onclick={() => {
+                listBefore = previousPages.at(-1) ?? null;
+                previousPages = previousPages.slice(0, -1);
+              }}>Previous page</button
+            >
+            <button
+              class="button"
+              disabled={listLoading || listNext === null}
+              onclick={() => {
+                previousPages = [...previousPages, listBefore];
+                listBefore = listNext;
+              }}>Next page</button
+            >
+            {#if listLoading}<span>Loading…</span>{/if}
+          </div>
+        {/if}
         <footer class="content-footer">
           <span><span class="footer-dot"></span> Thoughtful progress. No artificial churn.</span
           ><span>Updated {lastUpdated || 'just now'} · v0.1.0</span>
@@ -650,6 +894,7 @@
   </div>
   {#if selected}{#key selected}<TaskDetail
         id={selected}
+        onselect={(id) => (selected = id)}
         onclose={() => (selected = null)}
         onaction={refresh}
       />{/key}{/if}

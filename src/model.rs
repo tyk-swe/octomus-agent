@@ -53,6 +53,116 @@ pub struct Proposal {
     pub prompt: String,
     pub decision: String,
     pub reason: String,
+    #[serde(default)]
+    pub problem_key: String,
+    #[serde(default)]
+    pub relevant_paths: Vec<String>,
+    #[serde(default)]
+    pub reconsiders: Vec<String>,
+}
+
+impl Proposal {
+    pub fn problem_identity(&self) -> String {
+        let key = if self.problem_key.trim().is_empty() {
+            &self.title
+        } else {
+            &self.problem_key
+        };
+        key.trim().to_lowercase()
+    }
+}
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockedReason {
+    BudgetExhausted,
+    StorageLimit,
+    StaleBase,
+    RemoteConflict,
+    PublicationUncertain,
+    RunnerUnavailable,
+    InvalidReview,
+    VerificationFailed,
+    DependencyBlocked,
+    InvalidPlan,
+    WorkspaceInvalid,
+    RetryLimit,
+    Timeout,
+    #[default]
+    Unknown,
+}
+impl BlockedReason {
+    pub fn from_error(error: &anyhow::Error) -> Self {
+        // anyhow contexts support typed downcasting but do not appear as their
+        // context value in std::error::Error::source(). Prefer a concrete cause.
+        error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<Self>().copied())
+            .last()
+            .or_else(|| error.downcast_ref::<Self>().copied())
+            .unwrap_or_default()
+    }
+}
+impl std::fmt::Display for BlockedReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::BudgetExhausted => "Daily admission budget exhausted; adjust the current limit or wait until UTC midnight",
+            Self::StorageLimit => "Storage admission limit reached; resolve retained workspaces or adjust the limit",
+            Self::StaleBase => "Source or default branch moved; supersede this task and rediscover against current context",
+            Self::RemoteConflict => "Remote branch moved outside recorded task outputs; reconcile the preserved work",
+            Self::PublicationUncertain => "Publication result is uncertain; reconcile the preserved output commit",
+            Self::RunnerUnavailable => "Runner request failed; inspect the saved route and runner diagnostics",
+            Self::InvalidReview => "Incomplete or invalid review cannot authorize publication",
+            Self::VerificationFailed => "Verification or repairs remain unresolved; evidence is preserved",
+            Self::DependencyBlocked => "A dependency is unresolved; deliver it or rediscover dependent work",
+            Self::InvalidPlan => "The saved dependency plan cannot execute; rediscover a valid task order",
+            Self::WorkspaceInvalid => "Workspace initialization or recorded evidence is inconsistent; preserve and inspect it",
+            Self::RetryLimit => "Attempt or repair limit exhausted; inspect evidence before adjusting attempt limits",
+            Self::Timeout => "Task time limit exceeded; inspect the preserved workspace",
+            Self::Unknown => "Unclassified task failure; inspect the recorded diagnostics",
+        })
+    }
+}
+impl std::error::Error for BlockedReason {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptPolicy {
+    pub max_repair_rounds: usize,
+    pub max_no_progress_rounds: usize,
+    pub max_retries: usize,
+    pub task_timeout_seconds: u64,
+    pub session_timeout_seconds: u64,
+    pub command_timeout_seconds: u64,
+}
+impl AttemptPolicy {
+    pub fn from_config(c: &Config) -> Self {
+        Self {
+            max_repair_rounds: c.max_repair_rounds,
+            max_no_progress_rounds: c.max_no_progress_rounds,
+            max_retries: c.max_retries,
+            task_timeout_seconds: c.task_timeout_seconds,
+            session_timeout_seconds: c.session_timeout_seconds,
+            command_timeout_seconds: c.command_timeout_seconds,
+        }
+    }
+    pub fn apply(&self, c: &mut Config) {
+        c.max_repair_rounds = self.max_repair_rounds;
+        c.max_no_progress_rounds = self.max_no_progress_rounds;
+        c.max_retries = self.max_retries;
+        c.task_timeout_seconds = self.task_timeout_seconds;
+        c.session_timeout_seconds = self.session_timeout_seconds;
+        c.command_timeout_seconds = self.command_timeout_seconds;
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct WorkspaceLifecycle {
+    pub archived_at: Option<String>,
+    pub discarded_at: Option<String>,
+}
+impl WorkspaceLifecycle {
+    pub fn is_empty(&self) -> bool {
+        self.archived_at.is_none() && self.discarded_at.is_none()
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -124,6 +234,78 @@ pub struct Task {
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub attempt_policy: Option<AttemptPolicy>,
+    #[serde(default)]
+    pub blocked_reason: Option<BlockedReason>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub superseded_by: Vec<String>,
+    #[serde(default)]
+    pub supersedes: Vec<String>,
+    #[serde(default)]
+    pub rediscovery_requested: bool,
+    #[serde(default)]
+    pub rediscovery_result: Option<String>,
+    #[serde(default)]
+    pub lifecycle: WorkspaceLifecycle,
+}
+impl Task {
+    pub fn execution_config(&self) -> Config {
+        let mut c = self.config.clone();
+        if let Some(policy) = &self.attempt_policy {
+            policy.apply(&mut c);
+        }
+        c
+    }
+    pub fn allowed_actions(&self) -> Vec<&'static str> {
+        if self.lifecycle.archived_at.is_some() {
+            return if self.lifecycle.discarded_at.is_some() {
+                vec![]
+            } else {
+                vec!["discard"]
+            };
+        }
+        if self.status == Status::Published {
+            return vec!["archive"];
+        }
+        if self.status == Status::Cancelled {
+            let mut actions = vec!["archive"];
+            if self.lifecycle.discarded_at.is_none()
+                && self.output_commit.is_none()
+                && !self.rediscovery_requested
+                && self.superseded_by.is_empty()
+            {
+                actions.push("supersede");
+            }
+            return actions;
+        }
+        if self.lifecycle.discarded_at.is_some() {
+            return vec![];
+        }
+        if self.status == Status::Publishing {
+            return vec![];
+        }
+        if !self.status.retryable() {
+            return vec!["cancel"];
+        }
+        let mut actions = vec!["cancel", "archive"];
+        match self.blocked_reason.unwrap_or_default() {
+            BlockedReason::StaleBase
+            | BlockedReason::InvalidPlan
+            | BlockedReason::WorkspaceInvalid => actions.push("supersede"),
+            BlockedReason::RemoteConflict | BlockedReason::PublicationUncertain => {
+                actions.push("reconcile")
+            }
+            BlockedReason::DependencyBlocked | BlockedReason::RunnerUnavailable => {
+                actions.push("retry");
+                actions.push("supersede");
+            }
+            _ => actions.push("retry"),
+        }
+        actions
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullRequest {
@@ -138,6 +320,19 @@ pub struct PullRequest {
     pub changed_lines: u64,
     pub created_at: String,
     pub owned: bool,
+    #[serde(default)]
+    pub head_repository: String,
+    #[serde(default)]
+    pub base_repository: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrObservation {
+    pub repository: String,
+    pub pr: PullRequest,
+    pub observed_at: String,
+    pub delivered_head: Option<String>,
+    pub external_head_movement: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grounding {
@@ -168,13 +363,102 @@ pub struct Cycle {
     pub assessments: Vec<Value>,
     pub sessions: Vec<Session>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub repository: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decision_memory: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "WorkspaceLifecycle::is_empty")]
+    pub lifecycle: WorkspaceLifecycle,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatingMode {
+    #[default]
+    Paused,
+    RunOnce,
+    Continuous,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchPhase {
+    Draining,
+    Planning,
+    Executing,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunBatch {
+    pub id: String,
+    pub phase: BatchPhase,
+    pub cycle_id: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "SavedControl")]
 pub struct Control {
     pub paused: bool,
     pub cycle_number: u64,
     pub next_cycle_at: i64,
     pub error: Option<String>,
+    pub mode: OperatingMode,
+    pub batch: Option<RunBatch>,
+    pub idle_streak: u32,
+    pub context_fingerprint: String,
+}
+#[derive(Deserialize)]
+#[serde(default)]
+struct SavedControl {
+    paused: bool,
+    mode: Option<OperatingMode>,
+    cycle_number: u64,
+    next_cycle_at: i64,
+    error: Option<String>,
+    batch: Option<RunBatch>,
+    idle_streak: u32,
+    context_fingerprint: String,
+}
+impl Default for SavedControl {
+    fn default() -> Self {
+        Self {
+            paused: true,
+            mode: None,
+            cycle_number: 0,
+            next_cycle_at: 0,
+            error: None,
+            batch: None,
+            idle_streak: 0,
+            context_fingerprint: String::new(),
+        }
+    }
+}
+impl From<SavedControl> for Control {
+    fn from(c: SavedControl) -> Self {
+        let mode = c.mode.unwrap_or(if c.paused {
+            OperatingMode::Paused
+        } else {
+            OperatingMode::Continuous
+        });
+        Self {
+            paused: mode == OperatingMode::Paused,
+            mode,
+            cycle_number: c.cycle_number,
+            next_cycle_at: c.next_cycle_at,
+            error: c.error,
+            batch: c.batch,
+            idle_streak: c.idle_streak,
+            context_fingerprint: c.context_fingerprint,
+        }
+    }
+}
+impl Control {
+    pub fn set_mode(&mut self, mode: OperatingMode) {
+        self.mode = mode;
+        self.paused = mode == OperatingMode::Paused;
+        if mode != OperatingMode::RunOnce {
+            self.batch = None;
+        }
+    }
 }
 impl Default for Control {
     fn default() -> Self {
@@ -183,6 +467,10 @@ impl Default for Control {
             cycle_number: 0,
             next_cycle_at: 0,
             error: None,
+            mode: OperatingMode::Paused,
+            batch: None,
+            idle_streak: 0,
+            context_fingerprint: String::new(),
         }
     }
 }

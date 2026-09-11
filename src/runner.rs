@@ -241,6 +241,7 @@ impl Runners {
             .await?
             .start(route, cwd, resume)
             .await
+            .context(crate::model::BlockedReason::RunnerUnavailable)
     }
     pub async fn turn(
         &mut self,
@@ -254,5 +255,6 @@ impl Runners {
             .await?
             .turn(session, route, cwd, prompt, schema)
             .await
+            .context(crate::model::BlockedReason::RunnerUnavailable)
     }
 }

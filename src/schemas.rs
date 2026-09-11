@@ -63,7 +63,7 @@ pub fn array(items: Value) -> Value {
 }
 pub fn proposal_schema() -> Value {
     object(
-        json!({"proposals":array(object(json!({"id":string(),"title":string(),"problem":string(),"evidence":array(string()),"benefit":string(),"category":string(),"target":string(),"tier":string(),"scope":string(),"dependencies":array(string()),"prompt":string(),"decision":string(),"reason":string()})))}),
+        json!({"proposals":array(object(json!({"id":string(),"title":string(),"problem":string(),"evidence":array(string()),"benefit":string(),"category":string(),"target":string(),"tier":string(),"scope":string(),"dependencies":array(string()),"prompt":string(),"decision":string(),"reason":string(),"problem_key":string(),"relevant_paths":array(string()),"reconsiders":array(string())})))}),
     )
 }
 pub fn review_schema() -> Value {

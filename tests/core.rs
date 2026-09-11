@@ -31,6 +31,9 @@ fn proposal(id: &str) -> Proposal {
         prompt: "Implement and verify the documented capability".into(),
         decision: "accepted".into(),
         reason: "Both adversaries accepted; no duplicate work".into(),
+        problem_key: String::new(),
+        relevant_paths: vec![],
+        reconsiders: vec![],
     }
 }
 fn grounding() -> Grounding {
@@ -48,6 +51,8 @@ fn grounding() -> Grounding {
             changed_lines: 2000,
             created_at: "2026-01-01T00:00:00Z".into(),
             owned: true,
+            head_repository: "fixture/project".into(),
+            base_repository: "fixture/project".into(),
         }],
         history: json!([]),
         maintenance_due: true,
@@ -146,6 +151,16 @@ fn codex_version_diagnostics_do_not_accept_prefix_matches() {
 fn daily_admission_budget_is_atomic_under_concurrency() {
     let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(&temp.path().join("state.db")).unwrap());
+    store
+        .put(
+            "settings",
+            "config",
+            &Config {
+                max_sessions_per_day: 5,
+                ..Default::default()
+            },
+        )
+        .unwrap();
     let handles: Vec<_> = (0..20)
         .map(|_| {
             let store = store.clone();

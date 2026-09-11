@@ -6,18 +6,21 @@ use tokio_util::sync::CancellationToken;
 
 impl App {
     pub(super) async fn execute(&self, task: &mut Task, cancel: &CancellationToken) -> Result<()> {
-        let config = task.config.clone();
+        let config = task.execution_config();
         task.error = None;
+        task.blocked_reason = None;
         self.save_task(task)?;
         if task.output_commit.is_some() {
             self.transition(task, Status::Publishing)?;
             let p = git::publish(task, cancel).await?;
             return self.published(task, p);
         }
+        self.retry_preflight(task, cancel).await?;
         let mut client = Runners::new(&config, self.store.clone(), &task.id, cancel.clone());
         client
             .validate_routes(&config, &self.data_dir, false)
-            .await?;
+            .await
+            .context(BlockedReason::RunnerUnavailable)?;
         // Initialization reserves the first executor admission, including on retries.
         let admission_reserved = task.execution_session.is_none();
         if admission_reserved {
@@ -26,7 +29,7 @@ impl App {
         let workspace = PathBuf::from(&task.workspace);
         ensure!(
             workspace.join(".git").exists(),
-            "Workspace initialization was interrupted; cancel and rediscover rather than overwrite partial files"
+            BlockedReason::WorkspaceInvalid
         );
         if task.comparison_base.is_empty() {
             bail!("Comparison base was not persisted; cancel this task and rediscover");
@@ -51,7 +54,7 @@ impl App {
             );
             ensure!(
                 task.reviews.len() < config.max_repair_rounds + 1,
-                "Review/repair round limit exhausted; unresolved work is preserved"
+                BlockedReason::RetryLimit
             );
             let review = self
                 .review_revision(task, &mut client, &revision, cancel)
@@ -67,7 +70,7 @@ impl App {
                                 .await?
                                 .as_deref()
                                 == Some(&task.source_revision),
-                            "Default branch moved during execution; preserve and reconcile before publication"
+                            BlockedReason::StaleBase
                         );
                     }
                     task.output_commit = Some(revision);
@@ -78,7 +81,7 @@ impl App {
             }
             ensure!(
                 task.reviews.len() <= config.max_repair_rounds,
-                "Repair limit exhausted; unresolved findings or verification failures remain"
+                BlockedReason::VerificationFailed
             );
             if previous == revision {
                 no_progress += 1;
@@ -88,11 +91,47 @@ impl App {
             }
             ensure!(
                 no_progress < config.max_no_progress_rounds,
-                "Repairs made no progress; workspace preserved"
+                BlockedReason::VerificationFailed
             );
             self.repair(task, &mut client, &review, &verification_errors)
                 .await?;
         }
+    }
+    pub async fn retry_preflight(&self, task: &Task, cancel: &CancellationToken) -> Result<()> {
+        let c = task.execution_config();
+        ensure!(
+            task.lifecycle.discarded_at.is_none() && task.lifecycle.archived_at.is_none(),
+            BlockedReason::WorkspaceInvalid
+        );
+        let default = git::remote_revision(&c, &c.default_branch, cancel).await?;
+        ensure!(
+            default.as_deref() == Some(&task.default_revision),
+            BlockedReason::StaleBase
+        );
+        let source = git::remote_revision(&c, &task.proposal.target, cancel).await?;
+        let mut authorized = source.as_deref() == Some(&task.source_revision);
+        for id in &task.proposal.dependencies {
+            let dependency: Task = self
+                .store
+                .get("task", id)?
+                .context(BlockedReason::DependencyBlocked)?;
+            ensure!(
+                dependency.status == Status::Published,
+                BlockedReason::DependencyBlocked
+            );
+            if task.execution_session.is_none() && source == dependency.output_commit {
+                authorized = true;
+            }
+        }
+        ensure!(authorized, BlockedReason::StaleBase);
+        if task.execution_session.is_some() {
+            ensure!(
+                !task.comparison_base.is_empty()
+                    && Path::new(&task.workspace).join(".git").is_dir(),
+                BlockedReason::WorkspaceInvalid
+            );
+        }
+        Ok(())
     }
     async fn initialize_task(
         &self,
@@ -100,7 +139,7 @@ impl App {
         client: &mut Runners,
         cancel: &CancellationToken,
     ) -> Result<()> {
-        let config = task.config.clone();
+        let config = task.execution_config();
         git::fetch(&config, cancel).await?;
         let current = git::remote_revision(&config, &task.proposal.target, cancel)
             .await?
@@ -125,7 +164,7 @@ impl App {
             }
             ensure!(
                 dependency_outputs.contains(&current),
-                "Source changed outside the declared dependency chain. Cancel this stale task and rediscover against the new revision"
+                BlockedReason::StaleBase
             );
             for output in &dependency_outputs {
                 git::git(
@@ -137,7 +176,7 @@ impl App {
                 .await?;
             }
             task.source_revision = current;
-            task.proposal.prompt.push_str(&format!("\nPrerequisite work is now present in the target branch at {}. Inspect its accumulated diff before implementing this follow-up.", task.source_revision));
+
             self.save_task(task)?;
         }
         ensure!(
@@ -145,7 +184,7 @@ impl App {
                 .await?
                 .as_deref()
                 == Some(&task.default_revision),
-            "Default branch changed after planning; cancel and rediscover against the new context"
+            BlockedReason::StaleBase
         );
         if let Some(n) = task.pr_number {
             let p = git::pr(&config, n, cancel).await?;
@@ -154,14 +193,8 @@ impl App {
                 "Target PR is no longer eligible"
             );
         }
-        self.budget(
-            &config,
-            &task.cycle_id,
-            Some(&task.id),
-            "executor",
-            &task.route,
-        )
-        .await?;
+        self.budget(&task.cycle_id, Some(&task.id), "executor", &task.route)
+            .await?;
         uuid::Uuid::parse_str(&task.id).context("Invalid task workspace identity")?;
         let workspace = self.data_dir.join("tasks").join(&task.id).join("workspace");
         if task.workspace.is_empty() {
@@ -190,7 +223,7 @@ impl App {
                 Path::new(&task.workspace) == workspace
                     && !task.comparison_base.is_empty()
                     && workspace.join(".git").exists(),
-                "Workspace initialization was interrupted; cancel and rediscover rather than overwrite partial files"
+                BlockedReason::WorkspaceInvalid
             );
             ensure!(
                 git::clean(&config, &workspace, cancel).await?
@@ -219,7 +252,7 @@ impl App {
         client: &mut Runners,
         admission_reserved: bool,
     ) -> Result<()> {
-        let config = task.config.clone();
+        let config = task.execution_config();
         let workspace = PathBuf::from(&task.workspace);
         if !task
             .sessions
@@ -232,14 +265,8 @@ impl App {
                 .context("Executor session identity is missing")?;
             session_mut(task, &thread, "executor")?;
             if !admission_reserved {
-                self.budget(
-                    &config,
-                    &task.cycle_id,
-                    Some(&task.id),
-                    "executor",
-                    &task.route,
-                )
-                .await?;
+                self.budget(&task.cycle_id, Some(&task.id), "executor", &task.route)
+                    .await?;
             }
             client.start(&task.route, &workspace, Some(&thread)).await?;
             session_mut(task, &thread, "executor")?.status = "running".into();
@@ -274,11 +301,11 @@ impl App {
         revision: &str,
         cancel: &CancellationToken,
     ) -> Result<Review> {
-        let config = task.config.clone();
+        let config = task.execution_config();
         let workspace = PathBuf::from(&task.workspace);
         self.transition(task, Status::Reviewing)?;
         let route = &config.roles["code_reviewer"];
-        self.budget(&config, &task.cycle_id, Some(&task.id), "reviewer", route)
+        self.budget(&task.cycle_id, Some(&task.id), "reviewer", route)
             .await?;
         let thread = client.start(route, &workspace, None).await?;
         task.sessions.push(Session {
@@ -305,16 +332,17 @@ impl App {
             .await?;
         session_mut(task, &thread, "reviewer")?.summary = redact(&answer);
         self.save_task(task)?;
-        let review: Review =
-            serde_json::from_str(&answer).context("Unparseable review is not clean")?;
+        let review: Review = serde_json::from_str(&answer)
+            .context("Unparseable review is not clean")
+            .context(BlockedReason::InvalidReview)?;
         ensure!(
             review.completed && !review.summary.trim().is_empty(),
-            "Incomplete review is not clean"
+            BlockedReason::InvalidReview
         );
         ensure!(
             git::clean(&config, &workspace, cancel).await?
                 && git::git(&config, &workspace, &["rev-parse", "HEAD"], cancel).await? == revision,
-            "Reviewer modified the reviewed revision"
+            BlockedReason::WorkspaceInvalid
         );
         let s = session_mut(task, &thread, "reviewer")?;
         s.status = "completed".into();
@@ -336,7 +364,7 @@ impl App {
         revision: &str,
         cancel: &CancellationToken,
     ) -> Result<Vec<String>> {
-        let config = task.config.clone();
+        let config = task.execution_config();
         let workspace = PathBuf::from(&task.workspace);
         let mut verification_errors = Vec::new();
         self.transition(task, Status::Verifying)?;
@@ -369,7 +397,7 @@ impl App {
         ensure!(
             git::clean(&config, &workspace, cancel).await?
                 && git::git(&config, &workspace, &["rev-parse", "HEAD"], cancel).await? == revision,
-            "Verification modified the reviewed tree; inspect before retrying"
+            BlockedReason::WorkspaceInvalid
         );
         Ok(verification_errors)
     }
@@ -381,14 +409,14 @@ impl App {
         review: &Review,
         verification_errors: &[String],
     ) -> Result<()> {
-        let config = task.config.clone();
+        let config = task.execution_config();
         let workspace = PathBuf::from(&task.workspace);
         self.transition(task, Status::Repairing)?;
         if let Some(thread) = task.repair_session.clone() {
             session_mut(task, &thread, "repair")?;
         }
         let route = config.repair_route.clone();
-        self.budget(&config, &task.cycle_id, Some(&task.id), "repair", &route)
+        self.budget(&task.cycle_id, Some(&task.id), "repair", &route)
             .await?;
         let thread = client
             .start(&route, &workspace, task.repair_session.as_deref())
@@ -427,9 +455,11 @@ impl App {
 
     fn published(&self, task: &mut Task, p: PullRequest) -> Result<()> {
         task.pr_number = Some(p.number);
-        task.pr_url = Some(p.url);
+        task.pr_url = Some(p.url.clone());
         task.error = None;
-        self.transition(task, Status::Published)
+        task.blocked_reason = None;
+        self.transition(task, Status::Published)?;
+        self.observe_delivery(&task.config, p)
     }
 }
 

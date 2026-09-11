@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Enforce live admission policy for queued and recovered tasks; preserve immutable contracts and explicit attempt limits.
+- Validate exact PR publication results, complete same-branch dependency orders, and bounded machine output.
+- Persist one-shot operation, typed recovery and supersession; run safe housekeeping while paused.
+- Add indexed history summaries, authoritative counts, paginated evidence, decision memory, idle backoff and PR outcome observation.
+- Exercise pinned real clients with isolated synthetic providers, and add operational, browser and scale regressions.
+
 Notable changes are recorded here using [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 

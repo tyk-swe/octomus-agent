@@ -66,11 +66,12 @@ The dashboard starts paused. Configure the repository, explicit role routes, ver
 
 - **Pause:** prevents new work. Running discovery and tasks finish their current workflow, including publication. To stop a running task, use its **Cancel task** control. Publication already in progress is allowed to reconcile.
 - **Run an audit:** requires paused operation and no active work. It spends planning admissions, records all decisions, creates no tasks and leaves any existing queue paused. Resume and cycle requests return a conflict while the audit is active. Restart marks interrupted audits without replaying them.
-- **Run a cycle:** enables operation and makes the next planning cycle due. The current queue finishes first.
-- **Retry task:** retries blocked or failed work within the configured retry budget. It retains the original target, model routes, verification contract and workspace. Updated time, storage, daily-session and repair limits can be applied to the retry. Resume operation if the service is paused.
-- **Source/branch conflict:** inspect the preserved workspace and changed remote state. Cancel the stale task and rediscover against the current source. Octomus does not blindly rebase or overwrite external changes.
+- **Run once:** requires paused operation with no active work. It captures the queued tasks, drains them, runs one discovery cycle, drains that cycle's accepted tasks, and returns to paused. Later retries are outside the captured batch. Independent tasks finish after failures; dependent tasks block. A failed initial drain prevents discovery. The batch and its phase survive restart; interrupted planning pauses without replay.
+- **Start continuous:** enables queued execution and subsequent discovery cycles. **Pause** ends further one-shot dispatch as well as continuous scheduling; active workflows still finish.
+- **Retry task:** available for eligible failures after prerequisite checks. It retains the task contract and workspace, but captures current timeouts, repair/no-progress limits and retry ceiling as a new attempt policy. Daily admissions and application storage always use saved live limits, including ordinary queued work and restart recovery. Start continuous operation or run once to execute a paused retry.
+- **Stale context:** use **Supersede and rediscover**. The old task and workspace remain available; a durable request seeds the next authorized execution cycle. The new context receives fresh planning and review evidence. Replacements link back to the old task; an obsolete objective records its rejection instead. Dependents need their own rediscovery. **Reconcile publication** reuses the saved output and all publication checks without a model turn.
 - **Restart:** initialized in-flight tasks are queued for bounded automatic recovery. Partial workspace initialization or exhausted retry budgets are blocked. The last executor can resume, interrupted review work gets a fresh review, and a recorded publication checkpoint reconciles GitHub without another model call. Completed PR delivery remains recorded even if the PR has since been closed.
-- **Model or authentication errors:** correct the host's account setup or explicit routes. There is no hidden fallback. Existing task route snapshots remain unchanged; cancel and rediscover if a task needs a different route.
+- **Model or authentication errors:** correct the host's account setup or explicit routes. There is no hidden fallback. Existing task route snapshots remain unchanged. If a task needs a different route, pause, cancel it, save the new routes, then choose **Supersede and rediscover** on the cancelled task and start an execution cycle. This explicitly requests a fresh decision even when repository files are unchanged; any replacement uses the new routes and links back to the cancelled task. Cancellation alone does not request replacement work.
 - **Repair/verification limits:** unresolved work stays blocked and is never treated as clean. Review evidence and the workspace remain available for inspection.
 
 Repository identity and branch policy cannot change while unresolved tasks exist. Configuration edits require the service to be paused with no active tasks or cycle. Operator API changes are the only application path for modifying policy; repository/model output is never parsed as configuration.
@@ -81,7 +82,7 @@ Defaults are visible in the dashboard and [configuration example](configuration.
 
 The workspace budget is an **admission limit**, checked before launching model work. Active commands can grow beyond it; set host disk and process limits appropriate to the repository. The MVP does not estimate dollar spend or interrupt a provider's in-flight token billing. Use account-level spending limits as appropriate.
 
-Published task workspaces and successful/idle discovery workspaces are removed after the configured retention period (14 days by default). Task identity, decisions, review records and publication associations remain in SQLite. Failed, interrupted or cancelled workspaces are preserved for inspection and may require deliberate operator cleanup after resolution. Activity events are capped at the configured count. Command output is drained and bounded; raw app-server tool arguments and output streams are not stored in the dashboard event log. Runner transcript storage is separate: Codex uses the service account's Codex home, and OpenCode uses its data directory. Configure host retention for the selected runners separately.
+Housekeeping runs every 15 minutes, including while paused or configured only for audits. Published task workspaces and completed cycle directories follow the configured retention period (14 days by default). Successful planning-role clones are disposed after structured results, session evidence and unchanged-source checks are persisted. Failed or modified clones and unresolved task workspaces remain retained. **Archive task/cycle** resolves retained work and makes its workspace eligible for retention; **Discard workspace** explicitly removes an archived workspace. Database evidence, identities and lineage remain available. Active workspaces and symlink paths are excluded from cleanup. Activity events are capped at the configured count. Command output is drained and bounded; raw app-server tool arguments and output streams are not stored in the dashboard event log. Runner transcript storage is separate: Codex uses the service account's Codex home, and OpenCode uses its data directory. Configure host retention for the selected runners separately.
 
 Logs: `journalctl -u octomus-agent`. Task errors and session metadata also appear in the dashboard. Known credential patterns and values from token/secret/password/API-key environment variables are redacted from dashboard JSON and summaries. Keep secrets out of project documentation and task prompts; this redaction is not a secret-detection guarantee.
 
@@ -123,6 +124,46 @@ full execution checking. `GET /api/state` includes `audit_configured`,
 status is `auditing` even though execution is paused. Older cycles load as
 `execution`. Usage-report cycle rows also include `mode`; existing fields remain.
 
-Successful/idle audit clones follow normal cycle retention. Cleanup runs during
-enabled, idle scheduling; a service used only for paused audits still requires
-operator monitoring of retained disk usage. No automatic replay occurs on resume.
+Successful audit role clones are disposable; retained failures follow the archive/discard lifecycle. Housekeeping runs while paused. No automatic audit replay occurs on resume.
+
+
+## Operational API and history
+
+`POST /api/control/cycle` now means **Run once**; it does not enable continuous
+operation. `POST /api/control/resume` selects continuous operation. Control JSON
+contains `mode` (`paused`, `run_once`, `continuous`) and the persisted batch phase;
+`paused` remains a derived compatibility field. Old boolean control records load
+as paused or continuous.
+
+`GET /api/state` contains authoritative task counts, merged PR count, bounded task,
+cycle, PR and event summaries, attention examples, live admission limits, and the
+latest storage sample. It does not include full planning evidence. Use
+`GET /api/tasks/{id}`, `GET /api/cycles/{id}`, and
+`GET /api/proposals/{cycle}/{id}` for details. Task detail includes
+`blocked_reason`, `allowed_actions`, `effective_attempt_policy`, and current
+`operating_policy`. Existing `config` remains the original task snapshot.
+
+`GET /api/tasks`, `/api/cycles`, `/api/proposals`, and `/api/prs` support `before`
+cursors, `limit` (default 50, maximum 100), `status`, and `q`. Proposals also
+support `cycle`. Responses contain `items`, `next_cursor`, and decision counts
+where applicable. Task filters include `active` and `attention`. Pagination uses
+insertion order, so task status changes do not reorder history pages.
+
+Task actions add `supersede`, `reconcile`, `archive`, and `discard`; cycle actions
+support `archive` and `discard`. Ineligible actions return 409. Discard requires
+archiving first. Publication reconciliation waits for active tasks to finish.
+
+PR observations refresh after delivery and every five minutes, including while
+paused. Open, merged and closed-unmerged outcomes and external head movement are
+separate from delivered task status. Migrated PR caches have no observation time
+until a fresh read. Runner transcript storage is reported separately as unavailable
+when it is not measured; it is never counted as zero or automatically deleted.
+
+
+Optional `runner_storage_paths` entries (`codex`, `opencode`) let the operator
+supply absolute paths for separate size measurement, also available below the
+operating limits in Configuration. Unconfigured or unreadable roots are shown
+as unavailable; configured readable roots report their actual size. Only file
+metadata is inspected. These roots are never cleaned by Octomus. Application admission still measures
+the entire data directory, including any runner storage placed inside it. Use
+disjoint roots when interpreting the separate runner total.

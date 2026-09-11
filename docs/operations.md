@@ -70,12 +70,12 @@ reviewed revision before publication. Measure cold timings before changing limit
 - [ ] While paused with no active work, run **Check audit connection**, then **Run an audit**. Audits need the three planning-role routes but no verification commands. Inspect every decision and both assessments. Confirm the queue is unchanged and operation remains paused. An audit does not sandbox agents or guarantee absence of malicious external effects.
 - [ ] For execution, configure the code reviewer, execution tiers, repair route and verification commands, then use **Check connection**. Audit results are recommendations; an executing cycle plans afresh.
 
-- [ ] Select **Run a cycle**. This also enables subsequent continuous cycles.
+- [ ] Select **Run once**. Confirm one planning cycle and its accepted task batch finish, then the service returns to paused. Select **Start continuous** separately when ready for ongoing scheduling.
 - [ ] Confirm discovery reads the repository and existing owned PRs, and proposal decisions include reasons.
 - [ ] Inspect the first task's workspace, executor/reviewer/repair sessions, verification output, and any blocked state.
 - [ ] Confirm a successfully reviewed task creates or updates the expected GitHub PR, with verification evidence, while leaving `main` untouched. An idle cycle with no worthwhile proposals is also a valid outcome.
 - [ ] Review the actual PR and its GitHub checks before merging it. Automated fixture tests do not replace this first authenticated, real-repository validation.
-- [ ] Exercise **Pause** and **Resume**. Pause prevents new work; in-flight tasks may finish and publish. Use a task's **Cancel task** control when you want to stop that task.
+- [ ] Exercise **Pause** and **Start continuous**. Pause prevents new work; in-flight tasks may finish and publish. Use a task's **Cancel task** control when you want to stop that task.
 
 ## 6. Enable ongoing operation
 
@@ -84,3 +84,19 @@ reviewed revision before publication. Measure cold timings before changing limit
 - [ ] Set up protected backups of the state directory, task workspaces, and the service account's selected runner session state (Codex home and/or OpenCode data directory) using the [backup procedure](deployment.md#backup-and-upgrade).
 - [ ] Review retention settings, including Codex's separate transcript storage. Unresolved workspaces are intentionally preserved and can require deliberate cleanup.
 - [ ] Continue reviewing and merging useful PRs yourself. Application upgrades and production deployments remain your responsibility; Octomus delivers PRs.
+
+
+## Week-long hardening acceptance
+
+This remains an owner-operated check on the dedicated VM and bot. Fixture and
+local-provider contract tests do not establish live acceptance. Use the
+conservative profile above, record UTC observations and private evidence references,
+and keep billing/account evidence out of Git.
+
+- Confirm lowered and raised admission limits govern already queued tasks across restart.
+- Exercise one-shot completion, interrupted planning, active-task pause and stale-context supersession.
+- Track blocked reasons and interventions per day; require no repeated stale retry loops.
+- Record delivered tasks separately from open, merged and closed PR outcomes.
+- Monitor application storage and separately managed runner transcripts; check eligible cleanup while paused.
+- Require zero admission overruns, unverified publications, duplicate deliveries or orphaned owned workers.
+- Record state response size/latency and daily admissions, alongside the owner’s PR acceptance decisions.

@@ -1,6 +1,6 @@
 use crate::{
     config::Config,
-    model::{PullRequest, Task},
+    model::{BlockedReason, PullRequest, Task},
     process,
 };
 use anyhow::{Context, Result, ensure};
@@ -14,10 +14,15 @@ pub async fn git(
     args: &[&str],
     cancel: &CancellationToken,
 ) -> Result<String> {
-    process::run("git", args, cwd, c.command_timeout_seconds, cancel).await
+    Ok(
+        process::run_machine("git", args, cwd, c.command_timeout_seconds, cancel)
+            .await?
+            .trim()
+            .to_owned(),
+    )
 }
 async fn gh(c: &Config, args: &[&str], cancel: &CancellationToken) -> Result<String> {
-    process::run("gh", args, &c.repository, c.command_timeout_seconds, cancel).await
+    process::run_machine("gh", args, &c.repository, c.command_timeout_seconds, cancel).await
 }
 pub async fn validate_remote(c: &Config, cancel: &CancellationToken) -> Result<()> {
     let remote = git(c, &c.repository, &["remote", "get-url", "origin"], cancel).await?;
@@ -189,6 +194,8 @@ fn parse_pr(p: &Value, c: &Config) -> Result<PullRequest> {
         },
         changed_lines: p["additions"].as_u64().unwrap_or(0) + p["deletions"].as_u64().unwrap_or(0),
         created_at: text(&p["created_at"]),
+        head_repository: text(&p["head"]["repo"]["full_name"]),
+        base_repository: text(&p["base"]["repo"]["full_name"]),
         owned: branch.starts_with(&c.branch_prefix)
             && p["head"]["repo"]["full_name"]
                 .as_str()
@@ -219,18 +226,48 @@ async fn publication_pr(
         cancel,
     )
     .await?;
+    let mut matches = vec![];
     for page in serde_json::Deserializer::from_str(&output).into_iter::<Vec<Value>>() {
         for value in page? {
             let candidate = parse_pr(&value, c)?;
             if candidate.branch == branch {
-                return Ok(Some(candidate));
+                matches.push(candidate);
             }
         }
     }
-    Ok(None)
+    ensure!(
+        matches.len() <= 1,
+        "Ambiguous PR association; reconcile before publication"
+    );
+    Ok(matches.pop())
 }
-pub async fn publish(task: &Task, cancel: &CancellationToken) -> Result<PullRequest> {
+
+pub fn validate_publication(task: &Task, p: &PullRequest, reconcile: bool) -> Result<()> {
     let c = &task.config;
+    ensure!(
+        p.head_repository.eq_ignore_ascii_case(&c.github_repo)
+            && p.base_repository.eq_ignore_ascii_case(&c.github_repo)
+            && p.owned
+            && p.branch == task.branch
+            && p.base == c.default_branch
+            && Some(p.head.as_str()) == task.output_commit.as_deref()
+            && p.body
+                .contains(&format!("<!-- octomus:task:{} -->", task.id))
+            && (p.state == "open"
+                || (reconcile && ["closed", "merged"].contains(&p.state.as_str()))),
+        "PR publication result does not match repository, ownership, branch, base, reviewed head, task marker or state"
+    );
+    Ok(())
+}
+
+pub async fn publish(task: &Task, cancel: &CancellationToken) -> Result<PullRequest> {
+    publish_inner(task, cancel)
+        .await
+        .context(BlockedReason::PublicationUncertain)
+}
+async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRequest> {
+    let config = task.execution_config();
+    let c = &config;
     validate_remote(c, cancel).await?;
     let trusted_remote = git(c, &c.repository, &["remote", "get-url", "origin"], cancel).await?;
     let path = Path::new(&task.workspace);
@@ -271,11 +308,7 @@ pub async fn publish(task: &Task, cancel: &CancellationToken) -> Result<PullRequ
         publication_pr(c, &task.branch, cancel).await?
     };
     if let Some(p) = &existing {
-        if p.owned
-            && p.head == commit
-            && p.body
-                .contains(&format!("<!-- octomus:task:{} -->", task.id))
-        {
+        if validate_publication(task, p, true).is_ok() {
             // Delivery already happened, even if a maintainer has since closed or merged the PR.
             return Ok(p.clone());
         }
@@ -297,19 +330,16 @@ pub async fn publish(task: &Task, cancel: &CancellationToken) -> Result<PullRequ
             .await?
             .as_deref()
             == Some(&task.default_revision),
-        "Default branch moved since the recorded review context; inspect and reconcile before publication"
+        BlockedReason::StaleBase
     );
     if remote.as_deref() != Some(commit) {
         if task.pr_number.is_some() {
             ensure!(
                 remote.as_deref() == Some(&task.source_revision),
-                "Remote branch changed during task; preserve workspace and reconcile"
+                BlockedReason::RemoteConflict
             );
         } else {
-            ensure!(
-                remote.is_none(),
-                "New branch collision; refusing to overwrite remote work"
-            );
+            ensure!(remote.is_none(), BlockedReason::RemoteConflict);
         }
         // An exact lease protects the check/push race. The local ancestry must also be preserved.
         git(
@@ -406,13 +436,10 @@ pub async fn publish(task: &Task, cancel: &CancellationToken) -> Result<PullRequ
         )
         .await?;
         let published = pr(c, p.number, cancel).await?;
-        ensure!(
-            published.state == "open" && published.head == commit,
-            "PR changed while its publication record was being updated"
-        );
+        validate_publication(task, &published, false)?;
         return Ok(published);
     }
-    gh(
+    let created = gh(
         c,
         &[
             "pr",
@@ -431,9 +458,27 @@ pub async fn publish(task: &Task, cancel: &CancellationToken) -> Result<PullRequ
         cancel,
     )
     .await?;
-    prs(c, cancel)
-        .await?
-        .into_iter()
-        .find(|p| p.branch == task.branch)
-        .context("PR creation returned but PR is not visible; retry will reconcile")
+    let url = reqwest::Url::parse(created.trim())
+        .context("PR creation returned no unambiguous URL; reconcile before retrying")?;
+    ensure!(
+        url.scheme() == "https"
+            && url.host_str() == Some("github.com")
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "Invalid PR creation URL"
+    );
+    let parts: Vec<_> = url
+        .path_segments()
+        .context("Missing PR URL path")?
+        .collect();
+    ensure!(
+        parts.len() == 4
+            && parts[2] == "pull"
+            && format!("{}/{}", parts[0], parts[1]).eq_ignore_ascii_case(&c.github_repo),
+        "Created PR belongs to a different repository"
+    );
+    let number: u64 = parts[3].parse().context("Missing created PR number")?;
+    let published = pr(c, number, cancel).await?;
+    validate_publication(task, &published, false)?;
+    Ok(published)
 }

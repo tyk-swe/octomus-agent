@@ -52,3 +52,34 @@ jobs:
           name: browser-test-evidence
           path: web/test-results
           retention-days: 7
+
+  client-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [codex, opencode]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: npm ci --prefix web && npm run build --prefix web
+      - name: Install pinned client
+        run: |
+          if [ '${{ matrix.backend }}' = codex ]; then
+            npm install --prefix "$RUNNER_TEMP/octomus-contract-client" --no-audit --no-fund @openai/codex@0.153.4
+            echo "OCTOMUS_CONTRACT_CODEX_BINARY=$RUNNER_TEMP/octomus-contract-client/node_modules/.bin/codex" >> "$GITHUB_ENV"
+          else
+            npm install --prefix "$RUNNER_TEMP/octomus-contract-client" --no-audit --no-fund opencode-ai@1.18.30
+            echo "OCTOMUS_CONTRACT_OPENCODE_BINARY=$RUNNER_TEMP/octomus-contract-client/node_modules/.bin/opencode" >> "$GITHUB_ENV"
+          fi
+      - name: Real client, synthetic provider contracts
+        run: cargo test --locked --test contracts pinned_${{ matrix.backend }}_contract -- --ignored --nocapture

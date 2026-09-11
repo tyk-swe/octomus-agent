@@ -10,12 +10,19 @@ export class ApiError extends Error {
     super(message);
   }
 }
-export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+export async function api<T>(
+  path: string,
+  method = 'GET',
+  body?: unknown,
+  signal?: AbortSignal
+): Promise<T> {
   const response = await fetch(`/api${path}`, {
     method,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     ...(method !== 'GET' ? { body: JSON.stringify(body ?? {}) } : {}),
-    signal: AbortSignal.timeout(90000)
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(90000)])
+      : AbortSignal.timeout(90000)
   });
   const result = await response
     .json()

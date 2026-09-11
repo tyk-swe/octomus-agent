@@ -87,5 +87,6 @@
   "max_workspace_bytes": 20000000000,
   "retain_completed_days": 14,
   "retain_events": 10000,
-  "opencode_binary": "opencode"
+  "opencode_binary": "opencode",
+  "runner_storage_paths": {}
 }

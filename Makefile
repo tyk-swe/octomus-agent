@@ -17,6 +17,7 @@ test: dashboard
 	cargo build --locked
 	python3 tests/e2e.py
 	python3 tests/e2e_runners.py
+	python3 tests/e2e_hardening.py
 	python3 tests/distribution.py
 	python3 tests/crate_guards.py
 	npm test --prefix web

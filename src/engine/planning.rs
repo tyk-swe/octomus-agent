@@ -18,7 +18,7 @@ impl App {
         schema: Value,
         cancel: &CancellationToken,
     ) -> Result<(Session, String)> {
-        self.budget(config, &cycle.id, None, label, &config.roles[role])
+        self.budget(&cycle.id, None, label, &config.roles[role])
             .await?;
         let workspace = self
             .data_dir
@@ -45,7 +45,7 @@ impl App {
         };
         self.store.put("session", &session.id, &session)?;
         let result = client
-            .turn(&session.id, route, &workspace, prompt, Some(schema))
+            .turn(&session.id, route, &workspace, prompt, Some(schema.clone()))
             .await;
         session.status = if result.is_ok() {
             "completed"
@@ -55,35 +55,34 @@ impl App {
         .into();
         self.store.put("session", &session.id, &session)?;
         let answer = result?;
+        schemas::validate(
+            &serde_json::from_str(&answer).context("Planning result is not JSON")?,
+            &schema,
+        )?;
+        session.summary = redact(&answer);
+        self.store.put("session", &session.id, &session)?;
         ensure!(
             git::clean(config, &workspace, cancel).await?
                 && git::git(config, &workspace, &["rev-parse", "HEAD"], cancel).await?
                     == grounding(cycle)?.revision,
             "Planning session modified its source snapshot"
         );
+        drop(client);
+        super::housekeeping::remove_owned_dir(
+            workspace
+                .parent()
+                .context("Missing planning workspace parent")?,
+            &workspace,
+        )
+        .await?;
         Ok((session, answer))
     }
     pub(super) async fn cycle(
         &self,
         config: &Config,
-        number: u64,
-        mode: CycleMode,
+        mut cycle: Cycle,
         cancel: &CancellationToken,
     ) -> Result<()> {
-        let mut cycle = Cycle {
-            mode,
-            id: id(),
-            number,
-            status: "running".into(),
-            started_at: now(),
-            completed_at: None,
-            grounding: None,
-            proposals: vec![],
-            assessments: vec![],
-            sessions: vec![],
-            error: None,
-        };
-        self.store.put("cycle", &cycle.id, &cycle)?;
         let result = self.plan(config, &mut cycle, cancel).await;
         cycle.completed_at = Some(now());
         cycle.status = if result.is_ok() {
@@ -106,8 +105,37 @@ impl App {
         cycle: &mut Cycle,
         cancel: &CancellationToken,
     ) -> Result<()> {
-        let history = self.capture_grounding(config, cycle, cancel).await?;
-        let context = serde_json::to_string(&cycle.grounding)?;
+        self.capture_grounding(config, cycle, cancel).await?;
+        let memory = self
+            .planning_memory(config, grounding(cycle)?, cancel)
+            .await?;
+        if cycle.mode == CycleMode::Execution {
+            for request in memory["rediscovery_requests"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let old: Task = self
+                    .store
+                    .get(
+                        "task",
+                        request["id"]
+                            .as_str()
+                            .context("Missing rediscovery identity")?,
+                    )?
+                    .context("Missing rediscovery task")?;
+                let mut proposal = old.proposal.clone();
+                proposal.id = format!("rediscover-{}", old.id);
+                proposal.dependencies.clear();
+                proposal.reconsiders = vec![old.id];
+                proposal.decision = "candidate".into();
+                proposal.reason =
+                    "Operator requested fresh assessment against current context".into();
+                cycle.proposals.push(proposal);
+            }
+        }
+        let context =
+            serde_json::to_string(&json!({"grounding":cycle.grounding,"decision_memory":memory}))?;
         let ground = self
             .summarize_grounding(config, cycle, &context, cancel)
             .await?;
@@ -115,15 +143,49 @@ impl App {
             .await?;
         self.review_proposals(config, cycle, &ground, &context, cancel)
             .await?;
-        let proposals = self
+        let mut proposals = self
             .consolidate(config, cycle, &ground, &context, cancel)
             .await?;
+        for proposal in &mut proposals {
+            proposal.problem_key = proposal.problem_identity();
+        }
+        let history = self
+            .store
+            .duplicate_tasks(&config.github_repo, &proposals)?;
         validate_proposals(config, &proposals, grounding(cycle)?, &history)?;
+        self.validate_memory(&proposals, &memory)?;
+        if cycle.mode == CycleMode::Execution {
+            for request in memory["rediscovery_requests"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let request_id = request["id"]
+                    .as_str()
+                    .context("Missing rediscovery identity")?;
+                ensure!(
+                    proposals
+                        .iter()
+                        .filter(|p| p.reconsiders.iter().any(|id| id == request_id))
+                        .count()
+                        == 1,
+                    "Every rediscovery request needs exactly one fresh decision"
+                );
+            }
+        }
         cycle.proposals = proposals;
+        cycle.decision_memory = self.record_decisions(config, cycle, cancel).await?;
         self.store.put("cycle", &cycle.id, cycle)?;
         if cycle.mode == CycleMode::Audit {
             // Recommendations retain their decisions, but never become an executable queue.
-            return Ok(());
+            cycle.status = if cycle.proposals.iter().any(|p| p.decision == "accepted") {
+                "completed"
+            } else {
+                "idle"
+            }
+            .into();
+            cycle.completed_at = Some(now());
+            return self.store.commit_plan(cycle, &[]);
         }
         self.commit_tasks(config, cycle)
     }
@@ -133,15 +195,26 @@ impl App {
         config: &Config,
         cycle: &mut Cycle,
         cancel: &CancellationToken,
-    ) -> Result<Vec<Task>> {
+    ) -> Result<()> {
         self.doctor_for(config, cycle.mode).await?;
         git::fetch(config, cancel).await?;
         let revision = git::remote_revision(config, &config.default_branch, cancel)
             .await?
             .context("Default branch missing on remote")?;
         let prs = git::prs(config, cancel).await?;
-        self.store.put("settings", "prs", &prs)?;
-        let history = self.store.list::<Task>("task")?;
+        for pr in &prs {
+            self.observe_pr(config, pr.clone())?;
+        }
+        let history = self
+            .store
+            .history_page(
+                "task",
+                &crate::store::HistoryQuery {
+                    limit: Some(100),
+                    ..Default::default()
+                },
+            )?
+            .items;
         let due = cycle.number.is_multiple_of(config.maintenance_every_cycles);
         let maintenance_targets = prs
             .iter()
@@ -155,21 +228,7 @@ impl App {
             })
             .map(|p| p.branch.clone())
             .collect();
-        let recorded_history: Vec<_> = history
-            .iter()
-            .filter(|task| task.status != Status::Cancelled)
-            .take(300)
-            .map(|task| {
-                json!({
-                    "id": task.id,
-                    "title": task.proposal.title,
-                    "scope": task.proposal.scope,
-                    "target": task.proposal.target,
-                    "status": task.status,
-                    "source_revision": task.source_revision,
-                })
-            })
-            .collect();
+        let recorded_history = history;
         cycle.grounding = Some(Grounding {
             revision,
             prs,
@@ -178,7 +237,7 @@ impl App {
             maintenance_targets,
         });
         self.store.put("cycle", &cycle.id, cycle)?;
-        Ok(history)
+        Ok(())
     }
 
     async fn summarize_grounding(
@@ -232,7 +291,7 @@ impl App {
             .map(|i| {
                 let scope = scopes[i];
                 let prompt = format!(
-                    "Discover worthwhile project improvements, focusing on {scope}. Also cover these enabled areas as appropriate: {:?}. Inspect actual code and relevant open branch diffs; do not modify files. Return no proposals when benefit is weak. For each proposal include concrete file evidence, problem, benefit, scope, tier XS/S/M/L/XL, dependencies by proposal id, a self-contained refined prompt with constraints and verification, and target '{}' or a listed owned PR branch. Give IDs prefixed d{i}-. Set decision='candidate' and reason describing value. Do not duplicate history/open work. Maintenance due: {}; prioritize maintenance on main and {:?} when due; preserve useful capabilities. Grounding: {ground}. Recorded context: {context}",
+                    "Discover worthwhile project improvements, focusing on {scope}. Also cover these enabled areas as appropriate: {:?}. Inspect actual code and relevant open branch diffs; do not modify files. Return no proposals when benefit is weak. For each proposal include concrete file evidence, problem, benefit, scope, tier XS/S/M/L/XL, dependencies by proposal id, a self-contained refined prompt with constraints and verification, and target '{}' or a listed owned PR branch. Give IDs prefixed d{i}-. Include a stable problem_key, relevant_paths as repository-relative files, and reconsiders=[] unless handling a supplied rediscovery request. Reuse matching problem identities from decision memory and do not repeat unchanged rejected work or seeded rediscovery candidates. Set decision='candidate' and reason describing value. Do not duplicate history/open work. Maintenance due: {}; prioritize maintenance on main and {:?} when due; preserve useful capabilities. Grounding: {ground}. Recorded context: {context}",
                     config.categories, config.default_branch, due, grounding.maintenance_targets
                 );
                 (format!("discovery-{i}"), prompt)
@@ -331,7 +390,7 @@ impl App {
     ) -> Result<Vec<Proposal>> {
         let candidates = serde_json::to_string(&cycle.proposals)?;
         let prompt = format!(
-            "Act as final orchestrator: assess all candidates yourself and resolve BOTH adversarial reviews explicitly in each decision reason, especially disagreements. Deduplicate overlapping proposals; retain a candidate ID for merged work, mark absorbed IDs rejected and reference the surviving ID. Return every original candidate exactly once, accepted/rejected/deferred with reasons. Accept at most {} cohesive tasks, dependency-aware, with a polished self-contained implementation prompt including objective, evidence, target, boundaries, required outcomes and proportionate verification. Keep priorities within {:?}. Avoid work already in history, including failed unresolved tasks. Only listed owned PR branches or '{}' are eligible targets. Dependencies must refer only to other accepted candidate IDs on the SAME existing owned PR branch. On main, combine code-dependent pieces into one cohesive task or defer dependent work until its prerequisite PR is merged. Multiple accepted changes to one existing branch must declare a dependency order. No cycles. Configured execution tiers: {}. Do not change operating policy. Candidates: {candidates}. Reviews: {}. Grounding: {ground}. Context: {context}",
+            "Act as final orchestrator: assess all candidates yourself and resolve BOTH adversarial reviews explicitly in each decision reason, especially disagreements. Deduplicate overlapping proposals; retain a candidate ID for merged work, mark absorbed IDs rejected and reference the surviving ID. Return every original candidate exactly once, accepted/rejected/deferred with reasons. Accept at most {} cohesive tasks, dependency-aware, with a polished self-contained implementation prompt including objective, evidence, target, boundaries, required outcomes and proportionate verification. Keep priorities within {:?}. Avoid work already in history, including failed unresolved tasks. Only listed owned PR branches or '{}' are eligible targets. Dependencies must refer only to other accepted candidate IDs on the SAME existing owned PR branch. On main, combine code-dependent pieces into one cohesive task or defer dependent work until its prerequisite PR is merged. Multiple accepted changes to one existing branch must declare a complete linear dependency order. Reuse problem_key from matching decision memory even when wording changes, record up to 40 relevant repository-relative file paths, and honor reconsideration_due. Preserve reconsiders IDs on the seeded rediscovery candidates (merge them into the surviving candidate if needed); decide every rediscovery request once, rejecting obsolete work with a reason. Do not duplicate seeded candidates. No cycles. Configured execution tiers: {}. Do not change operating policy. Candidates: {candidates}. Reviews: {}. Grounding: {ground}. Context: {context}",
             config.max_tasks_per_cycle,
             config.categories,
             config.default_branch,
@@ -410,6 +469,14 @@ impl App {
                 error: None,
                 created_at: now(),
                 updated_at: now(),
+                attempt_policy: Some(AttemptPolicy::from_config(config)),
+                blocked_reason: None,
+                run_id: cycle.run_id.clone(),
+                superseded_by: vec![],
+                supersedes: p.reconsiders.clone(),
+                rediscovery_requested: false,
+                rediscovery_result: None,
+                lifecycle: WorkspaceLifecycle::default(),
             });
         }
         // Commit the successful cycle and its complete queue as one durable transaction.
@@ -486,11 +553,12 @@ pub fn validate_proposals(
         );
         ensure!(
             !history.iter().any(|task| task.proposal.target == p.target
-                && task
+                && (task
                     .proposal
                     .title
                     .trim()
                     .eq_ignore_ascii_case(p.title.trim())
+                    || task.proposal.problem_identity() == p.problem_identity())
                 && task.status != Status::Cancelled),
             "Proposal duplicates recorded work"
         );
@@ -510,6 +578,62 @@ pub fn validate_proposals(
                 "Code dependencies must be delivered on the same existing PR branch; consolidate or defer default-branch dependencies"
             );
             stack.extend(dependency.dependencies.clone());
+        }
+    }
+    validate_branch_order(config, proposals)?;
+    Ok(())
+}
+
+pub fn validate_branch_order(config: &Config, proposals: &[Proposal]) -> Result<()> {
+    let accepted: HashMap<_, _> = proposals
+        .iter()
+        .filter(|p| p.decision == "accepted")
+        .map(|p| (p.id.as_str(), p))
+        .collect();
+    ensure!(
+        accepted.len()
+            == proposals
+                .iter()
+                .filter(|p| p.decision == "accepted")
+                .count(),
+        "Duplicate accepted proposal identity"
+    );
+    for proposal in accepted.values() {
+        for dependency in &proposal.dependencies {
+            ensure!(
+                proposal.target != config.default_branch
+                    && accepted
+                        .get(dependency.as_str())
+                        .is_some_and(|p| p.target == proposal.target),
+                "Dependencies must refer to accepted work on the same existing PR branch"
+            );
+        }
+    }
+    let mut branches: HashMap<&str, Vec<&Proposal>> = HashMap::new();
+    for p in proposals
+        .iter()
+        .filter(|p| p.decision == "accepted" && p.target != config.default_branch)
+    {
+        branches.entry(&p.target).or_default().push(p);
+    }
+    for (branch, members) in branches {
+        let mut remaining: HashSet<&str> = members.iter().map(|p| p.id.as_str()).collect();
+        while !remaining.is_empty() {
+            let ready: Vec<_> = members
+                .iter()
+                .filter(|p| {
+                    remaining.contains(p.id.as_str())
+                        && !p
+                            .dependencies
+                            .iter()
+                            .any(|d| remaining.contains(d.as_str()))
+                })
+                .collect();
+            ensure!(
+                ready.len() == 1,
+                "Accepted tasks on {branch} need a complete dependency order; unordered or forked branch plans cannot execute"
+            );
+            remaining.remove(ready[0].id.as_str());
         }
     }
     Ok(())

@@ -160,6 +160,10 @@ impl OpenCode {
         );
         Ok(server)
     }
+    /// Version-specific schema for contract checks, fetched from the owned server.
+    pub async fn protocol_schema(&self, cwd: &Path) -> Result<Value> {
+        self.json(Method::GET, "/doc", cwd, None, 60).await
+    }
     pub fn version(&self) -> &str {
         &self.version
     }

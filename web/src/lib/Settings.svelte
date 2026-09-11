@@ -339,6 +339,24 @@
           <Icon name="settings" />
         </div>
         <div class="form-grid">
+          {#each ['codex', 'opencode'] as backend}
+            <label
+              >{backend === 'codex' ? 'Codex' : 'OpenCode'} storage measurement path (optional)
+              <input
+                value={config.runner_storage_paths[backend] ?? ''}
+                placeholder="Absolute path to runner storage"
+                oninput={(event) => {
+                  const path = event.currentTarget.value.trim();
+                  if (path) config!.runner_storage_paths[backend] = path;
+                  else delete config!.runner_storage_paths[backend];
+                }}
+              />
+              <small
+                >Directory sizes only, measured every 15 minutes. Octomus never deletes this
+                storage.</small
+              >
+            </label>
+          {/each}
           {#each limits as limit}<label
               >{limit.label}<input
                 type="number"

@@ -33,6 +33,7 @@ export type Config = {
   command_timeout_seconds: number;
   max_sessions_per_day: number;
   max_workspace_bytes: number;
+  runner_storage_paths: Record<string, string>;
   retain_completed_days: number;
   retain_events: number;
 };
@@ -50,6 +51,9 @@ export type TaskRow = {
   error: string | null;
   created_at: string;
   updated_at: string;
+  blocked_reason?: string | null;
+  lifecycle: { archived_at?: string | null; discarded_at?: string | null };
+  superseded_by?: string[];
 };
 export type Proposal = {
   id: string;
@@ -85,8 +89,49 @@ export type ReviewRound = {
     findings: { title: string; file: string; detail: string; priority: string }[];
   };
 };
+export type AttemptPolicy = Pick<
+  Config,
+  | 'max_repair_rounds'
+  | 'max_no_progress_rounds'
+  | 'max_retries'
+  | 'task_timeout_seconds'
+  | 'session_timeout_seconds'
+  | 'command_timeout_seconds'
+>;
+export type Page<T> = { items: T[]; next_cursor: number | null; counts: Record<string, number> };
+export type ProposalDetail = Proposal & { content_revision: number };
+export type ProposalRow = ProposalDetail & {
+  cycle: number;
+  cycle_id: string;
+  mode: 'execution' | 'audit';
+  detail?: ProposalDetail;
+  detailRequested?: boolean;
+  detailLoading?: number;
+};
+export type PrObservation = {
+  repository: string;
+  pr: PR;
+  observed_at: string;
+  delivered_head: string | null;
+  external_head_movement: boolean;
+};
+export type CycleSummary = Pick<
+  Cycle,
+  'id' | 'number' | 'mode' | 'status' | 'started_at' | 'completed_at' | 'error'
+> & {
+  session_count: number;
+  decisions: Record<string, number>;
+  lifecycle: { archived_at?: string | null; discarded_at?: string | null };
+};
 export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   proposal: Proposal;
+  allowed_actions: string[];
+  config: Config;
+  effective_attempt_policy: AttemptPolicy;
+  operating_policy: Pick<Config, 'max_sessions_per_day' | 'max_workspace_bytes'>;
+  rediscovery_requested: boolean;
+  rediscovery_result: string | null;
+  supersedes: string[];
   route: Route;
   source_revision: string;
   comparison_base: string;
@@ -139,7 +184,14 @@ export type Cycle = {
 export type Event = { id: number; at: string; entity_id: string; kind: string; message: string };
 export type Snapshot = {
   status: string;
-  control: { paused: boolean; cycle_number: number; next_cycle_at: number; error: string | null };
+  control: {
+    paused: boolean;
+    mode: 'paused' | 'run_once' | 'continuous';
+    cycle_number: number;
+    next_cycle_at: number;
+    error: string | null;
+    idle_streak: number;
+  };
   repository: string;
   configured: boolean;
   audit_configured: boolean;
@@ -149,8 +201,24 @@ export type Snapshot = {
   sessions_today: number;
   session_limit: number;
   tasks: TaskRow[];
-  cycles: Cycle[];
-  prs: PR[];
+  counts: Record<string, number>;
+  attention_tasks: TaskRow[];
+  merged_prs: number;
+  storage_limit: number;
+  storage: {
+    measured_at: string;
+    application_bytes: number;
+    task_bytes: number;
+    planning_bytes: number;
+    runner_transcripts: {
+      bytes: number | null;
+      status: string;
+      message: string;
+      runners: Record<string, { bytes: number | null; status: string }>;
+    };
+  } | null;
+  cycles: CycleSummary[];
+  prs: PrObservation[];
   events: Event[];
 };
 export type Model = {

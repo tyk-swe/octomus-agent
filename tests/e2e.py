@@ -380,7 +380,7 @@ def audit_scenario(mode):
                 state = service.request('/state')
                 return state if state['cycles'] and not state['cycle_active'] and state['cycles'][0]['status'] == expected else None
             state = service.wait(completed_audit, 'audit completion')
-            cycle = state['cycles'][0]
+            cycle = service.request('/cycles/' + state['cycles'][0]['id'])
             assert cycle['mode'] == 'audit' and state['control']['paused']
             assert state['tasks'] == queued_before
             if mode in ['accepted', 'queued']:

@@ -1,7 +1,7 @@
 use crate::{
     config::{Backend, Config, validate_binary},
     engine::App,
-    model::{Cycle, CycleMode, Status, Task},
+    model::{AttemptPolicy, BlockedReason, Cycle, CycleMode, OperatingMode, Status, Task},
     store::redact,
 };
 use axum::{
@@ -68,6 +68,13 @@ pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
     };
     let api = Router::new()
         .route("/state", get(state_view))
+        .route("/tasks", get(task_history))
+        .route("/cycles", get(cycle_history))
+        .route("/cycles/{id}", get(cycle_detail))
+        .route("/cycles/{id}/{action}", post(cycle_action))
+        .route("/proposals", get(proposal_history))
+        .route("/proposals/{cycle}/{id}", get(proposal_detail))
+        .route("/prs", get(pr_history))
         .route("/tasks/{id}", get(task))
         .route("/tasks/{id}/{action}", post(task_action))
         .route("/config", get(config).put(save_config))
@@ -165,8 +172,7 @@ async fn authenticate(State(s): State<Api>, req: Request, next: Next) -> Respons
 }
 async fn state_view(State(s): State<Api>) -> Result<Json<Value>> {
     let c = s.app.control()?;
-    let tasks = s.app.store.list::<Task>("task")?;
-    let cycles = s.app.store.list::<Cycle>("cycle")?;
+    let mut snapshot = s.app.store.dashboard()?;
     let config = s.app.config()?;
     let rt = s.app.runtime.lock().unwrap();
     let status = if rt.cycle_mode == Some(CycleMode::Audit) {
@@ -180,16 +186,95 @@ async fn state_view(State(s): State<Api>) -> Result<Json<Value>> {
     } else {
         "idle"
     };
-    // Configuration and complete task details are fetched separately to keep polling inexpensive.
-    Ok(Json(
-        json!({"status":status,"control":c,"repository":config.github_repo,"configured":config.validate(true).is_ok(),"audit_configured":config.validate_audit().is_ok(),"active_cycle_mode":rt.cycle_mode,"active_tasks":rt.tasks.len(),"cycle_active":rt.cycle.is_some(),"sessions_today":s.app.store.sessions_today()?,"session_limit":config.max_sessions_per_day,"tasks":tasks.iter().take(300).map(|t|json!({"id":t.id,"cycle_id":t.cycle_id,"title":t.proposal.title,"category":t.proposal.category,"tier":t.proposal.tier,"target":t.proposal.target,"branch":t.branch,"status":t.status,"pr_url":t.pr_url,"pr_number":t.pr_number,"error":t.error,"created_at":t.created_at,"updated_at":t.updated_at})).collect::<Vec<_>>(),"cycles":cycles.into_iter().take(20).collect::<Vec<_>>(),"prs":s.app.store.get::<Value>("settings","prs")?.unwrap_or(json!([])),"events":s.app.store.events(None)?}),
-    ))
+    let fields = json!({"status":status,"control":c,"repository":config.github_repo,"configured":config.validate(true).is_ok(),"audit_configured":config.validate_audit().is_ok(),"active_cycle_mode":rt.cycle_mode,"active_tasks":rt.tasks.len(),"cycle_active":rt.cycle.is_some(),"session_limit":config.max_sessions_per_day,"storage_limit":config.max_workspace_bytes,"storage":s.app.store.get::<Value>("settings","storage")?});
+    snapshot
+        .as_object_mut()
+        .unwrap()
+        .extend(fields.as_object().unwrap().clone());
+    Ok(Json(snapshot))
 }
-async fn task(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Task>> {
-    Ok(Json(s.app.store.get("task", &id)?.ok_or(ApiError(
+async fn task(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
+    let task: Task = s
+        .app
+        .store
+        .get("task", &id)?
+        .ok_or(ApiError(StatusCode::NOT_FOUND, "Task not found".into()))?;
+    let mut value = serde_json::to_value(&task).map_err(anyhow::Error::from)?;
+    value["allowed_actions"] = json!(task.allowed_actions());
+    value["effective_attempt_policy"] = json!(AttemptPolicy::from_config(&task.execution_config()));
+    let live = s.app.config()?;
+    value["operating_policy"] = json!({"max_sessions_per_day":live.max_sessions_per_day,"max_workspace_bytes":live.max_workspace_bytes});
+    Ok(Json(value))
+}
+async fn task_history(
+    State(s): State<Api>,
+    Query(q): Query<crate::store::HistoryQuery>,
+) -> Result<Json<crate::store::Page>> {
+    Ok(Json(s.app.store.history_page("task", &q)?))
+}
+async fn cycle_history(
+    State(s): State<Api>,
+    Query(q): Query<crate::store::HistoryQuery>,
+) -> Result<Json<crate::store::Page>> {
+    Ok(Json(s.app.store.history_page("cycle", &q)?))
+}
+async fn proposal_history(
+    State(s): State<Api>,
+    Query(q): Query<crate::store::HistoryQuery>,
+) -> Result<Json<crate::store::Page>> {
+    Ok(Json(s.app.store.proposal_page(&q)?))
+}
+async fn proposal_detail(
+    State(s): State<Api>,
+    Path((cycle, id)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    Ok(Json(s.app.store.proposal_detail(&cycle, &id)?.ok_or(
+        ApiError(StatusCode::NOT_FOUND, "Proposal not found".into()),
+    )?))
+}
+async fn pr_history(
+    State(s): State<Api>,
+    Query(q): Query<crate::store::HistoryQuery>,
+) -> Result<Json<crate::store::Page>> {
+    Ok(Json(s.app.store.history_page("pr", &q)?))
+}
+async fn cycle_detail(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Cycle>> {
+    Ok(Json(s.app.store.get("cycle", &id)?.ok_or(ApiError(
         StatusCode::NOT_FOUND,
-        "Task not found".into(),
+        "Cycle not found".into(),
     ))?))
+}
+async fn cycle_action(
+    State(s): State<Api>,
+    Path((id, action)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    let _gate = s.app.gate.lock().await;
+    let mut c: Cycle = s
+        .app
+        .store
+        .get("cycle", &id)?
+        .ok_or(ApiError(StatusCode::NOT_FOUND, "Cycle not found".into()))?;
+    if c.status == "running" {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Wait for planning to finish".into(),
+        ));
+    }
+    match action.as_str() {
+        "archive" => {
+            c.lifecycle.archived_at = Some(crate::model::now());
+            s.app.store.put("cycle", &id, &c)?;
+        }
+        "discard" if c.lifecycle.archived_at.is_some() => s.app.discard_cycle(&mut c).await?,
+        _ => {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                "Archive the cycle before discarding its workspace".into(),
+            ));
+        }
+    }
+    s.app.store.event(&id, "operator", &action)?;
+    Ok(Json(json!({"ok":true})))
 }
 async fn config(State(s): State<Api>) -> Result<Json<Config>> {
     Ok(Json(s.app.config()?))
@@ -206,14 +291,10 @@ async fn save_config(State(s): State<Api>, Json(c): Json<Config>) -> Result<Json
     c.validate(false)?;
     let old = s.app.config()?;
     if (old.repository != c.repository
-        || old.github_repo != c.github_repo
+        || !old.github_repo.eq_ignore_ascii_case(&c.github_repo)
         || old.branch_prefix != c.branch_prefix
         || old.default_branch != c.default_branch)
-        && s.app
-            .store
-            .list::<Task>("task")?
-            .iter()
-            .any(|t| !matches!(t.status, Status::Published | Status::Cancelled))
+        && s.app.store.has_unresolved_tasks()?
     {
         return Err(ApiError(StatusCode::CONFLICT,"Resolve or cancel existing tasks before changing repository identity or branch policy.".into()));
     }
@@ -227,7 +308,8 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
     let _gate = s.app.gate.lock().await;
     let mut c = s.app.control()?;
     let rt = s.app.runtime.lock().unwrap();
-    if (action == "audit" && (!c.paused || !rt.tasks.is_empty() || rt.cycle.is_some()))
+    if (matches!(action.as_str(), "audit" | "cycle")
+        && (!c.paused || !rt.tasks.is_empty() || rt.cycle.is_some()))
         || (matches!(action.as_str(), "resume" | "cycle")
             && rt.cycle_mode == Some(CycleMode::Audit))
     {
@@ -240,17 +322,15 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
             s.app.store.event("system", "operator", "audit")?;
             return Ok(Json(json!(s.app.control()?)));
         }
-        "pause" => c.paused = true,
+        "pause" => c.set_mode(OperatingMode::Paused),
         "resume" => {
             s.app.config()?.validate(true)?;
-            c.paused = false;
+            c.set_mode(OperatingMode::Continuous);
             c.error = None;
         }
         "cycle" => {
             s.app.config()?.validate(true)?;
-            c.paused = false;
-            c.next_cycle_at = 0;
-            c.error = None;
+            s.app.store.start_batch(&mut c)?;
         }
         _ => return Err(ApiError(StatusCode::NOT_FOUND, "Unknown control".into())),
     }
@@ -258,16 +338,44 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
     s.app.store.event("system", "operator", &action)?;
     Ok(Json(json!(c)))
 }
+// Caller holds the scheduler gate, including when rechecking after remote work.
+fn eligible_task(app: &App, id: &str, action: &str) -> Result<Task> {
+    let t: Task = app
+        .store
+        .get("task", id)?
+        .ok_or(ApiError(StatusCode::NOT_FOUND, "Task not found".into()))?;
+    if !t.allowed_actions().contains(&action) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "This action is not eligible for the task's recorded failure and workspace state"
+                .into(),
+        ));
+    }
+    if action != "cancel" && app.runtime.lock().unwrap().tasks.contains_key(id) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Wait for active task work to finish".into(),
+        ));
+    }
+    Ok(t)
+}
+fn revalidate_task_action(app: &App, task: &Task, action: &str) -> Result<()> {
+    let current = eligible_task(app, &task.id, action)?;
+    if json!(current) != json!(task) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Task changed during remote checks; inspect its current state before trying again"
+                .into(),
+        ));
+    }
+    Ok(())
+}
 async fn task_action(
     State(s): State<Api>,
     Path((id, action)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
-    let _gate = s.app.gate.lock().await;
-    let mut t: Task = s
-        .app
-        .store
-        .get("task", &id)?
-        .ok_or(ApiError(StatusCode::NOT_FOUND, "Task not found".into()))?;
+    let mut gate = s.app.gate.lock().await;
+    let mut t = eligible_task(&s.app, &id, &action)?;
     match action.as_str() {
         "cancel" => {
             let rt = s.app.runtime.lock().unwrap();
@@ -305,17 +413,142 @@ async fn task_action(
                         .into(),
                 ));
             }
+            let original = t.clone();
+            t.attempt_policy = Some(AttemptPolicy::from_config(&config));
+            if t.output_commit.is_none() {
+                drop(gate);
+                let preflight = s
+                    .app
+                    .retry_preflight(&t, &s.app.shutdown.child_token())
+                    .await;
+                gate = s.app.gate.lock().await;
+                revalidate_task_action(&s.app, &original, &action)?;
+                if t.attempt_policy.as_ref() != Some(&AttemptPolicy::from_config(&s.app.config()?))
+                {
+                    return Err(ApiError(
+                        StatusCode::CONFLICT,
+                        "Retry policy changed during remote checks; try again with the current limits"
+                            .into(),
+                    ));
+                }
+                if let Err(error) = preflight {
+                    t.blocked_reason = Some(BlockedReason::from_error(&error));
+                    t.error = Some(redact(&format!("{error:#}")));
+                    s.app.save_task(&mut t)?;
+                    return Err(error.into());
+                }
+            }
             t.attempts += 1;
             t.error = None;
+            t.blocked_reason = None;
             t.status = Status::Queued;
-            // Keep original target, prompt, routes and verification contract; allow operators to raise limits.
-            t.config.max_repair_rounds = config.max_repair_rounds;
-            t.config.max_no_progress_rounds = config.max_no_progress_rounds;
-            t.config.task_timeout_seconds = config.task_timeout_seconds;
-            t.config.session_timeout_seconds = config.session_timeout_seconds;
-            t.config.max_sessions_per_day = config.max_sessions_per_day;
-            t.config.max_workspace_bytes = config.max_workspace_bytes;
+            t.run_id = None;
+            s.app.store.event(
+                &id,
+                "attempt_policy",
+                &serde_json::to_string(&t.attempt_policy).map_err(anyhow::Error::from)?,
+            )?;
             s.app.save_task(&mut t)?;
+        }
+        "supersede" => {
+            t.status = Status::Cancelled;
+            t.rediscovery_requested = true;
+            t.rediscovery_result = None;
+            s.app.save_task(&mut t)?;
+        }
+        "archive" => {
+            if t.status.retryable() {
+                t.status = Status::Cancelled;
+            }
+            t.lifecycle.archived_at = Some(crate::model::now());
+            s.app.save_task(&mut t)?;
+        }
+        "discard" => s.app.discard_task(&mut t).await?,
+        "reconcile" => {
+            if !s.app.runtime.lock().unwrap().tasks.is_empty() {
+                return Err(ApiError(
+                    StatusCode::CONFLICT,
+                    "Wait for active tasks before publication reconciliation".into(),
+                ));
+            }
+            if t.output_commit.is_some() {
+                let previous_status = t.status.clone();
+                s.app.transition(&mut t, Status::Publishing)?;
+                let cancel = s.app.shutdown.child_token();
+                {
+                    let mut rt = s.app.runtime.lock().unwrap();
+                    rt.tasks.insert(id.clone(), cancel.clone());
+                    rt.reconciling_publication = true;
+                }
+                let app = s.app.clone();
+                // Own completion independently of the HTTP request so a disconnected
+                // operator cannot release the reservation while publication is running.
+                let work = tokio::spawn(async move {
+                    let published = {
+                        let limit = Duration::from_secs(t.execution_config().task_timeout_seconds);
+                        let publish = crate::git::publish(&t, &cancel);
+                        tokio::pin!(publish);
+                        match tokio::time::timeout(limit, &mut publish).await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                // Use the normal task deadline cleanup: prevent further
+                                // commands and let cancellation stop owned process groups.
+                                cancel.cancel();
+                                let _ = tokio::time::timeout(Duration::from_secs(8), &mut publish)
+                                    .await;
+                                Err(anyhow::Error::new(BlockedReason::Timeout))
+                            }
+                        }
+                    };
+                    let _gate = app.gate.lock().await;
+                    let result = (|| -> Result<()> {
+                        match published {
+                            Ok(pr) => {
+                                t.pr_number = Some(pr.number);
+                                t.pr_url = Some(pr.url.clone());
+                                t.error = None;
+                                t.blocked_reason = None;
+                                app.transition(&mut t, Status::Published)?;
+                                app.observe_delivery(&t.config, pr)?;
+                            }
+                            Err(error) => {
+                                t.blocked_reason = Some(BlockedReason::from_error(&error));
+                                t.error = Some(redact(&format!("{error:#}")));
+                                app.transition(&mut t, previous_status)?;
+                            }
+                        }
+                        app.store.event(&id, "operator", &action)?;
+                        Ok(())
+                    })();
+                    let mut rt = app.runtime.lock().unwrap();
+                    rt.tasks.remove(&id);
+                    rt.reconciling_publication = false;
+                    result
+                });
+                drop(gate);
+                work.await.map_err(anyhow::Error::from)??;
+                return Ok(Json(json!({"ok":true})));
+            } else {
+                drop(gate);
+                let preflight = s
+                    .app
+                    .retry_preflight(&t, &s.app.shutdown.child_token())
+                    .await;
+                gate = s.app.gate.lock().await;
+                revalidate_task_action(&s.app, &t, &action)?;
+                match preflight {
+                    Ok(()) => {
+                        t.blocked_reason = Some(BlockedReason::Unknown);
+                        t.error =
+                            Some("Remote prerequisites are restored; task can be retried".into());
+                    }
+                    Err(error) => {
+                        t.blocked_reason = Some(BlockedReason::from_error(&error));
+                        t.error = Some(redact(&format!("{error:#}")));
+                    }
+                }
+                s.app.save_task(&mut t)?;
+            }
         }
         _ => {
             return Err(ApiError(
@@ -325,6 +558,7 @@ async fn task_action(
         }
     }
     s.app.store.event(&id, "operator", &action)?;
+    drop(gate);
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Default, Deserialize)]

@@ -14,18 +14,28 @@ def proposal():
         'evidence': ['README.md: the feature contract requires fixed output'],
         'benefit': 'Delivers the documented feature.', 'category': 'features',
         'target': (root / 'target').read_text().strip() if (root / 'target').exists() else 'main', 'tier': 'M', 'scope': 'Implement feature.txt only.',
+        'problem_key': '', 'relevant_paths': [], 'reconsiders': [],
         'dependencies': [], 'prompt': 'Create feature.txt with fixed output and verify its contents. fixture-file=feature.txt',
         'decision': 'accepted', 'reason': 'Both independent reviews accept the concrete feature; no duplicates.'
     }
 
 def proposals():
     first = proposal()
-    if (root / 'parallel').exists() or (root / 'dependencies').exists():
+    if (root / 'proposal-override.json').exists():
+        first.update(json.loads((root / 'proposal-override.json').read_text()))
+    if (root / 'audit-absorbed').exists():
+        first['problem_key'] = 'fixture-feature-output'
+        return [first, {**first, 'id': 'd0-absorbed', 'title': 'Alternate wording for the fixture feature', 'decision': 'rejected', 'reason': 'Absorbed into d0-feature; both reviews support the consolidated scope.'}]
+    if any((root / name).exists() for name in ['parallel','dependencies','chain','fork','unordered']):
         second = {**first, 'id': 'd0-followup', 'title': 'Complete the next fixture feature', 'problem': 'The next output capability is missing.', 'scope': 'Implement feature-next.txt only.', 'evidence': ['README.md: next feature output'], 'prompt': 'Implement the next fixture capability. fixture-file=feature-next.txt'}
-        if (root / 'dependencies').exists():
+        if any((root / name).exists() for name in ['dependencies','chain','fork']):
             second['dependencies'] = [first['id']]
+        if (root / 'chain').exists() or (root / 'fork').exists():
+            third = {**second, 'id': 'd0-third', 'title': 'Complete the third fixture feature', 'prompt': 'Implement the third capability. fixture-file=feature-third.txt', 'dependencies': [second['id'] if (root / 'chain').exists() else first['id']]}
+            return [first, second, third]
         return [first, second]
     if (root / 'audit-decisions').exists():
+        first = {**first, 'title': 'Audit fixture documentation', 'problem_key': 'audit-fixture-documentation', 'problem': 'Fixture guidance is incomplete.', 'scope': 'Document fixture behavior.'}
         return [first, {**first, 'id': 'd0-rejected', 'title': 'Unnecessary rewrite', 'decision': 'rejected', 'reason': 'No measured benefit; both adversaries reject it.'}, {**first, 'id': 'd0-deferred', 'title': 'Later improvement', 'decision': 'deferred', 'reason': 'Wait for evidence from operation.'}]
     return [first]
 
@@ -74,4 +84,18 @@ def respond(prompt, cwd, thread, file):
         answer = 'Repaired feature output and checked the contract.'
     else:
         raise AssertionError(f'Unexpected prompt: {prompt[:100]}')
+    if prompt.startswith('Adversarial proposal') or prompt.startswith('Act as final orchestrator'):
+        ids = sorted(set(re.findall(r'rediscover-([0-9a-f-]{36})', prompt)))
+        for identity in ids:
+            if prompt.startswith('Adversarial proposal'):
+                answer['assessments'].append({'id': 'rediscover-' + identity, 'decision': 'accepted', 'reason': 'Fresh context assessed.'})
+            else:
+                accepted = {**proposal(), 'id': 'rediscover-' + identity, 'reconsiders': [identity], 'reason': 'Fresh evidence supports replacing stale work.'}
+                if (root / 'obsolete').exists():
+                    accepted.update(decision='rejected', reason='The objective is obsolete in the new context.')
+                answer['proposals'].append(accepted)
+        if ids and prompt.startswith('Act as final orchestrator'):
+            for candidate in answer['proposals']:
+                if not candidate['reconsiders']:
+                    candidate.update(decision='rejected', reason='Absorbed into the rediscovery task.')
     return answer

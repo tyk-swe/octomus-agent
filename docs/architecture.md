@@ -39,7 +39,7 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 
 Each cycle records the remote default-branch revision, open prefixed PRs, their heads and accumulated scope, maintenance targets, and task history. The orchestrator inspects the repository and PR diffs. Each discovery and proposal-review role has a separate clone and runner session. Planning sessions are instructed to inspect rather than mutate, and their worktree/HEAD must remain unchanged.
 
-The standard cycle runs nine discovery agents (configurable from eight to ten), followed by two adversarial reviewers and orchestrator consolidation. The final result must account for every original proposal ID, with a decision and reason. Accepted work needs project evidence, benefit, scope, a self-contained prompt, a supported tier, and an eligible target. Unknown dependencies, dependency cycles, duplicate accepted titles, and unowned targets are rejected by the core.
+The standard cycle runs nine discovery agents (configurable from eight to ten), followed by two adversarial reviewers and orchestrator consolidation. The final result must account for every original proposal ID, with a decision and reason. Accepted work needs project evidence, benefit, scope, a self-contained prompt, a supported tier, and an eligible target. Unknown dependencies, dependency cycles, unordered/forked same-PR plans, duplicate accepted titles, and unowned targets are rejected by the core. Same-PR proposals require a unique dependency order; unrelated branches remain parallelizable.
 
 Semantic value, overlapping ideas, and conflicting assessments are judged by the proposal reviewers and orchestrator; their results are recorded. The core cannot independently prove an idea's product value. Returning an empty task set is a successful idle cycle.
 
@@ -59,7 +59,7 @@ unsandboxed agent behavior and the normal cycle retention policy.
 
 ## Tasks and dependencies
 
-A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies. New workspaces use `.octomus/tasks/<task-id>/workspace` and are cloned before a runner session is created. Existing saved workspace paths, including legacy Codex thread-based paths, are retained. Native runner session IDs are recorded separately and never used to name new directories. Each task uses an independent Git clone. Review and repair threads work in that same task clone.
+A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies. Global admission limits come from current saved policy inside the reservation transaction. Separate attempt policy controls all timeouts, repair/no-progress limits and retry ceiling; explicit retry adopts current attempt limits, while automatic recovery retains them. Task configuration, routes and verification commands remain immutable. Dependency-authorized source advancement retains the original grounding in the cycle. New workspaces use `.octomus/tasks/<task-id>/workspace` and are cloned before a runner session is created. Existing saved workspace paths, including legacy Codex thread-based paths, are retained. Native runner session IDs are recorded separately and never used to name new directories. Each task uses an independent Git clone. Review and repair threads work in that same task clone.
 
 Independent tasks can run concurrently. Existing PR branch writers are serialized. Dependent tasks on the same existing PR wait for their prerequisites to publish; the source revision is advanced only to a recorded prerequisite output and its ancestry is checked. External branch movement blocks stale work.
 
@@ -77,7 +77,7 @@ Publication requires recorded clean review and successful verification evidence 
 
 GitHub is the MVP provider. Existing PRs require the configured prefix, matching head repository, and an Octomus task marker in their body. Prefixed PRs without that marker contribute planning context but are not writable targets. New branch suffixes use unique task IDs. PR bodies record the objective, scope, benefit, verification, implementation summary and publication marker. Follow-ups append their task record to the existing PR.
 
-Before retrying a publication, the service searches all matching PR states, including closed and merged PRs. A matching task marker and output head confirm previously completed delivery without another push or duplicate PR. Changed remote state is surfaced for reconciliation.
+Creation resolves the exact returned PR number, then creation and updates share a final repository/ownership/branch/base/head/task-marker validator. A mismatched result remains blocked with its publication checkpoint. Before retrying a publication, the service searches all matching PR states, including closed and merged PRs; ambiguous branch associations fail closed. A matching task marker and output head confirm previously completed delivery without another push or duplicate PR. Changed remote state is surfaced for reconciliation.
 
 ## Runtime and trust
 
@@ -109,3 +109,50 @@ Every budget reservation commits its UTC day counter and admission metadata in o
 
 For deployment trust boundaries, authentication backoff and redaction limitations,
 see the [threat model](threat-model.md).
+
+
+## Operating modes and recovery
+
+`Paused`, `RunOnce` and `Continuous` are durable modes. One-shot membership is
+recorded separately from mutable task retry state: a later retry cannot erase a
+batch failure or silently join the batch. The successful cycle, complete queue,
+decision memory, lineage and one-shot phase change commit together. Interrupted
+planning is never replayed automatically. Typed blocked reasons determine valid
+operator actions; stale context requires supersession and fresh discovery.
+
+## Bounded observation and storage
+
+SQLite JSON records remain canonical. Transactional projection triggers maintain
+indexed task/cycle/PR summaries and proposal listings. Dashboard queries limit rows
+before Rust deserialization, read counts and summaries in one transaction, and
+fetch full evidence only on demand. Attention queries use a dedicated partial
+index, including when no unresolved rows match. Scheduler/recovery queries select
+operational states and resolve dependencies by identity.
+
+Housekeeping runs independently of operation mode. Completed planning-role clones
+are disposable after evidence and source checks; unresolved work remains retained
+until explicit resolution. Archive/discard changes workspace lifecycle without
+deleting database evidence. Application storage is measured separately from runner
+transcripts. Storage admission remains a pre-turn check, not a filesystem quota.
+
+Diagnostic subprocess output retains a bounded 256 KiB preview and truncation
+flags. Machine stdout is complete up to 16 MiB or returns `OutputTooLarge`; invalid
+UTF-8 also fails explicitly. Git/GitHub machine consumers never parse a diagnostic
+truncation marker. All captures retain timeout, draining and process-group ownership.
+
+## Decision memory and outcomes
+
+A bounded selection of repository-scoped decisions records problem identity,
+relevant paths, rationale, source context and reconsideration time. Matching
+problem identities are reused across wording changes. Relevant blob changes or
+30 elapsed days permit reconsideration; unresolved tasks continue to suppress
+duplication. Audit acceptance remains a recommendation and does not suppress
+subsequent execution. Explicit supersession requests receive their own fresh
+accepted/rejected/deferred decision.
+
+After the first idle cycle, successive idle outcomes double the interval, capped
+at 24 hours without shortening a longer configured interval. Lightweight repository
+and PR-head observation every five minutes shortens extended idle backoff on changed context while preserving the ordinary configured cadence.
+Manual one-shot runs bypass backoff. PR outcomes are observations distinct from
+task delivery; known follow-up outputs are recognized when checking external head
+movement. The service never infers provider charges or merges a PR.

@@ -17,6 +17,9 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod execution;
+mod housekeeping;
+use housekeeping::directory_size;
+mod memory;
 mod planning;
 
 pub use planning::validate_proposals;
@@ -27,6 +30,10 @@ pub struct Runtime {
     pub cycle: Option<CancellationToken>,
     pub cycle_mode: Option<CycleMode>,
     pub last_retention_at: i64,
+    pub last_observation_at: i64,
+    pub housekeeping_active: bool,
+    pub reconciling_publication: bool,
+    pub checked_cycles: HashSet<String>,
 }
 #[derive(Clone)]
 pub struct App {
@@ -63,7 +70,13 @@ impl App {
             .event(&t.id, "status", &format!("{:?}", t.status))
     }
     pub fn recover(&self) -> Result<()> {
-        for mut task in self.store.list::<Task>("task")? {
+        for mut task in self.store.tasks_with_status(&[
+            "executing",
+            "reviewing",
+            "repairing",
+            "verifying",
+            "publishing",
+        ])? {
             if !task.status.active() {
                 continue;
             }
@@ -75,12 +88,17 @@ impl App {
                     session.status = "interrupted".into();
                 }
             }
-            if initialized && task.attempts < task.config.max_retries {
+            if initialized && task.attempts < task.execution_config().max_retries {
                 task.attempts += 1;
                 task.status = Status::Queued;
                 task.error = Some("Recovering an interrupted task: inspecting the recorded workspace and reconciling remote state before continuing.".into());
             } else {
                 task.status = Status::Blocked;
+                task.blocked_reason = Some(if initialized {
+                    BlockedReason::RetryLimit
+                } else {
+                    BlockedReason::WorkspaceInvalid
+                });
                 task.error = Some("Service interrupted before workspace initialization completed, or retry budget exhausted. Inspect the preserved task before retrying.".into());
             }
             self.save_task(&mut task)?;
@@ -90,7 +108,7 @@ impl App {
                 task.error.as_deref().unwrap_or("Recovering"),
             )?;
         }
-        for mut cycle in self.store.list::<Cycle>("cycle")? {
+        for mut cycle in self.store.running_cycles()? {
             if cycle.status == "running" {
                 cycle.status = "interrupted".into();
                 cycle.error =
@@ -98,6 +116,17 @@ impl App {
                 cycle.completed_at = Some(now());
                 self.store.put("cycle", &cycle.id, &cycle)?;
             }
+        }
+        let mut control = self.control()?;
+        if control
+            .batch
+            .as_ref()
+            .is_some_and(|b| b.phase == BatchPhase::Planning)
+        {
+            control.set_mode(OperatingMode::Paused);
+            control.error =
+                Some("One-shot planning was interrupted; incomplete work was not replayed".into());
+            self.store.put("settings", "control", &control)?;
         }
         Ok(())
     }
@@ -174,7 +203,7 @@ impl App {
                         let _ = self.store.event("system", "error", &message);
                         if let Ok(mut control) = self.control() {
                             control.error = Some(redact(&message));
-                            control.paused = true;
+                            control.set_mode(OperatingMode::Paused);
                             let _ = self.store.put("settings", "control", &control);
                         }
                     }
@@ -191,25 +220,49 @@ impl App {
     }
     async fn tick(&self) -> Result<()> {
         let _gate = self.gate.lock().await;
+        self.schedule_housekeeping()?;
+        // Reconciliation can write a preserved PR branch. Reserve publication while
+        // leaving the gate available to pause and other operator controls.
+        if self.runtime.lock().unwrap().reconciling_publication {
+            return Ok(());
+        }
         let mut control = self.control()?;
         if control.paused {
             return Ok(());
         }
         let c = self.config()?;
         c.validate(true)?;
-        let tasks = self.store.list::<Task>("task")?;
+        let tasks = self
+            .store
+            .scheduling_tasks(control.batch.as_ref().map(|b| b.id.as_str()))?;
+        self.runtime
+            .lock()
+            .unwrap()
+            .checked_cycles
+            .retain(|id| tasks.iter().any(|t| &t.cycle_id == id));
         let (active, cycle_active) = {
             let rt = self.runtime.lock().unwrap();
             (rt.tasks.len(), rt.cycle.is_some())
         };
-        let cleanup_due =
-            chrono::Utc::now().timestamp() - self.runtime.lock().unwrap().last_retention_at >= 900;
-        if active == 0 && !cycle_active && cleanup_due {
-            self.retention(&c).await?;
-            self.runtime.lock().unwrap().last_retention_at = chrono::Utc::now().timestamp();
-        }
         if cycle_active {
             return Ok(());
+        }
+        if let Some(batch) = &control.batch {
+            let (pending, failed) = self.store.batch_counts(&batch.id)?;
+            if pending == 0 && (batch.phase == BatchPhase::Executing || failed > 0) {
+                control.set_mode(OperatingMode::Paused);
+                self.store.event(
+                    "system",
+                    "run_complete",
+                    if failed > 0 {
+                        "Run once finished with unresolved work"
+                    } else {
+                        "Run once completed; new work paused"
+                    },
+                )?;
+                self.store.put("settings", "control", &control)?;
+                return Ok(());
+            }
         }
         let mut slots = c.execution_concurrency.saturating_sub(active);
         let mut occupied: HashSet<String> = tasks
@@ -220,29 +273,71 @@ impl App {
             .collect();
         for mut task in tasks
             .iter()
-            .rev()
-            .filter(|t| t.status == Status::Queued)
+            .filter(|t| {
+                t.status == Status::Queued
+                    && control
+                        .batch
+                        .as_ref()
+                        .is_none_or(|b| t.run_id.as_deref() == Some(&b.id))
+            })
             .cloned()
         {
             if slots == 0 {
                 break;
             }
-            if task.proposal.dependencies.iter().any(|id| {
-                !tasks
+            if !self
+                .runtime
+                .lock()
+                .unwrap()
+                .checked_cycles
+                .contains(&task.cycle_id)
+            {
+                let group = self.store.tasks_for_cycle(&task.cycle_id)?;
+                let proposals: Vec<_> = group
                     .iter()
-                    .any(|t| t.id == *id && t.status == Status::Published)
-            }) {
-                if task.proposal.dependencies.iter().any(|id| {
-                    tasks.iter().any(|t| {
-                        t.id == *id
-                            && matches!(
-                                t.status,
-                                Status::Cancelled | Status::Blocked | Status::Failed
-                            )
+                    .map(|t| {
+                        let mut p = t.proposal.clone();
+                        p.id = t.id.clone();
+                        p
+                    })
+                    .collect();
+                if let Err(error) = planning::validate_branch_order(&task.config, &proposals) {
+                    for mut invalid in group.into_iter().filter(|t| t.status == Status::Queued) {
+                        invalid.blocked_reason = Some(BlockedReason::InvalidPlan);
+                        invalid.error = Some(error.to_string());
+                        self.transition(&mut invalid, Status::Blocked)?;
+                    }
+                    continue;
+                }
+                self.runtime
+                    .lock()
+                    .unwrap()
+                    .checked_cycles
+                    .insert(task.cycle_id.clone());
+            }
+            let dependencies: Vec<Option<Task>> = task
+                .proposal
+                .dependencies
+                .iter()
+                .map(|id| self.store.get("task", id))
+                .collect::<Result<_>>()?;
+            if dependencies
+                .iter()
+                .any(|t| t.as_ref().is_none_or(|t| t.status != Status::Published))
+            {
+                if dependencies.iter().any(|t| {
+                    t.as_ref().is_none_or(|t| {
+                        matches!(
+                            t.status,
+                            Status::Cancelled | Status::Blocked | Status::Failed
+                        ) || (t.status != Status::Published
+                            && control.batch.as_ref().is_some_and(|batch| {
+                                t.run_id.as_deref() != Some(batch.id.as_str())
+                            }))
                     })
                 }) {
-                    task.error =
-                        Some("A dependency is unresolved; retry after it is published".into());
+                    task.blocked_reason = Some(BlockedReason::DependencyBlocked);
+                    task.error = Some("A dependency is unresolved; retry after it is published or rediscover dependent work".into());
                     self.transition(&mut task, Status::Blocked)?;
                 }
                 continue;
@@ -264,7 +359,7 @@ impl App {
             tokio::spawn(async move {
                 let mut timed_out = false;
                 let result = {
-                    let limit = Duration::from_secs(task.config.task_timeout_seconds);
+                    let limit = Duration::from_secs(task.execution_config().task_timeout_seconds);
                     let execute = app.execute(&mut task, &cancel);
                     tokio::pin!(execute);
                     match tokio::time::timeout(limit, &mut execute).await {
@@ -282,8 +377,14 @@ impl App {
                 };
                 let error = match result {
                     Ok(Ok(())) => None,
-                    Ok(Err(e)) => Some(format!("{e:#}")),
-                    Err(_) => Some("Task time limit exceeded".into()),
+                    Ok(Err(e)) => {
+                        task.blocked_reason = Some(BlockedReason::from_error(&e));
+                        Some(format!("{e:#}"))
+                    }
+                    Err(_) => {
+                        task.blocked_reason = Some(BlockedReason::Timeout);
+                        Some("Task time limit exceeded".into())
+                    }
                 };
                 if let Some(error) = error {
                     task.error = Some(redact(&error));
@@ -310,33 +411,63 @@ impl App {
                 app.runtime.lock().unwrap().tasks.remove(&task.id);
             });
         }
-        // Finish the current queue before the next planning cycle, so grounding includes its results.
-        let rt_busy = {
+        let busy = {
             let rt = self.runtime.lock().unwrap();
             !rt.tasks.is_empty() || rt.cycle.is_some()
         };
-        if !rt_busy
-            && !tasks.iter().any(|t| t.status == Status::Queued)
-            && chrono::Utc::now().timestamp() >= control.next_cycle_at
-        {
-            let cancel = self.shutdown.child_token();
-            {
-                let mut rt = self.runtime.lock().unwrap();
-                rt.cycle = Some(cancel.clone());
-                rt.cycle_mode = Some(CycleMode::Execution);
-            }
-            control.cycle_number += 1;
-            control.next_cycle_at =
-                chrono::Utc::now().timestamp() + c.cycle_interval_seconds as i64;
-            self.store.put("settings", "control", &control)?;
-            let app = self.clone();
-            tokio::spawn(async move {
-                let result = app
-                    .cycle(&c, control.cycle_number, CycleMode::Execution, &cancel)
-                    .await;
-                app.finish_cycle(&c, CycleMode::Execution, result).await;
-            });
+        let ready_to_plan = if let Some(batch) = &control.batch {
+            let (pending, failed) = self.store.batch_counts(&batch.id)?;
+            pending == 0 && failed == 0 && batch.phase == BatchPhase::Draining
+        } else {
+            self.store.tasks_with_status(&["queued"])?.is_empty()
+        };
+        if !busy && ready_to_plan && chrono::Utc::now().timestamp() >= control.next_cycle_at {
+            self.launch_cycle(&c, CycleMode::Execution, &mut control)?;
         }
+        Ok(())
+    }
+    fn launch_cycle(&self, config: &Config, mode: CycleMode, control: &mut Control) -> Result<()> {
+        control.cycle_number += 1;
+        let cycle_id = id();
+        let run_id = if mode == CycleMode::Execution {
+            control.batch.as_ref().map(|b| b.id.clone())
+        } else {
+            None
+        };
+        if let Some(batch) = &mut control.batch {
+            batch.phase = BatchPhase::Planning;
+            batch.cycle_id = Some(cycle_id.clone());
+        }
+        let cycle = Cycle {
+            mode,
+            id: cycle_id,
+            number: control.cycle_number,
+            status: "running".into(),
+            started_at: now(),
+            completed_at: None,
+            grounding: None,
+            proposals: vec![],
+            assessments: vec![],
+            sessions: vec![],
+            error: None,
+            repository: config.github_repo.clone(),
+            decision_memory: vec![],
+            run_id,
+            lifecycle: WorkspaceLifecycle::default(),
+        };
+        self.store.begin_cycle(&cycle, control)?;
+        let cancel = self.shutdown.child_token();
+        {
+            let mut rt = self.runtime.lock().unwrap();
+            rt.cycle = Some(cancel.clone());
+            rt.cycle_mode = Some(mode);
+        }
+        let app = self.clone();
+        let config = config.clone();
+        tokio::spawn(async move {
+            let result = app.cycle(&config, cycle, &cancel).await;
+            app.finish_cycle(mode, result).await;
+        });
         Ok(())
     }
     // Caller holds the scheduler gate; audits never unpause the execution queue.
@@ -344,33 +475,28 @@ impl App {
         let c = self.config()?;
         c.validate_audit()?;
         let mut control = self.control()?;
-        let mut rt = self.runtime.lock().unwrap();
-        ensure!(
-            control.paused && rt.tasks.is_empty() && rt.cycle.is_none(),
-            "Pause and wait for active work before running an audit"
-        );
-        control.cycle_number += 1;
+        {
+            let rt = self.runtime.lock().unwrap();
+            ensure!(
+                control.paused && rt.tasks.is_empty() && rt.cycle.is_none(),
+                "Pause and wait for active work before running an audit"
+            );
+        }
         control.error = None;
-        self.store.put("settings", "control", &control)?;
-        let cancel = self.shutdown.child_token();
-        rt.cycle = Some(cancel.clone());
-        rt.cycle_mode = Some(CycleMode::Audit);
-        let app = self.clone();
-        tokio::spawn(async move {
-            let result = app
-                .cycle(&c, control.cycle_number, CycleMode::Audit, &cancel)
-                .await;
-            app.finish_cycle(&c, CycleMode::Audit, result).await;
-        });
-        Ok(())
+        self.launch_cycle(&c, CycleMode::Audit, &mut control)
     }
-    async fn finish_cycle(&self, config: &Config, mode: CycleMode, result: Result<()>) {
+    async fn finish_cycle(&self, mode: CycleMode, result: Result<()>) {
         let _gate = self.gate.lock().await;
         if let Ok(mut control) = self.control() {
             control.error = result.err().map(|error| redact(&format!("{error:#}")));
             if mode == CycleMode::Execution {
-                control.next_cycle_at =
-                    chrono::Utc::now().timestamp() + config.cycle_interval_seconds as i64;
+                if control.error.is_some() && control.mode == OperatingMode::RunOnce {
+                    control.set_mode(OperatingMode::Paused);
+                }
+                if let Ok(config) = self.config() {
+                    control.next_cycle_at = chrono::Utc::now().timestamp()
+                        + idle_delay(config.cycle_interval_seconds, control.idle_streak) as i64;
+                }
             }
             let _ = self.store.put("settings", "control", &control);
         }
@@ -380,7 +506,6 @@ impl App {
     }
     async fn budget(
         &self,
-        c: &Config,
         cycle_id: &str,
         task_id: Option<&str>,
         role: &str,
@@ -388,58 +513,13 @@ impl App {
     ) -> Result<()> {
         let dir = self.data_dir.clone();
         let size = tokio::task::spawn_blocking(move || directory_size(&dir)).await??;
-        ensure!(
-            size < c.max_workspace_bytes,
-            "Workspace storage limit reached ({size} bytes). Resolve retained tasks or increase the limit"
-        );
         self.store.reserve_session(
-            c.max_sessions_per_day,
+            size,
             &crate::store::Admission::new(cycle_id, task_id, role, route),
         )
     }
-    async fn retention(&self, c: &Config) -> Result<()> {
-        self.store.prune_events(c.retain_events)?;
-        let cutoff =
-            chrono::Utc::now() - chrono::Duration::days(c.retain_completed_days.min(36500) as i64);
-        for task in self.store.list::<Task>("task")? {
-            if task.status == Status::Published
-                && chrono::DateTime::parse_from_rfc3339(&task.updated_at).is_ok_and(|d| d < cutoff)
-            {
-                let path = PathBuf::from(&task.workspace);
-                if !task.workspace.is_empty()
-                    && path.starts_with(self.data_dir.join("tasks"))
-                    && path.exists()
-                {
-                    tokio::fs::remove_dir_all(path.parent().unwrap()).await?;
-                }
-            }
-        }
-        for cycle in self.store.list::<Cycle>("cycle")? {
-            if ["completed", "idle"].contains(&cycle.status.as_str())
-                && chrono::DateTime::parse_from_rfc3339(&cycle.started_at).is_ok_and(|d| d < cutoff)
-            {
-                let path = self.data_dir.join("cycles").join(&cycle.id);
-                if path.exists() {
-                    tokio::fs::remove_dir_all(path).await?;
-                }
-            }
-        }
-        Ok(())
-    }
 }
-fn directory_size(path: &Path) -> Result<u64> {
-    let mut size = 0u64;
-    for e in std::fs::read_dir(path)? {
-        let e = e?;
-        let meta = e.metadata()?;
-        if e.file_type()?.is_symlink() {
-            continue;
-        }
-        size = size.saturating_add(if meta.is_dir() {
-            directory_size(&e.path())?
-        } else {
-            meta.len()
-        });
-    }
-    Ok(size)
+pub fn idle_delay(base: u64, streak: u32) -> u64 {
+    base.saturating_mul(1u64 << streak.saturating_sub(1).min(16))
+        .min(base.max(86400))
 }

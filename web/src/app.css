@@ -443,6 +443,12 @@ nav button b {
   min-width: 0;
   overflow: hidden;
 }
+.operating-summary {
+  display: grid;
+  gap: 8px;
+  padding: 0 24px 24px;
+  font-size: 12px;
+}
 .section-heading {
   display: flex;
   align-items: center;

@@ -1,6 +1,9 @@
 use crate::model::{Event, now};
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
+
+mod queries;
+pub use queries::{HistoryQuery, Page};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     path::Path,
@@ -42,6 +45,7 @@ impl Store {
         let c = Connection::open(path)?;
         c.busy_timeout(std::time::Duration::from_secs(5))?;
         c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL); CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, sessions INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS admissions (id TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS admissions_day ON admissions(day); CREATE TRIGGER IF NOT EXISTS cap_activity AFTER INSERT ON events BEGIN DELETE FROM events WHERE id <= NEW.id - COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'), '$.retain_events'),10000); END;")?;
+        queries::migrate(&c)?;
         Ok(Self(Arc::new(Mutex::new(c))))
     }
     pub fn put<T: Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
@@ -61,6 +65,103 @@ impl Store {
                 "INSERT INTO records VALUES ('task',?1,?2)",
                 params![task.id, serde_json::to_string(task)?],
             )?;
+        }
+        let saved: Option<String> = transaction
+            .query_row(
+                "SELECT data FROM records WHERE kind='settings' AND id='control'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(saved) = saved {
+            let mut control: crate::model::Control = serde_json::from_str(&saved)?;
+            if let Some(batch) = &mut control.batch
+                && cycle.run_id.as_deref() == Some(&batch.id)
+                && batch.cycle_id.as_deref() == Some(&cycle.id)
+            {
+                batch.phase = crate::model::BatchPhase::Executing;
+                transaction.execute(
+                    "UPDATE records SET data=?1 WHERE kind='settings' AND id='control'",
+                    [serde_json::to_string(&control)?],
+                )?;
+            }
+        }
+        for task in tasks {
+            for old_id in &task.supersedes {
+                let data: String = transaction.query_row(
+                    "SELECT data FROM records WHERE kind='task' AND id=?1",
+                    [old_id],
+                    |r| r.get(0),
+                )?;
+                let mut old: crate::model::Task = serde_json::from_str(&data)?;
+                anyhow::ensure!(
+                    old.rediscovery_requested
+                        && old
+                            .config
+                            .github_repo
+                            .eq_ignore_ascii_case(&task.config.github_repo),
+                    "Invalid rediscovery lineage"
+                );
+                old.superseded_by.push(task.id.clone());
+                transaction.execute(
+                    "UPDATE records SET data=?1 WHERE kind='task' AND id=?2",
+                    params![serde_json::to_string(&old)?, old_id],
+                )?;
+            }
+        }
+        for decision in &cycle.decision_memory {
+            let id = decision["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing decision identity"))?;
+            transaction.execute("INSERT INTO records VALUES ('decision',?1,?2) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",params![id,serde_json::to_string(decision)?])?;
+        }
+        if cycle.mode == crate::model::CycleMode::Execution {
+            for proposal in &cycle.proposals {
+                for id in &proposal.reconsiders {
+                    let data: String = transaction.query_row(
+                        "SELECT data FROM records WHERE kind='task' AND id=?1",
+                        [id],
+                        |r| r.get(0),
+                    )?;
+                    let mut old: crate::model::Task = serde_json::from_str(&data)?;
+                    anyhow::ensure!(
+                        old.rediscovery_requested
+                            && old.status == crate::model::Status::Cancelled
+                            && old
+                                .config
+                                .github_repo
+                                .eq_ignore_ascii_case(&cycle.repository)
+                            && old.proposal.target == proposal.target,
+                        "Rediscovery decisions must reference an eligible request in this repository and target"
+                    );
+                    old.rediscovery_requested = false;
+                    old.rediscovery_result =
+                        Some(format!("{}: {}", proposal.decision, proposal.reason));
+                    transaction.execute(
+                        "UPDATE records SET data=?1 WHERE kind='task' AND id=?2",
+                        params![serde_json::to_string(&old)?, id],
+                    )?;
+                }
+            }
+            let saved: Option<String> = transaction
+                .query_row(
+                    "SELECT data FROM records WHERE kind='settings' AND id='control'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(saved) = saved {
+                let mut control: crate::model::Control = serde_json::from_str(&saved)?;
+                control.idle_streak = if tasks.is_empty() {
+                    control.idle_streak.saturating_add(1)
+                } else {
+                    0
+                };
+                transaction.execute(
+                    "UPDATE records SET data=?1 WHERE kind='settings' AND id='control'",
+                    [serde_json::to_string(&control)?],
+                )?;
+            }
         }
         transaction.commit()?;
         Ok(())
@@ -115,8 +216,7 @@ impl Store {
         )?;
         Ok(())
     }
-    pub fn reserve_session(&self, limit: u64, admission: &Admission) -> Result<()> {
-        anyhow::ensure!(limit > 0, "Daily session budget must be positive");
+    pub fn reserve_session(&self, measured_bytes: u64, admission: &Admission) -> Result<()> {
         // Derive both timestamps from the same instant, including across UTC midnight.
         let day = chrono::DateTime::parse_from_rfc3339(&admission.at)?
             .with_timezone(&chrono::Utc)
@@ -124,11 +224,29 @@ impl Store {
             .to_string();
         let mut c = self.0.lock().unwrap();
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // Policy is read under the same write transaction as the reservation. Callers
+        // cannot accidentally supply a queued task's historical admission limits.
+        let config: crate::config::Config = tx
+            .query_row(
+                "SELECT data FROM records WHERE kind='settings' AND id='config'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?
+            .unwrap_or_default();
+        let limit = config.max_sessions_per_day;
+        anyhow::ensure!(limit > 0, "Daily session budget must be positive");
+        if measured_bytes >= config.max_workspace_bytes {
+            return Err(anyhow::Error::new(crate::model::BlockedReason::StorageLimit)
+                .context(format!("Workspace storage limit reached ({measured_bytes} bytes). Resolve retained tasks or increase the limit")));
+        }
         let changed=tx.execute("INSERT INTO usage(day,sessions) VALUES (?1,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1 WHERE sessions < ?2",params![day,limit.min(i64::MAX as u64) as i64])?;
-        anyhow::ensure!(
-            changed == 1,
-            "Daily session budget exhausted; increase the configured limit or wait until UTC midnight"
-        );
+        if changed != 1 {
+            return Err(anyhow::Error::new(crate::model::BlockedReason::BudgetExhausted)
+                .context("Daily session budget exhausted; increase the configured limit or wait until UTC midnight"));
+        }
         tx.execute(
             "INSERT INTO admissions(id,at,day,data) VALUES (?1,?2,?3,?4)",
             params![
@@ -192,6 +310,15 @@ mod tests {
         {
             let s = Store::open(&p).unwrap();
             s.put("x", "a", &vec![1, 2]).unwrap();
+            s.put(
+                "settings",
+                "config",
+                &crate::config::Config {
+                    max_sessions_per_day: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             s.reserve_session(
                 1,
                 &Admission::new(

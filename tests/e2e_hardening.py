@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""Operational regressions using synthetic runners and a real temporary Git remote."""
+import json
+from pathlib import Path
+import tempfile
+import time
+import urllib.error
+from concurrent.futures import ThreadPoolExecutor
+from e2e import Service, setup, existing_pr, git, usage_report
+
+
+def run(mode):
+    with tempfile.TemporaryDirectory(prefix='octomus-hardening-') as directory:
+        root = Path(directory)
+        setup(root)
+        if mode in ['chain', 'fork', 'unordered']:
+            existing_pr(root)
+        (root / mode).touch()
+        if mode == 'audit-absorbed':
+            (root / 'idle').touch()
+        if mode == 'reconcile-controls':
+            (root / 'publication-body').touch()
+        if mode == 'published-trimmed-title':
+            (root / 'proposal-override.json').write_text(json.dumps({'title': '\t Complete the fixture feature \u2003', 'problem_key': 'original-feature-key'}))
+        service = Service(root)
+        try:
+            service.start()
+            if mode in ['live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'cancel-route']:
+                (root / 'audit-hold').touch()
+            service.configure()
+            if mode == 'reconcile-controls':
+                task = service.wait(service.terminal_task, 'uncertain publication')
+                assert task['status'] == 'blocked' and task['output_commit'], task
+                service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'uncertain publication paused')
+                # First preserve an invalid remote identity to exercise failure cleanup,
+                # then restore it and reconcile the already delivered commit.
+                for succeeds in [False, True]:
+                    if succeeds:
+                        prs = json.loads((root / 'prs.json').read_text())
+                        prs[0]['body'] = f'<!-- octomus:task:{task["id"]} -->'
+                        (root / 'prs.json').write_text(json.dumps(prs))
+                    (root / 'reconcile-entered').unlink(missing_ok=True)
+                    (root / 'reconcile-hold').touch()
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST')
+                        try:
+                            service.wait(lambda: (root / 'reconcile-entered').exists(), 'held reconciliation', seconds=3)
+                            start = time.monotonic()
+                            service.request('/control/pause', 'POST')
+                            assert time.monotonic() - start < 1, 'Pause waited for remote reconciliation'
+                            assert service.request('/state')['active_tasks'] == 1
+                            assert service.request('/tasks/' + task['id'])['status'] == 'publishing'
+                            for action in ['reconcile', 'cancel', 'archive', 'discard', 'retry']:
+                                try:
+                                    service.request('/tasks/' + task['id'] + '/' + action, 'POST')
+                                    raise AssertionError(f'{action} changed a reserved publication')
+                                except urllib.error.HTTPError as e:
+                                    assert e.code == 409
+                            service.request('/control/resume', 'POST')
+                            time.sleep(1.1)
+                            state = service.request('/state')
+                            assert state['active_tasks'] == 1 and not state['cycle_active']
+                            service.request('/control/pause', 'POST')
+                        finally:
+                            (root / 'reconcile-hold').unlink(missing_ok=True)
+                        assert request.result(timeout=5)['ok']
+                    saved = service.request('/tasks/' + task['id'])
+                    assert saved['status'] == ('published' if succeeds else 'blocked'), saved
+                    assert service.request('/state')['active_tasks'] == 0
+                    assert saved['output_commit'] == task['output_commit']
+                    assert saved['attempts'] == task['attempts'] and saved['sessions'] == task['sessions']
+                assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+                return
+            if mode == 'audit-absorbed':
+                service.wait(lambda: (s := service.request('/state'))['cycles'] and s['control']['paused'] and not s['cycle_active'], 'initial idle cycle')
+                (root / 'idle').unlink()
+                service.request('/control/audit', 'POST')
+                state = service.wait(lambda: (s := service.request('/state'))['cycles'][0]['mode'] == 'audit' and not s['cycle_active'] and s, 'audit with absorbed candidate')
+                assert state['cycles'][0]['status'] == 'completed' and not state['tasks'], state
+                audit = service.request('/cycles/' + state['cycles'][0]['id'])
+                assert [p['decision'] for p in audit['proposals']] == ['accepted', 'rejected']
+                assert len({p['problem_key'] for p in audit['proposals']}) == 1
+                assert len(audit['decision_memory']) == 1 and audit['decision_memory'][0]['decision'] == 'accepted'
+                service.stop(); service.start()
+                service.request('/control/cycle', 'POST')
+                task = service.wait(service.terminal_task, 'execution after audit absorption')
+                assert task['status'] == 'published', task['error']
+                assert len(service.request('/state')['tasks']) == 1
+                assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+                return
+            if mode in ['published-duplicate', 'published-case-change', 'published-trimmed-title']:
+                task = service.wait(service.terminal_task, 'first delivery')
+                assert task['status'] == 'published' and not task['proposal']['relevant_paths'], task
+                service.wait(lambda: service.request('/state')['control']['paused'], 'first delivery paused')
+                if mode == 'published-trimmed-title':
+                    assert task['proposal']['title'] == '\t Complete the fixture feature \u2003'
+                    (root / 'proposal-override.json').write_text(json.dumps({'title': 'complete the fixture feature', 'problem_key': 'different-feature-key'}))
+                if mode == 'published-case-change':
+                    c = service.request('/config')
+                    c['github_repo'] = 'Fixture/Project'
+                    service.request('/config', 'PUT', c)
+                    service.request('/doctor', 'POST')
+                    service.stop(); service.start()
+                else:
+                    checkout = root / 'checkout'
+                    (checkout / 'unrelated.txt').write_text('Unrelated change on main\n')
+                    git('add', '.', cwd=checkout); git('commit', '-m', 'Unrelated main change', cwd=checkout); git('push', 'origin', 'main', cwd=checkout)
+                service.request('/control/cycle', 'POST')
+                state = service.wait(lambda: (s := service.request('/state'))['cycles'][0]['id'] != task['cycle_id'] and not s['cycle_active'] and s, 'duplicate planning completes')
+                cycle = service.request('/cycles/' + state['cycles'][0]['id'])
+                assert (cycle['grounding']['revision'] == task['source_revision']) == (mode == 'published-case-change')
+                assert any(pr['number'] == task['pr_number'] and pr['state'] == 'open' for pr in cycle['grounding']['prs'])
+                assert cycle['status'] == 'failed' and 'duplicates recorded work' in cycle['error'], cycle
+                assert len(state['tasks']) == 1
+                assert len(state['prs']) == 1 and state['prs'][0]['delivered_head'] == task['output_commit']
+                assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+                return
+            if mode == 'interrupt-planning':
+                service.wait(lambda: (root / 'audit-entered').exists(), 'one-shot planning entered')
+                service.stop(crash=True)
+                (root / 'audit-hold').unlink()
+                service.start()
+                time.sleep(1.2)
+                state = service.request('/state')
+                assert state['control']['mode'] == 'paused' and state['cycles'][0]['status'] == 'interrupted'
+                assert not state['tasks'] and len(usage_report(root)['admissions']) == 1
+                return
+            if mode in ['live-budget', 'stale-retry', 'supersede', 'obsolete', 'cancel-route']:
+                service.wait(lambda: (root / 'audit-entered').exists(), 'held planning')
+                service.request('/control/pause', 'POST')
+                (root / 'audit-hold').unlink()
+                service.wait(lambda: service.request('/state')['tasks'] and not service.request('/state')['cycle_active'], 'paused queue committed')
+                row = service.request('/state')['tasks'][0]
+                if mode == 'cancel-route':
+                    original = service.request('/tasks/' + row['id'])
+                    assert original['status'] == 'queued'
+                    service.request('/tasks/' + original['id'] + '/cancel', 'POST')
+                    cancelled = service.request('/tasks/' + original['id'])
+                    assert not cancelled['rediscovery_requested'] and 'supersede' in cancelled['allowed_actions']
+                    c = service.request('/config')
+                    c['tiers']['M'] = {**c['tiers']['M'], 'model': 'gpt-5.6-luna', 'effort': 'low'}
+                    c['github_repo'] = 'Fixture/Project'
+                    service.request('/config', 'PUT', c)
+                    service.request('/tasks/' + original['id'] + '/supersede', 'POST')
+                    service.stop(); service.start()
+                    service.request('/control/cycle', 'POST')
+                    old = service.wait(lambda: (t := service.request('/tasks/' + original['id']))['superseded_by'] and t, 'cancelled task rediscovered on unchanged repository')
+                    replacement_id = old['superseded_by'][0]
+                    replacement = service.wait(lambda: (t := service.request('/tasks/' + replacement_id))['status'] == 'published' and t, 'replacement published with the new route')
+                    assert old['status'] == 'cancelled' and not old['rediscovery_requested']
+                    assert old['route'] == original['route'] and old['config'] == original['config']
+                    assert replacement['source_revision'] == original['source_revision']
+                    assert replacement['supersedes'] == [original['id']]
+                    assert replacement['route'] == c['tiers']['M'] != original['route']
+                    assert next(s for s in replacement['sessions'] if s['role'] == 'executor')['route'] == c['tiers']['M']
+                    assert len(service.request('/state')['tasks']) == 2
+                    assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+                    return
+                if mode == 'live-budget':
+                    c = service.request('/config')
+                    c['max_sessions_per_day'] = service.request('/state')['sessions_today']
+                    service.request('/config', 'PUT', c)
+                    service.stop(); service.start()
+                    service.request('/control/cycle', 'POST')
+                    task = service.wait(service.terminal_task, 'live admission denied')
+                    assert task['blocked_reason'] == 'budget_exhausted'
+                    assert service.request('/state')['sessions_today'] == c['max_sessions_per_day']
+                    assert task['config']['max_sessions_per_day'] == 150
+                    service.wait(lambda: service.request('/state')['control']['paused'], 'failed drain paused')
+                    assert len(service.request('/state')['cycles']) == 1
+                    c['max_sessions_per_day'] += 20
+                    service.request('/config', 'PUT', c)
+                    service.request('/tasks/' + task['id'] + '/retry', 'POST')
+                    service.request('/control/resume', 'POST')
+                    task = service.wait(service.terminal_task, 'raised live policy permits retry')
+                    assert task['status'] == 'published', task['error']
+                    return
+                checkout = root / 'checkout'
+                (checkout / 'context.txt').write_text('New repository context\n')
+                git('add', '.', cwd=checkout); git('commit', '-m', 'Change context', cwd=checkout); git('push', 'origin', 'main', cwd=checkout)
+                service.request('/control/cycle', 'POST')
+                task = service.wait(service.terminal_task, 'stale task blocked')
+                assert task['blocked_reason'] == 'stale_base' and 'retry' not in task['allowed_actions']
+                assert service.request('/state')['sessions_today'] == 13
+                try:
+                    service.request('/tasks/' + task['id'] + '/retry', 'POST')
+                    raise AssertionError('Stale task retry was accepted')
+                except urllib.error.HTTPError as e:
+                    assert e.code == 409
+                if mode == 'stale-retry':
+                    return
+                service.wait(lambda: service.request('/state')['control']['paused'], 'stale drain paused')
+                service.request('/tasks/' + task['id'] + '/supersede', 'POST')
+                service.request('/control/cycle', 'POST')
+                service.wait(lambda: not service.request('/state')['cycle_active'] and service.request('/tasks/' + task['id'])['rediscovery_result'], 'rediscovery resolved')
+                old = service.request('/tasks/' + task['id'])
+                assert old['status'] == 'cancelled' and not old['rediscovery_requested']
+                if mode == 'obsolete':
+                    assert not old['superseded_by'] and old['rediscovery_result'].startswith('rejected:')
+                else:
+                    replacement = service.request('/tasks/' + old['superseded_by'][0])
+                    assert replacement['source_revision'] != old['source_revision'] and replacement['supersedes'] == [old['id']]
+                    service.wait(lambda: service.request('/tasks/' + replacement['id'])['status'] == 'published', 'replacement published')
+                return
+            if mode == 'pr-outcome':
+                task = service.wait(service.terminal_task, 'published task')
+                assert task['status'] == 'published', task['error']
+                service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot paused')
+                assert service.request('/state')['prs'][0]['pr']['head'] == task['output_commit']
+                service.stop(); service.start()
+                service.wait(lambda: service.request('/state')['control']['context_fingerprint'], 'initial repository observation')
+                fingerprint = service.request('/state')['control']['context_fingerprint']
+                deadline = service.request('/state')['control']['next_cycle_at']
+                service.stop()
+                remote = str(root / 'remote.git')
+                tree = git('--git-dir', remote, 'rev-parse', task['output_commit'] + '^{tree}', cwd=root)
+                advanced = git('--git-dir', remote, '-c', 'user.name=External', '-c', 'user.email=fixture@example.com', 'commit-tree', tree, '-p', task['output_commit'], '-m', 'External follow-up', cwd=root)
+                git('--git-dir', remote, 'update-ref', 'refs/heads/' + task['branch'], advanced, cwd=root)
+                service.start()
+                service.wait(lambda: service.request('/state')['prs'][0]['external_head_movement'], 'external head observed while paused')
+                service.wait(lambda: service.request('/state')['control']['context_fingerprint'] != fingerprint, 'changed context observed')
+                assert service.request('/state')['control']['next_cycle_at'] == deadline, 'Observations must preserve ordinary cadence'
+                service.stop()
+                prs = json.loads((root / 'prs.json').read_text())
+                prs[0].update(state='closed', merged_at='2026-09-10T00:00:00Z')
+                (root / 'prs.json').write_text(json.dumps(prs))
+                service.start()
+                service.wait(lambda: service.request('/state')['merged_prs'] == 1, 'merge outcome reconciled from old open record')
+                assert service.request('/tasks/' + task['id'])['status'] == 'published'
+                assert service.request('/state')['control']['paused']
+                return
+            if mode in ['fork', 'unordered']:
+                service.wait(lambda: (state := service.request('/state'))['cycles'] and state['cycles'][0]['status'] == 'failed', 'invalid branch plan rejected')
+                assert not service.request('/state')['tasks'] and not (root / 'publications.jsonl').exists()
+                return
+            if mode == 'chain':
+                service.wait(lambda: service.request('/state')['counts'].get('published') == 3, 'three branch tasks delivered')
+                tasks = [service.request('/tasks/' + r['id']) for r in service.request('/state')['tasks']]
+                for t in tasks:
+                    if t['proposal']['dependencies']:
+                        predecessor = next(x for x in tasks if x['id'] == t['proposal']['dependencies'][0])
+                        assert t['source_revision'] == predecessor['output_commit']
+                first = next(t for t in tasks if not t['proposal']['dependencies'])
+                service.request('/tasks/' + first['id'] + '/archive', 'POST')
+                service.stop(); service.start()
+                service.wait(lambda: bool(service.request('/state')['prs']), 'archived predecessor observation')
+                time.sleep(1)
+                assert not service.request('/state')['prs'][0]['external_head_movement'], 'Archival must not replace the latest known delivery head'
+
+            else:
+                task = service.wait(service.terminal_task, mode)
+                assert task['status'] == 'blocked' and task['output_commit'] and task['blocked_reason'] == 'publication_uncertain', task
+                assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+            service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot completion')
+            cycles = len(service.request('/state')['cycles'])
+            service.stop(); service.start(); time.sleep(1.2)
+            assert service.request('/state')['control']['mode'] == 'paused'
+            assert len(service.request('/state')['cycles']) == cycles
+        finally:
+            service.stop()
+            service.log.close()
+
+def reconciliation_deadline():
+    with tempfile.TemporaryDirectory(prefix='octomus-reconciliation-deadline-') as directory:
+        root = Path(directory)
+        setup(root)
+        (root / 'publication-body').touch()
+        (root / 'failed-executor-start').touch()
+        service = Service(root)
+        try:
+            service.start()
+            service.configure()
+            task = service.wait(service.terminal_task, 'failed executor start')
+            assert task['status'] == 'blocked' and task['blocked_reason'] == 'runner_unavailable', task
+            service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'failed executor paused')
+            (root / 'failed-executor-start').unlink()
+            config = service.request('/config')
+            config.update(session_timeout_seconds=10, task_timeout_seconds=10)
+            service.request('/config', 'PUT', config)
+            service.request('/tasks/' + task['id'] + '/retry', 'POST')
+            service.request('/control/cycle', 'POST')
+            task = service.wait(service.terminal_task, 'publication retry with saved deadline')
+            assert task['blocked_reason'] == 'publication_uncertain', task
+            assert task['config']['task_timeout_seconds'] == 120
+            assert task['attempt_policy']['task_timeout_seconds'] == 10
+            service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'publication retry paused')
+            config.update(session_timeout_seconds=30, task_timeout_seconds=120)
+            service.request('/config', 'PUT', config)
+            prs = json.loads((root / 'prs.json').read_text())
+            prs[0]['body'] = f'<!-- octomus:task:{task["id"]} -->'
+            (root / 'prs.json').write_text(json.dumps(prs))
+            # Each command fits its 10-second limit; their total exceeds the task's.
+            (root / 'reconcile-delay').write_text('6')
+            start = time.monotonic()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST')
+                service.wait(lambda: (root / 'reconcile-processes.jsonl').exists(), 'slow reconciliation entered', seconds=3)
+                try:
+                    request.result(timeout=7)
+                    raise AssertionError('The fixture request should disconnect before reconciliation finishes')
+                except TimeoutError:
+                    assert request.done(), 'The HTTP client did not disconnect'
+                state = service.request('/state')
+                assert state['active_tasks'] == 1
+                assert service.request('/tasks/' + task['id'])['status'] == 'publishing'
+                saved = service.wait(lambda: (t := service.request('/tasks/' + task['id']))['status'] != 'publishing' and t, 'reconciliation task deadline', seconds=10)
+            elapsed = time.monotonic() - start
+            assert saved['status'] == 'blocked' and saved['blocked_reason'] == 'timeout', saved
+            assert 'Task time limit exceeded' in saved['error']
+            assert 9 <= elapsed < 12, f'Reconciliation took {elapsed:.2f}s for a 10s task limit'
+            assert service.request('/state')['active_tasks'] == 0
+            for field in ['output_commit', 'attempts', 'sessions', 'reviews', 'verification', 'config', 'attempt_policy']:
+                assert saved[field] == task[field], field
+            calls = [json.loads(line) for line in (root / 'reconcile-processes.jsonl').read_text().splitlines()]
+            assert len(calls) == 2 and calls[0]['args'][:2] == ['auth', 'status'] and calls[1]['args'][0] == 'api', calls
+            for call in calls:
+                for pid in [call['pid'], call['child_pid']]:
+                    stat = Path(f'/proc/{pid}/stat')
+                    def stopped():
+                        try:
+                            return ') Z' in stat.read_text()
+                        except FileNotFoundError:
+                            return True
+                    service.wait(stopped, f'reconciliation process {pid} stopped', seconds=2)
+            (root / 'reconcile-delay').unlink()
+            service.request('/tasks/' + task['id'] + '/retry', 'POST')
+            service.request('/control/cycle', 'POST')
+            recovered = service.wait(service.terminal_task, 'scheduler dispatch after reconciliation timeout')
+            assert recovered['status'] == 'published', recovered
+            assert recovered['output_commit'] == task['output_commit'] and recovered['sessions'] == task['sessions']
+            assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+        finally:
+            service.stop()
+            service.log.close()
+
+
+if __name__ == '__main__':
+    for mode in ['reconcile-controls', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner']:
+        run(mode)
+        print(f'PASS hardening {mode}', flush=True)
+    reconciliation_deadline()
+    print('PASS hardening reconciliation deadline and process cleanup', flush=True)
