@@ -37,6 +37,10 @@ for line in sys.stdin:
         identity = params.get('threadId') or str(uuid.uuid4())
         file = threads / f'{identity}.json'
         thread = json.loads(file.read_text()) if file.exists() else {'repairs': 0}
+        # The pinned client cannot resume a rollout before its first turn starts.
+        if method == 'thread/resume' and not thread.get('turn_started'):
+            emit({'id': request['id'], 'error': {'code': -32600, 'message': f'no rollout found for thread id {identity}'}})
+            continue
         thread.update(params)
         thread['id'] = identity
         file.write_text(json.dumps(thread))
@@ -45,6 +49,8 @@ for line in sys.stdin:
         identity = params['threadId']
         file = threads / f'{identity}.json'
         thread = json.loads(file.read_text())
+        thread['turn_started'] = True
+        file.write_text(json.dumps(thread))
         prompt = params['input'][0]['text']
         if ((root / 'interactive').exists() and prompt.startswith('Implement this accepted')) or ((root / 'interactive-repair').exists() and prompt.startswith('Repair actionable')):
             emit({'id': 'interactive-1', 'method': 'item/tool/requestUserInput', 'params': {'threadId': identity}})

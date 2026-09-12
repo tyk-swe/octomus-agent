@@ -265,8 +265,10 @@ impl App {
             if !admission_reserved {
                 self.budget(&task.cycle_id, Some(&task.id), "executor", &task.route)
                     .await?;
+                client.start(&task.route, &workspace, Some(&thread)).await?;
             }
-            client.start(&task.route, &workspace, Some(&thread)).await?;
+            // A freshly created thread is already active; Codex has no resumable
+            // rollout until its first turn starts.
             session_mut(task, &thread, "executor")?.status = "running".into();
             self.save_task(task)?;
             let prompt = format!(

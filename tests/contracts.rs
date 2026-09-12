@@ -150,6 +150,16 @@ async fn contract(backend: Backend, binary: &str) -> Result<()> {
         }
     }
     let session = client.start(&route, &workspace, None).await?;
+    if backend == Backend::Codex {
+        let resumed = client.start(&route, &workspace, Some(&session)).await;
+        ensure!(
+            resumed
+                .as_ref()
+                .err()
+                .is_some_and(|error| format!("{error:#}").contains("no rollout found")),
+            "Pinned Codex unexpectedly resumed a thread before its first turn"
+        );
+    }
     let answer = client
         .turn(
             &session,
