@@ -53,7 +53,7 @@ impl App {
                 "Executor produced no net changes; task cannot be published"
             );
             ensure!(
-                task.reviews.len() < config.max_repair_rounds + 1,
+                task.attempt_reviews() < config.max_repair_rounds + 1,
                 BlockedReason::RetryLimit
             );
             let review = self
@@ -80,7 +80,7 @@ impl App {
                 }
             }
             ensure!(
-                task.reviews.len() <= config.max_repair_rounds,
+                task.attempt_reviews() <= config.max_repair_rounds,
                 BlockedReason::VerificationFailed
             );
             if previous == revision {
@@ -226,9 +226,7 @@ impl App {
                 BlockedReason::WorkspaceInvalid
             );
             ensure!(
-                git::clean(&config, &workspace, cancel).await?
-                    && git::git(&config, &workspace, &["rev-parse", "HEAD"], cancel).await?
-                        == task.source_revision,
+                git::at(&config, &workspace, &task.source_revision, cancel).await?,
                 "Workspace changed before executor session creation; preserve and inspect before retrying"
             );
         }
@@ -340,8 +338,7 @@ impl App {
             BlockedReason::InvalidReview
         );
         ensure!(
-            git::clean(&config, &workspace, cancel).await?
-                && git::git(&config, &workspace, &["rev-parse", "HEAD"], cancel).await? == revision,
+            git::at(&config, &workspace, revision, cancel).await?,
             BlockedReason::WorkspaceInvalid
         );
         let s = session_mut(task, &thread, "reviewer")?;
@@ -358,7 +355,11 @@ impl App {
         Ok(review)
     }
 
-    async fn verify_revision(
+    /// Runs every configured verification command against exactly `revision`.
+    /// Worktree and HEAD are checked before the first command and after each one, so a
+    /// command that changes tracked state is recorded as failed evidence and stops the run
+    /// instead of lending its success to the reviewed revision.
+    pub async fn verify_revision(
         &self,
         task: &mut Task,
         revision: &str,
@@ -368,6 +369,10 @@ impl App {
         let workspace = PathBuf::from(&task.workspace);
         let mut verification_errors = Vec::new();
         self.transition(task, Status::Verifying)?;
+        ensure!(
+            git::at(&config, &workspace, revision, cancel).await?,
+            BlockedReason::WorkspaceInvalid
+        );
         for command in &config.verification_commands {
             let result = crate::process::run(
                 "bash",
@@ -377,28 +382,25 @@ impl App {
                 cancel,
             )
             .await;
-            let success = result.is_ok();
-            let output = match result {
-                Ok(s) => s,
-                Err(e) => format!("{e:#}"),
-            };
-            if !success {
-                verification_errors.push(format!("{command}: {output}"));
+            let intact = git::at(&config, &workspace, revision, cancel).await?;
+            let failed = result.is_err();
+            let mut output = result.unwrap_or_else(|e| format!("{e:#}"));
+            if !intact {
+                output.push_str("\nWorkspace or HEAD changed during this verification command");
             }
             task.verification.push(Verification {
                 command: command.clone(),
-                success,
+                success: intact && !failed,
                 output: redact(&output),
                 revision: revision.into(),
                 created_at: now(),
             });
             self.save_task(task)?;
+            ensure!(intact, BlockedReason::WorkspaceInvalid);
+            if failed {
+                verification_errors.push(format!("{command}: {output}"));
+            }
         }
-        ensure!(
-            git::clean(&config, &workspace, cancel).await?
-                && git::git(&config, &workspace, &["rev-parse", "HEAD"], cancel).await? == revision,
-            BlockedReason::WorkspaceInvalid
-        );
         Ok(verification_errors)
     }
 

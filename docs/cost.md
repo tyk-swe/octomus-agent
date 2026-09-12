@@ -40,7 +40,8 @@ With nine discovery agents, a fully completed planning pass normally admits
 An audit uses the same planning admissions and queues no tasks; it is not free.
 A task with no retries admits two turns when the first review is clean; four
 repair rounds raise this to ten (one executor, five reviewers, four repair turns).
-Failed starts and retries alter these counts. These are workflow calculations,
+Repair rounds are budgeted per attempt: an explicit retry starts a fresh round
+budget from the reviews already recorded. Failed starts and retries alter these counts. These are workflow calculations,
 not measured provider consumption or dollar prices.
 
 The conservative six-hour cadence in the [operator checklist](operations.md)

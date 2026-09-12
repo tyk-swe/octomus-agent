@@ -132,6 +132,16 @@ pub async fn clean(c: &Config, path: &Path, cancel: &CancellationToken) -> Resul
         .await?
         .is_empty())
 }
+/// True when the worktree is clean and HEAD is exactly `revision`.
+pub async fn at(
+    c: &Config,
+    path: &Path,
+    revision: &str,
+    cancel: &CancellationToken,
+) -> Result<bool> {
+    Ok(clean(c, path, cancel).await?
+        && git(c, path, &["rev-parse", "HEAD"], cancel).await? == revision)
+}
 pub async fn prs(c: &Config, cancel: &CancellationToken) -> Result<Vec<PullRequest>> {
     // Paginate the API: never quietly omit older open work.
     let out = gh(

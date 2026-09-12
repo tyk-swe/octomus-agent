@@ -187,6 +187,37 @@ async fn concurrent_retries_queue_only_one_attempt() {
 }
 
 #[tokio::test]
+async fn retry_starts_a_fresh_repair_round_budget() {
+    let (temp, app, mut t, router) = held_preflight_fixture().await;
+    let round = ReviewRound {
+        session_id: "reviewer".into(),
+        revision: "r".into(),
+        comparison_base: "c".into(),
+        result: Review {
+            completed: true,
+            summary: "findings".into(),
+            findings: vec![],
+        },
+        created_at: now(),
+    };
+    t.reviews = vec![round.clone(), round];
+    t.blocked_reason = Some(BlockedReason::VerificationFailed);
+    app.store.put("task", &t.id, &t).unwrap();
+    let path = format!("tasks/{}/retry", t.id);
+    let request = tokio::spawn(router.oneshot(control_request(&path)));
+    wait_for_preflights(temp.path(), 1).await;
+    std::fs::remove_file(temp.path().join("hold")).unwrap();
+    assert_eq!(
+        request.await.unwrap().unwrap().status(),
+        axum::http::StatusCode::OK
+    );
+    let saved: Task = app.store.get("task", &t.id).unwrap().unwrap();
+    assert_eq!((saved.attempts, saved.review_baseline), (1, 2));
+    assert_eq!(saved.reviews.len(), 2, "earlier evidence is retained");
+    assert_eq!(saved.attempt_reviews(), 0);
+}
+
+#[tokio::test]
 async fn retry_rechecks_policy_after_remote_checks() {
     let (temp, app, t, router) = held_preflight_fixture().await;
     let request = tokio::spawn(router.oneshot(control_request(&format!("tasks/{}/retry", t.id))));

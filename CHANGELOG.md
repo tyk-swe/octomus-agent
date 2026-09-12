@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Check worktree and HEAD before and after every verification command; a command that
+  changes tracked state is recorded as failed evidence and blocks the task.
+- Budget repair rounds per attempt: explicit retry starts a fresh round budget while
+  retaining earlier review evidence.
+- Deduplicate same-cycle accepted proposals by stable problem identity as well as title.
+- Resolve PR targets once through a single owned-PR resolver shared by validation, task
+  construction and decision memory; reject ambiguous matches.
+- Record a terminal status for every started planning role, marking roles complete only
+  after schema and source-integrity validation, and attach all of them to the cycle
+  before a partial batch failure ends planning.
+- Keep bounded stderr in successful verification evidence.
+
 - Enforce live admission policy for queued and recovered tasks; preserve immutable contracts and explicit attempt limits.
 - Validate exact PR publication results, complete same-branch dependency orders, and bounded machine output.
 - Persist one-shot operation, typed recovery and supersession; run safe housekeeping while paused.

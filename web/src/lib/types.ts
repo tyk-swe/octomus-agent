@@ -142,6 +142,7 @@ export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   sessions: Session[];
   reviews: ReviewRound[];
   attempts: number;
+  review_baseline: number;
   verification: {
     command: string;
     success: boolean;

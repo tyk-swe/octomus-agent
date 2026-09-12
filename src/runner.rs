@@ -156,14 +156,16 @@ impl Runner {
                     account["requiresOpenaiAuth"] == false || !account["account"].is_null(),
                     "Codex authentication is missing; run codex login as the service user"
                 );
-                let version = crate::process::run(
+                let version = crate::process::run_machine(
                     &config.codex_binary,
                     &["--version"],
                     cwd,
                     config.command_timeout_seconds.min(60),
                     cancel,
                 )
-                .await?;
+                .await?
+                .trim()
+                .to_owned();
                 Ok(
                     json!({"backend":"codex","version":version,"protocol_version":crate::codex::TESTED_VERSION,"warning":crate::codex::version_warning(&version)}),
                 )

@@ -134,15 +134,7 @@ pub async fn capture(
         _=cancel.cancelled()=>bail!("Operation cancelled")
     }
 }
-async fn checked(
-    binary: &str,
-    args: &[&str],
-    cwd: &Path,
-    seconds: u64,
-    cancel: &CancellationToken,
-    mode: CaptureMode,
-) -> Result<String> {
-    let output = capture(binary, args, cwd, seconds, cancel, mode).await?;
+fn ensure_success(binary: &str, output: &ProcessOutput) -> Result<()> {
     if !output.status.success() {
         bail!(
             "{binary} exited with {}: {}",
@@ -154,8 +146,30 @@ async fn checked(
             ))
         );
     }
+    Ok(())
+}
+async fn checked(
+    binary: &str,
+    args: &[&str],
+    cwd: &Path,
+    seconds: u64,
+    cancel: &CancellationToken,
+    mode: CaptureMode,
+) -> Result<String> {
+    let output = capture(binary, args, cwd, seconds, cancel, mode).await?;
+    ensure_success(binary, &output)?;
     match mode {
-        CaptureMode::Diagnostic => Ok(output.stdout.preview().trim().to_owned()),
+        // Human-readable evidence: bounded stdout, with bounded stderr appended when present.
+        CaptureMode::Diagnostic => {
+            let mut text = output.stdout.preview().trim().to_owned();
+            let stderr = output.stderr.preview();
+            let stderr = stderr.trim();
+            if !stderr.is_empty() {
+                text.push_str("\n[stderr]\n");
+                text.push_str(stderr);
+            }
+            Ok(text)
+        }
         CaptureMode::Machine => {
             if output.stdout.truncated {
                 return Err(OutputTooLarge {
@@ -167,6 +181,7 @@ async fn checked(
         }
     }
 }
+/// Runs a command for human-readable evidence, keeping bounded stdout and stderr on success.
 pub async fn run(
     binary: &str,
     args: &[&str],

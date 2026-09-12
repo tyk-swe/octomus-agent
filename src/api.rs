@@ -439,6 +439,8 @@ async fn task_action(
                 }
             }
             t.attempts += 1;
+            // A new attempt starts its repair-round budget from the reviews recorded so far.
+            t.review_baseline = t.reviews.len();
             t.error = None;
             t.blocked_reason = None;
             t.status = Status::Queued;

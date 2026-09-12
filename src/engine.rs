@@ -22,7 +22,7 @@ use housekeeping::directory_size;
 mod memory;
 mod planning;
 
-pub use planning::validate_proposals;
+pub use planning::{resolve_target, validate_proposals};
 
 #[derive(Default)]
 pub struct Runtime {

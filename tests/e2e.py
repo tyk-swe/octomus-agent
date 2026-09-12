@@ -153,6 +153,25 @@ def scenario(mode):
                 assert not (root / 'publications.jsonl').exists()
                 print('PASS failed-start: admission retained without completed session')
                 return
+            if mode == 'failed-discovery':
+                def failed_cycle():
+                    state = service.request('/state')
+                    return state if state['cycles'] and not state['cycle_active'] and state['cycles'][0]['status'] == 'failed' else None
+                state = service.wait(failed_cycle, 'failed discovery cycle')
+                cycle = service.request('/cycles/' + state['cycles'][0]['id'])
+                assert 'not JSON' in cycle['error'], cycle['error']
+                # Every started role leaves terminal evidence, including the ones after the failure.
+                assert sorted(s['role'] for s in cycle['sessions']) == sorted(['grounding'] + [f'discovery-{i}' for i in range(9)]), cycle['sessions']
+                failed = [s for s in cycle['sessions'] if s['status'] == 'failed']
+                assert [s['role'] for s in failed] == ['discovery-0'] and 'not JSON' in failed[0]['summary'], failed
+                assert all(s['status'] == 'completed' and s['summary'] for s in cycle['sessions'] if s['role'] != 'discovery-0')
+                assert not cycle['proposals'] and not state['tasks']
+                report = usage_report(root)
+                assert report['cycles'][0]['planning_admissions'] == 10
+                assert report['cycles'][0]['recorded_completed_sessions'] == 9
+                assert not (root / 'publications.jsonl').exists()
+                print('PASS failed-discovery: partial planning failure records every role outcome and queues nothing')
+                return
             if mode == 'idle':
                 service.wait(lambda: (s := service.request('/state'))['cycles'] and s['cycles'][0]['status'] == 'idle', 'idle cycle')
                 assert not service.request('/state')['tasks']
@@ -410,7 +429,7 @@ def audit_scenario(mode):
 
 
 if __name__ == '__main__':
-    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-executor-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']:
+    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']:
         scenario(mode)
 
     for role in ['executor', 'repair']:

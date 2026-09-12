@@ -52,15 +52,11 @@ impl App {
         // Normalize older candidate-level records as well as newly saved memory.
         for decision in consolidated_decisions(&records) {
             let mut value = serde_json::to_value(decision)?;
-            let revision = if decision.target == c.default_branch {
-                Some(g.revision.as_str())
-            } else {
-                g.prs
-                    .iter()
-                    .find(|p| p.branch == decision.target && p.owned)
-                    .map(|p| p.head.as_str())
+            // Skip decisions whose PR target is no longer an owned open PR.
+            let revision = match super::planning::resolve_target(c, &g.prs, &decision.target) {
+                Ok(pr) => pr.map_or(g.revision.as_str(), |pr| pr.head.as_str()),
+                Err(_) => continue,
             };
-            let Some(revision) = revision else { continue };
             let unchanged = path_fingerprint(c, revision, &decision.relevant_paths, cancel).await?
                 == decision.context_fingerprint;
             let expired = chrono::DateTime::parse_from_rfc3339(&decision.reconsider_after)
@@ -84,10 +80,11 @@ impl App {
             .as_ref()
             .context("Missing decision context")?;
         for p in &cycle.proposals {
-            let revision = g
-                .prs
-                .iter()
-                .find(|pr| pr.branch == p.target && pr.owned)
+            // Rejected or deferred proposals may name any target; bind accepted ones exactly
+            // as task construction does so decisions and execution share one PR head.
+            let revision = super::planning::resolve_target(c, &g.prs, &p.target)
+                .ok()
+                .flatten()
                 .map(|pr| pr.head.as_str())
                 .unwrap_or(&g.revision);
             let d = DecisionRecord {

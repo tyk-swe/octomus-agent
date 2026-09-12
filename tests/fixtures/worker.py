@@ -50,6 +50,8 @@ def respond(prompt, cwd, thread, file):
         answer = {'context': 'Small fixture with a feature contract in README.md.'}
     elif prompt.startswith('Discover worthwhile'):
         answer = {'proposals': [] if (root / 'idle').exists() or 'IDs prefixed d0-' not in prompt else proposals()}
+        if (root / 'failed-discovery').exists() and cwd.parent.name == 'discovery-0':
+            answer = 'this discovery answer is not JSON'
     elif prompt.startswith('Adversarial proposal'):
         answer = {'assessments': [] if (root / 'idle').exists() else [{'id': p['id'], 'decision': 'accepted', 'reason': 'Concrete and useful.'} for p in proposals()]}
     elif prompt.startswith('Act as final orchestrator'):

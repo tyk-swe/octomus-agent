@@ -70,6 +70,13 @@ impl Proposal {
         };
         key.trim().to_lowercase()
     }
+    /// Two proposals describe the same work when they share a target and either a title
+    /// (case-insensitive) or a stable problem identity.
+    pub fn same_work(&self, other: &Proposal) -> bool {
+        self.target == other.target
+            && (self.title.trim().eq_ignore_ascii_case(other.title.trim())
+                || self.problem_identity() == other.problem_identity())
+    }
 }
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -236,6 +243,9 @@ pub struct Task {
     pub updated_at: String,
     #[serde(default)]
     pub attempt_policy: Option<AttemptPolicy>,
+    /// Reviews recorded before the current attempt began; repair rounds count from here.
+    #[serde(default)]
+    pub review_baseline: usize,
     #[serde(default)]
     pub blocked_reason: Option<BlockedReason>,
     #[serde(default)]
@@ -252,6 +262,10 @@ pub struct Task {
     pub lifecycle: WorkspaceLifecycle,
 }
 impl Task {
+    /// Review rounds recorded during the current attempt.
+    pub fn attempt_reviews(&self) -> usize {
+        self.reviews.len().saturating_sub(self.review_baseline)
+    }
     pub fn execution_config(&self) -> Config {
         let mut c = self.config.clone();
         if let Some(policy) = &self.attempt_policy {
