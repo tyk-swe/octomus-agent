@@ -1,4 +1,86 @@
-# First real run — owner-operated rehearsal
+# Validation on this VM and first real run
+
+## Current VM: local testing
+
+Use this section from the owner's approved development checkout, as its login
+user. Keep its absolute path private. On 2026-09-12 this environment
+has Ubuntu 26.04.1, Rust/Cargo 1.98.0, Node 24.20.0, npm 11.19.0, Python 3.14.4,
+and working headless Chromium. These satisfy the local test requirements, though
+they differ from CI's Ubuntu 24.04 and Node 22. Recheck tools when repeating this
+procedure. The installed user-level Codex is 0.154.0; it is not the pinned 0.153.4
+client needed for live acceptance. No dedicated `octomus` account or installed
+systemd service was found during preflight.
+
+The owner subsequently authorized a temporary foreground rehearsal on this
+machine using its existing authenticated accounts and a privately installed
+pinned client. See [the draft result](day1-result.md) for the actual failures,
+development fix, publication and cleanup. That observation does not authorize
+future live attempts or establish dedicated-deployment acceptance.
+
+Run the existing fixture suites here. They start temporary Octomus processes and
+exercise authenticated API controls, planning, execution, review, verification,
+and publication against synthetic peers and local Git repositories. Browser tests
+also use synthetic data. They require no model login, GitHub login, allowance, or
+live Run once. Their simulated PRs and admissions are not live evidence.
+
+Set `octomus_checkout` to that checkout's absolute path in your local shell.
+Record the application SHA and local diff, then run the commands below in Bash.
+Keep output private and capture both Make results even if one fails. The build
+must precede integration tests; each Make target handles that dependency.
+
+```bash
+cd "$octomus_checkout"
+umask 077
+octomus_test_run="$(mktemp -d /tmp/octomus-test.XXXXXX)"
+mkdir "$octomus_test_run/tmp"
+git rev-parse HEAD > "$octomus_test_run/revision.txt"
+git status --short > "$octomus_test_run/status.txt"
+npm ci --prefix web > "$octomus_test_run/npm-ci.log" 2>&1 || {
+  printf 'Dependency installation failed; preserve the log and resolve it before testing.\n' >&2
+  exit 1
+}
+if env -u OCTOMUS_TOKEN -u OCTOMUS_DATA_DIR -u OCTOMUS_LISTEN \
+  -u OCTOMUS_ASSETS -u OCTOMUS_TEST_BINARY -u CARGO_TARGET_DIR \
+  TMPDIR="$octomus_test_run/tmp" make check > "$octomus_test_run/check.log" 2>&1; then
+  octomus_check_exit=0
+else
+  octomus_check_exit=$?
+fi
+if env -u OCTOMUS_TOKEN -u OCTOMUS_DATA_DIR -u OCTOMUS_LISTEN \
+  -u OCTOMUS_ASSETS -u OCTOMUS_TEST_BINARY -u CARGO_TARGET_DIR \
+  TMPDIR="$octomus_test_run/tmp" make test > "$octomus_test_run/test.log" 2>&1; then
+  octomus_test_exit=0
+else
+  octomus_test_exit=$?
+fi
+printf 'make check: %s\nmake test: %s\n' "$octomus_check_exit" "$octomus_test_exit"
+```
+
+If browser prerequisites are missing, use the installation commands in
+[AGENTS.md](../../AGENTS.md); record unavailable prerequisites rather than
+omitting browser tests. For any failed command, create or append to repository
+root `FAIL.md` with the revision/diff, environment, UTC times, exact command and
+exit, redacted failure excerpt, reproduction, and checks not reached. Preserve
+the first failure and label any deliberate rerun. Do not create a failure record
+claiming a failure when all commands passed. Report intentionally ignored Rust
+tests separately; these targets do not cover all standalone CI/release jobs.
+
+If a requested live rehearsal cannot pass preflight, record its unmet prerequisites
+in a separate **Live preflight — BLOCKED** section of `FAIL.md`. An unstarted
+cycle is not a failed inference, and successful fixture tests do not clear those
+blockers. Record local command results separately.
+
+After recording results, stop any surviving processes belonging to this test run
+using their verified PIDs/process groups. Do not kill by a broad process name.
+Preserve failure logs/traces before removing this run's temporary fixture state
+under `$octomus_test_run/tmp` and generated browser results. Record existing
+artifacts before testing and preserve earlier evidence. Keep the private logs
+outside Git; remove only attributable test artifacts, retaining pre-existing
+build/dependency caches. Never clean the checkout with `git clean -fdx`, remove
+the checkout's `.octomus/`, or delete credentials or unrelated workspace contents.
+Verify no test processes remain and inspect `git status --short` afterward.
+
+## Live rehearsal prerequisites
 
 This is an operator procedure, not evidence of a live run. Use the existing
 [README](../../README.md), [deployment controls](../deployment.md), and
