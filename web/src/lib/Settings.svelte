@@ -3,6 +3,7 @@
   import { api } from './api';
   import type { Backend, Config, Model, ModelCatalog, Route } from './types';
   import RouteEditor from './RouteEditor.svelte';
+  import AstraRehearsal from './AstraRehearsal.svelte';
   import Icon from './Icon.svelte';
   let { editable, onsaved }: { editable: boolean; onsaved: () => void } = $props();
   let config = $state<Config | null>(null),
@@ -290,6 +291,7 @@
             >Load OpenCode models</button
           >
         </div>
+        <AstraRehearsal bind:config catalog={catalogs.codex} {editable} {busy} />
         {#each Object.keys(config.roles) as role}
           <RouteEditor
             name={names[role]}
