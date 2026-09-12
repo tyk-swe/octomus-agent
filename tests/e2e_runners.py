@@ -67,9 +67,6 @@ def successful_workflow(mode):
             diagnostic = service.request('/doctor', 'POST')
             assert {d['backend'] for d in diagnostic['backends']} == ({'opencode'} if mode in ['opencode', 'recovery'] else {'codex', 'opencode'})
             assert not (root / 'protocol.jsonl').exists()
-            if mode == 'mixed':
-                legacy = service.request('/models')
-                assert legacy[0]['displayName'] and legacy[0]['supportedReasoningEfforts']
             if mode == 'recovery':
                 (root / 'opencode-mode').write_text('hold')
             service.request('/control/cycle', 'POST')

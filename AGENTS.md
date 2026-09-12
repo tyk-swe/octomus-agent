@@ -1,19 +1,29 @@
 # Working on Octomus Agent
 
 Octomus is a single-operator Rust service that discovers repository improvements,
-reviews proposals, executes accepted tasks through Codex app-server, and delivers
+reviews proposals, executes accepted tasks through Codex or OpenCode, and delivers
 GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
 
 ## Repository map
 
-- `src/engine.rs`: scheduler, discovery, review/repair, verification and recovery.
-- `src/codex.rs`: app-server protocol, exact model routes, unattended requests.
-- `src/config.rs`, `src/model.rs`, `src/store.rs`: policy, durable records, SQLite.
-- `src/report.rs`: read-only usage reporting; `src/api.rs`: authenticated controls.
+- `src/engine.rs`: scheduler and cycle orchestration, with `src/engine/planning.rs`
+  (discovery and proposal review), `execution.rs` (execution, review, repair and
+  verification), `memory.rs` (grounding and history) and `housekeeping.rs`
+  (retention, workspace and disk limits).
+- `src/runner.rs`: runner-neutral model discovery, exact routing and dispatch;
+  `src/codex.rs` (app-server protocol) and `src/opencode.rs` (HTTP/SSE) implement it.
+- `src/config.rs`, `src/model.rs`, `src/store.rs` with `src/store/queries.rs`:
+  policy, durable records, SQLite and indexed operational views.
+- `src/report.rs`: read-only usage reporting; `src/api.rs`: authenticated controls;
+  `src/assets.rs`: embedded dashboard serving; `src/schemas.rs`: structured output.
 - `src/git.rs`, `src/process.rs`: Git/GitHub publication and owned process groups.
 - `web/src`: dashboard, shared TypeScript types, settings and task evidence.
-- `tests/core.rs`, `tests/usage.rs`: Rust behavior tests; `tests/e2e.py` and
-  `tests/fixtures`: deterministic Codex/GitHub peers with real local Git.
+- Rust behavior tests: `tests/core.rs`, `usage.rs`, `runners.rs`, `hardening.rs`,
+  `review_findings.rs`, `review_regressions.rs`, `history_scale.rs`, and
+  `contracts.rs` (ignored unless a pinned real client binary is provided).
+- `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py` with `tests/fixtures`:
+  deterministic Codex/OpenCode/GitHub peers with real local Git. `distribution.py`,
+  `crate.py`, `crate_guards.py` and `systemd.py` cover packaging and deployment.
 - `web/tests`: browser tests. `docs/architecture.md` describes the operating contract.
 
 ## Build and verify
@@ -34,7 +44,7 @@ loading of saved configuration and task snapshots when adding fields.
 
 ## Conventions and boundaries
 
-- Name branches created by Codex `tyk/{branch-name}`. Never use `codex/`.
+- Name branches created by Octomus `tyk/{branch-name}`. Never use `codex/`.
 - Make cohesive changes with meaningful verification. Preserve existing features,
   full-diff review, fresh reviewer threads and persistent per-task repair threads.
 - Never silently substitute model/effort routes or weaken verification to publish.
@@ -42,7 +52,7 @@ loading of saved configuration and task snapshots when adding fields.
   Workers must not push or publish; the Rust orchestrator owns publication.
 - Do not edit `.octomus/`, credentials, account configuration, or other workspaces.
   Fixtures and generated build artifacts are not live evidence.
-- Keep secrets, raw Codex transcripts and private billing screenshots out of Git.
+- Keep secrets, raw runner transcripts and private billing screenshots out of Git.
   Record redacted observations and evidence references instead.
 - Do not claim live validation without real evidence. Live operation needs
   the owner's dedicated VM and bot; the development workspace is not that VM.

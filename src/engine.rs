@@ -3,6 +3,7 @@ use crate::{
     config::{Config, Route},
     git,
     model::*,
+    process::Deadline,
     runner::{Runner, validate_route},
     store::{Store, redact},
 };
@@ -129,9 +130,6 @@ impl App {
             self.store.put("settings", "control", &control)?;
         }
         Ok(())
-    }
-    pub async fn doctor(&self, c: &Config) -> Result<Value> {
-        self.doctor_for(c, CycleMode::Execution).await
     }
     pub async fn doctor_for(&self, c: &Config, mode: CycleMode) -> Result<Value> {
         if mode == CycleMode::Audit {
@@ -360,18 +358,17 @@ impl App {
                 let mut timed_out = false;
                 let result = {
                     let limit = Duration::from_secs(task.execution_config().task_timeout_seconds);
-                    let execute = app.execute(&mut task, &cancel);
-                    tokio::pin!(execute);
-                    match tokio::time::timeout(limit, &mut execute).await {
-                        Ok(result) => Ok(result),
-                        Err(error) => {
-                            timed_out = !cancel.is_cancelled();
-                            cancel.cancel();
-                            // Let runner abort handlers stop their own detached shell groups.
-                            // The cancelled token prevents new turns and publication commands.
-                            let _ =
-                                tokio::time::timeout(Duration::from_secs(8), &mut execute).await;
-                            Err(error)
+                    match crate::process::with_deadline(
+                        limit,
+                        &cancel,
+                        app.execute(&mut task, &cancel),
+                    )
+                    .await
+                    {
+                        Deadline::Done(result) => Ok(result),
+                        Deadline::Expired { already_cancelled } => {
+                            timed_out = !already_cancelled;
+                            Err(())
                         }
                     }
                 };

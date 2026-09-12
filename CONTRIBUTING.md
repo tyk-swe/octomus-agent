@@ -53,7 +53,7 @@ snapshots must still load after upgrades.
 
 Workers must not push or publish; Rust owns publication. Do not merge, deploy,
 migrate production systems, edit live `.octomus/` state, or commit credentials,
-raw transcripts or private billing images. Codex-created branches use `tyk/`.
+raw transcripts or private billing images. Octomus-created branches use `tyk/`.
 License/NOTICE ownership changes await owner-cleared facts.
 
-Backend requests are welcome; Codex is currently the only backend.
+Backend requests are welcome; Codex and OpenCode are the supported backends.

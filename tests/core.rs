@@ -4,10 +4,11 @@ use axum::{
 };
 use octomus_agent::{
     api,
-    config::{Config, Route},
+    config::{Backend, Config, Route},
     engine::{App, validate_proposals},
     model::{Grounding, Proposal, PullRequest},
     process,
+    runner::{Model, validate_route},
     store::Store,
 };
 use serde_json::{Value, json};
@@ -16,6 +17,29 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 const TOKEN: &str = "operator-fixture-token-with-at-least-32-characters";
+fn codex_models(models: &[(&str, &[&str])]) -> Vec<Model> {
+    models
+        .iter()
+        .map(|(model, efforts)| Model {
+            backend: Backend::Codex,
+            provider: None,
+            provider_name: None,
+            model: (*model).into(),
+            display_name: (*model).into(),
+            efforts: efforts.iter().map(|e| (*e).into()).collect(),
+            variants: vec![],
+            available: true,
+            unavailable_reason: None,
+        })
+        .collect()
+}
+/// Mirrors `Runners::validate_routes` without the catalog round trip.
+fn validate_routes(config: &Config, models: &[Model], audit: bool) -> anyhow::Result<()> {
+    config
+        .routes_for(audit)
+        .into_iter()
+        .try_for_each(|(_, route)| validate_route(route, models))
+}
 fn proposal(id: &str) -> Proposal {
     Proposal {
         id: id.into(),
@@ -102,11 +126,11 @@ fn unsupported_effort_never_falls_back() {
         ),
         ..Config::default()
     };
-    let models = vec![
-        json!({"model":"gpt-6-astra","supportedReasoningEfforts":[{"reasoningEffort":"medium"},{"reasoningEffort":"low"},{"reasoningEffort":"high"}]}),
-        json!({"model":"gpt-5.6-luna","supportedReasoningEfforts":[{"reasoningEffort":"xhigh"}]}),
-    ];
-    let error = octomus_agent::codex::validate_routes(&c, &models).unwrap_err();
+    let models = codex_models(&[
+        ("gpt-6-astra", &["medium", "low", "high"]),
+        ("gpt-5.6-luna", &["xhigh"]),
+    ]);
+    let error = validate_routes(&c, &models, false).unwrap_err();
     assert!(error.to_string().contains("max"));
     assert_eq!(c.tiers["S"].effort, "max");
 }
@@ -120,19 +144,18 @@ fn repair_routes_are_backward_compatible_and_validated() {
     for route in config.roles.values_mut().chain(config.tiers.values_mut()) {
         *route = Route::new("available", "low");
     }
-    let catalog =
-        vec![json!({"model":"available","supportedReasoningEfforts":[{"reasoningEffort":"low"}]})];
-    let error = octomus_agent::codex::validate_routes(&config, &catalog).unwrap_err();
+    let catalog = codex_models(&[("available", &["low"])]);
+    let error = validate_routes(&config, &catalog, false).unwrap_err();
     assert!(error.to_string().contains("gpt-6-astra / medium"));
     config.repair_route = Route::new("available", "high");
     assert!(
-        octomus_agent::codex::validate_routes(&config, &catalog)
+        validate_routes(&config, &catalog, false)
             .unwrap_err()
             .to_string()
             .contains("available / high")
     );
     config.repair_route.effort = "low".into();
-    octomus_agent::codex::validate_routes(&config, &catalog).unwrap();
+    validate_routes(&config, &catalog, false).unwrap();
     let saved: Config = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
     assert_eq!(saved.repair_route, config.repair_route);
     config.repair_route.model = "x".repeat(101);
@@ -306,14 +329,13 @@ fn audit_readiness_requires_only_planning_routes_and_no_verification() {
     for role in ["orchestrator", "discovery", "proposal_reviewer"] {
         c.roles.insert(role.into(), Route::new("available", "low"));
     }
-    let catalog =
-        vec![json!({"model":"available","supportedReasoningEfforts":[{"reasoningEffort":"low"}]})];
+    let catalog = codex_models(&[("available", &["low"])]);
     c.validate_audit().unwrap();
     assert!(c.validate(true).is_err());
-    octomus_agent::codex::validate_routes_for(&c, &catalog, true).unwrap();
-    assert!(octomus_agent::codex::validate_routes(&c, &catalog).is_err());
+    validate_routes(&c, &catalog, true).unwrap();
+    assert!(validate_routes(&c, &catalog, false).is_err());
     c.roles.get_mut("discovery").unwrap().effort = "max".into();
-    assert!(octomus_agent::codex::validate_routes_for(&c, &catalog, true).is_err());
+    assert!(validate_routes(&c, &catalog, true).is_err());
     c.roles.get_mut("discovery").unwrap().model.clear();
     assert!(c.validate_audit().is_err());
 }

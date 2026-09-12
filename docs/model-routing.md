@@ -83,7 +83,6 @@ It returns an array with `backend`, `provider`, `provider_name`, `model`,
 `display_name`, `efforts`, `variants`, `available`, and `unavailable_reason`.
 OpenCode models require a configured provider and text/tool-calling capability.
 Provider keys, options, authentication records, and raw transcripts are excluded.
-The existing `GET /api/models` Codex catalog interface remains available.
 
 `POST /api/doctor` and `POST /api/doctor?mode=audit` inspect required backends and
 return per-backend versions, protocol baselines, normalized model catalogs and

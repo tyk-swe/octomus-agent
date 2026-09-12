@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{future::Future, path::Path, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::{Child, Command},
@@ -199,4 +199,33 @@ pub async fn run_machine(
     cancel: &CancellationToken,
 ) -> Result<String> {
     checked(binary, args, cwd, seconds, cancel, CaptureMode::Machine).await
+}
+
+// Bounded window for a cancelled future to unwind before the caller reports expiry.
+const GRACE: Duration = Duration::from_secs(8);
+
+pub enum Deadline<T> {
+    Done(T),
+    Expired { already_cancelled: bool },
+}
+
+/// Runs `future` under `limit`. On expiry, cancels `cancel` and then waits a bounded
+/// grace period: the cancelled token prevents new turns and publication commands while
+/// runner abort handlers stop their own detached process groups. `already_cancelled`
+/// separates an operator cancellation from a genuine deadline.
+pub async fn with_deadline<F: Future>(
+    limit: Duration,
+    cancel: &CancellationToken,
+    future: F,
+) -> Deadline<F::Output> {
+    tokio::pin!(future);
+    match tokio::time::timeout(limit, &mut future).await {
+        Ok(output) => Deadline::Done(output),
+        Err(_) => {
+            let already_cancelled = cancel.is_cancelled();
+            cancel.cancel();
+            let _ = tokio::time::timeout(GRACE, &mut future).await;
+            Deadline::Expired { already_cancelled }
+        }
+    }
 }

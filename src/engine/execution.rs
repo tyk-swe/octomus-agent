@@ -455,7 +455,7 @@ impl App {
         Ok(())
     }
 
-    fn published(&self, task: &mut Task, p: PullRequest) -> Result<()> {
+    pub(crate) fn published(&self, task: &mut Task, p: PullRequest) -> Result<()> {
         task.pr_number = Some(p.number);
         task.pr_url = Some(p.url.clone());
         task.error = None;

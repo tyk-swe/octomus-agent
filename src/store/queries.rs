@@ -47,7 +47,9 @@ pub(super) fn migrate(c: &Connection) -> Result<()> {
     // One transactional backfill; reopening never rewrites historical evidence.
     if c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 1 {
         let legacy: Vec<String> = {
-            let mut s=c.prepare("SELECT value FROM records,json_each(records.data) WHERE kind='settings' AND records.id='prs' LIMIT 10000")?;
+            let mut s = c.prepare(
+                "SELECT value FROM records,json_each(records.data) WHERE kind='settings' AND records.id='prs' LIMIT 10000",
+            )?;
             s.query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
@@ -65,7 +67,14 @@ pub(super) fn migrate(c: &Connection) -> Result<()> {
                     (pieces.len() >= 4).then(|| format!("{}/{}", pieces[0], pieces[1]))
                 })
                 .unwrap_or_default();
-            let delivered_head:Option<String>=c.query_row("SELECT json_extract(data,'$.output_commit') FROM records WHERE kind='task' AND json_extract(data,'$.status')='published' AND json_extract(data,'$.config.github_repo')=?1 COLLATE NOCASE AND json_extract(data,'$.pr_number')=?2 ORDER BY json_extract(data,'$.updated_at') DESC LIMIT 1",params![repository,p.number as i64],|r|r.get(0)).optional()?.flatten();
+            let delivered_head: Option<String> = c
+                .query_row(
+                    "SELECT json_extract(data,'$.output_commit') FROM records WHERE kind='task' AND json_extract(data,'$.status')='published' AND json_extract(data,'$.config.github_repo')=?1 COLLATE NOCASE AND json_extract(data,'$.pr_number')=?2 ORDER BY json_extract(data,'$.updated_at') DESC LIMIT 1",
+                    params![repository, p.number as i64],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
             let observation = crate::model::PrObservation {
                 repository: repository.clone(),
                 pr: p,
@@ -121,7 +130,7 @@ pub(super) fn migrate(c: &Connection) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 pub struct HistoryQuery {
     pub before: Option<i64>,
     pub limit: Option<usize>,
@@ -208,10 +217,26 @@ impl Store {
     pub fn proposal_page(&self, q: &HistoryQuery) -> Result<Page> {
         let c = self.0.lock().unwrap();
         let limit = q.limit.unwrap_or(50).clamp(1, 100);
-        let rows=c.prepare("SELECT json_set(json_remove(data,'$.prompt','$.evidence'),'$.content_revision',content_revision,'$.cycle',number,'$.cycle_id',cycle_id,'$.mode',mode,'$.prompt','','$.evidence',json('[]'),'$.problem',substr(json_extract(data,'$.problem'),1,2000),'$.reason',substr(json_extract(data,'$.reason'),1,2000)),seq FROM proposal_records WHERE seq<?1 AND (?2='' OR decision=?2) AND (?3='' OR cycle_id=?3) AND (?4='' OR instr(lower(title || ' ' || json_extract(data,'$.problem')),lower(?4))>0) ORDER BY seq DESC LIMIT ?5")?.query_map(params![q.before.unwrap_or(i64::MAX),q.status.as_deref().filter(|s|*s!="all").unwrap_or(""),q.cycle.as_deref().filter(|s|*s!="all").unwrap_or(""),q.q.as_deref().unwrap_or(""),(limit+1) as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = c
+            .prepare(
+                "SELECT json_set(json_remove(data,'$.prompt','$.evidence'),'$.content_revision',content_revision,'$.cycle',number,'$.cycle_id',cycle_id,'$.mode',mode,'$.prompt','','$.evidence',json('[]'),'$.problem',substr(json_extract(data,'$.problem'),1,2000),'$.reason',substr(json_extract(data,'$.reason'),1,2000)),seq FROM proposal_records WHERE seq<?1 AND (?2='' OR decision=?2) AND (?3='' OR cycle_id=?3) AND (?4='' OR instr(lower(title || ' ' || json_extract(data,'$.problem')),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
+            )?
+            .query_map(
+                params![
+                    q.before.unwrap_or(i64::MAX),
+                    q.status.as_deref().filter(|s| *s != "all").unwrap_or(""),
+                    q.cycle.as_deref().filter(|s| *s != "all").unwrap_or(""),
+                    q.q.as_deref().unwrap_or(""),
+                    (limit + 1) as i64
+                ],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut page = decode_page(rows, limit)?;
         let mut counts = serde_json::Map::new();
-        let mut stmt=c.prepare("SELECT decision,count(*) FROM proposal_records WHERE (?1='' OR cycle_id=?1) GROUP BY decision")?;
+        let mut stmt = c.prepare(
+            "SELECT decision,count(*) FROM proposal_records WHERE (?1='' OR cycle_id=?1) GROUP BY decision",
+        )?;
         for row in stmt.query_map(
             [q.cycle.as_deref().filter(|v| *v != "all").unwrap_or("")],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
@@ -256,7 +281,9 @@ impl Store {
     }
     pub fn tasks_with_status(&self, statuses: &[&str]) -> Result<Vec<Task>> {
         let c = self.0.lock().unwrap();
-        let mut s=c.prepare("SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500")?;
+        let mut s = c.prepare(
+            "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500",
+        )?;
         let rows = s.query_map([serde_json::to_string(statuses)?], |r| {
             r.get::<_, String>(0)
         })?;
@@ -264,14 +291,18 @@ impl Store {
     }
     pub fn running_cycles(&self) -> Result<Vec<Cycle>> {
         let c = self.0.lock().unwrap();
-        let mut s=c.prepare("SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'")?;
+        let mut s = c.prepare(
+            "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'",
+        )?;
         s.query_map([], |r| r.get::<_, String>(0))?
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
     }
     pub fn tasks_for_cycle(&self, id: &str) -> Result<Vec<Task>> {
         let c = self.0.lock().unwrap();
-        let mut s=c.prepare("SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq")?;
+        let mut s = c.prepare(
+            "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq",
+        )?;
         s.query_map([id], |r| r.get::<_, String>(0))?
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
@@ -295,7 +326,9 @@ impl Store {
                 let t: Task = serde_json::from_str(&row?)?;
                 found.insert(t.id.clone(), t);
             }
-            let mut identity=c.prepare("SELECT data FROM records WHERE kind='task' AND json_extract(data,'$.config.github_repo')=?1 COLLATE NOCASE AND json_extract(data,'$.proposal.target')=?2 AND lower(trim(COALESCE(NULLIF(json_extract(data,'$.proposal.problem_key'),''),json_extract(data,'$.proposal.title'))))=?3 AND json_extract(data,'$.status')!='cancelled' AND json_extract(data,'$.lifecycle.archived_at') IS NULL")?;
+            let mut identity = c.prepare(
+                "SELECT data FROM records WHERE kind='task' AND json_extract(data,'$.config.github_repo')=?1 COLLATE NOCASE AND json_extract(data,'$.proposal.target')=?2 AND lower(trim(COALESCE(NULLIF(json_extract(data,'$.proposal.problem_key'),''),json_extract(data,'$.proposal.title'))))=?3 AND json_extract(data,'$.status')!='cancelled' AND json_extract(data,'$.lifecycle.archived_at') IS NULL",
+            )?;
             for row in identity
                 .query_map(params![repository, p.target, p.problem_identity()], |r| {
                     r.get::<_, String>(0)
@@ -348,7 +381,9 @@ impl Store {
         let tx = c.transaction()?;
         let mut counts = serde_json::Map::new();
         {
-            let mut s=tx.prepare("SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN ('blocked','failed') OR archived=0) GROUP BY status HAVING sum(count)>0")?;
+            let mut s = tx.prepare(
+                "SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN ('blocked','failed') OR archived=0) GROUP BY status HAVING sum(count)>0",
+            )?;
             for row in s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
                 let (k, v) = row?;
                 counts.insert(k, json!(v));
@@ -418,7 +453,9 @@ impl Store {
         )?;
         let prs = page(&tx, "pr", &query)?;
         let events = {
-            let mut s=tx.prepare("SELECT id,at,entity_id,kind,substr(message,1,512) FROM events ORDER BY id DESC LIMIT 200")?;
+            let mut s = tx.prepare(
+                "SELECT id,at,entity_id,kind,substr(message,1,512) FROM events ORDER BY id DESC LIMIT 200",
+            )?;
             s.query_map([],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"at":r.get::<_,String>(1)?,"entity_id":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"message":r.get::<_,String>(4)?})))?.collect::<rusqlite::Result<Vec<_>>>()?
         };
         let sessions: i64 = tx
@@ -449,7 +486,9 @@ impl Store {
     }
     pub fn cleanup_candidates(&self, kind: &str, cutoff: &str) -> Result<Vec<String>> {
         let c = self.0.lock().unwrap();
-        let mut s=c.prepare("SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq LIMIT 100")?;
+        let mut s = c.prepare(
+            "SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq LIMIT 100",
+        )?;
         Ok(s.query_map(params![kind, cutoff], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?)
     }
@@ -474,44 +513,20 @@ impl Store {
     }
     pub fn decision_memory(&self, repository: &str) -> Result<Vec<Value>> {
         let c = self.0.lock().unwrap();
-        let mut s=c.prepare("SELECT data FROM records WHERE kind='decision' AND json_extract(data,'$.repository')=?1 COLLATE NOCASE ORDER BY rowid DESC LIMIT 100")?;
+        let mut s = c.prepare(
+            "SELECT data FROM records WHERE kind='decision' AND json_extract(data,'$.repository')=?1 COLLATE NOCASE ORDER BY rowid DESC LIMIT 100",
+        )?;
         s.query_map([repository], |r| r.get::<_, String>(0))?
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
     }
     pub fn rediscovery_requests(&self, repository: &str) -> Result<Vec<Value>> {
         let c = self.0.lock().unwrap();
-        let mut s=c.prepare("SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100")?;
+        let mut s = c.prepare(
+            "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100",
+        )?;
         s.query_map([repository], |r| r.get::<_, String>(0))?
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
-    }
-    pub fn record_page<T: DeserializeOwned>(
-        &self,
-        kind: &str,
-        before: i64,
-        limit: usize,
-    ) -> Result<Vec<(i64, T)>> {
-        let c = self.0.lock().unwrap();
-        let mut s=c.prepare("SELECT rowid,data FROM records WHERE kind=?1 AND rowid<?2 ORDER BY rowid DESC LIMIT ?3")?;
-        s.query_map(params![kind, before, limit as i64], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?
-        .map(|r| {
-            let (seq, data) = r?;
-            Ok((seq, serde_json::from_str(&data)?))
-        })
-        .collect()
-    }
-}
-impl Clone for HistoryQuery {
-    fn clone(&self) -> Self {
-        Self {
-            before: self.before,
-            limit: self.limit,
-            status: self.status.clone(),
-            q: self.q.clone(),
-            cycle: self.cycle.clone(),
-        }
     }
 }

@@ -22,7 +22,7 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 | --- | --- |
 | `src/config.rs` | Defaults, explicit role routes, exact tier mapping, input validation |
 | `src/model.rs` | Task, cycle, proposal, session, review, verification and PR records |
-| `src/store.rs` | SQLite WAL persistence, atomic plan commit, event retention, atomic admission counter/ledger, redaction |
+| `src/store.rs`, `src/store/queries.rs` | SQLite WAL persistence, atomic plan commit, event retention, atomic admission counter/ledger, redaction, indexed operational views |
 | `src/report.rs` | Read-only snapshot export of daily usage, cycles, tasks and admission routes |
 | `src/runner.rs`, `src/opencode.rs` | Runner-neutral catalog/dispatch and owned OpenCode HTTP/SSE sessions |
 | `src/schemas.rs` | Shared structured output schemas and validation |
@@ -32,7 +32,10 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 | `src/engine.rs` | Application state, scheduling, recovery, readiness, admission limits and retention |
 | `src/engine/planning.rs` | Grounding, discovery, proposal challenges, consolidation and atomic queue creation |
 | `src/engine/execution.rs` | Workspace initialization, executor turns, review/repair, verification and publication |
+| `src/engine/memory.rs` | Grounding inputs, repository history and rediscovery lineage |
+| `src/engine/housekeeping.rs` | Retention, workspace reclamation and disk limits |
 | `src/api.rs` | Operator authentication, configuration, observation and controls |
+| `src/assets.rs` | Embedded dashboard asset serving |
 | `web/src` | Responsive Svelte/TypeScript dashboard |
 
 ## Planning

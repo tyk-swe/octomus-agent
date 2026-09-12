@@ -44,12 +44,43 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let c = Connection::open(path)?;
         c.busy_timeout(std::time::Duration::from_secs(5))?;
-        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL); CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, sessions INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS admissions (id TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS admissions_day ON admissions(day); CREATE TRIGGER IF NOT EXISTS cap_activity AFTER INSERT ON events BEGIN DELETE FROM events WHERE id <= NEW.id - COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'), '$.retain_events'),10000); END;")?;
+        c.execute_batch(
+            r#"
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=FULL;
+            CREATE TABLE IF NOT EXISTS records (
+                kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL,
+                PRIMARY KEY(kind,id)
+            );
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
+                entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS usage (
+                day TEXT PRIMARY KEY, sessions INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS admissions (
+                id TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, data TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS admissions_day ON admissions(day);
+            -- Retain only the most recent configured number of events.
+            CREATE TRIGGER IF NOT EXISTS cap_activity AFTER INSERT ON events BEGIN
+                DELETE FROM events WHERE id <= NEW.id - COALESCE(json_extract(
+                    (SELECT data FROM records WHERE kind='settings' AND id='config'),
+                    '$.retain_events'
+                ),10000);
+            END;
+            "#,
+        )?;
         queries::migrate(&c)?;
         Ok(Self(Arc::new(Mutex::new(c))))
     }
     pub fn put<T: Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
-        self.0.lock().unwrap().execute("INSERT INTO records VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",params![kind,id,serde_json::to_string(value)?])?;
+        self.0.lock().unwrap().execute(
+            "INSERT INTO records VALUES (?1,?2,?3)
+             ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
+            params![kind, id, serde_json::to_string(value)?],
+        )?;
         Ok(())
     }
     pub fn commit_plan(
@@ -59,7 +90,11 @@ impl Store {
     ) -> Result<()> {
         let mut connection = self.0.lock().unwrap();
         let transaction = connection.transaction()?;
-        transaction.execute("INSERT INTO records VALUES ('cycle',?1,?2) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data", params![cycle.id, serde_json::to_string(cycle)?])?;
+        transaction.execute(
+            "INSERT INTO records VALUES ('cycle',?1,?2)
+             ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
+            params![cycle.id, serde_json::to_string(cycle)?],
+        )?;
         for task in tasks {
             transaction.execute(
                 "INSERT INTO records VALUES ('task',?1,?2)",
@@ -113,7 +148,11 @@ impl Store {
             let id = decision["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing decision identity"))?;
-            transaction.execute("INSERT INTO records VALUES ('decision',?1,?2) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",params![id,serde_json::to_string(decision)?])?;
+            transaction.execute(
+                "INSERT INTO records VALUES ('decision',?1,?2)
+                 ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
+                params![id, serde_json::to_string(decision)?],
+            )?;
         }
         if cycle.mode == crate::model::CycleMode::Execution {
             for proposal in &cycle.proposals {
@@ -197,7 +236,9 @@ impl Store {
     }
     pub fn events(&self, entity: Option<&str>) -> Result<Vec<Event>> {
         let c = self.0.lock().unwrap();
-        let mut s=c.prepare("SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1) ORDER BY id DESC LIMIT 200")?;
+        let mut s = c.prepare(
+            "SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1) ORDER BY id DESC LIMIT 200",
+        )?;
         Ok(s.query_map([entity], |r| {
             Ok(Event {
                 id: r.get(0)?,
@@ -242,7 +283,11 @@ impl Store {
             return Err(anyhow::Error::new(crate::model::BlockedReason::StorageLimit)
                 .context(format!("Workspace storage limit reached ({measured_bytes} bytes). Resolve retained tasks or increase the limit")));
         }
-        let changed=tx.execute("INSERT INTO usage(day,sessions) VALUES (?1,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1 WHERE sessions < ?2",params![day,limit.min(i64::MAX as u64) as i64])?;
+        let changed = tx.execute(
+            "INSERT INTO usage(day,sessions) VALUES (?1,1)
+             ON CONFLICT(day) DO UPDATE SET sessions=sessions+1 WHERE sessions < ?2",
+            params![day, limit.min(i64::MAX as u64) as i64],
+        )?;
         if changed != 1 {
             return Err(anyhow::Error::new(crate::model::BlockedReason::BudgetExhausted)
                 .context("Daily session budget exhausted; increase the configured limit or wait until UTC midnight"));

@@ -206,7 +206,23 @@ mod tests {
             maintenance_due: false,
             maintenance_targets: vec![],
         };
-        let p:Proposal=serde_json::from_value(json!({"id":"p","title":"New wording","problem":"Same underlying problem","evidence":[],"benefit":"x","category":"features","target":"main","tier":"M","scope":"x","dependencies":[],"prompt":"x","decision":"accepted","reason":"x","problem_key":"same-problem"})).unwrap();
+        let p: Proposal = serde_json::from_value(json!({
+            "id": "p",
+            "title": "New wording",
+            "problem": "Same underlying problem",
+            "evidence": [],
+            "benefit": "x",
+            "category": "features",
+            "target": "main",
+            "tier": "M",
+            "scope": "x",
+            "dependencies": [],
+            "prompt": "x",
+            "decision": "accepted",
+            "reason": "x",
+            "problem_key": "same-problem",
+        }))
+        .unwrap();
         let memory = app
             .planning_memory(&c, &g, &CancellationToken::new())
             .await

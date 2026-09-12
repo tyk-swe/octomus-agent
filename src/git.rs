@@ -127,7 +127,7 @@ pub async fn snapshot(
     }
     git(c, path, &["rev-parse", "HEAD"], cancel).await
 }
-pub async fn clean(c: &Config, path: &Path, cancel: &CancellationToken) -> Result<bool> {
+async fn clean(c: &Config, path: &Path, cancel: &CancellationToken) -> Result<bool> {
     Ok(git(c, path, &["status", "--porcelain"], cancel)
         .await?
         .is_empty())

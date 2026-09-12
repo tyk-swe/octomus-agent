@@ -2,6 +2,7 @@ use crate::{
     config::{Backend, Config, validate_binary},
     engine::App,
     model::{AttemptPolicy, BlockedReason, Cycle, CycleMode, OperatingMode, Status, Task},
+    process::Deadline,
     store::redact,
 };
 use axum::{
@@ -80,7 +81,6 @@ pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
         .route("/config", get(config).put(save_config))
         .route("/control/{action}", post(control))
         .route("/doctor", post(doctor))
-        .route("/models", get(models))
         .route("/model-catalog", post(model_catalog))
         .route("/events", get(events))
         .fallback(|| async {
@@ -488,16 +488,17 @@ async fn task_action(
                 let work = tokio::spawn(async move {
                     let published = {
                         let limit = Duration::from_secs(t.execution_config().task_timeout_seconds);
-                        let publish = crate::git::publish(&t, &cancel);
-                        tokio::pin!(publish);
-                        match tokio::time::timeout(limit, &mut publish).await {
-                            Ok(result) => result,
-                            Err(_) => {
-                                // Use the normal task deadline cleanup: prevent further
-                                // commands and let cancellation stop owned process groups.
-                                cancel.cancel();
-                                let _ = tokio::time::timeout(Duration::from_secs(8), &mut publish)
-                                    .await;
+                        // Uses the normal task deadline cleanup, so a stalled publication
+                        // stops its owned process groups before it is reported.
+                        match crate::process::with_deadline(
+                            limit,
+                            &cancel,
+                            crate::git::publish(&t, &cancel),
+                        )
+                        .await
+                        {
+                            Deadline::Done(result) => result,
+                            Deadline::Expired { .. } => {
                                 Err(anyhow::Error::new(BlockedReason::Timeout))
                             }
                         }
@@ -505,14 +506,7 @@ async fn task_action(
                     let _gate = app.gate.lock().await;
                     let result = (|| -> Result<()> {
                         match published {
-                            Ok(pr) => {
-                                t.pr_number = Some(pr.number);
-                                t.pr_url = Some(pr.url.clone());
-                                t.error = None;
-                                t.blocked_reason = None;
-                                app.transition(&mut t, Status::Published)?;
-                                app.observe_delivery(&t.config, pr)?;
-                            }
+                            Ok(pr) => app.published(&mut t, pr)?,
                             Err(error) => {
                                 t.blocked_reason = Some(BlockedReason::from_error(&error));
                                 t.error = Some(redact(&format!("{error:#}")));
@@ -570,17 +564,6 @@ struct DoctorQuery {
 }
 async fn doctor(State(s): State<Api>, Query(q): Query<DoctorQuery>) -> Result<Json<Value>> {
     Ok(Json(s.app.doctor_for(&s.app.config()?, q.mode).await?))
-}
-async fn models(State(s): State<Api>) -> Result<Json<Value>> {
-    let mut cx = crate::codex::Codex::connect(
-        &s.app.config()?,
-        &s.app.data_dir,
-        s.app.store.clone(),
-        "system",
-        s.app.shutdown.child_token(),
-    )
-    .await?;
-    Ok(Json(json!(cx.models().await?)))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

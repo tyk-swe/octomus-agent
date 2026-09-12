@@ -177,7 +177,7 @@ A later execution cycle plans afresh, rather than executing an old audit result.
 Each task has its own execution thread and checkout. Every code review uses a
 **fresh reviewer** and the **complete accumulated diff**. Repairs use one
 **persistent repair thread** per task. Configured verification must pass on the
-reviewed revision before Rust publishes or updates a PR. Interrupted work and
+reviewed revision before Octomus publishes or updates a PR. Interrupted work and
 publication are reconciled from durable state. See [architecture](docs/architecture.md).
 
 ## What a day costs
@@ -191,7 +191,7 @@ unavailable attribution, subscription fees and incremental charges.
 
 ## Security
 
-The dedicated VM is the sandbox: Codex and verification commands have the service
+The dedicated VM is the sandbox: runner and verification commands have the service
 user's permissions, and repository prompt injection is not prevented by design.
 Keep the single-operator dashboard on loopback behind SSH, with a random private
 token and repository-restricted GitHub authentication. Read the
@@ -200,7 +200,7 @@ privately to **mail@mail.tyk.sh** using [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
-Octomus is Codex-only, single-operator and single-repository. See
+Octomus runs on Codex or OpenCode, single-operator and single-repository. See
 [contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md),
 [configuration example](docs/configuration.example.json), and
 [acceptance coverage](docs/acceptance.md). License: [Apache-2.0](LICENSE).
