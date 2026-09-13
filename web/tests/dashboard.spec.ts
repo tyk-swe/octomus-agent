@@ -78,6 +78,8 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
     page.getByText('The full change set meets the objective without actionable findings.')
   ).toBeVisible();
   await page.getByRole('tab', { name: 'Verification' }).click();
+  await expect(page.getByText('Passed', { exact: true })).toBeVisible();
+  await page.getByText('Command output', { exact: true }).click();
   await expect(page.getByText('All tests passed.')).toBeVisible();
   await page.getByRole('button', { name: 'Close task details' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);

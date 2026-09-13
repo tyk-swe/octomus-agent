@@ -14,6 +14,11 @@
   import Settings from '$lib/Settings.svelte';
   import TaskDetail from '$lib/TaskDetail.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
+  import {
+    decisionCounts as decisionEntries,
+    planningVerdict,
+    taskOutcomeCounts
+  } from '$lib/evidence';
   let connected = $state(false),
     accessToken = $state(''),
     data = $state<Snapshot | null>(null),
@@ -30,18 +35,36 @@
     evidence = $state<{ cycle: string; proposal: string | null } | null>(null),
     mobileOpen = $state(false),
     lastUpdated = $state('');
+  /** The control that opened the first panel; keyboard focus returns there on close. */
+  let panelOpener: HTMLElement | null = null;
+  function rememberOpener() {
+    if (selected || evidence) return;
+    panelOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
   /** Only one panel is ever open: run evidence hands deep inspection to TaskDetail. */
   function inspectRun(cycle: string, proposal: string | null) {
+    rememberOpener();
     selected = null;
     evidence = { cycle, proposal };
   }
   function inspectTask(id: string) {
+    rememberOpener();
     evidence = null;
     selected = id;
+  }
+  async function closePanels() {
+    selected = null;
+    evidence = null;
+    const opener = panelOpener;
+    panelOpener = null;
+    await tick();
+    if (opener?.isConnected) opener.focus();
+    else document.getElementById('main-content')?.focus();
   }
   function inspectLatestRun() {
     if (latestCycle) inspectRun(latestCycle.id, null);
   }
+  const gb = (bytes: number) => (bytes / 1e9).toFixed(2);
   const navigation = [
     { id: 'overview', label: 'Overview', icon: 'overview' },
     { id: 'queue', label: 'Task queue', icon: 'queue' },
@@ -282,6 +305,7 @@
     setToken('');
     selected = null;
     evidence = null;
+    panelOpener = null;
     listGeneration++;
     listRequest?.abort();
     refreshing = false;
@@ -432,7 +456,7 @@
           >
         </div>
       </header>
-      <main class="content" id="main-content">
+      <main class="content" id="main-content" tabindex="-1">
         <div class="page-heading">
           <div>
             <div class="eyebrow">YOUR PROJECT, MOVING FORWARD</div>
@@ -569,9 +593,9 @@
               >
             </article>
             <article class="stat">
-              <div class="stat-label">Published improvements<Icon name="prs" size={17} /></div>
+              <div class="stat-label">Published PRs<Icon name="prs" size={17} /></div>
               <strong>{(data.counts.published ?? 0).toString().padStart(2, '0')}</strong><small
-                >{data.merged_prs} PRs merged by maintainers</small
+                >{data.merged_prs} merged by maintainers</small
               >
             </article>
             <article class="stat">
@@ -585,71 +609,79 @@
               >
             </article>
           </div>
-          <section class="panel">
-            <div class="section-heading">
-              <div>
-                <h2>Operating evidence</h2>
-                <p>Current limits and retained storage.</p>
-              </div>
-              <Icon name="activity" />
-            </div>
-            <div class="operating-summary muted">
-              {#if data.storage}<p>
-                  Application storage: {(data.storage.application_bytes / 1e9).toFixed(2)} GB / {(
-                    data.storage_limit / 1e9
-                  ).toFixed(2)} GB admission limit. Measured {relative(data.storage.measured_at)}.
-                </p>
-                <p>
-                  Task workspaces: {(data.storage.task_bytes / 1e9).toFixed(2)} GB · Planning clones:
-                  {(data.storage.planning_bytes / 1e9).toFixed(2)} GB.
-                </p>
-                <p>
-                  {data.storage.runner_transcripts.message} · {data.storage.runner_transcripts
-                    .status}.
-                </p>
-                {#each Object.entries(data.storage.runner_transcripts.runners ?? {}) as [backend, usage]}<p
-                  >
-                    {backend} storage: {usage.bytes === null
-                      ? 'Unavailable'
-                      : `${(usage.bytes / 1e9).toFixed(2)} GB`}
-                  </p>{/each}{:else}<p>
-                  Storage measurement pending. This limit controls admission, not disk growth during
-                  active work.
-                </p>{/if}
-            </div>
-            {#if attentionCount}<div class="section-heading">
-                <h3>Work needing attention</h3>
-                <button
-                  class="text-button"
-                  onclick={async () => {
-                    await navigate('queue');
-                    filter = 'attention';
-                  }}>View all unresolved work</button
-                >
-              </div>
-              {@render taskList(data.attention_tasks)}{/if}
-          </section>
-          <section class="panel cycle-panel">
+          <section class="panel cycle-panel" aria-labelledby="latest-run-heading">
             <div class="section-heading">
               <div class="row-title">
                 <span class="section-icon"><Icon name="refresh" /></span>
                 <div>
-                  <h2>The improvement loop</h2>
+                  <h2 id="latest-run-heading">
+                    {latestCycle
+                      ? `Latest run · ${latestCycle.mode === 'audit' ? 'Audit' : 'Execution'} cycle ${String(latestCycle.number).padStart(3, '0')}`
+                      : 'The improvement loop'}
+                  </h2>
                   <p>
                     {latestCycle
-                      ? `Cycle ${String(latestCycle.number).padStart(3, '0')} · started ${relative(latestCycle.started_at)}`
+                      ? `Started ${relative(latestCycle.started_at)}${latestCycle.completed_at ? ` · planning finished ${relative(latestCycle.completed_at)}` : ''}`
                       : 'A thoughtful path from opportunity to pull request.'}
                   </p>
                 </div>
               </div>
               <div class="row-title">
-                <span class={'badge ' + (latestCycle?.status || 'queued')}
-                  >{latestCycle?.status || 'Ready when you are'}</span
-                >{#if latestCycle}<button class="button small" onclick={inspectLatestRun}
+                {#if latestCycle}
+                  {@const planning = planningVerdict(latestCycle)}
+                  <span class={'badge ' + planning.tone}>{planning.label}</span>
+                  <button class="button primary small" onclick={inspectLatestRun}
                     ><Icon name="search" size={15} />Inspect run</button
-                  >{/if}
+                  >
+                {:else}
+                  <span class="badge queued">Ready when you are</span>
+                {/if}
               </div>
             </div>
+            {#if latestCycle}
+              {@const cycle = latestCycle}
+              {@const planning = planningVerdict(cycle)}
+              {@const runTasks = taskOutcomeCounts(
+                data.tasks.filter((t) => t.cycle_id === cycle.id)
+              )}
+              <div class="run-outcome">
+                <div>
+                  <span class="eyebrow">PROPOSAL DECISIONS</span>
+                  <ul class="outcome-counts" aria-label="Proposal decisions">
+                    {#each decisionEntries(cycle.decisions) as entry (entry.decision)}<li>
+                        <strong>{entry.count}</strong><span class={'badge ' + entry.tone}
+                          >{entry.decision}</span
+                        >
+                      </li>{:else}<li class="muted">No decisions recorded</li>{/each}
+                  </ul>
+                  <small>{planning.detail}</small>
+                </div>
+                <div>
+                  <span class="eyebrow">TASKS FROM THIS RUN</span>
+                  {#if runTasks.length}
+                    <ul class="outcome-counts" aria-label="Tasks from this run">
+                      {#each runTasks as entry (entry.label)}<li>
+                          <strong>{entry.count}</strong><span class={'badge ' + entry.tone}
+                            >{entry.label}</span
+                          >
+                        </li>{/each}
+                    </ul>
+                    <small
+                      >Published means a pull request was delivered. Merging stays with you.</small
+                    >
+                  {:else}
+                    <p class="muted">
+                      {cycle.mode === 'audit'
+                        ? 'Audits record recommendations and queue no tasks.'
+                        : 'No tasks are recorded for this run.'}
+                    </p>
+                  {/if}
+                </div>
+              </div>
+              {#if cycle.error}<div class="notice error">
+                  <Icon name="alert" size={18} /><span>{cycle.error}</span>
+                </div>{/if}
+            {/if}
             <div class="pipeline">
               {#each [{ name: 'Ground & discover', icon: 'proposals', detail: 'Understand what matters' }, { name: 'Challenge & refine', icon: 'shield', detail: 'Keep the worthwhile work' }, { name: 'Build & verify', icon: 'code', detail: 'Make the complete change' }, { name: 'Review & deliver', icon: 'prs', detail: 'Fresh eyes before every PR' }] as step, i}<div
                   class="pipeline-step"
@@ -663,8 +695,28 @@
                     >{/if}
                 </div>{/each}
             </div>
-            {#if latestCycle?.error}<div class="notice error">{latestCycle.error}</div>{/if}
           </section>
+          {#if attentionCount}<section
+              class="panel attention-panel"
+              aria-labelledby="attention-heading"
+            >
+              <div class="section-heading">
+                <div>
+                  <h2 id="attention-heading">
+                    Needs attention <span class="count">{attentionCount}</span>
+                  </h2>
+                  <p>Blocked or failed tasks keep their workspace and evidence for inspection.</p>
+                </div>
+                <button
+                  class="text-button"
+                  onclick={async () => {
+                    await navigate('queue');
+                    filter = 'attention';
+                  }}>View all unresolved work<Icon name="arrow" size={15} /></button
+                >
+              </div>
+              {@render taskList(data.attention_tasks)}
+            </section>{/if}
           <div class="overview-columns">
             <section class="panel">
               <div class="section-heading">
@@ -718,7 +770,7 @@
                     ></span>
                     <div>
                       <p>{event.message}</p>
-                      <small>{relative(event.at)}</small>
+                      <small>{event.kind === 'error' ? 'Error · ' : ''}{relative(event.at)}</small>
                     </div>
                   </div>{:else}<div class="activity-item">
                     <span class="activity-point"></span>
@@ -745,6 +797,49 @@
               </div>
             </section>
           </div>
+          <section class="panel operating-panel">
+            <details class="operating-details">
+              <summary>
+                <span class="section-icon"><Icon name="activity" /></span>
+                <h2>Operating limits and storage</h2>
+                <span class="operating-gist"
+                  >{data.storage
+                    ? `Application storage ${gb(data.storage.application_bytes)} GB of ${gb(data.storage_limit)} GB admission limit · measured ${relative(data.storage.measured_at)}`
+                    : 'Storage measurement pending.'}</span
+                >
+                <Icon name="chevron" size={15} />
+              </summary>
+              <div class="operating-summary muted">
+                {#if data.storage}<p>
+                    Application storage: {gb(data.storage.application_bytes)} GB / {gb(
+                      data.storage_limit
+                    )} GB admission limit. Measured {relative(data.storage.measured_at)}.
+                  </p>
+                  <p>
+                    Task workspaces: {gb(data.storage.task_bytes)} GB · Planning clones: {gb(
+                      data.storage.planning_bytes
+                    )} GB.
+                  </p>
+                  <p>
+                    {data.storage.runner_transcripts.message} · {data.storage.runner_transcripts
+                      .status}.
+                  </p>
+                  {#each Object.entries(data.storage.runner_transcripts.runners ?? {}) as [backend, usage]}<p
+                    >
+                      {backend} storage: {usage.bytes === null
+                        ? 'Unavailable'
+                        : `${gb(usage.bytes)} GB`}
+                    </p>{/each}{:else}<p>
+                    Storage measurement pending. This limit controls admission, not disk growth
+                    during active work.
+                  </p>{/if}
+                <p>
+                  Session budget today: {data.sessions_today} of {data.session_limit} admissions. Admissions
+                  reserve budget before work starts; they are not completed turns or billed usage.
+                </p>
+              </div>
+            </details>
+          </section>
         {:else if view === 'queue'}
           <section class="panel">
             <div class="list-toolbar">
@@ -957,14 +1052,14 @@
   {#if selected}{#key selected}<TaskDetail
         id={selected}
         onselect={(id) => (selected = id)}
-        onclose={() => (selected = null)}
+        onclose={closePanels}
         onaction={refresh}
       />{/key}{/if}
   {#if evidence}<RunEvidence
       cycleId={evidence.cycle}
       proposalId={evidence.proposal}
       onopentask={inspectTask}
-      onclose={() => (evidence = null)}
+      onclose={closePanels}
     />{/if}
 {/if}
 {#snippet searchBox()}<label class="search-box"
@@ -979,7 +1074,7 @@
       >{/if}</label
   >{/snippet}
 {#snippet taskList(tasks: TaskRow[])}<div class="task-list">
-    {#each tasks as task}<button class="task-row" onclick={() => (selected = task.id)}
+    {#each tasks as task}<button class="task-row" onclick={() => inspectTask(task.id)}
         ><span class={'task-type-icon ' + task.status}
           ><Icon
             name={task.status === 'published'

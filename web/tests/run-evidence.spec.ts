@@ -5,234 +5,26 @@
  * rehearsal report, and no test asserts a live model identity or a fresh GitHub
  * observation, because the feature does not claim either.
  */
-import { test, expect, type Page, type Route } from '@playwright/test';
-import type {
-  CommandResult,
-  CommandState,
-  ProposalEvidence,
-  ProposalRow,
-  ReviewerVerdict,
-  ReviewRoundEvidence,
-  RunEvidenceV1,
-  TaskEvidence
-} from '../src/lib/types';
-
-const token = 'browser-test-operator-token-32-characters';
-const SYNTHETIC = 'Synthetic browser-test verdict text. Not a real reviewer statement.';
-const now = new Date().toISOString();
-const A = 'a'.repeat(40);
-const B = 'b'.repeat(40);
-const Z = 'z'.repeat(40);
-
-async function login(page: Page) {
-  await page.goto('/');
-  await page.getByLabel('Operator access token').fill(token);
-  await page.getByRole('button', { name: 'Open dashboard' }).click();
-}
-
-/** Records every non-GET call so read-only interaction can be proven read-only. */
-function trackWrites(page: Page) {
-  const writes: { path: string; method: string }[] = [];
-  page.on('request', (request) => {
-    const path = new URL(request.url()).pathname;
-    if (path.startsWith('/api/') && request.method() !== 'GET')
-      writes.push({ path, method: request.method() });
-  });
-  return writes;
-}
-
-function reviewer(slot: string, over: Partial<ReviewerVerdict> = {}): ReviewerVerdict {
-  return {
-    reviewer: slot,
-    state: 'recorded',
-    decision: 'accepted',
-    reason: `${SYNTHETIC} (${slot})`,
-    note: null,
-    ...over
-  };
-}
-
-function reviewRound(over: Partial<ReviewRoundEvidence> = {}): ReviewRoundEvidence {
-  return {
-    session_id: 'synthetic-review-session',
-    revision: B,
-    comparison_base: A,
-    created_at: now,
-    completed: true,
-    summary_present: true,
-    matches_output_revision: true,
-    findings: [],
-    ...over
-  };
-}
-
-function command(name: string, state: CommandState, revision: string | null = B): CommandResult {
-  return {
-    command: name,
-    state,
-    results_recorded: state === 'no_result' ? 0 : 1,
-    latest_success: state === 'no_result' ? null : state !== 'failed',
-    latest_revision: revision,
-    latest_created_at: state === 'no_result' ? null : now,
-    matches_output_revision: state === 'no_result' ? null : revision === B
-  };
-}
-
-function taskEvidence(id: string, over: Partial<TaskEvidence> = {}): TaskEvidence {
-  return {
-    id,
-    cycle_id: 'synthetic-cycle',
-    proposal_id: 'synthetic-proposal',
-    status: 'published',
-    branch: `tyk/${id}`,
-    attempts: 0,
-    blocked_reason: null,
-    error_recorded: false,
-    created_at: now,
-    updated_at: now,
-    revisions: { source: A, comparison_base: A, default_branch: 'main', output: B },
-    sessions: [
-      {
-        id: 'synthetic-executor-session',
-        role: 'executor',
-        status: 'completed',
-        requested_route: { backend: 'codex', model: 'gpt-6-astra', effort: 'medium' },
-        started_at: now
-      }
-    ],
-    latest_review: {
-      rounds_recorded: 1,
-      latest: reviewRound(),
-      clean: true,
-      clean_at_output_revision: true
-    },
-    required_commands: {
-      state: 'recorded',
-      commands: [command('cargo test', 'passed')],
-      all_passed_at_output_revision: true
-    },
-    pull_request: {
-      number: 77,
-      url: 'https://github.com/fixture/project/pull/77',
-      source: 'recorded_task_reference'
-    },
-    gaps: [],
-    ...over
-  };
-}
-
-function proposalEvidence(id: string, over: Partial<ProposalEvidence> = {}): ProposalEvidence {
-  return {
-    id,
-    title: `Synthetic proposal ${id}`,
-    target: 'main',
-    tier: 'S',
-    category: 'correctness',
-    problem: 'Synthetic recorded problem statement for browser tests.',
-    benefit: 'Synthetic recorded benefit statement for browser tests.',
-    scope: 'Synthetic recorded scope statement for browser tests.',
-    evidence: ['src/main.rs: synthetic fixture reference'],
-    final_decision: 'accepted',
-    final_reason: 'Synthetic recorded final rationale for browser tests.',
-    reviewer_verdicts: [reviewer('adversary-a'), reviewer('adversary-b')],
-    linked_tasks: [],
-    gaps: [],
-    ...over
-  };
-}
-
-function runEvidence(
-  over: Partial<RunEvidenceV1> = {},
-  cycle: Partial<RunEvidenceV1['cycle']> = {}
-): RunEvidenceV1 {
-  return {
-    schema_version: 1,
-    generated_at: now,
-    kind: 'recorded_review_check_evidence',
-    review_required_before_sharing: true,
-    review_requirement:
-      'Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.',
-    limitations: ['Synthetic limitation recorded for browser tests.', 'Deferred is not rejected.'],
-    cycle: {
-      id: 'synthetic-cycle',
-      number: 7,
-      mode: 'execution',
-      status: 'completed',
-      started_at: now,
-      completed_at: now,
-      repository: 'fixture/project',
-      grounding_revision: A,
-      planning: {
-        status: 'completed',
-        planning_finished: true,
-        proposal_count: 1,
-        decisions: { accepted: 1 },
-        creates_execution_queue: true,
-        error_recorded: false,
-        reviewer_batches_saved: 2
-      },
-      ...cycle
-    },
-    proposals: [],
-    gaps: [],
-    ...over
-  };
-}
-
-/** One synthetic proposal summary row, as the paged proposal history returns them. */
-function proposalRow(
-  id: string,
-  cycleId: string,
-  cycleNumber: number,
-  over: Partial<ProposalRow> = {}
-): ProposalRow {
-  return {
-    id,
-    cycle: cycleNumber,
-    cycle_id: cycleId,
-    mode: 'execution',
-    content_revision: 1,
-    title: `Synthetic proposal ${id}`,
-    problem: 'Synthetic recorded problem statement for browser tests.',
-    benefit: 'Synthetic recorded benefit statement for browser tests.',
-    scope: 'Synthetic recorded scope statement for browser tests.',
-    target: 'main',
-    tier: 'S',
-    category: 'correctness',
-    evidence: ['src/main.rs: synthetic fixture reference'],
-    dependencies: [],
-    prompt: 'Synthetic execution prompt for browser tests.',
-    decision: 'accepted',
-    reason: 'Synthetic recorded decision reason for browser tests.',
-    ...over
-  };
-}
-
-async function serveProposals(page: Page, rows: ProposalRow[]) {
-  await page.route('**/api/proposals?*', async (route: Route) => {
-    await route.fulfill({
-      json: { items: rows, next_cursor: null, counts: { all: rows.length } }
-    });
-  });
-}
-
-async function openProposalEvidence(
-  page: Page,
-  index: number,
-  testInfo: { project: { name: string } }
-) {
-  if (testInfo.project.name === 'mobile')
-    await page.getByRole('button', { name: 'Toggle navigation' }).click();
-  await page
-    .getByRole('navigation')
-    .getByRole('button', { name: 'Proposals', exact: true })
-    .click();
-  await page
-    .locator('.proposal-card')
-    .nth(index)
-    .getByRole('button', { name: 'Inspect decision evidence' })
-    .click();
-}
+import { test, expect, type Route } from '@playwright/test';
+import {
+  A,
+  B,
+  SYNTHETIC,
+  Z,
+  command,
+  login,
+  now,
+  openProposalEvidence,
+  proposalEvidence,
+  proposalRow,
+  reviewRound,
+  reviewer,
+  runEvidence,
+  serveProposals,
+  taskEvidence,
+  token,
+  trackWrites
+} from './synthetic';
 
 test('inspect run reports recorded reviewer roles, review, checks and delivery, then hands off to the task', async ({
   page
@@ -250,17 +42,37 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
   await expect(page.getByText('Planning completion is not task completion').first()).toBeVisible();
   await expect(page.getByText('This is not a replayed event timeline')).toBeVisible();
 
-  // The recorded sequence, in order, for the one published proposal of this run.
+  // The recorded outcome first, then the published proposal's records in order.
+  await expect(page.getByText('Planning complete', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Work complete')).toHaveCount(0);
   await page.getByLabel('Proposal', { exact: true }).selectOption('task-reviewed');
-  await expect(page.getByRole('heading', { name: 'Proposal evidence' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Reviewer A — Problem and value' })).toBeVisible();
   await expect(
-    page.getByRole('heading', { name: 'Reviewer B — Feasibility and risk' })
+    page.getByRole('heading', { name: 'Explain the local development workflow' })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: /^Reviewer A\s+Problem and value$/ })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: /^Reviewer B\s+Feasibility and risk$/ })
   ).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Final decision' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Associated task' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Review and check evidence' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Linked task' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Review at the output commit' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Configured checks' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Recorded pull request' })).toBeVisible();
+  // Reviewer A and B sit side by side on desktop and stack on narrow screens.
+  const cards = page.locator('.reviewer-card');
+  await expect(cards).toHaveCount(2);
+  const [first, second] = await Promise.all([
+    cards.nth(0).boundingBox(),
+    cards.nth(1).boundingBox()
+  ]);
+  if (page.viewportSize()!.width >= 700) {
+    expect(first!.y).toBe(second!.y);
+    expect(first!.width).toBe(second!.width);
+  } else {
+    expect(second!.y).toBeGreaterThan(first!.y + first!.height - 1);
+  }
 
   // Real server-normalized statuses, not recomputed booleans.
   await expect(page.getByText('Both reviewers recorded accepted', { exact: true })).toBeVisible();
@@ -1158,3 +970,44 @@ for (const source of ['run', 'task', 'state'] as const) {
     await expect(page.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
   });
 }
+
+test('closing a panel returns keyboard focus to the control that opened it, including after hand-off', async ({
+  page
+}) => {
+  await login(page);
+  const inspect = page.getByRole('button', { name: 'Inspect run' });
+  await inspect.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Close run evidence' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(inspect).toBeFocused();
+
+  await inspect.click();
+  await page.getByLabel('Proposal', { exact: true }).selectOption('task-reviewed');
+  await page.getByRole('button', { name: 'Open task details' }).click();
+  await expect(page.getByRole('heading', { name: 'Recorded result' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close task details' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(inspect).toBeFocused();
+});
+
+test('a failed initial evidence request explains itself and offers a retry', async ({ page }) => {
+  let fail = true;
+  await page.route('**/api/cycles/cycle-1/evidence', async (route: Route) => {
+    if (fail) await route.fulfill({ status: 503, json: { error: 'Synthetic evidence outage' } });
+    else await route.fulfill({ json: await (await route.fetch()).json() });
+  });
+  await login(page);
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(
+    dialog.getByRole('heading', { name: 'Recorded evidence could not be loaded' })
+  ).toBeVisible();
+  await expect(dialog).toContainText('Synthetic evidence outage');
+  fail = false;
+  await dialog.getByRole('button', { name: 'Try again' }).click();
+  await expect(dialog.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
+});

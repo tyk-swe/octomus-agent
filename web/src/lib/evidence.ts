@@ -9,6 +9,7 @@
  */
 import type {
   CommandEvidence,
+  CommandResult,
   CommandState,
   ReviewRoundEvidence,
   ReviewerVerdict,
@@ -311,4 +312,101 @@ export function findTaskEvidence(run: RunEvidenceV1, taskId: string): TaskEviden
 
 export function shortCommit(value: string | null): string {
   return value ? value.slice(0, 12) : 'None recorded';
+}
+
+/**
+ * The planning-only outcome word for a cycle. `completed` means planning finished and
+ * decisions are recorded; it never means the run's work is complete.
+ */
+export function planningVerdict(cycle: { status: string; mode: 'execution' | 'audit' }): Verdict {
+  const noun = cycle.mode === 'audit' ? 'Audit' : 'Planning';
+  const outputs = cycle.mode === 'audit' ? 'recommendations' : 'decisions';
+  switch (cycle.status) {
+    case 'completed':
+      return {
+        label: `${noun} complete`,
+        tone: 'clean',
+        detail: `Proposal ${outputs} are recorded. Planning completion is not task completion.`
+      };
+    case 'running':
+      return {
+        label: `${noun} in progress`,
+        tone: 'running',
+        detail: `${noun} is still running. ${outputs[0].toUpperCase()}${outputs.slice(1)} are recorded when it finishes.`
+      };
+    case 'failed':
+      return {
+        label: `${noun} failed`,
+        tone: 'failed',
+        detail: `${noun} ended with a recorded error. Anything saved before the failure is shown as recorded.`
+      };
+    case 'interrupted':
+      return {
+        label: `${noun} interrupted`,
+        tone: 'blocked',
+        detail: `${noun} was interrupted by a service stop and did not finish.`
+      };
+    default:
+      return {
+        label: `${noun} ${cycle.status}`,
+        tone: '',
+        detail: 'The saved cycle status, verbatim.'
+      };
+  }
+}
+
+const DECISION_ORDER = ['accepted', 'rejected', 'deferred'];
+/** Decision counts in a fixed order, so accepted never trades places with deferred. */
+export function decisionCounts(
+  decisions: Record<string, number>
+): { decision: string; count: number; tone: Tone }[] {
+  const extra = Object.keys(decisions)
+    .filter((key) => !DECISION_ORDER.includes(key))
+    .sort();
+  return [...DECISION_ORDER.filter((key) => key in decisions), ...extra].map((decision) => ({
+    decision,
+    count: decisions[decision] ?? 0,
+    tone: decisionTone(decision)
+  }));
+}
+
+const OUTCOME_GROUPS: { label: (count: number) => string; tone: Tone; statuses: string[] }[] = [
+  {
+    label: (n) => (n === 1 ? 'published PR' : 'published PRs'),
+    tone: 'clean',
+    statuses: ['published']
+  },
+  {
+    label: () => 'active',
+    tone: 'running',
+    statuses: ['executing', 'reviewing', 'repairing', 'verifying', 'publishing']
+  },
+  { label: () => 'queued', tone: '', statuses: ['queued'] },
+  { label: () => 'blocked', tone: 'blocked', statuses: ['blocked'] },
+  { label: () => 'failed', tone: 'failed', statuses: ['failed'] },
+  { label: () => 'cancelled', tone: 'cancelled', statuses: ['cancelled'] }
+];
+/** Task outcomes grouped for a run summary. Published counts delivered PRs, never merges. */
+export function taskOutcomeCounts(
+  tasks: { status: string }[]
+): { label: string; count: number; tone: Tone }[] {
+  return OUTCOME_GROUPS.map((group) => {
+    const count = tasks.filter((task) => group.statuses.includes(task.status)).length;
+    return { label: group.label(count), count, tone: group.tone };
+  }).filter((group) => group.count > 0);
+}
+
+/** Why a configured command's state is what it is, naming the revisions involved. */
+export function commandExplanation(command: CommandResult, output: string | null): string {
+  const at = command.latest_revision ? shortCommit(command.latest_revision) : null;
+  switch (command.state) {
+    case 'passed':
+      return `Latest recorded result passed at the recorded output commit${at ? ` ${at}` : ''}.`;
+    case 'passed_at_other_revision':
+      return `Latest recorded result passed at ${at ?? 'an unrecorded revision'}, not at the recorded output commit${output ? ` ${shortCommit(output)}` : ''}. A pass at another revision does not count.`;
+    case 'failed':
+      return `Latest recorded result failed${at ? ` at ${at}` : ''}. A newer failure invalidates any older pass.`;
+    case 'no_result':
+      return 'Configured, with no result recorded. Not passing.';
+  }
 }

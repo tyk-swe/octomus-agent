@@ -2,8 +2,10 @@
   import { onMount } from 'svelte';
   import { api, ApiError, relative, safeUrl } from './api';
   import { routeLabel } from './routes';
+  import { copyMessage, copyText } from './clipboard';
   import type { Task, Event, RunEvidenceV1, TaskEvidence } from './types';
   import Icon from './Icon.svelte';
+  import Sha from './Sha.svelte';
   import EvidenceText from './EvidenceText.svelte';
   import EvidenceFact from './EvidenceFact.svelte';
   import {
@@ -14,7 +16,6 @@
     reviewRoundBadge,
     reviewVerdict,
     roundRevisionLabel,
-    shortCommit,
     type Tone
   } from './evidence';
   let {
@@ -29,7 +30,8 @@
     error = $state(''),
     tab = $state('Overview'),
     busy = $state(false),
-    events = $state<Event[]>([]);
+    events = $state<Event[]>([]),
+    copyStatus = $state('');
   let evidence = $state<TaskEvidence | null>(null),
     evidenceError = $state(''),
     evidenceStale = $state(false),
@@ -40,6 +42,7 @@
   let evidenceKey = '';
   let evidenceGeneration = 0;
   let evidenceRequest: AbortController | null = null;
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
   /**
    * Recorded evidence is fetched per (cycle, task, task revision) and skipped while that
    * key is unchanged. Awaiting it keeps slow evidence reads from being restarted on
@@ -118,6 +121,7 @@
     const timer = setInterval(() => load(), 4000);
     return () => {
       clearInterval(timer);
+      clearTimeout(copyTimer);
       generation++;
       request?.abort();
       evidenceGeneration++;
@@ -144,6 +148,11 @@
       busy = false;
     }
   }
+  async function copy(value: string, label: string) {
+    clearTimeout(copyTimer);
+    copyStatus = copyMessage(label, await copyText(value));
+    copyTimer = setTimeout(() => (copyStatus = ''), 4000);
+  }
 </script>
 
 {#snippet tone(label: string, value: Tone)}<span class={'badge ' + value}>{label}</span>{/snippet}
@@ -164,15 +173,18 @@
     >
   </div>
   {#if error}<div class="notice error" role="alert">
-      {taskStale ? 'Retained task details · stale. ' : ''}{error}
+      <Icon name="alert" size={18} /><span
+        >{taskStale ? 'Retained task details · stale. ' : ''}{error}</span
+      >
     </div>{/if}
   {#if task}
     <div class="task-title">
-      <span class={'badge ' + task.status}>{task.status}</span>
+      <div class="badge-row"><span class={'badge ' + task.status}>{task.status}</span></div>
       <h2 id="task-title">{task.proposal.title}</h2>
       <p>
-        <span class="tier">{task.proposal.tier}</span>
-        Requested route: {routeLabel(task.route)}
+        <span class="tier">{task.proposal.tier}</span><span>{task.proposal.category}</span><span
+          class="dot-separator">·</span
+        ><span>Requested route: {routeLabel(task.route)}</span>
       </p>
     </div>
     <div class="tabs" role="tablist" aria-label="Task information">
@@ -186,9 +198,9 @@
         >{/each}
     </div>
     <div class="detail-content" role="tabpanel" aria-label={tab}>
-      <section class="result-summary" aria-label="Recorded result and evidence">
+      <section class="result-summary" aria-labelledby="result-heading">
         <div class="row-between">
-          <h3>Recorded result</h3>
+          <h3 id="result-heading">Recorded result</h3>
           {#if evidenceStale || taskStale}<span class="badge blocked">Retained · stale</span>{/if}
         </div>
         {#if evidenceError}<p class="muted">
@@ -206,14 +218,22 @@
             }}
           />
           <div>
-            <dt>Output SHA</dt>
+            <dt>Output commit</dt>
             <dd>
-              <code>{evidence ? shortCommit(outputSha) : 'Unknown'}</code><small
-                >The commit this task recorded as its output.</small
+              {#if evidence}<Sha
+                  value={outputSha}
+                  label="Output commit"
+                  oncopy={copy}
+                />{:else}<span class="badge cancelled">Unknown</span>{/if}<small
+                >{evidence
+                  ? outputSha
+                    ? 'The commit this task recorded as its output.'
+                    : 'No output commit is recorded for this task yet.'
+                  : 'Recorded outcome evidence has not loaded.'}</small
               >
             </dd>
           </div>
-          <EvidenceFact label="Review at that SHA" verdict={review} />
+          <EvidenceFact label="Review at the output commit" verdict={review} />
           <EvidenceFact label="Configured check results" verdict={checks} />
           <div>
             <dt>Recorded PR</dt>
@@ -250,21 +270,7 @@
             : 'Workspace retained until cleanup'}
         </p>{/if}
       {#if tab === 'Overview'}
-        <details class="operating-limits">
-          <summary>Effective operating limits</summary>
-          <p>
-            Daily admissions: {task.operating_policy.max_sessions_per_day} (original snapshot: {task
-              .config.max_sessions_per_day}). Storage admission: {(
-              task.operating_policy.max_workspace_bytes / 1e9
-            ).toFixed(2)} GB.
-          </p>
-          <p>
-            This attempt allows {task.effective_attempt_policy.max_repair_rounds} repair rounds and {task
-              .effective_attempt_policy.task_timeout_seconds} seconds. An explicit retry adopts current
-            attempt limits.
-          </p>
-        </details>
-        <h3>The opportunity</h3>
+        <h3>Proposal</h3>
         <p>{task.proposal.problem}</p>
         <p>{task.proposal.benefit}</p>
         <dl class="detail-grid">
@@ -274,15 +280,21 @@
           </div>
           <div>
             <dt>Branch</dt>
-            <dd>{task.branch}</dd>
+            <dd><code>{task.branch}</code></dd>
           </div>
           <div>
             <dt>Source revision</dt>
-            <dd><code>{task.source_revision}</code></dd>
+            <dd><Sha value={task.source_revision} label="Source revision" oncopy={copy} /></dd>
           </div>
           <div>
             <dt>Comparison base</dt>
-            <dd><code>{task.comparison_base || 'Assigned at execution'}</code></dd>
+            <dd>
+              {#if task.comparison_base}<Sha
+                  value={task.comparison_base}
+                  label="Comparison base"
+                  oncopy={copy}
+                />{:else}Assigned at execution{/if}
+            </dd>
           </div>
           <div class="full">
             <dt>Workspace</dt>
@@ -297,13 +309,31 @@
             <dd>{task.attempts}</dd>
           </div>
         </dl>
-        <h3>Execution prompt</h3>
-        <pre class="prompt">{task.proposal.prompt}</pre>
         <h3>Scope & evidence</h3>
         <p>{task.proposal.scope}</p>
         {#each task.proposal.evidence as evidence}<p class="evidence">
             <Icon name="code" size={16} />{evidence}
           </p>{/each}
+        <details class="raw-detail">
+          <summary>Execution prompt</summary>
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be keyboard reachable) -->
+          <pre class="prompt" role="region" aria-label="Execution prompt" tabindex="0">{task
+              .proposal.prompt}</pre>
+        </details>
+        <details class="operating-limits">
+          <summary>Effective operating limits</summary>
+          <p>
+            Daily admissions: {task.operating_policy.max_sessions_per_day} (original snapshot: {task
+              .config.max_sessions_per_day}). Storage admission: {(
+              task.operating_policy.max_workspace_bytes / 1e9
+            ).toFixed(2)} GB.
+          </p>
+          <p>
+            This attempt allows {task.effective_attempt_policy.max_repair_rounds} repair rounds and {task
+              .effective_attempt_policy.task_timeout_seconds} seconds. An explicit retry adopts current
+            attempt limits.
+          </p>
+        </details>
       {:else if tab === 'Sessions'}
         {#each task.sessions as session}<article class="history-card">
             <div class="row-between">
@@ -342,12 +372,21 @@
                 label="Review summary"
                 value={round.result.summary}
               />{:else}<p>No review summary was recorded for this round.</p>{/if}
-            <small
-              >Full change set · {round.comparison_base.slice(0, 8)} → {round.revision.slice(
-                0,
-                8
-              )}</small
-            >{#each round.result.findings as finding}<div class="finding">
+            <dl class="fact-row">
+              <div>
+                <dt>Reviewed change set</dt>
+                <dd>
+                  <Sha value={round.comparison_base} label="Comparison base" oncopy={copy} />
+                  <span aria-hidden="true">→</span>
+                  <Sha value={round.revision} label="Reviewed revision" oncopy={copy} />
+                </dd>
+              </div>
+              <div>
+                <dt>Recorded</dt>
+                <dd>{relative(round.created_at)}</dd>
+              </div>
+            </dl>
+            {#each round.result.findings as finding}<div class="finding">
                 <span class="tier">{finding.priority}</span>
                 <h4>{finding.title}</h4>
                 <code>{finding.file}</code>
@@ -359,27 +398,48 @@
             <p>Every round starts with a fresh reviewer and the full change set.</p>
           </div>{/each}
       {:else if tab === 'Verification'}
-        {#each task.verification as verification}<article class="history-card">
-            <div class="row-between">
-              <code>{verification.command}</code><span
-                class={'badge ' + (verification.success ? 'published' : 'failed')}
-                >{verification.success ? 'Passed' : 'Failed'}</span
-              >
-            </div>
-            <small
-              >Revision {verification.revision.slice(0, 8)} · {relative(
-                verification.created_at
-              )}</small
-            >
-            <pre>{verification.output || 'Command completed without output.'}</pre>
-          </article>{:else}<div class="empty">
+        {#if task.verification.length}
+          <p class="muted">
+            Every configured check must pass at the recorded output commit. A newer failure
+            invalidates any older pass.
+          </p>
+          <ul class="command-list">
+            {#each task.verification as verification}
+              {@const marker = roundRevisionLabel(verification.revision, task.output_commit)}
+              <li class="command-row">
+                <code class="command">{verification.command}</code>
+                <span class="review-badges"
+                  ><span class={'badge ' + (verification.success ? 'clean' : 'failed')}
+                    >{verification.success ? 'Passed' : 'Failed'}</span
+                  >{@render tone(marker.label, marker.tone)}</span
+                >
+                <p class="command-meta">
+                  Ran at <Sha
+                    value={verification.revision}
+                    label="Verified revision"
+                    oncopy={copy}
+                  /> · {relative(verification.created_at)}
+                </p>
+                <details class="command-output" open={!verification.success}>
+                  <summary>Command output</summary>
+                  <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be keyboard reachable) -->
+                  <pre
+                    role="region"
+                    aria-label={`Output of ${verification.command}`}
+                    tabindex="0">{verification.output || 'Command completed without output.'}</pre>
+                </details>
+              </li>
+            {/each}
+          </ul>
+        {:else}<div class="empty">
             <Icon name="check" size={32} />
             <h3>No verification results yet</h3>
             <p>All configured checks must pass on the reviewed revision.</p>
-          </div>{/each}
+          </div>{/if}
       {:else}<div class="activity-list">
           {#each events as event}<div class="activity-item">
-              <span class="activity-point"></span>
+              <span class={'activity-point ' + (event.kind === 'error' ? 'error-point' : '')}
+              ></span>
               <div>
                 <p>{event.message}</p>
                 <small>{event.kind.replaceAll('_', ' ')} · {relative(event.at)}</small>
@@ -388,7 +448,9 @@
         </div>{/if}
     </div>
     <div class="dialog-footer">
-      <span class="muted">Created {relative(task.created_at)}</span>
+      <span class="muted" aria-live="polite"
+        >{copyStatus || `Created ${relative(task.created_at)}`}</span
+      >
       <div class="actions">
         {#if task.pr_url}<a
             class="button primary"
@@ -415,14 +477,18 @@
       </div>
     </div>
   {:else if error}<div class="empty">
+      <Icon name="alert" size={32} />
       <h2 id="task-title">Task unavailable</h2>
       <p>
         The selected task ({id}) could not be loaded. Its saved link does not establish that the
         task is still available.
       </p>
+      <button class="button primary" onclick={() => load(true)}
+        ><Icon name="refresh" size={16} />Try again</button
+      >
     </div>
   {:else}<div class="empty">
       <span class="spinner"></span>
-      <p>Loading task…</p>
+      <p id="task-title">Loading task…</p>
     </div>{/if}
 </dialog>

@@ -25,7 +25,8 @@
     chevron: 'm9 5 7 7-7 7',
     alert: 'm12 3 10 18H2zM12 9v5M12 17h.01',
     menu: 'M3 6h18M3 12h18M3 18h18',
-    logout: 'M9 3H3v18h6M10 12h11m-4-4 4 4-4 4'
+    logout: 'M9 3H3v18h6M10 12h11m-4-4 4 4-4 4',
+    copy: 'M9 9h11v11H9zM15 9V4H4v11h5'
   };
 </script>
 

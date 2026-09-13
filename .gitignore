@@ -13,3 +13,4 @@
 *.db-wal
 /dist/
 __pycache__/
+/web/artifacts/
