@@ -49,6 +49,28 @@ returns **before** directory creation, permission changes, service locking, migr
 JSON. It conflicts with `--doctor`, `--print-config` and `--usage-report`. A missing
 state database or a missing cycle is an explicit error, never an empty successful export.
 
+### Exporting from a copy of saved state
+
+The minimum input is a directory containing `state.db` plus the cycle ID:
+
+```
+octomus-agent --data-dir <copy-dir> --export-run <cycle-id> > <private-dir>/run-<cycle-id>.json
+```
+
+Observed on synthetic databases (2026-09-13):
+
+- The database runs in WAL mode. **Copy `state.db`, `state.db-wal` and `state.db-shm`
+  together** when the sidecars exist. A copy of `state.db` alone opens successfully but
+  silently omits records still held in the WAL: a task written after the last checkpoint
+  disappears and the export reports "accepted but no task is linked". The exporter cannot
+  detect this; only a complete copy or the original directory is trustworthy.
+- A copy inside a directory the exporting user cannot write to fails explicitly with
+  `attempt to write a readonly database` (SQLite needs to create the WAL index). Copy into
+  a writable private directory first; the export itself still writes nothing.
+- Cycle IDs are matched exactly (case and whitespace).
+- Write the output only to a private location. `web/static`, `docs/` and any other Git
+  path are not export destinations; `web/artifacts/` is Git-ignored for local captures.
+
 ## Consistency and joins
 
 The cycle and its tasks are read inside **one** database transaction, so a cycle can

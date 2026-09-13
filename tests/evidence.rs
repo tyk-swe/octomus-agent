@@ -592,6 +592,28 @@ fn later_failures_missing_results_and_mismatched_revisions_are_not_passing() {
 }
 
 #[test]
+fn blocked_reason_uses_the_task_api_vocabulary() {
+    let c = cycle(
+        "cycle-a",
+        "execution",
+        json!([proposal("p1", "accepted")]),
+        json!([]),
+        json!([]),
+    );
+    let mut t = task("cycle-a", "p1");
+    t.status = octomus_agent::model::Status::Blocked;
+    t.blocked_reason = Some(octomus_agent::model::BlockedReason::VerificationFailed);
+    let saved = serde_json::to_value(&t).unwrap()["blocked_reason"].clone();
+    assert_eq!(saved, "verification_failed");
+    let (_temp, store, _path) = fixture(&[c], &[t]);
+    let value = store.run_evidence("cycle-a").unwrap().unwrap();
+    let exported = &find_proposal(&value, "p1")["linked_tasks"][0];
+    assert_eq!(exported["status"], "blocked");
+    // One saved reason, one spelling: the export must match what GET /api/tasks/{id} says.
+    assert_eq!(exported["blocked_reason"], saved);
+}
+
+#[test]
 fn no_configured_checks_is_not_configured_rather_than_passing() {
     let c = cycle(
         "cycle-a",

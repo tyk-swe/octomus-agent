@@ -562,9 +562,14 @@ fn task_evidence(task: &Task) -> TaskEvidence {
         status: task.status.clone(),
         branch: task.branch.clone(),
         attempts: task.attempts,
-        blocked_reason: task
-            .blocked_reason
-            .map(|reason| format!("{reason:?}").to_lowercase()),
+        // The same snake_case token the task API serializes, so one saved reason never
+        // has two spellings across the task view, the run evidence and the CLI export.
+        blocked_reason: task.blocked_reason.and_then(|reason| {
+            serde_json::to_value(reason)
+                .ok()?
+                .as_str()
+                .map(str::to_owned)
+        }),
         error_recorded: task.error.is_some(),
         created_at: task.created_at.clone(),
         updated_at: task.updated_at.clone(),
