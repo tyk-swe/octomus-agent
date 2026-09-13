@@ -6,6 +6,16 @@
  * observation, because the feature does not claim either.
  */
 import { test, expect, type Page, type Route } from '@playwright/test';
+import type {
+  CommandResult,
+  CommandState,
+  ProposalEvidence,
+  ProposalRow,
+  ReviewerVerdict,
+  ReviewRoundEvidence,
+  RunEvidenceV1,
+  TaskEvidence
+} from '../src/lib/types';
 
 const token = 'browser-test-operator-token-32-characters';
 const SYNTHETIC = 'Synthetic browser-test verdict text. Not a real reviewer statement.';
@@ -13,8 +23,6 @@ const now = new Date().toISOString();
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
 const Z = 'z'.repeat(40);
-
-type Json = Record<string, any>;
 
 async function login(page: Page) {
   await page.goto('/');
@@ -27,13 +35,13 @@ function trackWrites(page: Page) {
   const writes: { path: string; method: string }[] = [];
   page.on('request', (request) => {
     const path = new URL(request.url()).pathname;
-    if (path.startsWith('/api/') && request.method() !== 'GET' && path !== '/api/model-catalog')
+    if (path.startsWith('/api/') && request.method() !== 'GET')
       writes.push({ path, method: request.method() });
   });
   return writes;
 }
 
-function reviewer(slot: string, over: Json = {}): Json {
+function reviewer(slot: string, over: Partial<ReviewerVerdict> = {}): ReviewerVerdict {
   return {
     reviewer: slot,
     state: 'recorded',
@@ -44,7 +52,7 @@ function reviewer(slot: string, over: Json = {}): Json {
   };
 }
 
-function reviewRound(over: Json = {}): Json {
+function reviewRound(over: Partial<ReviewRoundEvidence> = {}): ReviewRoundEvidence {
   return {
     session_id: 'synthetic-review-session',
     revision: B,
@@ -58,7 +66,7 @@ function reviewRound(over: Json = {}): Json {
   };
 }
 
-function command(name: string, state: string, revision: string | null = B): Json {
+function command(name: string, state: CommandState, revision: string | null = B): CommandResult {
   return {
     command: name,
     state,
@@ -70,7 +78,7 @@ function command(name: string, state: string, revision: string | null = B): Json
   };
 }
 
-function taskEvidence(id: string, over: Json = {}): Json {
+function taskEvidence(id: string, over: Partial<TaskEvidence> = {}): TaskEvidence {
   return {
     id,
     cycle_id: 'synthetic-cycle',
@@ -82,7 +90,7 @@ function taskEvidence(id: string, over: Json = {}): Json {
     error_recorded: false,
     created_at: now,
     updated_at: now,
-    revisions: { source: A, comparison_base: A, default_branch: A, output: B },
+    revisions: { source: A, comparison_base: A, default_branch: 'main', output: B },
     sessions: [
       {
         id: 'synthetic-executor-session',
@@ -113,7 +121,7 @@ function taskEvidence(id: string, over: Json = {}): Json {
   };
 }
 
-function proposalEvidence(id: string, over: Json = {}): Json {
+function proposalEvidence(id: string, over: Partial<ProposalEvidence> = {}): ProposalEvidence {
   return {
     id,
     title: `Synthetic proposal ${id}`,
@@ -133,7 +141,10 @@ function proposalEvidence(id: string, over: Json = {}): Json {
   };
 }
 
-function runEvidence(over: Json = {}, cycle: Json = {}): Json {
+function runEvidence(
+  over: Partial<RunEvidenceV1> = {},
+  cycle: Partial<RunEvidenceV1['cycle']> = {}
+): RunEvidenceV1 {
   return {
     schema_version: 1,
     generated_at: now,
@@ -169,7 +180,12 @@ function runEvidence(over: Json = {}, cycle: Json = {}): Json {
 }
 
 /** One synthetic proposal summary row, as the paged proposal history returns them. */
-function proposalRow(id: string, cycleId: string, cycleNumber: number, over: Json = {}): Json {
+function proposalRow(
+  id: string,
+  cycleId: string,
+  cycleNumber: number,
+  over: Partial<ProposalRow> = {}
+): ProposalRow {
   return {
     id,
     cycle: cycleNumber,
@@ -192,7 +208,7 @@ function proposalRow(id: string, cycleId: string, cycleNumber: number, over: Jso
   };
 }
 
-async function serveProposals(page: Page, rows: Json[]) {
+async function serveProposals(page: Page, rows: ProposalRow[]) {
   await page.route('**/api/proposals?*', async (route: Route) => {
     await route.fulfill({
       json: { items: rows, next_cursor: null, counts: { all: rows.length } }
@@ -781,7 +797,25 @@ test('read-only inspection and the evidence download perform no writes', async (
   await page
     .getByRole('button', { name: 'Download evidence JSON (review before sharing)' })
     .click();
-  expect((await download).suggestedFilename()).toBe('octomus-run-evidence-cycle-1.json');
+  const artifact = await download;
+  expect(artifact.suggestedFilename()).toBe('octomus-run-evidence-cycle-1.json');
+  const stream = await artifact.createReadStream();
+  let contents = '';
+  for await (const chunk of stream!) contents += chunk.toString();
+  const exported = JSON.parse(contents);
+  const response = await page.request.get('/api/cycles/cycle-1/evidence', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const saved = await response.json();
+  expect({ ...exported, generated_at: null }).toEqual({ ...saved, generated_at: null });
+  expect(exported.review_required_before_sharing).toBe(true);
+  expect(JSON.stringify(exported)).not.toContain('verification_commands');
+  for (const proposal of exported.proposals)
+    for (const task of proposal.linked_tasks) {
+      expect(task).not.toHaveProperty('config');
+      expect(task).not.toHaveProperty('workspace');
+      expect(task).not.toHaveProperty('verification');
+    }
   // Nothing in the panel offers upload or public sharing.
   await expect(page.getByRole('button', { name: /share/i })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /upload/i })).toHaveCount(0);
@@ -839,7 +873,288 @@ test('retained evidence is labelled stale after a failed refresh and cleared on 
   await expect(page.getByText('Clean at the output commit', { exact: true })).toHaveCount(0, {
     timeout: 15000
   });
-  await expect(page.getByText('Unknown', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('unknown rather than passing').first()).toBeVisible();
+  await expect(page.getByLabel('Operator access token')).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(
+    page.getByText('Explain the local development workflow', { exact: true })
+  ).toHaveCount(0);
   expect(evidenceCalls).toBeGreaterThan(1);
 });
+
+test('multiple task matches require a choice; unavailable tasks and saved replacements stay explicit', async ({
+  page
+}) => {
+  await page.route('**/api/cycles/cycle-1/evidence', (route) =>
+    route.fulfill({
+      json: runEvidence(
+        {
+          proposals: [
+            proposalEvidence('rediscover-unverified-identity', {
+              linked_tasks: [
+                taskEvidence('missing-task'),
+                taskEvidence('task-blocked', { status: 'cancelled' })
+              ]
+            })
+          ]
+        },
+        { id: 'cycle-1' }
+      )
+    })
+  );
+  await page.route('**/api/tasks/missing-task', (route) =>
+    route.fulfill({ status: 404, json: { error: 'Synthetic missing task' } })
+  );
+  await page.route('**/api/tasks/task-blocked', async (route) => {
+    const body = await (await route.fetch()).json();
+    await route.fulfill({ json: { ...body, status: 'cancelled', superseded_by: ['task-active'] } });
+  });
+  const writes = trackWrites(page);
+  await login(page);
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  await expect(page.getByText('2 matches', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open task details' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open the superseded task' })).toHaveCount(0);
+  await page.getByRole('button', { name: /missing-task.*retries/ }).click();
+  await page.getByRole('button', { name: 'Open task details' }).click();
+  await expect(page.getByRole('heading', { name: 'Task unavailable' })).toBeVisible();
+  await expect(page.getByText('Loading task…')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close task details' }).click();
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  await page.getByRole('button', { name: /task-blocked.*retries/ }).click();
+  await expect(page.getByText('Supersession relationships are not included')).toBeVisible();
+  await page.getByRole('button', { name: 'Open task details' }).click();
+  await expect(page.getByText('Replacement tasks:')).toBeVisible();
+  await page.getByRole('button', { name: 'task-act', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await expect(
+    page.getByRole('heading', { name: 'Complete the repository setup flow' })
+  ).toBeVisible();
+  expect(writes).toEqual([]);
+});
+
+test('unknown output comparisons, unconfigured checks and duplicate verdicts do not become passes', async ({
+  page
+}) => {
+  await page.route('**/api/cycles/cycle-1/evidence', (route) =>
+    route.fulfill({
+      json: runEvidence(
+        {
+          proposals: [
+            proposalEvidence('unknown-output', {
+              reviewer_verdicts: [
+                reviewer('adversary-a', {
+                  state: 'duplicate',
+                  reason: null,
+                  note: 'Synthetic duplicate entries agree, but remain duplicated.'
+                }),
+                reviewer('adversary-b', {
+                  note: 'Synthetic batch is unconfirmed by a completed session.'
+                })
+              ],
+              linked_tasks: [
+                taskEvidence('unknown-output-task', {
+                  revisions: {
+                    source: A,
+                    comparison_base: A,
+                    default_branch: 'main',
+                    output: null
+                  },
+                  latest_review: {
+                    clean: true,
+                    clean_at_output_revision: false,
+                    rounds_recorded: 1,
+                    latest: reviewRound({ matches_output_revision: null })
+                  },
+                  required_commands: {
+                    state: 'not_configured',
+                    commands: [],
+                    all_passed_at_output_revision: false
+                  },
+                  pull_request: {
+                    number: null,
+                    url: 'https://github.com/fixture/repo/pull/77',
+                    source: 'saved_task_pr_reference'
+                  }
+                })
+              ]
+            })
+          ]
+        },
+        { id: 'cycle-1' }
+      )
+    })
+  );
+  await login(page);
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  await expect(page.getByText('Clean, output revision unknown', { exact: true })).toBeVisible();
+  await expect(page.getByText('Clean at another revision', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('No output commit recorded', { exact: true })).toBeVisible();
+  await expect(page.getByText('No checks configured', { exact: true })).toBeVisible();
+  await expect(page.getByText('Recorded PR · number unavailable', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open recorded PR', exact: true })).toHaveAttribute(
+    'href',
+    'https://github.com/fixture/repo/pull/77'
+  );
+  await expect(page.getByText('accepted (duplicated)', { exact: true })).toBeVisible();
+  await expect(page.getByText('Several verdicts are recorded')).toBeVisible();
+  await expect(page.getByText('Reviewer evidence incomplete', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('Synthetic batch is unconfirmed by a completed session.')
+  ).toBeVisible();
+});
+
+test('refresh preserves proposal choice, disclosures and scroll, and never substitutes a removed selection', async ({
+  page
+}) => {
+  await page.clock.install();
+  let calls = 0;
+  let remove = false;
+  const reason = 'Synthetic long reasoning. '.repeat(80);
+  await page.route('**/api/cycles/cycle-1/evidence', (route) => {
+    calls++;
+    const proposals = [
+      proposalEvidence('first'),
+      proposalEvidence('selected', { final_reason: reason })
+    ];
+    return route.fulfill({
+      json: runEvidence({ proposals: remove ? [proposals[0]] : proposals }, { id: 'cycle-1' })
+    });
+  });
+  await login(page);
+  await page.clock.runFor(12000);
+  expect(calls).toBe(0);
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  await page.getByLabel('Proposal', { exact: true }).selectOption('selected');
+  const summary = page.getByText(`Show the full final rationale (${reason.length} characters)`);
+  await summary.click();
+  const content = page.locator('.evidence-dialog .detail-content');
+  const scroll = await content.evaluate((el) => el.scrollTop);
+  await page.clock.runFor(10000);
+  await expect.poll(() => calls).toBe(2);
+  await expect(page.getByLabel('Proposal', { exact: true })).toHaveValue('selected');
+  await expect(page.getByText(reason, { exact: true })).toBeVisible();
+  expect(await content.evaluate((el) => el.scrollTop)).toBe(scroll);
+  remove = true;
+  await page.clock.runFor(10000);
+  await expect(page.getByText('The selected proposal (selected) is not recorded')).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Synthetic proposal first', exact: true })
+  ).toHaveCount(0);
+  await page.getByLabel('Proposal', { exact: true }).selectOption('first');
+  await expect(
+    page.getByRole('heading', { name: 'Synthetic proposal first', exact: true })
+  ).toBeVisible();
+});
+
+test('refresh never substitutes another task when a selected match disappears', async ({
+  page
+}) => {
+  await page.clock.install();
+  let remove = false;
+  await page.route('**/api/cycles/cycle-1/evidence', (route) =>
+    route.fulfill({
+      json: runEvidence(
+        {
+          proposals: [
+            proposalEvidence('multiple', {
+              linked_tasks: remove
+                ? [taskEvidence('remaining', { pull_request: null })]
+                : [taskEvidence('selected'), taskEvidence('remaining', { pull_request: null })]
+            })
+          ]
+        },
+        { id: 'cycle-1' }
+      )
+    })
+  );
+  await login(page);
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  await page.getByRole('button', { name: /selected.*retries/ }).click();
+  await expect(page.getByRole('link', { name: 'Open recorded PR #77' })).toBeVisible();
+  remove = true;
+  await page.clock.runFor(10000);
+  await expect(page.getByText('The selected task (selected) is no longer recorded')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open task details' })).toHaveCount(0);
+  await expect(page.getByText('No pull request recorded', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: /remaining.*retries/ }).click();
+  await expect(page.getByText('No pull request recorded', { exact: true })).toBeVisible();
+});
+
+test('slow task evidence finishes before another task revision triggers a refresh', async ({
+  page
+}, testInfo) => {
+  await page.clock.install();
+  const requests: Route[] = [];
+  let taskReads = 0;
+  await page.route('**/api/cycles/cycle-1/evidence', (route) => {
+    requests.push(route);
+  });
+  await page.route('**/api/tasks/task-reviewed', async (route) => {
+    const body = await (await route.fetch()).json();
+    await route.fulfill({ json: { ...body, updated_at: `synthetic-revision-${++taskReads}` } });
+  });
+  await login(page);
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Task queue', exact: true })
+    .click();
+  await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  await page.clock.runFor(12000);
+  expect(requests).toHaveLength(1);
+  expect(taskReads).toBe(1);
+  await requests[0].fulfill({ json: await (await requests[0].fetch()).json() });
+  await expect(page.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+  await page.clock.runFor(4000);
+  await expect.poll(() => requests.length).toBe(2);
+  await expect(page.getByText('Retained · stale')).toBeVisible();
+  await page.getByRole('button', { name: 'Close task details' }).click();
+  await requests[1].fulfill({ json: await (await requests[1].fetch()).json() });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+for (const source of ['run', 'task', 'state'] as const) {
+  test(`a ${source} 401 clears the private session, including delayed responses and next-login selection`, async ({
+    page
+  }) => {
+    await page.clock.install();
+    let reject = false;
+    let delayed: Route | undefined;
+    const endpoint =
+      source === 'run'
+        ? 'cycles/cycle-1/evidence'
+        : source === 'task'
+          ? 'tasks/task-reviewed'
+          : 'state';
+    await page.route(`**/api/${endpoint}`, async (route) => {
+      if (reject)
+        await route.fulfill({ status: 401, json: { error: 'Synthetic expired session' } });
+      else await route.fulfill({ json: await (await route.fetch()).json() });
+    });
+    await login(page);
+    await page.getByRole('button', { name: 'Inspect run' }).click();
+    await page.getByLabel('Proposal', { exact: true }).selectOption('task-reviewed');
+    await expect(page.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+    if (source === 'task') await page.getByRole('button', { name: 'Open task details' }).click();
+    if (source !== 'state')
+      await page.route('**/api/state', (route) => {
+        delayed = route;
+      });
+    reject = true;
+    await page.clock.runFor(12000);
+    await expect(page.getByLabel('Operator access token')).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByText('Clean at the output commit', { exact: true })).toHaveCount(0);
+    if (delayed) await delayed.fulfill({ json: await (await delayed.fetch()).json() });
+    if (source !== 'state') await page.unroute('**/api/state');
+    reject = false;
+    await page.getByLabel('Operator access token').fill(token);
+    await page.getByRole('button', { name: 'Open dashboard' }).click();
+    await expect(page.getByRole('button', { name: 'Inspect run' })).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Inspect run' }).click();
+    await expect(page.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
+  });
+}

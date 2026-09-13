@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { api, ApiError, setToken, relative, safeUrl } from '$lib/api';
+  import { api, setToken, onUnauthorized, relative, safeUrl } from '$lib/api';
   import type {
     Snapshot,
     TaskRow,
@@ -65,6 +65,7 @@
   let listGeneration = 0;
   let listRequest: AbortController | null = null;
   let lastScope = '';
+  let sessionGeneration = 0;
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
   let latestCycle = $derived(data?.cycles[0]);
@@ -140,7 +141,9 @@
     }
   }
   function loadCycles(more = false) {
+    const currentSession = sessionGeneration;
     const request = cycleRequest.then(async () => {
+      if (!connected || currentSession !== sessionGeneration) return;
       if (more && cycleCursor === null) return;
       let before = more ? cycleCursor : null;
       const oldest = more ? undefined : cycleRows.at(-1)?.id;
@@ -159,6 +162,7 @@
     return request;
   }
   async function loadProposal(p: ProposalRow) {
+    const currentSession = sessionGeneration;
     p.detailRequested = true;
     const revision = p.content_revision;
     if (p.detail || p.detailLoading === revision) return;
@@ -168,11 +172,16 @@
         `/proposals/${encodeURIComponent(p.cycle_id)}/${encodeURIComponent(p.id)}`
       );
       // A response for an older summary must not overwrite newer evidence.
-      if (p.content_revision === revision && detail.content_revision === revision) {
+      if (
+        currentSession === sessionGeneration &&
+        p.content_revision === revision &&
+        detail.content_revision === revision
+      ) {
         p.detail = detail;
       }
     } catch (e) {
-      if (p.content_revision === revision) error = (e as Error).message;
+      if (currentSession === sessionGeneration && p.content_revision === revision)
+        error = (e as Error).message;
     } finally {
       if (p.detailLoading === revision) p.detailLoading = undefined;
     }
@@ -188,6 +197,7 @@
   }
   async function refresh() {
     if (!connected || refreshing) return;
+    const currentSession = sessionGeneration;
     refreshing = true;
     try {
       data = await api<Snapshot>('/state');
@@ -196,10 +206,9 @@
       connectionError = '';
       lastUpdated = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch (e) {
-      connectionError = (e as Error).message;
-      if (e instanceof ApiError && e.status === 401) connected = false;
+      if (connected && currentSession === sessionGeneration) connectionError = (e as Error).message;
     } finally {
-      refreshing = false;
+      if (currentSession === sessionGeneration) refreshing = false;
     }
   }
   async function login() {
@@ -221,13 +230,20 @@
     }
   }
   onMount(() => {
+    const unsubscribe = onUnauthorized(() => {
+      if (!connected) return;
+      disconnect();
+      error = 'Session expired. Connect again to inspect private records.';
+    });
     const timer = setInterval(refresh, 4000);
     return () => {
       clearInterval(timer);
-      listRequest?.abort();
+      unsubscribe();
+      disconnect();
     };
   });
   async function navigate(id: string) {
+    const currentSession = sessionGeneration;
     view = id;
     search = '';
     filter = 'all';
@@ -235,7 +251,7 @@
       try {
         await loadCycles();
       } catch (e) {
-        error = (e as Error).message;
+        if (currentSession === sessionGeneration) error = (e as Error).message;
       }
     }
     mobileOpen = false;
@@ -260,11 +276,35 @@
     }
   }
   function disconnect() {
+    sessionGeneration++;
     connected = false;
     data = null;
     setToken('');
     selected = null;
     evidence = null;
+    listGeneration++;
+    listRequest?.abort();
+    refreshing = false;
+    listLoading = false;
+    filtered = [];
+    proposals = [];
+    prRows = [];
+    cycleRows = [];
+    cycleCursor = null;
+    cycleRequest = Promise.resolve();
+    decisionCounts = {};
+    listBefore = null;
+    listNext = null;
+    previousPages = [];
+    proposalCycle = 'all';
+    proposalFilter = 'all';
+    search = '';
+    filter = 'all';
+    view = 'overview';
+    mobileOpen = false;
+    lastUpdated = '';
+    error = '';
+    connectionError = '';
   }
 </script>
 

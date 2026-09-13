@@ -4,6 +4,8 @@
   import { routeLabel } from './routes';
   import type { Task, Event, RunEvidenceV1, TaskEvidence } from './types';
   import Icon from './Icon.svelte';
+  import EvidenceText from './EvidenceText.svelte';
+  import EvidenceFact from './EvidenceFact.svelte';
   import {
     checksVerdict,
     findTaskEvidence,
@@ -13,8 +15,7 @@
     reviewVerdict,
     roundRevisionLabel,
     shortCommit,
-    type Tone,
-    type Verdict
+    type Tone
   } from './evidence';
   let {
     id,
@@ -31,7 +32,8 @@
     events = $state<Event[]>([]);
   let evidence = $state<TaskEvidence | null>(null),
     evidenceError = $state(''),
-    evidenceStale = $state(false);
+    evidenceStale = $state(false),
+    taskStale = $state(false);
   let loading = false;
   let generation = 0;
   let request: AbortController | null = null;
@@ -40,10 +42,12 @@
   let evidenceRequest: AbortController | null = null;
   /**
    * Recorded evidence is fetched per (cycle, task, task revision) and skipped while that
-   * key is unchanged, so the 4s task poll never re-downloads the run's evidence.
+   * key is unchanged. Awaiting it keeps slow evidence reads from being restarted on
+   * every task poll, and preserves a coherent evidence snapshot during refresh.
    */
   async function loadEvidence(cycleId: string, key: string) {
     if (evidenceKey === key) return;
+    evidenceStale = evidence !== null;
     evidenceKey = key;
     const current = ++evidenceGeneration;
     evidenceRequest?.abort();
@@ -93,13 +97,17 @@
         task = nextTask;
         events = nextEvents;
         error = '';
-        void loadEvidence(
+        taskStale = false;
+        await loadEvidence(
           nextTask.cycle_id,
           `${nextTask.cycle_id}:${id}:${nextTask.updated_at}:${nextTask.status}`
         );
       }
     } catch (e) {
-      if (current === generation && !controller.signal.aborted) error = (e as Error).message;
+      if (current === generation && !controller.signal.aborted) {
+        error = (e as Error).message;
+        taskStale = task !== null;
+      }
     } finally {
       if (current === generation) loading = false;
     }
@@ -118,21 +126,11 @@
   });
   // Recorded result, taken from the server's normalized statuses. When evidence is
   // absent these stay explicitly unknown instead of falling back to optimistic booleans.
-  let outcome = $derived(
-    evidence
-      ? outcomeVerdict(evidence)
-      : task
-        ? outcomeVerdict({
-            status: task.status,
-            blocked_reason: task.blocked_reason,
-            error_recorded: !!task.error
-          })
-        : null
-  );
+  let outcome = $derived(evidence ? outcomeVerdict(evidence) : null);
   let review = $derived(reviewVerdict(evidence));
   let checks = $derived(checksVerdict(evidence));
   let delivery = $derived(prVerdict(evidence));
-  let outputSha = $derived(evidence ? evidence.revisions.output : (task?.output_commit ?? null));
+  let outputSha = $derived(evidence?.revisions.output ?? null);
   async function action(value: string) {
     busy = true;
     error = '';
@@ -149,12 +147,6 @@
 </script>
 
 {#snippet tone(label: string, value: Tone)}<span class={'badge ' + value}>{label}</span>{/snippet}
-{#snippet fact(label: string, verdict: Verdict)}<div>
-    <dt>{label}</dt>
-    <dd>
-      {@render tone(verdict.label, verdict.tone)}<small>{verdict.detail}</small>
-    </dd>
-  </div>{/snippet}
 
 <dialog
   bind:this={dialog}
@@ -171,14 +163,16 @@
       onclick={onclose}><Icon name="close" /></button
     >
   </div>
-  {#if error}<div class="notice error" role="alert">{error}</div>{/if}
+  {#if error}<div class="notice error" role="alert">
+      {taskStale ? 'Retained task details · stale. ' : ''}{error}
+    </div>{/if}
   {#if task}
     <div class="task-title">
       <span class={'badge ' + task.status}>{task.status}</span>
       <h2 id="task-title">{task.proposal.title}</h2>
       <p>
         <span class="tier">{task.proposal.tier}</span>
-        {routeLabel(task.route)}
+        Requested route: {routeLabel(task.route)}
       </p>
     </div>
     <div class="tabs" role="tablist" aria-label="Task information">
@@ -192,6 +186,47 @@
         >{/each}
     </div>
     <div class="detail-content" role="tabpanel" aria-label={tab}>
+      <section class="result-summary" aria-label="Recorded result and evidence">
+        <div class="row-between">
+          <h3>Recorded result</h3>
+          {#if evidenceStale || taskStale}<span class="badge blocked">Retained · stale</span>{/if}
+        </div>
+        {#if evidenceError}<p class="muted">
+            {evidenceStale
+              ? `Showing the last received evidence, which may now be out of date. ${evidenceError}`
+              : `Recorded evidence is unavailable, so review and check standing stay unknown rather than assumed. ${evidenceError}`}
+          </p>{/if}
+        <dl class="detail-grid">
+          <EvidenceFact
+            label="Recorded outcome"
+            verdict={outcome ?? {
+              label: 'Unknown',
+              tone: 'cancelled',
+              detail: 'Recorded outcome evidence has not loaded.'
+            }}
+          />
+          <div>
+            <dt>Output SHA</dt>
+            <dd>
+              <code>{evidence ? shortCommit(outputSha) : 'Unknown'}</code><small
+                >The commit this task recorded as its output.</small
+              >
+            </dd>
+          </div>
+          <EvidenceFact label="Review at that SHA" verdict={review} />
+          <EvidenceFact label="Configured check results" verdict={checks} />
+          <div>
+            <dt>Recorded PR</dt>
+            <dd>
+              {@render tone(delivery.label, delivery.tone)}{#if evidence?.pull_request?.url}<a
+                  href={safeUrl(evidence.pull_request.url)}
+                  target="_blank"
+                  rel="noreferrer">Open on GitHub<Icon name="external" size={13} /></a
+                >{/if}<small>{delivery.detail}</small>
+            </dd>
+          </div>
+        </dl>
+      </section>
       {#if task.error}<div class="notice error">
           <Icon name="alert" size={18} /><span>{task.error}</span>
         </div>{/if}
@@ -214,40 +249,6 @@
             ? 'Workspace discarded'
             : 'Workspace retained until cleanup'}
         </p>{/if}
-      <section class="result-summary" aria-label="Recorded result and evidence">
-        <div class="row-between">
-          <h3>Recorded result</h3>
-          {#if evidenceStale}<span class="badge blocked">Retained · stale</span>{/if}
-        </div>
-        {#if evidenceError}<p class="muted">
-            {evidenceStale
-              ? `Showing the last received evidence, which may now be out of date. ${evidenceError}`
-              : `Recorded evidence is unavailable, so review and check standing stay unknown rather than assumed. ${evidenceError}`}
-          </p>{/if}
-        <dl class="detail-grid">
-          {#if outcome}{@render fact('Recorded outcome', outcome)}{/if}
-          <div>
-            <dt>Output SHA</dt>
-            <dd>
-              <code>{shortCommit(outputSha)}</code><small
-                >The commit this task recorded as its output.</small
-              >
-            </dd>
-          </div>
-          {@render fact('Review at that SHA', review)}
-          {@render fact('Configured check results', checks)}
-          <div>
-            <dt>Recorded PR</dt>
-            <dd>
-              {@render tone(delivery.label, delivery.tone)}{#if task.pr_url}<a
-                  href={safeUrl(task.pr_url)}
-                  target="_blank"
-                  rel="noreferrer">Open on GitHub<Icon name="external" size={13} /></a
-                >{/if}<small>{delivery.detail}</small>
-            </dd>
-          </div>
-        </dl>
-      </section>
       {#if tab === 'Overview'}
         <details class="operating-limits">
           <summary>Effective operating limits</summary>
@@ -309,7 +310,7 @@
               <h3>{session.role}</h3>
               <span class={'badge ' + session.status}>{session.status}</span>
             </div>
-            <p>{routeLabel(session.route)}</p>
+            <p>Requested route: {routeLabel(session.route)}</p>
             <code>{session.id}</code><small>{relative(session.started_at)}</small
             >{#if session.id === task.repair_session}<div class="inline-note">
                 This repair context is reused across rounds.
@@ -337,7 +338,10 @@
                 )}</span
               >
             </div>
-            <p>{round.result.summary.trim() || 'No review summary was recorded for this round.'}</p>
+            {#if round.result.summary.trim()}<EvidenceText
+                label="Review summary"
+                value={round.result.summary}
+              />{:else}<p>No review summary was recorded for this round.</p>{/if}
             <small
               >Full change set · {round.comparison_base.slice(0, 8)} → {round.revision.slice(
                 0,
@@ -347,7 +351,7 @@
                 <span class="tier">{finding.priority}</span>
                 <h4>{finding.title}</h4>
                 <code>{finding.file}</code>
-                <p>{finding.detail}</p>
+                <EvidenceText label="Finding detail" value={finding.detail} />
               </div>{/each}
           </article>{:else}<div class="empty">
             <Icon name="shield" size={32} />
@@ -409,6 +413,13 @@
             )[value]}
           </button>{/each}
       </div>
+    </div>
+  {:else if error}<div class="empty">
+      <h2 id="task-title">Task unavailable</h2>
+      <p>
+        The selected task ({id}) could not be loaded. Its saved link does not establish that the
+        task is still available.
+      </p>
     </div>
   {:else}<div class="empty">
       <span class="spinner"></span>

@@ -129,8 +129,13 @@ export function roundRevisionLabel(
   revision: string,
   outputCommit: string | null
 ): { label: string; tone: Tone } {
-  if (!outputCommit) return { label: 'No output commit recorded', tone: 'cancelled' };
-  return revision === outputCommit
+  return revisionMatchLabel(outputCommit ? revision === outputCommit : null);
+}
+
+/** The run view uses the server's normalized comparison, including null. */
+export function revisionMatchLabel(matches: boolean | null): { label: string; tone: Tone } {
+  if (matches === null) return { label: 'No output commit recorded', tone: 'cancelled' };
+  return matches
     ? { label: 'At the recorded output commit', tone: 'clean' }
     : { label: 'Not the recorded output commit', tone: 'blocked' };
 }
@@ -193,9 +198,15 @@ export function reviewVerdict(evidence: TaskEvidence | null): Verdict {
     };
   if (review.clean)
     return {
-      label: 'Clean at another revision',
+      label:
+        review.latest.matches_output_revision === null
+          ? 'Clean, output revision unknown'
+          : 'Clean at another revision',
       tone: 'blocked',
-      detail: `The latest of ${rounds} is clean but did not run at the recorded output commit.`
+      detail:
+        review.latest.matches_output_revision === null
+          ? `The latest of ${rounds} is clean, but no output commit is recorded for comparison.`
+          : `The latest of ${rounds} is clean but did not run at the recorded output commit.`
     };
   const verdict = latestRoundVerdict(review.latest);
   return { ...verdict, detail: `${verdict.detail} ${rounds}.` };
@@ -222,9 +233,9 @@ function latestRoundVerdict(latest: ReviewRoundEvidence): Verdict {
       detail: 'The latest recorded review round completed with a blank summary, so it is not clean.'
     };
   return {
-    label: 'Clean, revision unknown',
+    label: 'Review standing unknown',
     tone: 'blocked',
-    detail: 'The latest round is clean but cannot be compared to an output commit.'
+    detail: 'The server has not reported this review as clean.'
   };
 }
 
@@ -278,14 +289,14 @@ export function checksVerdict(evidence: TaskEvidence | null): Verdict {
 export function prVerdict(evidence: TaskEvidence | null): Verdict {
   if (!evidence) return UNKNOWN;
   const pr = evidence.pull_request;
-  if (!pr || pr.number === null)
+  if (!pr)
     return {
       label: 'No pull request recorded',
       tone: 'cancelled',
       detail: 'No pull-request reference is saved for this task.'
     };
   return {
-    label: `#${pr.number}`,
+    label: pr.number === null ? 'Recorded PR · number unavailable' : `#${pr.number}`,
     tone: 'clean',
     detail: `Saved task reference (${pr.source}). Delivery, not merge, and not a fresh observation of the GitHub head.`
   };
