@@ -326,7 +326,7 @@ function demoProposalRows() {
 }
 
 async function installDemo(page: Page) {
-  const state = { evidence: 'ok' as 'ok' | 'fail' };
+  const state = { evidence: 'ok' as 'ok' | 'fail' | 'missing' };
   await page.route('**/api/state', async (routeRequest: Route) => {
     const response = await routeRequest.fetch();
     const snapshot = await response.json();
@@ -391,7 +391,12 @@ async function installDemo(page: Page) {
   });
   await serveProposals(page, demoProposalRows());
   await page.route('**/api/cycles/cycle-1/evidence', async (routeRequest: Route) => {
-    if (state.evidence === 'fail')
+    if (state.evidence === 'missing')
+      await routeRequest.fulfill({
+        status: 404,
+        json: { error: 'Synthetic retained cycle unavailable' }
+      });
+    else if (state.evidence === 'fail')
       await routeRequest.fulfill({ status: 503, json: { error: 'Service returned 503' } });
     else await routeRequest.fulfill({ json: demoRun() });
   });
@@ -502,6 +507,44 @@ for (const viewport of viewports) {
     await expectAccessible(page, 'task evidence');
     await page.getByRole('tab', { name: 'Verification' }).click();
     await captureDialog(page, viewport.width, viewport.height, `${prefix}-task-verification`);
+    await page.getByRole('button', { name: 'Close task details' }).click();
+
+    // Task evidence errors: retained missing cycle, explicit retry focus, then recovery.
+    demo.evidence = 'missing';
+    await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+    await expect(
+      page.getByText('Synthetic retained cycle unavailable', { exact: false })
+    ).toBeVisible();
+    const retryEvidence = page.getByRole('button', { name: 'Retry evidence' });
+    await retryEvidence.focus();
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Tab');
+    await expect(retryEvidence).toBeFocused();
+    await expect(retryEvidence).toHaveCSS('outline-style', 'solid');
+    if (mobile) {
+      const bounds = await retryEvidence.boundingBox();
+      expect(bounds!.width).toBeGreaterThanOrEqual(44);
+      expect(bounds!.height).toBeGreaterThanOrEqual(44);
+    }
+    await captureDialog(page, viewport.width, viewport.height, `${prefix}-task-missing-focus`);
+    await expectNoHorizontalOverflow(page, 'task missing');
+    await expectAccessible(page, 'task missing');
+    demo.evidence = 'ok';
+    await page.getByRole('button', { name: 'Retry evidence' }).click();
+    await expect(page.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+    await page.route('**/api/tasks/task-reviewed', async (request) => {
+      const task = await (await request.fetch()).json();
+      await request.fulfill({ json: { ...task, updated_at: 'synthetic-changed-revision' } });
+    });
+    demo.evidence = 'fail';
+    await expect(page.getByText('Retained · stale')).toBeVisible({ timeout: 10000 });
+    await captureDialog(page, viewport.width, viewport.height, `${prefix}-task-stale`);
+    await expectNoHorizontalOverflow(page, 'task stale');
+    await page.getByRole('button', { name: 'Close task details' }).click();
+    await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+    await expect(page.getByText('Service returned 503', { exact: false })).toBeVisible();
+    await captureDialog(page, viewport.width, viewport.height, `${prefix}-task-error`);
+    await expectNoHorizontalOverflow(page, 'task error');
     await page.getByRole('button', { name: 'Close task details' }).click();
 
     // Failed initial request: the panel must explain the failure rather than show nothing.

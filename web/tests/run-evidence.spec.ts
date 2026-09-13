@@ -1011,3 +1011,93 @@ test('a failed initial evidence request explains itself and offers a retry', asy
   await dialog.getByRole('button', { name: 'Try again' }).click();
   await expect(dialog.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
 });
+
+for (const recentMatches of [true, false]) {
+  test(`overview labels the recent window with matches=${recentMatches} and opens complete evidence`, async ({
+    page
+  }) => {
+    let evidenceCalls = 0;
+    await page.route('**/api/state', async (route) => {
+      const snapshot = await (await route.fetch()).json();
+      snapshot.tasks = recentMatches
+        ? snapshot.tasks.filter((task: { id: string }) => task.id === 'task-active')
+        : [];
+      await route.fulfill({ json: snapshot });
+    });
+    await page.route('**/api/cycles/cycle-1/evidence', async (route) => {
+      evidenceCalls++;
+      await route.fulfill({ json: await (await route.fetch()).json() });
+    });
+    await login(page);
+    await expect(page.getByText('Recent window only, not cycle totals.')).toBeVisible();
+    await expect(page.getByText('No tasks are recorded for this run.')).toHaveCount(0);
+    if (recentMatches)
+      await expect(
+        page.getByRole('list', { name: 'Recent tasks from this run', exact: true })
+      ).toBeVisible();
+    else await expect(page.getByText('Older tasks may exist.')).toBeVisible();
+    expect(evidenceCalls).toBe(0);
+    await page.getByRole('button', { name: 'Inspect run' }).click();
+    await page.getByLabel('Proposal', { exact: true }).selectOption('task-reviewed');
+    await expect(page.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+    expect(evidenceCalls).toBe(1);
+  });
+}
+
+for (const status of [404, 503]) {
+  test(`task evidence retains ${status} until explicit retry or a saved revision changes`, async ({
+    page,
+    isMobile
+  }) => {
+    await page.clock.install();
+    let calls = 0;
+    let revision = 1;
+    let fail = true;
+    let pending: Route | undefined;
+    let hold = false;
+    await page.route('**/api/tasks/task-reviewed', async (route) => {
+      const task = await (await route.fetch()).json();
+      await route.fulfill({ json: { ...task, updated_at: `synthetic-revision-${revision}` } });
+    });
+    await page.route('**/api/cycles/cycle-1/evidence', async (route) => {
+      calls++;
+      if (hold) {
+        pending = route;
+        return;
+      }
+      if (fail) await route.fulfill({ status, json: { error: `Synthetic evidence ${status}` } });
+      else await route.fulfill({ json: await (await route.fetch()).json() });
+    });
+    await login(page);
+    if (isMobile) await page.getByRole('button', { name: 'Toggle navigation' }).click();
+    await page
+      .getByRole('navigation')
+      .getByRole('button', { name: 'Task queue', exact: true })
+      .click();
+    await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+    await expect(page.getByText(`Synthetic evidence ${status}`, { exact: false })).toBeVisible();
+    await page.clock.runFor(20000);
+    expect(calls).toBe(1);
+    hold = true;
+    await page.getByRole('button', { name: 'Retry evidence', exact: true }).click();
+    await expect.poll(() => calls).toBe(2);
+    await expect(page.getByRole('button', { name: 'Retrying evidence…' })).toBeDisabled();
+    await page.clock.runFor(12000);
+    expect(calls).toBe(2);
+    await pending!.fulfill({ json: await (await pending!.fetch()).json() });
+    hold = false;
+    await expect(page.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+    revision++;
+    await page.clock.runFor(4000);
+    await expect(page.getByText('Retained · stale')).toBeVisible();
+    await expect.poll(() => calls).toBe(3);
+    await page.clock.runFor(16000);
+    expect(calls).toBe(3);
+    fail = false;
+    revision++;
+    await page.clock.runFor(4000);
+    await expect(page.getByText('Retained · stale')).toHaveCount(0);
+    await expect(page.getByText(`Synthetic evidence ${status}`, { exact: false })).toHaveCount(0);
+    expect(calls).toBe(4);
+  });
+}

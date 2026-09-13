@@ -728,9 +728,9 @@
                   <small>{planning.detail}</small>
                 </div>
                 <div>
-                  <span class="eyebrow">TASKS FROM THIS RUN</span>
+                  <span class="eyebrow">RECENT TASKS FROM THIS RUN</span>
                   {#if runTasks.length}
-                    <ul class="outcome-counts" aria-label="Tasks from this run">
+                    <ul class="outcome-counts" aria-label="Recent tasks from this run">
                       {#each runTasks as entry (entry.label)}<li>
                           <strong>{entry.count}</strong><span class={'badge ' + entry.tone}
                             >{entry.label}</span
@@ -744,9 +744,13 @@
                     <p class="muted">
                       {cycle.mode === 'audit'
                         ? 'Audits record recommendations and queue no tasks.'
-                        : 'No tasks are recorded for this run.'}
+                        : 'No tasks from this run appear in the recent window. Older tasks may exist.'}
                     </p>
                   {/if}
+                  <small
+                    >Recent window only, not cycle totals. Inspect run for complete retained run
+                    evidence.</small
+                  >
                 </div>
               </div>
               {#if cycle.error}<div class="notice error">

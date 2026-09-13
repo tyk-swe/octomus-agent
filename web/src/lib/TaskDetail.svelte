@@ -35,6 +35,7 @@
   let evidence = $state<TaskEvidence | null>(null),
     evidenceError = $state(''),
     evidenceStale = $state(false),
+    evidenceLoading = $state(false),
     taskStale = $state(false);
   let loading = false;
   let generation = 0;
@@ -48,8 +49,9 @@
    * key is unchanged. Awaiting it keeps slow evidence reads from being restarted on
    * every task poll, and preserves a coherent evidence snapshot during refresh.
    */
-  async function loadEvidence(cycleId: string, key: string) {
-    if (evidenceKey === key) return;
+  async function loadEvidence(cycleId: string, key: string, force = false) {
+    if (evidenceKey === key && !force) return;
+    evidenceLoading = true;
     evidenceStale = evidence !== null;
     evidenceKey = key;
     const current = ++evidenceGeneration;
@@ -75,8 +77,10 @@
       // A rejected session must not keep displaying the previous session's records.
       if (e instanceof ApiError && e.status === 401) evidence = null;
       evidenceStale = evidence !== null;
-      // Allow the next poll to retry rather than pinning the failed key.
-      evidenceKey = '';
+      // Retain failures for this identity/revision, including cycles removed by retention.
+      // Retry explicitly or fetch again when the saved task changes.
+    } finally {
+      if (current === evidenceGeneration) evidenceLoading = false;
     }
   }
   async function load(force = false) {
@@ -207,7 +211,13 @@
             {evidenceStale
               ? `Showing the last received evidence, which may now be out of date. ${evidenceError}`
               : `Recorded evidence is unavailable, so review and check standing stay unknown rather than assumed. ${evidenceError}`}
-          </p>{/if}
+          </p>
+          <button
+            class="button small"
+            disabled={evidenceLoading}
+            onclick={() => task && loadEvidence(task.cycle_id, evidenceKey, true)}
+            >{evidenceLoading ? 'Retrying evidence…' : 'Retry evidence'}</button
+          >{/if}
         <dl class="detail-grid">
           <EvidenceFact
             label="Recorded outcome"
