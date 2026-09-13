@@ -1,0 +1,389 @@
+{
+  "public_schema_version": 1,
+  "mode": "fixture",
+  "evidence": {
+    "schema_version": 1,
+    "kind": "recorded_review_check_evidence",
+    "generated_at": "2026-09-13T12:00:00Z",
+    "review_required_before_sharing": true,
+    "review_requirement": "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.",
+    "limitations": [
+      "Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
+      "Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
+      "Deferred is not rejected.",
+      "A recorded pull request describes delivery, not merge. Published is not merged.",
+      "Audit acceptance is a recommendation. Audit cycles never create an execution queue, so an accepted audit proposal has no linked task by design.",
+      "Saved session routes are requested routes. Runtime model identity is not independently reported here.",
+      "Costs, delivery time and any replay timeline are not inferred from these records.",
+      "Zero or multiple task matches are preserved as recorded. No single task is selected on the caller's behalf.",
+      "Free text carried here (proposal problem, benefit, scope and evidence, and code-review findings) is model-authored and still requires manual review before sharing."
+    ],
+    "gaps": [
+      "Synthetic example includes missing, duplicated and inconsistent records; it is not a complete success story."
+    ],
+    "cycle": {
+      "id": "synthetic-cycle",
+      "number": 1,
+      "mode": "execution",
+      "status": "completed",
+      "started_at": "2026-09-13T12:00:00Z",
+      "completed_at": "2026-09-13T12:00:00Z",
+      "repository": "synthetic-owner/synthetic-repository",
+      "grounding_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "planning": {
+        "status": "completed",
+        "planning_finished": true,
+        "proposal_count": 4,
+        "decisions": {
+          "accepted": 2,
+          "deferred": 1,
+          "rejected": 1
+        },
+        "creates_execution_queue": true,
+        "error_recorded": false,
+        "reviewer_batches_saved": 2
+      }
+    },
+    "proposals": [
+      {
+        "id": "synthetic-clear",
+        "title": "Clarify a recorded result",
+        "target": "main",
+        "tier": "S",
+        "category": "correctness",
+        "problem": "Synthetic problem: a saved result can be difficult to inspect.",
+        "benefit": "Synthetic benefit: make missing evidence explicit.",
+        "scope": "Synthetic scope: a small display change with local fixtures.",
+        "evidence": ["Synthetic reference: src/example.rs"],
+        "final_decision": "accepted",
+        "final_reason": "Synthetic final decision: accepted.",
+        "reviewer_verdicts": [
+          {
+            "reviewer": "adversary-a",
+            "state": "recorded",
+            "decision": "accepted",
+            "reason": "Synthetic reviewer statement: a bounded improvement with testable behavior.",
+            "note": null
+          },
+          {
+            "reviewer": "adversary-b",
+            "state": "recorded",
+            "decision": "accepted",
+            "reason": "Synthetic reviewer statement: a bounded improvement with testable behavior.",
+            "note": null
+          }
+        ],
+        "linked_tasks": [
+          {
+            "id": "synthetic-delivered",
+            "cycle_id": "synthetic-cycle",
+            "proposal_id": "synthetic-clear",
+            "status": "published",
+            "branch": "tyk/synthetic-delivered",
+            "attempts": 0,
+            "blocked_reason": null,
+            "error_recorded": false,
+            "created_at": "2026-09-13T12:00:00Z",
+            "updated_at": "2026-09-13T12:00:00Z",
+            "gaps": [],
+            "revisions": {
+              "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "default_branch": "main",
+              "output": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "sessions": [
+              {
+                "id": "synthetic-delivered-session",
+                "role": "executor",
+                "status": "completed",
+                "requested_route": {
+                  "backend": "codex",
+                  "model": "synthetic-requested-model",
+                  "effort": "medium"
+                },
+                "started_at": "2026-09-13T12:00:00Z"
+              }
+            ],
+            "latest_review": {
+              "rounds_recorded": 1,
+              "clean": true,
+              "clean_at_output_revision": true,
+              "latest": {
+                "session_id": "synthetic-delivered-review",
+                "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "created_at": "2026-09-13T12:00:00Z",
+                "completed": true,
+                "summary_present": true,
+                "matches_output_revision": true,
+                "findings": []
+              }
+            },
+            "required_commands": {
+              "state": "recorded",
+              "all_passed_at_output_revision": true,
+              "commands": [
+                {
+                  "command": "cargo test --locked --test synthetic_example",
+                  "state": "passed",
+                  "results_recorded": 1,
+                  "latest_success": true,
+                  "latest_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "latest_created_at": "2026-09-13T12:00:00Z",
+                  "matches_output_revision": true
+                }
+              ]
+            },
+            "pull_request": {
+              "number": 12,
+              "url": "https://github.com/synthetic-owner/synthetic-repository/pull/12",
+              "source": "recorded_task_reference"
+            }
+          }
+        ],
+        "gaps": []
+      },
+      {
+        "id": "synthetic-deferred",
+        "title": "Wait for stronger evidence",
+        "target": "main",
+        "tier": "S",
+        "category": "correctness",
+        "problem": "Synthetic problem: a saved result can be difficult to inspect.",
+        "benefit": "Synthetic benefit: make missing evidence explicit.",
+        "scope": "Synthetic scope: a small display change with local fixtures.",
+        "evidence": ["Synthetic reference: src/example.rs"],
+        "final_decision": "deferred",
+        "final_reason": "Synthetic rationale: defer until the scope is grounded. Deferred is not rejected.",
+        "reviewer_verdicts": [
+          {
+            "reviewer": "adversary-a",
+            "state": "recorded",
+            "decision": "accepted",
+            "reason": "Synthetic reviewer statement: a bounded improvement with testable behavior.",
+            "note": null
+          },
+          {
+            "reviewer": "adversary-b",
+            "state": "recorded",
+            "decision": "deferred",
+            "reason": "Synthetic reviewer statement: a bounded improvement with testable behavior.",
+            "note": null
+          }
+        ],
+        "linked_tasks": [],
+        "gaps": []
+      },
+      {
+        "id": "synthetic-ambiguous",
+        "title": "Inspect an inconsistent saved outcome",
+        "target": "main",
+        "tier": "S",
+        "category": "correctness",
+        "problem": "Synthetic problem: a saved result can be difficult to inspect.",
+        "benefit": "Synthetic benefit: make missing evidence explicit.",
+        "scope": "Synthetic scope: a small display change with local fixtures.",
+        "evidence": ["Synthetic reference: src/example.rs"],
+        "final_decision": "rejected",
+        "final_reason": "Synthetic final decision: rejected.",
+        "reviewer_verdicts": [
+          {
+            "reviewer": "adversary-a",
+            "state": "duplicate",
+            "decision": null,
+            "reason": null,
+            "note": "Synthetic duplicate verdicts disagree: accepted, rejected. No single verdict selected."
+          },
+          {
+            "reviewer": "adversary-b",
+            "state": "recorded",
+            "decision": "rejected",
+            "reason": "Synthetic reviewer statement: a bounded improvement with testable behavior.",
+            "note": null
+          }
+        ],
+        "linked_tasks": [
+          {
+            "id": "synthetic-blocked-a",
+            "cycle_id": "synthetic-cycle",
+            "proposal_id": "synthetic-ambiguous",
+            "status": "blocked",
+            "branch": "tyk/synthetic-blocked-a",
+            "attempts": 2,
+            "blocked_reason": "verification_failed",
+            "error_recorded": true,
+            "created_at": "2026-09-13T12:00:00Z",
+            "updated_at": "2026-09-13T12:00:00Z",
+            "gaps": [
+              "Synthetic adverse evidence: the latest check failed and the latest review contains a finding."
+            ],
+            "revisions": {
+              "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "default_branch": "main",
+              "output": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "sessions": [
+              {
+                "id": "synthetic-blocked-a-session",
+                "role": "executor",
+                "status": "completed",
+                "requested_route": {
+                  "backend": "codex",
+                  "model": "synthetic-requested-model",
+                  "effort": "medium"
+                },
+                "started_at": "2026-09-13T12:00:00Z"
+              }
+            ],
+            "latest_review": {
+              "rounds_recorded": 3,
+              "clean": false,
+              "clean_at_output_revision": false,
+              "latest": {
+                "session_id": "synthetic-blocked-a-review",
+                "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "created_at": "2026-09-13T12:00:00Z",
+                "completed": true,
+                "summary_present": true,
+                "matches_output_revision": true,
+                "findings": [
+                  {
+                    "title": "Synthetic retry loses a pending result",
+                    "file": "src/example.rs",
+                    "priority": "P1",
+                    "detail": "Synthetic finding: a newer attempt can overwrite an unresolved result. Keep this adverse evidence visible."
+                  }
+                ]
+              }
+            },
+            "required_commands": {
+              "state": "recorded",
+              "all_passed_at_output_revision": false,
+              "commands": [
+                {
+                  "command": "cargo test --locked --test synthetic_example",
+                  "state": "failed",
+                  "results_recorded": 2,
+                  "latest_success": false,
+                  "latest_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "latest_created_at": "2026-09-13T12:00:00Z",
+                  "matches_output_revision": true
+                }
+              ]
+            },
+            "pull_request": null
+          },
+          {
+            "id": "synthetic-blocked-b",
+            "cycle_id": "synthetic-cycle",
+            "proposal_id": "synthetic-ambiguous",
+            "status": "blocked",
+            "branch": "tyk/synthetic-blocked-b",
+            "attempts": 2,
+            "blocked_reason": "verification_failed",
+            "error_recorded": true,
+            "created_at": "2026-09-13T12:00:00Z",
+            "updated_at": "2026-09-13T12:00:00Z",
+            "gaps": [
+              "Synthetic adverse evidence: the latest check failed and the latest review contains a finding."
+            ],
+            "revisions": {
+              "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "default_branch": "main",
+              "output": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "sessions": [
+              {
+                "id": "synthetic-blocked-b-session",
+                "role": "executor",
+                "status": "completed",
+                "requested_route": {
+                  "backend": "codex",
+                  "model": "synthetic-requested-model",
+                  "effort": "medium"
+                },
+                "started_at": "2026-09-13T12:00:00Z"
+              }
+            ],
+            "latest_review": {
+              "rounds_recorded": 3,
+              "clean": false,
+              "clean_at_output_revision": false,
+              "latest": {
+                "session_id": "synthetic-blocked-b-review",
+                "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "created_at": "2026-09-13T12:00:00Z",
+                "completed": true,
+                "summary_present": true,
+                "matches_output_revision": true,
+                "findings": [
+                  {
+                    "title": "Synthetic retry loses a pending result",
+                    "file": "src/example.rs",
+                    "priority": "P1",
+                    "detail": "Synthetic finding: a newer attempt can overwrite an unresolved result. Keep this adverse evidence visible."
+                  }
+                ]
+              }
+            },
+            "required_commands": {
+              "state": "recorded",
+              "all_passed_at_output_revision": false,
+              "commands": [
+                {
+                  "command": "cargo test --locked --test synthetic_example",
+                  "state": "failed",
+                  "results_recorded": 2,
+                  "latest_success": false,
+                  "latest_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "latest_created_at": "2026-09-13T12:00:00Z",
+                  "matches_output_revision": true
+                }
+              ]
+            },
+            "pull_request": null
+          }
+        ],
+        "gaps": [
+          "Synthetic inconsistency: rejected proposal has two linked task matches. Every match is retained."
+        ]
+      },
+      {
+        "id": "synthetic-missing",
+        "title": "Accepted with missing task evidence",
+        "target": "main",
+        "tier": "S",
+        "category": "correctness",
+        "problem": "Synthetic problem: a saved result can be difficult to inspect.",
+        "benefit": "Synthetic benefit: make missing evidence explicit.",
+        "scope": "Synthetic scope: a small display change with local fixtures.",
+        "evidence": ["Synthetic reference: src/example.rs"],
+        "final_decision": "accepted",
+        "final_reason": "Synthetic final decision: accepted.",
+        "reviewer_verdicts": [
+          {
+            "reviewer": "adversary-a",
+            "state": "malformed",
+            "decision": null,
+            "reason": null,
+            "note": "Synthetic malformed first batch; its slot remains fixed."
+          },
+          {
+            "reviewer": "adversary-b",
+            "state": "missing",
+            "decision": null,
+            "reason": null,
+            "note": "Synthetic second reviewer has no recorded verdict."
+          }
+        ],
+        "linked_tasks": [],
+        "gaps": ["Synthetic accepted proposal has no linked task; acceptance is not execution."]
+      }
+    ]
+  }
+}

@@ -10,6 +10,7 @@ check: dashboard
 	cargo fmt --check
 	cargo clippy --all-targets --locked -- -D warnings
 	npm run check --prefix web
+	npm run showcase:check --prefix web
 	npm run format:check --prefix web
 
 test: dashboard
@@ -21,6 +22,7 @@ test: dashboard
 	python3 tests/distribution.py
 	python3 tests/crate_guards.py
 	npm test --prefix web
+	npm run showcase:test --prefix web
 
 audit:
 	cargo audit
