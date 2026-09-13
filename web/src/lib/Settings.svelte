@@ -1,12 +1,26 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api } from './api';
+  import { api, ApiError } from './api';
   import type { Backend, Config, Model, ModelCatalog, Route } from './types';
   import RouteEditor from './RouteEditor.svelte';
   import AstraRehearsal from './AstraRehearsal.svelte';
+  import SetupChecklist from './SetupChecklist.svelte';
+  import { configIdentity, type Preflight, type SetupStatus } from './setup';
   import Icon from './Icon.svelte';
-  let { active, editable, onsaved }: { active: boolean; editable: boolean; onsaved: () => void } =
-    $props();
+  let {
+    active,
+    editable,
+    status,
+    onsaved,
+    onchoose
+  }: {
+    active: boolean;
+    editable: boolean;
+    status: SetupStatus | null;
+    onsaved: () => void;
+    /** Hands the operator to the Overview controls without starting anything. */
+    onchoose: (action: 'audit' | 'cycle') => void;
+  } = $props();
   let config = $state<Config | null>(null),
     baseline = $state(''),
     baselineCommands = $state(''),
@@ -17,11 +31,14 @@
     pending = $state(''),
     presetResetKey = $state(0),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
-    commands = $state('');
+    commands = $state(''),
+    /** Result of the last explicit connection check, keyed to the exact saved configuration. */
+    preflight = $state<Preflight | null>(null);
   const busy = $derived(pending !== '');
   const dirty = $derived(
     config !== null && (JSON.stringify(config) !== baseline || commands !== baselineCommands)
   );
+  const savedConfig = $derived<Config | null>(baseline ? JSON.parse(baseline) : null);
   // Revisit saved values only on navigation, never in response to a draft edit.
   $effect(() => {
     if (active) untrack(() => void load());
@@ -172,9 +189,11 @@
   }
   function acceptSaved(saved: Config) {
     const serialized = JSON.stringify(saved);
-    if (serialized !== baseline) {
+    if (!savedConfig || configIdentity(saved) !== configIdentity(savedConfig)) {
       error = '';
       message = '';
+      // A connection check only ever covers the exact saved configuration it ran against.
+      preflight = null;
     }
     config = saved;
     baseline = serialized;
@@ -239,17 +258,42 @@
     pending = mode;
     error = '';
     message = '';
+    const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     try {
-      const result = await api<{ message: string }>(`/doctor?mode=${mode}`, 'POST');
+      const result = await api<{ message: string; checked_config: Config }>(
+        `/doctor?mode=${mode}`,
+        'POST'
+      );
       message = result.message;
+      preflight = {
+        mode,
+        ok: true,
+        detail: result.message,
+        baseline: configIdentity(result.checked_config),
+        at
+      };
     } catch (e) {
       error = (e as Error).message;
+      preflight =
+        e instanceof ApiError && e.checkedConfig
+          ? { mode, ok: false, detail: error, baseline: configIdentity(e.checkedConfig), at }
+          : null;
     } finally {
       pending = '';
     }
   }
   function numberValue(key: keyof Config, value: string) {
     if (config) (config as unknown as Record<string, unknown>)[key] = Number(value);
+  }
+  /** Checklist links move focus to the existing control; they never edit, save or start work. */
+  function focusControl(target: string) {
+    const element = document.getElementById(target);
+    if (!element) return;
+    const control = element.matches('input, select, textarea, button')
+      ? element
+      : element.querySelector<HTMLElement>('input, select, textarea, button');
+    (control ?? element).scrollIntoView({ block: 'center' });
+    control?.focus({ preventScroll: true });
   }
 </script>
 
@@ -260,6 +304,7 @@
   </p>
   <div class="actions" aria-describedby="connection-check-help">
     <button
+      id="check-connection"
       class="button"
       onclick={() => doctor('execution')}
       disabled={!config || busy || loading || dirty}
@@ -268,6 +313,7 @@
         : 'Check connection'}</button
     >
     <button
+      id="check-audit-connection"
       class="button"
       onclick={() => doctor('audit')}
       disabled={!config || busy || loading || dirty}
@@ -288,6 +334,18 @@
     <button class="button" onclick={load} disabled={loading || busy || dirty}>Retry</button>
   </div>{/if}
 {#if config}
+  <SetupChecklist
+    draft={config}
+    saved={savedConfig}
+    {baseline}
+    {commands}
+    {dirty}
+    {catalogs}
+    {preflight}
+    {status}
+    onfocus={focusControl}
+    {onchoose}
+  />
   <form
     onsubmit={(e) => {
       e.preventDefault();
@@ -306,6 +364,7 @@
         <div class="form-grid">
           <label
             >Repository path<input
+              id="repository-path"
               bind:value={config.repository}
               placeholder="/srv/projects/your-project"
             /><small>Absolute path to the checkout on this host.</small></label
@@ -320,6 +379,7 @@
           <label>Owned branch prefix<input bind:value={config.branch_prefix} required /></label>
           <label class="full"
             >Verification commands<textarea
+              id="verification-commands"
               bind:value={commands}
               rows="3"
               placeholder={'npm test\nnpm run build'}
@@ -351,6 +411,7 @@
         </div>
         <div class="catalog-actions">
           <button
+            id="load-codex-models"
             type="button"
             class="button small"
             onclick={() => catalog('codex')}
@@ -358,6 +419,7 @@
             >{pending === 'catalog-codex' ? 'Loading Codex models…' : 'Load Codex models'}</button
           >
           <button
+            id="load-opencode-models"
             type="button"
             class="button small"
             onclick={() => catalog('opencode')}
@@ -373,6 +435,7 @@
         {#each Object.keys(config.roles) as role}
           <RouteEditor
             name={names[role]}
+            anchor={'route-' + role}
             bind:route={config.roles[role]}
             catalog={routeCatalog(config.roles[role])}
           />

@@ -580,8 +580,18 @@ struct DoctorQuery {
     #[serde(default)]
     mode: CycleMode,
 }
-async fn doctor(State(s): State<Api>, Query(q): Query<DoctorQuery>) -> Result<Json<Value>> {
-    Ok(Json(s.app.doctor_for(&s.app.config()?, q.mode).await?))
+async fn doctor(State(s): State<Api>, Query(q): Query<DoctorQuery>) -> Result<Response> {
+    // Return the same snapshot passed to the check, even if another tab saves meanwhile.
+    let config = s.app.config()?;
+    let (status, mut result) = match s.app.doctor_for(&config, q.mode).await {
+        Ok(result) => (StatusCode::OK, result),
+        Err(error) => {
+            let ApiError(status, message) = error.into();
+            (status, json!({"error": message}))
+        }
+    };
+    result["checked_config"] = json!(config);
+    Ok((status, Json(result)).into_response())
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

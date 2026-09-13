@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import type { Config, Model, Snapshot } from '../src/lib/types';
-import { login, openNavigation, token } from './synthetic';
+import { login, openNavigation, token, trackWrites } from './synthetic';
 
 function deferred() {
   let resolve!: () => void;
@@ -9,7 +9,10 @@ function deferred() {
 }
 
 // All writes terminate in browser fixtures; neither runner nor GitHub is contacted.
-async function configurationFixture(page: Page) {
+async function configurationFixture(
+  page: Page,
+  options: { unconfigured?: boolean; snapshot?: (snapshot: Snapshot) => void } = {}
+) {
   const state = {
     saved: null as Config | null,
     reads: 0,
@@ -20,15 +23,18 @@ async function configurationFixture(page: Page) {
     failSave: false,
     failCheck: false,
     loadGate: null as ReturnType<typeof deferred> | null,
-    saveGate: null as ReturnType<typeof deferred> | null
+    saveGate: null as ReturnType<typeof deferred> | null,
+    checkGate: null as ReturnType<typeof deferred> | null
   };
   await page.route('**/api/state', async (route) => {
     const response = await route.fetch();
     const snapshot: Snapshot = await response.json();
     snapshot.control.paused = true;
+    snapshot.control.mode = 'paused';
     snapshot.active_tasks = 0;
     snapshot.cycle_active = false;
     snapshot.active_cycle_mode = null;
+    options.snapshot?.(snapshot);
     await route.fulfill({ json: snapshot });
   });
   await page.route('**/api/config', async (route) => {
@@ -48,15 +54,17 @@ async function configurationFixture(page: Page) {
     if (!state.saved) {
       const response = await route.fetch();
       const initial: Config = await response.json();
-      const model = { backend: 'codex' as const, model: 'gpt-6-astra', effort: 'medium' };
+      const model = options.unconfigured
+        ? { backend: 'codex' as const, model: '', effort: '' }
+        : { backend: 'codex' as const, model: 'gpt-6-astra', effort: 'medium' };
       state.saved = {
         ...initial,
-        repository: '/fixture/repository',
-        github_repo: 'fixture/project',
+        repository: options.unconfigured ? '' : '/fixture/repository',
+        github_repo: options.unconfigured ? '' : 'fixture/project',
         default_branch: 'fixture-main',
         codex_binary: '/fixture/codex',
         opencode_binary: '/fixture/opencode',
-        verification_commands: ['fixture saved test'],
+        verification_commands: options.unconfigured ? [] : ['fixture saved test'],
         roles: Object.fromEntries(Object.keys(initial.roles).map((key) => [key, { ...model }])),
         tiers: Object.fromEntries(Object.keys(initial.tiers).map((key) => [key, { ...model }])),
         repair_route: { ...model }
@@ -91,10 +99,12 @@ async function configurationFixture(page: Page) {
   });
   await page.route('**/api/doctor?*', async (route) => {
     state.checks.push(new URL(route.request().url()).searchParams.get('mode')!);
+    const checked_config = structuredClone(state.saved);
+    await state.checkGate?.promise;
     await route.fulfill(
       state.failCheck
-        ? { status: 500, json: { error: 'Synthetic connection check failed' } }
-        : { json: { message: 'Synthetic saved configuration checked' } }
+        ? { status: 400, json: { error: 'Synthetic connection check failed', checked_config } }
+        : { json: { message: 'Synthetic saved configuration checked', checked_config } }
     );
   });
   return state;
@@ -181,6 +191,7 @@ for (const check of [
     await navigate('Configuration');
     const field = page.getByLabel(check.field);
     const button = page.getByRole('button', { name: check.button, exact: true });
+    const badge = page.locator('[data-step="preflight"] .badge');
     await expect(button).toBeEnabled();
 
     for (const failed of [false, true]) {
@@ -191,14 +202,26 @@ for (const check of [
         : 'Synthetic saved configuration checked';
       await button.click();
       await expect(feedback).toHaveText(text);
+      await expect(badge).toHaveText(
+        new RegExp(`^${failed ? 'Failed' : 'Passed'} · ${check.mode} · `)
+      );
+      const result = await badge.innerText();
 
-      // An unchanged saved configuration keeps its diagnostic result.
+      // Reordering object keys, including nested routes, keeps the diagnostic result.
+      state.saved = JSON.parse(
+        JSON.stringify(state.saved, (_key, value) =>
+          value && typeof value === 'object' && !Array.isArray(value)
+            ? Object.fromEntries(Object.entries(value).reverse())
+            : value
+        )
+      );
       await navigate('Overview');
       const refresh = page.waitForResponse('**/api/config');
       await navigate('Configuration');
       await refresh;
       await expect(button).toBeEnabled();
       await expect(feedback).toHaveText(text);
+      await expect(badge).toHaveText(result);
 
       // Simulate settings saved by another tab, then accept them on a clean revisit.
       await navigate('Overview');
@@ -207,6 +230,7 @@ for (const check of [
       await navigate('Configuration');
       await expect(field).toHaveValue(updated);
       await expect(feedback).toHaveCount(0);
+      await expect(badge).toHaveText('Not checked');
       await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
     }
     expect(state.checks).toEqual([check.mode, check.mode]);
@@ -255,11 +279,324 @@ test('failed configuration loads retry, failed saves retain exact drafts, and su
   await expect(commands).toHaveValue('fixture new test\nfixture new build');
 });
 
+test('setup checklist distinguishes entered, saved, checked, stale and failed states without starting work', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page, {
+    unconfigured: true,
+    snapshot: (snapshot) => {
+      snapshot.configured = false;
+      snapshot.audit_configured = false;
+      snapshot.cycles = [];
+      snapshot.counts = {};
+    }
+  });
+  const writes = trackWrites(page);
+  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const step = (id: string) => page.locator(`[data-step="${id}"]`);
+  const badge = (id: string) => step(id).locator('.badge');
+  await login(page);
+  await navigate('Configuration');
+  await expect(page.getByRole('heading', { name: 'Setup checklist' })).toBeVisible();
+  await expect(badge('repository')).toHaveText('Incomplete');
+  await expect(badge('routes')).toHaveText('Incomplete');
+  await expect(badge('verification')).toHaveText('None');
+  await expect(badge('preflight')).toHaveText('Not checked');
+  await expect(badge('choose')).toHaveText('Not run');
+  await expect(step('choose')).toContainText(
+    'Audit: saved configuration incomplete. Run once: saved configuration incomplete.'
+  );
+  await expect(page.getByText('0 of 5 steps saved, checked or run')).toBeVisible();
+
+  // Entered: typed in this tab only, including the preset's route replacement.
+  await page.getByLabel('Repository path').fill('/fixture/entered');
+  await page.getByLabel('GitHub repository').fill('fixture/entered');
+  await expect(badge('repository')).toHaveText('Entered, not saved');
+  await expect(badge('preflight')).toHaveText('Unsaved edits');
+  await expect(page.getByRole('button', { name: 'Check connection', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Load Codex models' }).click();
+  await expect(page.getByLabel('Astra rehearsal effort')).toHaveValue('medium');
+
+  // Partially configured: only the three audit routes, saved.
+  for (const role of ['Orchestrator', 'Discovery agents', 'Proposal reviewers']) {
+    await page.getByLabel(`${role} model`, { exact: true }).fill('gpt-6-astra');
+    await page.getByLabel(`${role} reasoning effort`, { exact: true }).selectOption('medium');
+  }
+  await expect(badge('routes')).toHaveText('Entered, not saved');
+  await expect(step('routes')).toContainText(
+    '3 of 10 execution routes selected (3 of 3 audit routes). 3 match a loaded catalog'
+  );
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  await expect(badge('repository')).toHaveText('Saved');
+  await expect(badge('routes')).toHaveText('Saved, audit routes only');
+  await expect(step('routes')).toContainText('Run once also needs the code reviewer');
+  await expect(badge('verification')).toHaveText('None');
+  await expect(badge('preflight')).toHaveText('Not checked');
+  expect(state.writes).toHaveLength(1);
+
+  // The preset replaces every route in the draft only; nothing is saved by confirming.
+  await page.getByRole('button', { name: 'Apply Astra rehearsal preset', exact: true }).click();
+  await page
+    .getByRole('group', { name: 'Confirm Astra rehearsal preset', exact: true })
+    .getByRole('button', { name: 'Confirm preset', exact: true })
+    .click();
+  await expect(badge('routes')).toHaveText('Entered, not saved');
+  await expect(step('routes')).toContainText(
+    '10 of 10 execution routes selected (3 of 3 audit routes). 10 match a loaded catalog'
+  );
+  expect(state.writes).toHaveLength(1);
+  await page.getByRole('textbox', { name: /^Verification commands/ }).fill('fixture entered test');
+  await expect(badge('verification')).toHaveText('Entered, not saved');
+  expect(state.writes).toHaveLength(1);
+
+  // Saved: written to the service, still unchecked.
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  await expect(badge('repository')).toHaveText('Saved');
+  await expect(badge('routes')).toHaveText('Saved');
+  await expect(badge('verification')).toHaveText('Saved');
+  await expect(badge('preflight')).toHaveText('Not checked');
+  await expect(step('preflight')).toContainText('does not prove repository push permission');
+  await expect(page.getByText('3 of 5 steps saved, checked or run')).toBeVisible();
+  expect(state.writes).toHaveLength(2);
+
+  // Checked: the link only focuses the existing control; the operator activates it.
+  await step('preflight').getByRole('button', { name: 'Open the execution check' }).click();
+  await expect(page.getByRole('button', { name: 'Check connection', exact: true })).toBeFocused();
+  expect(state.checks).toEqual([]);
+  await page.keyboard.press('Enter');
+  await expect(badge('preflight')).toHaveText(/^Passed · execution · /);
+  await expect.poll(() => state.checks).toEqual(['execution']);
+  await expect(page.getByText('4 of 5 steps saved, checked or run')).toBeVisible();
+
+  // The API sorts keys; revisiting after the preset must preserve this exact check.
+  const checked = structuredClone(state.saved!);
+  const result = await badge('preflight').innerText();
+  state.saved = JSON.parse(
+    JSON.stringify(state.saved, (_key, value) =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+        : value
+    )
+  );
+  expect(state.saved).toEqual(checked);
+  expect(JSON.stringify(state.saved)).not.toBe(JSON.stringify(checked));
+  await navigate('Overview');
+  const refresh = page.waitForResponse('**/api/config');
+  await navigate('Configuration');
+  await refresh;
+  await expect(page.getByRole('button', { name: 'Check connection', exact: true })).toBeEnabled();
+  await expect(badge('preflight')).toHaveText(result);
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('4 of 5 steps saved, checked or run')).toBeVisible();
+  expect(state.checks).toEqual(['execution']);
+
+  // Stale while dirty, restored by discard, invalidated by a saved change.
+  await page.getByLabel('Default branch', { exact: true }).fill('edited-main');
+  await expect(badge('preflight')).toHaveText('Unsaved edits');
+  await expect(step('preflight')).toContainText(
+    'covered the previously saved values, not these edits'
+  );
+  await page.getByRole('button', { name: 'Discard changes' }).click();
+  await expect(badge('preflight')).toHaveText(/^Passed · execution · /);
+  await page.getByLabel('Default branch', { exact: true }).fill('resaved-main');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  await expect(badge('preflight')).toHaveText('Not checked');
+
+  // A failed check is reported as a failure, never as readiness.
+  state.failCheck = true;
+  await step('preflight').getByRole('button', { name: 'Open the audit check' }).click();
+  await expect(page.getByRole('button', { name: 'Check audit connection' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(badge('preflight')).toHaveText(/^Failed · audit · /);
+  await expect(step('preflight')).toContainText('Synthetic connection check failed');
+  await expect(page.getByRole('alert')).toHaveText('Synthetic connection check failed');
+  expect(state.checks).toEqual(['execution', 'audit']);
+  expect(writes.map((write) => write.path)).toEqual([
+    '/api/model-catalog',
+    '/api/config',
+    '/api/config',
+    '/api/doctor',
+    '/api/config',
+    '/api/doctor'
+  ]);
+});
+
+for (const mode of ['execution', 'audit'] as const) {
+  test(`setup checklist attributes ${mode} checks to the server snapshot across external saves`, async ({
+    page,
+    isMobile
+  }) => {
+    const state = await configurationFixture(page);
+    const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+    await login(page);
+    await navigate('Configuration');
+    const branch = page.getByLabel('Default branch', { exact: true });
+    const badge = page.locator('[data-step="preflight"] .badge');
+    const check = page.getByRole('button', {
+      name: mode === 'execution' ? 'Check connection' : 'Check audit connection',
+      exact: true
+    });
+    await expect(branch).toHaveValue('fixture-main');
+    await check.click();
+    await expect(badge).toHaveText(new RegExp(`^Passed · ${mode} · `));
+
+    const original = structuredClone(state.saved!);
+    // Simulate another dashboard tab saving before this stale form starts a check.
+    state.saved!.default_branch = 'external-main';
+    for (const fail of [false, true]) {
+      state.failCheck = fail;
+      state.checkGate = deferred();
+      const count = state.checks.length;
+      await check.click();
+      await expect.poll(() => state.checks.length).toBe(count + 1);
+      // Another save during the check must not change which snapshot it covered.
+      state.saved = structuredClone(original);
+      state.checkGate.resolve();
+      await expect(check).toBeEnabled();
+      await expect(badge).toHaveText('Not checked');
+      await expect(page.locator('[data-step="preflight"]')).toContainText(
+        'The server checked different saved values'
+      );
+      await expect(branch).toHaveValue('fixture-main');
+      state.saved!.default_branch = 'external-main';
+    }
+
+    state.failCheck = false;
+    state.checkGate = null;
+    await navigate('Overview');
+    await navigate('Configuration');
+    await expect(branch).toHaveValue('external-main');
+    // Serialization order is not a configuration change, including nested routes.
+    state.saved = JSON.parse(
+      JSON.stringify(state.saved, (_key, value) =>
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? Object.fromEntries(Object.entries(value).reverse())
+          : value
+      )
+    );
+    await check.click();
+    await expect(badge).toHaveText(new RegExp(`^Passed · ${mode} · `));
+
+    // A transport failure has no checked snapshot and must clear the previous result.
+    await page.route('**/api/doctor?*', (route) => route.abort('failed'));
+    await check.click();
+    await expect(check).toBeEnabled();
+    await expect(badge).toHaveText('Not checked');
+    expect(state.writes).toHaveLength(0);
+  });
+}
+
+test('setup checklist links focus existing controls, hands off to the Overview and reports active work without starting anything', async ({
+  page,
+  isMobile
+}) => {
+  let restriction: 'idle' | 'task' | 'audit' | 'continuous' = 'idle';
+  await configurationFixture(page, {
+    snapshot: (snapshot) => {
+      snapshot.configured = true;
+      snapshot.audit_configured = true;
+      snapshot.counts = { ...snapshot.counts, queued: 2 };
+      snapshot.cycles = [
+        {
+          id: 'synthetic-audit',
+          number: 4,
+          mode: 'audit',
+          status: 'completed',
+          started_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          error: null,
+          session_count: 13,
+          decisions: { accepted: 1 },
+          lifecycle: {}
+        }
+      ];
+      if (restriction === 'task') snapshot.active_tasks = 1;
+      if (restriction === 'audit') {
+        snapshot.cycle_active = true;
+        snapshot.active_cycle_mode = 'audit';
+      }
+      if (restriction === 'continuous') {
+        snapshot.control.paused = false;
+        snapshot.control.mode = 'continuous';
+      }
+    }
+  });
+  const writes = trackWrites(page);
+  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const step = (id: string) => page.locator(`[data-step="${id}"]`);
+  const badge = (id: string) => step(id).locator('.badge');
+  await login(page);
+  await navigate('Configuration');
+  await expect(badge('choose')).toHaveText('Audit cycle 4 · completed');
+  await expect(step('choose')).toContainText(
+    'Audit: available. Run once: available, and 2 queued tasks would be drained first.'
+  );
+  await expect(step('choose')).toContainText('no later cycle executes its recommendations');
+  await expect(badge('preflight')).toHaveText('Not checked');
+
+  // Links move focus to the existing controls without editing them.
+  await step('repository').getByRole('button', { name: 'Edit repository details' }).click();
+  await expect(page.getByLabel('Repository path')).toBeFocused();
+  await step('verification').getByRole('button', { name: 'Edit verification commands' }).click();
+  await expect(page.getByRole('textbox', { name: /^Verification commands/ })).toBeFocused();
+  await step('routes').getByRole('button', { name: 'Edit routes' }).click();
+  await expect(page.getByLabel('Orchestrator runner', { exact: true })).toBeFocused();
+  await step('routes').getByRole('button', { name: 'Load a runner catalog' }).click();
+  await expect(page.getByRole('button', { name: 'Load Codex models' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByLabel('Astra rehearsal effort')).toHaveValue('medium');
+  await step('routes').getByRole('button', { name: 'Astra rehearsal preset' }).click();
+  await expect(page.getByLabel('Astra rehearsal effort')).toBeFocused();
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
+  await expect(badge('routes')).toHaveText('Saved');
+  await expect(step('routes')).toContainText('10 match a loaded catalog');
+
+  // Choosing hands off to the Overview control; the operator still has to click it.
+  await step('choose').getByRole('button', { name: 'Run once on the Overview' }).click();
+  await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Run once', exact: true })).toBeFocused();
+  await navigate('Configuration');
+  await step('choose').getByRole('button', { name: 'Audit on the Overview' }).click();
+  await expect(page.getByRole('button', { name: 'Run an audit', exact: true })).toBeFocused();
+  await navigate('Configuration');
+
+  // Hiding the checklist is tab-local and starts nothing.
+  await page.getByRole('button', { name: 'Hide checklist' }).click();
+  await expect(page.locator('[data-step]')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Show checklist' }).click();
+  await expect(page.locator('[data-step]')).toHaveCount(5);
+
+  // Active work, audits and continuous operation are reported, not hidden.
+  restriction = 'task';
+  await expect(step('choose')).toContainText(
+    'Unavailable now: 1 active task may still finish and publish.',
+    { timeout: 10000 }
+  );
+  restriction = 'audit';
+  await expect(step('choose')).toContainText('Unavailable now: An audit is in progress.', {
+    timeout: 10000
+  });
+  restriction = 'continuous';
+  await expect(step('choose')).toContainText(
+    'Continuous operation is running; Pause stops new work first.',
+    { timeout: 10000 }
+  );
+  expect(writes.map((write) => write.path)).toEqual(['/api/model-catalog']);
+});
+
 for (const boundary of ['disconnect', 'expiry', 'reload']) {
   test(`configuration drafts and catalogs clear on ${boundary}`, async ({ page, isMobile }) => {
     await configurationFixture(page);
     await login(page);
     await openNavigation(page, 'Configuration', !!isMobile);
+    await page.getByRole('button', { name: 'Check connection', exact: true }).click();
+    await expect(page.locator('[data-step="preflight"] .badge')).toHaveText(
+      /^Passed · execution · /
+    );
     await page.getByLabel('Default branch', { exact: true }).fill('private-unsaved-main');
     await page.getByRole('button', { name: 'Load Codex models' }).click();
     await expect(
@@ -287,6 +624,8 @@ for (const boundary of ['disconnect', 'expiry', 'reload']) {
     await expect(
       page.getByLabel('Repair reasoning effort', { exact: true }).locator('option[value="high"]')
     ).toHaveCount(0);
+    // The earlier check result belongs to the old session and is not carried over.
+    await expect(page.locator('[data-step="preflight"] .badge')).toHaveText('Not checked');
   });
 }
 

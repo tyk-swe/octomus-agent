@@ -220,12 +220,18 @@ dd {
   gap: 0.5rem;
 }
 .task-links a,
-.pr-link {
+.pr-link,
+.install-link {
   padding: 0.75rem;
   display: block;
   border: 1px solid #aabbab;
   border-radius: 0.25rem;
   min-height: 44px;
+}
+.install-link {
+  width: max-content;
+  max-width: 100%;
+  font-weight: 700;
 }
 code {
   font-size: 0.88em;

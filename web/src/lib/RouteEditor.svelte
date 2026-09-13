@@ -4,8 +4,9 @@
   let {
     name,
     route = $bindable(),
-    catalog
-  }: { name: string; route: Route; catalog?: ModelCatalog } = $props();
+    catalog,
+    anchor
+  }: { name: string; route: Route; catalog?: ModelCatalog; anchor?: string } = $props();
   const id = $props.id();
   const backend = $derived(route.backend ?? 'codex');
   const models = $derived(
@@ -52,7 +53,7 @@
   }
 </script>
 
-<div class="model-route" role="group" aria-label={name + ' route'}>
+<div class="model-route" id={anchor} role="group" aria-label={name + ' route'}>
   <h3>{name}</h3>
   <div class="route-fields" class:opencode={backend === 'opencode'}>
     <label

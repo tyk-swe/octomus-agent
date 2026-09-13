@@ -1,3 +1,5 @@
+import type { Config } from './types';
+
 let token = '';
 let session = new AbortController();
 let unauthorized: (() => void) | null = null;
@@ -16,7 +18,8 @@ export function onUnauthorized(handler: () => void) {
 export class ApiError extends Error {
   constructor(
     message: string,
-    public status: number
+    public status: number,
+    public checkedConfig?: Config
   ) {
     super(message);
   }
@@ -44,7 +47,8 @@ export async function api<T>(
   // Includes JSON parsing: an old session's response cannot populate a new session.
   requestSignal.throwIfAborted();
   if (response.status === 401) unauthorized?.();
-  if (!response.ok) throw new ApiError(result.error ?? 'Request failed', response.status);
+  if (!response.ok)
+    throw new ApiError(result.error ?? 'Request failed', response.status, result.checked_config);
   return result as T;
 }
 export function relative(value: string) {

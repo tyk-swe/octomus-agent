@@ -146,3 +146,109 @@ synthetic approval hash. Valid exact-byte downloads and existing isolation tests
 Logs: `/tmp/octomus-showcase-duplicate-{check,test}.log`. No live state or owner approval
 was used. The full unrelated Rust/integration/operator behavior suite was not rerun for
 this build-only fix; its preceding results remain recorded above.
+
+## First-run path: setup checklist and README — 2026-09-13
+
+Starting commit `1817020`, clean worktree. Read AGENTS.md, README, distribution and
+Astra rehearsal docs, `Settings.svelte`, `AstraRehearsal.svelte`, the overview and the
+operator browser tests before changing anything. No onboarding subsystem, persistent
+readiness schema, scheduler change, dependency, or automatic configuration change was
+added; the initial checklist implementation left Rust source untouched. The subsequent
+connection-check snapshot correction below updates the doctor API.
+
+Configuration now opens with a compact **Setup checklist** (`web/src/lib/setup.ts`,
+`SetupChecklist.svelte`) of five steps: repository details, model routes, verification
+policy, connection check, and choosing Audit or Run once. Each step is labelled from
+tab-local state only: *Incomplete/None*, *Entered, not saved* (typed in this tab),
+*Saved* (the last loaded or saved configuration), *Passed/Failed · mode · time*
+(the explicit connection check keyed to the exact saved serialization), and the
+latest cycle actually executed from the polled snapshot. Routes report how many of the
+ten execution routes (three audit routes) are selected and how many match a catalog
+loaded for the entered executable; a match is explicitly not a connection check.
+Populated fields, catalog matches and a passed check are never described as proof of
+repository push permission or model inference; the doctor endpoint only validates the
+origin remote, GitHub CLI login and runner catalogs, and the checklist says so.
+
+The check result is invalidated whenever the saved configuration changes (save,
+external refresh), shown as *Unsaved edits* with a "covered the previously saved
+values" note while the draft is dirty, restored by Discard, and reset on disconnect,
+session expiry or reload because the Settings component unmounts. Checklist links only
+move focus to the existing controls (repository path, verification commands, runner
+catalog buttons, orchestrator route, Astra effort selector, both check buttons); the
+Audit/Run once links navigate to the Overview and focus the existing header control.
+Saving, navigating, applying the preset, hiding the checklist and every link never
+issue a control request; Run once still drains the queue, audits still plan only, and
+continuous operation remains a separate explicit control. Existing draft persistence,
+executable-keyed catalogs, unsupported-route errors and active-work restrictions are
+unchanged; the Astra preset is reused, and custom/OpenCode routes are untouched until
+confirmed.
+
+The README's Getting started section now states the dedicated Ubuntu 24.04 VM and the
+owner-supplied Codex/OpenCode and repository-restricted GitHub accounts as
+prerequisites, keeps the source-build path, keeps the installer and crates.io options
+marked pending (a read-only check on 2026-09-13 found `releases/latest` redirecting to
+the empty releases list and crates.io returning 404 for `octomus-agent`; no install
+flags were invented), and walks the first run as enter, save, check, then choose. The
+public showcase gained a "Run it on your own repository" panel whose only link is the
+README first-run anchor with `rel="noopener noreferrer"`; its network-isolation test
+still passes because a link is a visitor action. CHANGELOG, the operator checklist and
+the Astra rehearsal doc mention the checklist.
+
+Actual local results (synthetic fixtures; no live models, accounts, state, pushes or
+publication):
+
+- `npm ci --prefix web` installed the locked dependencies; nothing was upgraded.
+- Browser coverage added to `operator-experience.spec.ts`: unconfigured, entered,
+  partially configured (three audit routes saved, "Saved, audit routes only"), preset
+  applied to the draft, saved, checked, dirty/stale, discarded, invalidated by a saved
+  change, failed check, link focus targets, Overview hand-off with focus on Run once /
+  Run an audit, hide/show, active task, running audit and continuous restrictions, and
+  `Not checked` after disconnect, expiry and reload. Every test asserts that no
+  `/api/control` request is made. The focused run of these ten cases passed on
+  desktop and mobile (50 s), and again after the partial-configuration additions.
+- Full dashboard suite `npx playwright test`: **110 passed, 5 intentional viewport
+  skips, 3 failed** in 9.5 min. The three failures were the `captures.spec.ts`
+  viewport captures, whose traces were deleted from the shared `test-results`
+  directory by a showcase suite I had started concurrently (ENOENT on
+  `.playwright-artifacts-0/traces/...`, no assertion failure). Rerun alone with
+  `CAPTURE_LABEL=day3-setup`, all three captures, the unconfigured first-run overview
+  and the checklist cases passed: **14 passed, 4 intentional skips** (2.2 min),
+  including the mobile 44 px target and 16 px input checks over the new controls.
+- `npm run showcase:check` and `npm run showcase:test` rerun alone: nine contract
+  tests and **6 browser tests passed** (39.8 s), including the new CTA assertions and
+  the unchanged network-isolation window.
+- Opened synthetic captures of the checklist at 1440×1000 and iPhone 13 width
+  (scratchpad only, not tracked): steps, badges and links wrap cleanly with no
+  horizontal overflow.
+- `make check` passed: dashboard build, Rust formatting/clippy, dashboard and showcase
+  Svelte/TypeScript checks (zero errors/warnings) and Prettier.
+- `cargo build --locked` re-embedded the dashboard, then `python3 tests/distribution.py`
+  passed both stages (embedded binary HTTP/JS/SPA/override/listener checks and the
+  local installer fixtures across architectures and failure modes). This is a local
+  fixture package check, not dedicated-deployment acceptance.
+- `cargo test --locked` passed (84 tests, 4 opt-in tests ignored) and
+  `python3 tests/e2e.py` passed every scenario, including the audit cases that keep
+  the queue paused with no publication. Rust source was not changed; these confirm the
+  re-embedded dashboard did not disturb the service. `make test` was not run as a
+  single invocation; its stages above were covered individually except
+  `e2e_runners.py`, `e2e_hardening.py` and `crate_guards.py`, which exercise
+  unchanged Rust behaviour.
+
+Unresolved gates are unchanged: no live validation, no owner VM/bot deployment, no
+public release or crate, and no owner-approved recorded showcase payload.
+
+### Connection-check snapshot correction
+
+The doctor API now returns the exact configuration snapshot it checked on both success
+and failure. The dashboard binds the result to that snapshot using an identity that
+ignores object-key ordering. A save in another tab before or during a check therefore
+cannot label different form values as checked. Transport failures clear the prior
+result. Integration assertions cover the returned snapshot, and browser cases cover
+external saves, reordered keys and transport failures for execution and audit checks.
+
+Final shipment validation on September 13 ran `make check test` successfully as one
+invocation, including Rust checks and tests, all three integration suites, distribution
+and crate guards, and both browser suites. The dashboard browser suite passed 117 tests
+with five intentional viewport skips; the showcase passed nine contract tests and six
+browser tests. This supersedes the partial-suite coverage recorded above and remains
+local fixture validation, not live deployment acceptance.

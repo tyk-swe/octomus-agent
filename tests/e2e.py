@@ -74,6 +74,7 @@ class Service:
             config['tiers']['M'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}
         self.request('/config', 'PUT', config)
         diagnostic = self.request('/doctor', 'POST')
+        assert diagnostic['checked_config'] == self.request('/config')
         assert diagnostic['codex_version'] == 'codex-cli 0.153.4'
         assert diagnostic['tested_codex_version'] == '0.153.4' and diagnostic['warnings'] == []
         (self.root / 'version').write_text('0.0.0-fixture')
@@ -365,12 +366,15 @@ def audit_scenario(mode):
             if mode == 'budget':
                 c['max_sessions_per_day'] = 2
             service.request('/config', 'PUT', c)
-            assert service.request('/doctor?mode=audit', 'POST')['mode'] == 'audit'
+            diagnostic = service.request('/doctor?mode=audit', 'POST')
+            assert diagnostic['mode'] == 'audit'
+            assert diagnostic['checked_config'] == service.request('/config')
             try:
                 service.request('/doctor', 'POST')
                 raise AssertionError('Execution doctor accepted missing verification')
             except urllib.error.HTTPError as e:
                 assert e.code == 400
+                assert json.load(e)['checked_config'] == service.request('/config')
             marker = {'idle': 'idle', 'malformed': 'audit-malformed', 'failed': 'failed-start'}.get(mode, 'audit-decisions')
             (root / marker).touch()
             if mode not in ['failed']:

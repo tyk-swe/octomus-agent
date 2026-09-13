@@ -359,5 +359,21 @@
     <p>A hash binds reviewed bytes, not proof of truth or an independent signature.</p>
     <a href="./public-run.json" download>Download exact public payload</a>
   </section>
+  <section class="panel install" aria-labelledby="install-heading">
+    <h2 id="install-heading">Run it on your own repository</h2>
+    <p>
+      Octomus is built from source today; public release binaries and the crates.io package are
+      pending. You need a dedicated Ubuntu 24.04 VM, your own Codex or OpenCode provider login and a
+      dedicated GitHub identity restricted to one repository. The README's first-run path walks
+      through entering, saving and checking the configuration before you explicitly choose an audit
+      or a single run.
+    </p>
+    <a
+      class="install-link"
+      href="https://github.com/tyk-swe/octomus-agent#getting-started"
+      target="_blank"
+      rel="noopener noreferrer">Read the first-run guide on GitHub</a
+    >
+  </section>
 </main>
 <footer>Octomus · Recorded evidence, with its gaps intact.</footer>

@@ -26,6 +26,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Preserve configuration drafts and model catalogs across dashboard navigation,
   show unsaved changes with local discard, and require saved values for connection checks.
+- Add a compact setup checklist to Configuration that labels repository details,
+  routes, verification policy, the connection check and the Audit/Run once choice as
+  entered, saved, checked or ran, links to the existing controls, invalidates a check
+  result when the saved configuration changes, and never starts work. Tighten the
+  README first-run path and link the public showcase's installation call to action to it.
 - Improve dashboard typography, mobile touch targets and keyboard navigation; add
   distinct list loading, empty and retry states with retained results after refresh failures.
 - Share dashboard action eligibility and pending feedback; distinguish delivered tasks

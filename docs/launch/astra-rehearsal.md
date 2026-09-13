@@ -21,7 +21,10 @@ Every other setting, including unsaved verification commands, is preserved.
 This changes only the unsaved draft. It does not save, check connections, start
 an audit or execution, or set operating mode. The operator must **Save
 configuration**, **Check connection**, then explicitly choose **Run once**.
-Existing saved task contracts and shipped defaults are unchanged.
+Existing saved task contracts and shipped defaults are unchanged. The **Setup
+checklist** at the top of Configuration reports the routes as entered until saved,
+counts catalog matches for the entered executable, and links to this preset's
+effort selector; it starts nothing and a catalog match is not a connection check.
 
 Live rehearsal requires the owner's dedicated VM and bot with already approved
 account setup, repository configuration, and verification commands. Check the

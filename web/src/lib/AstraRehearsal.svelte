@@ -49,6 +49,7 @@
   <label>
     Astra rehearsal effort
     <select
+      id="astra-effort"
       value={effort}
       disabled={!!availability.problem || !editable || busy}
       onchange={(event) => {

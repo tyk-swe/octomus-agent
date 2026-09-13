@@ -12,16 +12,28 @@ PR for you to review and merge.
 
 ## Getting started
 
-**Build from source today.** Release binaries and the crates.io package are still
-pending publication. The source-build steps below install the available application;
-see [distribution](docs/distribution.md) for release preparation.
+**Build from source today.** Public release binaries and the crates.io package are
+still pending publication: a read-only check on 2026-09-13 found no GitHub release
+and no `octomus-agent` crate. The source-build steps below install the available
+application; see [distribution](docs/distribution.md) for release preparation.
 
-Use a dedicated Ubuntu 24.04 VM (x86_64 or aarch64), configured access to the
-models you select through Codex or OpenCode,
-and a dedicated GitHub identity with access restricted to the target repository.
-Do not use your workstation or put unrelated credentials on the VM. Account
-creation, owner-approved authentication and VM provisioning must already be
-arranged; login is performed by you.
+### Prerequisites you must already have
+
+- A **dedicated Ubuntu 24.04 VM** (x86_64 or aarch64) that runs nothing else. Runner
+  and verification commands execute with the service user's permissions and are not
+  sandboxed. Do not use your workstation, and keep unrelated credentials off the VM.
+- **Owner-supplied accounts**, arranged and approved before you start: a Codex or
+  OpenCode provider login that exposes the models you intend to route, and a dedicated
+  GitHub identity whose access is restricted to the one target repository. Octomus never
+  creates accounts or performs logins; you run each login yourself as the service user.
+- The target repository, cloned to a persistent path writable by the service user, with
+  its own build and test tools installed on the VM.
+- Build tools, needed only to build Octomus itself: Git, gh, curl, OpenSSL, a C
+  compiler, Rust 1.88+, Node 22.12+ and npm. Python 3 is only needed for repository tests.
+
+The first run is four explicit moves: enter the configuration, save it, check the
+connection, then choose **Run an audit** or **Run once**. Nothing starts before that
+last choice, and continuous operation is a separate control.
 
 ### 1. Install the tools and application
 
@@ -118,59 +130,68 @@ ssh -N -L 4200:127.0.0.1:4200 your-vm
 Open **http://127.0.0.1:4200**, enter your saved token, and keep the service running
 in the VM terminal. It starts paused. Refreshing the page requires the token again.
 
-### 3. Run an audit, then a cycle
+### 3. First run: enter, save, check, then choose
 
-In **Configuration**, enter `/srv/projects/project`, `OWNER/REPOSITORY`, the default
-branch, and an owned branch prefix. For this repository use `tyk/`; the general
-product default is `octomus/`.
+Open **Configuration**. The **Setup checklist** at the top tracks five steps and labels
+each one as entered (typed in this tab), saved (sent to the service), checked (the
+saved configuration passed an explicit connection check) or ran (a cycle actually
+executed). Its links move focus to the existing controls. Nothing on the checklist
+starts work, and populated fields, catalog matches or a passed check never prove
+repository push permission or model inference; only a run's recorded evidence does.
+
+1. **Repository details.** Enter `/srv/projects/project`, `OWNER/REPOSITORY`, the
+   default branch and an owned branch prefix. For this repository use `tyk/`; the
+   general product default is `octomus/`.
+2. **Model routes.** Set the executable paths, then use **Load Codex models** or
+   **Load OpenCode models**. For each role, choose a runner and model. Codex requires
+   reasoning effort; OpenCode requires a provider and offers the model's supported
+   variants, including **Provider default**. The same selectors apply to all execution
+   tiers and repair. Catalog checks use the executable paths currently entered, without
+   saving or making model calls. Custom providers configured for the OpenCode service
+   user appear in its catalog; models must support text and tool calling. Unsupported
+   routes fail visibly; select available routes explicitly instead of expecting a
+   fallback. The [Astra rehearsal preset](docs/launch/astra-rehearsal.md) fills every
+   route from a loaded Codex catalog after you confirm; custom and OpenCode routes stay
+   untouched until then. See [model routing](docs/model-routing.md) for JSON examples.
+3. **Verification policy.** Enter meaningful verification commands, one shell command
+   per line; all must pass on the reviewed revision before a PR is published. Install
+   your project's build and test tools first. For Octomus itself, install Rust with
+   rustfmt and clippy, Node 22.12+, Python 3 and the Playwright prerequisites, then use:
+
+   ```bash
+   npm ci --prefix web && make check && make test
+   ```
+
+   An audit needs no commands; **Run once** refuses to start without at least one.
+4. **Save configuration**, then **Check connection** or **Check audit connection**.
+   Both stay disabled while edits are unsaved. The check validates the saved origin
+   remote, the GitHub CLI login and the runner catalogs for the saved routes. It does
+   not prove push permission and makes no model call. Correct any CLI version warning
+   before live work. Any later saved change invalidates the result, so check again.
+5. **Choose Audit or Run once** on the Overview while the service is paused and idle.
+   **Run an audit** runs one planning pass, records accepted, rejected and deferred
+   decisions with reasons, queues nothing and leaves execution paused; no later cycle
+   executes an audit's recommendations. With nine discovery agents a completed pass
+   normally consumes 13 session admissions, and audit agents still run unsandboxed.
+   Read the **Proposals** view before going further. **Run once** drains any existing
+   queue, plans one cycle, finishes its accepted tasks and pauses. Start conservatively:
+   one concurrent task, one task per cycle and a 21,600-second interval. This is a
+   conservative starting profile, not a measured replacement for shipped defaults.
 
 Unsaved edits, verification commands and loaded model catalogs survive dashboard
 navigation in this tab. **Discard changes** restores the last loaded or saved
 configuration without writing to the server. Revisiting a clean form refreshes saved
-values; dirty drafts and failed saves keep your edits. Disconnecting, session expiry
-or reloading the page clears the draft. **Check connection** and **Check audit
-connection** validate saved configuration and stay disabled until edits are saved
-or discarded.
+values; dirty drafts and failed saves keep your edits. Disconnecting, session expiry or
+reloading the page clears the draft and the checklist's check result. Existing saved
+model IDs stay visible when a catalog changes or cannot be loaded.
 
-Set the executable paths, then use **Load Codex models** or **Load OpenCode models**.
-For each role, choose a runner and model. Codex requires reasoning effort; OpenCode
-requires a provider and offers the model's supported variants, including **Provider
-default**. The same selectors apply to all execution tiers and repair. Catalog
-checks use the executable paths currently entered, without saving or making model
-calls. Custom providers configured for the OpenCode service user appear in its
-catalog; models must support text and tool calling.
+Use **Start continuous** only when you want ongoing scheduling; it is never the default
+first action. Inspect each task's review and verification evidence and its PR; only you
+decide to merge. A cycle with no worthwhile work is a valid outcome.
 
-Configure the orchestrator, discovery agents and proposal reviewers. Save, then
-**Check audit connection**. Unsupported routes fail visibly; explicitly select available routes
-instead of expecting a fallback. Correct any CLI version warning before live work. Existing saved model IDs stay
-visible when a catalog changes or cannot be loaded. See [model routing](docs/model-routing.md)
-for JSON examples and runner behavior.
-
-Select **Run an audit** while paused and idle. It runs one planning pass, retains
-accepted/rejected/deferred decisions, queues nothing, and leaves execution paused.
-Read the **Proposals** view, select the audit and inspect its reasons. With nine
-discovery agents, a completed pass normally consumes 13 session admissions; it is
-not free. Audit agents still run unsandboxed.
-
-For an executing cycle, install your target project's build/test tools, choose the
-code reviewer, five execution tier routes and repair route, and enter meaningful
-verification commands (one shell command per line). For Octomus itself, install
-Rust/rustfmt/clippy, Node 22.12+, Python 3 and Playwright prerequisites, then use:
-
-```bash
-npm ci --prefix web && make check && make test
-```
-
-Start conservatively: one concurrent task, one task per cycle and a 21,600-second
-interval. This is a conservative starting profile, not a measured replacement for
-shipped defaults. Save and **Check connection**, then **Run once**. It drains the
-existing queue, plans one cycle, finishes its accepted tasks, and pauses. Use
-**Start continuous** to enable ongoing scheduling. Inspect the task's review/verification evidence and PR;
-only you decide to merge it. A cycle with no worthwhile work is a valid outcome.
-
-**Pause** stops new work; active tasks may finish and publish. Use **Cancel task**
-to stop an individual task, or stop the service to terminate its workers. Audits
-cannot start alongside active work. For durable service setup, follow
+**Pause** stops new work; active tasks may finish and publish. Use **Cancel task** to
+stop an individual task, or stop the service to terminate its workers. Audits cannot
+start alongside active work. For durable service setup, follow
 [deployment](docs/deployment.md) and the [operator checklist](docs/operations.md).
 
 ## How it decides

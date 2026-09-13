@@ -77,6 +77,16 @@ test('static explorer preserves evidence, fragment selection, hostile text and n
     'href',
     'https://github.com/synthetic-owner/synthetic-repository/pull/12'
   );
+  // The installation CTA points at the README first-run path and is a visitor action only.
+  const install = page.getByRole('link', { name: 'Read the first-run guide on GitHub' });
+  await expect(install).toHaveAttribute(
+    'href',
+    'https://github.com/tyk-swe/octomus-agent#getting-started'
+  );
+  await expect(install).toHaveAttribute('rel', 'noopener noreferrer');
+  await expect(page.getByRole('heading', { name: 'Run it on your own repository' })).toBeVisible();
+  await expect(page.locator('.install')).toContainText('built from source today');
+  await expect(page.locator('.install')).toContainText('pending');
   await page.screenshot({
     path: `artifacts/showcase/synthetic-${testInfo.project.name}-overview.png`
   });

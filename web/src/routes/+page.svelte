@@ -12,6 +12,7 @@
   } from '$lib/types';
   import Icon from '$lib/Icon.svelte';
   import Settings from '$lib/Settings.svelte';
+  import type { SetupStatus } from '$lib/setup';
   import TaskDetail from '$lib/TaskDetail.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
   import {
@@ -105,6 +106,27 @@
     audit:
       !!data?.audit_configured && data.control.paused && !data.cycle_active && !data.active_tasks
   });
+  /** Polled snapshot facts the setup checklist reads; nothing new is stored or fetched. */
+  const setupStatus = $derived<SetupStatus | null>(
+    data
+      ? {
+          configured: data.configured,
+          audit_configured: data.audit_configured,
+          paused: data.control.paused,
+          mode: data.control.mode,
+          active_tasks: data.active_tasks,
+          cycle_active: data.cycle_active,
+          active_cycle_mode: data.active_cycle_mode,
+          queued: data.counts.queued ?? 0,
+          latest: data.cycles[0] ?? null
+        }
+      : null
+  );
+  /** The checklist hands off to the existing Overview controls; the operator still has to click. */
+  async function chooseOnOverview(action: 'audit' | 'cycle') {
+    await navigate('overview');
+    document.getElementById(action === 'audit' ? 'run-audit-control' : 'run-once-control')?.focus();
+  }
   $effect(() => {
     const scope = `${connected}:${view}:${search}:${filter}:${proposalFilter}:${proposalCycle}`;
     const before = listBefore;
@@ -567,6 +589,7 @@
                       ? 'Start continuous'
                       : 'Pause'}</button
               ><button
+                id="run-once-control"
                 class="button primary"
                 disabled={busy || !canControl.cycle}
                 onclick={() => control('cycle')}
@@ -575,6 +598,7 @@
                   : 'Run once'}</button
               >
               <button
+                id="run-audit-control"
                 class="button"
                 disabled={busy || !canControl.audit}
                 onclick={() => control('audit')}
@@ -627,7 +651,8 @@
                 <h2>A home for your next improvement.</h2>
                 <p>
                   Connect a repository, choose your models, and define the checks that every change
-                  needs to pass.
+                  needs to pass. The setup checklist in Configuration tracks what is entered, saved,
+                  checked and run; nothing starts until you choose Audit or Run once.
                 </p>
                 <button class="button primary" onclick={() => navigate('settings')}
                   >Set up your project<Icon name="arrow" size={17} /></button
@@ -1121,7 +1146,9 @@
             <Settings
               active={view === 'settings'}
               editable={data.control.paused && !data.active_tasks && !data.cycle_active}
+              status={setupStatus}
               onsaved={refresh}
+              onchoose={chooseOnOverview}
             />
           </div>{/if}
         {#if ['queue', 'proposals', 'prs'].includes(view)}
