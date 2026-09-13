@@ -72,6 +72,7 @@ pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
         .route("/tasks", get(task_history))
         .route("/cycles", get(cycle_history))
         .route("/cycles/{id}", get(cycle_detail))
+        .route("/cycles/{id}/evidence", get(cycle_evidence))
         .route("/cycles/{id}/{action}", post(cycle_action))
         .route("/proposals", get(proposal_history))
         .route("/proposals/{cycle}/{id}", get(proposal_detail))
@@ -240,6 +241,14 @@ async fn pr_history(
 }
 async fn cycle_detail(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Cycle>> {
     Ok(Json(s.app.store.get("cycle", &id)?.ok_or(ApiError(
+        StatusCode::NOT_FOUND,
+        "Cycle not found".into(),
+    ))?))
+}
+/// Recorded review and check evidence for one run, assembled from a single consistent
+/// database snapshot by the same assembler the CLI export uses. Read-only.
+async fn cycle_evidence(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
+    Ok(Json(s.app.store.run_evidence(&id)?.ok_or(ApiError(
         StatusCode::NOT_FOUND,
         "Cycle not found".into(),
     ))?))

@@ -34,6 +34,8 @@ struct Args {
     audit: bool,
     #[arg(long, conflicts_with_all = ["doctor", "print_config"], help = "Export a read-only JSON usage report from saved state and exit")]
     usage_report: bool,
+    #[arg(long, value_name = "CYCLE_ID", conflicts_with_all = ["doctor", "print_config", "usage_report"], help = "Export read-only JSON run evidence for one saved cycle and exit")]
+    export_run: Option<String>,
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -57,6 +59,18 @@ async fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&octomus_agent::report::usage_report(
                 &args.data_dir.join("state.db")
+            )?)?
+        );
+        return Ok(());
+    }
+    // Read-only export: no directory creation, permission change, service lock,
+    // migration, App construction or worker start. Diagnostics stay on stderr.
+    if let Some(cycle) = &args.export_run {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&octomus_agent::evidence::export_run(
+                &args.data_dir.join("state.db"),
+                cycle
             )?)?
         );
         return Ok(());

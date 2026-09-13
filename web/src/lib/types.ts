@@ -182,6 +182,132 @@ export type Cycle = {
     maintenance_targets: string[];
   } | null;
 };
+/**
+ * GET /api/cycles/{id}/evidence and `--export-run <cycle-id>`. Mirrors src/evidence.rs.
+ * Recorded review and check evidence only: no live HEAD, workspace, remote,
+ * authorization or current PR state is inspected, and free text still requires
+ * manual review before sharing.
+ */
+export type VerdictState = 'recorded' | 'missing' | 'duplicate' | 'malformed';
+export type ReviewerVerdict = {
+  reviewer: string;
+  state: VerdictState;
+  decision: string | null;
+  reason: string | null;
+  note: string | null;
+};
+export type EvidenceRevisions = {
+  source: string;
+  comparison_base: string | null;
+  default_branch: string;
+  output: string | null;
+};
+export type SessionRoute = {
+  id: string;
+  role: string;
+  status: string;
+  requested_route: Route;
+  started_at: string;
+};
+export type FindingEvidence = { title: string; file: string; priority: string; detail: string };
+export type ReviewRoundEvidence = {
+  session_id: string;
+  revision: string;
+  comparison_base: string;
+  created_at: string;
+  completed: boolean;
+  summary_present: boolean;
+  matches_output_revision: boolean | null;
+  findings: FindingEvidence[];
+};
+export type ReviewEvidence = {
+  rounds_recorded: number;
+  latest: ReviewRoundEvidence | null;
+  clean: boolean;
+  clean_at_output_revision: boolean;
+};
+export type CommandState = 'passed' | 'passed_at_other_revision' | 'failed' | 'no_result';
+export type CommandResult = {
+  command: string;
+  state: CommandState;
+  results_recorded: number;
+  latest_success: boolean | null;
+  latest_revision: string | null;
+  latest_created_at: string | null;
+  matches_output_revision: boolean | null;
+};
+export type CommandEvidence = {
+  state: 'not_configured' | 'recorded';
+  commands: CommandResult[];
+  all_passed_at_output_revision: boolean;
+};
+export type PrReference = { number: number | null; url: string | null; source: string };
+export type TaskEvidence = {
+  id: string;
+  cycle_id: string;
+  proposal_id: string;
+  status: string;
+  branch: string;
+  attempts: number;
+  blocked_reason: string | null;
+  error_recorded: boolean;
+  created_at: string;
+  updated_at: string;
+  revisions: EvidenceRevisions;
+  sessions: SessionRoute[];
+  latest_review: ReviewEvidence;
+  required_commands: CommandEvidence;
+  pull_request: PrReference | null;
+  gaps: string[];
+};
+export type ProposalEvidence = {
+  id: string;
+  title: string;
+  target: string;
+  tier: string;
+  category: string;
+  problem: string;
+  benefit: string;
+  scope: string;
+  evidence: string[];
+  final_decision: string;
+  final_reason: string;
+  reviewer_verdicts: ReviewerVerdict[];
+  /** Zero or many: every task matching (cycle_id, proposal_id) is preserved. */
+  linked_tasks: TaskEvidence[];
+  gaps: string[];
+};
+export type PlanningOutcome = {
+  status: string;
+  planning_finished: boolean;
+  proposal_count: number;
+  decisions: Record<string, number>;
+  creates_execution_queue: boolean;
+  error_recorded: boolean;
+  reviewer_batches_saved: number;
+};
+export type CycleEvidence = {
+  id: string;
+  number: number;
+  mode: 'execution' | 'audit';
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  repository: string;
+  grounding_revision: string | null;
+  planning: PlanningOutcome;
+};
+export type RunEvidenceV1 = {
+  schema_version: number;
+  generated_at: string;
+  kind: 'recorded_review_check_evidence';
+  review_required_before_sharing: boolean;
+  review_requirement: string;
+  limitations: string[];
+  cycle: CycleEvidence;
+  proposals: ProposalEvidence[];
+  gaps: string[];
+};
 export type Event = { id: number; at: string; entity_id: string; kind: string; message: string };
 export type Snapshot = {
   status: string;

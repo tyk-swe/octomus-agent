@@ -307,6 +307,20 @@ impl Store {
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
     }
+    /// Recorded run evidence for one cycle. The cycle and every task naming it are read
+    /// inside one transaction, so the result always describes a single consistent
+    /// snapshot rather than the dashboard's recent task window.
+    pub fn run_evidence(&self, cycle_id: &str) -> Result<Option<Value>> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        let snapshot = crate::evidence::read_snapshot(&tx, cycle_id)?;
+        tx.commit()?;
+        // Assemble and redact without holding the database lock.
+        drop(c);
+        snapshot
+            .map(|(cycle, tasks)| crate::evidence::evidence_value(&cycle, &tasks))
+            .transpose()
+    }
     pub fn duplicate_tasks(
         &self,
         repository: &str,

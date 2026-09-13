@@ -3,6 +3,7 @@ pub mod assets;
 pub mod codex;
 pub mod config;
 pub mod engine;
+pub mod evidence;
 pub mod git;
 pub mod model;
 pub mod opencode;
