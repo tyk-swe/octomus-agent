@@ -252,3 +252,63 @@ and crate guards, and both browser suites. The dashboard browser suite passed 11
 with five intentional viewport skips; the showcase passed nine contract tests and six
 browser tests. This supersedes the partial-suite coverage recorded above and remains
 local fixture validation, not live deployment acceptance.
+
+### Independent re-verification — 2026-09-13
+
+A second pass reviewed the shipped first-run path against the brief and re-ran the
+evidence rather than trusting the record above. The worktree was clean at `22ea222`
+before and after; no file was modified.
+
+Review found nothing to correct. `requiredRoutes` in `setup.ts` still mirrors
+`Config::routes_for` exactly (audits drop the code reviewer, the five tiers and
+repair). `preflightStep` still keys the result to the server's returned snapshot
+through the key-order-insensitive `configIdentity`, so a reordered serialization is
+not a change while a real external save is. `acceptSaved` still clears the result
+whenever the saved identity moves, `doctor` clears it on transport failure, and
+`disconnect` unmounts `Settings` so no result survives a session boundary. No
+checklist path reaches `/api/control`; the link handlers only move focus, and the
+Overview hand-off focuses the header controls without pressing them. On the Overview,
+`Run once` remains the only primary-styled control, so continuous operation is still
+an explicit second choice rather than the default first action.
+
+The README's pending-release wording was re-checked read-only, because it carries a
+dated claim. The GitHub API reports zero releases and zero tags for
+`tyk-swe/octomus-agent`, and the crates.io API returns 404 for `octomus-agent`. Both
+remain unpublished, so the existing wording stands and nothing was upgraded to
+"available". A plain `curl` to crates.io returns 403 from its CDN and is not evidence
+either way; the API response is what was used. The documented installer surface also
+matches `install.sh`, which takes an optional `[vVERSION]` positional and `INSTALL_DIR`
+and nothing else, and the shipped `discovery_agents` default of nine keeps the
+README's 13-admission figure consistent with `docs/cost.md`.
+
+Checks re-run this pass, all passing:
+
+- `npm ci --prefix web` restored the locked dependency tree. npm 11 leaves esbuild's
+  postinstall unapproved and prints a warning; the platform package supplies the
+  binary, so the dashboard build was unaffected.
+- `make check`: dashboard build, `cargo fmt --check`, `cargo clippy --all-targets
+  --locked -D warnings`, dashboard Svelte/TypeScript (172 files, zero errors and
+  warnings), showcase Svelte/TypeScript (78 files, zero errors and warnings), Prettier.
+- Focused operator coverage, `npx playwright test tests/operator-experience.spec.ts`:
+  39 passed and 1 skipped across desktop and mobile in 3.3 minutes. The skip is the
+  desktop-only short-sidebar case, which the mobile project excludes by design. This
+  covers the unconfigured, entered, partially configured, saved, checked, dirty,
+  discarded, invalidated, failed-preflight, active-work, audit-in-progress,
+  continuous and disconnect/expiry/reload states, each asserting the recorded write
+  sequence so no case starts work.
+- Focused preset coverage, `npx playwright test tests/dashboard.spec.ts -g "Astra
+  rehearsal"`: 6 passed across both viewports, covering confirmation, cancellation,
+  unrelated draft preservation, missing/stale/failed/incompatible catalogs,
+  unsupported efforts, and the active-work and continuous refusals.
+- `cargo build --locked` re-embedded the dashboard; `python3 tests/distribution.py`
+  passed both stages and `python3 tests/crate_guards.py` passed. These are local
+  fixture packaging checks and are not dedicated-deployment acceptance.
+- `npm run showcase:test --prefix web`: nine contract tests and six browser tests
+  passed, covering the installation CTA's target, `rel` and pending wording.
+
+Not re-run this pass, because no Rust source changed and the record above already
+covers them under a single `make check test`: `cargo test --locked`, `tests/e2e.py`,
+`tests/e2e_runners.py` and `tests/e2e_hardening.py`.
+
+Unresolved gates are unchanged: no live validation, no owner VM or bot deployment, no
+public release or crate, and no owner-approved recorded showcase payload.
