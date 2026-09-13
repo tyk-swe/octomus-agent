@@ -13,11 +13,12 @@ and a temporary instance. Dedicated-deployment acceptance was not established.
 | Revision | Observed value |
 | --- | --- |
 | Initial application / target baseline / reviewed comparison base | `a2f8f6288ba7a546fb4c2a1ab993c2210778bb73` |
-| Corrected application, local development commit; not pushed | `14ffefc610a0f0330624c531f945f87ad28580b1` |
+| Corrected application used for continuation | `14ffefc610a0f0330624c531f945f87ad28580b1` |
 | Output commit = clean review = successful required check = public PR head | `06bdf7a81dde2bb932e9d18b102568423493690d` |
 
 The GitHub API and public PR were inspected at 18:21 UTC. PR base `main` still
-pointed to the recorded baseline. The PR remains open; no merge was performed.
+pointed to the recorded baseline. At rehearsal completion the PR was open; no
+merge was performed during the rehearsal.
 
 ## Actual attempts and decisions
 
@@ -25,7 +26,7 @@ pointed to the recorded baseline. The PR remains open; no merge was performed.
    sessions: one proposal accepted, six deferred. Its task
    `73aaf60b-cedc-49a1-b8ce-374022c4afe7` blocked before its first executor turn:
    `thread/resume` returned `no rollout found`. The original failure is retained
-   in [FAIL.md](../../FAIL.md) and private state evidence.
+   in the private state and verification evidence archive.
 2. After the development fix and supported **Supersede and rediscover**, execution
    cycle `aebbd918-063b-440e-97c9-1758c93b36b0` replanned: one accepted, four
    deferred. Proposal `rediscover-73aaf60b-cedc-49a1-b8ce-374022c4afe7` produced task
@@ -59,9 +60,9 @@ Four opt-in Rust tests remain excluded from the default Make target. Stored
 verification output is capped at 16 KiB: its browser console tail is unavailable.
 The successful command/revision record and final browser passed marker are present;
 executor and reviewer summaries both report 22 browser tests passed. GitHub's
-separate client-contract jobs passed; its `verify` jobs were still running at
-18:31 UTC. The separate GitHub Codex review marked completion, with no inline
-findings observed at 18:26 UTC. Pending checks are not recorded as green.
+separate client-contract and `verify` jobs subsequently passed; all checks on the
+PR head were confirmed green on September 13. The separate GitHub Codex review
+marked completion, with no inline findings observed at 18:26 UTC on September 12.
 
 ## Provenance, usage and interventions
 
@@ -93,6 +94,6 @@ Evidence references: private `publication-verified.json`, cycle/task records,
 `usage-final.json`, baseline/development command results, paired regression logs,
 `interventions.jsonl`, `cleanup-final.json`, and the state archive manifest.
 Human usefulness assessment: **NOT PROVIDED**. The demonstrated technical benefit
-is prevention of false verification timeouts. Next owner action: review PR #3 and
-the local application fix, wait for outstanding GitHub checks before merge, and
-review this draft before any public sharing. No further live attempt is running.
+is prevention of false verification timeouts. The remaining owner assessment is
+human usefulness and suitability for a broader public account of the rehearsal.
+No further live attempt is running.

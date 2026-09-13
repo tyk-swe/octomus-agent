@@ -58,15 +58,15 @@ printf 'make check: %s\nmake test: %s\n' "$octomus_check_exit" "$octomus_test_ex
 
 If browser prerequisites are missing, use the installation commands in
 [AGENTS.md](../../AGENTS.md); record unavailable prerequisites rather than
-omitting browser tests. For any failed command, create or append to repository
-root `FAIL.md` with the revision/diff, environment, UTC times, exact command and
+omitting browser tests. For any failed command, retain a private failure record
+outside Git with the revision/diff, environment, UTC times, exact command and
 exit, redacted failure excerpt, reproduction, and checks not reached. Preserve
 the first failure and label any deliberate rerun. Do not create a failure record
 claiming a failure when all commands passed. Report intentionally ignored Rust
 tests separately; these targets do not cover all standalone CI/release jobs.
 
 If a requested live rehearsal cannot pass preflight, record its unmet prerequisites
-in a separate **Live preflight — BLOCKED** section of `FAIL.md`. An unstarted
+in a separate **Live preflight — BLOCKED** section of that private record. An unstarted
 cycle is not a failed inference, and successful fixture tests do not clear those
 blockers. Record local command results separately.
 
