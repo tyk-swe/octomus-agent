@@ -389,6 +389,13 @@ def audit_scenario(mode):
                         raise AssertionError('Conflicting control accepted')
                     except urllib.error.HTTPError as e:
                         assert e.code == 409
+                        message = json.load(e)['error']
+                        explanation = {
+                            'audit': 'Audits require paused operation with no active work',
+                            'cycle': 'Run once requires paused operation with no active work',
+                            'resume': 'Wait for the audit to finish before starting continuous operation',
+                        }[action]
+                        assert message.startswith(explanation), message
                 if mode == 'interrupted':
                     service.stop(crash=True)
                 (root / 'audit-hold').unlink()

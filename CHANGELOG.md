@@ -24,6 +24,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Preserve configuration drafts and model catalogs across dashboard navigation,
+  show unsaved changes with local discard, and require saved values for connection checks.
+- Improve dashboard typography, mobile touch targets and keyboard navigation; add
+  distinct list loading, empty and retry states with retained results after refresh failures.
+- Share dashboard action eligibility and pending feedback; distinguish delivered tasks
+  from merged PRs and explain control conflicts for the requested operation.
+- Lead installation guidance with the available source build, document both runners
+  for contributors, and refresh the synthetic dashboard screenshot.
 - Check worktree and HEAD before and after every verification command; a command that
   changes tracked state is recorded as failed evidence and blocks the task.
 - Budget repair rounds per attempt: explicit retry starts a fresh round budget while

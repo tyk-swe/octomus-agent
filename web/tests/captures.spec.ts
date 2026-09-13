@@ -1,6 +1,6 @@
 /**
- * Screenshot captures of the populated dashboard, the run-evidence panel and the task
- * evidence panel at the documented review viewports, using only SYNTHETIC fixtures.
+ * Screenshot captures of the populated dashboard, Configuration, the run-evidence
+ * panel and the task evidence panel at review viewports, using only SYNTHETIC fixtures.
  *
  * Captures land in `web/artifacts/captures/<label>/` (Git-ignored) so that a "before"
  * set survives Playwright's own `test-results` cleanup. Every file name carries the
@@ -512,6 +512,84 @@ for (const viewport of viewports) {
     await page.screenshot({ path: `${directory}/${prefix}-evidence-failed-viewport.png` });
     await page.getByRole('button', { name: 'Close run evidence' }).click();
     demo.evidence = 'ok';
+
+    // Configuration draft, including mobile feedback and a synthetic runner catalog.
+    await page.route('**/api/config', async (request) => {
+      expect(request.request().method()).toBe('GET');
+      const response = await request.fetch();
+      const config = await response.json();
+      const model = { backend: 'codex', model: 'gpt-6-astra', effort: 'medium' };
+      config.repository = '/srv/synthetic/project';
+      config.github_repo = 'fixture/project';
+      config.branch_prefix = 'tyk/';
+      config.codex_binary = 'codex';
+      config.opencode_binary = 'opencode';
+      config.verification_commands = ['cargo test'];
+      config.roles = Object.fromEntries(Object.keys(config.roles).map((key) => [key, model]));
+      config.repair_route = model;
+      await request.fulfill({ json: config });
+    });
+    await page.route('**/api/model-catalog', (request) =>
+      request.fulfill({
+        json: [
+          {
+            backend: 'codex',
+            provider: null,
+            provider_name: null,
+            model: 'gpt-6-astra',
+            display_name: 'Astra',
+            efforts: ['low', 'medium', 'high'],
+            variants: [],
+            available: true,
+            unavailable_reason: null
+          }
+        ]
+      })
+    );
+    await openNavigation(page, 'Configuration', mobile);
+    await page.getByRole('button', { name: 'Load Codex models' }).click();
+    await page
+      .getByRole('textbox', { name: /^Verification commands/ })
+      .fill('cargo test\nnpm run check --prefix web');
+    await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible();
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: `${directory}/${prefix}-configuration-viewport.png` });
+    await page.screenshot({
+      path: `${directory}/${prefix}-configuration-full.png`,
+      fullPage: true
+    });
+    await expectNoHorizontalOverflow(page, 'configuration');
+    await expectAccessible(page, 'configuration');
+    if (mobile) {
+      const smallTargets = await page
+        .locator(
+          'button:visible, input:visible, select:visible, textarea:visible, .checkbox:visible'
+        )
+        .evaluateAll((elements) =>
+          elements
+            .filter((element) => !element.matches('[type="checkbox"]'))
+            .filter((element) => {
+              const box = element.getBoundingClientRect();
+              return box.height < 44 || box.width < 44;
+            })
+            .map((element) => element.textContent?.trim() || element.getAttribute('aria-label'))
+        );
+      expect(smallTargets, '44px mobile controls').toEqual([]);
+      expect(
+        await page
+          .locator('input:visible:not([type="checkbox"]), textarea:visible, select:visible')
+          .evaluateAll((elements) =>
+            elements.every((element) => parseFloat(getComputedStyle(element).fontSize) >= 16)
+          )
+      ).toBe(true);
+    }
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    if (mobile) await page.getByRole('button', { name: 'Toggle navigation' }).click();
+    const motion = await page
+      .locator('.sidebar')
+      .evaluate((element) => parseFloat(getComputedStyle(element).transitionDuration));
+    expect(motion).toBeLessThanOrEqual(0.00001);
+    await page.screenshot({ path: `${directory}/${prefix}-configuration-reduced-motion.png` });
 
     expect(errors).toEqual([]);
     void now;

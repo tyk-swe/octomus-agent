@@ -26,7 +26,9 @@
     connectionError = $state(''),
     refreshing = false,
     busy = $state(false),
+    pendingAction = $state(''),
     view = $state('overview'),
+    settingsVisited = $state(false),
     search = $state(''),
     filter = $state('all'),
     proposalFilter = $state('all'),
@@ -85,13 +87,24 @@
   let previousPages = $state<(number | null)[]>([]);
   let listRefresh = $state(0);
   let listLoading = $state(false);
+  let listLoaded = $state(false);
+  let listError = $state('');
   let listGeneration = 0;
   let listRequest: AbortController | null = null;
   let lastScope = '';
+  let lastPage = '';
   let sessionGeneration = 0;
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
   let latestCycle = $derived(data?.cycles[0]);
+  type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
+  const canControl = $derived({
+    resume: !!data?.configured && data.active_cycle_mode !== 'audit',
+    pause: !!data?.configured && data.active_cycle_mode !== 'audit',
+    cycle: !!data?.configured && data.control.paused && !data.cycle_active && !data.active_tasks,
+    audit:
+      !!data?.audit_configured && data.control.paused && !data.cycle_active && !data.active_tasks
+  });
   $effect(() => {
     const scope = `${connected}:${view}:${search}:${filter}:${proposalFilter}:${proposalCycle}`;
     const before = listBefore;
@@ -103,11 +116,25 @@
       previousPages = [];
     }
     if (!connected || !['queue', 'proposals', 'prs'].includes(view)) return;
-    const timer = setTimeout(() => loadList(changed ? null : before), 100);
+    const cursor = changed ? null : before;
+    const page = `${scope}:${cursor}`;
+    if (page !== lastPage) {
+      lastPage = page;
+      filtered = [];
+      proposals = [];
+      prRows = [];
+      decisionCounts = {};
+      listNext = null;
+      listLoaded = false;
+      listError = '';
+    }
+    listLoading = true;
+    const timer = setTimeout(() => loadList(cursor), 100);
     void refreshNumber;
     return () => {
       clearTimeout(timer);
       listRequest?.abort();
+      listGeneration++;
     };
   });
   async function loadList(before: number | null) {
@@ -157,8 +184,11 @@
       }
       if (view === 'prs') prRows = page.items as PrObservation[];
       listNext = page.next_cursor;
+      listLoaded = true;
+      listError = '';
     } catch (e) {
-      if (!controller.signal.aborted) error = (e as Error).message;
+      if (current === listGeneration && !controller.signal.aborted)
+        listError = (e as Error).message;
     } finally {
       if (current === listGeneration) listLoading = false;
     }
@@ -210,12 +240,19 @@
     }
   }
   async function cycleAction(value: string) {
+    if (busy) return;
+    busy = true;
+    pendingAction = value;
+    error = '';
     try {
       await api(`/cycles/${proposalCycle}/${value}`, 'POST');
       await loadCycles();
       await refresh();
     } catch (e) {
       error = (e as Error).message;
+    } finally {
+      busy = false;
+      pendingAction = '';
     }
   }
   async function refresh() {
@@ -268,8 +305,13 @@
   async function navigate(id: string) {
     const currentSession = sessionGeneration;
     view = id;
+    if (id === 'settings') settingsVisited = true;
     search = '';
     filter = 'all';
+    mobileOpen = false;
+    await tick();
+    document.getElementById('main-content')?.focus();
+    window.scrollTo(0, 0);
     if (id === 'proposals') {
       try {
         await loadCycles();
@@ -277,12 +319,27 @@
         if (currentSession === sessionGeneration) error = (e as Error).message;
       }
     }
+  }
+  async function closeNavigation(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || !mobileOpen) return;
+    event.preventDefault();
     mobileOpen = false;
     await tick();
-    window.scrollTo(0, 0);
+    document.getElementById('navigation-toggle')?.focus();
   }
-  async function control(action: string) {
+  async function toggleNavigation() {
+    mobileOpen = !mobileOpen;
+    if (mobileOpen) {
+      await tick();
+      document
+        .querySelector<HTMLButtonElement>('#workspace-navigation [aria-current="page"]')
+        ?.focus();
+    }
+  }
+  async function control(action: ControlAction) {
+    if (busy || !canControl[action]) return;
     busy = true;
+    pendingAction = action;
     error = '';
     try {
       await api(`/control/${action}`, 'POST');
@@ -296,11 +353,13 @@
       error = (e as Error).message;
     } finally {
       busy = false;
+      pendingAction = '';
     }
   }
   function disconnect() {
     sessionGeneration++;
     connected = false;
+    settingsVisited = false;
     data = null;
     setToken('');
     selected = null;
@@ -310,6 +369,11 @@
     listRequest?.abort();
     refreshing = false;
     listLoading = false;
+    listLoaded = false;
+    listError = '';
+    lastPage = '';
+    busy = false;
+    pendingAction = '';
     filtered = [];
     proposals = [];
     prRows = [];
@@ -332,6 +396,7 @@
   }
 </script>
 
+<svelte:window onkeydown={closeNavigation} />
 <svelte:head
   ><title>Octomus Agent · Your project, moving forward</title><meta
     name="description"
@@ -395,8 +460,9 @@
     </footer>
   </main>
 {:else if data}
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="app-shell">
-    <aside class:mobile-open={mobileOpen} class="sidebar">
+    <aside id="workspace-navigation" class:mobile-open={mobileOpen} class="sidebar">
       <a class="brand" href="#overview" onclick={() => navigate('overview')}
         ><img src="/favicon.svg" alt="" width="35" height="35" /><span
           >octomus<span class="brand-light">agent</span></span
@@ -415,6 +481,7 @@
       <nav aria-label="Main navigation">
         {#each navigation as item}<button
             aria-label={item.label}
+            aria-current={view === item.id ? 'page' : undefined}
             class:active={view === item.id}
             onclick={() => navigate(item.id)}
             ><Icon name={item.icon} size={19} /><span>{item.label}</span
@@ -441,8 +508,11 @@
         <div class="breadcrumbs">
           <button
             class="icon-button mobile-toggle"
+            id="navigation-toggle"
             aria-label="Toggle navigation"
-            onclick={() => (mobileOpen = !mobileOpen)}><Icon name="menu" /></button
+            aria-controls="workspace-navigation"
+            aria-expanded={mobileOpen}
+            onclick={toggleNavigation}><Icon name="menu" /></button
           ><span>Workspace</span><Icon name="chevron" size={13} /><strong
             >{navigation.find((n) => n.id === view)?.label}</strong
           >
@@ -486,30 +556,31 @@
           {#if view !== 'settings'}<div class="actions">
               <button
                 class="button"
-                disabled={busy || !data.configured || data.active_cycle_mode === 'audit'}
+                disabled={busy || !canControl[data.control.paused ? 'resume' : 'pause']}
                 onclick={() => control(data?.control.paused ? 'resume' : 'pause')}
-                ><Icon name={data.control.paused ? 'play' : 'pause'} size={16} />{data.control
-                  .paused
-                  ? 'Start continuous'
-                  : 'Pause'}</button
+                ><Icon name={data.control.paused ? 'play' : 'pause'} size={16} />{pendingAction ===
+                'resume'
+                  ? 'Starting continuous…'
+                  : pendingAction === 'pause'
+                    ? 'Pausing…'
+                    : data.control.paused
+                      ? 'Start continuous'
+                      : 'Pause'}</button
               ><button
                 class="button primary"
-                disabled={busy ||
-                  !data.configured ||
-                  data.cycle_active ||
-                  !data.control.paused ||
-                  data.active_tasks > 0}
-                onclick={() => control('cycle')}><Icon name="refresh" size={16} />Run once</button
+                disabled={busy || !canControl.cycle}
+                onclick={() => control('cycle')}
+                ><Icon name="refresh" size={16} />{pendingAction === 'cycle'
+                  ? 'Starting run…'
+                  : 'Run once'}</button
               >
               <button
                 class="button"
-                disabled={busy ||
-                  !data.audit_configured ||
-                  !data.control.paused ||
-                  data.cycle_active ||
-                  data.active_tasks > 0}
+                disabled={busy || !canControl.audit}
                 onclick={() => control('audit')}
-                ><Icon name="proposals" size={16} />Run an audit</button
+                ><Icon name="proposals" size={16} />{pendingAction === 'audit'
+                  ? 'Starting audit…'
+                  : 'Run an audit'}</button
               >
             </div>{/if}
         </div>
@@ -593,9 +664,9 @@
               >
             </article>
             <article class="stat">
-              <div class="stat-label">Published PRs<Icon name="prs" size={17} /></div>
+              <div class="stat-label">Delivered tasks<Icon name="prs" size={17} /></div>
               <strong>{(data.counts.published ?? 0).toString().padStart(2, '0')}</strong><small
-                >{data.merged_prs} merged by maintainers</small
+                >{data.merged_prs} PRs merged by maintainers</small
               >
             </article>
             <article class="stat">
@@ -748,11 +819,13 @@
                   </p>
                   <button
                     class="text-button"
+                    disabled={data.configured && (busy || !canControl.cycle)}
                     onclick={() => (data?.configured ? control('cycle') : navigate('settings'))}
-                    >{data.configured ? 'Discover opportunities' : 'Configure your repository'}<Icon
-                      name="arrow"
-                      size={16}
-                    /></button
+                    >{pendingAction === 'cycle'
+                      ? 'Starting run…'
+                      : data.configured
+                        ? 'Discover opportunities'
+                        : 'Configure your repository'}<Icon name="arrow" size={16} /></button
                   >
                 </div>{/if}
             </section>
@@ -843,15 +916,18 @@
         {:else if view === 'queue'}
           <section class="panel">
             <div class="list-toolbar">
-              <div class="filter-tabs" aria-label="Task filters">
+              <div class="filter-tabs" role="group" aria-label="Task filters">
                 {#each ['all', 'active', 'queued', 'published', 'attention', 'blocked', 'cancelled'] as state}<button
                     class:active={filter === state}
+                    aria-pressed={filter === state}
                     onclick={() => (filter = state)}>{state}</button
                   >{/each}
               </div>
               {@render searchBox()}
             </div>
-            {#if filtered.length}{@render taskList(filtered)}{:else}<div class="empty">
+            {#if filtered.length}{@render taskList(filtered)}{:else if listLoaded}<div
+                class="empty"
+              >
                 <Icon name="queue" size={34} />
                 <h3>
                   {search || filter !== 'all'
@@ -875,10 +951,16 @@
                 >Load older cycles</button
               >{/if}
             {#if proposalCycle !== 'all' && cycleRows.find((c) => c.id === proposalCycle)?.status !== 'running'}
-              <button class="button" onclick={() => cycleAction('archive')}>Archive cycle</button>
+              <button class="button" disabled={busy} onclick={() => cycleAction('archive')}
+                >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
+              >
               {#if cycleRows.find((c) => c.id === proposalCycle)?.lifecycle.archived_at}<button
                   class="button danger"
-                  onclick={() => cycleAction('discard')}>Discard cycle workspaces</button
+                  disabled={busy}
+                  onclick={() => cycleAction('discard')}
+                  >{pendingAction === 'discard'
+                    ? 'Discarding workspaces…'
+                    : 'Discard cycle workspaces'}</button
                 >{/if}
             {/if}
           </div>
@@ -900,9 +982,10 @@
           </div>
           <section class="panel">
             <div class="list-toolbar">
-              <div class="filter-tabs" aria-label="Proposal filters">
+              <div class="filter-tabs" role="group" aria-label="Proposal filters">
                 {#each ['all', 'accepted', 'rejected', 'deferred', 'candidate'] as state}<button
                     class:active={proposalFilter === state}
+                    aria-pressed={proposalFilter === state}
                     onclick={() => (proposalFilter = state)}>{state}</button
                   >{/each}
               </div>
@@ -949,18 +1032,20 @@
                       >Inspect decision evidence<Icon name="arrow" size={15} /></button
                     >
                   </div>
-                </article>{:else}<div class="empty">
+                </article>{/each}
+              {#if !proposals.length && listLoaded}<div class="empty">
                   <Icon name="proposals" size={34} />
                   <h3>
-                    {search || proposalFilter !== 'all'
+                    {search || proposalFilter !== 'all' || proposalCycle !== 'all'
                       ? 'No matching proposals'
                       : 'Better ideas start with questions.'}
                   </h3>
                   <p>
-                    Discovery explores your project. Two adversarial reviewers challenge each
-                    proposal before the orchestrator decides.
+                    {search || proposalFilter !== 'all' || proposalCycle !== 'all'
+                      ? 'Try another cycle, filter or search term.'
+                      : 'Discovery explores your project. Two adversarial reviewers challenge each proposal before the orchestrator decides.'}
                   </p>
-                </div>{/each}
+                </div>{/if}
             </div>
           </section>
         {:else if view === 'prs'}
@@ -970,9 +1055,10 @@
             >
           </div>
           <div class="list-toolbar">
-            <div class="filter-tabs" aria-label="PR filters">
+            <div class="filter-tabs" role="group" aria-label="PR filters">
               {#each ['all', 'open', 'merged', 'closed'] as state}<button
                   class:active={filter === state}
+                  aria-pressed={filter === state}
                   onclick={() => (filter = state)}>{state}</button
                 >{/each}
             </div>
@@ -1004,11 +1090,20 @@
                     ? ' · external head change'
                     : ''}</span
                 ><Icon name="external" size={16} /></a
-              >{:else}<div class="empty">
+              >{/each}
+            {#if !prRows.length && listLoaded}<div class="empty">
                 <Icon name="prs" size={34} />
-                <h3>Room for your next improvement.</h3>
-                <p>Open Octomus branches appear here after discovery grounds the repository.</p>
-              </div>{/each}
+                <h3>
+                  {search || filter !== 'all'
+                    ? 'No matching pull requests'
+                    : 'Room for your next improvement.'}
+                </h3>
+                <p>
+                  {search || filter !== 'all'
+                    ? 'Try another filter or search term.'
+                    : 'Open Octomus branches appear here after discovery grounds the repository.'}
+                </p>
+              </div>{/if}
           </section>
           {#if published.length}<section class="panel published-panel">
               <div class="section-heading">
@@ -1017,10 +1112,14 @@
               </div>
               {@render taskList(published)}
             </section>{/if}
-        {:else}<Settings
-            editable={data.control.paused && !data.active_tasks && !data.cycle_active}
-            onsaved={refresh}
-          />{/if}
+        {/if}
+        {#if settingsVisited}<div hidden={view !== 'settings'}>
+            <Settings
+              active={view === 'settings'}
+              editable={data.control.paused && !data.active_tasks && !data.cycle_active}
+              onsaved={refresh}
+            />
+          </div>{/if}
         {#if ['queue', 'proposals', 'prs'].includes(view)}
           <div class="actions" aria-label="History pagination">
             <button
@@ -1033,14 +1132,18 @@
             >
             <button
               class="button"
-              disabled={listLoading || listNext === null}
+              disabled={listLoading || !!listError || listNext === null}
               onclick={() => {
                 previousPages = [...previousPages, listBefore];
                 listBefore = listNext;
               }}>Next page</button
             >
-            {#if listLoading}<span>Loading…</span>{/if}
           </div>
+          <!-- Background feedback follows all results, including PR delivery history. -->
+          {@render listFeedback(
+            view === 'queue' ? 'tasks' : view === 'proposals' ? 'proposals' : 'pull requests',
+            filtered.length + proposals.length + prRows.length
+          )}
         {/if}
         <footer class="content-footer">
           <span><span class="footer-dot"></span> Thoughtful progress. No artificial churn.</span
@@ -1062,6 +1165,32 @@
       onclose={closePanels}
     />{/if}
 {/if}
+{#snippet listFeedback(noun: string, count: number)}
+  {#if listError}<div class="notice error list-feedback" role="alert">
+      <span
+        >{listLoaded
+          ? `Could not refresh ${noun}. Showing the last received results.`
+          : `Could not load ${noun}.`}
+        {listError}</span
+      >
+      <button class="button" disabled={listLoading} onclick={() => listRefresh++}>Retry</button>
+    </div>{/if}
+  <!-- Keep the status line's space between polls, including at the bottom of a page. -->
+  {#if listLoading || listLoaded}<div
+      class:empty={!listLoaded && !count}
+      class="list-feedback"
+      aria-live="polite"
+    >
+      {#if !listLoaded && !count}<span class="spinner"></span>{/if}
+      <p>
+        {listLoading
+          ? listLoaded
+            ? `Refreshing ${noun}…`
+            : `Loading ${noun}…`
+          : `Results on this page: ${count}`}
+      </p>
+    </div>{/if}
+{/snippet}
 {#snippet searchBox()}<label class="search-box"
     ><Icon name="search" size={17} /><input
       bind:value={search}

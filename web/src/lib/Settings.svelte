@@ -1,17 +1,34 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
   import { api } from './api';
   import type { Backend, Config, Model, ModelCatalog, Route } from './types';
   import RouteEditor from './RouteEditor.svelte';
   import AstraRehearsal from './AstraRehearsal.svelte';
   import Icon from './Icon.svelte';
-  let { editable, onsaved }: { editable: boolean; onsaved: () => void } = $props();
+  let { active, editable, onsaved }: { active: boolean; editable: boolean; onsaved: () => void } =
+    $props();
   let config = $state<Config | null>(null),
+    baseline = $state(''),
+    baselineCommands = $state(''),
+    loading = $state(false),
+    loadError = $state(''),
     error = $state(''),
     message = $state(''),
-    busy = $state(false),
+    pending = $state(''),
+    presetResetKey = $state(0),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
     commands = $state('');
+  const busy = $derived(pending !== '');
+  const dirty = $derived(
+    config !== null && (JSON.stringify(config) !== baseline || commands !== baselineCommands)
+  );
+  // Revisit saved values only on navigation, never in response to a draft edit.
+  $effect(() => {
+    if (active) untrack(() => void load());
+  });
+  $effect(() => {
+    if (dirty) message = '';
+  });
   const categories = [
     'features',
     'correctness',
@@ -140,31 +157,59 @@
     }
   ];
   async function load() {
+    if (loading || busy || dirty) return;
+    loading = true;
+    loadError = '';
     try {
-      config = await api<Config>('/config');
-      commands = config.verification_commands.join('\n');
+      const saved = await api<Config>('/config');
+      // The operator may have started typing while this refresh was in flight.
+      if (!dirty) acceptSaved(saved);
     } catch (e) {
-      error = (e as Error).message;
+      loadError = (e as Error).message;
+    } finally {
+      loading = false;
     }
   }
-  onMount(load);
+  function acceptSaved(saved: Config) {
+    const serialized = JSON.stringify(saved);
+    if (serialized !== baseline) {
+      error = '';
+      message = '';
+    }
+    config = saved;
+    baseline = serialized;
+    commands = saved.verification_commands.join('\n');
+    baselineCommands = commands;
+  }
+  function discard() {
+    if (!dirty || busy) return;
+    config = JSON.parse(baseline);
+    commands = baselineCommands;
+    presetResetKey++;
+    error = '';
+    message = 'Changes discarded. Saved configuration restored.';
+  }
   async function save() {
-    if (!config) return;
-    busy = true;
+    if (!config || !editable || busy || loading || !dirty) return;
+    pending = 'save';
     error = '';
     message = '';
     try {
-      config.verification_commands = commands
-        .split('\n')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      await api('/config', 'PUT', config);
+      const saved = {
+        ...config,
+        verification_commands: commands
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      };
+      await api('/config', 'PUT', saved);
+      acceptSaved(saved);
       message = 'Configuration saved.';
       onsaved();
     } catch (e) {
       error = (e as Error).message;
     } finally {
-      busy = false;
+      pending = '';
     }
   }
   function routeCatalog(route: Route) {
@@ -173,9 +218,9 @@
     return entry?.binary === config?.[`${backend}_binary`] ? entry : undefined;
   }
   async function catalog(backend: Backend) {
-    if (!config) return;
+    if (!config || !editable || busy || loading) return;
     const binary = config[`${backend}_binary`];
-    busy = true;
+    pending = `catalog-${backend}`;
     error = '';
     message = '';
     try {
@@ -186,11 +231,12 @@
       error = (e as Error).message;
       catalogs[backend] = { binary, models: [], loaded: false, error };
     } finally {
-      busy = false;
+      pending = '';
     }
   }
   async function doctor(mode: 'execution' | 'audit') {
-    busy = true;
+    if (!config || dirty || busy || loading) return;
+    pending = mode;
     error = '';
     message = '';
     try {
@@ -199,7 +245,7 @@
     } catch (e) {
       error = (e as Error).message;
     } finally {
-      busy = false;
+      pending = '';
     }
   }
   function numberValue(key: keyof Config, value: string) {
@@ -208,19 +254,39 @@
 </script>
 
 <div class="settings-actions">
-  <p class="muted">Configure once. Keep the work moving.</p>
-  <button class="button" onclick={() => doctor('execution')} disabled={busy}
-    ><Icon name="shield" size={16} /> Check connection</button
-  >
-  <button class="button" onclick={() => doctor('audit')} disabled={busy}
-    >Check audit connection</button
-  >
+  <p class="muted" id="connection-check-help">
+    Connection checks validate saved configuration. Save or discard edits before checking. Model
+    catalogs use the executable paths entered below.
+  </p>
+  <div class="actions" aria-describedby="connection-check-help">
+    <button
+      class="button"
+      onclick={() => doctor('execution')}
+      disabled={!config || busy || loading || dirty}
+      ><Icon name="shield" size={16} />{pending === 'execution'
+        ? 'Checking connection…'
+        : 'Check connection'}</button
+    >
+    <button
+      class="button"
+      onclick={() => doctor('audit')}
+      disabled={!config || busy || loading || dirty}
+      >{pending === 'audit' ? 'Checking audit connection…' : 'Check audit connection'}</button
+    >
+  </div>
 </div>
 {#if !editable}<div class="notice">
     <Icon name="clock" /> Pause the service and wait for active work to finish to edit configuration.
   </div>{/if}
-{#if error}<div class="notice error" role="alert">{error}</div>{/if}
-{#if message}<div class="notice success" role="status">{message}</div>{/if}
+{#if loadError}<div class="notice error" role="alert">
+    <span
+      >{config
+        ? 'Could not refresh saved configuration. Displaying the last loaded values.'
+        : 'Could not load configuration.'}
+      {loadError}</span
+    >
+    <button class="button" onclick={load} disabled={loading || busy || dirty}>Retry</button>
+  </div>{/if}
 {#if config}
   <form
     onsubmit={(e) => {
@@ -284,14 +350,26 @@
           >
         </div>
         <div class="catalog-actions">
-          <button type="button" class="button small" onclick={() => catalog('codex')}
-            >Load Codex models</button
+          <button
+            type="button"
+            class="button small"
+            onclick={() => catalog('codex')}
+            disabled={loading}
+            >{pending === 'catalog-codex' ? 'Loading Codex models…' : 'Load Codex models'}</button
           >
-          <button type="button" class="button small" onclick={() => catalog('opencode')}
-            >Load OpenCode models</button
+          <button
+            type="button"
+            class="button small"
+            onclick={() => catalog('opencode')}
+            disabled={loading}
+            >{pending === 'catalog-opencode'
+              ? 'Loading OpenCode models…'
+              : 'Load OpenCode models'}</button
           >
         </div>
-        <AstraRehearsal bind:config catalog={catalogs.codex} {editable} {busy} />
+        {#key presetResetKey}
+          <AstraRehearsal bind:config catalog={catalogs.codex} {editable} {busy} />
+        {/key}
         {#each Object.keys(config.roles) as role}
           <RouteEditor
             name={names[role]}
@@ -372,16 +450,33 @@
             >{/each}
         </div>
       </section>
-      <div class="save-bar">
-        <span class="muted"
-          >Changes apply to new work. Existing tasks retain their execution contract.</span
-        ><button class="button primary" type="submit" disabled={!editable || busy}
-          >{busy ? 'Working…' : 'Save configuration'}<Icon name="check" size={16} /></button
+    </fieldset>
+    <div class="save-bar">
+      <div class="save-summary">
+        <strong aria-live="polite">{dirty ? 'Unsaved changes' : 'Saved configuration'}</strong>
+        <p class="muted">
+          Changes apply to new work. Drafts stay in this tab until disconnect or reload.
+        </p>
+      </div>
+      <div class="actions">
+        <button class="button" type="button" onclick={discard} disabled={!dirty || busy}
+          >Discard changes</button
+        >
+        <button
+          class="button primary"
+          type="submit"
+          disabled={!editable || busy || loading || !dirty}
+          >{pending === 'save' ? 'Saving configuration…' : 'Save configuration'}<Icon
+            name="check"
+            size={16}
+          /></button
         >
       </div>
-    </fieldset>
+      {#if error}<div class="notice error settings-feedback" role="alert">{error}</div>{/if}
+      {#if message}<div class="notice success settings-feedback" role="status">{message}</div>{/if}
+    </div>
   </form>
-{:else if !error}<div class="empty">
+{:else if loading}<div class="empty" role="status">
     <span class="spinner"></span>
     <p>Loading configuration…</p>
   </div>{/if}

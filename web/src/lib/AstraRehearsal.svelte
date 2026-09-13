@@ -107,10 +107,10 @@
 <style>
   .preset {
     margin: 20px 24px;
-    font-size: 13px;
+    font-size: 14px;
   }
   h3 {
-    font-size: 13px;
+    font-size: 14px;
   }
   label {
     display: grid;
@@ -125,6 +125,6 @@
   }
   button,
   select {
-    scroll-margin-block: 100px;
+    scroll-margin-block: 100px 260px;
   }
 </style>

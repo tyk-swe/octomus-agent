@@ -153,7 +153,7 @@
     border-top: 1px solid var(--line);
   }
   h3 {
-    font-size: 13px;
+    font-size: 14px;
     margin: 0 0 12px;
   }
   .route-fields {
@@ -177,7 +177,7 @@
   select {
     width: 100%;
     min-width: 0;
-    scroll-margin-block: 100px;
+    scroll-margin-block: 100px 260px;
   }
   .route-help,
   .route-problem {

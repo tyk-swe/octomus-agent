@@ -322,7 +322,16 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
         || (matches!(action.as_str(), "resume" | "cycle")
             && rt.cycle_mode == Some(CycleMode::Audit))
     {
-        return Err(ApiError(StatusCode::CONFLICT, "Audits require paused operation with no active work; wait for the audit to finish before resuming.".into()));
+        let message = match action.as_str() {
+            "audit" => {
+                "Audits require paused operation with no active work. Pause the service and wait for active work to finish."
+            }
+            "cycle" => {
+                "Run once requires paused operation with no active work. Pause the service and wait for active work to finish."
+            }
+            _ => "Wait for the audit to finish before starting continuous operation.",
+        };
+        return Err(ApiError(StatusCode::CONFLICT, message.into()));
     }
     drop(rt);
     match action.as_str() {

@@ -435,7 +435,20 @@ async fn valid_authentication_bypasses_pending_failure_delay_and_audit_controls_
     );
     app.runtime.lock().unwrap().cycle = Some(CancellationToken::new());
     app.runtime.lock().unwrap().cycle_mode = Some(octomus_agent::model::CycleMode::Audit);
-    for action in ["audit", "cycle", "resume"] {
+    for (action, explanation) in [
+        (
+            "audit",
+            "Audits require paused operation with no active work",
+        ),
+        (
+            "cycle",
+            "Run once requires paused operation with no active work",
+        ),
+        (
+            "resume",
+            "Wait for the audit to finish before starting continuous operation",
+        ),
+    ] {
         let response = router
             .clone()
             .oneshot(
@@ -450,6 +463,105 @@ async fn valid_authentication_bypasses_pending_failure_delay_and_audit_controls_
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body.as_object().unwrap().len(), 1);
+        assert!(
+            body["error"].as_str().unwrap().starts_with(explanation),
+            "{body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn control_conflicts_explain_the_requested_operation_without_changing_eligibility() {
+    use octomus_agent::model::{CycleMode, OperatingMode};
+    // Each request starts from the same fixture state; no scheduler or live runner is started.
+    for scenario in ["continuous", "task", "execution", "idle"] {
+        for action in ["audit", "cycle", "resume", "pause"] {
+            // An accepted audit launches planning; existing fixture integration tests cover it.
+            if scenario == "idle" && action == "audit" {
+                continue;
+            }
+            let temp = tempfile::tempdir().unwrap();
+            let app = App::new(
+                Store::open(&temp.path().join("state.db")).unwrap(),
+                temp.path().into(),
+            );
+            std::fs::create_dir(temp.path().join(".git")).unwrap();
+            let mut config = Config {
+                repository: temp.path().into(),
+                github_repo: "fixture/project".into(),
+                verification_commands: vec!["true".into()],
+                ..Config::default()
+            };
+            for route in config.roles.values_mut() {
+                *route = Route::new("gpt-6-astra", "medium");
+            }
+            app.store.put("settings", "config", &config).unwrap();
+            let mut control = app.control().unwrap();
+            if scenario == "continuous" {
+                control.set_mode(OperatingMode::Continuous);
+            }
+            app.store.put("settings", "control", &control).unwrap();
+            {
+                let mut rt = app.runtime.lock().unwrap();
+                if scenario == "task" {
+                    rt.tasks
+                        .insert("synthetic-task".into(), CancellationToken::new());
+                }
+                if scenario == "execution" {
+                    rt.cycle = Some(CancellationToken::new());
+                    rt.cycle_mode = Some(CycleMode::Execution);
+                }
+            }
+            let response = api::router(app.clone(), TOKEN, None)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/control/{action}"))
+                        .header("authorization", format!("Bearer {TOKEN}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let rejected = scenario != "idle" && matches!(action, "audit" | "cycle");
+            assert_eq!(
+                response.status(),
+                if rejected {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::OK
+                },
+                "{scenario}/{action}"
+            );
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                    .unwrap();
+            if rejected {
+                let operation = if action == "cycle" {
+                    "Run once"
+                } else {
+                    "Audits"
+                };
+                let message = body["error"].as_str().unwrap();
+                assert!(
+                    message.starts_with(operation)
+                        && message.contains("paused operation with no active work"),
+                    "{body}"
+                );
+                assert_eq!(app.control().unwrap().mode, control.mode);
+            } else {
+                let expected = match action {
+                    "cycle" => "run_once",
+                    "resume" => "continuous",
+                    _ => "paused",
+                };
+                assert_eq!(body["mode"], expected);
+            }
+        }
     }
 }
 

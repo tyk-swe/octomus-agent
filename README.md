@@ -12,10 +12,9 @@ PR for you to review and merge.
 
 ## Getting started
 
-**Release preparation:** binaries and the crates.io package have not been
-published yet. The release installer below becomes usable after publication;
-use the source-build alternative today. See [distribution](docs/distribution.md)
-for packaging and publication instructions.
+**Build from source today.** Release binaries and the crates.io package are still
+pending publication. The source-build steps below install the available application;
+see [distribution](docs/distribution.md) for release preparation.
 
 Use a dedicated Ubuntu 24.04 VM (x86_64 or aarch64), configured access to the
 models you select through Codex or OpenCode,
@@ -43,20 +42,8 @@ sudo apt-get install -y nodejs
 sudo npm install -g @openai/codex@0.153.4
 ```
 
-After Octomus releases are published, install the latest stable binary in one command:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tyk-swe/octomus-agent/main/install.sh | sh
-```
-
-The installer verifies the downloaded archive against release SHA-256 checksums
-and installs to `/usr/local/bin`. To select a version, download the script and run
-`sh install.sh v0.1.0`; an alternate writable absolute destination is supported
-through `INSTALL_DIR`. Checksums detect corruption; they are not independent
-signatures against a compromised release account.
-
-**Source-build alternative, available now:** add Rust 1.88+ and a C compiler,
-then build the dashboard before Rust. Python is only needed for repository tests.
+Add Rust 1.88+ and a C compiler, then build the dashboard before Rust.
+Python is only needed for repository tests.
 
 ```bash
 sudo apt-get install -y build-essential
@@ -70,9 +57,21 @@ make build
 sudo install -m 755 target/release/octomus-agent /usr/local/bin/octomus-agent
 ```
 
-`cargo install octomus-agent --locked` will be another option after crates.io
-publication. The crate includes the built dashboard; end users won't need npm to
-build that package. See [distribution](docs/distribution.md) for release preparation.
+**Pending release options:** after binary releases are published, the installer
+will support the following command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tyk-swe/octomus-agent/main/install.sh | sh
+```
+
+The installer verifies the downloaded archive against release SHA-256 checksums
+and installs to `/usr/local/bin`. To select a version, download the script and run
+`sh install.sh v0.1.0`; an alternate writable absolute destination is supported
+through `INSTALL_DIR`. Checksums detect corruption; they are not independent
+signatures against a compromised release account.
+
+`cargo install octomus-agent --locked` is also pending crates.io publication. The
+crate includes the built dashboard, so installing that package will not require npm.
 
 ### 2. Connect as the service user
 
@@ -124,6 +123,14 @@ in the VM terminal. It starts paused. Refreshing the page requires the token aga
 In **Configuration**, enter `/srv/projects/project`, `OWNER/REPOSITORY`, the default
 branch, and an owned branch prefix. For this repository use `tyk/`; the general
 product default is `octomus/`.
+
+Unsaved edits, verification commands and loaded model catalogs survive dashboard
+navigation in this tab. **Discard changes** restores the last loaded or saved
+configuration without writing to the server. Revisiting a clean form refreshes saved
+values; dirty drafts and failed saves keep your edits. Disconnecting, session expiry
+or reloading the page clears the draft. **Check connection** and **Check audit
+connection** validate saved configuration and stay disabled until edits are saved
+or discarded.
 
 Set the executable paths, then use **Load Codex models** or **Load OpenCode models**.
 For each role, choose a runner and model. Codex requires reasoning effort; OpenCode

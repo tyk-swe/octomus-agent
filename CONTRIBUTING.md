@@ -8,7 +8,7 @@ Report security issues privately using [SECURITY.md](SECURITY.md).
 ## Development
 
 Use Linux, Rust 1.88+ with rustfmt/clippy, a C compiler, Node 22.12+, npm, Python 3
-and Git. Codex/GitHub credentials are not needed for fixture tests.
+and Git. Codex, OpenCode and GitHub credentials are not needed for fixture tests.
 
 ```bash
 npm ci --prefix web
@@ -28,15 +28,26 @@ serves a development dashboard instead of the embedded copy. See
 
 ## Meaningful evidence
 
-`tests/e2e.py` runs the real service, SQLite and local Git with deterministic
-Codex/GitHub peers in temporary directories. It covers discovery, reviews,
-repairs, publication recovery and audits without model calls or network writes.
+`tests/e2e.py`, `tests/e2e_runners.py` and `tests/e2e_hardening.py` run the real
+service, SQLite and local Git with deterministic Codex, OpenCode and GitHub peers
+in temporary directories. They cover both runner protocols, discovery, reviews,
+repairs, publication recovery and audits without live model calls or network writes.
 `tests/distribution.py` checks the executable and installer using local release
 fixtures. `tests/crate_guards.py` checks release input guards with real Cargo,
 and `tests/crate.py` verifies the extracted application crate after packaging.
 Browser tests use clearly synthetic data; their screenshots are not
 live operating evidence. `tests/systemd.py` requires root on a disposable systemd
 VM and exercises the unit's write restrictions and child cleanup.
+
+Dashboard regressions cover configuration drafts in tab memory, saved-configuration
+checks, keyboard navigation and list recovery. Keep drafts across view changes,
+clear them at session boundaries, and use entered executable paths for catalogs.
+To refresh synthetic presentation captures after rebuilding, run
+`npm test --prefix web -- captures.spec.ts --project=desktop`. Inspect the overview,
+Configuration and evidence panels at 1440×1000, 1280×800 and 390×844 in
+`web/artifacts/captures/after/`. The tests check contrast, overflow and reduced motion.
+Copy the inspected `synthetic-1440x1000-overview.png` to `docs/dashboard.png` when
+updating the README image; retain its synthetic-data caption.
 
 Run relevant behavior tests while editing and full `make check`/`make test` before
 delivery. Install `cargo-audit` with `cargo install cargo-audit --locked`, then run
