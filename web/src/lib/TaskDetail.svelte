@@ -1,9 +1,21 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, relative, safeUrl } from './api';
+  import { api, ApiError, relative, safeUrl } from './api';
   import { routeLabel } from './routes';
-  import type { Task, Event } from './types';
+  import type { Task, Event, RunEvidenceV1, TaskEvidence } from './types';
   import Icon from './Icon.svelte';
+  import {
+    checksVerdict,
+    findTaskEvidence,
+    outcomeVerdict,
+    prVerdict,
+    reviewRoundBadge,
+    reviewVerdict,
+    roundRevisionLabel,
+    shortCommit,
+    type Tone,
+    type Verdict
+  } from './evidence';
   let {
     id,
     onclose,
@@ -17,9 +29,49 @@
     tab = $state('Overview'),
     busy = $state(false),
     events = $state<Event[]>([]);
+  let evidence = $state<TaskEvidence | null>(null),
+    evidenceError = $state(''),
+    evidenceStale = $state(false);
   let loading = false;
   let generation = 0;
   let request: AbortController | null = null;
+  let evidenceKey = '';
+  let evidenceGeneration = 0;
+  let evidenceRequest: AbortController | null = null;
+  /**
+   * Recorded evidence is fetched per (cycle, task, task revision) and skipped while that
+   * key is unchanged, so the 4s task poll never re-downloads the run's evidence.
+   */
+  async function loadEvidence(cycleId: string, key: string) {
+    if (evidenceKey === key) return;
+    evidenceKey = key;
+    const current = ++evidenceGeneration;
+    evidenceRequest?.abort();
+    const controller = new AbortController();
+    evidenceRequest = controller;
+    const task = id;
+    try {
+      const run = await api<RunEvidenceV1>(
+        `/cycles/${encodeURIComponent(cycleId)}/evidence`,
+        'GET',
+        undefined,
+        controller.signal
+      );
+      // A late response must not describe a task this panel no longer shows.
+      if (current !== evidenceGeneration || controller.signal.aborted || task !== id) return;
+      evidence = findTaskEvidence(run, task);
+      evidenceError = evidence ? '' : 'This task has no recorded evidence in its planning cycle.';
+      evidenceStale = false;
+    } catch (e) {
+      if (current !== evidenceGeneration || controller.signal.aborted || task !== id) return;
+      evidenceError = (e as Error).message;
+      // A rejected session must not keep displaying the previous session's records.
+      if (e instanceof ApiError && e.status === 401) evidence = null;
+      evidenceStale = evidence !== null;
+      // Allow the next poll to retry rather than pinning the failed key.
+      evidenceKey = '';
+    }
+  }
   async function load(force = false) {
     if (loading && !force) return;
     request?.abort();
@@ -41,6 +93,10 @@
         task = nextTask;
         events = nextEvents;
         error = '';
+        void loadEvidence(
+          nextTask.cycle_id,
+          `${nextTask.cycle_id}:${id}:${nextTask.updated_at}:${nextTask.status}`
+        );
       }
     } catch (e) {
       if (current === generation && !controller.signal.aborted) error = (e as Error).message;
@@ -56,8 +112,27 @@
       clearInterval(timer);
       generation++;
       request?.abort();
+      evidenceGeneration++;
+      evidenceRequest?.abort();
     };
   });
+  // Recorded result, taken from the server's normalized statuses. When evidence is
+  // absent these stay explicitly unknown instead of falling back to optimistic booleans.
+  let outcome = $derived(
+    evidence
+      ? outcomeVerdict(evidence)
+      : task
+        ? outcomeVerdict({
+            status: task.status,
+            blocked_reason: task.blocked_reason,
+            error_recorded: !!task.error
+          })
+        : null
+  );
+  let review = $derived(reviewVerdict(evidence));
+  let checks = $derived(checksVerdict(evidence));
+  let delivery = $derived(prVerdict(evidence));
+  let outputSha = $derived(evidence ? evidence.revisions.output : (task?.output_commit ?? null));
   async function action(value: string) {
     busy = true;
     error = '';
@@ -72,6 +147,14 @@
     }
   }
 </script>
+
+{#snippet tone(label: string, value: Tone)}<span class={'badge ' + value}>{label}</span>{/snippet}
+{#snippet fact(label: string, verdict: Verdict)}<div>
+    <dt>{label}</dt>
+    <dd>
+      {@render tone(verdict.label, verdict.tone)}<small>{verdict.detail}</small>
+    </dd>
+  </div>{/snippet}
 
 <dialog
   bind:this={dialog}
@@ -131,19 +214,55 @@
             ? 'Workspace discarded'
             : 'Workspace retained until cleanup'}
         </p>{/if}
+      <section class="result-summary" aria-label="Recorded result and evidence">
+        <div class="row-between">
+          <h3>Recorded result</h3>
+          {#if evidenceStale}<span class="badge blocked">Retained · stale</span>{/if}
+        </div>
+        {#if evidenceError}<p class="muted">
+            {evidenceStale
+              ? `Showing the last received evidence, which may now be out of date. ${evidenceError}`
+              : `Recorded evidence is unavailable, so review and check standing stay unknown rather than assumed. ${evidenceError}`}
+          </p>{/if}
+        <dl class="detail-grid">
+          {#if outcome}{@render fact('Recorded outcome', outcome)}{/if}
+          <div>
+            <dt>Output SHA</dt>
+            <dd>
+              <code>{shortCommit(outputSha)}</code><small
+                >The commit this task recorded as its output.</small
+              >
+            </dd>
+          </div>
+          {@render fact('Review at that SHA', review)}
+          {@render fact('Configured check results', checks)}
+          <div>
+            <dt>Recorded PR</dt>
+            <dd>
+              {@render tone(delivery.label, delivery.tone)}{#if task.pr_url}<a
+                  href={safeUrl(task.pr_url)}
+                  target="_blank"
+                  rel="noreferrer">Open on GitHub<Icon name="external" size={13} /></a
+                >{/if}<small>{delivery.detail}</small>
+            </dd>
+          </div>
+        </dl>
+      </section>
       {#if tab === 'Overview'}
-        <h3>Effective operating limits</h3>
-        <p>
-          Daily admissions: {task.operating_policy.max_sessions_per_day} (original snapshot: {task
-            .config.max_sessions_per_day}). Storage admission: {(
-            task.operating_policy.max_workspace_bytes / 1e9
-          ).toFixed(2)} GB.
-        </p>
-        <p>
-          This attempt allows {task.effective_attempt_policy.max_repair_rounds} repair rounds and {task
-            .effective_attempt_policy.task_timeout_seconds} seconds. An explicit retry adopts current
-          attempt limits.
-        </p>
+        <details class="operating-limits">
+          <summary>Effective operating limits</summary>
+          <p>
+            Daily admissions: {task.operating_policy.max_sessions_per_day} (original snapshot: {task
+              .config.max_sessions_per_day}). Storage admission: {(
+              task.operating_policy.max_workspace_bytes / 1e9
+            ).toFixed(2)} GB.
+          </p>
+          <p>
+            This attempt allows {task.effective_attempt_policy.max_repair_rounds} repair rounds and {task
+              .effective_attempt_policy.task_timeout_seconds} seconds. An explicit retry adopts current
+            attempt limits.
+          </p>
+        </details>
         <h3>The opportunity</h3>
         <p>{task.proposal.problem}</p>
         <p>{task.proposal.benefit}</p>
@@ -201,22 +320,30 @@
             <p>A separate Codex session starts when this task runs.</p>
           </div>{/each}
       {:else if tab === 'Reviews'}
-        {#each task.reviews as review, index}<article class="history-card">
+        <p class="muted">
+          A round is clean only when it completed, recorded a summary, and found nothing. Whether it
+          ran at the recorded output commit is a separate fact.
+        </p>
+        {#each task.reviews as round, index}
+          {@const badge = reviewRoundBadge(round)}
+          {@const marker = roundRevisionLabel(round.revision, task.output_commit)}
+          <article class="history-card">
             <div class="row-between">
               <h3>Review {index + 1}</h3>
-              <span class={'badge ' + (review.result.findings.length ? 'blocked' : 'published')}
-                >{review.result.findings.length
-                  ? `${review.result.findings.length} findings`
-                  : 'Clean'}</span
+              <span class="review-badges"
+                >{@render tone(badge.label, badge.tone)}{@render tone(
+                  marker.label,
+                  marker.tone
+                )}</span
               >
             </div>
-            <p>{review.result.summary}</p>
+            <p>{round.result.summary.trim() || 'No review summary was recorded for this round.'}</p>
             <small
-              >Full change set · {review.comparison_base.slice(0, 8)} → {review.revision.slice(
+              >Full change set · {round.comparison_base.slice(0, 8)} → {round.revision.slice(
                 0,
                 8
               )}</small
-            >{#each review.result.findings as finding}<div class="finding">
+            >{#each round.result.findings as finding}<div class="finding">
                 <span class="tier">{finding.priority}</span>
                 <h4>{finding.title}</h4>
                 <code>{finding.file}</code>

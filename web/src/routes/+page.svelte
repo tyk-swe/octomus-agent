@@ -13,6 +13,7 @@
   import Icon from '$lib/Icon.svelte';
   import Settings from '$lib/Settings.svelte';
   import TaskDetail from '$lib/TaskDetail.svelte';
+  import RunEvidence from '$lib/RunEvidence.svelte';
   let connected = $state(false),
     accessToken = $state(''),
     data = $state<Snapshot | null>(null),
@@ -26,8 +27,21 @@
     proposalFilter = $state('all'),
     proposalCycle = $state('all'),
     selected = $state<string | null>(null),
+    evidence = $state<{ cycle: string; proposal: string | null } | null>(null),
     mobileOpen = $state(false),
     lastUpdated = $state('');
+  /** Only one panel is ever open: run evidence hands deep inspection to TaskDetail. */
+  function inspectRun(cycle: string, proposal: string | null) {
+    selected = null;
+    evidence = { cycle, proposal };
+  }
+  function inspectTask(id: string) {
+    evidence = null;
+    selected = id;
+  }
+  function inspectLatestRun() {
+    if (latestCycle) inspectRun(latestCycle.id, null);
+  }
   const navigation = [
     { id: 'overview', label: 'Overview', icon: 'overview' },
     { id: 'queue', label: 'Task queue', icon: 'queue' },
@@ -250,6 +264,7 @@
     data = null;
     setToken('');
     selected = null;
+    evidence = null;
   }
 </script>
 
@@ -587,9 +602,13 @@
                   </p>
                 </div>
               </div>
-              <span class={'badge ' + (latestCycle?.status || 'queued')}
-                >{latestCycle?.status || 'Ready when you are'}</span
-              >
+              <div class="row-title">
+                <span class={'badge ' + (latestCycle?.status || 'queued')}
+                  >{latestCycle?.status || 'Ready when you are'}</span
+                >{#if latestCycle}<button class="button small" onclick={inspectLatestRun}
+                    ><Icon name="search" size={15} />Inspect run</button
+                  >{/if}
+              </div>
             </div>
             <div class="pipeline">
               {#each [{ name: 'Ground & discover', icon: 'proposals', detail: 'Understand what matters' }, { name: 'Challenge & refine', icon: 'shield', detail: 'Keep the worthwhile work' }, { name: 'Build & verify', icon: 'code', detail: 'Make the complete change' }, { name: 'Review & deliver', icon: 'prs', detail: 'Fresh eyes before every PR' }] as step, i}<div
@@ -791,6 +810,9 @@
                   </details>
                   <div class="proposal-target">
                     <Icon name="branch" size={14} /><code>{p.target}</code>
+                    <button class="text-button" onclick={() => inspectRun(p.cycle_id, p.id)}
+                      >Inspect decision evidence<Icon name="arrow" size={15} /></button
+                    >
                   </div>
                 </article>{:else}<div class="empty">
                   <Icon name="proposals" size={34} />
@@ -898,6 +920,12 @@
         onclose={() => (selected = null)}
         onaction={refresh}
       />{/key}{/if}
+  {#if evidence}<RunEvidence
+      cycleId={evidence.cycle}
+      proposalId={evidence.proposal}
+      onopentask={inspectTask}
+      onclose={() => (evidence = null)}
+    />{/if}
 {/if}
 {#snippet searchBox()}<label class="search-box"
     ><Icon name="search" size={17} /><input
