@@ -119,7 +119,13 @@ pub async fn capture(
     };
     let future = async {
         let (status, out, err) = tokio::join!(
-            child.0.wait(),
+            async move {
+                let status = child.0.wait().await;
+                // Stop owned descendants as soon as the leader finishes, so their
+                // inherited pipes reach EOF. Readers still drain buffered output.
+                drop(child);
+                status
+            },
             bounded_read(stdout, limit),
             bounded_read(stderr, DIAGNOSTIC_LIMIT)
         );
