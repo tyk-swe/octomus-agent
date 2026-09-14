@@ -309,14 +309,13 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   );
   await expect(page.getByText('0 of 5 steps saved, checked or run')).toBeVisible();
 
-  // Entered: typed in this tab only, including the preset's route replacement.
+  // Entered: typed in this tab only.
   await page.getByLabel('Repository path').fill('/fixture/entered');
   await page.getByLabel('GitHub repository').fill('fixture/entered');
   await expect(badge('repository')).toHaveText('Entered, not saved');
   await expect(badge('preflight')).toHaveText('Unsaved edits');
   await expect(page.getByRole('button', { name: 'Check connection', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Load Codex models' }).click();
-  await expect(page.getByLabel('Astra rehearsal effort')).toHaveValue('medium');
 
   // Partially configured: only the three audit routes, saved.
   for (const role of ['Orchestrator', 'Discovery agents', 'Proposal reviewers']) {
@@ -336,12 +335,19 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(badge('preflight')).toHaveText('Not checked');
   expect(state.writes).toHaveLength(1);
 
-  // The preset replaces every route in the draft only; nothing is saved by confirming.
-  await page.getByRole('button', { name: 'Apply Astra rehearsal preset', exact: true }).click();
-  await page
-    .getByRole('group', { name: 'Confirm Astra rehearsal preset', exact: true })
-    .getByRole('button', { name: 'Confirm preset', exact: true })
-    .click();
+  // Route edits change the draft only; nothing is saved until Save.
+  for (const role of [
+    'Code reviewer',
+    'XS execution',
+    'S execution',
+    'M execution',
+    'L execution',
+    'XL execution',
+    'Repair'
+  ]) {
+    await page.getByLabel(`${role} model`, { exact: true }).fill('gpt-6-astra');
+    await page.getByLabel(`${role} reasoning effort`, { exact: true }).selectOption('medium');
+  }
   await expect(badge('routes')).toHaveText('Entered, not saved');
   await expect(step('routes')).toContainText(
     '10 of 10 execution routes selected (3 of 3 audit routes). 10 match a loaded catalog'
@@ -371,7 +377,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect.poll(() => state.checks).toEqual(['execution']);
   await expect(page.getByText('4 of 5 steps saved, checked or run')).toBeVisible();
 
-  // The API sorts keys; revisiting after the preset must preserve this exact check.
+  // The API sorts keys; revisiting after a saved change must preserve this exact check.
   const checked = structuredClone(state.saved!);
   const result = await badge('preflight').innerText();
   state.saved = JSON.parse(
@@ -548,9 +554,6 @@ test('setup checklist links focus existing controls, hands off to the Overview a
   await step('routes').getByRole('button', { name: 'Load a runner catalog' }).click();
   await expect(page.getByRole('button', { name: 'Load Codex models' })).toBeFocused();
   await page.keyboard.press('Enter');
-  await expect(page.getByLabel('Astra rehearsal effort')).toHaveValue('medium');
-  await step('routes').getByRole('button', { name: 'Astra rehearsal preset' }).click();
-  await expect(page.getByLabel('Astra rehearsal effort')).toBeFocused();
   await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
   await expect(badge('routes')).toHaveText('Saved');
   await expect(step('routes')).toContainText('10 match a loaded catalog');

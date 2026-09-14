@@ -17,7 +17,7 @@ use tower::ServiceExt;
 
 const TOKEN: &str = "run-evidence-fixture-token-at-least-32-characters";
 
-fn cycle(id: &str, mode: &str, proposals: Value, assessments: Value, sessions: Value) -> Cycle {
+fn cycle(id: &str, mode: &str, proposals: &Value, assessments: &Value, sessions: &Value) -> Cycle {
     serde_json::from_value(json!({
         "id": id, "mode": mode, "number": 7, "status": "completed",
         "started_at": "2026-09-12T00:00:00Z", "completed_at": "2026-09-12T01:00:00Z",
@@ -44,7 +44,7 @@ fn reviewer_session(role: &str, status: &str) -> Value {
     })
 }
 
-fn batch(entries: Value) -> Value {
+fn batch(entries: &Value) -> Value {
     json!({"assessments": entries})
 }
 
@@ -74,7 +74,7 @@ fn task(cycle_id: &str, proposal_id: &str) -> Task {
     .unwrap()
 }
 
-fn review(revision: &str, completed: bool, summary: &str, findings: Value) -> Value {
+fn review(revision: &str, completed: bool, summary: &str, findings: &Value) -> Value {
     json!({
         "session_id": "review-1", "revision": revision, "comparison_base": "source00",
         "created_at": now(),
@@ -144,7 +144,7 @@ fn complete_cycle_reports_reviewers_tasks_revisions_and_checks() {
         "out00001",
         true,
         "Reviewed the complete change set",
-        json!([])
+        &json!([])
     )]))
     .unwrap();
     delivered.verification =
@@ -152,18 +152,18 @@ fn complete_cycle_reports_reviewers_tasks_revisions_and_checks() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted"), proposal("p2", "deferred")]),
-        json!([
-            batch(json!([
+        &json!([proposal("p1", "accepted"), proposal("p2", "deferred")]),
+        &json!([
+            batch(&json!([
                 {"id": "p1", "decision": "accepted", "reason": "a accepts"},
                 {"id": "p2", "decision": "deferred", "reason": "a defers"}
             ])),
-            batch(json!([
+            batch(&json!([
                 {"id": "p1", "decision": "accepted", "reason": "b accepts"},
                 {"id": "p2", "decision": "rejected", "reason": "b rejects"}
             ]))
         ]),
-        json!([
+        &json!([
             reviewer_session("adversary-a", "completed"),
             reviewer_session("adversary-b", "completed")
         ]),
@@ -234,7 +234,7 @@ fn private_fields_are_omitted_from_the_export() {
         "out00001",
         true,
         "SECRET-REVIEW-SUMMARY",
-        json!([{"title": "Finding title", "file": "src/x.rs",
+        &json!([{"title": "Finding title", "file": "src/x.rs",
                 "detail": "Finding rationale", "priority": "high"}])
     )]))
     .unwrap();
@@ -243,9 +243,9 @@ fn private_fields_are_omitted_from_the_export() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let (_temp, store, _path) = fixture(&[c], &[t]);
     let value = store.run_evidence("cycle-a").unwrap().unwrap();
@@ -278,9 +278,9 @@ fn partial_cycle_reports_gaps_without_inventing_outcomes() {
     let mut c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     c.status = "running".into();
     c.completed_at = None;
@@ -318,16 +318,16 @@ fn malformed_and_missing_reviewer_batches_never_shift_identities() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        // Reviewer A's batch is unusable; reviewer B's is valid and must stay B's.
+        &json!([proposal("p1", "accepted")]),
+        &// Reviewer A's batch is unusable; reviewer B's is valid and must stay B's.
         json!([
             json!({"unexpected": "not an assessment list"}),
-            batch(json!([
+            batch(&json!([
                 {"id": "p1", "decision": "rejected", "reason": "b rejects"},
                 {"id": "", "decision": "accepted", "reason": "unreadable identity"}
             ]))
         ]),
-        json!([
+        &json!([
             reviewer_session("adversary-a", "completed"),
             reviewer_session("adversary-b", "completed")
         ]),
@@ -358,12 +358,12 @@ fn unconfirmed_and_duplicate_reviewer_evidence_stays_explicit() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([batch(json!([
+        &json!([proposal("p1", "accepted")]),
+        &json!([batch(&json!([
             {"id": "p1", "decision": "accepted", "reason": "first"},
             {"id": "p1", "decision": "rejected", "reason": "second"}
         ]))]),
-        // A recorded but failed reviewer session cannot confirm the batch's identity.
+        &// A recorded but failed reviewer session cannot confirm the batch's identity.
         json!([reviewer_session("adversary-a", "failed")]),
     );
     let (_temp, store, _path) = fixture(&[c], &[]);
@@ -382,16 +382,16 @@ fn repeated_proposal_ids_across_cycles_do_not_cross_runs() {
     let first = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let second = cycle(
         "cycle-b",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let a = task("cycle-a", "p1");
     let b = task("cycle-b", "p1");
@@ -412,9 +412,9 @@ fn multiple_task_matches_are_preserved_and_none_is_selected() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let mut newest = task("cycle-a", "p1");
     newest.updated_at = "2099-01-01T00:00:00Z".into();
@@ -441,11 +441,11 @@ fn audit_acceptance_without_tasks_is_not_execution() {
     let c = cycle(
         "cycle-a",
         "audit",
-        json!([proposal("p1", "accepted")]),
-        json!([batch(
-            json!([{"id": "p1", "decision": "accepted", "reason": "a accepts"}])
+        &json!([proposal("p1", "accepted")]),
+        &json!([batch(
+            &json!([{"id": "p1", "decision": "accepted", "reason": "a accepts"}])
         )]),
-        json!([reviewer_session("adversary-a", "completed")]),
+        &json!([reviewer_session("adversary-a", "completed")]),
     );
     let (_temp, store, _path) = fixture(&[c], &[]);
     let value = store.run_evidence("cycle-a").unwrap().unwrap();
@@ -478,20 +478,20 @@ fn latest_review_governs_and_incomplete_or_empty_summaries_are_not_clean() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     // A clean round followed by a later unclean one: the latest saved review governs.
     let mut regressed = task("cycle-a", "p1");
     regressed.output_commit = Some("out00001".into());
     regressed.reviews = serde_json::from_value(json!([
-        review("out00001", true, "clean earlier round", json!([])),
+        review("out00001", true, "clean earlier round", &json!([])),
         review(
             "out00001",
             true,
             "later round found a problem",
-            json!([{"title": "t", "file": "f", "detail": "d", "priority": "high"}])
+            &json!([{"title": "t", "file": "f", "detail": "d", "priority": "high"}])
         )
     ]))
     .unwrap();
@@ -513,7 +513,7 @@ fn latest_review_governs_and_incomplete_or_empty_summaries_are_not_clean() {
         let mut t = task("cycle-a", "p1");
         t.output_commit = Some("out00001".into());
         t.reviews =
-            serde_json::from_value(json!([review("out00001", completed, summary, json!([]))]))
+            serde_json::from_value(json!([review("out00001", completed, summary, &json!([]))]))
                 .unwrap();
         let (_temp, store, _path) = fixture(std::slice::from_ref(&c), &[t]);
         let value = store.run_evidence("cycle-a").unwrap().unwrap();
@@ -535,9 +535,9 @@ fn later_failures_missing_results_and_mismatched_revisions_are_not_passing() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let mut t = task("cycle-a", "p1");
     t.output_commit = Some("out00001".into());
@@ -546,9 +546,13 @@ fn later_failures_missing_results_and_mismatched_revisions_are_not_passing() {
         "make test".into(),
         "make never-run".into(),
     ];
-    t.reviews =
-        serde_json::from_value(json!([review("out00001", true, "clean review", json!([]))]))
-            .unwrap();
+    t.reviews = serde_json::from_value(json!([review(
+        "out00001",
+        true,
+        "clean review",
+        &json!([])
+    )]))
+    .unwrap();
     t.verification = serde_json::from_value(json!([
         // A newer failure invalidates the older pass.
         check("make check", true, "out00001"),
@@ -596,9 +600,9 @@ fn blocked_reason_uses_the_task_api_vocabulary() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let mut t = task("cycle-a", "p1");
     t.status = octomus_agent::model::Status::Blocked;
@@ -618,9 +622,9 @@ fn no_configured_checks_is_not_configured_rather_than_passing() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let mut t = task("cycle-a", "p1");
     t.config.verification_commands = vec![];
@@ -638,9 +642,9 @@ async fn evidence_route_requires_auth_and_reports_unknown_cycles() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let (temp, store, _path) = fixture(&[c], &[]);
     let app = App::new(store.clone(), temp.path().to_path_buf());
@@ -683,9 +687,9 @@ async fn existing_cycle_action_routes_are_preserved() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let (temp, store, _path) = fixture(&[c], &[]);
     let app = App::new(store.clone(), temp.path().to_path_buf());
@@ -727,19 +731,23 @@ async fn existing_cycle_action_routes_are_preserved() {
 async fn api_and_cli_facts_agree_apart_from_generation_metadata() {
     let mut t = task("cycle-a", "p1");
     t.output_commit = Some("out00001".into());
-    t.reviews =
-        serde_json::from_value(json!([review("out00001", true, "clean review", json!([]))]))
-            .unwrap();
+    t.reviews = serde_json::from_value(json!([review(
+        "out00001",
+        true,
+        "clean review",
+        &json!([])
+    )]))
+    .unwrap();
     t.verification =
         serde_json::from_value(json!([check("make check", true, "out00001")])).unwrap();
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([batch(
-            json!([{"id": "p1", "decision": "accepted", "reason": "a accepts"}])
+        &json!([proposal("p1", "accepted")]),
+        &json!([batch(
+            &json!([{"id": "p1", "decision": "accepted", "reason": "a accepts"}])
         )]),
-        json!([reviewer_session("adversary-a", "completed")]),
+        &json!([reviewer_session("adversary-a", "completed")]),
     );
     let (temp, store, path) = fixture(&[c], &[t]);
     let (status, mut from_api) = api_evidence(&store, temp.path(), "cycle-a").await;
@@ -759,9 +767,9 @@ fn cli_export_is_read_only_and_errors_explicitly() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     let (temp, store, path) = fixture(&[c], &[t]);
 
@@ -862,9 +870,9 @@ fn export_run_flag_returns_before_touching_application_state() {
     let c = cycle(
         "cycle-a",
         "execution",
-        json!([proposal("p1", "accepted")]),
-        json!([]),
-        json!([]),
+        &json!([proposal("p1", "accepted")]),
+        &json!([]),
+        &json!([]),
     );
     std::fs::create_dir_all(&data_dir).unwrap();
     let store = Store::open(&data_dir.join("state.db")).unwrap();
@@ -897,7 +905,7 @@ fn committed_plan_attributes_verdicts_to_reviewer_slots() {
         "out00001",
         true,
         "Reviewed the complete change set",
-        json!([])
+        &json!([])
     )]))
     .unwrap();
     committed.verification =
@@ -905,18 +913,18 @@ fn committed_plan_attributes_verdicts_to_reviewer_slots() {
     let c = cycle(
         "cycle-slots",
         "execution",
-        json!([proposal("p1", "accepted"), proposal("p2", "deferred")]),
-        json!([
-            batch(json!([
+        &json!([proposal("p1", "accepted"), proposal("p2", "deferred")]),
+        &json!([
+            batch(&json!([
                 {"id": "p1", "decision": "accepted", "reason": "a accepts"},
                 {"id": "p2", "decision": "deferred", "reason": "a defers"}
             ])),
-            batch(json!([
+            batch(&json!([
                 {"id": "p1", "decision": "accepted", "reason": "b accepts"},
                 {"id": "p2", "decision": "rejected", "reason": "b rejects"}
             ]))
         ]),
-        json!([
+        &json!([
             reviewer_session(octomus_agent::model::REVIEWER_SLOTS[0], "completed"),
             reviewer_session(octomus_agent::model::REVIEWER_SLOTS[1], "completed")
         ]),

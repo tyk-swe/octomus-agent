@@ -2,8 +2,8 @@
 
 Octomus discovers useful work and delivers reviewed PRs for a single operator and
 repository. Start with a concrete problem, reproduction or proposal; a justified
-no-change outcome is welcome. Follow our [code of conduct](CODE_OF_CONDUCT.md).
-Report security issues privately using [SECURITY.md](SECURITY.md).
+no-change outcome is welcome. Report security issues privately using
+[SECURITY.md](SECURITY.md).
 
 ## Development
 
@@ -45,12 +45,9 @@ VM and exercises the unit's write restrictions and child cleanup.
 Dashboard regressions cover configuration drafts in tab memory, saved-configuration
 checks, keyboard navigation and list recovery. Keep drafts across view changes,
 clear them at session boundaries, and use entered executable paths for catalogs.
-To refresh synthetic presentation captures after rebuilding, run
-`npm test --prefix web -- captures.spec.ts --project=desktop`. Inspect the overview,
-Configuration and evidence panels at 1440×1000, 1280×800 and 390×844 in
-`web/artifacts/captures/after/`. The tests check contrast, overflow and reduced motion.
-Copy the inspected `synthetic-1440x1000-overview.png` to `docs/dashboard.png` when
-updating the README image; retain its synthetic-data caption.
+The dashboard browser tests include axe WCAG A/AA and overflow checks. To refresh
+`docs/dashboard.png`, take a 1440×1000 screenshot of the synthetic overview served by
+`python3 tests/serve_ui.py` and keep the synthetic-data caption.
 
 Run relevant behavior tests while editing and full `make check`/`make test` before
 delivery. Install `cargo-audit` with `cargo install cargo-audit --locked`, then run

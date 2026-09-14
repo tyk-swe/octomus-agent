@@ -1,9 +1,0 @@
-[
-  {"name":"bug","color":"d73a4a","description":"Incorrect behavior with a reproducible report"},
-  {"name":"blocked-task","color":"b60205","description":"Task interruption, verification or recovery problem"},
-  {"name":"proposal-quality","color":"d4c5f9","description":"Grounding, acceptance or rejection quality"},
-  {"name":"backend","color":"5319e7","description":"Agent runtime integration and runner boundary"},
-  {"name":"good first issue","color":"7057ff","description":"Maintainer-scoped work suitable for a first contribution"},
-  {"name":"documentation","color":"0075ca","description":"Operator and contributor documentation"},
-  {"name":"enhancement","color":"a2eeef","description":"A concrete new capability"}
-]

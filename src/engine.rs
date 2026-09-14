@@ -248,7 +248,7 @@ impl App {
     }
     async fn tick(&self) -> Result<()> {
         let _gate = self.gate.lock().await;
-        self.schedule_housekeeping()?;
+        self.schedule_housekeeping();
         // Reconciliation can write a preserved PR branch. Reserve publication while
         // leaving the gate available to pause and other operator controls.
         if self.runtime().reconciling_publication {

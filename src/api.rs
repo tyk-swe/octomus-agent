@@ -108,7 +108,7 @@ pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
             )
         })
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
-        .with_state(state.clone());
+        .with_state(state);
     let router = Router::new().nest("/api", api).route(
         "/healthz",
         get(|| async { Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION")})) }),

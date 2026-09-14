@@ -22,11 +22,6 @@ export const A = 'a'.repeat(40);
 export const B = 'b'.repeat(40);
 export const Z = 'z'.repeat(40);
 
-/** An ISO timestamp a fixed number of minutes before the fixture's `now`. */
-export function minutesAgo(minutes: number): string {
-  return new Date(Date.parse(now) - minutes * 60_000).toISOString();
-}
-
 export async function login(page: Page) {
   await page.goto('/');
   await page.getByLabel('Operator access token').fill(token);

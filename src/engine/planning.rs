@@ -184,7 +184,7 @@ impl App {
             .store
             .duplicate_tasks(&config.github_repo, &proposals)?;
         validate_proposals(config, &proposals, grounding(cycle)?, &history)?;
-        self.validate_memory(&proposals, &memory)?;
+        Self::validate_memory(&proposals, &memory)?;
         if cycle.mode == CycleMode::Execution {
             for request in memory["rediscovery_requests"]
                 .as_array()
@@ -288,7 +288,7 @@ impl App {
                 "grounding",
                 "orchestrator",
                 &ground_prompt,
-                schemas::object(json!({"context":schemas::string()})),
+                schemas::object(&json!({"context":schemas::string()})),
                 cancel,
             )
             .await;
@@ -362,7 +362,7 @@ impl App {
     ) -> Result<()> {
         let candidates = serde_json::to_string(&cycle.proposals)?;
         let schema = schemas::object(
-            json!({"assessments":schemas::array(schemas::object(json!({"id":schemas::string(),"decision":schemas::string(),"reason":schemas::string()})))}),
+            &json!({"assessments":schemas::array(&schemas::object(&json!({"id":schemas::string(),"decision":schemas::string(),"reason":schemas::string()})))}),
         );
         let prompts = [
             format!(

@@ -46,7 +46,7 @@ pub fn validate(value: &Value, schema: &Value) -> Result<()> {
     Ok(())
 }
 
-pub fn object(properties: Value) -> Value {
+pub fn object(properties: &Value) -> Value {
     let required = properties
         .as_object()
         .unwrap()
@@ -58,16 +58,16 @@ pub fn object(properties: Value) -> Value {
 pub fn string() -> Value {
     json!({"type":"string"})
 }
-pub fn array(items: Value) -> Value {
+pub fn array(items: &Value) -> Value {
     json!({"type":"array","items":items})
 }
 pub fn proposal_schema() -> Value {
     object(
-        json!({"proposals":array(object(json!({"id":string(),"title":string(),"problem":string(),"evidence":array(string()),"benefit":string(),"category":string(),"target":string(),"tier":string(),"scope":string(),"dependencies":array(string()),"prompt":string(),"decision":string(),"reason":string(),"problem_key":string(),"relevant_paths":array(string()),"reconsiders":array(string())})))}),
+        &json!({"proposals":array(&object(&json!({"id":string(),"title":string(),"problem":string(),"evidence":array(&string()),"benefit":string(),"category":string(),"target":string(),"tier":string(),"scope":string(),"dependencies":array(&string()),"prompt":string(),"decision":string(),"reason":string(),"problem_key":string(),"relevant_paths":array(&string()),"reconsiders":array(&string())})))}),
     )
 }
 pub fn review_schema() -> Value {
     object(
-        json!({"completed":{"type":"boolean"},"summary":string(),"findings":array(object(json!({"title":string(),"file":string(),"detail":string(),"priority":string()})))}),
+        &json!({"completed":{"type":"boolean"},"summary":string(),"findings":array(&object(&json!({"title":string(),"file":string(),"detail":string(),"priority":string()})))}),
     )
 }

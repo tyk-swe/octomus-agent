@@ -59,8 +59,7 @@
       step: routesStep(draft, saved, catalogs),
       links: [
         { label: 'Load a runner catalog', target: 'load-codex-models' },
-        { label: 'Edit routes', target: 'route-orchestrator' },
-        { label: 'Astra rehearsal preset', target: 'astra-effort' }
+        { label: 'Edit routes', target: 'route-orchestrator' }
       ]
     },
     {

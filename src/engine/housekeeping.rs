@@ -11,18 +11,18 @@ struct StorageUsage {
     runner_transcripts: Value,
 }
 impl App {
-    pub(super) fn schedule_housekeeping(&self) -> Result<()> {
+    pub(super) fn schedule_housekeeping(&self) {
         let now = chrono::Utc::now().timestamp();
         let (cleanup, observe) = {
             let mut rt = self.runtime();
             if rt.housekeeping.as_ref().is_some_and(|h| !h.is_finished()) {
-                return Ok(());
+                return;
             }
             rt.housekeeping = None;
             let cleanup = now - rt.last_retention_at >= 900;
             let observe = now - rt.last_observation_at >= 300;
             if !cleanup && !observe {
-                return Ok(());
+                return;
             }
             if cleanup {
                 rt.last_retention_at = now;
@@ -53,7 +53,6 @@ impl App {
             }
         });
         self.runtime().housekeeping = Some(handle);
-        Ok(())
     }
     async fn measure_storage(&self, c: &Config) -> Result<()> {
         let dir = self.data_dir.clone();

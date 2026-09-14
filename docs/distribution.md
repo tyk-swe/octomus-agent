@@ -81,22 +81,3 @@ Only after the owner clears naming/ownership and controls the registry account:
 These commands are a handoff, not a record of execution. Record the registry URL
 and install evidence before advertising `cargo install octomus-agent --locked` as
 available. No credentials belong in this repository.
-
-## Community setup handoff
-
-The owner can apply `.github/labels.json` with authenticated GitHub CLI:
-
-```bash
-python3 - <<'PY'
-import json, subprocess
-with open('.github/labels.json') as f:
-    for label in json.load(f):
-        subprocess.run(['gh', 'label', 'create', label['name'], '--color', label['color'],
-                        '--description', label['description'], '--force'], check=True)
-PY
-```
-
-Enable **Discussions** in the repository's Settings → General → Features after
-clearance. Confirm `@tyk-swe` has the access required for CODEOWNERS review requests.
-Issue forms and PR templates ship as repository files; labels, Discussions and
-actual private-report delivery are external setup checks, not completed here.

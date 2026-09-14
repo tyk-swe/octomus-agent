@@ -12,7 +12,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
 mkdir "$stage/octomus-agent"
 cp "$binary" "$stage/octomus-agent/octomus-agent"
-cp LICENSE README.md SECURITY.md CHANGELOG.md CONTRIBUTING.md CODE_OF_CONDUCT.md AGENTS.md PRD.md "$stage/octomus-agent/"
+cp LICENSE README.md SECURITY.md CHANGELOG.md CONTRIBUTING.md AGENTS.md "$stage/octomus-agent/"
 cp -R docs deploy "$stage/octomus-agent/"
 # Private operational state, credentials and transcripts are never package inputs.
 tar -czf "$out/octomus-agent-$version-$target.tar.gz" -C "$stage" octomus-agent

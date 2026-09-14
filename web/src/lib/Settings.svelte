@@ -3,7 +3,6 @@
   import { api, ApiError } from './api';
   import type { Backend, Config, Model, ModelCatalog, Route } from './types';
   import RouteEditor from './RouteEditor.svelte';
-  import AstraRehearsal from './AstraRehearsal.svelte';
   import SetupChecklist from './SetupChecklist.svelte';
   import { configIdentity, type Preflight, type SetupStatus } from './setup';
   import Icon from './Icon.svelte';
@@ -29,7 +28,6 @@
     error = $state(''),
     message = $state(''),
     pending = $state(''),
-    presetResetKey = $state(0),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
     commands = $state(''),
     /** Result of the last explicit connection check, keyed to the exact saved configuration. */
@@ -204,7 +202,6 @@
     if (!dirty || busy) return;
     config = JSON.parse(baseline);
     commands = baselineCommands;
-    presetResetKey++;
     error = '';
     message = 'Changes discarded. Saved configuration restored.';
   }
@@ -429,9 +426,6 @@
               : 'Load OpenCode models'}</button
           >
         </div>
-        {#key presetResetKey}
-          <AstraRehearsal bind:config catalog={catalogs.codex} {editable} {busy} />
-        {/key}
         {#each Object.keys(config.roles) as role}
           <RouteEditor
             name={names[role]}

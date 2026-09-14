@@ -150,9 +150,7 @@ repository push permission or model inference; only a run's recorded evidence do
    saving or making model calls. Custom providers configured for the OpenCode service
    user appear in its catalog; models must support text and tool calling. Unsupported
    routes fail visibly; select available routes explicitly instead of expecting a
-   fallback. The [Astra rehearsal preset](docs/launch/astra-rehearsal.md) fills every
-   route from a loaded Codex catalog after you confirm; custom and OpenCode routes stay
-   untouched until then. See [model routing](docs/model-routing.md) for JSON examples.
+   fallback. See [model routing](docs/model-routing.md) for JSON examples.
 3. **Verification policy.** Enter meaningful verification commands, one shell command
    per line; all must pass on the reviewed revision before a PR is published. Install
    your project's build and test tools first. For Octomus itself, install Rust with
@@ -231,6 +229,5 @@ privately to **mail@mail.tyk.sh** using [SECURITY.md](SECURITY.md).
 ## Contributing
 
 Octomus runs on Codex or OpenCode, single-operator and single-repository. See
-[contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md),
-[configuration example](docs/configuration.example.json), and
-[acceptance coverage](docs/acceptance.md). License: [Apache-2.0](LICENSE).
+[contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md) and the
+[configuration example](docs/configuration.example.json). License: [Apache-2.0](LICENSE).

@@ -441,7 +441,7 @@ fn publication_checks_every_identity_field_and_closed_reconciliation() {
 fn shared_branch_requires_a_total_dependency_order() {
     let c = Config::default();
     let t = task();
-    let mut a = t.proposal.clone();
+    let mut a = t.proposal;
     a.target = "octomus/existing".into();
     let mut b = a.clone();
     b.id = "b".into();

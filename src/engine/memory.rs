@@ -109,7 +109,7 @@ impl App {
             .map(serde_json::to_value)
             .collect::<serde_json::Result<_>>()?)
     }
-    pub(super) fn validate_memory(&self, proposals: &[Proposal], memory: &Value) -> Result<()> {
+    pub(super) fn validate_memory(proposals: &[Proposal], memory: &Value) -> Result<()> {
         for p in proposals {
             ensure!(
                 p.problem_key.len() <= 200
@@ -228,17 +228,13 @@ mod tests {
             .planning_memory(&c, &g, &CancellationToken::new())
             .await
             .unwrap();
-        assert!(
-            app.validate_memory(std::slice::from_ref(&p), &memory)
-                .is_err()
-        );
+        assert!(App::validate_memory(std::slice::from_ref(&p), &memory).is_err());
         g.revision = "new".into();
         let memory = app
             .planning_memory(&c, &g, &CancellationToken::new())
             .await
             .unwrap();
-        app.validate_memory(std::slice::from_ref(&p), &memory)
-            .unwrap();
+        App::validate_memory(std::slice::from_ref(&p), &memory).unwrap();
         g.revision = "old".into();
         decision.mode = CycleMode::Audit;
         decision.decision = "accepted".into();
@@ -247,7 +243,7 @@ mod tests {
             .planning_memory(&c, &g, &CancellationToken::new())
             .await
             .unwrap();
-        app.validate_memory(&[p], &memory).unwrap();
+        App::validate_memory(&[p], &memory).unwrap();
     }
 
     #[tokio::test]
@@ -295,8 +291,7 @@ mod tests {
             .planning_memory(&c, &g, &CancellationToken::new())
             .await
             .unwrap();
-        app.validate_memory(std::slice::from_ref(&p), &memory)
-            .unwrap();
+        App::validate_memory(std::slice::from_ref(&p), &memory).unwrap();
 
         // Acceptance in another cycle must not exempt a real rejection.
         rejected.cycle_id = "independent-cycle".into();
@@ -306,10 +301,7 @@ mod tests {
             .planning_memory(&c, &g, &CancellationToken::new())
             .await
             .unwrap();
-        assert!(
-            app.validate_memory(std::slice::from_ref(&p), &memory)
-                .is_err()
-        );
+        assert!(App::validate_memory(std::slice::from_ref(&p), &memory).is_err());
 
         // Execution acceptance still suppresses repeated work after absorption.
         rejected.cycle_id = accepted.cycle_id.clone();
@@ -323,6 +315,6 @@ mod tests {
             .planning_memory(&c, &g, &CancellationToken::new())
             .await
             .unwrap();
-        assert!(app.validate_memory(&[p], &memory).is_err());
+        assert!(App::validate_memory(&[p], &memory).is_err());
     }
 }

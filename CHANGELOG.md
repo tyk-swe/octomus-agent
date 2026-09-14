@@ -80,5 +80,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The superseded `GET /api/models` Codex-only catalog endpoint; `POST /api/model-catalog`
   reports both runners.
+- The Astra rehearsal preset on the Configuration dashboard.
+- Launch rehearsal draft reports and the PRD, acceptance and hardening-validation
+  documents; their history remains in Git.
+- The screenshot-capture spec and community boilerplate files (code of conduct,
+  CODEOWNERS, label definitions and issue forms).
 
 Publication remains pending; this is not a released version.

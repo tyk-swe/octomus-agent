@@ -86,7 +86,7 @@ Task joins must still match the supplied cycle and proposal identity.
 
 ## Preparing a real candidate privately
 
-A launch narrative such as [day1-result.md](day1-result.md) is a historical comparison
+A launch narrative document is a historical comparison
 source, not `RunEvidenceV1` input. Use only a specific offline snapshot or export the
 owner has explicitly authorized; do not discover archives, reconstruct records from
 prose, or launch a run without separate explicit authorization. Follow
