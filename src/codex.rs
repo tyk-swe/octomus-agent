@@ -1,6 +1,7 @@
 use crate::{
     config::{Backend, Config, Route},
     process::{self, GroupChild},
+    runner::{MAX_MESSAGE, Model},
     store::Store,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -40,6 +41,7 @@ impl Codex {
         entity: &str,
         cancel: CancellationToken,
     ) -> Result<Self> {
+        ensure!(!cancel.is_cancelled(), "Session cancelled");
         let mut child = GroupChild::new(
             process::command(&config.codex_binary, cwd)
                 .args(["app-server", "--listen", "stdio://"])
@@ -53,7 +55,7 @@ impl Codex {
         let input = child.0.stdin.take().unwrap();
         let output = FramedRead::new(
             child.0.stdout.take().unwrap(),
-            LinesCodec::new_with_max_length(16_000_000),
+            LinesCodec::new_with_max_length(MAX_MESSAGE),
         );
         let mut s = Self {
             _child: child,
@@ -77,21 +79,32 @@ impl Codex {
             self.input.write_all(payload.as_bytes()).await?;
             self.input.flush().await
         };
-        tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(self.timeout.min(60)), write) => result.context("Codex write timed out")??,
-            _ = self.cancel.cancelled() => bail!("Session cancelled"),
-        }
+        process::bounded(
+            self.timeout.min(60),
+            &self.cancel,
+            "Codex write timed out",
+            write,
+        )
+        .await??;
+        Ok(())
+    }
+    /// Writes without checking `self.cancel`: cleanup requests must still reach the
+    /// server after operator cancellation. Callers bound the wait themselves.
+    async fn send_best_effort(&mut self, value: Value) -> Result<()> {
+        let payload = format!("{value}\n");
+        self.input.write_all(payload.as_bytes()).await?;
+        self.input.flush().await?;
         Ok(())
     }
     async fn receive(&mut self) -> Result<Value> {
-        let line = tokio::select! {
-            x=tokio::time::timeout(Duration::from_secs(self.timeout),self.output.next())=>x.context("Codex response timed out")?.context("Codex app-server disconnected")??,
-            _=self.cancel.cancelled()=>bail!("Session cancelled"),
-        };
-        ensure!(
-            line.len() <= 16_000_000,
-            "Codex message exceeds 16 MB protocol limit"
-        );
+        let line = process::bounded(
+            self.timeout,
+            &self.cancel,
+            "Codex response timed out",
+            self.output.next(),
+        )
+        .await?
+        .context("Codex app-server disconnected")??;
         let v: Value = serde_json::from_str(&line).context("Invalid app-server JSON")?;
         if v.get("method").is_some() && v.get("id").is_some() {
             self.send(json!({"id":v["id"],"error":{"code":-32000,"message":"Octomus unattended mode cannot answer interactive requests"}})).await?;
@@ -109,10 +122,10 @@ impl Codex {
             .await?;
         // A turn can emit notifications before the request response; preserve their order.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let cancel = self.cancel.clone();
         loop {
-            let v = tokio::time::timeout_at(deadline, self.receive())
-                .await
-                .context("Codex RPC timed out")??;
+            let v = process::bounded_at(deadline, &cancel, "Codex RPC timed out", self.receive())
+                .await??;
             if v["id"] == id {
                 if let Some(e) = v.get("error") {
                     bail!("Codex {method}: {}", crate::store::redact(&e.to_string()));
@@ -132,7 +145,7 @@ impl Codex {
             self.pending.push_back((v, size));
         }
     }
-    pub async fn models(&mut self) -> Result<Vec<Value>> {
+    pub async fn models(&mut self) -> Result<Vec<Model>> {
         let mut out = vec![];
         let mut cursor = Value::Null;
         loop {
@@ -142,12 +155,32 @@ impl Codex {
                     json!({"limit":100,"cursor":cursor,"includeHidden":true}),
                 )
                 .await?;
-            out.extend(
-                v["data"]
-                    .as_array()
-                    .context("Invalid model catalog")?
-                    .clone(),
-            );
+            for m in v["data"].as_array().context("Invalid model catalog")? {
+                out.push(Model {
+                    backend: Backend::Codex,
+                    provider: None,
+                    provider_name: None,
+                    model: m["model"]
+                        .as_str()
+                        .context("Invalid Codex model identity")?
+                        .into(),
+                    display_name: m["displayName"].as_str().unwrap_or("").into(),
+                    efforts: m["supportedReasoningEfforts"]
+                        .as_array()
+                        .context("Invalid Codex reasoning catalog")?
+                        .iter()
+                        .map(|e| {
+                            e["reasoningEffort"]
+                                .as_str()
+                                .map(str::to_owned)
+                                .context("Invalid reasoning effort")
+                        })
+                        .collect::<Result<_>>()?,
+                    variants: vec![],
+                    available: true,
+                    unavailable_reason: None,
+                });
+            }
             cursor = v["nextCursor"].clone();
             if cursor.is_null() {
                 break;
@@ -162,7 +195,6 @@ impl Codex {
         cwd: &Path,
         resume: Option<&str>,
     ) -> Result<String> {
-        route.validate(true)?;
         ensure!(route.backend == Backend::Codex, "Wrong runner for {route}");
         let mut params = json!({"model":route.model,"cwd":cwd,"approvalPolicy":"never","sandbox":"danger-full-access","config":{"model_reasoning_effort":route.effort},"developerInstructions":crate::runner::WORKER_INSTRUCTIONS});
         let method = if let Some(id) = resume {
@@ -188,6 +220,10 @@ impl Codex {
             .as_str()
             .context("Missing Codex thread identity")?;
         uuid::Uuid::parse_str(identity).context("Invalid Codex thread identity")?;
+        ensure!(
+            resume.is_none_or(|id| identity == id),
+            "Codex substituted the requested thread"
+        );
         Ok(identity.to_owned())
     }
     pub async fn turn(
@@ -198,6 +234,7 @@ impl Codex {
         prompt: &str,
         schema: Option<Value>,
     ) -> Result<String> {
+        ensure!(route.backend == Backend::Codex, "Wrong runner for {route}");
         let mut params = json!({"threadId":thread,"cwd":cwd,"model":route.model,"effort":route.effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"},"input":[{"type":"text","text":prompt,"text_elements":[]}]});
         if let Some(schema) = schema {
             params["outputSchema"] = schema;
@@ -208,54 +245,80 @@ impl Codex {
             .context("Missing turn identity")?
             .to_owned();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(self.timeout);
-        let mut answer = String::new();
-        loop {
-            let event = if let Some((v, size)) = self.pending.pop_front() {
-                self.pending_bytes -= size;
-                v
-            } else {
-                tokio::time::timeout_at(deadline, self.receive())
-                    .await
-                    .context("Codex session time limit exceeded")??
-            };
-            if event["params"]["threadId"].as_str() != Some(thread) {
-                continue;
-            }
-            if event["params"]["turnId"]
-                .as_str()
-                .is_some_and(|id| id != turn)
-            {
-                continue;
-            }
-            match event["method"].as_str().unwrap_or("") {
-                "item/completed" => {
-                    let item = &event["params"]["item"];
-                    if item["type"] == "agentMessage" && item["phase"] != "commentary" {
-                        answer = item["text"].as_str().unwrap_or("").to_owned();
+        let cancel = self.cancel.clone();
+        let result: Result<String> = async {
+            let mut answer = String::new();
+            loop {
+                ensure!(!self.cancel.is_cancelled(), "Session cancelled");
+                ensure!(
+                    tokio::time::Instant::now() < deadline,
+                    "Codex session time limit exceeded"
+                );
+                let event = if let Some((v, size)) = self.pending.pop_front() {
+                    self.pending_bytes -= size;
+                    v
+                } else {
+                    process::bounded_at(
+                        deadline,
+                        &cancel,
+                        "Codex session time limit exceeded",
+                        self.receive(),
+                    )
+                    .await??
+                };
+                if event["params"]["threadId"].as_str() != Some(thread) {
+                    continue;
+                }
+                if event["params"]["turnId"]
+                    .as_str()
+                    .is_some_and(|id| id != turn)
+                {
+                    continue;
+                }
+                match event["method"].as_str().unwrap_or("") {
+                    "item/completed" => {
+                        let item = &event["params"]["item"];
+                        if item["type"] == "agentMessage" && item["phase"] != "commentary" {
+                            answer = item["text"].as_str().unwrap_or("").to_owned();
+                        }
+                        // Only record metadata, never raw tool arguments or command output from session notifications.
+                        self.store.event(
+                            &self.entity,
+                            "session_progress",
+                            &format!(
+                                "{} · {} · {}",
+                                thread,
+                                item["type"].as_str().unwrap_or("item"),
+                                item["status"].as_str().unwrap_or("completed")
+                            ),
+                        )?;
                     }
-                    // Only record metadata, never raw tool arguments or command output from session notifications.
-                    self.store.event(
-                        &self.entity,
-                        "session_progress",
-                        &format!(
-                            "{} · {} · {}",
-                            thread,
-                            item["type"].as_str().unwrap_or("item"),
-                            item["status"].as_str().unwrap_or("completed")
-                        ),
-                    )?;
+                    "turn/completed" if event["params"]["turn"]["id"] == turn => {
+                        ensure!(
+                            event["params"]["turn"]["status"] == "completed",
+                            "Codex turn did not complete successfully: {}",
+                            crate::store::redact(&event["params"]["turn"]["error"].to_string())
+                        );
+                        ensure!(!answer.trim().is_empty(), "Codex returned no final result");
+                        break Ok(answer);
+                    }
+                    _ => {}
                 }
-                "turn/completed" if event["params"]["turn"]["id"] == turn => {
-                    ensure!(
-                        event["params"]["turn"]["status"] == "completed",
-                        "Codex turn did not complete successfully: {}",
-                        crate::store::redact(&event["params"]["turn"]["error"].to_string())
-                    );
-                    ensure!(!answer.trim().is_empty(), "Codex returned no final result");
-                    return Ok(answer);
-                }
-                _ => {}
             }
         }
+        .await;
+        if result.is_err() {
+            // Best-effort interrupt bypasses the cancel select so it still reaches
+            // the server after operator cancellation; the response is not awaited.
+            self.serial += 1;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                self.send_best_effort(
+                    json!({"id":self.serial,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn}}),
+                ),
+            )
+            .await;
+        }
+        result
     }
 }

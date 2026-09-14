@@ -7,6 +7,11 @@ use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
+/// Attaches a typed blocked reason as the innermost cause while keeping the
+/// detailed message outermost, so `BlockedReason::from_error` picks the reason.
+fn blocked(reason: BlockedReason, message: &'static str) -> anyhow::Error {
+    anyhow::Error::new(reason).context(message)
+}
 
 pub async fn git(
     c: &Config,
@@ -247,7 +252,10 @@ async fn publication_pr(
     }
     ensure!(
         matches.len() <= 1,
-        "Ambiguous PR association; reconcile before publication"
+        blocked(
+            BlockedReason::RemoteConflict,
+            "Ambiguous PR association; reconcile before publication"
+        )
     );
     Ok(matches.pop())
 }
@@ -284,12 +292,15 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
     let commit = task
         .output_commit
         .as_deref()
-        .context("No reviewed commit")?;
+        .ok_or_else(|| blocked(BlockedReason::WorkspaceInvalid, "No reviewed commit"))?;
     ensure!(
         task.reviews
             .last()
             .is_some_and(|r| r.revision == commit && r.result.clean()),
-        "Publication requires a clean review at the output revision"
+        blocked(
+            BlockedReason::WorkspaceInvalid,
+            "Publication requires a clean review at the output revision"
+        )
     );
     ensure!(
         c.verification_commands.iter().all(|cmd| task
@@ -298,19 +309,31 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
             .rev()
             .find(|v| v.command == *cmd)
             .is_some_and(|v| v.success && v.revision == commit)),
-        "Publication requires successful verification at the reviewed revision"
+        blocked(
+            BlockedReason::WorkspaceInvalid,
+            "Publication requires successful verification at the reviewed revision"
+        )
     );
     ensure!(
         task.branch.starts_with(&c.branch_prefix) && task.branch != c.default_branch,
-        "Cannot publish outside the owned branch namespace"
+        blocked(
+            BlockedReason::WorkspaceInvalid,
+            "Cannot publish outside the owned branch namespace"
+        )
     );
     ensure!(
         clean(c, path, cancel).await?,
-        "Workspace changed after review"
+        blocked(
+            BlockedReason::WorkspaceInvalid,
+            "Workspace changed after review"
+        )
     );
     ensure!(
         git(c, path, &["rev-parse", "HEAD"], cancel).await? == commit,
-        "Workspace HEAD changed after review"
+        blocked(
+            BlockedReason::WorkspaceInvalid,
+            "Workspace HEAD changed after review"
+        )
     );
     let existing = if let Some(number) = task.pr_number {
         Some(pr(c, number, cancel).await?)
@@ -324,13 +347,19 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
         }
         ensure!(
             p.owned && p.state == "open" && p.branch == task.branch && p.base == c.default_branch,
-            "PR ownership, base, or open state changed; reconcile before retrying"
+            blocked(
+                BlockedReason::RemoteConflict,
+                "PR ownership, base, or open state changed; reconcile before retrying"
+            )
         );
         if task.pr_number.is_none() {
             ensure!(
                 p.body
                     .contains(&format!("<!-- octomus:task:{} -->", task.id)),
-                "Branch is already associated with another task"
+                blocked(
+                    BlockedReason::RemoteConflict,
+                    "Branch is already associated with another task"
+                )
             );
         }
     }
@@ -429,7 +458,10 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
                 && latest.base == c.default_branch
                 && latest.head == commit
                 && latest.body == p.body,
-            "PR changed around publication; retry will reconcile the current remote state"
+            blocked(
+                BlockedReason::RemoteConflict,
+                "PR changed around publication; retry will reconcile the current remote state"
+            )
         );
         gh(
             c,
@@ -469,25 +501,32 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
     )
     .await?;
     let url = reqwest::Url::parse(created.trim())
+        .context(BlockedReason::RemoteConflict)
         .context("PR creation returned no unambiguous URL; reconcile before retrying")?;
     ensure!(
         url.scheme() == "https"
             && url.host_str() == Some("github.com")
             && url.query().is_none()
             && url.fragment().is_none(),
-        "Invalid PR creation URL"
+        blocked(BlockedReason::RemoteConflict, "Invalid PR creation URL")
     );
     let parts: Vec<_> = url
         .path_segments()
-        .context("Missing PR URL path")?
+        .ok_or_else(|| blocked(BlockedReason::RemoteConflict, "Missing PR URL path"))?
         .collect();
     ensure!(
         parts.len() == 4
             && parts[2] == "pull"
             && format!("{}/{}", parts[0], parts[1]).eq_ignore_ascii_case(&c.github_repo),
-        "Created PR belongs to a different repository"
+        blocked(
+            BlockedReason::RemoteConflict,
+            "Created PR belongs to a different repository"
+        )
     );
-    let number: u64 = parts[3].parse().context("Missing created PR number")?;
+    let number: u64 = parts[3]
+        .parse()
+        .context(BlockedReason::RemoteConflict)
+        .context("Missing created PR number")?;
     let published = pr(c, number, cancel).await?;
     validate_publication(task, &published, false)?;
     Ok(published)

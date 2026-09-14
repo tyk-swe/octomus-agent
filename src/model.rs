@@ -8,6 +8,9 @@ pub fn now() -> String {
 pub fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
+/// Reviewer session labels in dispatch order. Planning writes sessions under these
+/// names; run evidence attributes saved assessment batches by matching them.
+pub const REVIEWER_SLOTS: [&str; 2] = ["adversary-a", "adversary-b"];
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -36,6 +39,15 @@ impl Status {
     pub fn retryable(&self) -> bool {
         matches!(self, Self::Failed | Self::Blocked)
     }
+    /// Statuses whose tasks hold a scheduler slot or branch writer lock. SQL projections
+    /// and history filters derive their literal lists from this single vocabulary.
+    pub const ACTIVE: [&'static str; 5] = [
+        "executing",
+        "reviewing",
+        "repairing",
+        "verifying",
+        "publishing",
+    ];
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,12 +75,7 @@ pub struct Proposal {
 
 impl Proposal {
     pub fn problem_identity(&self) -> String {
-        let key = if self.problem_key.trim().is_empty() {
-            &self.title
-        } else {
-            &self.problem_key
-        };
-        key.trim().to_lowercase()
+        problem_identity(&self.title, &self.problem_key)
     }
     /// Two proposals describe the same work when they share a target and either a title
     /// (case-insensitive) or a stable problem identity.
@@ -77,6 +84,15 @@ impl Proposal {
             && (self.title.trim().eq_ignore_ascii_case(other.title.trim())
                 || self.problem_identity() == other.problem_identity())
     }
+}
+
+pub(crate) fn problem_identity(title: &str, problem_key: &str) -> String {
+    let key = if problem_key.trim().is_empty() {
+        title
+    } else {
+        problem_key
+    };
+    key.trim().to_lowercase()
 }
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -302,9 +318,17 @@ impl Task {
             return vec![];
         }
         if !self.status.retryable() {
-            return vec!["cancel"];
+            return if self.output_commit.is_none() {
+                vec!["cancel"]
+            } else {
+                vec![]
+            };
         }
-        let mut actions = vec!["cancel", "archive"];
+        let mut actions = vec![];
+        if self.output_commit.is_none() {
+            actions.push("cancel");
+        }
+        actions.push("archive");
         match self.blocked_reason.unwrap_or_default() {
             BlockedReason::StaleBase
             | BlockedReason::InvalidPlan
@@ -411,6 +435,8 @@ pub struct RunBatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(from = "SavedControl")]
 pub struct Control {
+    /// Serialized derivative of `mode` for the dashboard contract; kept in sync by
+    /// `set_mode` and the `SavedControl` migration. Never set it directly.
     pub paused: bool,
     pub cycle_number: u64,
     pub next_cycle_at: i64,

@@ -23,12 +23,7 @@ impl App {
     ) -> Result<(Session, Result<String>)> {
         self.budget(&cycle.id, None, label, &config.roles[role])
             .await?;
-        let workspace = self
-            .data_dir
-            .join("cycles")
-            .join(&cycle.id)
-            .join(label)
-            .join("workspace");
+        let workspace = self.cycle_workspace(&cycle.id, label);
         let revision = &grounding(cycle)?.revision;
         git::clone_at(config, &workspace, revision, cancel).await?;
         let route = &config.roles[role];
@@ -47,15 +42,12 @@ impl App {
             started_at: now(),
             summary: String::new(),
         };
-        self.store.put("session", &session.id, &session)?;
         let result = async {
             let answer = client
                 .turn(&session.id, route, &workspace, prompt, Some(schema.clone()))
                 .await?;
-            schemas::validate(
-                &serde_json::from_str(&answer).context("Planning result is not JSON")?,
-                &schema,
-            )?;
+            // Structured turns are schema-validated by the runner; only the
+            // snapshot-integrity check remains here.
             ensure!(
                 git::at(config, &workspace, revision, cancel).await?,
                 "Planning session modified its source snapshot"
@@ -74,7 +66,6 @@ impl App {
                 session.summary = redact(&format!("{e:#}"));
             }
         }
-        self.store.put("session", &session.id, &session)?;
         drop(client);
         if result.is_ok() {
             super::housekeeping::remove_owned_dir(
@@ -95,16 +86,26 @@ impl App {
         cycle: &mut Cycle,
         outcomes: impl IntoIterator<Item = Result<(Session, Result<String>)>>,
     ) -> Result<Vec<String>> {
-        let answers: Vec<Result<Result<String>>> = outcomes
-            .into_iter()
-            .map(|outcome| {
-                let (session, answer) = outcome?;
-                cycle.sessions.push(session);
-                Ok(answer)
-            })
-            .collect();
+        let mut answers = vec![];
+        let mut first_error = None;
+        for outcome in outcomes {
+            match outcome {
+                Ok((session, answer)) => {
+                    cycle.sessions.push(session);
+                    answers.push(answer);
+                }
+                Err(e) => {
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
+                }
+            }
+        }
         self.store.put("cycle", &cycle.id, cycle)?;
-        answers.into_iter().map(|answer| answer?).collect()
+        if let Some(e) = first_error {
+            return Err(e);
+        }
+        answers.into_iter().collect()
     }
 
     pub(super) async fn cycle(
@@ -375,7 +376,7 @@ impl App {
             self.role(
                 config,
                 cycle,
-                if i == 0 { "adversary-a" } else { "adversary-b" },
+                crate::model::REVIEWER_SLOTS[i],
                 "proposal_reviewer",
                 p,
                 schema.clone(),

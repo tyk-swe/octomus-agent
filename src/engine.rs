@@ -32,7 +32,7 @@ pub struct Runtime {
     pub cycle_mode: Option<CycleMode>,
     pub last_retention_at: i64,
     pub last_observation_at: i64,
-    pub housekeeping_active: bool,
+    pub housekeeping: Option<tokio::task::JoinHandle<()>>,
     pub reconciling_publication: bool,
     pub checked_cycles: HashSet<String>,
 }
@@ -54,6 +54,27 @@ impl App {
             shutdown: CancellationToken::new(),
         }
     }
+    /// A poisoned runtime mutex means a worker panicked; the scheduler keeps
+    /// operating on the surviving state rather than wedging on the poison.
+    pub fn runtime(&self) -> std::sync::MutexGuard<'_, Runtime> {
+        self.runtime.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    pub(crate) fn task_workspace(&self, task_id: &str) -> PathBuf {
+        self.data_dir.join("tasks").join(task_id).join("workspace")
+    }
+    pub(crate) fn cycle_workspace(&self, cycle_id: &str, label: &str) -> PathBuf {
+        self.data_dir
+            .join("cycles")
+            .join(cycle_id)
+            .join(label)
+            .join("workspace")
+    }
+    pub fn task_guard(&self, id: &str) -> TaskGuard {
+        TaskGuard {
+            app: self.clone(),
+            id: id.to_owned(),
+        }
+    }
     pub fn config(&self) -> Result<Config> {
         Ok(self.store.get("settings", "config")?.unwrap_or_default())
     }
@@ -71,13 +92,7 @@ impl App {
             .event(&t.id, "status", &format!("{:?}", t.status))
     }
     pub fn recover(&self) -> Result<()> {
-        for mut task in self.store.tasks_with_status(&[
-            "executing",
-            "reviewing",
-            "repairing",
-            "verifying",
-            "publishing",
-        ])? {
+        for mut task in self.store.tasks_with_status(&Status::ACTIVE)? {
             if !task.status.active() {
                 continue;
             }
@@ -89,7 +104,17 @@ impl App {
                     session.status = "interrupted".into();
                 }
             }
-            if initialized && task.attempts < task.execution_config().max_retries {
+            // The marker only cancels work that never produced an output commit;
+            // a task cancelled mid-publication keeps its commit for reconciliation.
+            let operator_cancelled = task.output_commit.is_none()
+                && self
+                    .store
+                    .get::<serde_json::Value>("cancel", &task.id)?
+                    .is_some_and(|v| !v.is_null());
+            if operator_cancelled {
+                task.status = Status::Cancelled;
+                task.error = Some("Operator cancellation preserved across restart".into());
+            } else if initialized && task.attempts < task.execution_config().max_retries {
                 task.attempts += 1;
                 task.status = Status::Queued;
                 task.error = Some("Recovering an interrupted task: inspecting the recorded workspace and reconciling remote state before continuing.".into());
@@ -115,6 +140,11 @@ impl App {
                 cycle.error =
                     Some("Discovery interrupted; incomplete proposals were not dispatched".into());
                 cycle.completed_at = Some(now());
+                for session in &mut cycle.sessions {
+                    if session.status == "running" {
+                        session.status = "interrupted".into();
+                    }
+                }
                 self.store.put("cycle", &cycle.id, &cycle)?;
             }
         }
@@ -208,7 +238,7 @@ impl App {
                 }
             }
         }
-        let rt = self.runtime.lock().unwrap();
+        let rt = self.runtime();
         for token in rt.tasks.values() {
             token.cancel();
         }
@@ -221,7 +251,7 @@ impl App {
         self.schedule_housekeeping()?;
         // Reconciliation can write a preserved PR branch. Reserve publication while
         // leaving the gate available to pause and other operator controls.
-        if self.runtime.lock().unwrap().reconciling_publication {
+        if self.runtime().reconciling_publication {
             return Ok(());
         }
         let mut control = self.control()?;
@@ -233,13 +263,11 @@ impl App {
         let tasks = self
             .store
             .scheduling_tasks(control.batch.as_ref().map(|b| b.id.as_str()))?;
-        self.runtime
-            .lock()
-            .unwrap()
+        self.runtime()
             .checked_cycles
             .retain(|id| tasks.iter().any(|t| &t.cycle_id == id));
         let (active, cycle_active) = {
-            let rt = self.runtime.lock().unwrap();
+            let rt = self.runtime();
             (rt.tasks.len(), rt.cycle.is_some())
         };
         if cycle_active {
@@ -283,13 +311,7 @@ impl App {
             if slots == 0 {
                 break;
             }
-            if !self
-                .runtime
-                .lock()
-                .unwrap()
-                .checked_cycles
-                .contains(&task.cycle_id)
-            {
+            if !self.runtime().checked_cycles.contains(&task.cycle_id) {
                 let group = self.store.tasks_for_cycle(&task.cycle_id)?;
                 let proposals: Vec<_> = group
                     .iter()
@@ -302,16 +324,12 @@ impl App {
                 if let Err(error) = planning::validate_branch_order(&task.config, &proposals) {
                     for mut invalid in group.into_iter().filter(|t| t.status == Status::Queued) {
                         invalid.blocked_reason = Some(BlockedReason::InvalidPlan);
-                        invalid.error = Some(error.to_string());
+                        invalid.error = Some(format!("{error:#}"));
                         self.transition(&mut invalid, Status::Blocked)?;
                     }
                     continue;
                 }
-                self.runtime
-                    .lock()
-                    .unwrap()
-                    .checked_cycles
-                    .insert(task.cycle_id.clone());
+                self.runtime().checked_cycles.insert(task.cycle_id.clone());
             }
             let dependencies: Vec<Option<Task>> = task
                 .proposal
@@ -347,14 +365,11 @@ impl App {
             occupied.insert(task.proposal.target.clone());
             slots -= 1;
             let cancel = self.shutdown.child_token();
-            self.runtime
-                .lock()
-                .unwrap()
-                .tasks
-                .insert(task.id.clone(), cancel.clone());
+            self.runtime().tasks.insert(task.id.clone(), cancel.clone());
             self.transition(&mut task, Status::Executing)?;
             let app = self.clone();
             tokio::spawn(async move {
+                let _guard = app.task_guard(&task.id);
                 let mut timed_out = false;
                 let result = {
                     let limit = Duration::from_secs(task.execution_config().task_timeout_seconds);
@@ -393,23 +408,32 @@ impl App {
                             }
                         }
                     }
+                    let operator_cancelled = app
+                        .store
+                        .get::<serde_json::Value>("cancel", &task.id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|v| !v.is_null());
                     let status = if cancel.is_cancelled()
                         && !timed_out
-                        && !app.shutdown.is_cancelled()
                         && task.output_commit.is_none()
+                        && (operator_cancelled || !app.shutdown.is_cancelled())
                     {
                         Status::Cancelled
                     } else {
                         Status::Blocked
                     };
-                    let _ = app.transition(&mut task, status);
-                    let _ = app.store.event(&task.id, "error", &error);
+                    if let Err(e) = app.transition(&mut task, status) {
+                        tracing::error!("Task {} final transition failed: {e:#}", task.id);
+                    }
+                    if let Err(e) = app.store.event(&task.id, "error", &error) {
+                        tracing::error!("Task {} error event failed: {e:#}", task.id);
+                    }
                 }
-                app.runtime.lock().unwrap().tasks.remove(&task.id);
             });
         }
         let busy = {
-            let rt = self.runtime.lock().unwrap();
+            let rt = self.runtime();
             !rt.tasks.is_empty() || rt.cycle.is_some()
         };
         let ready_to_plan = if let Some(batch) = &control.batch {
@@ -455,13 +479,18 @@ impl App {
         self.store.begin_cycle(&cycle, control)?;
         let cancel = self.shutdown.child_token();
         {
-            let mut rt = self.runtime.lock().unwrap();
+            let mut rt = self.runtime();
             rt.cycle = Some(cancel.clone());
             rt.cycle_mode = Some(mode);
         }
         let app = self.clone();
         let config = config.clone();
         tokio::spawn(async move {
+            let _guard = CycleGuard {
+                app: app.clone(),
+                id: cycle.id.clone(),
+                mode,
+            };
             let result = app.cycle(&config, cycle, &cancel).await;
             app.finish_cycle(mode, result).await;
         });
@@ -473,7 +502,7 @@ impl App {
         c.validate_audit()?;
         let mut control = self.control()?;
         {
-            let rt = self.runtime.lock().unwrap();
+            let rt = self.runtime();
             ensure!(
                 control.paused && rt.tasks.is_empty() && rt.cycle.is_none(),
                 "Pause and wait for active work before running an audit"
@@ -497,7 +526,7 @@ impl App {
             }
             let _ = self.store.put("settings", "control", &control);
         }
-        let mut runtime = self.runtime.lock().unwrap();
+        let mut runtime = self.runtime();
         runtime.cycle = None;
         runtime.cycle_mode = None;
     }
@@ -514,6 +543,91 @@ impl App {
             size,
             &crate::store::Admission::new(cycle_id, task_id, role, route),
         )
+    }
+}
+
+/// Removes a task's scheduler slot on every exit path — normal completion,
+/// cancellation and panic — and marks a still-active stored task blocked so a
+/// dead worker never leaves work looking runnable.
+pub struct TaskGuard {
+    app: App,
+    id: String,
+}
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        let _ = (|| -> Result<()> {
+            if let Some(mut task) = self.app.store.get::<crate::model::Task>("task", &self.id)?
+                && task.status.active()
+            {
+                task.status = Status::Blocked;
+                task.blocked_reason = Some(BlockedReason::Unknown);
+                task.error =
+                    Some("Task worker exited unexpectedly; inspect the preserved workspace".into());
+                self.app.save_task(&mut task)?;
+            }
+            Ok(())
+        })();
+        // A successor must not reserve this task until fallback writes finish.
+        self.app.runtime().tasks.remove(&self.id);
+    }
+}
+/// A panicked cycle worker must not wedge the scheduler: on unwind this clears
+/// the cycle slot and marks a still-running stored cycle interrupted. Normal
+/// completion is owned by `finish_cycle`, so the guard only acts on panic —
+/// clearing unconditionally could erase a successor cycle's token.
+struct CycleGuard {
+    app: App,
+    id: String,
+    mode: CycleMode,
+}
+impl Drop for CycleGuard {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let _ = (|| -> Result<()> {
+            if let Some(mut cycle) = self
+                .app
+                .store
+                .get::<crate::model::Cycle>("cycle", &self.id)?
+                && cycle.status == "running"
+            {
+                cycle.status = "interrupted".into();
+                cycle.completed_at = Some(now());
+                cycle.error = Some("Cycle worker exited unexpectedly".into());
+                for session in &mut cycle.sessions {
+                    if session.status == "running" {
+                        session.status = "interrupted".into();
+                    }
+                }
+                self.app.store.put("cycle", &cycle.id, &cycle)?;
+            }
+            Ok(())
+        })();
+        // finish_cycle owns the control bookkeeping (error record, RunOnce pause,
+        // backoff) and the rt.cycle clear, but cannot run inside Drop. Leave the
+        // panicked token in rt.cycle so the scheduler stays blocked until the
+        // spawned task clears it — clearing here would let a successor start and
+        // then have its token and batch state erased by the late finish_cycle.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let app = self.app.clone();
+                let mode = self.mode;
+                handle.spawn(async move {
+                    app.finish_cycle(
+                        mode,
+                        Err(anyhow::anyhow!("Cycle worker exited unexpectedly")),
+                    )
+                    .await;
+                });
+            }
+            Err(_) => {
+                // No runtime left to run finish_cycle; unblock the scheduler directly.
+                let mut rt = self.app.runtime();
+                rt.cycle = None;
+                rt.cycle_mode = None;
+            }
+        }
     }
 }
 pub fn idle_delay(base: u64, streak: u32) -> u64 {

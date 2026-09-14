@@ -886,3 +886,77 @@ fn export_run_flag_returns_before_touching_application_state() {
     assert!(!data_dir.join("service.lock").exists());
     drop(store);
 }
+
+#[test]
+fn committed_plan_attributes_verdicts_to_reviewer_slots() {
+    // Records written through commit_plan — the same path the engine uses — must
+    // attribute each saved assessment batch to the REVIEWER_SLOTS session labels.
+    let mut committed = task("cycle-slots", "p1");
+    committed.output_commit = Some("out00001".into());
+    committed.reviews = serde_json::from_value(json!([review(
+        "out00001",
+        true,
+        "Reviewed the complete change set",
+        json!([])
+    )]))
+    .unwrap();
+    committed.verification =
+        serde_json::from_value(json!([check("make check", true, "out00001")])).unwrap();
+    let c = cycle(
+        "cycle-slots",
+        "execution",
+        json!([proposal("p1", "accepted"), proposal("p2", "deferred")]),
+        json!([
+            batch(json!([
+                {"id": "p1", "decision": "accepted", "reason": "a accepts"},
+                {"id": "p2", "decision": "deferred", "reason": "a defers"}
+            ])),
+            batch(json!([
+                {"id": "p1", "decision": "accepted", "reason": "b accepts"},
+                {"id": "p2", "decision": "rejected", "reason": "b rejects"}
+            ]))
+        ]),
+        json!([
+            reviewer_session(octomus_agent::model::REVIEWER_SLOTS[0], "completed"),
+            reviewer_session(octomus_agent::model::REVIEWER_SLOTS[1], "completed")
+        ]),
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(&temp.path().join("state.db")).unwrap();
+    store
+        .commit_plan(&c, std::slice::from_ref(&committed))
+        .unwrap();
+
+    let value = store.run_evidence("cycle-slots").unwrap().unwrap();
+    let p1 = find_proposal(&value, "p1");
+    let verdicts = p1["reviewer_verdicts"].as_array().unwrap();
+    assert_eq!(verdicts.len(), octomus_agent::model::REVIEWER_SLOTS.len());
+    for (index, slot) in octomus_agent::model::REVIEWER_SLOTS.iter().enumerate() {
+        assert_eq!(verdicts[index]["reviewer"], *slot);
+        assert_eq!(verdicts[index]["state"], "recorded");
+        assert_eq!(verdicts[index]["decision"], "accepted");
+    }
+    assert_eq!(verdicts[0]["reason"], "a accepts");
+    assert_eq!(verdicts[1]["reason"], "b accepts");
+
+    let linked = p1["linked_tasks"].as_array().unwrap();
+    assert_eq!(linked.len(), 1);
+    let t = &linked[0];
+    assert_eq!(t["id"], committed.id);
+    assert_eq!(t["cycle_id"], "cycle-slots");
+    assert_eq!(t["proposal_id"], "p1");
+    assert_eq!(t["latest_review"]["latest"]["revision"], "out00001");
+    assert_eq!(t["latest_review"]["clean"], true);
+    assert_eq!(t["latest_review"]["clean_at_output_revision"], true);
+    assert_eq!(t["required_commands"]["state"], "recorded");
+    assert_eq!(t["required_commands"]["commands"][0]["state"], "passed");
+    assert_eq!(
+        t["required_commands"]["commands"][0]["latest_revision"],
+        "out00001"
+    );
+
+    let p2 = find_proposal(&value, "p2");
+    assert_eq!(p2["reviewer_verdicts"][0]["decision"], "deferred");
+    assert_eq!(p2["reviewer_verdicts"][1]["decision"], "rejected");
+    assert!(p2["linked_tasks"].as_array().unwrap().is_empty());
+}

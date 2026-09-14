@@ -1,6 +1,6 @@
 //! Indexed operational views. Canonical evidence remains in records.data.
 use super::*;
-use crate::model::{BatchPhase, Control, Cycle, OperatingMode, RunBatch, Task};
+use crate::model::{BatchPhase, Control, Cycle, OperatingMode, RunBatch, Status, Task};
 use serde_json::{Value, json};
 
 const TASK_SUMMARY: &str = "json_object('id',NEW.id,'cycle_id',json_extract(NEW.data,'$.cycle_id'),'title',substr(json_extract(NEW.data,'$.proposal.title'),1,200),'category',json_extract(NEW.data,'$.proposal.category'),'tier',json_extract(NEW.data,'$.proposal.tier'),'target',json_extract(NEW.data,'$.proposal.target'),'branch',json_extract(NEW.data,'$.branch'),'status',json_extract(NEW.data,'$.status'),'pr_url',json_extract(NEW.data,'$.pr_url'),'pr_number',json_extract(NEW.data,'$.pr_number'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'blocked_reason',json_extract(NEW.data,'$.blocked_reason'),'created_at',json_extract(NEW.data,'$.created_at'),'updated_at',json_extract(NEW.data,'$.updated_at'),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}')),'superseded_by',json(COALESCE(json_extract(NEW.data,'$.superseded_by'),'[]')))";
@@ -10,6 +10,14 @@ const PR_SUMMARY: &str = "json_set(json_remove(NEW.data,'$.pr.body'),'$.pr.title
 // default trim only removes ASCII spaces. Keep this identical in the index/query.
 const TITLE_WHITESPACE: &str = "char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)";
 
+/// Quotes statuses as a SQL IN-list literal derived from the model vocabulary.
+fn status_list(statuses: &[&'static str]) -> String {
+    statuses
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
 pub(super) fn migrate(c: &Connection) -> Result<()> {
     let projection = format!(
         "INSERT INTO record_meta(kind,id,seq,status,repository,target,title,cycle_id,run_id,archived,discarded,summary) VALUES (NEW.kind,NEW.id,NEW.rowid,COALESCE(json_extract(NEW.data,'$.status'),json_extract(NEW.data,'$.pr.state'),''),COALESCE(json_extract(NEW.data,'$.config.github_repo'),json_extract(NEW.data,'$.repository'),''),COALESCE(json_extract(NEW.data,'$.proposal.target'),''),COALESCE(json_extract(NEW.data,'$.proposal.title'),json_extract(NEW.data,'$.pr.title'),''),COALESCE(json_extract(NEW.data,'$.cycle_id'),''),json_extract(NEW.data,'$.run_id'),json_extract(NEW.data,'$.lifecycle.archived_at'),json_extract(NEW.data,'$.lifecycle.discarded_at'),CASE NEW.kind WHEN 'task' THEN {TASK_SUMMARY} WHEN 'cycle' THEN {CYCLE_SUMMARY} WHEN 'pr' THEN {PR_SUMMARY} ELSE '{{}}' END) ON CONFLICT(kind,id) DO UPDATE SET status=excluded.status,repository=excluded.repository,target=excluded.target,title=excluded.title,cycle_id=excluded.cycle_id,run_id=excluded.run_id,archived=excluded.archived,discarded=excluded.discarded,summary=excluded.summary;"
@@ -29,7 +37,7 @@ pub(super) fn migrate(c: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS proposal_cycle ON proposal_records(cycle_id,seq DESC);
         CREATE TRIGGER IF NOT EXISTS project_record_insert AFTER INSERT ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN {projection} END;
         CREATE TRIGGER IF NOT EXISTS project_record_update AFTER UPDATE ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN {projection} END;
-        CREATE TRIGGER IF NOT EXISTS project_record_delete AFTER DELETE ON records BEGIN DELETE FROM record_meta WHERE kind=OLD.kind AND id=OLD.id; DELETE FROM proposal_records WHERE OLD.kind='cycle' AND cycle_id=OLD.id; END;
+        DROP TRIGGER IF EXISTS project_record_delete;
         COMMIT;"))?;
     let proposal_projection = "INSERT INTO proposal_records(cycle_id,proposal_id,mode,number,decision,target,title,data) SELECT NEW.id,json_extract(value,'$.id'),COALESCE(json_extract(NEW.data,'$.mode'),'execution'),json_extract(NEW.data,'$.number'),json_extract(value,'$.decision'),json_extract(value,'$.target'),json_extract(value,'$.title'),value FROM json_each(NEW.data,'$.proposals') WHERE true ON CONFLICT(cycle_id,proposal_id) DO UPDATE SET decision=excluded.decision,target=excluded.target,title=excluded.title,data=excluded.data;";
     c.execute_batch(&format!("BEGIN IMMEDIATE;
@@ -95,7 +103,7 @@ pub(super) fn migrate(c: &Connection) -> Result<()> {
     c.execute_batch("BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS record_counts(kind TEXT NOT NULL,status TEXT NOT NULL,archived INTEGER NOT NULL,count INTEGER NOT NULL,PRIMARY KEY(kind,status,archived));
         CREATE TRIGGER IF NOT EXISTS count_record_insert AFTER INSERT ON record_meta BEGIN INSERT INTO record_counts VALUES(NEW.kind,NEW.status,NEW.archived IS NOT NULL,1) ON CONFLICT(kind,status,archived) DO UPDATE SET count=count+1; END;
-        CREATE TRIGGER IF NOT EXISTS count_record_delete AFTER DELETE ON record_meta BEGIN UPDATE record_counts SET count=count-1 WHERE kind=OLD.kind AND status=OLD.status AND archived=(OLD.archived IS NOT NULL); END;
+        DROP TRIGGER IF EXISTS count_record_delete;
         CREATE TRIGGER IF NOT EXISTS count_record_update AFTER UPDATE OF status,archived ON record_meta WHEN OLD.status IS NOT NEW.status OR OLD.archived IS NOT NEW.archived BEGIN UPDATE record_counts SET count=count-1 WHERE kind=OLD.kind AND status=OLD.status AND archived=(OLD.archived IS NOT NULL); INSERT INTO record_counts VALUES(NEW.kind,NEW.status,NEW.archived IS NOT NULL,1) ON CONFLICT(kind,status,archived) DO UPDATE SET count=count+1; END;
         COMMIT;")?;
     if c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 2 {
@@ -126,6 +134,15 @@ pub(super) fn migrate(c: &Connection) -> Result<()> {
             CREATE INDEX meta_duplicate ON record_meta(kind,repository COLLATE NOCASE,target,trim(title,{TITLE_WHITESPACE}) COLLATE NOCASE,status);
             PRAGMA user_version=4;
             COMMIT;"))?;
+    }
+    if c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 5 {
+        // Cover identity comparisons without reading task evidence. Keep the raw
+        // strings so Rust can apply the same Unicode normalization as Proposal.
+        c.execute_batch("BEGIN IMMEDIATE;
+            DROP INDEX task_problem_identity;
+            CREATE INDEX task_problem_identity ON records(kind,json_extract(data,'$.config.github_repo') COLLATE NOCASE,json_extract(data,'$.proposal.target'),json_extract(data,'$.proposal.title'),COALESCE(json_extract(data,'$.proposal.problem_key'),''),json_extract(data,'$.status'),json_extract(data,'$.lifecycle.archived_at'),id);
+            PRAGMA user_version=5;
+            COMMIT;")?;
     }
     Ok(())
 }
@@ -164,9 +181,10 @@ fn page(c: &Connection, kind: &str, query: &HistoryQuery) -> Result<Page> {
         );
     }
     if status == "active" {
-        sql.push_str(
-            " AND status IN ('executing','reviewing','repairing','verifying','publishing')",
-        );
+        sql.push_str(&format!(
+            " AND status IN ({})",
+            status_list(&Status::ACTIVE)
+        ));
     } else if status == "attention" {
         sql.push_str(" AND status IN ('blocked','failed') AND archived IS NULL");
     } else if !status.is_empty() {
@@ -212,10 +230,10 @@ fn decode_page(mut rows: Vec<(String, i64)>, limit: usize) -> Result<Page> {
 }
 impl Store {
     pub fn history_page(&self, kind: &str, query: &HistoryQuery) -> Result<Page> {
-        page(&self.0.lock().unwrap(), kind, query)
+        page(&self.conn(), kind, query)
     }
     pub fn proposal_page(&self, q: &HistoryQuery) -> Result<Page> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let limit = q.limit.unwrap_or(50).clamp(1, 100);
         let rows = c
             .prepare(
@@ -248,7 +266,7 @@ impl Store {
         Ok(page)
     }
     pub fn proposal_detail(&self, cycle: &str, id: &str) -> Result<Option<Value>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let value: Option<String> = c
             .query_row(
                 "SELECT json_set(data,'$.content_revision',content_revision) FROM proposal_records WHERE cycle_id=?1 AND proposal_id=?2",
@@ -259,12 +277,12 @@ impl Store {
         value.map(|v| Ok(serde_json::from_str(&v)?)).transpose()
     }
     pub fn scheduling_tasks(&self, run_id: Option<&str>) -> Result<Vec<Task>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         // Every active writer must be visible, regardless of the queued history size or batch.
-        let mut stmt = c.prepare(
+        let mut stmt = c.prepare(&format!(
             "WITH candidates AS (
                 SELECT id,seq FROM record_meta WHERE kind='task' AND archived IS NULL
-                    AND status IN ('executing','reviewing','repairing','verifying','publishing')
+                    AND status IN ({})
                 UNION ALL
                 SELECT id,seq FROM (
                     SELECT id,seq FROM record_meta WHERE kind='task' AND archived IS NULL
@@ -274,13 +292,14 @@ impl Store {
             )
             SELECT r.data FROM candidates m JOIN records r ON r.kind='task' AND r.id=m.id
             ORDER BY m.seq ASC",
-        )?;
+            status_list(&Status::ACTIVE)
+        ))?;
         stmt.query_map([run_id], |r| r.get::<_, String>(0))?
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
     }
     pub fn tasks_with_status(&self, statuses: &[&str]) -> Result<Vec<Task>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let mut s = c.prepare(
             "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500",
         )?;
@@ -290,7 +309,7 @@ impl Store {
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
     }
     pub fn running_cycles(&self) -> Result<Vec<Cycle>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let mut s = c.prepare(
             "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'",
         )?;
@@ -299,7 +318,7 @@ impl Store {
             .collect()
     }
     pub fn tasks_for_cycle(&self, id: &str) -> Result<Vec<Task>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let mut s = c.prepare(
             "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq",
         )?;
@@ -311,7 +330,7 @@ impl Store {
     /// inside one transaction, so the result always describes a single consistent
     /// snapshot rather than the dashboard's recent task window.
     pub fn run_evidence(&self, cycle_id: &str) -> Result<Option<Value>> {
-        let mut c = self.0.lock().unwrap();
+        let mut c = self.conn();
         let tx = c.transaction()?;
         let snapshot = crate::evidence::read_snapshot(&tx, cycle_id)?;
         tx.commit()?;
@@ -326,40 +345,58 @@ impl Store {
         repository: &str,
         proposals: &[crate::model::Proposal],
     ) -> Result<Vec<Task>> {
-        let c = self.0.lock().unwrap();
-        let mut found = std::collections::HashMap::new();
-        let title_query = format!(
-            "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.target=?2 AND trim(m.title,{TITLE_WHITESPACE})=?3 COLLATE NOCASE AND m.status!='cancelled' AND m.archived IS NULL"
-        );
+        let mut targets = std::collections::HashMap::<_, Vec<_>>::new();
         for p in proposals.iter().filter(|p| p.decision == "accepted") {
-            // Publication records delivery, not integration into the target branch.
-            let mut s = c.prepare(&title_query)?;
-            for row in s.query_map(params![repository, p.target, p.title.trim()], |r| {
-                r.get::<_, String>(0)
-            })? {
-                let t: Task = serde_json::from_str(&row?)?;
-                found.insert(t.id.clone(), t);
-            }
-            let mut identity = c.prepare(
-                "SELECT data FROM records WHERE kind='task' AND json_extract(data,'$.config.github_repo')=?1 COLLATE NOCASE AND json_extract(data,'$.proposal.target')=?2 AND lower(trim(COALESCE(NULLIF(json_extract(data,'$.proposal.problem_key'),''),json_extract(data,'$.proposal.title'))))=?3 AND json_extract(data,'$.status')!='cancelled' AND json_extract(data,'$.lifecycle.archived_at') IS NULL",
+            targets
+                .entry(p.target.as_str())
+                .or_default()
+                .push((p.title.trim(), p.problem_identity()));
+        }
+        let c = self.conn();
+        let mut found = std::collections::HashSet::new();
+        {
+            // Read the covering index once per target, regardless of proposal count
+            // or evidence size. SQLite lower() cannot normalize Unicode identities.
+            let mut s = c.prepare(
+                "SELECT id,json_extract(data,'$.proposal.title'),COALESCE(json_extract(data,'$.proposal.problem_key'),'') FROM records INDEXED BY task_problem_identity WHERE kind='task' AND json_extract(data,'$.config.github_repo')=?1 COLLATE NOCASE AND json_extract(data,'$.proposal.target')=?2 AND json_extract(data,'$.status')!='cancelled' AND json_extract(data,'$.lifecycle.archived_at') IS NULL",
             )?;
-            for row in identity
-                .query_map(params![repository, p.target, p.problem_identity()], |r| {
-                    r.get::<_, String>(0)
-                })?
-            {
-                let t: Task = serde_json::from_str(&row?)?;
-                found.insert(t.id.clone(), t);
+            for (target, identities) in targets {
+                let mut rows = s.query(params![repository, target])?;
+                while let Some(row) = rows.next()? {
+                    let title = row.get_ref(1)?.as_str()?;
+                    let key = row.get_ref(2)?.as_str()?;
+                    let identity = crate::model::problem_identity(title, key);
+                    if identities
+                        .iter()
+                        .any(|(proposed_title, proposed_identity)| {
+                            title.trim().eq_ignore_ascii_case(proposed_title)
+                                || identity == *proposed_identity
+                        })
+                    {
+                        found.insert(row.get::<_, String>(0)?);
+                    }
+                }
             }
         }
-        Ok(found.into_values().collect())
+        let records = {
+            let mut s = c.prepare("SELECT data FROM records WHERE kind='task' AND id=?1")?;
+            found
+                .into_iter()
+                .map(|id| s.query_row([id], |r| r.get::<_, String>(0)))
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        drop(c);
+        records
+            .into_iter()
+            .map(|row| Ok(serde_json::from_str(&row)?))
+            .collect()
     }
     pub fn has_unresolved_tasks(&self) -> Result<bool> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM record_counts WHERE kind='task' AND status NOT IN ('published','cancelled') AND archived=0 AND count>0)",[],|r|r.get(0))?)
     }
     pub fn start_batch(&self, control: &mut Control) -> Result<()> {
-        let mut c = self.0.lock().unwrap();
+        let mut c = self.conn();
         let tx = c.transaction()?;
         let id = crate::model::id();
         control.set_mode(OperatingMode::RunOnce);
@@ -376,7 +413,7 @@ impl Store {
         Ok(())
     }
     pub fn begin_cycle(&self, cycle: &Cycle, control: &Control) -> Result<()> {
-        let mut c = self.0.lock().unwrap();
+        let mut c = self.conn();
         let tx = c.transaction()?;
         tx.execute(
             "INSERT INTO records VALUES ('cycle',?1,?2)",
@@ -387,11 +424,14 @@ impl Store {
         Ok(())
     }
     pub fn batch_counts(&self, id: &str) -> Result<(u64, u64)> {
-        let c = self.0.lock().unwrap();
-        Ok(c.query_row("SELECT COALESCE(sum(status IN ('queued','executing','reviewing','repairing','verifying','publishing')),0), COALESCE(sum(status IN ('blocked','failed','cancelled')),0) FROM batch_members WHERE run_id=?1",[id],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?)
+        let c = self.conn();
+        // Pending work is queued plus every active status; the second list holds the
+        // unresolved-terminal statuses.
+        let pending = format!("'queued',{}", status_list(&Status::ACTIVE));
+        Ok(c.query_row(&format!("SELECT COALESCE(sum(status IN ({pending})),0), COALESCE(sum(status IN ('blocked','failed','cancelled')),0) FROM batch_members WHERE run_id=?1"),[id],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?)
     }
     pub fn dashboard(&self) -> Result<Value> {
-        let mut c = self.0.lock().unwrap();
+        let mut c = self.conn();
         let tx = c.transaction()?;
         let mut counts = serde_json::Map::new();
         {
@@ -499,7 +539,7 @@ impl Store {
         Ok(result)
     }
     pub fn cleanup_candidates(&self, kind: &str, cutoff: &str) -> Result<Vec<String>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let mut s = c.prepare(
             "SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq LIMIT 100",
         )?;
@@ -507,7 +547,7 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
     pub fn latest_pr_output(&self, repository: &str, number: u64) -> Result<Option<String>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         Ok(c.query_row("SELECT json_extract(r.data,'$.output_commit') FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='published' AND json_extract(m.summary,'$.pr_number')=?2 ORDER BY json_extract(m.summary,'$.updated_at') DESC LIMIT 1",params![repository,number as i64],|r|r.get(0)).optional()?.flatten())
     }
     pub fn pr_observation(
@@ -515,7 +555,7 @@ impl Store {
         repository: &str,
         number: u64,
     ) -> Result<Option<(String, crate::model::PrObservation)>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let saved: Option<(String, String)> = c.query_row(
             "SELECT m.id,r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='pr' AND m.repository=?1 COLLATE NOCASE AND json_extract(m.summary,'$.pr.number')=?2 ORDER BY m.seq DESC LIMIT 1",
             params![repository, number as i64],
@@ -526,7 +566,7 @@ impl Store {
             .transpose()
     }
     pub fn decision_memory(&self, repository: &str) -> Result<Vec<Value>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let mut s = c.prepare(
             "SELECT data FROM records WHERE kind='decision' AND json_extract(data,'$.repository')=?1 COLLATE NOCASE ORDER BY rowid DESC LIMIT 100",
         )?;
@@ -535,7 +575,7 @@ impl Store {
             .collect()
     }
     pub fn rediscovery_requests(&self, repository: &str) -> Result<Vec<Value>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let mut s = c.prepare(
             "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100",
         )?;

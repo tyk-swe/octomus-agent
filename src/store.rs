@@ -1,13 +1,14 @@
 use crate::model::{Event, now};
-use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use anyhow::{Context, Result};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 mod queries;
 pub use queries::{HistoryQuery, Page};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
 
 /// A budget admission, not a completed turn or a provider charge.
@@ -41,6 +42,9 @@ impl Admission {
 #[derive(Clone)]
 pub struct Store(Arc<Mutex<Connection>>);
 impl Store {
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
     pub fn open(path: &Path) -> Result<Self> {
         let c = Connection::open(path)?;
         c.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -76,7 +80,7 @@ impl Store {
         Ok(Self(Arc::new(Mutex::new(c))))
     }
     pub fn put<T: Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
-        self.0.lock().unwrap().execute(
+        self.conn().execute(
             "INSERT INTO records VALUES (?1,?2,?3)
              ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
             params![kind, id, serde_json::to_string(value)?],
@@ -88,7 +92,7 @@ impl Store {
         cycle: &crate::model::Cycle,
         tasks: &[crate::model::Task],
     ) -> Result<()> {
-        let mut connection = self.0.lock().unwrap();
+        let mut connection = self.conn();
         let transaction = connection.transaction()?;
         transaction.execute(
             "INSERT INTO records VALUES ('cycle',?1,?2)
@@ -123,11 +127,13 @@ impl Store {
         }
         for task in tasks {
             for old_id in &task.supersedes {
-                let data: String = transaction.query_row(
-                    "SELECT data FROM records WHERE kind='task' AND id=?1",
-                    [old_id],
-                    |r| r.get(0),
-                )?;
+                let data: String = transaction
+                    .query_row(
+                        "SELECT data FROM records WHERE kind='task' AND id=?1",
+                        [old_id],
+                        |r| r.get(0),
+                    )
+                    .with_context(|| format!("Missing lineage task {old_id}"))?;
                 let mut old: crate::model::Task = serde_json::from_str(&data)?;
                 anyhow::ensure!(
                     old.rediscovery_requested
@@ -157,11 +163,13 @@ impl Store {
         if cycle.mode == crate::model::CycleMode::Execution {
             for proposal in &cycle.proposals {
                 for id in &proposal.reconsiders {
-                    let data: String = transaction.query_row(
-                        "SELECT data FROM records WHERE kind='task' AND id=?1",
-                        [id],
-                        |r| r.get(0),
-                    )?;
+                    let data: String = transaction
+                        .query_row(
+                            "SELECT data FROM records WHERE kind='task' AND id=?1",
+                            [id],
+                            |r| r.get(0),
+                        )
+                        .with_context(|| format!("Missing lineage task {id}"))?;
                     let mut old: crate::model::Task = serde_json::from_str(&data)?;
                     anyhow::ensure!(
                         old.rediscovery_requested
@@ -206,7 +214,7 @@ impl Store {
         Ok(())
     }
     pub fn get<T: DeserializeOwned>(&self, kind: &str, id: &str) -> Result<Option<T>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let mut s = c.prepare("SELECT data FROM records WHERE kind=?1 AND id=?2")?;
         let mut rows = s.query(params![kind, id])?;
         Ok(match rows.next()? {
@@ -215,27 +223,20 @@ impl Store {
         })
     }
     pub fn list<T: DeserializeOwned>(&self, kind: &str) -> Result<Vec<T>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let mut s = c.prepare("SELECT data FROM records WHERE kind=?1 ORDER BY rowid DESC")?;
         let rows = s.query_map([kind], |r| r.get::<_, String>(0))?;
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
     }
-    pub fn remove(&self, kind: &str, id: &str) -> Result<()> {
-        self.0.lock().unwrap().execute(
-            "DELETE FROM records WHERE kind=?1 AND id=?2",
-            params![kind, id],
-        )?;
-        Ok(())
-    }
     pub fn event(&self, entity: &str, kind: &str, message: &str) -> Result<()> {
-        self.0.lock().unwrap().execute(
+        self.conn().execute(
             "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)",
             params![now(), entity, kind, redact(message)],
         )?;
         Ok(())
     }
     pub fn events(&self, entity: Option<&str>) -> Result<Vec<Event>> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         let mut s = c.prepare(
             "SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1) ORDER BY id DESC LIMIT 200",
         )?;
@@ -251,7 +252,7 @@ impl Store {
         .collect::<rusqlite::Result<Vec<_>>>()?)
     }
     pub fn prune_events(&self, retain: usize) -> Result<()> {
-        self.0.lock().unwrap().execute(
+        self.conn().execute(
             "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
             [retain as i64],
         )?;
@@ -263,7 +264,7 @@ impl Store {
             .with_timezone(&chrono::Utc)
             .format("%F")
             .to_string();
-        let mut c = self.0.lock().unwrap();
+        let mut c = self.conn();
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         // Policy is read under the same write transaction as the reservation. Callers
         // cannot accidentally supply a queued task's historical admission limits.
@@ -305,13 +306,36 @@ impl Store {
         Ok(())
     }
     pub fn sessions_today(&self) -> Result<u64> {
-        let c = self.0.lock().unwrap();
+        let c = self.conn();
         Ok(c.query_row(
             "SELECT sessions FROM usage WHERE day=?1",
             [chrono::Utc::now().format("%F").to_string()],
             |r| r.get::<_, i64>(0),
         )
+        .optional()?
         .unwrap_or(0) as u64)
+    }
+    /// Targeted status write for the operator-cancel path: a full-record save from a
+    /// stale task copy could resurrect fields the running worker already updated.
+    /// Publication checkpoints must remain recoverable even if the worker has
+    /// already saved a final blocked status by the time cancellation reaches us.
+    pub fn cancel_task(&self, id: &str) -> Result<bool> {
+        let changed = self.conn().execute(
+            "UPDATE records SET data=json_set(data,'$.status','cancelled','$.updated_at',?2)
+             WHERE kind='task' AND id=?1
+               AND json_extract(data,'$.status') NOT IN ('publishing','published')
+               AND json_extract(data,'$.output_commit') IS NULL",
+            params![id, now()],
+        )?;
+        Ok(changed > 0)
+    }
+    /// Opens the state database read-only for reporting paths that must not migrate,
+    /// create directories or take the service lock.
+    pub fn open_readonly(path: &Path, what: &str) -> Result<Connection> {
+        let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("Cannot open existing state database for read-only {what}"))?;
+        c.busy_timeout(Duration::from_secs(5))?;
+        Ok(c)
     }
 }
 pub fn redact(input: &str) -> String {
@@ -392,6 +416,87 @@ mod tests {
             Some(vec![1, 2])
         );
     }
+    #[test]
+    fn task_guard_keeps_reservation_until_fallback_write_finishes() {
+        use crate::{
+            config::{Config, Route},
+            engine::App,
+            model::{BlockedReason, Status, Task},
+        };
+        use serde_json::json;
+
+        struct PendingCleanup {
+            app: App,
+            writer: Connection,
+            reserved: bool,
+        }
+        thread_local! {
+            static CLEANUP: std::cell::RefCell<Option<PendingCleanup>> = const {
+                std::cell::RefCell::new(None)
+            };
+        }
+        for fail_write in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("state.db");
+            let store = Store::open(&path).unwrap();
+            let app = App::new(store.clone(), temp.path().into());
+            let task: Task = serde_json::from_value(json!({
+                "id":"task", "cycle_id":"cycle",
+                "proposal":{"id":"proposal","title":"Improve behavior","problem":"Missing behavior","benefit":"Useful behavior","scope":"one file","evidence":[],"category":"features","target":"main","tier":"M","dependencies":[],"prompt":"Implement behavior","decision":"accepted","reason":"Grounded"},
+                "status":"publishing", "route":Route::new("fixture","low"), "config":Config::default(),
+                "source_revision":"source", "comparison_base":"source", "default_revision":"source",
+                "branch":"tyk/task", "workspace":"", "execution_session":null, "repair_session":null,
+                "sessions":[], "reviews":[], "verification":[], "output_commit":"reviewed-output",
+                "pr_number":null, "pr_url":null, "attempts":0, "error":null,
+                "created_at":now(), "updated_at":now()
+            }))
+            .unwrap();
+            store.put("task", &task.id, &task).unwrap();
+            app.runtime()
+                .tasks
+                .insert(task.id.clone(), app.shutdown.child_token());
+            let writer = Connection::open(&path).unwrap();
+            if fail_write {
+                writer
+                    .execute_batch(
+                        "CREATE TRIGGER fail_cleanup BEFORE UPDATE ON records
+                         WHEN OLD.kind='task' BEGIN SELECT RAISE(ABORT,'fixture failure'); END;",
+                    )
+                    .unwrap();
+            }
+            // WAL readers still work, but the guard's fallback save must wait.
+            writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+            CLEANUP.set(Some(PendingCleanup {
+                app: app.clone(),
+                writer,
+                reserved: false,
+            }));
+            store
+                .conn()
+                .busy_handler(Some(|_| {
+                    CLEANUP.with_borrow_mut(|pending| {
+                        let pending = pending.as_mut().unwrap();
+                        pending.reserved = pending.app.runtime().tasks.contains_key("task");
+                        pending.writer.execute_batch("ROLLBACK").unwrap();
+                    });
+                    true
+                }))
+                .unwrap();
+            drop(app.task_guard(&task.id));
+            assert!(CLEANUP.take().unwrap().reserved);
+            assert!(!app.runtime().tasks.contains_key(&task.id));
+            let saved: Task = store.get("task", &task.id).unwrap().unwrap();
+            if fail_write {
+                assert_eq!(json!(saved), json!(task));
+            } else {
+                assert_eq!(saved.status, Status::Blocked);
+                assert_eq!(saved.blocked_reason, Some(BlockedReason::Unknown));
+                assert!(saved.error.unwrap().contains("exited unexpectedly"));
+                assert_eq!(saved.output_commit, task.output_commit);
+            }
+        }
+    }
+
     #[test]
     fn redacts_tokens() {
         assert!(!redact("Bearer secretkey123 ghp_abcdefghijklmnop").contains("secretkey"));

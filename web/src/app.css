@@ -638,6 +638,13 @@ nav button b {
 .status-dot.idle {
   background: #8b9e95;
 }
+.status-dot.auditing {
+  background: #7a8fbf;
+  box-shadow: 0 0 0 4px #edf3f6;
+}
+.status-dot.paused {
+  background: #b0a08a;
+}
 .warning-number {
   color: #915624;
 }

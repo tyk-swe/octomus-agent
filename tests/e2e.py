@@ -160,11 +160,11 @@ def scenario(mode):
                     return state if state['cycles'] and not state['cycle_active'] and state['cycles'][0]['status'] == 'failed' else None
                 state = service.wait(failed_cycle, 'failed discovery cycle')
                 cycle = service.request('/cycles/' + state['cycles'][0]['id'])
-                assert 'not JSON' in cycle['error'], cycle['error']
+                assert 'invalid JSON' in cycle['error'], cycle['error']
                 # Every started role leaves terminal evidence, including the ones after the failure.
                 assert sorted(s['role'] for s in cycle['sessions']) == sorted(['grounding'] + [f'discovery-{i}' for i in range(9)]), cycle['sessions']
                 failed = [s for s in cycle['sessions'] if s['status'] == 'failed']
-                assert [s['role'] for s in failed] == ['discovery-0'] and 'not JSON' in failed[0]['summary'], failed
+                assert [s['role'] for s in failed] == ['discovery-0'] and 'invalid JSON' in failed[0]['summary'], failed
                 assert all(s['status'] == 'completed' and s['summary'] for s in cycle['sessions'] if s['role'] != 'discovery-0')
                 assert not cycle['proposals'] and not state['tasks']
                 report = usage_report(root)
@@ -247,7 +247,7 @@ def scenario(mode):
                     print('PASS interactive: blocked promptly; retry retains routes and counts another admission')
                     return
                 if mode == 'malformed-review':
-                    assert 'Unparseable review' in task['error'], task['error']
+                    assert 'invalid' in task['error'] and 'JSON' in task['error'], task['error']
                 if mode == 'remote-conflict':
                     assert git('rev-parse', 'octomus/existing', cwd=root / 'remote.git') == (root / 'external-revision').read_text()
                 print(f'PASS {mode}: blocked, never published, workspace retained')

@@ -1,5 +1,6 @@
 //! Real owned processes talking to deterministic HTTP/SSE peers, without model calls.
 use octomus_agent::{
+    codex::Codex,
     config::{Backend, Config, Route},
     model::Session,
     opencode::OpenCode,
@@ -19,6 +20,9 @@ fn route() -> Route {
         provider: Some("fixture".into()),
         variant: Some("high".into()),
     }
+}
+fn codex_route() -> Route {
+    Route::new("gpt-6-astra", "medium")
 }
 struct Fixture {
     temp: tempfile::TempDir,
@@ -50,6 +54,58 @@ impl Fixture {
             config,
             store,
         }
+    }
+    fn codex() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let wrapper = temp.path().join("codex");
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        std::fs::write(&wrapper, format!("#!/usr/bin/env python3\nimport os, runpy, sys\nos.environ['OCTOMUS_FIXTURE'] = {}\nsys.path.insert(0, {})\nrunpy.run_path({}, run_name='__main__')\n",
+            json!(temp.path()), json!(fixtures), json!(fixtures.join("codex.py")))).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config = Config {
+            opencode_binary: "/no-opencode-installed".into(),
+            codex_binary: wrapper.to_string_lossy().into_owned(),
+            session_timeout_seconds: 3,
+            command_timeout_seconds: 2,
+            ..Config::default()
+        };
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        Self {
+            temp,
+            workspace,
+            config,
+            store,
+        }
+    }
+    fn codex_mode(&self, mode: &str) {
+        std::fs::write(self.temp.path().join("codex-mode"), mode).unwrap();
+    }
+    async fn codex_interrupt(&self) -> Value {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(log) =
+                    std::fs::read_to_string(self.temp.path().join("codex-interrupts.jsonl"))
+                    && log.ends_with('\n')
+                {
+                    return serde_json::from_str(log.lines().next().unwrap()).unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+    async fn connect_codex(&self, cancel: CancellationToken) -> anyhow::Result<Codex> {
+        Codex::connect(
+            &self.config,
+            &self.workspace,
+            self.store.clone(),
+            "fixture",
+            cancel,
+        )
+        .await
     }
     fn mode(&self, mode: &str) {
         std::fs::write(self.temp.path().join("opencode-mode"), mode).unwrap();
@@ -357,6 +413,151 @@ async fn timeouts_and_startup_policy_failures_are_bounded() {
     .unwrap_err();
     assert!(format!("{error:#}").contains("time"));
     assert!(fixture.temp.path().join("opencode-aborts.jsonl").exists());
+}
+
+#[tokio::test]
+async fn codex_session_timeout_is_bounded_and_interrupts_the_turn() {
+    let fixture = Fixture::codex();
+    let mut client = fixture
+        .connect_codex(CancellationToken::new())
+        .await
+        .unwrap();
+    let session = client
+        .start(&codex_route(), &fixture.workspace, None)
+        .await
+        .unwrap();
+    fixture.codex_mode("hold");
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        client.turn(
+            &session,
+            &codex_route(),
+            &fixture.workspace,
+            "Fixture prompt",
+            None,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("time"));
+    let interrupt = fixture.codex_interrupt().await;
+    // initialize, thread/start, and turn/start consumed request IDs 1 through 3.
+    assert_eq!(interrupt["id"], 4);
+    assert_eq!(interrupt["threadId"], session);
+    uuid::Uuid::parse_str(interrupt["turnId"].as_str().unwrap()).unwrap();
+    // An unawaited interrupt response must not satisfy the next RPC.
+    assert!(!client.models().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn codex_cancellation_stops_the_turn() {
+    let fixture = Fixture::codex();
+    let cancel = CancellationToken::new();
+    let mut client = fixture.connect_codex(cancel.clone()).await.unwrap();
+    let session = client
+        .start(&codex_route(), &fixture.workspace, None)
+        .await
+        .unwrap();
+    fixture.codex_mode("hold");
+    let route = codex_route();
+    let turn = client.turn(&session, &route, &fixture.workspace, "Fixture prompt", None);
+    let stop = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !fixture.temp.path().join("codex-entered").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        cancel.cancel();
+    };
+    let (result, _) = tokio::join!(turn, stop);
+    assert!(result.unwrap_err().to_string().contains("cancelled"));
+    let interrupt = fixture.codex_interrupt().await;
+    assert_eq!(interrupt["id"], 4);
+    assert_eq!(interrupt["threadId"], session);
+    uuid::Uuid::parse_str(interrupt["turnId"].as_str().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn codex_structured_output_is_validated() {
+    let fixture = Fixture::codex();
+    let mut clients = Runners::new(
+        &fixture.config,
+        fixture.store.clone(),
+        "fixture",
+        CancellationToken::new(),
+    );
+    let session = clients
+        .start(&codex_route(), &fixture.workspace, None)
+        .await
+        .unwrap();
+    fixture.codex_mode("bad-structured");
+    let error = clients
+        .turn(
+            &session,
+            &codex_route(),
+            &fixture.workspace,
+            "Fixture prompt",
+            Some(schemas::review_schema()),
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("invalid JSON"));
+    std::fs::remove_file(fixture.temp.path().join("codex-mode")).unwrap();
+    std::fs::write(fixture.workspace.join("feature.txt"), "fixed\n").unwrap();
+    let review = clients
+        .turn(
+            &session,
+            &codex_route(),
+            &fixture.workspace,
+            "Perform a fresh code review of the workspace.",
+            Some(schemas::review_schema()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        serde_json::from_str::<octomus_agent::model::Review>(&review)
+            .unwrap()
+            .clean()
+    );
+}
+
+#[tokio::test]
+async fn codex_resume_verifies_thread_identity() {
+    let fixture = Fixture::codex();
+    let mut client = fixture
+        .connect_codex(CancellationToken::new())
+        .await
+        .unwrap();
+    let session = client
+        .start(&codex_route(), &fixture.workspace, None)
+        .await
+        .unwrap();
+    client
+        .turn(
+            &session,
+            &codex_route(),
+            &fixture.workspace,
+            "Implement this accepted task.",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .start(&codex_route(), &fixture.workspace, Some(&session))
+            .await
+            .unwrap(),
+        session
+    );
+    fixture.codex_mode("wrong-thread");
+    let error = client
+        .start(&codex_route(), &fixture.workspace, Some(&session))
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("substituted"));
 }
 
 #[tokio::test]

@@ -6,20 +6,16 @@
 //! computed from the saved records first; display strings are redacted afterwards.
 use crate::{
     config::Route,
-    model::{Cycle, CycleMode, Session, Status, Task, now},
-    store::redact_json,
+    model::{Cycle, CycleMode, REVIEWER_SLOTS, Session, Status, Task, now},
+    store::{Store, redact_json},
 };
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{collections::BTreeMap, path::Path};
 
 pub const SCHEMA_VERSION: u32 = 1;
-/// Reviewer slots in the order `review_proposals` dispatches and `attach` persists them.
-/// Batch attribution is positional: a malformed batch keeps its slot instead of shifting
-/// the next reviewer's verdicts into it.
-const REVIEWER_SLOTS: [&str; 2] = ["adversary-a", "adversary-b"];
 const DECISIONS: [&str; 3] = ["accepted", "rejected", "deferred"];
 const LIMITATIONS: [&str; 9] = [
     "Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
@@ -771,9 +767,7 @@ pub fn read_snapshot(c: &Connection, cycle_id: &str) -> Result<Option<(Cycle, Ve
 /// directories, taking the service lock or running migrations. A missing state database
 /// or cycle is an explicit error, never an empty successful export.
 pub fn export_run(state_db: &Path, cycle_id: &str) -> Result<Value> {
-    let mut c = Connection::open_with_flags(state_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .context("Cannot open existing state database for read-only run evidence export")?;
-    c.busy_timeout(Duration::from_secs(5))?;
+    let mut c = Store::open_readonly(state_db, "run evidence export")?;
     // One consistent snapshot even while the service is running.
     let tx = c.transaction()?;
     let snapshot = read_snapshot(&tx, cycle_id)?

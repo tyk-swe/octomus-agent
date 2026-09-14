@@ -235,3 +235,34 @@ pub async fn with_deadline<F: Future>(
         }
     }
 }
+
+/// Runs `future` until it completes, `seconds` elapse, or `cancel` fires. `what` is
+/// the complete timeout message so callers keep their existing wording.
+pub async fn bounded<F: Future>(
+    seconds: u64,
+    cancel: &CancellationToken,
+    what: &str,
+    future: F,
+) -> Result<F::Output> {
+    tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(seconds), future) => {
+            result.with_context(|| what.to_owned())
+        }
+        _ = cancel.cancelled() => bail!("Session cancelled"),
+    }
+}
+
+/// `bounded` against an absolute deadline.
+pub async fn bounded_at<F: Future>(
+    deadline: tokio::time::Instant,
+    cancel: &CancellationToken,
+    what: &str,
+    future: F,
+) -> Result<F::Output> {
+    tokio::select! {
+        result = tokio::time::timeout_at(deadline, future) => {
+            result.with_context(|| what.to_owned())
+        }
+        _ = cancel.cancelled() => bail!("Session cancelled"),
+    }
+}

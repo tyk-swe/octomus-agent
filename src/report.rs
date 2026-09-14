@@ -1,13 +1,13 @@
 //! Local, read-only reporting. Never open through Store::open (which migrates state).
 use crate::{
     model::{Cycle, Task, now},
-    store::{Admission, redact_json},
+    store::{Admission, Store, redact_json},
 };
-use anyhow::{Context, Result};
-use rusqlite::{Connection, OpenFlags};
+use anyhow::Result;
+use rusqlite::Connection;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{collections::BTreeMap, path::Path};
 
 fn records<T: DeserializeOwned>(c: &Connection, kind: &str) -> Result<Vec<T>> {
     let mut statement = c.prepare("SELECT data FROM records WHERE kind=?1 ORDER BY id")?;
@@ -16,9 +16,7 @@ fn records<T: DeserializeOwned>(c: &Connection, kind: &str) -> Result<Vec<T>> {
 }
 
 pub fn usage_report(path: &Path) -> Result<Value> {
-    let mut c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .context("Cannot open existing state database for read-only usage reporting")?;
-    c.busy_timeout(Duration::from_secs(5))?;
+    let mut c = Store::open_readonly(path, "usage reporting")?;
     // One consistent snapshot even while the service is admitting work.
     let tx = c.transaction()?;
     let has_ledger: bool = tx.query_row(

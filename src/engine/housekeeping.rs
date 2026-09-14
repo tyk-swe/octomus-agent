@@ -14,16 +14,16 @@ impl App {
     pub(super) fn schedule_housekeeping(&self) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
         let (cleanup, observe) = {
-            let mut rt = self.runtime.lock().unwrap();
-            if rt.housekeeping_active {
+            let mut rt = self.runtime();
+            if rt.housekeeping.as_ref().is_some_and(|h| !h.is_finished()) {
                 return Ok(());
             }
+            rt.housekeeping = None;
             let cleanup = now - rt.last_retention_at >= 900;
             let observe = now - rt.last_observation_at >= 300;
             if !cleanup && !observe {
                 return Ok(());
             }
-            rt.housekeeping_active = true;
             if cleanup {
                 rt.last_retention_at = now;
             }
@@ -33,7 +33,7 @@ impl App {
             (cleanup, observe)
         };
         let app = self.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let work = async {
                 let c = app.config()?;
                 if cleanup {
@@ -51,8 +51,8 @@ impl App {
                     .store
                     .event("system", "housekeeping_error", &format!("{error:#}"));
             }
-            app.runtime.lock().unwrap().housekeeping_active = false;
         });
+        self.runtime().housekeeping = Some(handle);
         Ok(())
     }
     async fn measure_storage(&self, c: &Config) -> Result<()> {
@@ -63,13 +63,21 @@ impl App {
             let mut total=0u64;
             let mut measured=0;
             for backend in ["codex","opencode"] {
-                let bytes=roots.get(backend).filter(|p|p.is_dir()).and_then(|p|directory_size(p).ok());
-                if let Some(bytes)=bytes { total=total.saturating_add(bytes); measured+=1; }
-                runners.insert(backend.into(),json!({"bytes":bytes,"status":if bytes.is_some(){"measured"}else{"unavailable"}}));
+                let (bytes,status)=match roots.get(backend) {
+                    None=>(None,"unconfigured"),
+                    Some(p) if !p.is_dir()=>(None,"unavailable"),
+                    Some(p)=>match directory_size(p) {
+                        Ok(b)=>(Some(b),"measured"),
+                        Err(_)=>(None,"error"),
+                    },
+                };
+                if let Some(b)=bytes { total=total.saturating_add(b); measured+=1; }
+                runners.insert(backend.into(),json!({"bytes":bytes,"status":status}));
             }
+            let status=if measured==runners.len(){"measured"}else if measured==0{"unavailable"}else{"partial"};
             Ok(StorageUsage { measured_at:now(),application_bytes:directory_size(&dir)?,
                 task_bytes:directory_size(&dir.join("tasks"))?,planning_bytes:directory_size(&dir.join("cycles"))?,
-                runner_transcripts:json!({"bytes":if measured>0{Some(total)}else{None},"status":if measured==2{"measured"}else if measured==1{"partial"}else{"unavailable"},"runners":runners,"message":"Runner storage reported separately. Application admission measures the data directory."}) })
+                runner_transcripts:json!({"bytes":if measured>0{Some(total)}else{None},"status":status,"runners":runners,"message":"Runner storage reported separately. Application admission measures the data directory."}) })
         }).await??;
         self.store.put("settings", "storage", &usage)
     }
@@ -87,8 +95,7 @@ impl App {
                 let result = if kind == "task" {
                     let mut task: Task =
                         self.store.get(kind, &id)?.context("Missing cleanup task")?;
-                    if task.status.active() || self.runtime.lock().unwrap().tasks.contains_key(&id)
-                    {
+                    if task.status.active() || self.runtime().tasks.contains_key(&id) {
                         continue;
                     }
                     self.discard_task(&mut task).await
@@ -119,12 +126,14 @@ impl App {
             let path = Path::new(&task.workspace)
                 .parent()
                 .context("Invalid task workspace")?;
+            let expected = self.task_workspace(&task.id);
+            let expected = expected.parent().context("Invalid task workspace")?;
             let owner = path
                 .file_name()
                 .and_then(|s| s.to_str())
                 .context("Invalid workspace owner")?;
             ensure!(
-                owner == task.id || task.execution_session.as_deref() == Some(owner),
+                path == expected || task.execution_session.as_deref() == Some(owner),
                 "Cleanup path does not belong to this task or its legacy execution session"
             );
             remove_owned_dir(&self.data_dir.join("tasks"), path).await?;

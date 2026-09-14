@@ -2,7 +2,7 @@
 use crate::{
     config::{Backend, Config, Route},
     process::{self, GroupChild},
-    runner::{Model, WORKER_INSTRUCTIONS},
+    runner::{MAX_MESSAGE, Model, WORKER_INSTRUCTIONS},
     store::Store,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -22,7 +22,6 @@ use tokio_util::{
 };
 
 pub const PROTOCOL_VERSION: &str = "1.18.30";
-const MAX_MESSAGE: usize = 16_000_000;
 
 pub fn version_warning(version: &str) -> Option<String> {
     (version != PROTOCOL_VERSION).then(|| format!("OpenCode version mismatch: installed {version}; protocol baseline {PROTOCOL_VERSION}. Pin the documented CLI; protocol compatibility is unverified."))
@@ -114,10 +113,13 @@ impl OpenCode {
             }
             bail!("OpenCode exceeded the startup output limit")
         };
-        let url = tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(config.command_timeout_seconds.min(60)), ready) => result.context("OpenCode startup timed out")??,
-            _ = cancel.cancelled() => bail!("Session cancelled"),
-        };
+        let url = process::bounded(
+            config.command_timeout_seconds.min(60),
+            &cancel,
+            "OpenCode startup timed out",
+            ready,
+        )
+        .await??;
         let client = Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -194,21 +196,28 @@ impl OpenCode {
             request
         };
         let future = async {
-            let response = request
+            let mut response = request
                 .send()
                 .await
                 .context("OpenCode HTTP request failed")?;
-            ensure!(
-                response.status().is_success(),
-                "OpenCode request failed with HTTP {}",
-                response.status()
-            );
+            if !response.status().is_success() {
+                let mut snippet = vec![];
+                while snippet.len() < 4096 {
+                    match response.chunk().await {
+                        Ok(Some(chunk)) => snippet.extend_from_slice(&chunk),
+                        _ => break,
+                    }
+                }
+                snippet.truncate(4096);
+                bail!(
+                    "OpenCode request failed with HTTP {}: {}",
+                    response.status(),
+                    crate::store::redact(&String::from_utf8_lossy(&snippet))
+                );
+            }
             read_json(response).await
         };
-        tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(seconds), future) => result.context("OpenCode response timed out")?,
-            _ = self.cancel.cancelled() => bail!("Session cancelled"),
-        }
+        process::bounded(seconds, &self.cancel, "OpenCode response timed out", future).await?
     }
     pub async fn models(&self, cwd: &Path) -> Result<Vec<Model>> {
         let value = self.json(Method::GET, "/provider", cwd, None, 60).await?;
@@ -268,8 +277,7 @@ impl OpenCode {
         ensure!(
             session["model"]["providerID"].as_str() == route.provider.as_deref()
                 && session["model"]["id"] == route.model
-                && (session["model"]["variant"].as_str() == route.variant.as_deref()
-                    || (route.variant.is_none() && session["model"]["variant"] == "default")),
+                && variant_matches(session["model"]["variant"].as_str(), route),
             "OpenCode substituted the requested model or variant"
         );
         ensure!(
@@ -293,10 +301,14 @@ impl OpenCode {
             "Wrong runner for {route}"
         );
         let path = format!("/session/{}", segment(session)?);
-        let result = tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(self.timeout), self.turn_inner(session, &path, route, cwd, prompt, schema)) => result.context("OpenCode session time limit exceeded").and_then(|v| v),
-            _ = self.cancel.cancelled() => Err(anyhow::anyhow!("Session cancelled")),
-        };
+        let result = process::bounded(
+            self.timeout,
+            &self.cancel,
+            "OpenCode session time limit exceeded",
+            self.turn_inner(session, &path, route, cwd, prompt, schema),
+        )
+        .await
+        .and_then(|v| v);
         if result.is_err() {
             // Independent of the cancelled token. Cleanup is bounded; dropping the owner kills the group.
             let _ = self
@@ -343,7 +355,7 @@ impl OpenCode {
         tokio::pin!(request);
         let value = loop {
             tokio::select! {
-                biased;
+                result = &mut request => break result?,
                 event = events.next() => {
                     let event = event?;
                     let props = &event["properties"];
@@ -374,7 +386,6 @@ impl OpenCode {
                         _ => {}
                     }
                 }
-                result = &mut request => break result?,
             }
         };
         let info = &value["info"];
@@ -461,13 +472,17 @@ fn message_id() -> String {
     format!("msg_{clock:012x}{suffix}")
 }
 
+fn variant_matches(reported: Option<&str>, route: &Route) -> bool {
+    reported == route.variant.as_deref() || (route.variant.is_none() && reported == Some("default"))
+}
+
 fn check_model(info: &Value, route: &Route) -> Result<()> {
     ensure!(
         info["modelID"] == route.model && info["providerID"].as_str() == route.provider.as_deref(),
         "OpenCode substituted the requested model"
     );
     ensure!(
-        info["variant"].as_str() == route.variant.as_deref(),
+        variant_matches(info["variant"].as_str(), route),
         "OpenCode substituted the requested variant"
     );
     Ok(())

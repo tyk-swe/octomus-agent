@@ -1,6 +1,6 @@
 use super::App;
 use crate::{git, model::*, runner::Runners, schemas, store::redact};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
@@ -32,7 +32,8 @@ impl App {
             BlockedReason::WorkspaceInvalid
         );
         if task.comparison_base.is_empty() {
-            bail!("Comparison base was not persisted; cancel this task and rediscover");
+            return Err(anyhow::Error::new(BlockedReason::WorkspaceInvalid)
+                .context("Comparison base was not persisted; cancel this task and rediscover"));
         }
         self.run_executor(task, &mut client, admission_reserved)
             .await?;
@@ -50,7 +51,7 @@ impl App {
                     )
                     .await?
                     .is_empty(),
-                "Executor produced no net changes; task cannot be published"
+                BlockedReason::VerificationFailed
             );
             ensure!(
                 task.attempt_reviews() < config.max_repair_rounds + 1,
@@ -143,18 +144,18 @@ impl App {
         git::fetch(&config, cancel).await?;
         let current = git::remote_revision(&config, &task.proposal.target, cancel)
             .await?
-            .context("Task target disappeared")?;
+            .context(BlockedReason::StaleBase)?;
         if current != task.source_revision {
             let mut dependency_outputs = Vec::new();
             for identity in &task.proposal.dependencies {
                 let dependency: Task = self
                     .store
                     .get("task", identity)?
-                    .context("Dependency record is missing")?;
+                    .context(BlockedReason::DependencyBlocked)?;
                 ensure!(
                     dependency.status == Status::Published
                         && dependency.branch == task.proposal.target,
-                    "Dependency has not been delivered to the target branch"
+                    BlockedReason::DependencyBlocked
                 );
                 dependency_outputs.push(
                     dependency
@@ -190,13 +191,13 @@ impl App {
             let p = git::pr(&config, n, cancel).await?;
             ensure!(
                 p.owned && p.state == "open" && p.base == config.default_branch,
-                "Target PR is no longer eligible"
+                BlockedReason::StaleBase
             );
         }
         self.budget(&task.cycle_id, Some(&task.id), "executor", &task.route)
             .await?;
         uuid::Uuid::parse_str(&task.id).context("Invalid task workspace identity")?;
-        let workspace = self.data_dir.join("tasks").join(&task.id).join("workspace");
+        let workspace = self.task_workspace(&task.id);
         if task.workspace.is_empty() {
             task.workspace = workspace.to_string_lossy().into_owned();
             self.save_task(task)?;
@@ -227,7 +228,7 @@ impl App {
             );
             ensure!(
                 git::at(&config, &workspace, &task.source_revision, cancel).await?,
-                "Workspace changed before executor session creation; preserve and inspect before retrying"
+                BlockedReason::WorkspaceInvalid
             );
         }
         let session = client.start(&task.route, &workspace, None).await?;
@@ -384,6 +385,7 @@ impl App {
                 cancel,
             )
             .await;
+            ensure!(!cancel.is_cancelled(), "Operation cancelled");
             let intact = git::at(&config, &workspace, revision, cancel).await?;
             let failed = result.is_err();
             let mut output = result.unwrap_or_else(|e| format!("{e:#}"));
@@ -471,10 +473,10 @@ fn session_mut<'a>(task: &'a mut Task, thread: &str, role: &str) -> Result<&'a m
     task.sessions
         .iter_mut()
         .find(|session| session.id == thread && session.role == role)
-        .with_context(|| {
-            format!(
+        .ok_or_else(|| {
+            anyhow::Error::new(BlockedReason::WorkspaceInvalid).context(format!(
                 "Task {} is missing its {role} session record ({thread})",
                 task.id
-            )
+            ))
         })
 }

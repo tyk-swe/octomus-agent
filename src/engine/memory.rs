@@ -80,8 +80,9 @@ impl App {
             .as_ref()
             .context("Missing decision context")?;
         for p in &cycle.proposals {
-            // Rejected or deferred proposals may name any target; bind accepted ones exactly
-            // as task construction does so decisions and execution share one PR head.
+            // Rejected or deferred proposals may name targets that no longer resolve;
+            // they deliberately bind to the grounding revision, matching
+            // planning_memory's skip of unresolvable targets.
             let revision = super::planning::resolve_target(c, &g.prs, &p.target)
                 .ok()
                 .flatten()

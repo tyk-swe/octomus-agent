@@ -138,9 +138,13 @@ async fn main() -> Result<()> {
         .await?;
     let _ = worker.await;
     for _ in 0..100 {
-        if app.runtime.lock().unwrap().tasks.is_empty()
-            && app.runtime.lock().unwrap().cycle.is_none()
-        {
+        let drained = {
+            let rt = app.runtime();
+            rt.tasks.is_empty()
+                && rt.cycle.is_none()
+                && rt.housekeeping.as_ref().is_none_or(|h| h.is_finished())
+        };
+        if drained {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
