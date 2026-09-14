@@ -1,7 +1,7 @@
 # Threat model
 
 Octomus is a single-operator service for a **dedicated Linux VM**. The VM is the
-isolation boundary. Codex sessions and verification commands run with the service
+isolation boundary. Runner sessions (Codex or OpenCode) and verification commands run with the service
 account's full permissions, without a process sandbox or interactive approvals.
 Do not place unrelated credentials, production services, workstation storage or
 GPU access on this VM.
@@ -14,9 +14,9 @@ GPU access on this VM.
 | Operator dashboard/API | A bearer token grants configuration changes, arbitrary verification commands, task controls and model usage. Treat it as a host capability. |
 | Service account | Can read its credentials, change its state/checkouts, run programs and contact permitted network destinations. |
 | Repository, PRs, dependencies and model output | Untrusted input, including adversarial instructions and executable build scripts. |
-| Codex and GitHub | External services receive repository content and authenticated requests under the operator's accounts and their terms. |
+| Model providers and GitHub | External services receive repository content and authenticated requests under the operator's accounts and their terms. |
 | Browser | Single operator, same-origin API; token stays in tab memory and is lost on reload. Browser extensions or a compromised endpoint can still steal it. |
-| SQLite, clones, logs and transcripts | Private local evidence. Backups inherit their sensitivity. Codex maintains its own state and transcript storage. |
+| SQLite, clones, logs and transcripts | Private local evidence. Backups inherit their sensitivity. Each runner maintains its own state and transcript storage. |
 
 ## Prompt injection and publication
 

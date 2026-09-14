@@ -107,7 +107,6 @@ OCTOMUS_OPENCODE_SMOKE_BINARY=/absolute/path/to/opencode \
 This check makes no model calls and does not validate live operation. Live
 commissioning remains on the owner's dedicated VM and bot.
 
-
 CI additionally runs required pinned-client contracts for Codex 0.153.4 and
 OpenCode 1.18.30. They start actual clients in isolated temporary state directories
 against a synthetic loopback model provider, inspect Codex-generated request schemas

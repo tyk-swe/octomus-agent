@@ -3,7 +3,7 @@
 Report vulnerabilities privately to **mail@mail.tyk.sh**. Include the affected
 version or commit, reproduction steps, impact, and redacted evidence. Do not open
 a public issue containing an exploit, access token, private repository content,
-or raw Codex transcripts. We target acknowledgement within **three business days**;
+or raw runner transcripts. We target acknowledgement within **three business days**;
 remediation and coordinated disclosure timing depend on the report.
 
 ## Supported versions

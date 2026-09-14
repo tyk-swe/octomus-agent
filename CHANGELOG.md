@@ -21,6 +21,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   memory, idle backoff and PR outcome observation.
 - Pinned real-client contract coverage with isolated synthetic providers, and
   operational, browser and scale regressions.
+- Read-only run evidence (`RunEvidenceV1`) for one cycle through
+  `GET /api/cycles/{id}/evidence`, `--export-run` and the dashboard's Inspect run panel,
+  with a documented consistent SQLite snapshot procedure exercised by
+  `tests/evidence_snapshot.py`.
+- A standalone public showcase build (`web/showcase`) of an owner-approved evidence
+  wrapper with explicit fixture/recorded modes, allowlist and duplicate-key gates,
+  hash-bound approval and network isolation.
 
 ### Changed
 
@@ -31,6 +38,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   entered, saved, checked or ran, links to the existing controls, invalidates a check
   result when the saved configuration changes, and never starts work. Tighten the
   README first-run path and link the public showcase's installation call to action to it.
+- Return the checked configuration snapshot from the connection check and bind
+  dashboard check results to it; keep failed task-evidence requests unavailable until
+  an explicit retry or a changed saved revision, and label overview counts as
+  recent-window observations.
 - Improve dashboard typography, mobile touch targets and keyboard navigation; add
   distinct list loading, empty and retry states with retained results after refresh failures.
 - Share dashboard action eligibility and pending feedback; distinguish delivered tasks
@@ -59,6 +70,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Dashboard builds precede Rust builds; `--assets` is an explicit override.
 - Operator checklist moved to `docs/operations.md`; README starts with installation
   and first-run guidance.
+
+### Fixed
+
+- Export `blocked_reason` with the task API's vocabulary (`verification_failed`)
+  instead of a lower-cased Rust type name.
 
 ### Removed
 

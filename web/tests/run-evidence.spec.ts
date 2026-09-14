@@ -1,7 +1,7 @@
 /**
  * Browser coverage for the authenticated "Inspect run" experience.
  *
- * Every fixture here is explicitly synthetic. No reviewer text is copied from the Day 1
+ * Every fixture here is explicitly synthetic. No reviewer text is copied from the
  * rehearsal report, and no test asserts a live model identity or a fresh GitHub
  * observation, because the feature does not claim either.
  */

@@ -6,7 +6,7 @@ body:
     id: context
     attributes:
       label: Version, configured route and blocked reason
-      description: Include the Octomus/Codex versions and exact model/effort. Omit credentials.
+      description: Include the Octomus and runner (Codex or OpenCode) versions and the exact route. Omit credentials.
     validations:
       required: true
   - type: textarea

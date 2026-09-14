@@ -24,6 +24,7 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 | `src/model.rs` | Task, cycle, proposal, session, review, verification and PR records |
 | `src/store.rs`, `src/store/queries.rs` | SQLite WAL persistence, atomic plan commit, event retention, atomic admission counter/ledger, redaction, indexed operational views |
 | `src/report.rs` | Read-only snapshot export of daily usage, cycles, tasks and admission routes |
+| `src/evidence.rs` | Read-only `RunEvidenceV1` assembly for one cycle, shared by the API and the CLI export |
 | `src/runner.rs`, `src/opencode.rs` | Runner-neutral catalog/dispatch and owned OpenCode HTTP/SSE sessions |
 | `src/schemas.rs` | Shared structured output schemas and validation |
 | `src/codex.rs` | App-server handshake, model catalog, thread start/resume, correlated RPC/events, structured results |
@@ -37,6 +38,7 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 | `src/api.rs` | Operator authentication, configuration, observation and controls |
 | `src/assets.rs` | Embedded dashboard asset serving |
 | `web/src` | Responsive Svelte/TypeScript dashboard |
+| `web/showcase` | Standalone public showcase build of an owner-approved evidence wrapper |
 
 ## Planning
 
@@ -110,9 +112,10 @@ Every budget reservation commits its UTC day counter and admission metadata in o
 
 `--usage-report` opens an existing database read-only and reads one transaction snapshot without taking the service lock or initializing/migrating state. It exports metadata rather than raw prompts/transcripts or credentials. Admissions are not provider charges; see [cost methodology](cost.md). Keep a full state backup before upgrading; older binaries do not understand newly saved configuration fields.
 
+`GET /api/cycles/{id}/evidence` and `--export-run` assemble `RunEvidenceV1`, a read-only account of what one cycle and its tasks saved: positional reviewer verdicts, the latest review round and the latest result per required command, joined by cycle and proposal identity, with explicit gaps and limitations and without prompts, transcripts or command output. See [run evidence](launch/run-evidence.md).
+
 For deployment trust boundaries, authentication backoff and redaction limitations,
 see the [threat model](threat-model.md).
-
 
 ## Operating modes and recovery
 
@@ -142,6 +145,8 @@ Diagnostic subprocess output retains a bounded 256 KiB preview and truncation
 flags. Machine stdout is complete up to 16 MiB or returns `OutputTooLarge`; invalid
 UTF-8 also fails explicitly. Git/GitHub machine consumers never parse a diagnostic
 truncation marker. All captures retain timeout, draining and process-group ownership.
+
+A dated measurement of state-snapshot cost at 1,000, 10,000 and 100,000 historical tasks is recorded in [hardening validation](hardening-validation.md).
 
 ## Decision memory and outcomes
 

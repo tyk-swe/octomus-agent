@@ -1,5 +1,5 @@
 // The public boundary accepts a deliberately authored wrapper, never an operator export.
-// This is a shape/consistency gate over Day 2 evidence, not an exporter or redactor.
+// This is a shape/consistency gate over `RunEvidenceV1` evidence, not an exporter or redactor.
 export const REVIEW_WARNING =
   'Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.';
 export const LIMITATIONS = [

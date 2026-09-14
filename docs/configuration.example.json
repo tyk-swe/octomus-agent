@@ -4,59 +4,60 @@
   "default_branch": "main",
   "branch_prefix": "octomus/",
   "codex_binary": "codex",
+  "opencode_binary": "opencode",
   "roles": {
     "code_reviewer": {
+      "backend": "codex",
       "model": "",
-      "effort": "",
-      "backend": "codex"
+      "effort": ""
     },
     "discovery": {
+      "backend": "codex",
       "model": "",
-      "effort": "",
-      "backend": "codex"
+      "effort": ""
     },
     "orchestrator": {
+      "backend": "codex",
       "model": "",
-      "effort": "",
-      "backend": "codex"
+      "effort": ""
     },
     "proposal_reviewer": {
+      "backend": "codex",
       "model": "",
-      "effort": "",
-      "backend": "codex"
+      "effort": ""
     }
   },
   "tiers": {
     "L": {
+      "backend": "codex",
       "model": "gpt-6-astra",
-      "effort": "medium",
-      "backend": "codex"
+      "effort": "medium"
     },
     "M": {
+      "backend": "codex",
       "model": "gpt-6-astra",
-      "effort": "low",
-      "backend": "codex"
+      "effort": "low"
     },
     "S": {
+      "backend": "codex",
       "model": "gpt-5.6-luna",
-      "effort": "max",
-      "backend": "codex"
+      "effort": "max"
     },
     "XL": {
+      "backend": "codex",
       "model": "gpt-6-astra",
-      "effort": "high",
-      "backend": "codex"
+      "effort": "high"
     },
     "XS": {
+      "backend": "codex",
       "model": "gpt-5.6-luna",
-      "effort": "xhigh",
-      "backend": "codex"
+      "effort": "xhigh"
     }
   },
   "repair_route": {
+    "backend": "codex",
     "model": "gpt-6-astra",
-    "effort": "medium",
-    "backend": "codex"
+    "effort": "medium"
   },
   "categories": [
     "features",
@@ -85,8 +86,7 @@
   "command_timeout_seconds": 600,
   "max_sessions_per_day": 150,
   "max_workspace_bytes": 20000000000,
+  "runner_storage_paths": {},
   "retain_completed_days": 14,
-  "retain_events": 10000,
-  "opencode_binary": "opencode",
-  "runner_storage_paths": {}
+  "retain_events": 10000
 }

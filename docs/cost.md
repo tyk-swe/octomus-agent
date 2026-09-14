@@ -4,7 +4,7 @@
 validated. Repository preparation and fixture tests do not establish live usage
 or billing evidence.
 
-Use existing Codex subscription allowance only, with no paid overage.
+Use existing provider subscription allowance only, with no paid overage.
 Record real usage measurements, the subscription fee and verified incremental
 charges when per-task dollar attribution is unavailable. A missing charge
 measurement is **unavailable**, not zero.

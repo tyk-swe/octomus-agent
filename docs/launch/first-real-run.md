@@ -3,15 +3,13 @@
 ## Current VM: local testing
 
 Use this section from the owner's approved development checkout, as its login
-user. Keep its absolute path private. On 2026-09-12 this environment
-has Ubuntu 26.04.1, Rust/Cargo 1.98.0, Node 24.20.0, npm 11.19.0, Python 3.14.4,
-and working headless Chromium. These satisfy the local test requirements, though
-they differ from CI's Ubuntu 24.04 and Node 22. Recheck tools when repeating this
-procedure. The installed user-level Codex is 0.154.0; it is not the pinned 0.153.4
-client needed for live acceptance. No dedicated `octomus` account or installed
-systemd service was found during preflight.
+user. Keep its absolute path private. Confirm the installed Rust, Node, npm, Python
+and headless Chromium versions satisfy [AGENTS.md](../../AGENTS.md) before each
+repetition; a development machine can differ from CI's Ubuntu 24.04 and Node 22, and
+a user-level Codex newer than the pinned 0.153.4 client does not satisfy live
+acceptance.
 
-The owner subsequently authorized a temporary foreground rehearsal on this
+The owner authorized one temporary foreground rehearsal on this
 machine using its existing authenticated accounts and a privately installed
 pinned client. See [the draft result](day1-result.md) for the actual failures,
 development fix, publication and cleanup. That observation does not authorize

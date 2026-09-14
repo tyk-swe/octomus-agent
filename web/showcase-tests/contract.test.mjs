@@ -134,7 +134,7 @@ test('contradictory summary facts, joins, revision claims and reviewer states ar
     assert.throws(() => publicPayload(value, 'fixture'));
   }
 });
-test('audit, missing output, no reviews, unconfigured and incomplete checks keep Day 2 semantics', () => {
+test('audit, missing output, no reviews, unconfigured and incomplete checks keep RunEvidenceV1 semantics', () => {
   const p = fresh();
   p.evidence.cycle.mode = 'audit';
   p.evidence.cycle.planning.creates_execution_queue = false;

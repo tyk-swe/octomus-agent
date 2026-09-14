@@ -45,7 +45,7 @@ fi
 printf '\nInstalled %s to %s/octomus-agent\n' "$version" "$dest"
 cat <<'NEXT'
 Next, as the service user on your dedicated VM (see the README for prerequisites):
-  codex login
+  codex login                 # or, for OpenCode routes: opencode auth login
   gh auth login && gh auth setup-git
   OCTOMUS_TOKEN='<your saved random token>' octomus-agent
 Save the generated token in your password manager before starting; the README shows how.

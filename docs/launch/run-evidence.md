@@ -53,9 +53,8 @@ state database or a missing cycle is an explicit error, never an empty successfu
 
 Use only a **specific offline snapshot or export explicitly authorized by the owner**.
 A narrative report, an archive mentioned in a previous note, or a discovered directory
-is not permission to read it. If no input is supplied, request its path and permission
-once, continue synthetic tooling work, and report **REAL DATA BLOCKED**. Do not search
-for archives or reconstruct records from prose.
+is not permission to read it. Do not search for archives or reconstruct records from
+prose.
 
 Keep the authorized original untouched. Work on a disposable copy in a private,
 owner-only directory outside Git and public build roots (including `dist`, `web/build`,
@@ -122,7 +121,7 @@ PY
 Use the destination only after successful completion; discard an incomplete destination
 after an error and retry with a new private filename. Record the capture method, UTC
 time, source identity and snapshot checksum privately. The owner then supplies the
-offline snapshot and explicit read permission. No live backup is performed by this task.
+offline snapshot and explicit read permission.
 
 #### Genuinely offline consistent archive
 
@@ -237,10 +236,11 @@ otherwise be summarized by private text, only the fact survives — `error_recor
 The store's existing redaction runs over the assembled value as defense in depth, after
 all facts are computed, so redacting a display string can never change a reported fact.
 
-## Scope
-
-No saved-state migration, no execution-policy change, no new dependency. The Day 1
-executor-startup and process-lifecycle behavior is untouched.
+Two joins stay outside the export. Tasks whose saved proposal ID is not among the
+cycle's proposals are counted only in the run-level `gaps`; their review and check
+evidence is not exported. The overview's "Tasks from this run" counts come from the
+dashboard's bounded recent-task window, not from this scan; the Inspect run panel is
+the complete view.
 
 ## Tests
 
@@ -255,5 +255,5 @@ database.
 `tests/evidence_snapshot.py` exercises the exact documented backup example on a synthetic
 open WAL database, including committed task records and an uncommitted change. It exports
 through `--export-run`, checks adverse/missing evidence, and validates/hashes a private
-synthetic wrapper with P02's existing public contract without staging a build. Run after
+synthetic wrapper with the showcase's public contract without staging a build. Run after
 `cargo build --locked` with `python3 tests/evidence_snapshot.py`; also part of `make test`.

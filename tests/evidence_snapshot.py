@@ -155,7 +155,7 @@ def main():
         assert candidate.read_bytes() == candidate_bytes
         assert candidate.stat().st_mode & 0o077 == 0
 
-        # The private check reuses P02's rejection of overwritten private members.
+        # The private check reuses the showcase gate's rejection of overwritten private members.
         candidate.write_text('{"evidence":{"transcript":"SYNTHETIC-PRIVATE-TRANSCRIPT"},'
                              + candidate_bytes.decode()[1:])
         result = run(['node', '--input-type=module', '-', str(candidate)], validate)

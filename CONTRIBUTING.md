@@ -36,7 +36,10 @@ repairs, publication recovery and audits without live model calls or network wri
 fixtures. `tests/crate_guards.py` checks release input guards with real Cargo,
 and `tests/crate.py` verifies the extracted application crate after packaging.
 Browser tests use clearly synthetic data; their screenshots are not
-live operating evidence. `tests/systemd.py` requires root on a disposable systemd
+live operating evidence. `tests/evidence_snapshot.py` runs the documented SQLite backup
+and `--export-run` examples on a synthetic database, and the showcase tests
+(`npm run showcase:test --prefix web`) cover the public showcase's input contract and
+rendering. `tests/systemd.py` requires root on a disposable systemd
 VM and exercises the unit's write restrictions and child cleanup.
 
 Dashboard regressions cover configuration drafts in tab memory, saved-configuration

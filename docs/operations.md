@@ -6,7 +6,7 @@ Use this checklist to commission and operate a dedicated host. Repository tests 
 
 - [ ] Use a dedicated Linux VM for Octomus. Agents execute without a sandbox and have the service account's host permissions.
 - [ ] Create the `octomus` service account with home directory `/var/lib/octomus` if using the supplied systemd unit.
-- [ ] Install Git, GitHub CLI, Codex CLI 0.153.4, and your target project's build tools. Building Octomus requires Rust 1.88+, Node.js 22.12+, npm, and a C compiler. Its integration tests also require Python 3.
+- [ ] Install Git, GitHub CLI, the runners your routes select (Codex CLI 0.153.4 and/or OpenCode 1.18.30), and your target project's build tools. Building Octomus requires Rust 1.88+, Node.js 22.12+, npm, and a C compiler. Its integration tests also require Python 3.
 - [ ] Clone the repository you want Octomus to improve into a persistent path writable by the service account, such as `/srv/projects/octomus-agent`. Keep this checkout separate from the installed binary at `/usr/local/bin/octomus-agent`.
 
 ## 2. Connect your accounts
@@ -21,7 +21,7 @@ gh auth setup-git
 
 - [ ] Confirm GitHub access can fetch and push branches and create/update PRs in the target repository. If using SSH, configure working non-interactive SSH credentials; the HTTPS credential helper is then optional.
 - [ ] Confirm the repository's `origin` uses SSH or credential-free HTTPS and points to the intended GitHub repository.
-- [ ] Confirm your Codex account exposes the models and reasoning efforts you plan to use. Repair defaults to `gpt-6-astra` with `medium` and can be configured explicitly; unsupported routes are blocked rather than silently replaced.
+- [ ] Confirm your provider account exposes the models and reasoning efforts you plan to use. Repair defaults to `gpt-6-astra` with `medium` and can be configured explicitly; unsupported routes are blocked rather than silently replaced.
 
 ## 3. Build and install
 
@@ -80,6 +80,7 @@ failed configuration load with **Retry**.
 - [ ] Select **Run once**. Confirm one planning cycle and its accepted task batch finish, then the service returns to paused. Select **Start continuous** separately when ready for ongoing scheduling.
 - [ ] Confirm discovery reads the repository and existing owned PRs, and proposal decisions include reasons.
 - [ ] Inspect the first task's workspace, executor/reviewer/repair sessions, verification output, and any blocked state.
+- [ ] Use **Inspect run** on the Overview, or `--export-run`, to review the recorded review and check evidence for that cycle; see [run evidence](launch/run-evidence.md).
 - [ ] Confirm a successfully reviewed task creates or updates the expected GitHub PR, with verification evidence, while leaving `main` untouched. An idle cycle with no worthwhile proposals is also a valid outcome.
 - [ ] Review the actual PR and its GitHub checks before merging it. Automated fixture tests do not replace this first authenticated, real-repository validation.
 - [ ] Exercise **Pause** and **Start continuous**. Pause prevents new work; in-flight tasks may finish and publish. Use a task's **Cancel task** control when you want to stop that task.
@@ -89,9 +90,8 @@ failed configuration load with **Retry**.
 - [ ] Leave the system running once you are satisfied with the first live results; increase throughput only as needed.
 - [ ] Monitor blocked/failed tasks, model usage, host disk capacity, and the value of generated PRs.
 - [ ] Set up protected backups of the state directory, task workspaces, and the service account's selected runner session state (Codex home and/or OpenCode data directory) using the [backup procedure](deployment.md#backup-and-upgrade).
-- [ ] Review retention settings, including Codex's separate transcript storage. Unresolved workspaces are intentionally preserved and can require deliberate cleanup.
+- [ ] Review retention settings, including the selected runner's separate transcript storage. Unresolved workspaces are intentionally preserved and can require deliberate cleanup.
 - [ ] Continue reviewing and merging useful PRs yourself. Application upgrades and production deployments remain your responsibility; Octomus delivers PRs.
-
 
 ## Week-long hardening acceptance
 

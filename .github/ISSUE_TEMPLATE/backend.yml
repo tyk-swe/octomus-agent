@@ -12,4 +12,4 @@ body:
     id: contract
     attributes:
       label: Protocol and capability evidence
-      description: Link public documentation for model/effort selection, sessions, review, cancellation and unattended operation. Codex is currently the only backend.
+      description: Link public documentation for model/effort selection, sessions, review, cancellation and unattended operation. Codex and OpenCode are the supported backends.

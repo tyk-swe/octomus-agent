@@ -9,7 +9,7 @@ body:
     id: environment
     attributes:
       label: Version and environment
-      description: Octomus commit/version, OS/architecture and Codex CLI version. No credentials.
+      description: Octomus commit/version, OS/architecture and runner (Codex or OpenCode) version. No credentials.
     validations:
       required: true
   - type: textarea

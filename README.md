@@ -207,6 +207,8 @@ Each task has its own execution thread and checkout. Every code review uses a
 **persistent repair thread** per task. Configured verification must pass on the
 reviewed revision before Octomus publishes or updates a PR. Interrupted work and
 publication are reconciled from durable state. See [architecture](docs/architecture.md).
+The Overview's **Inspect run** panel and `--export-run` show the recorded review and
+check evidence for one cycle; see [run evidence](docs/launch/run-evidence.md).
 
 ## What a day costs
 

@@ -1,6 +1,6 @@
 # Explore a run: public static showcase
 
-The showcase is a standalone Svelte/Vite build of recorded Day 2 `RunEvidenceV1`
+The showcase is a standalone Svelte/Vite build of recorded `RunEvidenceV1`
 evidence. It requires no Rust service, account, token, model, database or live GitHub
 request. It does not mount `RunEvidence.svelte`. It shares only the pure evidence/route
 labels and `EvidenceFact` / `EvidenceText` presentation components with the dashboard.
@@ -52,7 +52,7 @@ A deliberately prepared public JSON wrapper is required:
 ```
 
 The abbreviated `evidence` above is documentation, not a valid input. The complete
-synthetic example is `web/showcase/synthetic.public.json`. The Day 2 field contract is
+synthetic example is `web/showcase/synthetic.public.json`. The field contract is
 [run-evidence.md](run-evidence.md); the explicit public allowlist and consistency gate
 are `web/showcase/contract.mjs`. All required evidence keys, nulls, array entries,
 reviewer slots, findings, command results, gaps and limitations must be preserved.
@@ -60,7 +60,7 @@ Only Route's `provider` and `variant` keys are optional, as in the TypeScript mi
 Unknown keys at every object boundary are errors, including prompts, transcripts,
 configuration, logs and command output. The gate constructs allowlisted objects; it
 never silently strips a field, filters a record, upgrades a verdict or repairs evidence.
-It consumes normalized Day 2 evidence; it does not rebuild Day 2's exporter or read state.
+It consumes normalized exporter output; it does not rebuild the exporter or read state.
 
 Prepare any recorded public payload privately and manually. Review **all** remaining
 text, identities, revisions, repository names, commands and URLs for public disclosure.
@@ -76,7 +76,7 @@ The public wrapper does not turn the operator export into an automatically appro
 artifact. There is no prepare/approve command that grants approval.
 
 Normative schema states (reviewer state, check state, task status, route backend) reject
-unknown values explicitly. Day 2's free-form cycle/session statuses and final decisions
+unknown values explicitly. The exporter's free-form cycle/session statuses and final decisions
 remain verbatim, including unknown values, with neutral labels rather than an invented
 successful interpretation. Contradictory normalized summaries (counts, reviewer slots,
 review cleanliness, revision matches, configured checks and aggregate results) fail the
@@ -86,60 +86,49 @@ Task joins must still match the supplied cycle and proposal identity.
 
 ## Preparing a real candidate privately
 
-The Day 1 narrative is a historical comparison source, not `RunEvidenceV1` input.
-Request a specific offline snapshot/export and read permission once if none is supplied;
-then complete fixture work and report **REAL DATA BLOCKED**. Do not discover archives,
-open a previously mentioned archive, reconstruct records, or launch a run without
-separate explicit authorization.
-Follow [the snapshot procedure](run-evidence.md#exporting-from-a-copy-of-saved-state)
-and keep the authorized original untouched. Use `--export-run` on a private working
-copy for cycle `aebbd918-063b-440e-97c9-1758c93b36b0`; an existing authorized export
-needs no database read. Raw input, intermediate exports, candidate bytes and the private
-comparison/redaction notes stay outside Git and every public build/serve root.
+A launch narrative such as [day1-result.md](day1-result.md) is a historical comparison
+source, not `RunEvidenceV1` input. Use only a specific offline snapshot or export the
+owner has explicitly authorized; do not discover archives, reconstruct records from
+prose, or launch a run without separate explicit authorization. Follow
+[the snapshot procedure](run-evidence.md#exporting-from-a-copy-of-saved-state), keep the
+authorized original untouched, and run `--export-run` on a private working copy. An
+existing authorized export needs no database read. Raw input, intermediate exports,
+candidate bytes and the private comparison/redaction notes stay outside Git and every
+public build/serve root.
 
-If the owner separately authorizes a new run, record that authorization and preserve
-the new cycle/task IDs, baseline, decisions and actual outcome. Export its stopped,
-consistent state through the same interface and label it as new-run evidence. It
-cannot recover the Day 1 records or establish their reported sequence. Preserve this
-coverage limit in the private review packet and candidate's existing limitations.
-Public-sharing approval is still required, and any remaining restriction on remote
-writes stays in force.
+If the owner separately authorizes a new run, record that authorization and preserve the
+new cycle/task IDs, baseline, decisions and actual outcome. Export its stopped, consistent
+state through the same interface and label it as new-run evidence; it cannot recover
+earlier records or establish their reported sequence. Carry that coverage limit into the
+private review packet and the candidate's `limitations`. Public-sharing approval is still
+required, and any remaining restriction on remote writes stays in force.
 
-Compare the actual supplied fields with these **reported historical references**.
-Record each as supported, missing or discrepant with a source/field reference. Preserve
-all mismatches; do not change saved facts to agree with the report.
+Compare the supplied fields with the narrative's reported references: cycle, task and
+proposal identities, decision counts, positional reviewer verdicts, output and comparison
+revisions, review identity and findings, PR references, interventions, repair, cost and
+runtime identity. Record each as supported, missing or discrepant with a source/field
+reference, and preserve every mismatch; never change saved facts to agree with a report.
+Application revisions, intervention lineage and error text are outside `RunEvidenceV1`
+and need separately authorized evidence; a rediscovery-shaped proposal ID is not proof of
+an intervention, and requested routes are not runtime identity.
 
-| Reported reference | Comparison and limits |
-| --- | --- |
-| Cycle `aebbd918-063b-440e-97c9-1758c93b36b0`; task `85231f37-a1a0-41c9-aa09-901ad2e3980f`; proposal `rediscover-73aaf60b-cedc-49a1-b8ce-374022c4afe7` | Exact cycle/proposal/task join, including every zero/multiple match; do not join by title. |
-| One accepted proposal, four deferred; both reviewers accepted | Check all proposals, final counts, both positional reviewer states/decisions and any unconfirmed notes. Deferred remains deferred. |
-| Output `06bdf7a81dde2bb932e9d18b102568423493690d`; comparison base `a2f8f6288ba7a546fb4c2a1ab993c2210778bb73` | Compare task revisions, latest review and latest result for every required command at that output. Retain failures, missing results and revision mismatches. |
-| Fresh reviewer `01a096c2-6151-7b43-97f3-e266b7e4bbfc`, completed full diff review with zero findings | Check saved latest review identity/completion, summary presence, findings and revision. The export does not independently establish fresh-thread or full-diff protocol behavior. |
-| Published task and PR #3 | Check recorded task status, PR number and URL. Neither this preparation nor the showcase makes a fresh GitHub observation or implies merge. |
-| First cycle `1a25930b-4c9e-4bb3-9b0c-1ac6eee09936`, task `73aaf60b-cedc-49a1-b8ce-374022c4afe7`, executor startup failure (`thread/resume`: `no rollout found`) | Export the first cycle separately only when included in the owner's authorization. Error text is omitted by V1; the exact startup failure needs separately authorized evidence. A successful second cycle alone cannot establish it. |
-| Development fix `14ffefc610a0f0330624c531f945f87ad28580b1`, supported **Supersede and rediscover**, then publication | Application revision and intervention/lineage history are outside V1. Preserve their reported status and require separately authorized support; a rediscovery-shaped proposal ID is not proof of the intervention. |
-| No live repair needed | Compare retained task sessions/review rounds; no recorded repair session supports only that limited observation, not completeness of all runtime history. |
-| Cost unavailable; independent runtime identity unreported; human usefulness approval not provided | Do not estimate dollars from admissions, treat requested routes as runtime identity, or grant usefulness approval. Dedicated-deployment acceptance also remains unestablished. |
+The public contract describes **one cycle**, not an entire rehearsal. Keep additional
+authorized exports and the comparison in the private review packet. Do not splice earlier
+attempts into a successful cycle, append an invented replay, or add wrapper fields. The
+existing `limitations` array may carry a clearly labelled, owner-reviewed coverage
+limitation such as "Coverage: this export represents one cycle; earlier attempts and
+operator interventions are not included." Keep the nine original limitations verbatim and
+never use the array to fabricate saved events. If the required context cannot be conveyed
+faithfully within this projection, hold the candidate.
 
-The public contract describes **one cycle**, not the entire rehearsal. Keep additional
-authorized exports and the comparison in the private review packet. Do not splice first
-attempt tasks into the successful cycle, append an invented replay, or add wrapper
-fields. Preserve supported context and the limits of coverage in the review summary.
-If the payload needs a coverage caveat, the existing `limitations` array may carry a
-clearly labelled, owner-reviewed limitation such as “Coverage: this export represents
-one cycle; earlier attempts and operator interventions are not included.” Keep the nine
-original limitations verbatim. Never use that array to fabricate saved events. If the
-required context cannot be conveyed faithfully within this projection, hold the candidate
-instead of presenting an unqualified success.
+Manually prepare the public wrapper with `mode: "recorded"`. Redact only private text and
+identifiers, consistently across their references. Keep record order, all entries, nulls,
+gaps, adverse states and the original warning. Keep a private field-level record of each
+redaction and any added coverage limitation. Do not attach raw logs, provenance paths,
+billing material, transcripts or the review packet to the wrapper.
 
-Manually prepare the public wrapper with `mode: "recorded"`. Redact only private text
-and identifiers, consistently across their references. Keep record order, all entries,
-nulls, gaps, adverse states and the original warning. Keep a private field-level record
-of each redaction and any added coverage limitation. Do not attach raw logs, provenance
-paths, billing material, transcripts or the review packet to the wrapper.
-
-Before approval, validate and hash the candidate **without building or serving it**.
-From the repository root, the following example invokes P02's existing parser and
+Before approval, validate and hash the candidate **without building or serving it**. From
+the repository root, the following example invokes the showcase's existing parser and
 allowlist, reads one explicit local file, and writes no files. It grants no approval and
 does not compare the candidate to private source records. The fixture test exercises
 this exact example with synthetic bytes only.
@@ -171,11 +160,11 @@ is unavailable until real candidate bytes exist; a fixture hash is never a subst
 Keep human usefulness assessment separate from permission to share this exact payload.
 
 Only after the owner explicitly approves those bytes and supplies the public-safe
-approval reference, use P02's recorded-mode command below. It stages the exact bytes in
+approval reference, use the recorded-mode command below. It stages the exact bytes in
 `dist/showcase/public-run.json`. Compare that file byte-for-byte with the approved
 candidate and check its hash. Any byte change, including whitespace or a new limitation,
-invalidates approval. Record **DATA READY** in `day3-result.md` only after this gate and
-local staging succeed; otherwise record the precise missing input, evidence or approval.
+invalidates approval. Record the staging result only after this gate and local staging
+succeed; otherwise record the precise missing input, evidence or approval.
 Staging is local preparation, not publication or deployment.
 
 ## Fixture and recorded modes

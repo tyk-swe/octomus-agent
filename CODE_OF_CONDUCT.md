@@ -82,5 +82,4 @@ For answers to common questions about this code of conduct, see the FAQ at [http
 [FAQ]: https://www.contributor-covenant.org/faq
 [translations]: https://www.contributor-covenant.org/translations
 
-
 Octomus targets acknowledgement of private conduct reports within three business days.

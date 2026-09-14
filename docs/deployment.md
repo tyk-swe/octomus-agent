@@ -13,7 +13,7 @@ make package
 
 Install `target/release/octomus-agent` (or the executable from a checksum-verified release archive) as `/usr/local/bin/octomus-agent`. The dashboard is embedded. Public release installation remains pending; see [distribution](distribution.md). Create an `octomus` OS account with a home directory at `/var/lib/octomus`, and make its home and target repository writable by that account. The binary must remain administrator-owned. The supplied unit expects `/srv/projects/octomus-agent` to exist. If using another target path (including the README example `/srv/projects/project`), change `ReadWritePaths` in a systemd override before starting.
 
-Install `git`, `gh`, and Codex for that account. Pin Codex CLI **0.153.4**, the tested protocol version. Authenticate Codex and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well. Ensure the unit's PATH includes their actual locations (including `/var/lib/octomus/.cargo/bin` when using rustup); a systemd service does not load the interactive shell's profile.
+Install `git`, `gh` and the runners your routes select for that account: Codex CLI pinned to **0.153.4** and/or OpenCode **1.18.30**, the tested protocol versions. Authenticate the runners and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well. Ensure the unit's PATH includes their actual locations (including `/var/lib/octomus/.cargo/bin` when using rustup); a systemd service does not load the interactive shell's profile.
 
 Create `/etc/octomus/agent.env`, readable only by the administrator and service account, with a fresh random token:
 
@@ -108,13 +108,14 @@ octomus-agent --print-config
 octomus-agent --data-dir PATH --usage-report
 octomus-agent --data-dir PATH --doctor
 octomus-agent --data-dir PATH --doctor --audit
+octomus-agent --data-dir PATH --export-run CYCLE_ID
 ```
 
 Environment equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`, `OCTOMUS_ASSETS`, `OCTOMUS_TOKEN`. `--assets`/`OCTOMUS_ASSETS` explicitly replaces embedded serving with a directory containing `200.html`; the default needs no asset files. `--doctor --audit` (or **Check audit connection**) checks only planning prerequisites. The `--doctor` check takes the same state lock as the service; stop the service first, or use **Check connection** in the running dashboard.
 
-`--doctor` reports installed/tested Codex versions and warns on a mismatch. Correct a mismatch before live commissioning. `--usage-report` opens existing SQLite state read-only, works alongside the service, and needs neither a token nor dashboard assets. It exports admission counts and saved cycle/task evidence, not provider billing. Historical usage without ledger entries is marked unattributed. See the [operator checklist](operations.md) and [cost methodology](cost.md). Admission records are retained with the state database; include their growth in disk monitoring and backups.
+`--doctor` reports installed/tested Codex versions and warns on a mismatch. Correct a mismatch before live commissioning. `--usage-report` opens existing SQLite state read-only, works alongside the service, and needs neither a token nor dashboard assets. It exports admission counts and saved cycle/task evidence, not provider billing. Historical usage without ledger entries is marked unattributed. See the [operator checklist](operations.md) and [cost methodology](cost.md). Admission records are retained with the state database; include their growth in disk monitoring and backups. `--export-run` likewise opens the database read-only, without the service lock, and prints the recorded `RunEvidenceV1` for one saved cycle; see [run evidence](launch/run-evidence.md).
 
-## HTTP interface additions
+## HTTP API
 
 `POST /api/control/audit` runs one audit; authentication and JSON content type are
 required. Conflicting active work returns 409; invalid configuration returns 400.
@@ -124,12 +125,9 @@ full execution checking. `GET /api/state` includes `audit_configured`,
 status is `auditing` even though execution is paused. Older cycles load as
 `execution`. Usage-report cycle rows also include `mode`; existing fields remain.
 
-Successful audit role clones are disposable; retained failures follow the archive/discard lifecycle. Housekeeping runs while paused. No automatic audit replay occurs on resume.
+Successful audit role clones are disposable; retained failures follow the archive/discard lifecycle. No automatic audit replay occurs on resume.
 
-
-## Operational API and history
-
-`POST /api/control/cycle` now means **Run once**; it does not enable continuous
+`POST /api/control/cycle` means **Run once**; it does not enable continuous
 operation. `POST /api/control/resume` selects continuous operation. Control JSON
 contains `mode` (`paused`, `run_once`, `continuous`) and the persisted batch phase;
 `paused` remains a derived compatibility field. Old boolean control records load
@@ -139,7 +137,8 @@ as paused or continuous.
 cycle, PR and event summaries, attention examples, live admission limits, and the
 latest storage sample. It does not include full planning evidence. Use
 `GET /api/tasks/{id}`, `GET /api/cycles/{id}`, and
-`GET /api/proposals/{cycle}/{id}` for details. Task detail includes
+`GET /api/proposals/{cycle}/{id}` for details. `GET /api/cycles/{id}/evidence` returns
+the recorded `RunEvidenceV1` for one cycle. Task detail includes
 `blocked_reason`, `allowed_actions`, `effective_attempt_policy`, and current
 `operating_policy`. Existing `config` remains the original task snapshot.
 
@@ -158,7 +157,6 @@ paused. Open, merged and closed-unmerged outcomes and external head movement are
 separate from delivered task status. Migrated PR caches have no observation time
 until a fresh read. Runner transcript storage is reported separately as unavailable
 when it is not measured; it is never counted as zero or automatically deleted.
-
 
 Optional `runner_storage_paths` entries (`codex`, `opencode`) let the operator
 supply absolute paths for separate size measurement, also available below the
