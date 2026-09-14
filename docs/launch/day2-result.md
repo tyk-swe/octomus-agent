@@ -101,8 +101,11 @@ commit", "Malformed batch", "Acceptance is not execution". No horizontal overflo
 - **Copying only `state.db` loses WAL records silently.** The database runs in WAL mode.
   A copy without `state.db-wal`/`state.db-shm` exported cleanly on a synthetic fixture but
   omitted a task written after the last checkpoint, reporting "accepted but no task is
-  linked". The exporter cannot detect this. Copy all three files or export from the
-  original directory (documented in `run-evidence.md`).
+  linked". The exporter cannot detect this. **Correction (Day 3):** sequential live
+  copying of all three files is also unsafe. The owner must use SQLite's supported
+  backup API for a running source, or supply a genuinely offline consistent archive.
+  Export from a private working copy only after explicit authorization; see
+  [run-evidence.md](run-evidence.md#exporting-from-a-copy-of-saved-state).
 - A copy inside a directory the exporting user cannot write to fails with
   `attempt to write a readonly database` (SQLite WAL index). Explicit, not silent.
 - Tasks whose saved proposal ID is not among the cycle's proposals are only counted in
@@ -121,10 +124,12 @@ commit", "Malformed batch", "Acceptance is not execution". No horizontal overflo
 octomus-agent --data-dir <dir-containing-state.db> --export-run <cycle-id> > <private-dir>/run-<cycle-id>.json
 ```
 
-Minimum input: a directory with `state.db` (plus `-wal`/`-shm` when present) and the
+Minimum input: an explicitly authorized, consistent offline database snapshot (with
+matching WAL sidecars when present), copied into a writable private directory, and the
 cycle ID. The command returns before directory creation, permission changes, the service
-lock, migrations or worker start. Write the output only to a private location; nothing
-under `web/static`, `docs/` or any other Git path.
+lock, migrations or worker start. SQLite may maintain WAL-index sidecars on the working
+copy. Keep the original untouched and all copies/exports outside Git and public build
+roots; follow the corrected backup procedure in `run-evidence.md`.
 
 ## Real archive data
 
@@ -133,6 +138,10 @@ archive, and no read-only snapshot with explicit access permission was supplied 
 pass. No raw record was fabricated from the narrative and no run was launched. A
 directory matching the Day 1 archive layout exists on this development workspace; its
 location is withheld here and reported to the owner separately. It was not opened.
+
+That historical location note grants no access and does not authorize a new search.
+Only an owner-specified offline snapshot/export with explicit read permission may be
+used for the showcase preparation.
 
 If the owner grants access to a **copy**, the expected comparison against
 `day1-result.md` is: execution cycles `1a25930b-4c9e-4bb3-9b0c-1ac6eee09936` (13

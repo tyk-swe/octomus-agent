@@ -84,6 +84,100 @@ build. Gaps in the *saved records*, such as a rejected proposal with linked task
 published task with missing review/PR evidence, remain displayable without being repaired.
 Task joins must still match the supplied cycle and proposal identity.
 
+## Preparing a real candidate privately
+
+The Day 1 narrative is a historical comparison source, not `RunEvidenceV1` input.
+Request a specific offline snapshot/export and read permission once if none is supplied;
+then complete fixture work and report **REAL DATA BLOCKED**. Do not discover archives,
+open a previously mentioned archive, reconstruct records, or launch a run without
+separate explicit authorization.
+Follow [the snapshot procedure](run-evidence.md#exporting-from-a-copy-of-saved-state)
+and keep the authorized original untouched. Use `--export-run` on a private working
+copy for cycle `aebbd918-063b-440e-97c9-1758c93b36b0`; an existing authorized export
+needs no database read. Raw input, intermediate exports, candidate bytes and the private
+comparison/redaction notes stay outside Git and every public build/serve root.
+
+If the owner separately authorizes a new run, record that authorization and preserve
+the new cycle/task IDs, baseline, decisions and actual outcome. Export its stopped,
+consistent state through the same interface and label it as new-run evidence. It
+cannot recover the Day 1 records or establish their reported sequence. Preserve this
+coverage limit in the private review packet and candidate's existing limitations.
+Public-sharing approval is still required, and any remaining restriction on remote
+writes stays in force.
+
+Compare the actual supplied fields with these **reported historical references**.
+Record each as supported, missing or discrepant with a source/field reference. Preserve
+all mismatches; do not change saved facts to agree with the report.
+
+| Reported reference | Comparison and limits |
+| --- | --- |
+| Cycle `aebbd918-063b-440e-97c9-1758c93b36b0`; task `85231f37-a1a0-41c9-aa09-901ad2e3980f`; proposal `rediscover-73aaf60b-cedc-49a1-b8ce-374022c4afe7` | Exact cycle/proposal/task join, including every zero/multiple match; do not join by title. |
+| One accepted proposal, four deferred; both reviewers accepted | Check all proposals, final counts, both positional reviewer states/decisions and any unconfirmed notes. Deferred remains deferred. |
+| Output `06bdf7a81dde2bb932e9d18b102568423493690d`; comparison base `a2f8f6288ba7a546fb4c2a1ab993c2210778bb73` | Compare task revisions, latest review and latest result for every required command at that output. Retain failures, missing results and revision mismatches. |
+| Fresh reviewer `01a096c2-6151-7b43-97f3-e266b7e4bbfc`, completed full diff review with zero findings | Check saved latest review identity/completion, summary presence, findings and revision. The export does not independently establish fresh-thread or full-diff protocol behavior. |
+| Published task and PR #3 | Check recorded task status, PR number and URL. Neither this preparation nor the showcase makes a fresh GitHub observation or implies merge. |
+| First cycle `1a25930b-4c9e-4bb3-9b0c-1ac6eee09936`, task `73aaf60b-cedc-49a1-b8ce-374022c4afe7`, executor startup failure (`thread/resume`: `no rollout found`) | Export the first cycle separately only when included in the owner's authorization. Error text is omitted by V1; the exact startup failure needs separately authorized evidence. A successful second cycle alone cannot establish it. |
+| Development fix `14ffefc610a0f0330624c531f945f87ad28580b1`, supported **Supersede and rediscover**, then publication | Application revision and intervention/lineage history are outside V1. Preserve their reported status and require separately authorized support; a rediscovery-shaped proposal ID is not proof of the intervention. |
+| No live repair needed | Compare retained task sessions/review rounds; no recorded repair session supports only that limited observation, not completeness of all runtime history. |
+| Cost unavailable; independent runtime identity unreported; human usefulness approval not provided | Do not estimate dollars from admissions, treat requested routes as runtime identity, or grant usefulness approval. Dedicated-deployment acceptance also remains unestablished. |
+
+The public contract describes **one cycle**, not the entire rehearsal. Keep additional
+authorized exports and the comparison in the private review packet. Do not splice first
+attempt tasks into the successful cycle, append an invented replay, or add wrapper
+fields. Preserve supported context and the limits of coverage in the review summary.
+If the payload needs a coverage caveat, the existing `limitations` array may carry a
+clearly labelled, owner-reviewed limitation such as “Coverage: this export represents
+one cycle; earlier attempts and operator interventions are not included.” Keep the nine
+original limitations verbatim. Never use that array to fabricate saved events. If the
+required context cannot be conveyed faithfully within this projection, hold the candidate
+instead of presenting an unqualified success.
+
+Manually prepare the public wrapper with `mode: "recorded"`. Redact only private text
+and identifiers, consistently across their references. Keep record order, all entries,
+nulls, gaps, adverse states and the original warning. Keep a private field-level record
+of each redaction and any added coverage limitation. Do not attach raw logs, provenance
+paths, billing material, transcripts or the review packet to the wrapper.
+
+Before approval, validate and hash the candidate **without building or serving it**.
+From the repository root, the following example invokes P02's existing parser and
+allowlist, reads one explicit local file, and writes no files. It grants no approval and
+does not compare the candidate to private source records. The fixture test exercises
+this exact example with synthetic bytes only.
+
+<!-- private-payload-check -->
+```sh
+node --input-type=module - /absolute/private/candidate.public.json <<'JS'
+import { readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { parseUniqueJson } from './web/scripts/public-json.mjs';
+import { publicPayload } from './web/showcase/contract.mjs';
+
+const input = process.argv[2];
+const info = statSync(input);
+if (!info.isFile() || info.size > 5_000_000)
+  throw new Error('Input must be a local regular JSON file, at most 5 MB');
+const bytes = readFileSync(input);
+publicPayload(parseUniqueJson(bytes.toString('utf8')), 'recorded');
+console.log('Candidate SHA-256: ' + createHash('sha256').update(bytes).digest('hex'));
+console.log('Shape checked only; no build written and no sharing approval granted.');
+JS
+```
+
+Supply the owner with the private candidate, its exact-byte SHA-256 and a concise
+redaction/provenance summary: authorized source and capture method (private reference),
+source/export hashes, cycle/task match results, redaction categories and preserved
+adverse/missing evidence, scope limits and unresolved discrepancies. A candidate hash
+is unavailable until real candidate bytes exist; a fixture hash is never a substitute.
+Keep human usefulness assessment separate from permission to share this exact payload.
+
+Only after the owner explicitly approves those bytes and supplies the public-safe
+approval reference, use P02's recorded-mode command below. It stages the exact bytes in
+`dist/showcase/public-run.json`. Compare that file byte-for-byte with the approved
+candidate and check its hash. Any byte change, including whitespace or a new limitation,
+invalidates approval. Record **DATA READY** in `day3-result.md` only after this gate and
+local staging succeed; otherwise record the precise missing input, evidence or approval.
+Staging is local preparation, not publication or deployment.
+
 ## Fixture and recorded modes
 
 Fixture mode must be selected explicitly, the wrapper must say `"mode": "fixture"`,

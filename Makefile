@@ -16,6 +16,7 @@ check: dashboard
 test: dashboard
 	cargo test --locked
 	cargo build --locked
+	python3 tests/evidence_snapshot.py
 	python3 tests/e2e.py
 	python3 tests/e2e_runners.py
 	python3 tests/e2e_hardening.py
