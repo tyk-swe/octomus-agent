@@ -5,15 +5,30 @@
 use super::*;
 
 const TASK_SUMMARY: &str = "json_object('id',NEW.id,'cycle_id',json_extract(NEW.data,'$.cycle_id'),'title',substr(json_extract(NEW.data,'$.proposal.title'),1,200),'category',json_extract(NEW.data,'$.proposal.category'),'tier',json_extract(NEW.data,'$.proposal.tier'),'target',json_extract(NEW.data,'$.proposal.target'),'branch',json_extract(NEW.data,'$.branch'),'status',json_extract(NEW.data,'$.status'),'pr_url',json_extract(NEW.data,'$.pr_url'),'pr_number',json_extract(NEW.data,'$.pr_number'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'blocked_reason',json_extract(NEW.data,'$.blocked_reason'),'created_at',json_extract(NEW.data,'$.created_at'),'updated_at',json_extract(NEW.data,'$.updated_at'),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}')),'superseded_by',json(COALESCE(json_extract(NEW.data,'$.superseded_by'),'[]')))";
-const CYCLE_SUMMARY: &str = "json_object('id',NEW.id,'number',json_extract(NEW.data,'$.number'),'mode',COALESCE(json_extract(NEW.data,'$.mode'),'execution'),'status',json_extract(NEW.data,'$.status'),'started_at',json_extract(NEW.data,'$.started_at'),'completed_at',json_extract(NEW.data,'$.completed_at'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'session_count',json_array_length(NEW.data,'$.sessions'),'decisions',json_object('accepted',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='accepted'),'rejected',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='rejected'),'deferred',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='deferred')),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}')))";
+/// The cycle projection's summary document. The decision counts come from
+/// model::decision::ALL, so a saved cycle reports every word a proposal can carry —
+/// including rediscovery candidates, which no reviewer ever returns.
+fn cycle_summary() -> String {
+    let decisions = crate::model::decision::ALL
+        .map(|decision| {
+            format!(
+                "'{decision}',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='{decision}')"
+            )
+        })
+        .join(",");
+    format!(
+        "json_object('id',NEW.id,'number',json_extract(NEW.data,'$.number'),'mode',COALESCE(json_extract(NEW.data,'$.mode'),'execution'),'status',json_extract(NEW.data,'$.status'),'started_at',json_extract(NEW.data,'$.started_at'),'completed_at',json_extract(NEW.data,'$.completed_at'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'session_count',json_array_length(NEW.data,'$.sessions'),'decisions',json_object({decisions}),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{{}}')))"
+    )
+}
 const PR_SUMMARY: &str = "json_set(json_remove(NEW.data,'$.pr.body'),'$.pr.title',substr(json_extract(NEW.data,'$.pr.title'),1,200))";
 // Match str::trim's Unicode whitespace, including tabs and newlines. SQLite's
 // default trim only removes ASCII spaces. Keep this identical in the index/query.
 const TITLE_WHITESPACE: &str = "char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)";
 
 pub(super) fn migrate(c: &Connection) -> Result<()> {
+    let cycle_summary = cycle_summary();
     let projection = format!(
-        "INSERT INTO record_meta(kind,id,seq,status,repository,target,title,cycle_id,run_id,archived,discarded,summary) VALUES (NEW.kind,NEW.id,NEW.rowid,COALESCE(json_extract(NEW.data,'$.status'),json_extract(NEW.data,'$.pr.state'),''),COALESCE(json_extract(NEW.data,'$.config.github_repo'),json_extract(NEW.data,'$.repository'),''),COALESCE(json_extract(NEW.data,'$.proposal.target'),''),COALESCE(json_extract(NEW.data,'$.proposal.title'),json_extract(NEW.data,'$.pr.title'),''),COALESCE(json_extract(NEW.data,'$.cycle_id'),''),json_extract(NEW.data,'$.run_id'),json_extract(NEW.data,'$.lifecycle.archived_at'),json_extract(NEW.data,'$.lifecycle.discarded_at'),CASE NEW.kind WHEN 'task' THEN {TASK_SUMMARY} WHEN 'cycle' THEN {CYCLE_SUMMARY} WHEN 'pr' THEN {PR_SUMMARY} ELSE '{{}}' END) ON CONFLICT(kind,id) DO UPDATE SET status=excluded.status,repository=excluded.repository,target=excluded.target,title=excluded.title,cycle_id=excluded.cycle_id,run_id=excluded.run_id,archived=excluded.archived,discarded=excluded.discarded,summary=excluded.summary;"
+        "INSERT INTO record_meta(kind,id,seq,status,repository,target,title,cycle_id,run_id,archived,discarded,summary) VALUES (NEW.kind,NEW.id,NEW.rowid,COALESCE(json_extract(NEW.data,'$.status'),json_extract(NEW.data,'$.pr.state'),''),COALESCE(json_extract(NEW.data,'$.config.github_repo'),json_extract(NEW.data,'$.repository'),''),COALESCE(json_extract(NEW.data,'$.proposal.target'),''),COALESCE(json_extract(NEW.data,'$.proposal.title'),json_extract(NEW.data,'$.pr.title'),''),COALESCE(json_extract(NEW.data,'$.cycle_id'),''),json_extract(NEW.data,'$.run_id'),json_extract(NEW.data,'$.lifecycle.archived_at'),json_extract(NEW.data,'$.lifecycle.discarded_at'),CASE NEW.kind WHEN 'task' THEN {TASK_SUMMARY} WHEN 'cycle' THEN {cycle_summary} WHEN 'pr' THEN {PR_SUMMARY} ELSE '{{}}' END) ON CONFLICT(kind,id) DO UPDATE SET status=excluded.status,repository=excluded.repository,target=excluded.target,title=excluded.title,cycle_id=excluded.cycle_id,run_id=excluded.run_id,archived=excluded.archived,discarded=excluded.discarded,summary=excluded.summary;"
     );
     c.execute_batch(&format!("BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS record_meta(kind TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,status TEXT NOT NULL,repository TEXT NOT NULL,target TEXT NOT NULL,title TEXT NOT NULL,cycle_id TEXT NOT NULL,run_id TEXT,archived TEXT,discarded TEXT,summary TEXT NOT NULL,PRIMARY KEY(kind,id));
@@ -136,6 +151,18 @@ pub(super) fn migrate(c: &Connection) -> Result<()> {
             CREATE INDEX task_problem_identity ON records(kind,json_extract(data,'$.config.github_repo') COLLATE NOCASE,json_extract(data,'$.proposal.target'),json_extract(data,'$.proposal.title'),COALESCE(json_extract(data,'$.proposal.problem_key'),''),json_extract(data,'$.status'),json_extract(data,'$.lifecycle.archived_at'),id);
             PRAGMA user_version=5;
             COMMIT;")?;
+    }
+    if c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 6 {
+        // Re-project saved cycles so their summaries count every decision word. The
+        // triggers are recreated from the projection above so the two cannot drift.
+        c.execute_batch(&format!("BEGIN IMMEDIATE;
+            DROP TRIGGER IF EXISTS project_record_insert;
+            DROP TRIGGER IF EXISTS project_record_update;
+            CREATE TRIGGER project_record_insert AFTER INSERT ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN {projection} END;
+            CREATE TRIGGER project_record_update AFTER UPDATE ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN {projection} END;
+            UPDATE records SET data=data WHERE kind='cycle';
+            PRAGMA user_version=6;
+            COMMIT;"))?;
     }
     c.execute_batch("BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS pr_reservations(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,branch TEXT NOT NULL,admitted_at TEXT NOT NULL);

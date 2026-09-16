@@ -585,6 +585,120 @@ fn proposal_content_revisions_cover_omitted_and_truncated_evidence_after_upgrade
     }
 }
 
+/// Reproduces a database written before saved cycle summaries counted candidate
+/// decisions: the old three-word decision map, the triggers that produced it, and
+/// user_version 5. The upgrade gate has to replace both.
+fn install_legacy_projection(path: &std::path::Path) {
+    let decisions = |source: &str| {
+        format!(
+            "json_object('accepted',(SELECT count(*) FROM json_each({source},'$.proposals') WHERE json_extract(value,'$.decision')='accepted'),'rejected',(SELECT count(*) FROM json_each({source},'$.proposals') WHERE json_extract(value,'$.decision')='rejected'),'deferred',(SELECT count(*) FROM json_each({source},'$.proposals') WHERE json_extract(value,'$.decision')='deferred'))"
+        )
+    };
+    let summary = format!(
+        "json_object('id',NEW.id,'number',json_extract(NEW.data,'$.number'),'mode',COALESCE(json_extract(NEW.data,'$.mode'),'execution'),'status',json_extract(NEW.data,'$.status'),'started_at',json_extract(NEW.data,'$.started_at'),'completed_at',json_extract(NEW.data,'$.completed_at'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'session_count',json_array_length(NEW.data,'$.sessions'),'decisions',{},'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{{}}')))",
+        decisions("NEW.data")
+    );
+    let projection = format!(
+        "INSERT INTO record_meta(kind,id,seq,status,repository,target,title,cycle_id,run_id,archived,discarded,summary) VALUES (NEW.kind,NEW.id,NEW.rowid,COALESCE(json_extract(NEW.data,'$.status'),''),COALESCE(json_extract(NEW.data,'$.config.github_repo'),''),COALESCE(json_extract(NEW.data,'$.proposal.target'),''),COALESCE(json_extract(NEW.data,'$.proposal.title'),''),COALESCE(json_extract(NEW.data,'$.cycle_id'),''),json_extract(NEW.data,'$.run_id'),json_extract(NEW.data,'$.lifecycle.archived_at'),json_extract(NEW.data,'$.lifecycle.discarded_at'),CASE NEW.kind WHEN 'cycle' THEN {summary} ELSE '{{}}' END) ON CONFLICT(kind,id) DO UPDATE SET status=excluded.status,summary=excluded.summary;"
+    );
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .execute_batch(&format!(
+            "BEGIN;
+            DROP TRIGGER project_record_insert;
+            DROP TRIGGER project_record_update;
+            CREATE TRIGGER project_record_insert AFTER INSERT ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN {projection} END;
+            CREATE TRIGGER project_record_update AFTER UPDATE ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN {projection} END;
+            UPDATE record_meta SET summary=json_set(summary,'$.decisions',(SELECT {} FROM records r WHERE r.kind='cycle' AND r.id=record_meta.id)) WHERE kind='cycle';
+            PRAGMA user_version=5;
+            COMMIT;",
+            decisions("r.data")
+        ))
+        .unwrap();
+}
+
+#[test]
+fn cycle_summaries_count_candidate_decisions_after_upgrade() {
+    for legacy in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        let mut cycle = cycle(&task());
+        cycle.proposals[0].decision = "accepted".into();
+        let mut candidate = cycle.proposals[0].clone();
+        candidate.id = "rediscover-1".into();
+        candidate.decision = "candidate".into();
+        candidate.reconsiders = vec![cycle.proposals[0].id.clone()];
+        cycle.proposals.push(candidate);
+        store.put("cycle", &cycle.id, &cycle).unwrap();
+        let revisions = |store: &Store| {
+            cycle
+                .proposals
+                .iter()
+                .map(|p| {
+                    store.proposal_detail(&cycle.id, &p.id).unwrap().unwrap()["content_revision"]
+                        .clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = revisions(&store);
+        drop(store);
+        let raw = |path: &std::path::Path| -> String {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .query_row(
+                    "SELECT data FROM records WHERE kind='cycle' AND id=?1",
+                    [&cycle.id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let saved_text = raw(&path);
+        if legacy {
+            install_legacy_projection(&path);
+            let stale: String = rusqlite::Connection::open(&path)
+                .unwrap()
+                .query_row(
+                    "SELECT json_extract(summary,'$.decisions') FROM record_meta WHERE kind='cycle' AND id=?1",
+                    [&cycle.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                !stale.contains("candidate"),
+                "The legacy projection must not count candidates"
+            );
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(raw(&path), saved_text, "Migration rewrote saved evidence");
+        assert_eq!(
+            revisions(&store),
+            before,
+            "Re-projecting summaries changed cached proposal revisions"
+        );
+        let summary = store
+            .history_page("cycle", &HistoryQuery::default())
+            .unwrap()
+            .items
+            .remove(0);
+        assert_eq!(
+            summary["decisions"],
+            json!({"accepted":1,"rejected":0,"deferred":0,"candidate":1}),
+            "legacy={legacy}"
+        );
+        // Later writes keep counting candidates, so the gate also has to replace the
+        // triggers that produced the old summary.
+        cycle.status = "completed".into();
+        store.put("cycle", &cycle.id, &cycle).unwrap();
+        let summary = store
+            .history_page("cycle", &HistoryQuery::default())
+            .unwrap()
+            .items
+            .remove(0);
+        assert_eq!(summary["decisions"]["candidate"], 1, "legacy={legacy}");
+    }
+}
+
 #[test]
 fn commit_plan_is_atomic_on_lineage_failure() {
     let temp = tempfile::tempdir().unwrap();
