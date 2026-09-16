@@ -18,8 +18,14 @@ import type {
   VerdictState
 } from './types';
 
-/** Existing badge tones in app.css. `cancelled` reads as "nothing recorded", not "fine". */
-export type Tone = 'clean' | 'blocked' | 'failed' | 'running' | 'cancelled' | '';
+/**
+ * Badge tones every surface must style. `cancelled` reads as "nothing
+ * recorded", not "fine", so a surface that leaves it unstyled hides exactly
+ * the adverse evidence this mapping exists to show. Both app.css and
+ * showcase/style.css are checked against this list.
+ */
+export const TONES = ['clean', 'blocked', 'failed', 'running', 'cancelled'] as const;
+export type Tone = (typeof TONES)[number] | '';
 export type Verdict = { label: string; tone: Tone; detail: string };
 
 /**

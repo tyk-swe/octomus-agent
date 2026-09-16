@@ -5,9 +5,20 @@
     "moduleResolution": "bundler",
     "strict": true,
     "allowJs": true,
-    "checkJs": false,
+    "checkJs": true,
     "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
     "lib": ["ES2022", "DOM"]
   },
-  "include": ["./**/*.ts", "./**/*.svelte", "../src/lib/types.ts"]
+  "include": [
+    "./**/*.ts",
+    "./**/*.svelte",
+    "../src/lib/types.ts",
+    "../src/lib/evidence.ts",
+    "../showcase-tests/**/*.ts",
+    "../showcase-tests/**/*.mjs",
+    "../scripts/**/*.mjs",
+    "../showcase.playwright.config.ts"
+  ]
 }

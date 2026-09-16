@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { publicPrUrl } from '../showcase/links';
+import { TONES } from '../src/lib/evidence';
 
 const hostile =
   '<img src="https://hostile.invalid/track" onerror="window.pwned=true"><script>alert(1)</script>';
@@ -220,5 +221,21 @@ test('recorded mode displays the supplied byte binding without executing approva
     ).toBeVisible();
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// EvidenceFact.svelte and EvidenceText.svelte are shared by the dashboard and
+// the showcase, and take their appearance from whichever stylesheet is loaded.
+// A tone with no rule falls back to the neutral badge, so "no verdict recorded"
+// would look like every other fact on the page.
+test('every surface styles every badge tone and the shared text classes', () => {
+  for (const sheet of ['src/app.css', 'showcase/style.css']) {
+    const css = readFileSync(sheet, 'utf8');
+    for (const tone of TONES) {
+      expect(css, `${sheet} is missing .badge.${tone}`).toContain(`.badge.${tone}`);
+    }
+    for (const shared of ['.muted', '.expandable', '.preview']) {
+      expect(css, `${sheet} is missing ${shared}`).toContain(shared);
+    }
   }
 });

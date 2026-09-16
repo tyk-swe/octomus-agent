@@ -179,17 +179,27 @@ dd {
   flex-wrap: wrap;
   gap: 0.6rem;
 }
-.clean {
+.badge.clean {
   background: #dcecd9;
   color: #255234;
 }
-.failed {
+.badge.failed {
   background: #f8dfd7;
   color: #83331d;
 }
-.blocked {
+.badge.blocked {
   background: #f9e9be;
   color: #704c0d;
+}
+.badge.running {
+  background: #dde8ef;
+  color: #2b5568;
+}
+/* "Nothing was recorded" keeps the neutral ground and gives up the ink, so it
+   never reads as a pass. */
+.badge.cancelled {
+  background: #e9ece5;
+  color: #5b6359;
 }
 .reviewers > article,
 .record {
@@ -269,4 +279,22 @@ footer {
   main {
     padding-top: 1rem;
   }
+}
+
+.muted {
+  color: #5c6a5f;
+}
+.expandable > .preview {
+  margin-bottom: 0.3rem;
+  color: #4a584d;
+}
+.expandable > details > summary {
+  font-size: 0.85rem;
+  font-weight: 650;
+  color: #20563f;
+  cursor: pointer;
+}
+.expandable > details > p {
+  margin-top: 0.55rem;
+  color: #4a584d;
 }

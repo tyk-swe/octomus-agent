@@ -10,6 +10,7 @@ import { parseUniqueJson } from './public-json.mjs';
 
 const root = fileURLToPath(new URL('../showcase/', import.meta.url));
 const outDir = fileURLToPath(new URL('../../dist/showcase/', import.meta.url));
+/** @param {string | undefined} path */
 async function localBytes(path) {
   if (!path || /^[a-z]+:\/\//i.test(path))
     throw new Error('An explicit local JSON file is required');
@@ -24,10 +25,11 @@ try {
   const { values } = parseArgs({
     options: { mode: { type: 'string' }, input: { type: 'string' }, approval: { type: 'string' } }
   });
-  if (!['fixture', 'recorded'].includes(values.mode))
+  const mode = values.mode;
+  if (mode !== 'fixture' && mode !== 'recorded')
     throw new Error('Select --mode fixture or --mode recorded, with --input <public.json>');
   const bytes = await localBytes(values.input);
-  const payload = publicPayload(parseUniqueJson(bytes.toString('utf8')), values.mode);
+  const payload = publicPayload(parseUniqueJson(bytes.toString('utf8')), mode);
   const hash = createHash('sha256').update(bytes).digest('hex');
   let approval = null;
   if (values.mode === 'recorded')
@@ -70,6 +72,8 @@ try {
   console.log(`Showcase ${values.mode}: ${outDir}\nPublic payload SHA-256: ${hash}`);
 } catch (error) {
   await rm(outDir, { recursive: true, force: true });
-  console.error(`Showcase build refused: ${error.message}`);
+  console.error(
+    `Showcase build refused: ${error instanceof Error ? error.message : String(error)}`
+  );
   process.exitCode = 1;
 }

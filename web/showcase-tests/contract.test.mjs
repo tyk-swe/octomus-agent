@@ -9,10 +9,25 @@ import { publicPayload, publicApproval } from '../showcase/contract.mjs';
 import { parseUniqueJson } from '../scripts/public-json.mjs';
 
 const example = JSON.parse(
-  readFileSync(new URL('../showcase/synthetic.public.json', import.meta.url))
+  readFileSync(new URL('../showcase/synthetic.public.json', import.meta.url), 'utf8')
 );
 const fresh = () => structuredClone(example);
+
+/**
+ * Each mutation deliberately violates the contract, so the payload is typed
+ * loosely on purpose: the point is that the validator rejects every one.
+ * @param {((payload: any) => unknown)[]} changes
+ */
+function rejectsEach(changes) {
+  for (const change of changes) {
+    const value = fresh();
+    change(value);
+    assert.throws(() => publicPayload(value, 'fixture'));
+  }
+}
+/** @param {string} bytes */
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+/** @param {string} bytes */
 const approval = (bytes) => ({
   approval_schema_version: 1,
   owner_reviewed: true,
@@ -68,20 +83,16 @@ test('unknown free-form statuses and decisions remain verbatim; normative states
   p.evidence.cycle.planning.decisions = { accepted: 2, rejected: 1, 'future-decision': 1 };
   p.evidence.proposals[0].linked_tasks[0].sessions[0].status = 'future-session-status';
   assert.deepEqual(publicPayload(p, 'fixture'), p);
-  for (const change of [
+  rejectsEach([
     (p) => (p.evidence.proposals[0].linked_tasks[0].status = 'merged'),
     (p) => (p.evidence.proposals[0].reviewer_verdicts[0].state = 'future-state'),
     (p) => (p.evidence.proposals[0].linked_tasks[0].required_commands.commands[0].state = 'green')
-  ]) {
-    const value = fresh();
-    change(value);
-    assert.throws(() => publicPayload(value, 'fixture'));
-  }
+  ]);
 });
 test('malformed, unsupported and unallowlisted data fail closed', () => {
   for (const value of [null, [], {}, example.evidence, { ...fresh(), public_schema_version: 2 }])
     assert.throws(() => publicPayload(value, 'fixture'));
-  for (const change of [
+  rejectsEach([
     (p) => (p.evidence.schema_version = 2),
     (p) => (p.evidence.review_required_before_sharing = false),
     (p) => (p.evidence.review_requirement = 'Approved!'),
@@ -94,14 +105,10 @@ test('malformed, unsupported and unallowlisted data fail closed', () => {
     (p) =>
       (p.evidence.proposals[0].linked_tasks[0].required_commands.commands[0].latest_success =
         'true')
-  ]) {
-    const value = fresh();
-    change(value);
-    assert.throws(() => publicPayload(value, 'fixture'));
-  }
+  ]);
 });
 test('contradictory summary facts, joins, revision claims and reviewer states are rejected', () => {
-  for (const change of [
+  rejectsEach([
     (p) => (p.evidence.cycle.planning.status = 'failed'),
     (p) => (p.evidence.cycle.planning.planning_finished = false),
     (p) => (p.evidence.cycle.planning.proposal_count = 0),
@@ -128,11 +135,7 @@ test('contradictory summary facts, joins, revision claims and reviewer states ar
     (p) =>
       (p.evidence.proposals[0].linked_tasks[0].required_commands.commands[0].latest_revision =
         'other')
-  ]) {
-    const value = fresh();
-    change(value);
-    assert.throws(() => publicPayload(value, 'fixture'));
-  }
+  ]);
 });
 test('audit, missing output, no reviews, unconfigured and incomplete checks keep RunEvidenceV1 semantics', () => {
   const p = fresh();
@@ -197,6 +200,7 @@ test('real CLI build modes, exact payload output, absent/mismatched approval and
   const input = resolve(dir, 'public.json'),
     owner = resolve(dir, 'approval.json');
   const out = resolve('../dist/showcase');
+  /** @param {...string} args */
   const run = (...args) =>
     spawnSync(process.execPath, ['scripts/build-showcase.mjs', ...args], { encoding: 'utf8' });
   try {

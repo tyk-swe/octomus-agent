@@ -13,8 +13,11 @@ export const LIMITATIONS = [
   "Zero or multiple task matches are preserved as recorded. No single task is selected on the caller's behalf.",
   'Free text carried here (proposal problem, benefit, scope and evidence, and code-review findings) is model-authored and still requires manual review before sharing.'
 ];
+/** @param {any} schema */
 const nullable = (schema) => ({ nullable: schema });
+/** @param {any} schema */
 const optional = (schema) => ({ optional: schema });
+/** @param {...any} values */
 const choices = (...values) => ({ choices: values });
 const texts = ['string'];
 const verdict = {
@@ -153,10 +156,22 @@ const schema = {
     ]
   }
 };
+/**
+ * @param {unknown} condition
+ * @param {string} path
+ */
 function requireFact(condition, path) {
   if (!condition) throw new Error(`Unsupported or inconsistent public input: ${path}`);
 }
 // Construct only allowlisted keys. Reject extras instead of silently dropping private or adverse data.
+/**
+ * Input arrives untrusted and unshaped, so it is typed as `any` on purpose:
+ * the shape table below, not the type system, decides what may be carried.
+ * @param {any} value
+ * @param {any} shape
+ * @param {string} path
+ * @returns {any}
+ */
 function project(value, shape, path) {
   if (typeof shape === 'string') {
     requireFact(
@@ -167,7 +182,9 @@ function project(value, shape, path) {
   }
   if (Array.isArray(shape)) {
     requireFact(Array.isArray(value), path);
-    return value.map((item, i) => project(item, shape[0], `${path}[${i}]`));
+    return value.map((/** @type {any} */ item, /** @type {number} */ i) =>
+      project(item, shape[0], `${path}[${i}]`)
+    );
   }
   if ('nullable' in shape) return value === null ? null : project(value, shape.nullable, path);
   if ('optional' in shape)
@@ -192,6 +209,10 @@ function project(value, shape, path) {
     })
   );
 }
+/**
+ * @param {any} value
+ * @param {string} mode
+ */
 export function publicPayload(value, mode) {
   const payload = project(value, schema, 'payload');
   requireFact(payload.mode === mode, 'mode must match the explicit build mode');
@@ -210,9 +231,9 @@ export function publicPayload(value, mode) {
     'planning facts'
   );
   const counts = Object.fromEntries(
-    [...new Set(run.proposals.map((p) => p.final_decision))].map((d) => [
+    [...new Set(run.proposals.map((/** @type {any} */ p) => p.final_decision))].map((d) => [
       d,
-      run.proposals.filter((p) => p.final_decision === d).length
+      run.proposals.filter((/** @type {any} */ p) => p.final_decision === d).length
     ])
   );
   requireFact(
@@ -240,6 +261,7 @@ export function publicPayload(value, mode) {
       const review = t.latest_review,
         latest = review.latest,
         output = t.revisions.output;
+      /** @param {string | null} revision */
       const matches = (revision) => (output === null ? null : output === revision);
       requireFact((review.rounds_recorded === 0) === (latest === null), 'latest review count');
       requireFact(
@@ -294,13 +316,18 @@ export function publicPayload(value, mode) {
       }
       requireFact(
         checks.all_passed_at_output_revision ===
-          (checks.commands.length > 0 && checks.commands.every((c) => c.state === 'passed')),
+          (checks.commands.length > 0 &&
+            checks.commands.every((/** @type {any} */ c) => c.state === 'passed')),
         'aggregate checks'
       );
     }
   }
   return payload;
 }
+/**
+ * @param {any} value
+ * @param {string} hash
+ */
 export function publicApproval(value, hash) {
   const approval = project(
     value,
