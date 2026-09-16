@@ -288,11 +288,7 @@ impl App {
         self.runtime()
             .checked_cycles
             .retain(|id| tasks.iter().any(|t| &t.cycle_id == id));
-        let (active, cycle_active) = {
-            let rt = self.runtime();
-            (rt.tasks.len(), rt.cycle.is_some())
-        };
-        if cycle_active {
+        if self.runtime().cycle.is_some() {
             return Ok(());
         }
         if let Some(batch) = &control.batch {
@@ -312,7 +308,21 @@ impl App {
                 return Ok(());
             }
         }
-        let mut slots = c.execution_concurrency.saturating_sub(active);
+        self.dispatch_queued(&control, &c, &tasks)?;
+        self.maybe_launch_cycle(&mut control, &c)?;
+        Ok(())
+    }
+    /// Queued tasks belong to the current batch's dispatch round: without a batch every
+    /// queued task is eligible, with one only its members are.
+    fn queued_in_batch(t: &Task, batch: Option<&RunBatch>) -> bool {
+        t.status == Status::Queued
+            && batch.is_none_or(|b| t.run_id.as_deref() == Some(b.id.as_str()))
+    }
+    /// Starts queued tasks up to the concurrency slot and branch-writer limits.
+    fn dispatch_queued(&self, control: &Control, c: &Config, tasks: &[Task]) -> Result<()> {
+        let mut slots = c
+            .execution_concurrency
+            .saturating_sub(self.runtime().tasks.len());
         let mut occupied: HashSet<String> = tasks
             .iter()
             .filter(|t| t.status.active())
@@ -321,13 +331,10 @@ impl App {
             .collect();
         let fresh_inventory = self.collect_pr_refresh();
         let mut unreserved_new = false;
-        for t in tasks.iter().filter(|t| {
-            t.status == Status::Queued
-                && control
-                    .batch
-                    .as_ref()
-                    .is_none_or(|b| t.run_id.as_deref() == Some(&b.id))
-        }) {
+        for t in tasks
+            .iter()
+            .filter(|t| Self::queued_in_batch(t, control.batch.as_ref()))
+        {
             if t.proposal.target == t.config.default_branch
                 && t.output_commit.is_none()
                 && !self.store.has_pr_reservation(&t.id)?
@@ -337,17 +344,11 @@ impl App {
             }
         }
         if slots > 0 && unreserved_new && fresh_inventory.is_none() {
-            self.schedule_pr_refresh(&c)?;
+            self.schedule_pr_refresh(c)?;
         }
         for mut task in tasks
             .iter()
-            .filter(|t| {
-                t.status == Status::Queued
-                    && control
-                        .batch
-                        .as_ref()
-                        .is_none_or(|b| t.run_id.as_deref() == Some(&b.id))
-            })
+            .filter(|t| Self::queued_in_batch(t, control.batch.as_ref()))
             .cloned()
         {
             if slots == 0 {
@@ -424,6 +425,11 @@ impl App {
             let app = self.clone();
             tokio::spawn(execution::supervise(app, task, cancel));
         }
+        Ok(())
+    }
+    /// When the queue has drained and the interval has elapsed, starts the next
+    /// planning cycle; RunOnce batches launch only from the draining phase.
+    fn maybe_launch_cycle(&self, control: &mut Control, c: &Config) -> Result<()> {
         let busy = {
             let rt = self.runtime();
             !rt.tasks.is_empty() || rt.cycle.is_some()
@@ -440,13 +446,13 @@ impl App {
                 if control.mode == OperatingMode::RunOnce {
                     control.error = Some(capacity.message());
                     control.set_mode(OperatingMode::Paused);
-                    self.store.save_control(&control)?;
+                    self.store.save_control(control)?;
                     self.store
                         .event("system", "planning_capacity", &capacity.message())?;
                 }
                 return Ok(());
             }
-            self.launch_cycle(&c, CycleMode::Execution, &mut control)?;
+            self.launch_cycle(c, CycleMode::Execution, control)?;
         }
         Ok(())
     }

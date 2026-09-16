@@ -1,6 +1,6 @@
 use super::App;
 use crate::process::Deadline;
-use crate::{git, model::*, runner::Runners, schemas, store::redact};
+use crate::{config::Config, git, model::*, runner::Runners, schemas, store::redact};
 use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,9 +13,7 @@ impl App {
         task.blocked_reason = None;
         self.save_task(task)?;
         if task.output_commit.is_some() {
-            self.transition(task, Status::Publishing)?;
-            let p = git::publish(task, cancel).await?;
-            return self.published(task, p);
+            return self.publish_reviewed(task, cancel).await;
         }
         self.retry_preflight(task, cancel).await?;
         let mut client = Runners::new(&config, self.store.clone(), &task.id, cancel.clone());
@@ -77,9 +75,7 @@ impl App {
                         );
                     }
                     task.output_commit = Some(revision);
-                    self.transition(task, Status::Publishing)?;
-                    let p = git::publish(task, cancel).await?;
-                    return self.published(task, p);
+                    return self.publish_reviewed(task, cancel).await;
                 }
             }
             ensure!(
@@ -100,6 +96,39 @@ impl App {
                 .await?;
         }
     }
+    /// The shared publication tail once a task's output is recorded: transition,
+    /// publish, record.
+    async fn publish_reviewed(&self, task: &mut Task, cancel: &CancellationToken) -> Result<()> {
+        self.transition(task, Status::Publishing)?;
+        let p = git::publish(task, cancel).await?;
+        self.published(task, p)
+    }
+    /// A dependency that is recorded published; anything else blocks the dependent.
+    fn published_dependency(&self, id: &str) -> Result<Task> {
+        let dependency: Task = self
+            .store
+            .get("task", id)?
+            .context(BlockedReason::DependencyBlocked)?;
+        ensure!(
+            dependency.status == Status::Published,
+            BlockedReason::DependencyBlocked
+        );
+        Ok(dependency)
+    }
+    /// The recorded workspace must still sit cleanly at `revision`; anything else
+    /// means recorded evidence does not describe the current tree.
+    async fn ensure_workspace_at(
+        config: &Config,
+        workspace: &Path,
+        revision: &str,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        ensure!(
+            git::at(config, workspace, revision, cancel).await?,
+            BlockedReason::WorkspaceInvalid
+        );
+        Ok(())
+    }
     pub async fn retry_preflight(&self, task: &Task, cancel: &CancellationToken) -> Result<()> {
         let c = task.execution_config();
         ensure!(
@@ -114,14 +143,7 @@ impl App {
         let source = git::remote_revision(&c, &task.proposal.target, cancel).await?;
         let mut authorized = source.as_deref() == Some(&task.source_revision);
         for id in &task.proposal.dependencies {
-            let dependency: Task = self
-                .store
-                .get("task", id)?
-                .context(BlockedReason::DependencyBlocked)?;
-            ensure!(
-                dependency.status == Status::Published,
-                BlockedReason::DependencyBlocked
-            );
+            let dependency = self.published_dependency(id)?;
             if task.execution_session.is_none() && source == dependency.output_commit {
                 authorized = true;
             }
@@ -150,13 +172,9 @@ impl App {
         if current != task.source_revision {
             let mut dependency_outputs = Vec::new();
             for identity in &task.proposal.dependencies {
-                let dependency: Task = self
-                    .store
-                    .get("task", identity)?
-                    .context(BlockedReason::DependencyBlocked)?;
+                let dependency = self.published_dependency(identity)?;
                 ensure!(
-                    dependency.status == Status::Published
-                        && dependency.branch == task.proposal.target,
+                    dependency.branch == task.proposal.target,
                     BlockedReason::DependencyBlocked
                 );
                 dependency_outputs.push(
@@ -228,10 +246,7 @@ impl App {
                     && workspace.join(".git").exists(),
                 BlockedReason::WorkspaceInvalid
             );
-            ensure!(
-                git::at(&config, &workspace, &task.source_revision, cancel).await?,
-                BlockedReason::WorkspaceInvalid
-            );
+            Self::ensure_workspace_at(&config, &workspace, &task.source_revision, cancel).await?;
         }
         let session = client.start(&task.route, &workspace, None).await?;
         task.execution_session = Some(session.clone());
@@ -328,10 +343,7 @@ impl App {
             review.completed && !review.summary.trim().is_empty(),
             BlockedReason::InvalidReview
         );
-        ensure!(
-            git::at(&config, &workspace, revision, cancel).await?,
-            BlockedReason::WorkspaceInvalid
-        );
+        Self::ensure_workspace_at(&config, &workspace, revision, cancel).await?;
         session_mut(task, &thread, "reviewer")?.mark_completed(redact(&review.summary));
         task.reviews.push(ReviewRound {
             session_id: thread,
@@ -358,10 +370,7 @@ impl App {
         let workspace = PathBuf::from(&task.workspace);
         let mut verification_errors = Vec::new();
         self.transition(task, Status::Verifying)?;
-        ensure!(
-            git::at(&config, &workspace, revision, cancel).await?,
-            BlockedReason::WorkspaceInvalid
-        );
+        Self::ensure_workspace_at(&config, &workspace, revision, cancel).await?;
         for command in &config.verification_commands {
             let result = crate::process::run(
                 "bash",
