@@ -126,10 +126,7 @@ pub async fn run_check_command(
 
 impl App {
     fn baseline_cancelled(&self, id: &str) -> Result<bool> {
-        Ok(self
-            .store
-            .get::<Value>("baseline_cancel", id)?
-            .is_some_and(|v| !v.is_null()))
+        self.store.marker_set("baseline_cancel", id)
     }
     pub async fn observe_default_branch(
         &self,
@@ -428,9 +425,7 @@ impl App {
         let measured = tokio::task::spawn_blocking(move || directory_size(&dir)).await??;
         ensure!(
             measured < c.max_workspace_bytes,
-            anyhow::Error::new(BlockedReason::StorageLimit).context(format!(
-                "Workspace storage limit reached ({measured} bytes). Resolve retained tasks or increase the limit"
-            ))
+            crate::store::storage_limit_error(measured)
         );
         git::validate_remote(&c, cancel).await?;
         let observed_at = now();

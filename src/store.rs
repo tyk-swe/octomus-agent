@@ -86,12 +86,7 @@ impl Store {
         Ok(Self(Arc::new(Mutex::new(c))))
     }
     pub fn put<T: Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO records VALUES (?1,?2,?3)
-             ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
-            params![kind, id, serde_json::to_string(value)?],
-        )?;
-        Ok(())
+        tx_put(&self.conn(), kind, id, value)
     }
     /// Persists the operator control record; the single durable scheduling state.
     pub fn save_control(&self, control: &crate::model::Control) -> Result<()> {
@@ -105,6 +100,13 @@ impl Store {
     /// this kind, so its final save cannot clobber the intent.
     pub fn mark_cancel(&self, id: &str) -> Result<()> {
         self.put("cancel", id, &serde_json::json!(crate::model::now()))
+    }
+    /// Whether an operator marker is set. Clearing writes a JSON null rather than
+    /// deleting the row, so a present row is not enough.
+    pub fn marker_set(&self, kind: &str, id: &str) -> Result<bool> {
+        Ok(self
+            .get::<serde_json::Value>(kind, id)?
+            .is_some_and(|v| !v.is_null()))
     }
     pub fn commit_plan(
         &self,
@@ -184,13 +186,7 @@ impl Store {
         Ok(())
     }
     pub fn get<T: DeserializeOwned>(&self, kind: &str, id: &str) -> Result<Option<T>> {
-        let c = self.conn();
-        let mut s = c.prepare("SELECT data FROM records WHERE kind=?1 AND id=?2")?;
-        let mut rows = s.query(params![kind, id])?;
-        Ok(match rows.next()? {
-            Some(r) => Some(serde_json::from_str(&r.get::<_, String>(0)?)?),
-            None => None,
-        })
+        tx_get(&self.conn(), kind, id)
     }
     pub fn list<T: DeserializeOwned>(&self, kind: &str) -> Result<Vec<T>> {
         let c = self.conn();
@@ -239,8 +235,7 @@ impl Store {
         let limit = config.max_sessions_per_day;
         anyhow::ensure!(limit > 0, "Daily session budget must be positive");
         if measured_bytes >= config.max_workspace_bytes {
-            return Err(anyhow::Error::new(crate::model::BlockedReason::StorageLimit)
-                .context(format!("Workspace storage limit reached ({measured_bytes} bytes). Resolve retained tasks or increase the limit")));
+            return Err(storage_limit_error(measured_bytes));
         }
         let changed = tx.execute(
             "INSERT INTO usage(day,sessions) VALUES (?1,1)
@@ -346,16 +341,7 @@ impl Store {
 /// Reads the live operator config inside a caller-owned transaction or connection.
 /// Defaults when none is stored, matching `Store::get` callers.
 pub(crate) fn stored_config(c: &Connection) -> Result<crate::config::Config> {
-    let data: Option<String> = c
-        .query_row(
-            "SELECT data FROM records WHERE kind='settings' AND id='config'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    data.map(|s| serde_json::from_str(&s).map_err(Into::into))
-        .transpose()
-        .map(|c| c.unwrap_or_default())
+    Ok(tx_get(c, "settings", "config")?.unwrap_or_default())
 }
 /// Reads one record inside a caller-owned transaction.
 pub(crate) fn tx_get<T: DeserializeOwned>(
@@ -399,6 +385,13 @@ fn update_lineage_task(
 /// message is built here rather than formatted at each site.
 pub fn error_message(error: &anyhow::Error) -> String {
     redact(&format!("{error:#}"))
+}
+/// The refusal an admission gets when the workspace already holds more bytes than
+/// the configured limit allows. Shared by task admission and the baseline check.
+pub fn storage_limit_error(measured_bytes: u64) -> anyhow::Error {
+    anyhow::Error::new(crate::model::BlockedReason::StorageLimit).context(format!(
+        "Workspace storage limit reached ({measured_bytes} bytes). Resolve retained tasks or increase the limit"
+    ))
 }
 pub fn redact(input: &str) -> String {
     use std::sync::LazyLock;

@@ -491,12 +491,7 @@ pub(super) async fn supervise(app: App, mut task: Task, cancel: CancellationToke
     if let Some(error) = error {
         task.error = Some(redact(&error));
         fail_running(&mut task.sessions, &redact(&error));
-        let operator_cancelled = app
-            .store
-            .get::<serde_json::Value>("cancel", &task.id)
-            .ok()
-            .flatten()
-            .is_some_and(|v| !v.is_null());
+        let operator_cancelled = app.store.marker_set("cancel", &task.id).unwrap_or(false);
         let status = if cancel.is_cancelled()
             && !timed_out
             && task.output_commit.is_none()

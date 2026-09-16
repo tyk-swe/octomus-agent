@@ -250,12 +250,13 @@ pub async fn bounded<F: Future>(
     what: &str,
     future: F,
 ) -> Result<F::Output> {
-    tokio::select! {
-        result = tokio::time::timeout(Duration::from_secs(seconds), future) => {
-            result.with_context(|| what.to_owned())
-        }
-        _ = cancel.cancelled() => bail!("Session cancelled"),
-    }
+    bounded_at(
+        tokio::time::Instant::now() + Duration::from_secs(seconds),
+        cancel,
+        what,
+        future,
+    )
+    .await
 }
 
 /// `bounded` against an absolute deadline.

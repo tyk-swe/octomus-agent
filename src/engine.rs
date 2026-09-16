@@ -138,11 +138,8 @@ impl App {
             interrupt_running(&mut task.sessions);
             // The marker only cancels work that never produced an output commit;
             // a task cancelled mid-publication keeps its commit for reconciliation.
-            let operator_cancelled = task.output_commit.is_none()
-                && self
-                    .store
-                    .get::<serde_json::Value>("cancel", &task.id)?
-                    .is_some_and(|v| !v.is_null());
+            let operator_cancelled =
+                task.output_commit.is_none() && self.store.marker_set("cancel", &task.id)?;
             if operator_cancelled {
                 task.status = Status::Cancelled;
                 task.error = Some("Operator cancellation preserved across restart".into());

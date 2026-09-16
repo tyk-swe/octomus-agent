@@ -26,6 +26,39 @@ fn reservation_rows(c: &Connection, repository: &str) -> Result<Vec<PrReservatio
     })?;
     rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
 }
+/// Records the admission reservation for a task that does not hold one yet.
+fn insert_reservation(
+    c: &Connection,
+    task_id: &str,
+    repository: &str,
+    branch: &str,
+    admitted_at: &str,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)",
+        params![task_id, repository, branch, admitted_at],
+    )?;
+    Ok(())
+}
+/// Seeds the reservation for a task that may already hold one.
+fn seed_reservation(
+    c: &Connection,
+    task_id: &str,
+    repository: &str,
+    branch: &str,
+    admitted_at: &str,
+) -> Result<()> {
+    c.execute(
+        "INSERT OR IGNORE INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)",
+        params![task_id, repository, branch, admitted_at],
+    )?;
+    Ok(())
+}
+/// Drops the reservation of a task that can no longer publish.
+fn release_reservation(c: &Connection, task_id: &str) -> Result<()> {
+    c.execute("DELETE FROM pr_reservations WHERE task_id=?1", [task_id])?;
+    Ok(())
+}
 
 fn saved_inventory(c: &Connection) -> Result<Option<OpenPrInventory>> {
     let data: Option<String> = c
@@ -89,16 +122,13 @@ impl Store {
             .collect()
     }
     pub fn seed_pr_reservation(&self, task: &Task) -> Result<()> {
-        self.conn().execute(
-            "INSERT OR IGNORE INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)",
-            params![
-                task.id,
-                task.config.github_repo.to_lowercase(),
-                task.branch,
-                now()
-            ],
-        )?;
-        Ok(())
+        seed_reservation(
+            &self.conn(),
+            &task.id,
+            &task.config.github_repo.to_lowercase(),
+            &task.branch,
+            &now(),
+        )
     }
     pub fn admit_new_pr_task(&self, task: &mut Task, inventory: &OpenPrInventory) -> Result<bool> {
         let mut c = self.conn();
@@ -136,14 +166,12 @@ impl Store {
         task.status = Status::Executing;
         task.updated_at = now();
         tx_put(&tx, "task", &task.id, task)?;
-        tx.execute(
-            "INSERT INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)",
-            params![
-                task.id,
-                config.github_repo.to_lowercase(),
-                task.branch,
-                now()
-            ],
+        insert_reservation(
+            &tx,
+            &task.id,
+            &config.github_repo.to_lowercase(),
+            &task.branch,
+            &now(),
         )?;
         tx.execute(
             "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,'status',?3)",
@@ -186,10 +214,7 @@ impl Store {
             .collect();
         for reservation in reservation_rows(&tx, &config.github_repo)? {
             if released.contains(&reservation.task_id) {
-                tx.execute(
-                    "DELETE FROM pr_reservations WHERE task_id=?1",
-                    [&reservation.task_id],
-                )?;
+                release_reservation(&tx, &reservation.task_id)?;
                 continue;
             }
             if represented.contains(reservation.branch.as_str()) {
@@ -202,10 +227,7 @@ impl Store {
                     .optional()?
                     .is_some();
                 if published {
-                    tx.execute(
-                        "DELETE FROM pr_reservations WHERE task_id=?1",
-                        [&reservation.task_id],
-                    )?;
+                    release_reservation(&tx, &reservation.task_id)?;
                 }
             }
         }
