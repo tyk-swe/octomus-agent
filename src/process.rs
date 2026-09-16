@@ -159,6 +159,18 @@ fn ensure_success(binary: &str, output: &ProcessOutput) -> Result<()> {
     }
     Ok(())
 }
+// Human-readable evidence: bounded stdout, with bounded stderr appended when present.
+pub(crate) fn diagnostic_text(binary: &str, output: &ProcessOutput) -> Result<String> {
+    ensure_success(binary, output)?;
+    let mut text = output.stdout.preview().trim().to_owned();
+    let stderr = output.stderr.preview();
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        text.push_str("\n[stderr]\n");
+        text.push_str(stderr);
+    }
+    Ok(text)
+}
 async fn checked(
     binary: &str,
     args: &[&str],
@@ -168,19 +180,8 @@ async fn checked(
     mode: CaptureMode,
 ) -> Result<String> {
     let output = capture(binary, args, cwd, seconds, cancel, mode).await?;
-    ensure_success(binary, &output)?;
     match mode {
-        // Human-readable evidence: bounded stdout, with bounded stderr appended when present.
-        CaptureMode::Diagnostic => {
-            let mut text = output.stdout.preview().trim().to_owned();
-            let stderr = output.stderr.preview();
-            let stderr = stderr.trim();
-            if !stderr.is_empty() {
-                text.push_str("\n[stderr]\n");
-                text.push_str(stderr);
-            }
-            Ok(text)
-        }
+        CaptureMode::Diagnostic => diagnostic_text(binary, &output),
         CaptureMode::Machine => {
             if output.stdout.truncated {
                 return Err(OutputTooLarge {

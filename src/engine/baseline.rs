@@ -67,11 +67,61 @@ pub fn command_output(captured: &Result<process::ProcessOutput>) -> (String, boo
         }
         Err(error) => (format!("{error:#}"), false, false),
     };
-    (
-        text.clone(),
-        truncated || text.chars().count() > 16384,
-        success,
+    // The middle flag reports capture-level truncation only; bounded_output
+    // measures and reports over-limit text itself, in the same byte unit.
+    (text.clone(), truncated, success)
+}
+/// One verification command's captured result plus the workspace-integrity
+/// check that follows it. `intact` carries the check's own failure so each
+/// caller decides whether it is evidence (baseline) or fatal (task
+/// verification).
+pub struct CheckOutcome {
+    pub captured: Result<process::ProcessOutput>,
+    pub intact: Result<bool>,
+}
+impl CheckOutcome {
+    /// The command-failure condition `process::run` reports as `Err`: a capture
+    /// failure or a nonzero exit.
+    pub fn failed(&self) -> bool {
+        !self.captured.as_ref().is_ok_and(|o| o.status.success())
+    }
+    /// The text `process::run` would have returned for this capture: bounded
+    /// diagnostic output on success, the error chain on failure.
+    pub fn output_text(&self) -> String {
+        match &self.captured {
+            Ok(output) => {
+                process::diagnostic_text("bash", output).unwrap_or_else(|e| format!("{e:#}"))
+            }
+            Err(e) => format!("{e:#}"),
+        }
+    }
+}
+/// Runs one `bash -o pipefail -c` verification command in `workspace`, then
+/// checks the workspace still sits at `revision`. The integrity read is skipped
+/// once `cancel` fires: it needs a live process and could only report the
+/// cancellation rather than the workspace state.
+pub async fn run_check_command(
+    config: &Config,
+    workspace: &Path,
+    command: &str,
+    revision: &str,
+    cancel: &CancellationToken,
+) -> CheckOutcome {
+    let captured = process::capture(
+        "bash",
+        &["-o", "pipefail", "-c", command],
+        workspace,
+        config.command_timeout_seconds,
+        cancel,
+        CaptureMode::Diagnostic,
     )
+    .await;
+    let intact = if cancel.is_cancelled() {
+        Ok(false)
+    } else {
+        git::at(config, workspace, revision, cancel).await
+    };
+    CheckOutcome { captured, intact }
 }
 
 impl App {
@@ -413,26 +463,19 @@ impl App {
         for command in &c.verification_commands {
             ensure!(!cancel.is_cancelled(), "Operation cancelled");
             ensure!(!self.baseline_cancelled(&check.id)?, "Operation cancelled");
-            let captured = process::capture(
-                "bash",
-                &["-o", "pipefail", "-c", command],
-                &workspace,
-                c.command_timeout_seconds,
-                cancel,
-                CaptureMode::Diagnostic,
-            )
-            .await;
-            let timed_out = captured
+            let outcome = run_check_command(&c, &workspace, command, &revision, cancel).await;
+            let timed_out = outcome
+                .captured
                 .as_ref()
                 .err()
                 .is_some_and(|e| e.downcast_ref::<tokio::time::error::Elapsed>().is_some());
-            let (mut text, diagnostic_truncated, mut success) = command_output(&captured);
+            let (mut text, diagnostic_truncated, mut success) = command_output(&outcome.captured);
             let mut failure = None;
             if cancel.is_cancelled() || self.baseline_cancelled(&check.id)? {
                 success = false;
                 failure = Some(anyhow::anyhow!("Operation cancelled"));
             } else {
-                match git::at(&c, &workspace, &revision, cancel).await {
+                match outcome.intact {
                     Ok(true) => {}
                     Ok(false) => {
                         success = false;

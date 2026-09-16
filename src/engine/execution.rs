@@ -1,4 +1,4 @@
-use super::App;
+use super::{App, baseline};
 use crate::process::Deadline;
 use crate::{config::Config, git, model::*, runner::Runners, schemas, store::redact};
 use anyhow::{Context, Result, ensure};
@@ -372,18 +372,12 @@ impl App {
         self.transition(task, Status::Verifying)?;
         Self::ensure_workspace_at(&config, &workspace, revision, cancel).await?;
         for command in &config.verification_commands {
-            let result = crate::process::run(
-                "bash",
-                &["-o", "pipefail", "-c", command],
-                &workspace,
-                config.command_timeout_seconds,
-                cancel,
-            )
-            .await;
+            let outcome =
+                baseline::run_check_command(&config, &workspace, command, revision, cancel).await;
             ensure!(!cancel.is_cancelled(), "Operation cancelled");
-            let intact = git::at(&config, &workspace, revision, cancel).await?;
-            let failed = result.is_err();
-            let mut output = result.unwrap_or_else(|e| format!("{e:#}"));
+            let failed = outcome.failed();
+            let mut output = outcome.output_text();
+            let intact = outcome.intact?;
             if !intact {
                 output.push_str("\nWorkspace or HEAD changed during this verification command");
             }
