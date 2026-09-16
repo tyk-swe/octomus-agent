@@ -63,8 +63,18 @@ impl Drop for ReconcileGuard<'_> {
 pub struct ApiError(pub StatusCode, pub String);
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
+        // Storage, encoding and worker failures are ours, not the operator's, so they
+        // must not be reported as a bad request. Deliberately excludes std::io::Error:
+        // a missing runner binary is operator configuration and belongs at 400.
+        let ours = e.chain().any(|cause| {
+            cause.is::<rusqlite::Error>()
+                || cause.is::<serde_json::Error>()
+                || cause.is::<tokio::task::JoinError>()
+        });
         // Typed task-state failures are conflicts; other errors stay 400.
-        let status = if BlockedReason::from_error(&e) != BlockedReason::Unknown {
+        let status = if ours {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else if BlockedReason::from_error(&e) != BlockedReason::Unknown {
             StatusCode::CONFLICT
         } else {
             StatusCode::BAD_REQUEST
@@ -316,10 +326,16 @@ async fn cycle_action(
             s.app.store.put("cycle", &id, &c)?;
         }
         "discard" if c.lifecycle.archived_at.is_some() => s.app.discard_cycle(&mut c).await?,
-        _ => {
+        "discard" => {
             return Err(ApiError(
                 StatusCode::CONFLICT,
                 "Archive the cycle before discarding its workspace".into(),
+            ));
+        }
+        _ => {
+            return Err(ApiError(
+                StatusCode::NOT_FOUND,
+                "Unknown cycle action".into(),
             ));
         }
     }

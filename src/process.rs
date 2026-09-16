@@ -16,8 +16,11 @@ impl GroupChild {
 }
 impl Drop for GroupChild {
     fn drop(&mut self) {
-        // Keep the original group ID even after wait() reaps the leader.
-        // This also terminates background descendants after normal completion.
+        // SAFETY: kill() with a negative PID signals a process group and is safe to
+        // call with any value; the worst outcome is ESRCH, which we ignore. The stored
+        // group ID is the one recorded at spawn, so it stays valid even after wait()
+        // reaps the leader. This also terminates background descendants after normal
+        // completion.
         unsafe {
             libc::kill(-(self.1 as i32), libc::SIGKILL);
         }

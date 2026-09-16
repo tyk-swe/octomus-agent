@@ -650,3 +650,53 @@ fn commit_plan_is_atomic_on_lineage_failure() {
         control
     );
 }
+
+/// An unrecognized cycle action must report 404, not the 409 that belongs to
+/// discarding a cycle nobody archived yet. Both paths shared one arm before.
+#[tokio::test]
+async fn unknown_cycle_actions_are_not_reported_as_archive_conflicts() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(&temp.path().join("state.db")).unwrap();
+    let t = task();
+    let mut c = cycle(&t);
+    c.status = "completed".into();
+    store.put("cycle", &c.id, &c).unwrap();
+    let app = App::new(store.clone(), temp.path().into());
+    let token = "cycle-action-fixture-token-at-least-32-characters";
+    let router = octomus_agent::api::router(app, token, None);
+    let call = |action: &'static str| {
+        let router = router.clone();
+        let id = c.id.clone();
+        async move {
+            let response = router
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/api/cycles/{id}/{action}"))
+                        .method("POST")
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            (status, serde_json::from_slice::<Value>(&body).unwrap())
+        }
+    };
+    let (status, body) = call("bogus").await;
+    assert_eq!(status, 404);
+    assert_eq!(body["error"], "Unknown cycle action");
+    // The conflict still belongs to discarding an unarchived cycle.
+    let (status, body) = call("discard").await;
+    assert_eq!(status, 409);
+    assert_eq!(
+        body["error"],
+        "Archive the cycle before discarding its workspace"
+    );
+    let (status, _) = call("archive").await;
+    assert_eq!(status, 200);
+}

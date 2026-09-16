@@ -708,7 +708,9 @@ async fn existing_cycle_action_routes_are_preserved() {
     assert_eq!(action("archive").await.unwrap().status(), StatusCode::OK);
     let archived: Cycle = store.get("cycle", "cycle-a").unwrap().unwrap();
     assert!(archived.lifecycle.archived_at.is_some());
-    // Cycle detail and the unchanged action conflict path still behave as before.
+    // Cycle detail and the action route still behave as before. An unknown
+    // action reports 404; the 409 belongs to discarding an unarchived cycle,
+    // which tests/review_regressions.rs covers.
     let detail = router
         .clone()
         .oneshot(
@@ -723,7 +725,7 @@ async fn existing_cycle_action_routes_are_preserved() {
     assert_eq!(detail.status(), StatusCode::OK);
     assert_eq!(
         action("bogus").await.unwrap().status(),
-        StatusCode::CONFLICT
+        StatusCode::NOT_FOUND
     );
 }
 
