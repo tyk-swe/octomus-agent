@@ -5,6 +5,15 @@ use serde_json::Value;
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
+/// The UTC calendar day (`%F`) containing `at`. Daily admission budgets bucket by
+/// this day, so every site derives it identically.
+pub fn utc_day(at: impl Into<chrono::DateTime<chrono::Utc>>) -> String {
+    at.into().format("%F").to_string()
+}
+/// Today's UTC day.
+pub fn today() -> String {
+    utc_day(chrono::Utc::now())
+}
 pub fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }

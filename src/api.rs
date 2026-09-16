@@ -520,7 +520,7 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
         }
         _ => return Err(ApiError(StatusCode::NOT_FOUND, "Unknown control".into())),
     }
-    s.app.store.put("settings", "control", &c)?;
+    s.app.store.save_control(&c)?;
     s.app.store.event("system", "operator", &action)?;
     let mut body = json!(c);
     if action == "resume" {
@@ -639,14 +639,14 @@ async fn task_action(
                 "attempt_policy",
                 &serde_json::to_string(&t.attempt_policy).map_err(anyhow::Error::from)?,
             )?;
-            s.app.store.put("cancel", &id, &json!(null))?;
+            s.app.store.clear_cancel(&id)?;
             s.app.save_task(&mut t)?;
         }
         "supersede" => {
             t.status = Status::Cancelled;
             t.rediscovery_requested = true;
             t.rediscovery_result = None;
-            s.app.store.put("cancel", &id, &json!(null))?;
+            s.app.store.clear_cancel(&id)?;
             s.app.save_task(&mut t)?;
         }
         "archive" => {
@@ -672,7 +672,7 @@ async fn task_action(
             }
             if t.output_commit.is_some() {
                 // Reconciliation revives the task; the operator-cancel marker is spent.
-                s.app.store.put("cancel", &id, &json!(null))?;
+                s.app.store.clear_cancel(&id)?;
                 let previous_status = t.status.clone();
                 s.app.transition(&mut t, Status::Publishing)?;
                 let cancel = s.app.shutdown.child_token();
@@ -745,7 +745,7 @@ async fn task_action(
                         t.error = Some(error_message(&error));
                     }
                 }
-                s.app.store.put("cancel", &id, &json!(null))?;
+                s.app.store.clear_cancel(&id)?;
                 s.app.save_task(&mut t)?;
             }
         }

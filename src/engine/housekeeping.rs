@@ -277,7 +277,7 @@ impl App {
             control.idle_streak = 0;
         }
         control.context_fingerprint = fingerprint;
-        self.store.put("settings", "control", &control)
+        self.store.save_control(&control)
     }
 }
 pub(super) fn context_fingerprint(revision: &str, prs: &[PullRequest]) -> String {

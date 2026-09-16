@@ -311,18 +311,15 @@ impl Store {
         control.error = None;
         control.next_cycle_at = 0;
         tx.execute("UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)",[id])?;
-        tx.execute("INSERT INTO records VALUES ('settings','control',?1) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",[serde_json::to_string(control)?])?;
+        tx_put(&tx, "settings", "control", control)?;
         tx.commit()?;
         Ok(())
     }
     pub fn begin_cycle(&self, cycle: &Cycle, control: &Control) -> Result<()> {
         let mut c = self.conn();
         let tx = c.transaction()?;
-        tx.execute(
-            "INSERT INTO records VALUES ('cycle',?1,?2)",
-            params![cycle.id, serde_json::to_string(cycle)?],
-        )?;
-        tx.execute("INSERT INTO records VALUES ('settings','control',?1) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",[serde_json::to_string(control)?])?;
+        tx_put(&tx, "cycle", &cycle.id, cycle)?;
+        tx_put(&tx, "settings", "control", control)?;
         tx.commit()?;
         Ok(())
     }
@@ -418,7 +415,7 @@ impl Store {
         let sessions: i64 = tx
             .query_row(
                 "SELECT sessions FROM usage WHERE day=?1",
-                [chrono::Utc::now().format("%F").to_string()],
+                [crate::model::today()],
                 |r| r.get(0),
             )
             .optional()?

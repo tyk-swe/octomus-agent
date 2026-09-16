@@ -38,10 +38,7 @@ pub fn usage_report(path: &Path) -> Result<Value> {
     let mut cycle_counts = BTreeMap::<String, (u64, u64)>::new();
     let mut task_counts = BTreeMap::<String, u64>::new();
     for admission in &admissions {
-        let day = chrono::DateTime::parse_from_rfc3339(&admission.at)?
-            .with_timezone(&chrono::Utc)
-            .format("%F")
-            .to_string();
+        let day = crate::model::utc_day(chrono::DateTime::parse_from_rfc3339(&admission.at)?);
         *daily_counts.entry(day).or_default() += 1;
         let counts = cycle_counts.entry(admission.cycle_id.clone()).or_default();
         if let Some(task) = &admission.task_id {

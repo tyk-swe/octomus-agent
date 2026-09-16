@@ -93,6 +93,14 @@ impl Store {
         )?;
         Ok(())
     }
+    /// Persists the operator control record; the single durable scheduling state.
+    pub fn save_control(&self, control: &crate::model::Control) -> Result<()> {
+        self.put("settings", "control", control)
+    }
+    /// Clears an operator-cancel marker without touching the task record.
+    pub fn clear_cancel(&self, id: &str) -> Result<()> {
+        self.put("cancel", id, &serde_json::Value::Null)
+    }
     pub fn commit_plan(
         &self,
         cycle: &crate::model::Cycle,
@@ -100,120 +108,71 @@ impl Store {
     ) -> Result<()> {
         let mut connection = self.conn();
         let transaction = connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO records VALUES ('cycle',?1,?2)
-             ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
-            params![cycle.id, serde_json::to_string(cycle)?],
-        )?;
+        tx_put(&transaction, "cycle", &cycle.id, cycle)?;
         for task in tasks {
-            transaction.execute(
-                "INSERT INTO records VALUES ('task',?1,?2)",
-                params![task.id, serde_json::to_string(task)?],
-            )?;
+            tx_put(&transaction, "task", &task.id, task)?;
         }
-        let saved: Option<String> = transaction
-            .query_row(
-                "SELECT data FROM records WHERE kind='settings' AND id='control'",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(saved) = saved {
-            let mut control: crate::model::Control = serde_json::from_str(&saved)?;
-            if let Some(batch) = &mut control.batch
-                && cycle.run_id.as_deref() == Some(&batch.id)
-                && batch.cycle_id.as_deref() == Some(&cycle.id)
-            {
-                batch.phase = crate::model::BatchPhase::Executing;
-                transaction.execute(
-                    "UPDATE records SET data=?1 WHERE kind='settings' AND id='control'",
-                    [serde_json::to_string(&control)?],
-                )?;
-            }
+        if let Some(mut control) =
+            tx_get::<crate::model::Control>(&transaction, "settings", "control")?
+            && let Some(batch) = &mut control.batch
+            && cycle.run_id.as_deref() == Some(&batch.id)
+            && batch.cycle_id.as_deref() == Some(&cycle.id)
+        {
+            batch.phase = crate::model::BatchPhase::Executing;
+            tx_put(&transaction, "settings", "control", &control)?;
         }
         for task in tasks {
             for old_id in &task.supersedes {
-                let data: String = transaction
-                    .query_row(
-                        "SELECT data FROM records WHERE kind='task' AND id=?1",
-                        [old_id],
-                        |r| r.get(0),
-                    )
-                    .with_context(|| format!("Missing lineage task {old_id}"))?;
-                let mut old: crate::model::Task = serde_json::from_str(&data)?;
-                anyhow::ensure!(
-                    old.rediscovery_requested
-                        && old
-                            .config
-                            .github_repo
-                            .eq_ignore_ascii_case(&task.config.github_repo),
-                    "Invalid rediscovery lineage"
-                );
-                old.superseded_by.push(task.id.clone());
-                transaction.execute(
-                    "UPDATE records SET data=?1 WHERE kind='task' AND id=?2",
-                    params![serde_json::to_string(&old)?, old_id],
-                )?;
+                update_lineage_task(&transaction, old_id, |old| {
+                    anyhow::ensure!(
+                        old.rediscovery_requested
+                            && old
+                                .config
+                                .github_repo
+                                .eq_ignore_ascii_case(&task.config.github_repo),
+                        "Invalid rediscovery lineage"
+                    );
+                    old.superseded_by.push(task.id.clone());
+                    Ok(())
+                })?;
             }
         }
         for decision in &cycle.decision_memory {
             let id = decision["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing decision identity"))?;
-            transaction.execute(
-                "INSERT INTO records VALUES ('decision',?1,?2)
-                 ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
-                params![id, serde_json::to_string(decision)?],
-            )?;
+            tx_put(&transaction, "decision", id, decision)?;
         }
         if cycle.mode == crate::model::CycleMode::Execution {
             for proposal in &cycle.proposals {
                 for id in &proposal.reconsiders {
-                    let data: String = transaction
-                        .query_row(
-                            "SELECT data FROM records WHERE kind='task' AND id=?1",
-                            [id],
-                            |r| r.get(0),
-                        )
-                        .with_context(|| format!("Missing lineage task {id}"))?;
-                    let mut old: crate::model::Task = serde_json::from_str(&data)?;
-                    anyhow::ensure!(
-                        old.rediscovery_requested
-                            && old.status == crate::model::Status::Cancelled
-                            && old
-                                .config
-                                .github_repo
-                                .eq_ignore_ascii_case(&cycle.repository)
-                            && old.proposal.target == proposal.target,
-                        "Rediscovery decisions must reference an eligible request in this repository and target"
-                    );
-                    old.rediscovery_requested = false;
-                    old.rediscovery_result =
-                        Some(format!("{}: {}", proposal.decision, proposal.reason));
-                    transaction.execute(
-                        "UPDATE records SET data=?1 WHERE kind='task' AND id=?2",
-                        params![serde_json::to_string(&old)?, id],
-                    )?;
+                    update_lineage_task(&transaction, id, |old| {
+                        anyhow::ensure!(
+                            old.rediscovery_requested
+                                && old.status == crate::model::Status::Cancelled
+                                && old
+                                    .config
+                                    .github_repo
+                                    .eq_ignore_ascii_case(&cycle.repository)
+                                && old.proposal.target == proposal.target,
+                            "Rediscovery decisions must reference an eligible request in this repository and target"
+                        );
+                        old.rediscovery_requested = false;
+                        old.rediscovery_result =
+                            Some(format!("{}: {}", proposal.decision, proposal.reason));
+                        Ok(())
+                    })?;
                 }
             }
-            let saved: Option<String> = transaction
-                .query_row(
-                    "SELECT data FROM records WHERE kind='settings' AND id='control'",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(saved) = saved {
-                let mut control: crate::model::Control = serde_json::from_str(&saved)?;
+            if let Some(mut control) =
+                tx_get::<crate::model::Control>(&transaction, "settings", "control")?
+            {
                 control.idle_streak = if tasks.is_empty() {
                     control.idle_streak.saturating_add(1)
                 } else {
                     0
                 };
-                transaction.execute(
-                    "UPDATE records SET data=?1 WHERE kind='settings' AND id='control'",
-                    [serde_json::to_string(&control)?],
-                )?;
+                tx_put(&transaction, "settings", "control", &control)?;
             }
         }
         transaction.commit()?;
@@ -266,24 +225,12 @@ impl Store {
     }
     pub fn reserve_session(&self, measured_bytes: u64, admission: &Admission) -> Result<()> {
         // Derive both timestamps from the same instant, including across UTC midnight.
-        let day = chrono::DateTime::parse_from_rfc3339(&admission.at)?
-            .with_timezone(&chrono::Utc)
-            .format("%F")
-            .to_string();
+        let day = crate::model::utc_day(chrono::DateTime::parse_from_rfc3339(&admission.at)?);
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         // Policy is read under the same write transaction as the reservation. Callers
         // cannot accidentally supply a queued task's historical admission limits.
-        let config: crate::config::Config = tx
-            .query_row(
-                "SELECT data FROM records WHERE kind='settings' AND id='config'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|s| serde_json::from_str(&s))
-            .transpose()?
-            .unwrap_or_default();
+        let config = stored_config(&tx)?;
         let limit = config.max_sessions_per_day;
         anyhow::ensure!(limit > 0, "Daily session budget must be positive");
         if measured_bytes >= config.max_workspace_bytes {
@@ -315,7 +262,7 @@ impl Store {
         let c = self.conn();
         Ok(c.query_row(
             "SELECT sessions FROM usage WHERE day=?1",
-            [chrono::Utc::now().format("%F").to_string()],
+            [crate::model::today()],
             |r| r.get::<_, i64>(0),
         )
         .optional()?
@@ -329,19 +276,10 @@ impl Store {
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<crate::model::PlanningCapacity> {
         use crate::model::{PlanningCapacity, PlanningCapacityStatus};
-        let day = at.format("%F").to_string();
+        let day = crate::model::utc_day(at);
         let mut c = self.conn();
         let tx = c.transaction()?;
-        let config: crate::config::Config = tx
-            .query_row(
-                "SELECT data FROM records WHERE kind='settings' AND id='config'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|s| serde_json::from_str(&s))
-            .transpose()?
-            .unwrap_or_default();
+        let config = stored_config(&tx)?;
         let used = tx
             .query_row("SELECT sessions FROM usage WHERE day=?1", [&day], |r| {
                 r.get::<_, i64>(0)
@@ -399,6 +337,57 @@ impl Store {
         c.busy_timeout(Duration::from_secs(5))?;
         Ok(c)
     }
+}
+/// Reads the live operator config inside a caller-owned transaction or connection.
+/// Defaults when none is stored, matching `Store::get` callers.
+pub(crate) fn stored_config(c: &Connection) -> Result<crate::config::Config> {
+    let data: Option<String> = c
+        .query_row(
+            "SELECT data FROM records WHERE kind='settings' AND id='config'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    data.map(|s| serde_json::from_str(&s).map_err(Into::into))
+        .transpose()
+        .map(|c| c.unwrap_or_default())
+}
+/// Reads one record inside a caller-owned transaction.
+pub(crate) fn tx_get<T: DeserializeOwned>(
+    tx: &Connection,
+    kind: &str,
+    id: &str,
+) -> Result<Option<T>> {
+    let data: Option<String> = tx
+        .query_row(
+            "SELECT data FROM records WHERE kind=?1 AND id=?2",
+            params![kind, id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    data.map(|s| serde_json::from_str(&s).map_err(Into::into))
+        .transpose()
+}
+/// Upserts one record inside a caller-owned transaction.
+pub(crate) fn tx_put<T: Serialize>(tx: &Connection, kind: &str, id: &str, value: &T) -> Result<()> {
+    tx.execute(
+        "INSERT INTO records VALUES (?1,?2,?3)
+         ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
+        params![kind, id, serde_json::to_string(value)?],
+    )?;
+    Ok(())
+}
+/// Reads a task inside the commit transaction, checks its lineage eligibility and
+/// writes the caller's mutation back, all-or-nothing with the plan.
+fn update_lineage_task(
+    tx: &Connection,
+    id: &str,
+    check: impl FnOnce(&mut crate::model::Task) -> Result<()>,
+) -> Result<()> {
+    let mut task: crate::model::Task =
+        tx_get(tx, "task", id)?.with_context(|| format!("Missing lineage task {id}"))?;
+    check(&mut task)?;
+    tx_put(tx, "task", id, &task)
 }
 /// An error rendered for an operator, with secrets scrubbed. Errors reach
 /// operators through saved records and API responses, so every stored error

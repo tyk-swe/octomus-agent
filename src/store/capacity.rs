@@ -1,5 +1,4 @@
-use super::Store;
-use crate::config::Config;
+use super::{Store, stored_config, tx_get, tx_put};
 use crate::model::{OpenPrInventory, Status, Task, now};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -26,20 +25,6 @@ fn reservation_rows(c: &Connection, repository: &str) -> Result<Vec<PrReservatio
         })
     })?;
     rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
-}
-
-fn live_config(c: &Connection) -> Result<Config> {
-    let data: Option<String> = c
-        .query_row(
-            "SELECT data FROM records WHERE kind='settings' AND id='config'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(match data {
-        Some(data) => serde_json::from_str(&data)?,
-        None => Config::default(),
-    })
 }
 
 fn saved_inventory(c: &Connection) -> Result<Option<OpenPrInventory>> {
@@ -121,7 +106,7 @@ impl Store {
     pub fn admit_new_pr_task(&self, task: &mut Task, inventory: &OpenPrInventory) -> Result<bool> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let config = live_config(&tx)?;
+        let config = stored_config(&tx)?;
         if !inventory
             .repository
             .eq_ignore_ascii_case(&config.github_repo)
@@ -134,26 +119,11 @@ impl Store {
             return Ok(false);
         }
         if task.proposal.target != task.config.default_branch
-            || task.config.repository != config.repository
-            || !task
-                .config
-                .github_repo
-                .eq_ignore_ascii_case(&config.github_repo)
-            || task.config.default_branch != config.default_branch
-            || task.config.branch_prefix != config.branch_prefix
+            || !crate::engine::PrIdentity::of(&task.config).matches(&config)
         {
             return Ok(false);
         }
-        let canonical: Option<Task> = tx
-            .query_row(
-                "SELECT data FROM records WHERE kind='task' AND id=?1",
-                [&task.id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|data| serde_json::from_str(&data))
-            .transpose()?;
-        let Some(canonical) = canonical else {
+        let Some(canonical): Option<Task> = tx_get(&tx, "task", &task.id)? else {
             return Ok(false);
         };
         if canonical.status != Status::Queued
@@ -168,10 +138,7 @@ impl Store {
         }
         task.status = Status::Executing;
         task.updated_at = now();
-        tx.execute(
-            "UPDATE records SET data=?1 WHERE kind='task' AND id=?2",
-            params![serde_json::to_string(&task)?, task.id],
-        )?;
+        tx_put(&tx, "task", &task.id, task)?;
         tx.execute(
             "INSERT INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)",
             params![
@@ -195,7 +162,7 @@ impl Store {
     ) -> Result<bool> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let config = live_config(&tx)?;
+        let config = stored_config(&tx)?;
         if !inventory
             .repository
             .eq_ignore_ascii_case(&config.github_repo)
@@ -213,10 +180,7 @@ impl Store {
                 return Ok(false);
             }
         }
-        tx.execute(
-            "INSERT INTO records(kind,id,data) VALUES ('settings','pr_inventory',?1) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
-            [serde_json::to_string(inventory)?],
-        )?;
+        tx_put(&tx, "settings", "pr_inventory", inventory)?;
         let represented: HashSet<&str> = inventory
             .prs
             .iter()

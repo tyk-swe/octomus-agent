@@ -170,7 +170,7 @@ impl App {
             control.set_mode(OperatingMode::Paused);
             control.error =
                 Some("One-shot planning was interrupted; incomplete work was not replayed".into());
-            self.store.put("settings", "control", &control)?;
+            self.store.save_control(&control)?;
         }
         Ok(())
     }
@@ -245,7 +245,7 @@ impl App {
                         if let Ok(mut control) = self.control() {
                             control.error = Some(redact(&message));
                             control.set_mode(OperatingMode::Paused);
-                            let _ = self.store.put("settings", "control", &control);
+                            let _ = self.store.save_control(&control);
                         }
                     }
                 }
@@ -308,7 +308,7 @@ impl App {
                         "Run once completed; new work paused"
                     },
                 )?;
-                self.store.put("settings", "control", &control)?;
+                self.store.save_control(&control)?;
                 return Ok(());
             }
         }
@@ -440,7 +440,7 @@ impl App {
                 if control.mode == OperatingMode::RunOnce {
                     control.error = Some(capacity.message());
                     control.set_mode(OperatingMode::Paused);
-                    self.store.put("settings", "control", &control)?;
+                    self.store.save_control(&control)?;
                     self.store
                         .event("system", "planning_capacity", &capacity.message())?;
                 }
@@ -528,7 +528,7 @@ impl App {
                         + idle_delay(config.cycle_interval_seconds, control.idle_streak) as i64;
                 }
             }
-            let _ = self.store.put("settings", "control", &control);
+            let _ = self.store.save_control(&control);
         }
         let mut runtime = self.runtime();
         runtime.cycle = None;
