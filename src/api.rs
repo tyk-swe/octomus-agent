@@ -89,8 +89,16 @@ impl From<anyhow::Error> for ApiError {
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.0, Json(json!({"error":self.1}))).into_response()
+        (self.0, Json(error_body(&self.1))).into_response()
     }
+}
+/// The acknowledgement every write endpoint returns unchanged.
+fn ok() -> Json<Value> {
+    Json(json!({"ok": true}))
+}
+/// The one error body shape the dashboard reads.
+fn error_body(message: &str) -> Value {
+    json!({"error": message})
 }
 fn not_found(message: &str) -> ApiError {
     ApiError(StatusCode::NOT_FOUND, message.into())
@@ -98,7 +106,22 @@ fn not_found(message: &str) -> ApiError {
 fn conflict(message: &str) -> ApiError {
     ApiError(StatusCode::CONFLICT, message.into())
 }
-type Result<T> = std::result::Result<T, ApiError>;
+type Result<T, E = ApiError> = std::result::Result<T, E>;
+fn task_record(app: &App, id: &str) -> Result<Task> {
+    app.store
+        .get("task", id)?
+        .ok_or_else(|| not_found("Task not found"))
+}
+fn cycle_record(app: &App, id: &str) -> Result<Cycle> {
+    app.store
+        .get("cycle", id)?
+        .ok_or_else(|| not_found("Cycle not found"))
+}
+/// Records why a running attempt stopped so the dashboard can explain the failure.
+fn record_error(task: &mut Task, error: &anyhow::Error) {
+    task.blocked_reason = Some(BlockedReason::from_error(error));
+    task.error = Some(error_message(error));
+}
 pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
     let state = Api {
         app,
@@ -126,12 +149,7 @@ pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
         .route("/doctor", post(doctor))
         .route("/model-catalog", post(model_catalog))
         .route("/events", get(events))
-        .fallback(|| async {
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error":"Unknown API route"})),
-            )
-        })
+        .fallback(|| async { (StatusCode::NOT_FOUND, Json(error_body("Unknown API route"))) })
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .with_state(state);
     let router = Router::new().nest("/api", api).route(
@@ -179,7 +197,7 @@ async fn authenticate(State(s): State<Api>, req: Request, next: Next) -> Respons
         tokio::time::sleep(delay).await;
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({"error":"Enter the operator access token to connect."})),
+            Json(error_body("Enter the operator access token to connect.")),
         )
             .into_response();
     }
@@ -192,7 +210,7 @@ async fn authenticate(State(s): State<Api>, req: Request, next: Next) -> Respons
     {
         return (
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Json(json!({"error":"Use application/json"})),
+            Json(error_body("Use application/json")),
         )
             .into_response();
     }
@@ -211,8 +229,17 @@ async fn authenticate(State(s): State<Api>, req: Request, next: Next) -> Respons
         }
         .await;
         return match sanitized {
-            Ok(body) => { parts.headers.remove("content-length"); Response::from_parts(parts, axum::body::Body::from(body)) },
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"Response exceeded the dashboard size limit or could not be encoded"}))).into_response()
+            Ok(body) => {
+                parts.headers.remove("content-length");
+                Response::from_parts(parts, axum::body::Body::from(body))
+            }
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_body(
+                    "Response exceeded the dashboard size limit or could not be encoded",
+                )),
+            )
+                .into_response(),
         };
     }
     response
@@ -307,11 +334,7 @@ async fn state_view(State(s): State<Api>) -> Result<Json<StateView>> {
     }))
 }
 async fn task(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
-    let task: Task = s
-        .app
-        .store
-        .get("task", &id)?
-        .ok_or_else(|| not_found("Task not found"))?;
+    let task: Task = task_record(&s.app, &id)?;
     let mut value = serde_json::to_value(&task).map_err(anyhow::Error::from)?;
     value["allowed_actions"] = json!(task.allowed_actions());
     value["effective_attempt_policy"] = json!(AttemptPolicy::from_config(&task.execution_config()));
@@ -352,7 +375,7 @@ async fn proposal_detail(
         s.app
             .store
             .proposal_detail(&cycle, &id)?
-            .ok_or(not_found("Proposal not found"))?,
+            .ok_or_else(|| not_found("Proposal not found"))?,
     ))
 }
 async fn pr_history(
@@ -362,16 +385,13 @@ async fn pr_history(
     history(&s, "pr", &q)
 }
 async fn cycle_detail(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Cycle>> {
-    Ok(Json(
-        s.app
-            .store
-            .get("cycle", &id)?
-            .ok_or_else(|| not_found("Cycle not found"))?,
-    ))
+    Ok(Json(cycle_record(&s.app, &id)?))
 }
 /// Recorded review and check evidence for one run, assembled from a single consistent
 /// database snapshot by the same assembler the CLI export uses. Read-only.
 async fn cycle_evidence(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
+    // The assembler already reports a missing cycle through the same 404 the other
+    // cycle endpoints use; looking the record up here would read it twice.
     Ok(Json(
         s.app
             .store
@@ -384,11 +404,7 @@ async fn cycle_action(
     Path((id, action)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
     let _gate = s.app.gate.lock().await;
-    let mut c: Cycle = s
-        .app
-        .store
-        .get("cycle", &id)?
-        .ok_or_else(|| not_found("Cycle not found"))?;
+    let mut c: Cycle = cycle_record(&s.app, &id)?;
     if c.status == crate::model::cycle_status::RUNNING {
         return Err(conflict("Wait for planning to finish"));
     }
@@ -408,7 +424,7 @@ async fn cycle_action(
         }
     }
     s.app.store.event(&id, "operator", &action)?;
-    Ok(Json(json!({"ok":true})))
+    Ok(ok())
 }
 async fn config(State(s): State<Api>) -> Result<Json<Config>> {
     Ok(Json(s.app.config()?))
@@ -423,10 +439,7 @@ async fn save_config(State(s): State<Api>, Json(c): Json<Config>) -> Result<Json
     }
     c.validate(false)?;
     let old = s.app.config()?;
-    if (old.repository != c.repository
-        || !old.github_repo.eq_ignore_ascii_case(&c.github_repo)
-        || old.branch_prefix != c.branch_prefix
-        || old.default_branch != c.default_branch)
+    if (!old.same_remote_identity(&c) || old.branch_prefix != c.branch_prefix)
         && s.app.store.has_unresolved_tasks()?
     {
         return Err(conflict(
@@ -439,7 +452,7 @@ async fn save_config(State(s): State<Api>, Json(c): Json<Config>) -> Result<Json
     s.app
         .store
         .event("system", "configuration", "Operator saved configuration")?;
-    Ok(Json(json!({"ok":true})))
+    Ok(ok())
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -476,7 +489,7 @@ async fn baseline_detail(State(s): State<Api>, Path(id): Path<String>) -> Result
 async fn baseline_cancel(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
     let _gate = s.app.gate.lock().await;
     s.app.cancel_baseline(&id).map_err(baseline_error)?;
-    Ok(Json(json!({"ok":true})))
+    Ok(ok())
 }
 async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Json<Value>> {
     let _gate = s.app.gate.lock().await;
@@ -536,10 +549,7 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
 }
 // Caller holds the scheduler gate, including when rechecking after remote work.
 fn eligible_task(app: &App, id: &str, action: &str) -> Result<Task> {
-    let t: Task = app
-        .store
-        .get("task", id)?
-        .ok_or_else(|| not_found("Task not found"))?;
+    let t: Task = task_record(app, id)?;
     if !t.allowed_actions().contains(&action) {
         return Err(conflict(
             "This action is not eligible for the task's recorded failure and workspace state",
@@ -609,8 +619,7 @@ async fn task_action(
                     ));
                 }
                 if let Err(error) = preflight {
-                    t.blocked_reason = Some(BlockedReason::from_error(&error));
-                    t.error = Some(error_message(&error));
+                    record_error(&mut t, &error);
                     s.app.save_task(&mut t)?;
                     return Err(error.into());
                 }
@@ -652,7 +661,7 @@ async fn task_action(
     }
     s.app.store.event(&id, "operator", &action)?;
     drop(gate);
-    Ok(Json(json!({"ok":true})))
+    Ok(ok())
 }
 /// Publication reconciliation runs the same publish path as task completion. The
 /// caller's gate stays held through eligibility, drops for remote work, and is
@@ -685,15 +694,12 @@ async fn reconcile_task(
                 t.blocked_reason = Some(BlockedReason::Unknown);
                 t.error = Some("Remote prerequisites are restored; task can be retried".into());
             }
-            Err(error) => {
-                t.blocked_reason = Some(BlockedReason::from_error(&error));
-                t.error = Some(error_message(&error));
-            }
+            Err(error) => record_error(&mut t, &error),
         }
         s.app.store.clear_cancel(id)?;
         s.app.save_task(&mut t)?;
         s.app.store.event(id, "operator", "reconcile")?;
-        return Ok(Json(json!({"ok":true})));
+        return Ok(ok());
     }
     // Reconciliation revives the task; the operator-cancel marker is spent.
     s.app.store.clear_cancel(id)?;
@@ -735,8 +741,7 @@ async fn reconcile_task(
             match published {
                 Ok(pr) => app.published(&mut t, pr)?,
                 Err(error) => {
-                    t.blocked_reason = Some(BlockedReason::from_error(&error));
-                    t.error = Some(error_message(&error));
+                    record_error(&mut t, &error);
                     app.transition(&mut t, previous_status)?;
                 }
             }
@@ -746,9 +751,9 @@ async fn reconcile_task(
     });
     drop(gate);
     work.await.map_err(anyhow::Error::from)??;
-    Ok(Json(json!({"ok":true})))
+    Ok(ok())
 }
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct DoctorQuery {
     #[serde(default)]
     mode: CycleMode,
@@ -760,7 +765,7 @@ async fn doctor(State(s): State<Api>, Query(q): Query<DoctorQuery>) -> Result<Re
         Ok(result) => (StatusCode::OK, result),
         Err(error) => {
             let ApiError(status, message) = error.into();
-            (status, json!({"error": message}))
+            (status, error_body(&message))
         }
     };
     result["checked_config"] = json!(config);
