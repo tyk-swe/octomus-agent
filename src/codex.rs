@@ -17,7 +17,13 @@ pub const TESTED_VERSION: &str = "0.153.4";
 
 pub fn version_warning(installed: &str) -> Option<String> {
     (installed.trim() != format!("codex-cli {TESTED_VERSION}")).then(|| {
-        format!("Codex version mismatch: installed {installed}; tested codex-cli {TESTED_VERSION}. Pin the tested CLI before live commissioning; protocol compatibility is unverified.")
+        crate::runner::version_warning(
+            Backend::Codex,
+            installed,
+            &format!(
+                "tested codex-cli {TESTED_VERSION}. Pin the tested CLI before live commissioning"
+            ),
+        )
     })
 }
 
@@ -72,6 +78,35 @@ impl Codex {
         s.rpc("initialize",json!({"clientInfo":{"name":"octomus_agent","title":"Octomus Agent","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false}})).await?;
         s.send(json!({"method":"initialized","params":{}})).await?;
         Ok(s)
+    }
+    /// Authentication state plus the installed CLI's version against the tested
+    /// baseline.
+    pub async fn diagnostics(
+        &mut self,
+        config: &Config,
+        cwd: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<Value> {
+        let account = self
+            .rpc("account/read", json!({"refreshToken":false}))
+            .await?;
+        ensure!(
+            account["requiresOpenaiAuth"] == false || !account["account"].is_null(),
+            "Codex authentication is missing; run codex login as the service user"
+        );
+        let version = crate::process::run_machine(
+            &config.codex_binary,
+            &["--version"],
+            cwd,
+            config.command_timeout_seconds.min(60),
+            cancel,
+        )
+        .await?
+        .trim()
+        .to_owned();
+        Ok(
+            json!({"backend":"codex","version":version,"protocol_version":TESTED_VERSION,"warning":version_warning(&version)}),
+        )
     }
     async fn send(&mut self, value: Value) -> Result<()> {
         let payload = format!("{value}\n");
@@ -195,7 +230,7 @@ impl Codex {
         cwd: &Path,
         resume: Option<&str>,
     ) -> Result<String> {
-        ensure!(route.backend == Backend::Codex, "Wrong runner for {route}");
+        route.require_backend(Backend::Codex)?;
         let mut params = json!({"model":route.model,"cwd":cwd,"approvalPolicy":"never","sandbox":"danger-full-access","config":{"model_reasoning_effort":route.effort},"developerInstructions":crate::runner::WORKER_INSTRUCTIONS});
         let method = if let Some(id) = resume {
             params["threadId"] = id.into();
@@ -234,7 +269,7 @@ impl Codex {
         prompt: &str,
         schema: Option<Value>,
     ) -> Result<String> {
-        ensure!(route.backend == Backend::Codex, "Wrong runner for {route}");
+        route.require_backend(Backend::Codex)?;
         let mut params = json!({"threadId":thread,"cwd":cwd,"model":route.model,"effort":route.effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"},"input":[{"type":"text","text":prompt,"text_elements":[]}]});
         if let Some(schema) = schema {
             params["outputSchema"] = schema;

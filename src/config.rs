@@ -102,6 +102,11 @@ impl Route {
         }
         Ok(())
     }
+    /// Backend-specific clients refuse routes meant for the other runner.
+    pub fn require_backend(&self, backend: Backend) -> Result<()> {
+        ensure!(self.backend == backend, "Wrong runner for {self}");
+        Ok(())
+    }
 }
 impl std::fmt::Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

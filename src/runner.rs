@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     path::Path,
@@ -18,6 +18,15 @@ pub const WORKER_INSTRUCTIONS: &str = "You are a worker controlled by Octomus. T
 
 /// Single protocol cap for runner payloads and event streams.
 pub(crate) const MAX_MESSAGE: usize = 16_000_000;
+
+/// One mismatch-warning shape for both backends; `expected` describes the pinned
+/// baseline and its pin advice, e.g. "protocol baseline 1.18.30. Pin the
+/// documented CLI".
+pub fn version_warning(backend: Backend, installed: &str, expected: &str) -> String {
+    format!(
+        "{backend} version mismatch: installed {installed}; {expected}; protocol compatibility is unverified."
+    )
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model {
@@ -99,6 +108,7 @@ impl Runner {
         cwd: &Path,
         resume: Option<&str>,
     ) -> Result<String> {
+        route.validate(true)?;
         match self {
             Self::Codex(client) => client.start(route, cwd, resume).await,
             Self::OpenCode(client) => client.start(route, cwd, resume).await,
@@ -112,6 +122,7 @@ impl Runner {
         prompt: &str,
         schema: Option<Value>,
     ) -> Result<String> {
+        route.validate(true)?;
         let answer = match self {
             Self::Codex(client) => {
                 client
@@ -140,31 +151,8 @@ impl Runner {
         cancel: &CancellationToken,
     ) -> Result<Value> {
         match self {
-            Self::Codex(client) => {
-                let account = client
-                    .rpc("account/read", json!({"refreshToken":false}))
-                    .await?;
-                ensure!(
-                    account["requiresOpenaiAuth"] == false || !account["account"].is_null(),
-                    "Codex authentication is missing; run codex login as the service user"
-                );
-                let version = crate::process::run_machine(
-                    &config.codex_binary,
-                    &["--version"],
-                    cwd,
-                    config.command_timeout_seconds.min(60),
-                    cancel,
-                )
-                .await?
-                .trim()
-                .to_owned();
-                Ok(
-                    json!({"backend":"codex","version":version,"protocol_version":crate::codex::TESTED_VERSION,"warning":crate::codex::version_warning(&version)}),
-                )
-            }
-            Self::OpenCode(client) => Ok(
-                json!({"backend":"opencode","version":client.version(),"protocol_version":crate::opencode::PROTOCOL_VERSION,"warning":crate::opencode::version_warning(client.version())}),
-            ),
+            Self::Codex(client) => client.diagnostics(config, cwd, cancel).await,
+            Self::OpenCode(client) => Ok(client.diagnostics()),
         }
     }
 }

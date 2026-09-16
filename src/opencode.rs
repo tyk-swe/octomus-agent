@@ -24,7 +24,13 @@ use tokio_util::{
 pub const PROTOCOL_VERSION: &str = "1.18.30";
 
 pub fn version_warning(version: &str) -> Option<String> {
-    (version != PROTOCOL_VERSION).then(|| format!("OpenCode version mismatch: installed {version}; protocol baseline {PROTOCOL_VERSION}. Pin the documented CLI; protocol compatibility is unverified."))
+    (version != PROTOCOL_VERSION).then(|| {
+        crate::runner::version_warning(
+            Backend::Opencode,
+            version,
+            &format!("protocol baseline {PROTOCOL_VERSION}. Pin the documented CLI"),
+        )
+    })
 }
 
 pub struct OpenCode {
@@ -169,6 +175,10 @@ impl OpenCode {
     pub fn version(&self) -> &str {
         &self.version
     }
+    /// Server version against the documented protocol baseline.
+    pub fn diagnostics(&self) -> Value {
+        json!({"backend":"opencode","version":self.version(),"protocol_version":PROTOCOL_VERSION,"warning":version_warning(self.version())})
+    }
 
     fn request(&self, method: Method, path: &str, cwd: &Path) -> reqwest::RequestBuilder {
         self.client
@@ -224,11 +234,7 @@ impl OpenCode {
         catalog(&value)
     }
     pub async fn start(&self, route: &Route, cwd: &Path, resume: Option<&str>) -> Result<String> {
-        route.validate(true)?;
-        ensure!(
-            route.backend == Backend::Opencode,
-            "Wrong runner for {route}"
-        );
+        route.require_backend(Backend::Opencode)?;
         let permissions = json!([
             {"permission":"*","pattern":"*","action":"allow"},
             {"permission":"question","pattern":"*","action":"deny"},
@@ -295,11 +301,7 @@ impl OpenCode {
         prompt: &str,
         schema: Option<Value>,
     ) -> Result<String> {
-        route.validate(true)?;
-        ensure!(
-            route.backend == Backend::Opencode,
-            "Wrong runner for {route}"
-        );
+        route.require_backend(Backend::Opencode)?;
         let path = format!("/session/{}", segment(session)?);
         let result = process::bounded(
             self.timeout,
