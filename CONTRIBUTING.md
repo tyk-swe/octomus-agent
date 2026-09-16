@@ -42,6 +42,13 @@ and `--export-run` examples on a synthetic database, and the showcase tests
 rendering. `tests/systemd.py` requires root on a disposable systemd
 VM and exercises the unit's write restrictions and child cleanup.
 
+Four checks run in CI rather than in `make test`, because each needs something a
+working copy does not have: `make package` followed by `tests/distribution.py
+--package`, which needs a real release build; `scripts/package-crate.sh` with
+`tests/crate.py`, which packages the crate and rebuilds it from the package;
+`tests/systemd.py`, which needs root; and `shellcheck`. Run any of them locally
+before changing packaging, the installer or the unit file.
+
 Dashboard regressions cover configuration drafts in tab memory, saved-configuration
 checks, keyboard navigation and list recovery. Keep drafts across view changes,
 clear them at session boundaries, and use entered executable paths for catalogs.

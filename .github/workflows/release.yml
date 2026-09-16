@@ -56,8 +56,6 @@ jobs:
         run: |
           ./scripts/package.sh "$RELEASE_TAG" "$RELEASE_TARGET" target/release/octomus-agent
           python3 tests/distribution.py --package "dist/octomus-agent-$RELEASE_TAG-$RELEASE_TARGET.tar.gz"
-          ./scripts/package-crate.sh
-          python3 tests/crate.py
       - uses: actions/upload-artifact@v4
         with:
           name: package-${{ matrix.target }}
