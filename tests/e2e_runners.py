@@ -8,7 +8,7 @@ import signal
 import sqlite3
 import tempfile
 
-from e2e import Service, setup, usage_report, git
+from e2e import Service, base_config, setup, usage_report, git
 
 
 def route(backend, planning=False, provider='fixture', variant='high'):
@@ -18,10 +18,7 @@ def route(backend, planning=False, provider='fixture', variant='high'):
 
 
 def configuration(service, planning='opencode', executor='opencode', reviewer='opencode', repair='opencode'):
-    c = service.request('/config')
-    c.update(repository=str(service.root / 'checkout'), github_repo='fixture/project',
-             verification_commands=['test "$(cat feature.txt)" = fixed'],
-             command_timeout_seconds=10, session_timeout_seconds=30, task_timeout_seconds=120)
+    c = base_config(service, ['test "$(cat feature.txt)" = fixed'], task_timeout_seconds=120)
     for role in ['orchestrator', 'discovery', 'proposal_reviewer']:
         c['roles'][role] = route(planning, planning=True)
     c['roles']['code_reviewer'] = route(reviewer)

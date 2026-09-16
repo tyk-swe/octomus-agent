@@ -15,10 +15,10 @@ import time
 from urllib.parse import parse_qs, unquote, urlparse
 import uuid
 
-from worker import respond
+from worker import mode as worker_mode, respond
 
 root = Path(os.environ['OCTOMUS_FIXTURE'])
-mode = lambda: (root / 'opencode-mode').read_text().strip() if (root / 'opencode-mode').exists() else ''
+mode = lambda: worker_mode('opencode')
 if sys.argv[1:] == ['--version']:
     print('1.18.30')
     sys.exit(0)

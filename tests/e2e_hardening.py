@@ -57,8 +57,12 @@ def run(mode):
                                 except urllib.error.HTTPError as e:
                                     assert e.code == 409
                             service.request('/control/resume', 'POST')
-                            time.sleep(1.1)
-                            state = service.request('/state')
+
+                            def resumed():
+                                state = service.request('/state')
+                                return state if state['active_tasks'] == 1 and not state['cycle_active'] else None
+
+                            state = service.wait(resumed, 'resumed publication')
                             assert state['active_tasks'] == 1 and not state['cycle_active']
                             service.request('/control/pause', 'POST')
                         finally:
@@ -120,9 +124,13 @@ def run(mode):
                 service.stop(crash=True)
                 (root / 'audit-hold').unlink()
                 service.start()
-                time.sleep(1.2)
-                state = service.request('/state')
-                assert state['control']['mode'] == 'paused' and state['cycles'][0]['status'] == 'interrupted'
+
+                def restored():
+                    state = service.request('/state')
+                    return state if state['control']['mode'] == 'paused' and state['cycles'] and state['cycles'][0]['status'] == 'interrupted' else None
+
+                state = service.wait(restored, 'interrupted cycle after restart')
+                assert state['control']['mode'] == 'paused'
                 assert not state['tasks'] and len(usage_report(root)['admissions']) == 1
                 return
             if mode in ['live-budget', 'stale-retry', 'supersede', 'obsolete', 'cancel-route']:

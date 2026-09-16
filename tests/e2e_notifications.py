@@ -8,9 +8,8 @@ import subprocess
 import tempfile
 import threading
 import time
-import urllib.request
 
-from e2e import BINARY, Service, setup
+from e2e import BINARY, Service, base_config, poll, setup
 from e2e_runners import configuration, stop_peers
 
 ENV = 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'
@@ -51,12 +50,9 @@ class Receiver:
             return list(self.requests)
 
     def wait(self, predicate, label, seconds=30):
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            found = predicate(self.events())
-            if found:
-                return found
-            time.sleep(0.1)
+        found = poll(lambda: predicate(self.events()), seconds)
+        if found:
+            return found
         raise AssertionError(f'{label} timed out: {self.events()}')
 
     def close(self):
@@ -149,8 +145,7 @@ def scenario(mode):
                 return
             if mode in ['env-strip', 'env-strip-opencode']:
                 service.start()
-                config = configuration(service) if mode == 'env-strip-opencode' else service.request('/config')
-                config.update(repository=str(root / 'checkout'), github_repo='fixture/project', cycle_interval_seconds=3600, verification_commands=[f'test -z "${{{ENV}+x}}"', 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], session_timeout_seconds=30, task_timeout_seconds=120, command_timeout_seconds=10)
+                config = configuration(service) if mode == 'env-strip-opencode' else base_config(service, [f'test -z "${{{ENV}+x}}"', 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], cycle_interval_seconds=3600, task_timeout_seconds=120)
                 if mode == 'env-strip':
                     codex = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
                     # Shipped tiers and repair carry effort but no model.

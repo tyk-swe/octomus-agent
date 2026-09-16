@@ -7,6 +7,11 @@ import time
 
 root = Path(os.environ['OCTOMUS_FIXTURE'])
 
+def mode(name):
+    """The recorded mode for one fixture peer; absent means unset."""
+    path = root / f'{name}-mode'
+    return path.read_text().strip() if path.exists() else ''
+
 def proposal():
     return {
         'id': 'd0-feature', 'title': 'Complete the fixture feature',

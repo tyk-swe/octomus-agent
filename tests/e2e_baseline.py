@@ -9,24 +9,16 @@ import sqlite3
 import subprocess
 import tempfile
 import time
-import urllib.error
-import urllib.request
 
-from e2e import TOKEN, Service, setup, usage_report
+from e2e import TOKEN, Service, base_config, poll, setup, usage_report
 
 
 def status(service, path, method='GET', value=None):
-    request = urllib.request.Request(f'http://127.0.0.1:{service.port}/api{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
-    try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            return response.status, json.load(response)
-    except urllib.error.HTTPError as error:
-        return error.code, json.loads(error.read() or b'{}')
+    return service.expect(path, method, value)
 
 
 def save_config(service, empty_models=False, **overrides):
-    config = service.request('/config')
-    config.update(repository=str(service.root / 'checkout'), github_repo='fixture/project', cycle_interval_seconds=3600, verification_commands=['true'], session_timeout_seconds=30, task_timeout_seconds=60, command_timeout_seconds=10)
+    config = base_config(service, ['true'], cycle_interval_seconds=3600, task_timeout_seconds=60)
     if empty_models:
         for role in config['roles']:
             config['roles'][role] = {'backend': 'codex', 'model': '', 'effort': ''}
@@ -34,8 +26,7 @@ def save_config(service, empty_models=False, **overrides):
             config['tiers'][tier] = {'model': '', 'effort': ''}
         config['repair_route'] = {'backend': 'codex', 'model': '', 'effort': ''}
     config.update(overrides)
-    service.request('/config', 'PUT', config)
-    return service.request('/config')
+    return service.save_config(config)
 
 
 def latest(service):
@@ -52,12 +43,9 @@ def wait_check(service, statuses, seconds=60, cleaned=False):
 
 
 def descendants_gone(pattern, seconds=10):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if subprocess.run(['pgrep', '-f', pattern], capture_output=True).returncode != 0:
-            return
-        time.sleep(0.2)
-    raise AssertionError(f'descendant still running: {pattern}')
+    gone = poll(lambda: subprocess.run(['pgrep', '-f', pattern], capture_output=True).returncode != 0, seconds, interval=0.2)
+    if not gone:
+        raise AssertionError(f'descendant still running: {pattern}')
 
 
 def scenario(mode):

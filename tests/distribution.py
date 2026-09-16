@@ -11,9 +11,10 @@ import socket
 import subprocess
 import tarfile
 import tempfile
-import time
 import urllib.error
 import urllib.request
+
+from e2e import poll
 
 PROJECT = Path(__file__).resolve().parents[1]
 TOKEN = 'distribution-fixture-token-at-least-32-characters'
@@ -38,15 +39,16 @@ def smoke(binary):
                 process = subprocess.Popen([str(executable), '--listen', f'{listen}:{port}'], cwd=root, env=env, stdout=log, stderr=log)
                 try:
                     base = f'http://127.0.0.1:{port}'
-                    for _ in range(100):
+
+                    def healthy():
                         try:
                             with urllib.request.urlopen(base + '/healthz', timeout=1) as response:
-                                assert json.load(response)['ok']
-                            break
+                                return json.load(response)['ok']
                         except (OSError, urllib.error.URLError):
                             assert process.poll() is None, 'Packaged service exited'
-                            time.sleep(0.05)
-                    else:
+                            return False
+
+                    if not poll(healthy, 5, interval=0.05):
                         raise AssertionError('Embedded service did not start')
                     with urllib.request.urlopen(base + '/') as response:
                         html = response.read().decode()

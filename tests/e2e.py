@@ -23,6 +23,37 @@ def git(*args, cwd):
     return subprocess.check_output(['/usr/bin/git', *args], cwd=cwd, stderr=subprocess.DEVNULL, text=True).strip()
 
 
+def poll(predicate, seconds, interval=0.1, tick=None):
+    """Runs `predicate` until it returns a truthy value or `seconds` elapse.
+
+    Returns that value, or None on timeout. A predicate that cannot connect is retried,
+    because the service may still be starting; `tick` runs once per iteration and may
+    raise to abort the wait early.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            result = predicate()
+            if result:
+                return result
+        except (OSError, urllib.error.URLError):
+            pass
+        if tick:
+            tick()
+        time.sleep(interval)
+    return None
+
+
+def base_config(service, commands, **overrides):
+    """Loads the saved configuration every scenario starts from.
+
+    Callers add their own routes, flags and overrides, then PUT it themselves.
+    """
+    config = service.request('/config')
+    config.update(repository=str(service.root / 'checkout'), github_repo='fixture/project', verification_commands=commands, session_timeout_seconds=30, command_timeout_seconds=10, **overrides)
+    return config
+
+
 class Service:
     def __init__(self, root):
         self.root = root
@@ -48,26 +79,32 @@ class Service:
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.load(response)
 
+    def expect(self, path, method='GET', value=None):
+        """One API request that may fail: returns (status, body) instead of raising."""
+        request = urllib.request.Request(f'http://127.0.0.1:{self.port}/api{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read() or b'{}')
+
+    def save_config(self, config):
+        self.request('/config', 'PUT', config)
+        return self.request('/config')
+
     def wait(self, predicate, label, seconds=45):
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            try:
-                result = predicate()
-                if result:
-                    return result
-            except (OSError, urllib.error.URLError):
-                pass
+        def exited():
             if self.process and self.process.poll() is not None:
                 raise AssertionError(f'{label}: service exited\n{(self.root / "service.log").read_text()}')
-            time.sleep(0.1)
+        result = poll(predicate, seconds, tick=exited)
+        if result:
+            return result
         state = self.request('/state')
         raise AssertionError(f'{label} timed out: {json.dumps(state, indent=2)}')
 
     def configure(self):
-        config = self.request('/config')
-        config.update(repository=str(self.root / 'checkout'), github_repo='fixture/project', cycle_interval_seconds=3600, verification_commands=['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], session_timeout_seconds=30, task_timeout_seconds=120, command_timeout_seconds=10)
-        if (self.root / 'failed-verification').exists():
-            config['verification_commands'] = ['false']
+        commands = ['false'] if (self.root / 'failed-verification').exists() else ['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done']
+        config = base_config(self, commands, cycle_interval_seconds=3600, task_timeout_seconds=120)
         for role in config['roles']:
             config['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
         # Shipped tiers and repair carry effort but no model, so the fixture picks one.
@@ -383,8 +420,7 @@ def audit_scenario(mode):
                     db.execute("UPDATE records SET data=? WHERE kind='task' AND id=?", (json.dumps(task), identity))
                 service.start()
                 queued_before = service.request('/state')['tasks']
-            c = service.request('/config')
-            c.update(repository=str(root / 'checkout'), github_repo='fixture/project', verification_commands=[], command_timeout_seconds=10, session_timeout_seconds=30, task_timeout_seconds=120)
+            c = base_config(service, [], task_timeout_seconds=120)
             for role in ['orchestrator', 'discovery', 'proposal_reviewer']:
                 c['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
             c['roles']['code_reviewer'] = {'model': 'unavailable', 'effort': 'high'}

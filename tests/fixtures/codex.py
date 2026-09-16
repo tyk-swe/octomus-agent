@@ -7,6 +7,8 @@ from pathlib import Path
 import sys
 import uuid
 
+from worker import mode as worker_mode
+
 root = Path(os.environ['OCTOMUS_FIXTURE'])
 assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 if sys.argv[1:] == ['--version']:
@@ -15,10 +17,7 @@ if sys.argv[1:] == ['--version']:
 threads = root / 'threads'
 threads.mkdir(exist_ok=True)
 def mode():
-    try:
-        return (root / 'codex-mode').read_text().strip()
-    except FileNotFoundError:
-        return ''
+    return worker_mode('codex')
 
 def emit(value):
     print(json.dumps(value), flush=True)
