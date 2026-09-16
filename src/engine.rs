@@ -120,11 +120,7 @@ impl App {
             let initialized = task.execution_session.is_some()
                 && Path::new(&task.workspace).join(".git").exists()
                 && !task.comparison_base.is_empty();
-            for session in &mut task.sessions {
-                if session.status == "running" {
-                    session.status = "interrupted".into();
-                }
-            }
+            interrupt_running(&mut task.sessions);
             // The marker only cancels work that never produced an output commit;
             // a task cancelled mid-publication keeps its commit for reconciliation.
             let operator_cancelled = task.output_commit.is_none()
@@ -156,16 +152,12 @@ impl App {
             )?;
         }
         for mut cycle in self.store.running_cycles()? {
-            if cycle.status == "running" {
-                cycle.status = "interrupted".into();
+            if cycle.status == cycle_status::RUNNING {
+                cycle.status = cycle_status::INTERRUPTED.into();
                 cycle.error =
                     Some("Discovery interrupted; incomplete proposals were not dispatched".into());
                 cycle.completed_at = Some(now());
-                for session in &mut cycle.sessions {
-                    if session.status == "running" {
-                        session.status = "interrupted".into();
-                    }
-                }
+                interrupt_running(&mut cycle.sessions);
                 self.store.put("cycle", &cycle.id, &cycle)?;
             }
         }
@@ -475,7 +467,7 @@ impl App {
             mode,
             id: cycle_id,
             number: control.cycle_number,
-            status: "running".into(),
+            status: cycle_status::RUNNING.into(),
             started_at: now(),
             completed_at: None,
             grounding: None,
@@ -602,16 +594,12 @@ impl Drop for CycleGuard {
                 .app
                 .store
                 .get::<crate::model::Cycle>("cycle", &self.id)?
-                && cycle.status == "running"
+                && cycle.status == cycle_status::RUNNING
             {
-                cycle.status = "interrupted".into();
+                cycle.status = cycle_status::INTERRUPTED.into();
                 cycle.completed_at = Some(now());
                 cycle.error = Some("Cycle worker exited unexpectedly".into());
-                for session in &mut cycle.sessions {
-                    if session.status == "running" {
-                        session.status = "interrupted".into();
-                    }
-                }
+                interrupt_running(&mut cycle.sessions);
                 self.app.store.put("cycle", &cycle.id, &cycle)?;
             }
             Ok(())

@@ -374,7 +374,7 @@ async fn cycle_action(
         .store
         .get("cycle", &id)?
         .ok_or(ApiError(StatusCode::NOT_FOUND, "Cycle not found".into()))?;
-    if c.status == "running" {
+    if c.status == crate::model::cycle_status::RUNNING {
         return Err(ApiError(
             StatusCode::CONFLICT,
             "Wait for planning to finish".into(),

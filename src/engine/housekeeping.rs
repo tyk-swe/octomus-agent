@@ -131,7 +131,7 @@ impl App {
                         .store
                         .get(kind, &id)?
                         .context("Missing cleanup cycle")?;
-                    if cycle.status == "running" {
+                    if cycle.status == cycle_status::RUNNING {
                         continue;
                     }
                     self.discard_cycle(&mut cycle).await
@@ -170,7 +170,7 @@ impl App {
     }
     pub async fn discard_cycle(&self, cycle: &mut Cycle) -> Result<()> {
         ensure!(
-            cycle.status != "running",
+            cycle.status != cycle_status::RUNNING,
             "Running planning work cannot be discarded"
         );
         uuid::Uuid::parse_str(&cycle.id).context("Invalid cycle workspace identity")?;

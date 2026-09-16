@@ -41,14 +41,7 @@ impl App {
             "session_started",
             &format!("{label}: {id} · {route}"),
         )?;
-        let mut session = Session {
-            id,
-            role: label.into(),
-            route: route.clone(),
-            status: "running".into(),
-            started_at: now(),
-            summary: String::new(),
-        };
+        let mut session = Session::new(id, label, route.clone());
         let result = async {
             let answer = client
                 .turn(&session.id, route, &workspace, prompt, Some(schema.clone()))
@@ -64,14 +57,8 @@ impl App {
         .await;
         // The role is complete only after its answer validated against the unchanged snapshot.
         match &result {
-            Ok(answer) => {
-                session.status = "completed".into();
-                session.summary = redact(answer);
-            }
-            Err(e) => {
-                session.status = "failed".into();
-                session.summary = error_message(e);
-            }
+            Ok(answer) => session.mark_completed(redact(answer)),
+            Err(e) => session.mark_failed(error_message(e)),
         }
         drop(client);
         if result.is_ok() {
@@ -125,12 +112,12 @@ impl App {
         cycle.completed_at = Some(now());
         cycle.status = if result.is_ok() {
             if cycle.proposals.iter().any(|p| p.decision == "accepted") {
-                "completed"
+                cycle_status::COMPLETED
             } else {
-                "idle"
+                cycle_status::IDLE
             }
         } else {
-            "failed"
+            cycle_status::FAILED
         }
         .into();
         cycle.error = result.as_ref().err().map(error_message);
@@ -218,9 +205,9 @@ impl App {
         if cycle.mode == CycleMode::Audit {
             // Recommendations retain their decisions, but never become an executable queue.
             cycle.status = if cycle.proposals.iter().any(|p| p.decision == "accepted") {
-                "completed"
+                cycle_status::COMPLETED
             } else {
-                "idle"
+                cycle_status::IDLE
             }
             .into();
             cycle.completed_at = Some(now());
@@ -525,9 +512,9 @@ impl App {
         }
         // Commit the successful cycle and its complete queue as one durable transaction.
         cycle.status = if planned.is_empty() {
-            "idle"
+            cycle_status::IDLE
         } else {
-            "completed"
+            cycle_status::COMPLETED
         }
         .into();
         cycle.completed_at = Some(now());

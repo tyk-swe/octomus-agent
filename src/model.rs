@@ -306,6 +306,22 @@ pub struct DefaultBranchObservation {
     pub revision: String,
     pub observed_at: String,
 }
+/// Persisted `Session.status` values. These strings are the durable record's
+/// vocabulary; saved sessions stay readable, so they never change.
+pub mod session_status {
+    pub const RUNNING: &str = "running";
+    pub const COMPLETED: &str = "completed";
+    pub const FAILED: &str = "failed";
+    pub const INTERRUPTED: &str = "interrupted";
+}
+/// Persisted `Cycle.status` values, likewise part of the durable vocabulary.
+pub mod cycle_status {
+    pub const RUNNING: &str = "running";
+    pub const COMPLETED: &str = "completed";
+    pub const IDLE: &str = "idle";
+    pub const FAILED: &str = "failed";
+    pub const INTERRUPTED: &str = "interrupted";
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -314,6 +330,52 @@ pub struct Session {
     pub status: String,
     pub started_at: String,
     pub summary: String,
+}
+impl Session {
+    /// A freshly started session record: running, started now, no summary yet.
+    pub fn new(id: String, role: &str, route: Route) -> Self {
+        Self {
+            id,
+            role: role.into(),
+            route,
+            status: session_status::RUNNING.into(),
+            started_at: now(),
+            summary: String::new(),
+        }
+    }
+    pub fn mark_completed(&mut self, summary: String) {
+        self.status = session_status::COMPLETED.into();
+        self.summary = summary;
+    }
+    pub fn mark_failed(&mut self, summary: String) {
+        self.status = session_status::FAILED.into();
+        self.summary = summary;
+    }
+    pub fn mark_interrupted(&mut self) {
+        self.status = session_status::INTERRUPTED.into();
+    }
+}
+/// Marks every still-running session interrupted. Sessions that already reached a
+/// terminal state keep their recorded outcome.
+pub fn interrupt_running(sessions: &mut [Session]) {
+    for session in sessions {
+        if session.status == session_status::RUNNING {
+            session.mark_interrupted();
+        }
+    }
+}
+/// Marks every still-running session failed, backfilling an empty summary with
+/// the task's terminal error so the session record explains its ending.
+pub fn fail_running(sessions: &mut [Session], summary: &str) {
+    for session in sessions {
+        if session.status != session_status::RUNNING {
+            continue;
+        }
+        session.status = session_status::FAILED.into();
+        if session.summary.is_empty() {
+            session.summary = summary.to_owned();
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {

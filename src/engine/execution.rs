@@ -235,14 +235,8 @@ impl App {
         }
         let session = client.start(&task.route, &workspace, None).await?;
         task.execution_session = Some(session.clone());
-        task.sessions.push(Session {
-            id: session,
-            role: "executor".into(),
-            route: task.route.clone(),
-            status: "running".into(),
-            started_at: now(),
-            summary: String::new(),
-        });
+        task.sessions
+            .push(Session::new(session, "executor", task.route.clone()));
         self.save_task(task)?;
         Ok(())
     }
@@ -272,7 +266,7 @@ impl App {
             }
             // A freshly created thread is already active; Codex has no resumable
             // rollout until its first turn starts.
-            session_mut(task, &thread, "executor")?.status = "running".into();
+            session_mut(task, &thread, "executor")?.status = session_status::RUNNING.into();
             self.save_task(task)?;
             let prompt = format!(
                 "Implement this accepted task end to end in this workspace. Source revision: {}. Full comparison base: {}. Existing PR: {:?}. Preserve existing accumulated branch behavior; inspect its full diff. Do not push, publish, merge or deploy. Required repository verification commands: {:?}. Objective and constraints:\n{}\nProblem: {}\nBenefit: {}\nScope: {}\nEvidence: {:?}\nReturn a concise summary of actual changes, verification and material risks or migration notes.",
@@ -289,9 +283,7 @@ impl App {
             let answer = client
                 .turn(&thread, &task.route, &workspace, &prompt, None)
                 .await?;
-            let s = session_mut(task, &thread, "executor")?;
-            s.status = "completed".into();
-            s.summary = redact(&answer);
+            session_mut(task, &thread, "executor")?.mark_completed(redact(&answer));
             self.save_task(task)?;
         }
         Ok(())
@@ -311,14 +303,8 @@ impl App {
         self.budget(&task.cycle_id, Some(&task.id), "reviewer", route)
             .await?;
         let thread = client.start(route, &workspace, None).await?;
-        task.sessions.push(Session {
-            id: thread.clone(),
-            role: "reviewer".into(),
-            route: route.clone(),
-            status: "running".into(),
-            started_at: now(),
-            summary: String::new(),
-        });
+        task.sessions
+            .push(Session::new(thread.clone(), "reviewer", route.clone()));
         self.save_task(task)?;
         let prompt = format!(
             "Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff {} HEAD. Recorded HEAD: {revision}. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: {}. Scope: {}. Existing PR: {:?}. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
@@ -346,9 +332,7 @@ impl App {
             git::at(&config, &workspace, revision, cancel).await?,
             BlockedReason::WorkspaceInvalid
         );
-        let s = session_mut(task, &thread, "reviewer")?;
-        s.status = "completed".into();
-        s.summary = redact(&review.summary);
+        session_mut(task, &thread, "reviewer")?.mark_completed(redact(&review.summary));
         task.reviews.push(ReviewRound {
             session_id: thread,
             revision: revision.into(),
@@ -431,17 +415,11 @@ impl App {
             .await?;
         if task.repair_session.is_none() {
             task.repair_session = Some(thread.clone());
-            task.sessions.push(Session {
-                id: thread.clone(),
-                role: "repair".into(),
-                route: route.clone(),
-                status: "running".into(),
-                started_at: now(),
-                summary: String::new(),
-            });
+            task.sessions
+                .push(Session::new(thread.clone(), "repair", route.clone()));
             self.save_task(task)?;
         }
-        session_mut(task, &thread, "repair")?.status = "running".into();
+        session_mut(task, &thread, "repair")?.status = session_status::RUNNING.into();
         self.save_task(task)?;
         let prompt = format!(
             "Repair actionable findings and verification failures for this task. Preserve useful capabilities and meaningful tests. Do not push, publish, merge or deploy. If a finding is unsupported, explain the technical evidence in your final summary; the next fresh reviewer must independently assess it. Rerun relevant verification {:?}. Full comparison base: {}. Task: {}. Findings: {}. Verification failures: {:?}",
@@ -454,9 +432,7 @@ impl App {
         let answer = client
             .turn(&thread, &route, &workspace, &prompt, None)
             .await?;
-        let s = session_mut(task, &thread, "repair")?;
-        s.status = "completed".into();
-        s.summary = redact(&answer);
+        session_mut(task, &thread, "repair")?.mark_completed(redact(&answer));
         self.save_task(task)?;
         Ok(())
     }
@@ -514,14 +490,7 @@ pub(super) async fn supervise(app: App, mut task: Task, cancel: CancellationToke
     };
     if let Some(error) = error {
         task.error = Some(redact(&error));
-        for session in &mut task.sessions {
-            if session.status == "running" {
-                session.status = "failed".into();
-                if session.summary.is_empty() {
-                    session.summary = redact(&error);
-                }
-            }
-        }
+        fail_running(&mut task.sessions, &redact(&error));
         let operator_cancelled = app
             .store
             .get::<serde_json::Value>("cancel", &task.id)

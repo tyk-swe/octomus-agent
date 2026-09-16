@@ -6,7 +6,9 @@
 //! computed from the saved records first; display strings are redacted afterwards.
 use crate::{
     config::Route,
-    model::{Cycle, CycleMode, REVIEWER_SLOTS, Session, Status, Task, now},
+    model::{
+        Cycle, CycleMode, REVIEWER_SLOTS, Session, Status, Task, cycle_status, now, session_status,
+    },
     store::{Store, redact_json},
 };
 use anyhow::{Context, Result};
@@ -292,7 +294,10 @@ fn normalize_batches(cycle: &Cycle) -> (Vec<Batch>, Vec<String>) {
     }
     for (slot, role) in REVIEWER_SLOTS.iter().enumerate() {
         let sessions = slot_sessions(cycle, role);
-        let completed = sessions.iter().filter(|s| s.status == "completed").count();
+        let completed = sessions
+            .iter()
+            .filter(|s| s.status == session_status::COMPLETED)
+            .count();
         let saved = batches.iter().any(|b| b.slot == Some(slot));
         if sessions.len() > 1 {
             gaps.push(format!(
@@ -683,7 +688,7 @@ pub fn assemble(cycle: &Cycle, tasks: &[Task]) -> RunEvidenceV1 {
             }
         })
         .collect();
-    if cycle.status == "running" {
+    if cycle.status == cycle_status::RUNNING {
         gaps.push(
             "Planning is still recorded as running, so this run's evidence is incomplete."
                 .to_owned(),
@@ -713,7 +718,8 @@ pub fn assemble(cycle: &Cycle, tasks: &[Task]) -> RunEvidenceV1 {
             grounding_revision: cycle.grounding.as_ref().map(|g| g.revision.clone()),
             planning: PlanningOutcome {
                 status: cycle.status.clone(),
-                planning_finished: cycle.completed_at.is_some() && cycle.status != "running",
+                planning_finished: cycle.completed_at.is_some()
+                    && cycle.status != cycle_status::RUNNING,
                 proposal_count: cycle.proposals.len(),
                 decisions,
                 creates_execution_queue: execution,

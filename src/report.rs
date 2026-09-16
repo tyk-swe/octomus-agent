@@ -1,6 +1,6 @@
 //! Local, read-only reporting. Never open through Store::open (which migrates state).
 use crate::{
-    model::{Cycle, Task, now},
+    model::{Cycle, Task, now, session_status},
     store::{Admission, Store, redact_json},
 };
 use anyhow::Result;
@@ -78,14 +78,14 @@ pub fn usage_report(path: &Path) -> Result<Value> {
         json!({"id":cycle.id,"mode":cycle.mode,"number":cycle.number,"status":cycle.status,
             "started_at":cycle.started_at,"completed_at":cycle.completed_at,"wall_seconds":wall_seconds,
             "planning_admissions":planning,"task_admissions":task,
-            "recorded_completed_sessions":cycle.sessions.iter().filter(|s| s.status == "completed").count(),
+            "recorded_completed_sessions":cycle.sessions.iter().filter(|s| s.status == session_status::COMPLETED).count(),
             "decisions":decisions,"error":cycle.error})
     }).collect::<Vec<_>>();
     let task_rows = tasks.iter().map(|task| json!({
         "id":task.id,"cycle_id":task.cycle_id,"tier":task.proposal.tier,
         "status":task.status,"route":task.route,"repair_route":task.config.repair_route,
         "admissions":task_counts.get(&task.id).copied().unwrap_or(0),
-        "recorded_completed_sessions":task.sessions.iter().filter(|s| s.status == "completed").count(),
+        "recorded_completed_sessions":task.sessions.iter().filter(|s| s.status == session_status::COMPLETED).count(),
         "created_at":task.created_at,"updated_at":task.updated_at,
         "pr_url":task.pr_url,"error":task.error
     })).collect::<Vec<_>>();
