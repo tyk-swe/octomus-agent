@@ -90,9 +90,7 @@ impl App {
         let _gate = self.gate.lock().await;
         let live = self.config()?;
         ensure!(
-            live.repository == config.repository
-                && live.github_repo.eq_ignore_ascii_case(&config.github_repo)
-                && live.default_branch == config.default_branch,
+            live.same_remote_identity(config),
             "Configuration identity changed during remote observation"
         );
         let observed =
@@ -214,12 +212,7 @@ impl App {
         check: &BaselineCheck,
         live: &Config,
     ) -> &'static str {
-        let same_identity = live.repository == check.config.repository
-            && live
-                .github_repo
-                .eq_ignore_ascii_case(&check.config.github_repo)
-            && live.default_branch == check.config.default_branch;
-        if !same_identity {
+        if !live.same_remote_identity(&check.config) {
             return "unknown";
         }
         let Some(observation) = &rt.default_observation else {

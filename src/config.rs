@@ -230,6 +230,14 @@ impl Config {
     pub fn planning_admissions_required(&self) -> u64 {
         self.discovery_agents as u64 + crate::model::REVIEWER_SLOTS.len() as u64 + 2
     }
+    /// Whether two configurations describe the same remote: repository path,
+    /// GitHub owner/name (case-insensitive) and default branch. Observations made
+    /// under one configuration stop applying once any of these change.
+    pub fn same_remote_identity(&self, other: &Config) -> bool {
+        self.repository == other.repository
+            && self.github_repo.eq_ignore_ascii_case(&other.github_repo)
+            && self.default_branch == other.default_branch
+    }
     pub fn validate(&self, ready: bool) -> Result<()> {
         self.validate_mode(ready, false)
     }

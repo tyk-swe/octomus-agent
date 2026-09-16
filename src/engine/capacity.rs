@@ -34,10 +34,7 @@ impl PrIdentity {
 
 pub struct PrRefresh {
     pub id: String,
-    pub repository: PathBuf,
-    pub github_repo: String,
-    pub default_branch: String,
-    pub branch_prefix: String,
+    pub identity: PrIdentity,
     pub handle: JoinHandle<()>,
     pub cancel: CancellationToken,
     pub result: Option<OpenPrInventory>,
@@ -76,10 +73,7 @@ impl App {
         });
         rt.pr_refresh = Some(PrRefresh {
             id: job_id,
-            repository: c.repository.clone(),
-            github_repo: c.github_repo.to_lowercase(),
-            default_branch: c.default_branch.clone(),
-            branch_prefix: c.branch_prefix.clone(),
+            identity: PrIdentity::of(c),
             handle,
             cancel,
             result: None,
@@ -103,11 +97,7 @@ impl App {
         rt.pr_refresh_error = job.error.clone();
         let inventory = job.result?;
         let live = self.config().ok()?;
-        if live.repository != job.repository
-            || !live.github_repo.eq_ignore_ascii_case(&job.github_repo)
-            || live.default_branch != job.default_branch
-            || live.branch_prefix != job.branch_prefix
-        {
+        if !job.identity.matches(&live) {
             return None;
         }
         let observed = chrono::DateTime::parse_from_rfc3339(&inventory.observed_at).ok()?;
@@ -133,12 +123,7 @@ impl App {
             if job.id != job_id || worker_cancel.is_cancelled() {
                 return;
             }
-            PrIdentity {
-                repository: job.repository.clone(),
-                github_repo: job.github_repo.clone(),
-                default_branch: job.default_branch.clone(),
-                branch_prefix: job.branch_prefix.clone(),
-            }
+            job.identity.clone()
         };
         let live = match self.config() {
             Ok(c) => c,
@@ -303,10 +288,7 @@ impl App {
         let _gate = self.gate.lock().await;
         let live = self.config()?;
         ensure!(
-            live.repository == c.repository
-                && live.github_repo.eq_ignore_ascii_case(&c.github_repo)
-                && live.default_branch == c.default_branch
-                && live.branch_prefix == c.branch_prefix,
+            PrIdentity::of(c).matches(&live),
             "Configuration changed while the open-PR inventory was being read"
         );
         self.persist_pr_observation(inventory, &releases)?;

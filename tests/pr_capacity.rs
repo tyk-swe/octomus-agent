@@ -63,10 +63,7 @@ fn store_with_limit(limit: usize) -> (tempfile::TempDir, Store) {
 fn refresh_job(id: &str, c: &Config, cancel: &CancellationToken) -> PrRefresh {
     PrRefresh {
         id: id.into(),
-        repository: c.repository.clone(),
-        github_repo: c.github_repo.to_lowercase(),
-        default_branch: c.default_branch.clone(),
-        branch_prefix: c.branch_prefix.clone(),
+        identity: PrIdentity::of(c),
         handle: tokio::spawn(async {}),
         cancel: cancel.clone(),
         result: None,
