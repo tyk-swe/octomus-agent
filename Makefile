@@ -18,6 +18,8 @@ test: dashboard
 	cargo build --locked
 	python3 tests/evidence_snapshot.py
 	python3 tests/e2e.py
+	python3 tests/e2e_baseline.py
+	python3 tests/e2e_notifications.py
 	python3 tests/e2e_runners.py
 	python3 tests/e2e_hardening.py
 	python3 tests/distribution.py

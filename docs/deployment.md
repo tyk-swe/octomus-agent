@@ -50,6 +50,29 @@ sudo systemctl status octomus-agent
 
 The unit uses `KillMode=control-group` so crashes and restarts cannot leave old task processes running alongside recovered work. Do not change that to `process`. The service additionally kills each owned process group on normal cancellation or timeouts. Escaped processes on this intentionally unsandboxed host remain an operator responsibility.
 
+## Optional attention webhook
+
+Add `OCTOMUS_NOTIFICATION_WEBHOOK_URL=<operator-supplied HTTPS webhook URL>` to the
+same protected environment file to opt in, then restart the service. Do not use the
+placeholder or commit the actual URL. Unset the variable to disable notifications.
+URL rotation cancels old pending deliveries rather than forwarding them to a new
+receiver. No dashboard URL editor or inbound integration is provided.
+
+The receiver accepts an `application/json` POST with `schema_version`, `event_id`,
+`occurred_at`, `repository`, optional `cycle_id`/`run_id`/`task_id`, `category` and
+`action`. Deduplicate by event ID if appropriate. Notices cover newly blocked/failed
+tasks and error-paused service episodes; historical failures are not backfilled.
+HTTPS is required except literal loopback HTTP for local receivers. Redirects and
+implicit proxies are disabled. Requests time out after ten seconds and have at most
+five attempts with 30/120/600/1,800-second backoffs. Delivery is rate-limited to one
+request per second, expires after 24 hours, and bounds pending backlog to 1,000.
+Retries after ambiguous acceptance may duplicate an event. Queue overflow, expiry,
+invalid setup and delivery failures remain visible in Configuration.
+
+The URL is not persisted in task/config snapshots, returned through observation APIs,
+or passed in child-process environments. Same-user unsandboxed processes are still
+inside the dedicated-host trust boundary. Never provision unrelated secrets here.
+
 ## Private access
 
 The default listener is `127.0.0.1:4200`. Access it over an SSH tunnel:
@@ -65,6 +88,7 @@ The dashboard starts paused. Configure the repository, explicit role routes, ver
 ## Controls and recovery
 
 - **Pause:** prevents new work. Running discovery and tasks finish their current workflow, including publication. To stop a running task, use its **Cancel task** control. Publication already in progress is allowed to reconcile.
+- **Check clean baseline:** explicitly runs saved verification commands without model calls in a disposable clone of the identified remote default revision. Requires paused idle operation and confirmation of the saved configuration. Config changes, planning/execution starts and publication reconciliation conflict while it runs; Cancel stops the check. Results retain revision/configuration identity, bounded output and cleanup status separately from task verification. Restart records interruption without replay.
 - **Run an audit:** requires paused operation and no active work. It spends planning admissions, records all decisions, creates no tasks and leaves any existing queue paused. Resume and cycle requests return a conflict while the audit is active. Restart marks interrupted audits without replaying them.
 - **Run once:** requires paused operation with no active work. It captures the queued tasks, drains them, runs one discovery cycle, drains that cycle's accepted tasks, and returns to paused. Later retries are outside the captured batch. Independent tasks finish after failures; dependent tasks block. A failed initial drain prevents discovery. The batch and its phase survive restart; interrupted planning pauses without replay.
 - **Start continuous:** enables queued execution and subsequent discovery cycles. **Pause** ends further one-shot dispatch as well as continuous scheduling; active workflows still finish.
@@ -78,7 +102,20 @@ Repository identity and branch policy cannot change while unresolved tasks exist
 
 ## Limits and retention
 
-Defaults are visible in the dashboard and [configuration example](configuration.example.json): nine discovery agents, two simultaneous tasks, a 30-minute cycle interval, five accepted tasks per cycle, four repair rounds, two no-progress rounds, and 150 agent turn admissions per UTC day. Reused repair turns count against the daily budget too.
+Defaults are visible in the dashboard and [configuration example](configuration.example.json): nine discovery agents, two simultaneous tasks, a 30-minute cycle interval, five accepted tasks per cycle, five owned open PRs, four repair rounds, two no-progress rounds, and 150 agent turn admissions per UTC day. Reused repair turns count against the daily budget too.
+
+Planning checks the complete pass requirement before starting (13 admissions with
+nine discovery agents). Manual audit/Run once requests are refused without spending
+admissions when short. Continuous operation waits without repeated failed cycles;
+Run once pauses if its initial queue drain leaves insufficient planning allowance.
+Per-role atomic limits still apply, and the preflight is not an execution-budget reservation.
+
+The owned-open-PR ceiling is live policy, including for queued work. Complete remote
+observations plus durable admitted-delivery reservations govern new-PR dispatch;
+unknown state is not zero. Existing-PR maintenance and preserved publication replay
+remain eligible. Capacity returns after observed closure/merge. A lowered limit does
+not close existing PRs or interrupt already admitted work, which can finish above the
+new ceiling. External PR changes can also alter backlog after observation.
 
 The workspace budget is an **admission limit**, checked before launching model work. Active commands can grow beyond it; set host disk and process limits appropriate to the repository. The MVP does not estimate dollar spend or interrupt a provider's in-flight token billing. Use account-level spending limits as appropriate.
 

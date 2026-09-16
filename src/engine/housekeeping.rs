@@ -85,6 +85,34 @@ impl App {
         let cutoff = (chrono::Utc::now()
             - chrono::Duration::days(c.retain_completed_days.min(36500) as i64))
         .to_rfc3339();
+        for mut check in self.store.baseline_cleanup_candidates()? {
+            if self.shutdown.is_cancelled() {
+                return Ok(());
+            }
+            {
+                let _gate = self.gate.lock().await;
+                let current: Option<crate::model::BaselineCheck> =
+                    self.store.get("baseline", &check.id)?;
+                let terminal = current
+                    .as_ref()
+                    .is_some_and(|c| c.status != crate::model::BaselineStatus::Running);
+                let active = self
+                    .runtime()
+                    .baseline
+                    .as_ref()
+                    .is_some_and(|job| job.id == check.id);
+                if !terminal || active {
+                    continue;
+                }
+                if let Some(current) = current {
+                    check = current;
+                }
+            }
+            if let Err(error) = self.cleanup_baseline(&mut check).await {
+                self.store
+                    .event(&check.id, "cleanup_error", &format!("{error:#}"))?;
+            }
+        }
         for kind in ["task", "cycle"] {
             for id in self.store.cleanup_candidates(kind, &cutoff)? {
                 if self.shutdown.is_cancelled() {
@@ -185,11 +213,11 @@ impl App {
     async fn observe_remote(&self, c: &Config) -> Result<()> {
         let cancel = self.shutdown.child_token();
         git::validate_remote(c, &cancel).await?;
-        let prs = git::prs(c, &cancel).await?;
-        for p in &prs {
+        let inventory = git::open_pr_inventory(c, &cancel).await?;
+        for p in inventory.prs.iter().filter(|p| p.owned) {
             self.observe_pr(c, p.clone())?;
         }
-        let open: HashSet<_> = prs.iter().map(|p| p.number).collect();
+        let open: HashSet<_> = inventory.prs.iter().map(|p| p.number).collect();
         // Poll known open PRs even when they disappear from open discovery results.
         let mut before = None;
         loop {
@@ -222,16 +250,19 @@ impl App {
                 break;
             }
         }
+        self.reconcile_pr_inventory(c, &inventory, &cancel).await?;
+        let observed_at = now();
         let revision = git::remote_revision(c, &c.default_branch, &cancel)
             .await?
             .unwrap_or_default();
-        let fingerprint = context_fingerprint(&revision, &prs);
+        let fingerprint = context_fingerprint(&revision, &inventory.prs);
+        if !revision.is_empty() {
+            self.observe_default_branch(c, &revision, &observed_at)
+                .await?;
+        }
         let _gate = self.gate.lock().await;
-        if !self
-            .config()?
-            .github_repo
-            .eq_ignore_ascii_case(&c.github_repo)
-        {
+        let live = self.config()?;
+        if !live.github_repo.eq_ignore_ascii_case(&c.github_repo) {
             return Ok(());
         }
         let mut control = self.control()?;

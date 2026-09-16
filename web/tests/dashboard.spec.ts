@@ -100,7 +100,9 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await page.getByLabel('Repair model', { exact: true }).fill('gpt-5.6-luna');
   await page.getByLabel('Repair reasoning effort', { exact: true }).selectOption('high');
   await page.getByRole('button', { name: 'Save configuration' }).click();
-  await expect(page.getByRole('status')).toHaveText('Configuration saved.');
+  await expect(page.getByRole('status').and(page.locator('.settings-feedback'))).toHaveText(
+    'Configuration saved.'
+  );
   await page.waitForTimeout(4500); // Ensure state polling never overwrites an operator's draft.
   await expect(page.getByLabel('Orchestrator model', { exact: true })).toHaveValue('gpt-6-astra');
   await expect(page.getByLabel('Repair model', { exact: true })).toHaveValue('gpt-5.6-luna');
@@ -195,7 +197,9 @@ test('one-shot audit progress, decisions and paused controls', async ({ page }, 
   await expect(page.getByRole('button', { name: 'Run once' })).toBeDisabled();
   await page.getByRole('button', { name: 'Run an audit' }).click();
   await expect(page.getByRole('heading', { name: 'Worth doing. Before doing.' })).toBeVisible();
-  await expect(page.getByRole('status')).toContainText('Audit in progress');
+  await expect(page.getByRole('status').filter({ hasText: 'Audit in progress' })).toContainText(
+    'Audit in progress'
+  );
   await expect(page.getByRole('button', { name: 'Start continuous', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Run an audit' })).toBeDisabled();
   running = false;
@@ -289,7 +293,9 @@ test('model routing across all roles, provider variants, draft catalogs and unav
   await expect(page.getByLabel('Repair model', { exact: true })).toHaveValue('fixture-model');
   await expect(page.getByLabel('Repair variant', { exact: true })).toHaveValue('deep');
   await page.getByRole('button', { name: 'Save configuration' }).click();
-  await expect(page.getByRole('status')).toHaveText('Configuration saved.');
+  await expect(page.getByRole('status').and(page.locator('.settings-feedback'))).toHaveText(
+    'Configuration saved.'
+  );
   await navigate('Overview');
   await navigate('Configuration');
   for (const name of names)

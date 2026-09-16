@@ -147,6 +147,50 @@ impl std::fmt::Display for BlockedReason {
 }
 impl std::error::Error for BlockedReason {}
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningCapacityStatus {
+    Ready,
+    DailyExhausted,
+    LimitTooLow,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningCapacity {
+    pub day: String,
+    pub limit: u64,
+    pub used: u64,
+    pub remaining: u64,
+    pub required: u64,
+    pub next_reset_at: i64,
+    pub status: PlanningCapacityStatus,
+}
+impl PlanningCapacity {
+    pub fn available(&self) -> bool {
+        self.status == PlanningCapacityStatus::Ready
+    }
+    pub fn message(&self) -> String {
+        let guidance = match self.status {
+            PlanningCapacityStatus::Ready => "Planning can start.",
+            PlanningCapacityStatus::DailyExhausted => {
+                "Wait until UTC midnight or increase the daily limit."
+            }
+            PlanningCapacityStatus::LimitTooLow => {
+                "The configured daily limit cannot fund a complete planning pass; increase it."
+            }
+        };
+        format!(
+            "A complete planning pass requires {} daily admissions; {} remain ({} of {} used). {}",
+            self.required, self.remaining, self.used, self.limit, guidance
+        )
+    }
+    pub fn ensure_available(&self) -> anyhow::Result<()> {
+        if self.available() {
+            return Ok(());
+        }
+        Err(anyhow::Error::new(BlockedReason::BudgetExhausted).context(self.message()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptPolicy {
     pub max_repair_rounds: usize,
@@ -222,6 +266,45 @@ pub struct Verification {
     pub output: String,
     pub revision: String,
     pub created_at: String,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BaselineStatus {
+    Running,
+    Passed,
+    Failed,
+    Cancelled,
+    TimedOut,
+    Interrupted,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaselineCommand {
+    pub command: String,
+    pub success: bool,
+    pub output: String,
+    pub output_truncated: bool,
+    pub created_at: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaselineCheck {
+    pub id: String,
+    pub status: BaselineStatus,
+    pub config: Config,
+    pub config_fingerprint: String,
+    pub revision: Option<String>,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub commands: Vec<BaselineCommand>,
+    pub error: Option<String>,
+    pub workspace_removed: bool,
+    pub cleanup_error: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultBranchObservation {
+    pub repository: String,
+    pub default_branch: String,
+    pub revision: String,
+    pub observed_at: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -376,9 +459,56 @@ pub struct PrObservation {
 pub struct Grounding {
     pub revision: String,
     pub prs: Vec<PullRequest>,
+    #[serde(default)]
+    pub external_prs: Vec<ExternalPrContext>,
+    #[serde(default)]
+    pub pr_coverage: PrCoverage,
     pub history: Value,
     pub maintenance_due: bool,
     pub maintenance_targets: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalPrContext {
+    pub number: u64,
+    pub url: String,
+    pub title: String,
+    pub body: String,
+    pub branch: String,
+    pub head: String,
+    pub base: String,
+    pub head_repository: String,
+    pub base_repository: String,
+    pub title_truncated: bool,
+    pub body_truncated: bool,
+}
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct PrCoverage {
+    pub observed_at: Option<String>,
+    pub complete: bool,
+    pub total_open: usize,
+    pub total_external: usize,
+    pub included_external: usize,
+    pub omitted_external: usize,
+    pub max_external: usize,
+    pub max_title_chars: usize,
+    pub max_body_chars: usize,
+    pub max_context_bytes: usize,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenPrInventory {
+    pub repository: String,
+    pub observed_at: String,
+    pub prs: Vec<PullRequest>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrCapacity {
+    pub limit: usize,
+    pub owned_open: Option<usize>,
+    pub reserved: usize,
+    pub remaining: Option<usize>,
+    pub observed_at: Option<String>,
+    pub status: String,
+    pub reason: Option<String>,
 }
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

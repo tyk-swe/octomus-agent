@@ -1,5 +1,13 @@
 import { relative } from './api';
-import type { Backend, Config, CycleSummary, ModelCatalog, Route } from './types';
+import type {
+  Backend,
+  BaselineSummary,
+  Config,
+  CycleSummary,
+  ModelCatalog,
+  NotificationHealth,
+  Route
+} from './types';
 
 /**
  * First-run setup checklist states, derived from the configuration draft, the last
@@ -28,6 +36,9 @@ export type SetupStatus = {
   mode: 'paused' | 'run_once' | 'continuous';
   active_tasks: number;
   cycle_active: boolean;
+  baseline_active: boolean;
+  baseline: BaselineSummary | null;
+  notifications: NotificationHealth;
   active_cycle_mode: 'execution' | 'audit' | null;
   queued: number;
   latest: CycleSummary | null;
@@ -202,6 +213,57 @@ export function preflightStep(
   };
 }
 
+export function baselineStep(status: SetupStatus | null): SetupStep {
+  const contract =
+    'Runs the saved verification commands on a disposable clone of the remote default branch. Optional; a pass is not publication evidence and does not prove later host or remote health.';
+  if (!status)
+    return {
+      tone: 'missing',
+      label: 'Optional',
+      detail: `Connect to the service first. ${contract}`
+    };
+  if (status.baseline_active)
+    return {
+      tone: 'draft',
+      label: 'Running',
+      detail: `A baseline check is in progress; controls resume when it finishes. ${contract}`
+    };
+  const baseline = status.baseline;
+  if (!baseline) return { tone: 'missing', label: 'Optional · not run', detail: contract };
+  if (baseline.status === 'running') return { tone: 'draft', label: 'Running', detail: contract };
+  if (baseline.status === 'passed') {
+    const label = `Passed · ${relative(baseline.started_at)}`;
+    if (baseline.config_matches === false)
+      return {
+        tone: 'saved',
+        label,
+        detail: `The saved configuration changed after this check; the pass covered the previous saved values. ${contract}`
+      };
+    if (baseline.revision_status === 'stale')
+      return {
+        tone: 'saved',
+        label,
+        detail: `The observed remote default branch moved after this check. ${contract}`
+      };
+    if (baseline.revision_status !== 'matches_last_observation')
+      return {
+        tone: 'saved',
+        label,
+        detail: `No recent remote observation confirms the checked revision is still current. ${contract}`
+      };
+    return {
+      tone: 'checked',
+      label,
+      detail: `The saved commands passed on a clone checked at ${baseline.started_at}. ${contract}`
+    };
+  }
+  return {
+    tone: 'failed',
+    label: `${baseline.status.replace('_', ' ')} · ${relative(baseline.started_at)}`,
+    detail: `The last baseline check did not pass. ${contract}`
+  };
+}
+
 export function chooseStep(status: SetupStatus | null): SetupStep {
   const contract =
     'An audit plans only: it records decisions and queues nothing, and no later cycle executes its recommendations. Run once drains the existing queue, plans one cycle, finishes accepted tasks and pauses. Continuous operation is a separate, explicit control.';
@@ -214,15 +276,17 @@ export function chooseStep(status: SetupStatus | null): SetupStep {
   const blocker =
     status.active_cycle_mode === 'audit'
       ? 'An audit is in progress.'
-      : status.active_tasks
-        ? `${plural(status.active_tasks, 'active task')} may still finish and publish.`
-        : status.cycle_active
-          ? 'A cycle is planning.'
-          : !status.paused
-            ? status.mode === 'continuous'
-              ? 'Continuous operation is running; Pause stops new work first.'
-              : 'A run-once cycle is in progress.'
-            : '';
+      : status.baseline_active
+        ? 'A baseline check is running.'
+        : status.active_tasks
+          ? `${plural(status.active_tasks, 'active task')} may still finish and publish.`
+          : status.cycle_active
+            ? 'A cycle is planning.'
+            : !status.paused
+              ? status.mode === 'continuous'
+                ? 'Continuous operation is running; Pause stops new work first.'
+                : 'A run-once cycle is in progress.'
+              : '';
   const availability = blocker
     ? `Unavailable now: ${blocker}`
     : `Audit: ${status.audit_configured ? 'available' : 'saved configuration incomplete'}. Run once: ${

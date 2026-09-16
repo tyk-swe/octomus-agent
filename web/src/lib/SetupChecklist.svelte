@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Backend, Config, ModelCatalog } from './types';
   import {
+    baselineStep,
     chooseStep,
     preflightStep,
     repositoryStep,
@@ -76,6 +77,12 @@
         { label: 'Open the execution check', target: 'check-connection' },
         { label: 'Open the audit check', target: 'check-audit-connection' }
       ]
+    },
+    {
+      id: 'baseline',
+      title: 'Clean baseline (optional)',
+      step: baselineStep(status),
+      links: [{ label: 'Open the baseline check', target: 'check-baseline' }]
     },
     {
       id: 'choose',

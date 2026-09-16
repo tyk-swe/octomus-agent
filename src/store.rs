@@ -2,7 +2,11 @@ use crate::model::{Event, now};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
+mod capacity;
+pub mod notifications;
 mod queries;
+pub use capacity::{PrReservation, pr_union};
+pub use notifications::NotificationDelivery;
 pub use queries::{HistoryQuery, Page};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -77,6 +81,7 @@ impl Store {
             "#,
         )?;
         queries::migrate(&c)?;
+        notifications::migrate(&c)?;
         Ok(Self(Arc::new(Mutex::new(c))))
     }
     pub fn put<T: Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
@@ -315,6 +320,62 @@ impl Store {
         .optional()?
         .unwrap_or(0) as u64)
     }
+    pub fn planning_capacity(&self) -> Result<crate::model::PlanningCapacity> {
+        self.planning_capacity_at(chrono::Utc::now())
+    }
+    fn planning_capacity_at(
+        &self,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::model::PlanningCapacity> {
+        use crate::model::{PlanningCapacity, PlanningCapacityStatus};
+        let day = at.format("%F").to_string();
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        let config: crate::config::Config = tx
+            .query_row(
+                "SELECT data FROM records WHERE kind='settings' AND id='config'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?
+            .unwrap_or_default();
+        let used = tx
+            .query_row("SELECT sessions FROM usage WHERE day=?1", [&day], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()?
+            .unwrap_or(0)
+            .max(0) as u64;
+        tx.commit()?;
+        drop(c);
+        let limit = config.max_sessions_per_day;
+        let required = config.planning_admissions_required();
+        let remaining = limit.saturating_sub(used);
+        let next_reset_at = at
+            .date_naive()
+            .checked_add_days(chrono::Days::new(1))
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|d| d.and_utc().timestamp())
+            .unwrap_or(i64::MAX);
+        let status = if limit < required {
+            PlanningCapacityStatus::LimitTooLow
+        } else if remaining < required {
+            PlanningCapacityStatus::DailyExhausted
+        } else {
+            PlanningCapacityStatus::Ready
+        };
+        Ok(PlanningCapacity {
+            day,
+            limit,
+            used,
+            remaining,
+            required,
+            next_reset_at,
+            status,
+        })
+    }
     /// Targeted status write for the operator-cancel path: a full-record save from a
     /// stale task copy could resurrect fields the running worker already updated.
     /// Publication checkpoints must remain recoverable even if the worker has
@@ -348,9 +409,10 @@ pub fn redact(input: &str) -> String {
         std::env::vars()
             .filter(|(key, value)| {
                 value.len() >= 8
-                    && ["TOKEN", "SECRET", "PASSWORD", "API_KEY"]
-                        .iter()
-                        .any(|p| key.contains(p))
+                    && (key == crate::notifications::WEBHOOK_ENV
+                        || ["TOKEN", "SECRET", "PASSWORD", "API_KEY"]
+                            .iter()
+                            .any(|p| key.contains(p)))
             })
             .map(|(_, value)| value)
             .collect()
@@ -495,6 +557,89 @@ mod tests {
                 assert_eq!(saved.output_commit, task.output_commit);
             }
         }
+    }
+
+    #[test]
+    fn planning_capacity_reflects_policy_usage_and_utc_day() {
+        use crate::model::{BlockedReason, PlanningCapacityStatus};
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(&d.path().join("state.db")).unwrap();
+        let route = crate::config::Route::new("fixture", "low");
+        for (agents, required) in [(8, 12), (9, 13), (10, 14)] {
+            s.put(
+                "settings",
+                "config",
+                &crate::config::Config {
+                    discovery_agents: agents,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let capacity = s.planning_capacity().unwrap();
+            assert_eq!(capacity.required, required);
+            assert_eq!(capacity.status, PlanningCapacityStatus::Ready);
+            capacity.ensure_available().unwrap();
+        }
+        s.put(
+            "settings",
+            "config",
+            &crate::config::Config {
+                max_sessions_per_day: 12,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let capacity = s.planning_capacity().unwrap();
+        assert_eq!(capacity.status, PlanningCapacityStatus::LimitTooLow);
+        assert!(capacity.message().contains("cannot fund"));
+        let error = capacity.ensure_available().unwrap_err();
+        assert_eq!(
+            BlockedReason::from_error(&error),
+            BlockedReason::BudgetExhausted
+        );
+        s.put(
+            "settings",
+            "config",
+            &crate::config::Config {
+                max_sessions_per_day: 14,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.reserve_session(0, &Admission::new("cycle", None, "grounding", &route))
+            .unwrap();
+        let capacity = s.planning_capacity().unwrap();
+        assert_eq!((capacity.used, capacity.remaining), (1, 13));
+        capacity.ensure_available().unwrap();
+        s.reserve_session(0, &Admission::new("cycle", None, "discovery-0", &route))
+            .unwrap();
+        let capacity = s.planning_capacity().unwrap();
+        assert_eq!((capacity.used, capacity.remaining), (2, 12));
+        assert_eq!(capacity.status, PlanningCapacityStatus::DailyExhausted);
+        assert!(capacity.message().contains("Wait until UTC midnight"));
+        assert!(capacity.ensure_available().is_err());
+        let at = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        for role in ["grounding", "discovery-0"] {
+            let mut admission = Admission::new("cycle", None, role, &route);
+            admission.at = "2026-03-01T23:30:00Z".into();
+            s.reserve_session(0, &admission).unwrap();
+        }
+        let capacity = s.planning_capacity_at(at("2026-03-01T23:59:00Z")).unwrap();
+        assert_eq!(capacity.day, "2026-03-01");
+        assert_eq!((capacity.used, capacity.remaining), (2, 12));
+        assert_eq!(capacity.status, PlanningCapacityStatus::DailyExhausted);
+        assert_eq!(
+            capacity.next_reset_at,
+            at("2026-03-02T00:00:00Z").timestamp()
+        );
+        let capacity = s.planning_capacity_at(at("2026-03-02T00:00:00Z")).unwrap();
+        assert_eq!(capacity.day, "2026-03-02");
+        assert_eq!((capacity.used, capacity.remaining), (0, 14));
+        assert_eq!(capacity.status, PlanningCapacityStatus::Ready);
     }
 
     #[test]

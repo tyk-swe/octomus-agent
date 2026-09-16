@@ -37,7 +37,9 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     put('settings', 'prs', [{'number': 12, 'title': rows[1][1], 'branch': 'octomus/task-reviewed', 'head': 'b' * 40, 'base': 'main', 'url': 'https://github.com/fixture/project/pull/12', 'body': 'Synthetic browser test PR.', 'state': 'open', 'changed_lines': 42, 'created_at': now, 'owned': True}])
     db.commit()
     db.close()
-    process = subprocess.Popen([str(binary), '--listen', '127.0.0.1:4299', '--data-dir', directory, '--assets', str(project / 'web/build')], env={**os.environ, 'OCTOMUS_TOKEN': 'browser-test-operator-token-32-characters'})
+    env = {key: value for key, value in os.environ.items() if key != 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'}
+    env['OCTOMUS_TOKEN'] = 'browser-test-operator-token-32-characters'
+    process = subprocess.Popen([str(binary), '--listen', '127.0.0.1:4299', '--data-dir', directory, '--assets', str(project / 'web/build')], env=env)
     try:
         process.wait()
     except KeyboardInterrupt:

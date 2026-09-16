@@ -51,7 +51,13 @@ Four completed planning passes imply 52 planning admissions, before task work.
 Shipped defaults remain 30 minutes, two concurrent tasks, five tasks per cycle
 and 150 daily admissions until live validation supports changing them. At those
 defaults, eleven complete 13-admission planning passes consume 143 admissions;
-the next pass can exhaust the daily budget partway through. No dollar cap follows
+the next pass is refused before any planning admission because seven remain, fewer
+than the required thirteen. Continuous operation waits; manual audits and Run once
+requests receive an explicit refusal. A daily limit below the complete-pass requirement
+is reported separately from temporary exhaustion. Run once rechecks after draining
+its existing queue and pauses if that drain leaves too little planning allowance.
+The preflight reserves nothing, refunds nothing, and does not guarantee later runner
+or storage success. Per-role atomic checks remain authoritative. No dollar cap follows
 from this admission limit.
 
 ## Measurement table

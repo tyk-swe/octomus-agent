@@ -32,6 +32,7 @@ export type Config = {
   task_timeout_seconds: number;
   command_timeout_seconds: number;
   max_sessions_per_day: number;
+  max_open_prs: number;
   max_workspace_bytes: number;
   runner_storage_paths: Record<string, string>;
   retain_completed_days: number;
@@ -163,6 +164,33 @@ export type PR = {
   changed_lines: number;
   created_at: string;
   owned: boolean;
+  head_repository: string;
+  base_repository: string;
+};
+export type ExternalPrContext = {
+  number: number;
+  url: string;
+  title: string;
+  body: string;
+  branch: string;
+  head: string;
+  base: string;
+  head_repository: string;
+  base_repository: string;
+  title_truncated: boolean;
+  body_truncated: boolean;
+};
+export type PrCoverage = {
+  observed_at: string | null;
+  complete: boolean;
+  total_open: number;
+  total_external: number;
+  included_external: number;
+  omitted_external: number;
+  max_external: number;
+  max_title_chars: number;
+  max_body_chars: number;
+  max_context_bytes: number;
 };
 export type Cycle = {
   mode: 'execution' | 'audit';
@@ -178,6 +206,8 @@ export type Cycle = {
   grounding: {
     revision: string;
     prs: PR[];
+    external_prs?: ExternalPrContext[];
+    pr_coverage?: PrCoverage;
     maintenance_due: boolean;
     maintenance_targets: string[];
   } | null;
@@ -309,6 +339,79 @@ export type RunEvidenceV1 = {
   gaps: string[];
 };
 export type Event = { id: number; at: string; entity_id: string; kind: string; message: string };
+export type PrCapacity = {
+  limit: number;
+  owned_open: number | null;
+  reserved: number;
+  remaining: number | null;
+  observed_at: string | null;
+  status: string;
+  reason: string | null;
+};
+export type PlanningCapacity = {
+  day: string;
+  limit: number;
+  used: number;
+  remaining: number;
+  required: number;
+  next_reset_at: number;
+  status: 'ready' | 'daily_exhausted' | 'limit_too_low';
+};
+export type BaselineStatus =
+  'running' | 'passed' | 'failed' | 'cancelled' | 'timed_out' | 'interrupted';
+export type BaselineCommand = {
+  command: string;
+  success: boolean;
+  output: string;
+  output_truncated: boolean;
+  created_at: string;
+};
+export type BaselineCheck = {
+  id: string;
+  status: BaselineStatus;
+  config: Config;
+  config_fingerprint: string;
+  revision: string | null;
+  started_at: string;
+  completed_at: string | null;
+  commands: BaselineCommand[];
+  error: string | null;
+  workspace_removed: boolean;
+  cleanup_error: string | null;
+};
+export type DefaultBranchObservation = {
+  repository: string;
+  default_branch: string;
+  revision: string;
+  observed_at: string;
+};
+export type BaselineView = {
+  check: BaselineCheck | null;
+  eligible: boolean;
+  reason: string | null;
+  config_matches: boolean | null;
+  revision_status: 'matches_last_observation' | 'stale' | 'unknown';
+  default_observation: DefaultBranchObservation | null;
+  caveat: string;
+};
+export type BaselineSummary = {
+  id: string;
+  status: BaselineStatus;
+  started_at: string;
+  completed_at: string | null;
+  error: string | null;
+  config_matches: boolean;
+  revision_status: 'matches_last_observation' | 'stale' | 'unknown';
+};
+export type NotificationHealth = {
+  state: 'disabled' | 'invalid' | 'enabled';
+  configured: boolean;
+  pending: number;
+  failed: number;
+  last_delivered_at: string | null;
+  last_error: string | null;
+  last_http_status: number | null;
+};
 export type Snapshot = {
   status: string;
   control: {
@@ -325,8 +428,13 @@ export type Snapshot = {
   active_cycle_mode: 'execution' | 'audit' | null;
   active_tasks: number;
   cycle_active: boolean;
+  baseline_active: boolean;
+  baseline: BaselineSummary | null;
+  notifications: NotificationHealth;
   sessions_today: number;
   session_limit: number;
+  planning_capacity: PlanningCapacity;
+  pr_capacity: PrCapacity;
   tasks: TaskRow[];
   counts: Record<string, number>;
   attention_tasks: TaskRow[];

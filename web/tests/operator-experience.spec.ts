@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import type { Config, Model, Snapshot } from '../src/lib/types';
+import type { BaselineView, Config, Model, Snapshot } from '../src/lib/types';
 import { login, openNavigation, token, trackWrites } from './synthetic';
 
 function deferred() {
@@ -24,7 +24,17 @@ async function configurationFixture(
     failCheck: false,
     loadGate: null as ReturnType<typeof deferred> | null,
     saveGate: null as ReturnType<typeof deferred> | null,
-    checkGate: null as ReturnType<typeof deferred> | null
+    checkGate: null as ReturnType<typeof deferred> | null,
+    baselineView: {
+      check: null,
+      eligible: true,
+      reason: null,
+      config_matches: null,
+      revision_status: 'unknown',
+      default_observation: null,
+      caveat: 'Synthetic baseline caveat'
+    } as BaselineView,
+    baselines: [] as unknown[]
   };
   await page.route('**/api/state', async (route) => {
     const response = await route.fetch();
@@ -97,6 +107,44 @@ async function configurationFixture(
       ] satisfies Model[]
     });
   });
+  await page.route('**/api/baseline-checks/latest', async (route) => {
+    await route.fulfill({ json: state.baselineView });
+  });
+  await page.route('**/api/baseline-checks/*/cancel', async (route) => {
+    state.baselines.push({ cancel: route.request().url() });
+    if (state.baselineView.check) {
+      state.baselineView = {
+        ...state.baselineView,
+        check: {
+          ...state.baselineView.check,
+          status: 'cancelled',
+          completed_at: new Date().toISOString()
+        }
+      };
+    }
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.route('**/api/baseline-checks', async (route) => {
+    const body = route.request().postDataJSON() as { expected_config: Config };
+    state.baselines.push(body);
+    state.baselineView = {
+      ...state.baselineView,
+      check: {
+        id: 'synthetic-check',
+        status: 'running',
+        config: body.expected_config,
+        config_fingerprint: 'synthetic',
+        revision: null,
+        started_at: new Date().toISOString(),
+        completed_at: null,
+        commands: [],
+        error: null,
+        workspace_removed: false,
+        cleanup_error: null
+      }
+    };
+    await route.fulfill({ status: 202, json: state.baselineView.check });
+  });
   await page.route('**/api/doctor?*', async (route) => {
     state.checks.push(new URL(route.request().url()).searchParams.get('mode')!);
     const checked_config = structuredClone(state.saved);
@@ -109,6 +157,97 @@ async function configurationFixture(
   });
   return state;
 }
+
+test('baseline refresh preserves server staleness and rejects obsolete responses', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  await login(page);
+  await navigate('Configuration');
+  await expect(page.locator('#check-baseline')).toBeEnabled();
+  state.baselineView = {
+    ...state.baselineView,
+    config_matches: false,
+    check: {
+      id: 'current-baseline',
+      status: 'passed',
+      config: structuredClone(state.saved!),
+      config_fingerprint: 'synthetic',
+      revision: 'a'.repeat(40),
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      commands: [],
+      error: null,
+      workspace_removed: true,
+      cleanup_error: null
+    }
+  };
+  await expect(
+    page.getByText('Configuration changed since this check', { exact: true })
+  ).toBeVisible({ timeout: 10000 });
+  await expect(page.getByText('Matches the saved configuration', { exact: true })).toHaveCount(0);
+  const gate = deferred();
+  let requests = 0;
+  await page.route('**/api/baseline-checks/latest', async (route) => {
+    const number = ++requests;
+    const response = structuredClone(state.baselineView);
+    if (number === 1) {
+      response.check!.error = 'Obsolete baseline response';
+      await gate.promise;
+    }
+    await route.fulfill({ json: response }).catch(() => {});
+  });
+  await expect.poll(() => requests, { timeout: 10000 }).toBe(1);
+  await page.waitForTimeout(4500);
+  expect(requests).toBe(1);
+  await navigate('Task queue');
+  gate.resolve();
+  await navigate('Configuration');
+  await expect.poll(() => requests).toBeGreaterThan(1);
+  await expect(
+    page.getByText('Configuration changed since this check', { exact: true })
+  ).toBeVisible();
+  await expect(page.getByText('Obsolete baseline response')).toHaveCount(0);
+  expect(state.baselines).toHaveLength(0);
+});
+
+test('notification health and PR limits remain read-only observations', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page, {
+    snapshot: (snapshot) => {
+      snapshot.notifications = {
+        state: 'enabled',
+        configured: true,
+        pending: 2,
+        failed: 1,
+        last_delivered_at: null,
+        last_error: 'http_status',
+        last_http_status: 503
+      };
+      snapshot.pr_capacity = {
+        limit: 5,
+        owned_open: 4,
+        reserved: 1,
+        remaining: 0,
+        observed_at: new Date().toISOString(),
+        status: 'full',
+        reason: 'Capacity full'
+      };
+    }
+  });
+  await login(page);
+  await expect(page.getByText(/Open-PR capacity is full/)).toBeVisible();
+  await openNavigation(page, 'Configuration', !!isMobile);
+  await expect(page.getByRole('heading', { name: 'Attention notifications' })).toBeVisible();
+  await expect(page.getByText('http_status (HTTP 503)', { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/^Open PR capacity/)).toHaveValue('5');
+  expect(state.writes).toHaveLength(0);
+  expect(state.baselines).toHaveLength(0);
+});
 
 test('configuration keeps drafts and catalogs across views, discards locally, and refreshes clean values', async ({
   page,
@@ -196,7 +335,9 @@ for (const check of [
 
     for (const failed of [false, true]) {
       state.failCheck = failed;
-      const feedback = page.getByRole(failed ? 'alert' : 'status');
+      const feedback = page
+        .getByRole(failed ? 'alert' : 'status')
+        .and(page.locator('.settings-feedback'));
       const text = failed
         ? 'Synthetic connection check failed'
         : 'Synthetic saved configuration checked';
@@ -269,7 +410,9 @@ test('failed configuration loads retry, failed saves retain exact drafts, and su
   // Even a scripted form submission while pending cannot create a duplicate write.
   await page.locator('form').evaluate((form) => (form as HTMLFormElement).requestSubmit());
   state.saveGate.resolve();
-  await expect(page.getByRole('status')).toHaveText('Configuration saved.');
+  await expect(page.getByRole('status').and(page.locator('.settings-feedback'))).toHaveText(
+    'Configuration saved.'
+  );
   expect(state.writes).toHaveLength(2);
   await expect(commands).toHaveValue('fixture new test\nfixture new build');
   await page.getByRole('button', { name: 'Check connection', exact: true }).click();
@@ -303,11 +446,12 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(badge('routes')).toHaveText('Incomplete');
   await expect(badge('verification')).toHaveText('None');
   await expect(badge('preflight')).toHaveText('Not checked');
+  await expect(badge('baseline')).toHaveText('Optional · not run');
   await expect(badge('choose')).toHaveText('Not run');
   await expect(step('choose')).toContainText(
     'Audit: saved configuration incomplete. Run once: saved configuration incomplete.'
   );
-  await expect(page.getByText('0 of 5 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('0 of 6 steps saved, checked or run')).toBeVisible();
 
   // Entered: typed in this tab only.
   await page.getByLabel('Repository path').fill('/fixture/entered');
@@ -365,7 +509,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(badge('verification')).toHaveText('Saved');
   await expect(badge('preflight')).toHaveText('Not checked');
   await expect(step('preflight')).toContainText('does not prove repository push permission');
-  await expect(page.getByText('3 of 5 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('3 of 6 steps saved, checked or run')).toBeVisible();
   expect(state.writes).toHaveLength(2);
 
   // Checked: the link only focuses the existing control; the operator activates it.
@@ -375,7 +519,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await page.keyboard.press('Enter');
   await expect(badge('preflight')).toHaveText(/^Passed · execution · /);
   await expect.poll(() => state.checks).toEqual(['execution']);
-  await expect(page.getByText('4 of 5 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('4 of 6 steps saved, checked or run')).toBeVisible();
 
   // The API sorts keys; revisiting after a saved change must preserve this exact check.
   const checked = structuredClone(state.saved!);
@@ -396,7 +540,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(page.getByRole('button', { name: 'Check connection', exact: true })).toBeEnabled();
   await expect(badge('preflight')).toHaveText(result);
   await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('4 of 5 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('4 of 6 steps saved, checked or run')).toBeVisible();
   expect(state.checks).toEqual(['execution']);
 
   // Stale while dirty, restored by discard, invalidated by a saved change.
@@ -421,13 +565,35 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(step('preflight')).toContainText('Synthetic connection check failed');
   await expect(page.getByRole('alert')).toHaveText('Synthetic connection check failed');
   expect(state.checks).toEqual(['execution', 'audit']);
+
+  await expect(badge('baseline')).toHaveText('Optional · not run');
+  expect(state.baselines).toHaveLength(0);
+  await step('baseline').getByRole('button', { name: 'Open the baseline check' }).click();
+  await expect(page.locator('#check-baseline')).toBeFocused();
+  expect(state.baselines).toHaveLength(0);
+  await page.locator('#check-baseline').click();
+  await expect(page.getByRole('alertdialog')).toContainText(
+    'Run the saved verification commands on a disposable clone of the remote default branch?'
+  );
+  await page.getByRole('button', { name: 'Back' }).click();
+  expect(state.baselines).toHaveLength(0);
+  await page.locator('#check-baseline').click();
+  await page.getByRole('button', { name: 'Run baseline check' }).click();
+  await expect.poll(() => state.baselines.length).toBe(1);
+  expect((state.baselines[0] as { expected_config: Config }).expected_config).toEqual(state.saved);
+  await expect(page.getByRole('button', { name: 'Cancel baseline check' })).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel baseline check' }).click();
+  await expect.poll(() => state.baselines.length).toBe(2);
+  expect(state.baselines[1]).toEqual({ cancel: expect.stringContaining('/cancel') });
   expect(writes.map((write) => write.path)).toEqual([
     '/api/model-catalog',
     '/api/config',
     '/api/config',
     '/api/doctor',
     '/api/config',
-    '/api/doctor'
+    '/api/doctor',
+    '/api/baseline-checks',
+    '/api/baseline-checks/synthetic-check/cancel'
   ]);
 });
 
@@ -571,7 +737,7 @@ test('setup checklist links focus existing controls, hands off to the Overview a
   await page.getByRole('button', { name: 'Hide checklist' }).click();
   await expect(page.locator('[data-step]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Show checklist' }).click();
-  await expect(page.locator('[data-step]')).toHaveCount(5);
+  await expect(page.locator('[data-step]')).toHaveCount(6);
 
   // Active work, audits and continuous operation are reported, not hidden.
   restriction = 'task';

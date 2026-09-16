@@ -161,12 +161,18 @@ def run(mode):
                     c['max_sessions_per_day'] = service.request('/state')['sessions_today']
                     service.request('/config', 'PUT', c)
                     service.stop(); service.start()
-                    service.request('/control/cycle', 'POST')
+                    try:
+                        service.request('/control/cycle', 'POST')
+                        raise AssertionError('Unaffordable Run once was accepted')
+                    except urllib.error.HTTPError as error:
+                        assert error.code == 409
+                    service.request('/control/resume', 'POST')
                     task = service.wait(service.terminal_task, 'live admission denied')
                     assert task['blocked_reason'] == 'budget_exhausted'
                     assert service.request('/state')['sessions_today'] == c['max_sessions_per_day']
                     assert task['config']['max_sessions_per_day'] == 150
-                    service.wait(lambda: service.request('/state')['control']['paused'], 'failed drain paused')
+                    service.request('/control/pause', 'POST')
+                    service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'exhausted task stopped')
                     assert len(service.request('/state')['cycles']) == 1
                     c['max_sessions_per_day'] += 20
                     service.request('/config', 'PUT', c)

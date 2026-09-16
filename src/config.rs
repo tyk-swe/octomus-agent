@@ -148,6 +148,7 @@ pub struct Config {
     pub task_timeout_seconds: u64,
     pub command_timeout_seconds: u64,
     pub max_sessions_per_day: u64,
+    pub max_open_prs: usize,
     pub max_workspace_bytes: u64,
     pub runner_storage_paths: BTreeMap<String, PathBuf>,
     pub retain_completed_days: u64,
@@ -193,6 +194,7 @@ impl Default for Config {
             task_timeout_seconds: 14400,
             command_timeout_seconds: 600,
             max_sessions_per_day: 150,
+            max_open_prs: 5,
             max_workspace_bytes: 20_000_000_000,
             runner_storage_paths: BTreeMap::new(),
             retain_completed_days: 14,
@@ -215,6 +217,9 @@ impl Config {
             .map(|(name, route)| (name.as_str(), route))
             .chain((!audit).then_some(("repair", &self.repair_route)))
             .collect()
+    }
+    pub fn planning_admissions_required(&self) -> u64 {
+        self.discovery_agents as u64 + crate::model::REVIEWER_SLOTS.len() as u64 + 2
     }
     pub fn validate(&self, ready: bool) -> Result<()> {
         self.validate_mode(ready, false)
@@ -254,6 +259,7 @@ impl Config {
         );
         ensure!(
             (1..=1000000).contains(&self.max_sessions_per_day)
+                && (1..=1000).contains(&self.max_open_prs)
                 && (1_000_000..=1_000_000_000_000_000).contains(&self.max_workspace_bytes)
                 && (1..=36500).contains(&self.retain_completed_days)
                 && (100..=100000).contains(&self.retain_events),
@@ -321,23 +327,36 @@ impl Config {
                     .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
                 validate_binary(self.binary(route.backend))?;
             }
-            ensure!(
-                self.repository.is_absolute() && self.repository.join(".git").exists(),
-                "Repository must be an absolute path to a Git checkout"
-            );
-            let parts: Vec<_> = self.github_repo.split('/').collect();
-            ensure!(
-                parts.len() == 2
-                    && parts.iter().all(|s| !s.is_empty()
-                        && s.bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))),
-                "GitHub repository must be owner/name"
-            );
+            self.validate_repository()?;
             ensure!(
                 audit || !self.verification_commands.is_empty(),
                 "Set at least one meaningful repository verification command"
             );
         }
+        Ok(())
+    }
+    pub fn validate_baseline(&self) -> Result<()> {
+        self.validate(false)?;
+        self.validate_repository()?;
+        ensure!(
+            !self.verification_commands.is_empty(),
+            "Set at least one meaningful repository verification command"
+        );
+        Ok(())
+    }
+    fn validate_repository(&self) -> Result<()> {
+        ensure!(
+            self.repository.is_absolute() && self.repository.join(".git").exists(),
+            "Repository must be an absolute path to a Git checkout"
+        );
+        let parts: Vec<_> = self.github_repo.split('/').collect();
+        ensure!(
+            parts.len() == 2
+                && parts.iter().all(|s| !s.is_empty()
+                    && s.bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))),
+            "GitHub repository must be owner/name"
+        );
         Ok(())
     }
 }

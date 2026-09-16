@@ -17,13 +17,17 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+pub mod baseline;
+mod capacity;
 mod execution;
 mod housekeeping;
 use housekeeping::directory_size;
 mod memory;
 mod planning;
 
-pub use planning::{resolve_target, validate_proposals};
+pub use baseline::{BaselineConflict, BaselineJob, baseline_fingerprint};
+pub use capacity::{PrIdentity, PrRefresh};
+pub use planning::{external_context, resolve_target, validate_proposals};
 
 #[derive(Default)]
 pub struct Runtime {
@@ -35,6 +39,12 @@ pub struct Runtime {
     pub housekeeping: Option<tokio::task::JoinHandle<()>>,
     pub reconciling_publication: bool,
     pub checked_cycles: HashSet<String>,
+    pub pr_refresh: Option<PrRefresh>,
+    pub pr_refresh_last_attempt: i64,
+    pub pr_refresh_error: Option<String>,
+    pub pr_observation: Option<(capacity::PrIdentity, i64)>,
+    pub baseline: Option<BaselineJob>,
+    pub default_observation: Option<DefaultBranchObservation>,
 }
 #[derive(Clone)]
 pub struct App {
@@ -92,6 +102,8 @@ impl App {
             .event(&t.id, "status", &format!("{:?}", t.status))
     }
     pub fn recover(&self) -> Result<()> {
+        self.recover_baselines()?;
+        self.seed_pr_reservations()?;
         for mut task in self.store.tasks_with_status(&Status::ACTIVE)? {
             if !task.status.active() {
                 continue;
@@ -245,6 +257,12 @@ impl App {
         if let Some(token) = &rt.cycle {
             token.cancel();
         }
+        if let Some(job) = &rt.pr_refresh {
+            job.cancel.cancel();
+        }
+        if let Some(job) = &rt.baseline {
+            job.cancel.cancel();
+        }
     }
     async fn tick(&self) -> Result<()> {
         let _gate = self.gate.lock().await;
@@ -252,6 +270,9 @@ impl App {
         // Reconciliation can write a preserved PR branch. Reserve publication while
         // leaving the gate available to pause and other operator controls.
         if self.runtime().reconciling_publication {
+            return Ok(());
+        }
+        if self.runtime().baseline.is_some() {
             return Ok(());
         }
         let mut control = self.control()?;
@@ -297,6 +318,26 @@ impl App {
             .map(|t| t.proposal.target.clone())
             .filter(|b| b != &c.default_branch)
             .collect();
+        let fresh_inventory = self.collect_pr_refresh();
+        let mut unreserved_new = false;
+        for t in tasks.iter().filter(|t| {
+            t.status == Status::Queued
+                && control
+                    .batch
+                    .as_ref()
+                    .is_none_or(|b| t.run_id.as_deref() == Some(&b.id))
+        }) {
+            if t.proposal.target == t.config.default_branch
+                && t.output_commit.is_none()
+                && !self.store.has_pr_reservation(&t.id)?
+            {
+                unreserved_new = true;
+                break;
+            }
+        }
+        if slots > 0 && unreserved_new && fresh_inventory.is_none() {
+            self.schedule_pr_refresh(&c)?;
+        }
         for mut task in tasks
             .iter()
             .filter(|t| {
@@ -362,11 +403,23 @@ impl App {
             {
                 continue;
             }
+            if task.proposal.target == task.config.default_branch
+                && task.output_commit.is_none()
+                && !self.store.has_pr_reservation(&task.id)?
+            {
+                let Some(inventory) = &fresh_inventory else {
+                    continue;
+                };
+                if !self.store.admit_new_pr_task(&mut task, inventory)? {
+                    continue;
+                }
+            } else {
+                self.transition(&mut task, Status::Executing)?;
+            }
             occupied.insert(task.proposal.target.clone());
             slots -= 1;
             let cancel = self.shutdown.child_token();
             self.runtime().tasks.insert(task.id.clone(), cancel.clone());
-            self.transition(&mut task, Status::Executing)?;
             let app = self.clone();
             tokio::spawn(async move {
                 let _guard = app.task_guard(&task.id);
@@ -443,11 +496,23 @@ impl App {
             self.store.tasks_with_status(&["queued"])?.is_empty()
         };
         if !busy && ready_to_plan && chrono::Utc::now().timestamp() >= control.next_cycle_at {
+            let capacity = self.store.planning_capacity()?;
+            if !capacity.available() {
+                if control.mode == OperatingMode::RunOnce {
+                    control.error = Some(capacity.message());
+                    control.set_mode(OperatingMode::Paused);
+                    self.store.put("settings", "control", &control)?;
+                    self.store
+                        .event("system", "planning_capacity", &capacity.message())?;
+                }
+                return Ok(());
+            }
             self.launch_cycle(&c, CycleMode::Execution, &mut control)?;
         }
         Ok(())
     }
     fn launch_cycle(&self, config: &Config, mode: CycleMode, control: &mut Control) -> Result<()> {
+        self.store.planning_capacity()?.ensure_available()?;
         control.cycle_number += 1;
         let cycle_id = id();
         let run_id = if mode == CycleMode::Execution {
@@ -504,7 +569,10 @@ impl App {
         {
             let rt = self.runtime();
             ensure!(
-                control.paused && rt.tasks.is_empty() && rt.cycle.is_none(),
+                control.paused
+                    && rt.tasks.is_empty()
+                    && rt.cycle.is_none()
+                    && rt.baseline.is_none(),
                 "Pause and wait for active work before running an audit"
             );
         }

@@ -19,7 +19,9 @@ def arg(name):
 
 def refresh(pr):
     pr['base'].setdefault('repo', {'full_name': 'fixture/project'})
-    pr['head']['sha'] = subprocess.check_output(['/usr/bin/git', '--git-dir', str(root / 'remote.git'), 'rev-parse', pr['head']['ref']], text=True).strip()
+    owned_source = (pr['head'].get('repo') or {}).get('full_name') == 'fixture/project'
+    if owned_source:
+        pr['head']['sha'] = subprocess.check_output(['/usr/bin/git', '--git-dir', str(root / 'remote.git'), 'rev-parse', pr['head']['ref']], text=True).strip()
     return pr
 
 if (root / 'reconcile-delay').exists():
@@ -36,6 +38,8 @@ if args[:2] == ['auth', 'status']:
     print('Authenticated fixture operator')
 elif args[0] == 'api':
     route = args[-1]
+    with (root / 'gh-api.jsonl').open('a') as log:
+        log.write(json.dumps({'route': route}) + '\n')
     if '?' in route:
         print(json.dumps([refresh(p) for p in prs if p['state'] == 'open' or 'state=all' in route]))
     else:

@@ -14,7 +14,8 @@
   import Sha from './Sha.svelte';
   import EvidenceText from './EvidenceText.svelte';
   import EvidenceFact from './EvidenceFact.svelte';
-  import type { ProposalEvidence, RunEvidenceV1, TaskEvidence } from './types';
+  import PrContext from './PrContext.svelte';
+  import type { Cycle, ProposalEvidence, RunEvidenceV1, TaskEvidence } from './types';
   import {
     checksVerdict,
     commandBadge,
@@ -46,6 +47,8 @@
   } = $props();
   let dialog: HTMLDialogElement;
   let run = $state<RunEvidenceV1 | null>(null),
+    cycleDetail = $state<Cycle | null>(null),
+    contextError = $state(''),
     error = $state(''),
     stale = $state(false),
     loading = $state(true),
@@ -77,15 +80,25 @@
     const controller = new AbortController();
     request = controller;
     try {
-      const next = await api<RunEvidenceV1>(
-        `/cycles/${encodeURIComponent(cycle)}/evidence`,
-        'GET',
-        undefined,
-        controller.signal
-      );
+      const [next, detail] = await Promise.all([
+        api<RunEvidenceV1>(
+          `/cycles/${encodeURIComponent(cycle)}/evidence`,
+          'GET',
+          undefined,
+          controller.signal
+        ),
+        api<Cycle>(`/cycles/${encodeURIComponent(cycle)}`, 'GET', undefined, controller.signal)
+          .then((c) => ({ cycle: c, error: '' }))
+          .catch((e: unknown) => ({
+            cycle: null,
+            error: e instanceof Error ? e.message : String(e)
+          }))
+      ]);
       // A late response for a superseded selection must never replace newer evidence.
       if (current !== generation || controller.signal.aborted || cycle !== cycleId) return;
       run = next;
+      cycleDetail = detail.cycle;
+      contextError = detail.error;
       error = '';
       stale = false;
       // A removed selection stays explicit; another proposal is never silently substituted.
@@ -94,7 +107,10 @@
       if (current !== generation || controller.signal.aborted || cycle !== cycleId) return;
       error = (e as Error).message;
       // A rejected session must not keep displaying the previous session's records.
-      if (e instanceof ApiError && e.status === 401) run = null;
+      if (e instanceof ApiError && e.status === 401) {
+        run = null;
+        cycleDetail = null;
+      }
       stale = run !== null;
     } finally {
       if (current === generation) {
@@ -111,6 +127,8 @@
     const cycle = cycleId;
     // Selecting another run discards the previous run rather than mixing two cycles.
     run = null;
+    cycleDetail = null;
+    contextError = '';
     error = '';
     stale = false;
     loading = true;
@@ -253,6 +271,16 @@
         </dl>
         {@render gapList('Recorded gaps for this run', run.gaps)}
       </section>
+      {#if contextError}
+        <section class="evidence-section">
+          <p class="notice">
+            <Icon name="alert" size={18} /> PR context unavailable: {contextError}. Retrying
+            automatically.
+          </p>
+        </section>
+      {:else}
+        <PrContext grounding={cycleDetail?.grounding ?? null} />
+      {/if}
       {#if proposals.length}
         <div class="evidence-picker">
           <label for="evidence-proposal">Proposal</label>

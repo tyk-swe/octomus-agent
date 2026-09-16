@@ -203,6 +203,8 @@ mod tests {
         let mut g = Grounding {
             revision: "old".into(),
             prs: vec![],
+            external_prs: vec![],
+            pr_coverage: PrCoverage::default(),
             history: json!([]),
             maintenance_due: false,
             maintenance_targets: vec![],
@@ -259,6 +261,8 @@ mod tests {
         let g = Grounding {
             revision: "source".into(),
             prs: vec![],
+            external_prs: vec![],
+            pr_coverage: PrCoverage::default(),
             history: json!([]),
             maintenance_due: false,
             maintenance_targets: vec![],

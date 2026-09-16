@@ -32,8 +32,9 @@ application; see [distribution](docs/distribution.md) for release preparation.
   compiler, Rust 1.88+, Node 22.12+ and npm. Python 3 is only needed for repository tests.
 
 The first run is four explicit moves: enter the configuration, save it, check the
-connection, then choose **Run an audit** or **Run once**. Nothing starts before that
-last choice, and continuous operation is a separate control.
+connection, then choose **Run an audit** or **Run once**. No model work starts before
+that last choice, and continuous operation is a separate control. An optional, explicit
+clean-baseline check can run saved verification commands before model work.
 
 ### 1. Install the tools and application
 
@@ -132,7 +133,8 @@ in the VM terminal. It starts paused. Refreshing the page requires the token aga
 
 ### 3. First run: enter, save, check, then choose
 
-Open **Configuration**. The **Setup checklist** at the top tracks five steps and labels
+Open **Configuration**. The **Setup checklist** at the top tracks six steps (including
+an optional clean-baseline check) and labels
 each one as entered (typed in this tab), saved (sent to the service), checked (the
 saved configuration passed an explicit connection check) or ran (a cycle actually
 executed). Its links move focus to the existing controls. Nothing on the checklist
@@ -166,7 +168,12 @@ repository push permission or model inference; only a run's recorded evidence do
    remote, the GitHub CLI login and the runner catalogs for the saved routes. It does
    not prove push permission and makes no model call. Correct any CLI version warning
    before live work. Any later saved change invalidates the result, so check again.
-5. **Choose Audit or Run once** on the Overview while the service is paused and idle.
+5. Optionally use **Check clean baseline** while paused and idle. Confirm the saved
+   commands will run with the service user's permissions in a disposable clone of the
+   remote default branch. This makes no model calls and creates no tasks or PRs. Inspect
+   the checked revision, bounded output, cancellation/timeout status and configuration
+   freshness. A baseline pass is never verification of a later task's changes.
+6. **Choose Audit or Run once** on the Overview while the service is paused and idle.
    **Run an audit** runs one planning pass, records accepted, rejected and deferred
    decisions with reasons, queues nothing and leaves execution paused; no later cycle
    executes an audit's recommendations. With nine discovery agents a completed pass
@@ -187,6 +194,22 @@ Use **Start continuous** only when you want ongoing scheduling; it is never the 
 first action. Inspect each task's review and verification evidence and its PR; only you
 decide to merge. A cycle with no worthwhile work is a valid outcome.
 
+A complete planning pass needs 12–14 admissions (13 with nine discovery agents).
+Unaffordable audits and Run once requests are refused before spending admissions.
+Continuous operation waits for allowance to return without creating failed cycles;
+Run once rechecks after draining queued work and pauses if planning is no longer affordable.
+
+**Open PR capacity** defaults to five owned open PRs. New-PR tasks wait when those PRs
+plus admitted deliveries fill the limit, or when remote state cannot be established.
+Existing-PR maintenance remains eligible. Lowering the limit never closes PRs or
+interrupts already admitted publication.
+
+For unattended attention notices, optionally set `OCTOMUS_NOTIFICATION_WEBHOOK_URL`
+in the protected service environment and restart. Only minimal task/run identity and
+failure categories are sent, with bounded retries; duplicate delivery is possible.
+The URL is not returned by the dashboard or inherited by runner/verification commands.
+Inspect delivery health in Configuration. See [deployment](docs/deployment.md).
+
 **Pause** stops new work; active tasks may finish and publish. Use **Cancel task** to
 stop an individual task, or stop the service to terminate its workers. Audits cannot
 start alongside active work. For durable service setup, follow
@@ -194,7 +217,10 @@ start alongside active work. For durable service setup, follow
 
 ## How it decides
 
-Grounding inspects code, AGENTS.md, history and existing owned PRs. Eight to ten
+Grounding inspects code, AGENTS.md, history and existing owned PRs, with bounded,
+source-attributed contributor/fork PR context to help identify overlapping work.
+External PRs are never writable targets, and recorded coverage names omitted or
+truncated context. Eight to ten
 discovery agents explore complementary areas; two independent adversaries
 challenge their proposals. The orchestrator records a reason for every decision.
 An execution cycle queues accepted work; an audit only records recommendations.

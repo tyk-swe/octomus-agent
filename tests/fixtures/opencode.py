@@ -28,6 +28,7 @@ if mode() == 'startup-hang':
     time.sleep(120)
 assert sys.argv[1] == 'serve'
 assert 'OCTOMUS_TOKEN' not in os.environ
+assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 assert os.environ['OPENCODE_DISABLE_PROJECT_CONFIG'] == 'true'
 policy = json.loads(os.environ['OPENCODE_CONFIG_CONTENT'])
 sessions = root / 'oc-sessions'

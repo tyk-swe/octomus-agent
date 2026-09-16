@@ -226,6 +226,8 @@ fn same_cycle_proposals_sharing_a_problem_key_are_duplicates() {
     let g = Grounding {
         revision: "rev".into(),
         prs: vec![],
+        external_prs: vec![],
+        pr_coverage: PrCoverage::default(),
         history: json!({}),
         maintenance_due: false,
         maintenance_targets: vec![],
@@ -246,7 +248,10 @@ fn same_cycle_proposals_sharing_a_problem_key_are_duplicates() {
 // F4
 #[test]
 fn target_resolution_binds_the_owned_pr_regardless_of_order() {
-    let c = Config::default();
+    let c = Config {
+        github_repo: "fixture/project".into(),
+        ..Default::default()
+    };
     let prs = vec![
         pr(202, "octomus/fix", "fork-head", false),
         pr(101, "octomus/fix", "repo-head", true),
@@ -260,6 +265,8 @@ fn target_resolution_binds_the_owned_pr_regardless_of_order() {
     let g = Grounding {
         revision: "rev".into(),
         prs,
+        external_prs: vec![],
+        pr_coverage: PrCoverage::default(),
         history: json!({}),
         maintenance_due: false,
         maintenance_targets: vec![],

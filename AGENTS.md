@@ -6,6 +6,9 @@ GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
 
 ## Repository map
 
+- `src/engine/baseline.rs`: explicit clean-baseline checks, separate from task verification;
+  `src/engine/capacity.rs` and `src/store/capacity.rs`: owned-PR admission and observations.
+  `src/notifications.rs` and `src/store/notifications.rs`: opt-in webhook delivery and durable attention outbox.
 - `src/engine.rs`: scheduler and cycle orchestration, with `src/engine/planning.rs`
   (discovery and proposal review), `execution.rs` (execution, review, repair and
   verification), `memory.rs` (grounding and history) and `housekeeping.rs`
@@ -25,7 +28,10 @@ GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
   `review_findings.rs`, `review_regressions.rs`, `evidence.rs`, `process_lifecycle.rs`,
   `history_scale.rs`, and `contracts.rs` (ignored unless a pinned real client binary
   is provided).
-- `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py` with `tests/fixtures`:
+- `tests/baseline.rs`, `notifications.rs`, `pr_capacity.rs`, and `pr_context.rs`:
+  baseline, webhook, PR admission and external-context regressions.
+- `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py`, `e2e_baseline.py`, and
+  `e2e_notifications.py` with `tests/fixtures`:
   deterministic Codex/OpenCode/GitHub peers with real local Git. `distribution.py`,
   `crate.py`, `crate_guards.py` and `systemd.py` cover packaging and deployment;
   `evidence_snapshot.py` runs the documented backup and export examples on synthetic data.

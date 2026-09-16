@@ -1,6 +1,8 @@
 //! Indexed operational views. Canonical evidence remains in records.data.
 use super::*;
-use crate::model::{BatchPhase, Control, Cycle, OperatingMode, RunBatch, Status, Task};
+use crate::model::{
+    BaselineCheck, BatchPhase, Control, Cycle, OperatingMode, RunBatch, Status, Task,
+};
 use serde_json::{Value, json};
 
 const TASK_SUMMARY: &str = "json_object('id',NEW.id,'cycle_id',json_extract(NEW.data,'$.cycle_id'),'title',substr(json_extract(NEW.data,'$.proposal.title'),1,200),'category',json_extract(NEW.data,'$.proposal.category'),'tier',json_extract(NEW.data,'$.proposal.tier'),'target',json_extract(NEW.data,'$.proposal.target'),'branch',json_extract(NEW.data,'$.branch'),'status',json_extract(NEW.data,'$.status'),'pr_url',json_extract(NEW.data,'$.pr_url'),'pr_number',json_extract(NEW.data,'$.pr_number'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'blocked_reason',json_extract(NEW.data,'$.blocked_reason'),'created_at',json_extract(NEW.data,'$.created_at'),'updated_at',json_extract(NEW.data,'$.updated_at'),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}')),'superseded_by',json(COALESCE(json_extract(NEW.data,'$.superseded_by'),'[]')))";
@@ -144,6 +146,12 @@ pub(super) fn migrate(c: &Connection) -> Result<()> {
             PRAGMA user_version=5;
             COMMIT;")?;
     }
+    c.execute_batch("BEGIN IMMEDIATE;
+        CREATE TABLE IF NOT EXISTS pr_reservations(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,branch TEXT NOT NULL,admitted_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS pr_reservations_repository ON pr_reservations(repository);
+        CREATE TRIGGER IF NOT EXISTS release_pr_reservation_insert AFTER INSERT ON records WHEN NEW.kind='task' AND json_extract(NEW.data,'$.status') IN ('blocked','failed','cancelled') AND json_extract(NEW.data,'$.output_commit') IS NULL BEGIN DELETE FROM pr_reservations WHERE task_id=NEW.id; END;
+        CREATE TRIGGER IF NOT EXISTS release_pr_reservation_update AFTER UPDATE ON records WHEN NEW.kind='task' AND json_extract(NEW.data,'$.status') IN ('blocked','failed','cancelled') AND json_extract(NEW.data,'$.output_commit') IS NULL BEGIN DELETE FROM pr_reservations WHERE task_id=NEW.id; END;
+        COMMIT;")?;
     Ok(())
 }
 
@@ -283,11 +291,23 @@ impl Store {
             "WITH candidates AS (
                 SELECT id,seq FROM record_meta WHERE kind='task' AND archived IS NULL
                     AND status IN ({})
-                UNION ALL
+                UNION
                 SELECT id,seq FROM (
-                    SELECT id,seq FROM record_meta WHERE kind='task' AND archived IS NULL
-                        AND status='queued' AND (?1 IS NULL OR run_id=?1)
-                    ORDER BY seq ASC LIMIT 500
+                    SELECT m.id,m.seq FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
+                        WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued'
+                            AND (?1 IS NULL OR m.run_id=?1)
+                            AND (json_extract(r.data,'$.proposal.target') != json_extract(r.data,'$.config.default_branch')
+                                OR EXISTS(SELECT 1 FROM pr_reservations p WHERE p.task_id=m.id))
+                        ORDER BY m.seq ASC LIMIT 500
+                )
+                UNION
+                SELECT id,seq FROM (
+                    SELECT m.id,m.seq FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
+                        WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued'
+                            AND (?1 IS NULL OR m.run_id=?1)
+                            AND json_extract(r.data,'$.proposal.target') = json_extract(r.data,'$.config.default_branch')
+                            AND NOT EXISTS(SELECT 1 FROM pr_reservations p WHERE p.task_id=m.id)
+                        ORDER BY m.seq ASC LIMIT 500
                 )
             )
             SELECT r.data FROM candidates m JOIN records r ON r.kind='task' AND r.id=m.id
@@ -316,6 +336,30 @@ impl Store {
         s.query_map([], |r| r.get::<_, String>(0))?
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
+    }
+    pub fn running_baselines(&self) -> Result<Vec<BaselineCheck>> {
+        let c = self.conn();
+        let mut s = c.prepare(
+            "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')='running'",
+        )?;
+        s.query_map([], |r| r.get::<_, String>(0))?
+            .map(|r| Ok(serde_json::from_str(&r?)?))
+            .collect()
+    }
+    pub fn baseline_cleanup_candidates(&self) -> Result<Vec<BaselineCheck>> {
+        let c = self.conn();
+        let mut s = c.prepare(
+            "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid LIMIT 100",
+        )?;
+        s.query_map([], |r| r.get::<_, String>(0))?
+            .map(|r| Ok(serde_json::from_str(&r?)?))
+            .collect()
+    }
+    pub fn latest_baseline(&self) -> Result<Option<BaselineCheck>> {
+        let Some(id) = self.get::<String>("settings", "baseline_latest")? else {
+            return Ok(None);
+        };
+        self.get("baseline", &id)
     }
     pub fn tasks_for_cycle(&self, id: &str) -> Result<Vec<Task>> {
         let c = self.conn();

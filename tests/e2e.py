@@ -31,7 +31,8 @@ class Service:
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             self.port = sock.getsockname()[1]
-        self.env = {**os.environ, 'OCTOMUS_TOKEN': TOKEN, 'OCTOMUS_FIXTURE': str(root), 'PATH': f'{root / "bin"}:{os.environ["PATH"]}'}
+        self.env = {key: value for key, value in os.environ.items() if key != 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'}
+        self.env.update({'OCTOMUS_TOKEN': TOKEN, 'OCTOMUS_FIXTURE': str(root), 'PATH': f'{root / "bin"}:{os.environ["PATH"]}'})
 
     def start(self):
         self.process = subprocess.Popen([str(BINARY), '--data-dir', str(self.root / '.octomus'), '--listen', f'127.0.0.1:{self.port}', '--assets', str(PROJECT / 'web/build')], env=self.env, stdout=self.log, stderr=self.log)
@@ -72,6 +73,8 @@ class Service:
         if (self.root / 'custom-route').exists():
             config['repair_route'] = {'backend': 'codex', 'model': 'gpt-5.6-luna', 'effort': 'high'}
             config['tiers']['M'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}
+        if (self.root / 'cap1-interrupt').exists():
+            config['max_open_prs'] = 1
         self.request('/config', 'PUT', config)
         diagnostic = self.request('/doctor', 'POST')
         assert diagnostic['checked_config'] == self.request('/config')
@@ -137,9 +140,11 @@ def scenario(mode):
         setup(root)
         if mode in ['existing-pr', 'remote-conflict', 'dependencies']:
             existing_pr(root)
+        if mode == 'external-context':
+            (root / 'prs.json').write_text(json.dumps([{'number': 77, 'title': 'External contribution', 'body': 'External work.\n', 'head': {'ref': 'external-work', 'sha': 'e' * 40, 'repo': {'full_name': 'contributor/project'}}, 'base': {'ref': 'main', 'repo': {'full_name': 'fixture/project'}}, 'html_url': 'https://github.com/fixture/project/pull/77', 'state': 'open', 'merged_at': None, 'additions': 4, 'deletions': 1, 'created_at': '2026-08-02T00:00:00Z'}]))
         if mode != 'normal':
             (root / mode).touch()
-        if mode == 'closed-after-publication':
+        if mode in ['closed-after-publication', 'cap1-interrupt']:
             (root / 'interrupt-publication').touch()
         service = Service(root)
         try:
@@ -182,7 +187,7 @@ def scenario(mode):
                 assert report['tasks'] == []
                 print('PASS idle: all discovery/review roles complete without creating work')
                 return
-            if mode in ['interrupt-publication', 'closed-after-publication']:
+            if mode in ['interrupt-publication', 'closed-after-publication', 'cap1-interrupt']:
                 service.wait(lambda: (root / 'publication-created').exists(), 'publication side effect')
                 service.stop(crash=True)
                 if mode == 'closed-after-publication':
@@ -261,7 +266,7 @@ def scenario(mode):
             assert task['workspace'].endswith(f'tasks/{task["id"]}/workspace')
             assert task['verification'][-1]['success']
             assert task['verification'][-1]['revision'] == task['output_commit']
-            assert len(json.loads((root / 'prs.json').read_text())) == (2 if mode == 'parallel' else 1)
+            assert len(json.loads((root / 'prs.json').read_text())) == (2 if mode in ['parallel', 'external-context'] else 1)
             if mode in ['existing-pr', 'dependencies']:
                 assert task['pr_number'] == 42 and task['branch'] == 'octomus/existing'
                 assert (Path(task['workspace']) / 'earlier.txt').exists()
@@ -279,6 +284,23 @@ def scenario(mode):
             assert sum(a['role'] == 'repair' for a in report['admissions']) == 2 * expected_tasks
             assert report['cycles'][0]['planning_admissions'] == 13
             assert report['cycles'][0]['task_admissions'] == 6 * expected_tasks
+            if mode == 'external-context':
+                cycle_id = service.request('/state')['cycles'][0]['id']
+                grounding = service.request(f'/cycles/{cycle_id}')['grounding']
+                coverage = grounding['pr_coverage']
+                assert coverage['complete'] and coverage['total_external'] == 1 and coverage['included_external'] == 1, coverage
+                external = grounding['external_prs']
+                assert [p['number'] for p in external] == [77]
+                assert external[0]['head_repository'] == 'contributor/project' and external[0]['head'] == 'e' * 40
+                reviewers = [p['prompt'] for p in protocol if p['prompt'].startswith('Adversarial proposal')]
+                assert len(reviewers) == 2
+                assert all('pull/77' in p and 'contributor/project' in p for p in reviewers)
+                ground_prompt = next(p['prompt'] for p in protocol if p['prompt'].startswith('Ground this repository'))
+                assert 'pull/77' in ground_prompt
+                api_calls = [json.loads(line)['route'] for line in (root / 'gh-api.jsonl').read_text().splitlines()]
+                assert any('state=open' in call for call in api_calls)
+                assert not any(call.endswith('/pulls/77') for call in api_calls), api_calls
+                assert all(t['branch'] != 'external-work' for t in service.request('/state')['tasks'])
             if mode == 'custom-route':
                 assert repairs[0]['route'] == {'backend': 'codex', 'model': 'gpt-5.6-luna', 'effort': 'high'}
                 consolidation = next(p['prompt'] for p in protocol if p['prompt'].startswith('Act as final'))
@@ -382,6 +404,27 @@ def audit_scenario(mode):
             publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
             baseline_revision = git('rev-parse', 'main', cwd=root / 'remote.git')
             baseline_refs = git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git')
+            if mode == 'budget':
+                try:
+                    service.request('/control/audit', 'POST')
+                    raise AssertionError('Unaffordable audit was accepted')
+                except urllib.error.HTTPError as e:
+                    assert e.code == 409
+                    message = json.load(e)['error']
+                    assert '13' in message and 'increase' in message, message
+                state = service.request('/state')
+                capacity = state['planning_capacity']
+                assert capacity['status'] == 'limit_too_low', capacity
+                assert capacity['required'] == 13 and capacity['limit'] == 2, capacity
+                assert state['cycles'] == [] and state['tasks'] == queued_before
+                assert state['control']['paused'] and state['control']['error'] is None
+                report = usage_report(root)
+                assert report['admissions'] == [] and report['cycles'] == [] and report['daily'] == []
+                assert not (root / 'publications.jsonl').exists()
+                assert git('rev-parse', 'main', cwd=root / 'remote.git') == baseline_revision
+                assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
+                print('PASS audit-budget: refused before any admission with an explicit capacity reason')
+                return
             service.request('/control/audit', 'POST')
             if mode != 'failed':
                 service.wait(lambda: (root / 'audit-entered').exists(), 'audit started')
@@ -440,7 +483,7 @@ def audit_scenario(mode):
 
 
 if __name__ == '__main__':
-    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication']:
+    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']:
         scenario(mode)
 
     for role in ['executor', 'repair']:

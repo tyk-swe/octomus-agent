@@ -8,6 +8,7 @@ import sys
 import uuid
 
 root = Path(os.environ['OCTOMUS_FIXTURE'])
+assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 if sys.argv[1:] == ['--version']:
     print('codex-cli ' + ((root / 'version').read_text().strip() if (root / 'version').exists() else '0.153.4'))
     sys.exit(0)

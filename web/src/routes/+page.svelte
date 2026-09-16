@@ -100,11 +100,20 @@
   let latestCycle = $derived(data?.cycles[0]);
   type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
   const canControl = $derived({
-    resume: !!data?.configured && data.active_cycle_mode !== 'audit',
+    resume: !!data?.configured && data.active_cycle_mode !== 'audit' && !data.baseline_active,
     pause: !!data?.configured && data.active_cycle_mode !== 'audit',
-    cycle: !!data?.configured && data.control.paused && !data.cycle_active && !data.active_tasks,
+    cycle:
+      !!data?.configured &&
+      data.control.paused &&
+      !data.cycle_active &&
+      !data.active_tasks &&
+      !data.baseline_active,
     audit:
-      !!data?.audit_configured && data.control.paused && !data.cycle_active && !data.active_tasks
+      !!data?.audit_configured &&
+      data.control.paused &&
+      !data.cycle_active &&
+      !data.active_tasks &&
+      !data.baseline_active
   });
   /** Polled snapshot facts the setup checklist reads; nothing new is stored or fetched. */
   const setupStatus = $derived<SetupStatus | null>(
@@ -116,6 +125,9 @@
           mode: data.control.mode,
           active_tasks: data.active_tasks,
           cycle_active: data.cycle_active,
+          baseline_active: data.baseline_active,
+          baseline: data.baseline,
+          notifications: data.notifications,
           active_cycle_mode: data.active_cycle_mode,
           queued: data.counts.queued ?? 0,
           latest: data.cycles[0] ?? null
@@ -632,6 +644,40 @@
             not be queued.
           </div>
         {/if}
+        {#if data.planning_capacity.status !== 'ready'}
+          <div class="notice" role="status" aria-live="polite">
+            <Icon name="alert" /><span
+              >A complete planning pass requires {data.planning_capacity.required} daily admissions; {data
+                .planning_capacity.remaining} remain today.
+              {data.planning_capacity.status === 'limit_too_low'
+                ? 'The configured daily limit cannot fund a complete planning pass; increase it in Configuration.'
+                : 'The daily allowance resets at midnight UTC.'}
+              {data.control.mode === 'continuous' && !data.control.paused
+                ? 'Continuous operation keeps waiting and plans again when the allowance returns.'
+                : 'Audit and Run once are refused until planning can be funded.'}</span
+            >
+          </div>
+        {/if}
+        {#if data.pr_capacity.status !== 'ready'}
+          <div class="notice" role="status" aria-live="polite">
+            <Icon name="alert" /><span
+              >{#if data.pr_capacity.status === 'full'}Open-PR capacity is full: {data.pr_capacity
+                  .owned_open} owned open PRs of {data.pr_capacity.limit}
+                allowed{data.pr_capacity.reserved > 0
+                  ? `, plus ${data.pr_capacity.reserved} reserved deliveries`
+                  : ''}. New-PR work waits for an observed closure or merge; maintenance on eligible
+                owned PRs continues.
+              {:else if data.pr_capacity.status === 'refreshing'}Refreshing the open-PR inventory
+                before admitting new-PR work…
+              {:else}Open-PR capacity is unavailable: {data.pr_capacity.reason ??
+                  'no complete inventory observed'}. New-PR work waits; unknown capacity is never
+                treated as zero.{/if}
+              {#if data.pr_capacity.observed_at}Observed {relative(
+                  data.pr_capacity.observed_at
+                )}.{/if}</span
+            >
+          </div>
+        {/if}
         <div class="notice" aria-label="Operating mode" aria-live="polite">
           <span
             >{data.control.mode === 'run_once'
@@ -895,7 +941,15 @@
                   value={data.sessions_today}
                   max={data.session_limit}
                   aria-label="Daily session budget used"
-                ></progress><small>Resets at midnight UTC</small>
+                ></progress><small
+                  >Resets at midnight UTC · planning pass requires {data.planning_capacity.required} admissions,
+                  {data.planning_capacity.remaining} remain · open-PR capacity {data.pr_capacity
+                    .owned_open ?? '?'}/{data.pr_capacity.limit}{data.pr_capacity.reserved > 0
+                    ? ` + ${data.pr_capacity.reserved} reserved`
+                    : ''}{data.pr_capacity.observed_at
+                    ? ` · observed ${relative(data.pr_capacity.observed_at)}`
+                    : ''}</small
+                >
               </div>
             </section>
           </div>
@@ -1145,7 +1199,10 @@
         {#if settingsVisited}<div hidden={view !== 'settings'}>
             <Settings
               active={view === 'settings'}
-              editable={data.control.paused && !data.active_tasks && !data.cycle_active}
+              editable={data.control.paused &&
+                !data.active_tasks &&
+                !data.cycle_active &&
+                !data.baseline_active}
               status={setupStatus}
               onsaved={refresh}
               onchoose={chooseOnOverview}

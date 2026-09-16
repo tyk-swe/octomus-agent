@@ -1,9 +1,10 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, ApiError } from './api';
+  import { api, ApiError, relative } from './api';
   import type { Backend, Config, Model, ModelCatalog, Route } from './types';
   import RouteEditor from './RouteEditor.svelte';
   import SetupChecklist from './SetupChecklist.svelte';
+  import BaselineCheck from './BaselineCheck.svelte';
   import { configIdentity, type Preflight, type SetupStatus } from './setup';
   import Icon from './Icon.svelte';
   let {
@@ -150,6 +151,13 @@
       label: 'Daily session budget',
       help: 'Hard admission limit, resets at UTC midnight',
       min: 1
+    },
+    {
+      key: 'max_open_prs',
+      label: 'Open PR capacity',
+      help: 'Owned open PRs allowed before new-PR work waits · 1–1000',
+      min: 1,
+      max: 1000
     },
     {
       key: 'max_workspace_bytes',
@@ -533,12 +541,83 @@
       {#if message}<div class="notice success settings-feedback" role="status">{message}</div>{/if}
     </div>
   </form>
+  <BaselineCheck {active} {editable} saved={savedConfig} {dirty} onchanged={onsaved} />
+  <section class="panel settings-section" aria-labelledby="notifications-heading">
+    <div class="section-heading">
+      <div>
+        <h2 id="notifications-heading">Attention notifications</h2>
+        <p>
+          Read-only delivery health for the webhook configured by the
+          <code>OCTOMUS_NOTIFICATION_WEBHOOK_URL</code> service environment variable. Set it on the service
+          host to receive attention notices.
+        </p>
+      </div>
+      <Icon name="alert" />
+    </div>
+    {#if status?.notifications}
+      {@const health = status.notifications}
+      <dl class="baseline-facts">
+        <div>
+          <dt>State</dt>
+          <dd>
+            {health.state === 'enabled'
+              ? 'Enabled'
+              : health.state === 'invalid'
+                ? 'Configured but invalid'
+                : 'Disabled'}
+          </dd>
+        </div>
+        <div>
+          <dt>Destination</dt>
+          <dd>{health.configured ? 'Configured' : 'Not set'}</dd>
+        </div>
+        <div>
+          <dt>Pending</dt>
+          <dd>{health.pending}</dd>
+        </div>
+        <div>
+          <dt>Failed</dt>
+          <dd>{health.failed}</dd>
+        </div>
+        {#if health.last_delivered_at}<div>
+            <dt>Last delivered</dt>
+            <dd>
+              {relative(health.last_delivered_at)}
+            </dd>
+          </div>{/if}
+        {#if health.last_error}<div>
+            <dt>Last error</dt>
+            <dd>
+              {health.last_error}{health.last_http_status !== null
+                ? ` (HTTP ${health.last_http_status})`
+                : ''}
+            </dd>
+          </div>{/if}
+      </dl>
+    {:else}
+      <p class="muted">Notification status is unavailable.</p>
+    {/if}
+  </section>
 {:else if loading}<div class="empty" role="status">
     <span class="spinner"></span>
     <p>Loading configuration…</p>
   </div>{/if}
 
 <style>
+  .baseline-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin: 0 24px 20px;
+  }
+  .baseline-facts dt {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .baseline-facts dd {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
   .catalog-actions {
     display: flex;
     flex-wrap: wrap;

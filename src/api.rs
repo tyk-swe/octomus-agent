@@ -97,6 +97,10 @@ pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
         .route("/tasks/{id}", get(task))
         .route("/tasks/{id}/{action}", post(task_action))
         .route("/config", get(config).put(save_config))
+        .route("/baseline-checks", post(baseline_start))
+        .route("/baseline-checks/latest", get(baseline_latest))
+        .route("/baseline-checks/{id}", get(baseline_detail))
+        .route("/baseline-checks/{id}/cancel", post(baseline_cancel))
         .route("/control/{action}", post(control))
         .route("/doctor", post(doctor))
         .route("/model-catalog", post(model_catalog))
@@ -196,6 +200,10 @@ async fn state_view(State(s): State<Api>) -> Result<Json<Value>> {
     let c = s.app.control()?;
     let mut snapshot = s.app.store.dashboard()?;
     let config = s.app.config()?;
+    let planning_capacity = s.app.store.planning_capacity()?;
+    let pr_capacity = s.app.pr_capacity()?;
+    let baseline = s.app.store.latest_baseline()?;
+    let notifications = s.app.store.notification_health()?;
     let rt = s.app.runtime();
     let status = if rt.cycle_mode == Some(CycleMode::Audit) {
         "auditing"
@@ -208,7 +216,12 @@ async fn state_view(State(s): State<Api>) -> Result<Json<Value>> {
     } else {
         "idle"
     };
-    let fields = json!({"status":status,"control":c,"repository":config.github_repo,"configured":config.validate(true).is_ok(),"audit_configured":config.validate_audit().is_ok(),"active_cycle_mode":rt.cycle_mode,"active_tasks":rt.tasks.len(),"cycle_active":rt.cycle.is_some(),"session_limit":config.max_sessions_per_day,"storage_limit":config.max_workspace_bytes,"storage":s.app.store.get::<Value>("settings","storage")?});
+    let baseline_summary = baseline.map(|check| {
+        let config_matches = s.app.baseline_config_matches(&check, &config);
+        let revision_status = s.app.baseline_revision_status(&rt, &check, &config);
+        json!({"id":check.id,"status":check.status,"started_at":check.started_at,"completed_at":check.completed_at,"error":check.error,"config_matches":config_matches,"revision_status":revision_status})
+    });
+    let fields = json!({"status":status,"control":c,"repository":config.github_repo,"configured":config.validate(true).is_ok(),"audit_configured":config.validate_audit().is_ok(),"active_cycle_mode":rt.cycle_mode,"active_tasks":rt.tasks.len(),"cycle_active":rt.cycle.is_some(),"baseline_active":rt.baseline.is_some(),"baseline":baseline_summary,"notifications":notifications,"session_limit":config.max_sessions_per_day,"storage_limit":config.max_workspace_bytes,"storage":s.app.store.get::<Value>("settings","storage")?,"planning_capacity":planning_capacity,"pr_capacity":pr_capacity});
     snapshot
         .as_object_mut()
         .unwrap()
@@ -319,7 +332,11 @@ async fn config(State(s): State<Api>) -> Result<Json<Config>> {
 async fn save_config(State(s): State<Api>, Json(c): Json<Config>) -> Result<Json<Value>> {
     let _gate = s.app.gate.lock().await;
     let rt = s.app.runtime();
-    if !s.app.control()?.paused || !rt.tasks.is_empty() || rt.cycle.is_some() {
+    if !s.app.control()?.paused
+        || !rt.tasks.is_empty()
+        || rt.cycle.is_some()
+        || rt.baseline.is_some()
+    {
         return Err(ApiError(
             StatusCode::CONFLICT,
             "Pause and wait for active work to finish before changing configuration.".into(),
@@ -336,28 +353,76 @@ async fn save_config(State(s): State<Api>, Json(c): Json<Config>) -> Result<Json
         return Err(ApiError(StatusCode::CONFLICT,"Resolve or cancel existing tasks before changing repository identity or branch policy.".into()));
     }
     s.app.store.put("settings", "config", &c)?;
+    drop(rt);
+    s.app.invalidate_pr_refresh();
     s.app
         .store
         .event("system", "configuration", "Operator saved configuration")?;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BaselineStart {
+    expected_config: Config,
+}
+fn baseline_error(error: anyhow::Error) -> ApiError {
+    if error
+        .downcast_ref::<crate::engine::BaselineConflict>()
+        .is_some()
+    {
+        ApiError(StatusCode::CONFLICT, redact(&format!("{error:#}")))
+    } else {
+        error.into()
+    }
+}
+async fn baseline_start(State(s): State<Api>, Json(body): Json<BaselineStart>) -> Result<Response> {
+    let _gate = s.app.gate.lock().await;
+    let check = s
+        .app
+        .start_baseline(&body.expected_config)
+        .map_err(baseline_error)?;
+    Ok((StatusCode::ACCEPTED, Json(json!(check))).into_response())
+}
+async fn baseline_latest(State(s): State<Api>) -> Result<Json<Value>> {
+    Ok(Json(s.app.baseline_view(None)?))
+}
+async fn baseline_detail(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
+    if s.app.store.get::<Value>("baseline", &id)?.is_none() {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "Baseline check not found".into(),
+        ));
+    }
+    Ok(Json(s.app.baseline_view(Some(&id))?))
+}
+async fn baseline_cancel(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
+    let _gate = s.app.gate.lock().await;
+    s.app.cancel_baseline(&id).map_err(baseline_error)?;
     Ok(Json(json!({"ok":true})))
 }
 async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Json<Value>> {
     let _gate = s.app.gate.lock().await;
     let mut c = s.app.control()?;
     let rt = s.app.runtime();
+    let baseline_active = rt.baseline.is_some();
     if (matches!(action.as_str(), "audit" | "cycle")
-        && (!c.paused || !rt.tasks.is_empty() || rt.cycle.is_some()))
+        && (!c.paused || !rt.tasks.is_empty() || rt.cycle.is_some() || baseline_active))
         || (matches!(action.as_str(), "resume" | "cycle")
             && rt.cycle_mode == Some(CycleMode::Audit))
+        || (action.as_str() == "resume" && baseline_active)
     {
-        let message = match action.as_str() {
-            "audit" => {
-                "Audits require paused operation with no active work. Pause the service and wait for active work to finish."
+        let message = if baseline_active {
+            "Wait for the baseline check to finish."
+        } else {
+            match action.as_str() {
+                "audit" => {
+                    "Audits require paused operation with no active work. Pause the service and wait for active work to finish."
+                }
+                "cycle" => {
+                    "Run once requires paused operation with no active work. Pause the service and wait for active work to finish."
+                }
+                _ => "Wait for the audit to finish before starting continuous operation.",
             }
-            "cycle" => {
-                "Run once requires paused operation with no active work. Pause the service and wait for active work to finish."
-            }
-            _ => "Wait for the audit to finish before starting continuous operation.",
         };
         return Err(ApiError(StatusCode::CONFLICT, message.into()));
     }
@@ -368,7 +433,10 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
             s.app.store.event("system", "operator", "audit")?;
             return Ok(Json(json!(s.app.control()?)));
         }
-        "pause" => c.set_mode(OperatingMode::Paused),
+        "pause" => {
+            c.set_mode(OperatingMode::Paused);
+            s.app.invalidate_pr_refresh();
+        }
         "resume" => {
             s.app.config()?.validate(true)?;
             c.set_mode(OperatingMode::Continuous);
@@ -376,13 +444,18 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
         }
         "cycle" => {
             s.app.config()?.validate(true)?;
+            s.app.store.planning_capacity()?.ensure_available()?;
             s.app.store.start_batch(&mut c)?;
         }
         _ => return Err(ApiError(StatusCode::NOT_FOUND, "Unknown control".into())),
     }
     s.app.store.put("settings", "control", &c)?;
     s.app.store.event("system", "operator", &action)?;
-    Ok(Json(json!(c)))
+    let mut body = json!(c);
+    if action == "resume" {
+        body["planning_capacity"] = json!(s.app.store.planning_capacity()?);
+    }
+    Ok(Json(body))
 }
 // Caller holds the scheduler gate, including when rechecking after remote work.
 fn eligible_task(app: &App, id: &str, action: &str) -> Result<Task> {
@@ -514,6 +587,12 @@ async fn task_action(
         }
         "discard" => s.app.discard_task(&mut t).await?,
         "reconcile" => {
+            if s.app.runtime().baseline.is_some() {
+                return Err(ApiError(
+                    StatusCode::CONFLICT,
+                    "Wait for the baseline check to finish".into(),
+                ));
+            }
             if !s.app.runtime().tasks.is_empty() {
                 return Err(ApiError(
                     StatusCode::CONFLICT,

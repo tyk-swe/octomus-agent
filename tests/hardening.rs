@@ -453,6 +453,8 @@ fn shared_branch_requires_a_total_dependency_order() {
     let g = Grounding {
         revision: "source".into(),
         prs: vec![pr],
+        external_prs: vec![],
+        pr_coverage: PrCoverage::default(),
         history: json!([]),
         maintenance_due: false,
         maintenance_targets: vec![],
@@ -867,7 +869,13 @@ async fn queued_history_never_hides_active_branch_writers() {
         let tasks = store.scheduling_tasks(run).unwrap();
         assert_eq!(
             tasks.iter().filter(|t| t.status == Status::Queued).count(),
-            if run == Some("empty-batch") { 0 } else { 500 }
+            if run == Some("empty-batch") {
+                0
+            } else if run.is_none() {
+                501
+            } else {
+                500
+            }
         );
         assert_eq!(
             tasks.iter().filter(|t| t.status.active()).count(),
@@ -989,6 +997,211 @@ async fn one_shot_blocks_dependents_of_retries_excluded_from_the_batch() {
     }
 }
 
+#[tokio::test]
+async fn unaffordable_planning_refuses_audit_and_run_once_without_side_effects() {
+    use axum::http::StatusCode;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let app = App::new(store.clone(), tmp.path().into());
+    let mut config = Config {
+        repository: tmp.path().join("checkout"),
+        github_repo: "fixture/project".into(),
+        max_sessions_per_day: 12,
+        verification_commands: vec!["true".into()],
+        ..Default::default()
+    };
+    for route in config.roles.values_mut() {
+        *route = Route::new("fixture", "low");
+    }
+    std::fs::create_dir_all(config.repository.join(".git")).unwrap();
+    config.validate(true).unwrap();
+    config.validate_audit().unwrap();
+    store.put("settings", "config", &config).unwrap();
+    let queued = task();
+    store.put("task", &queued.id, &queued).unwrap();
+    let before = serde_json::to_value(app.control().unwrap()).unwrap();
+    let router = octomus_agent::api::router(app.clone(), CONTROL_TOKEN, Some(tmp.path().into()));
+    for action in ["audit", "cycle"] {
+        let response = router
+            .clone()
+            .oneshot(control_request(&format!("control/{action}")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{action}");
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let message = body["error"].as_str().unwrap();
+        assert!(
+            message.contains("requires 13") && message.contains("cannot fund"),
+            "{body}"
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(app.control().unwrap()).unwrap(),
+        before
+    );
+    assert!(
+        store
+            .get::<Task>("task", &queued.id)
+            .unwrap()
+            .unwrap()
+            .run_id
+            .is_none()
+    );
+    assert!(store.list::<Cycle>("cycle").unwrap().is_empty());
+    assert_eq!(store.sessions_today().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn run_once_pauses_when_the_drain_consumed_planning_allowance() {
+    use axum::http::StatusCode;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let app = App::new(store.clone(), tmp.path().into());
+    let mut config = Config {
+        repository: tmp.path().join("checkout"),
+        github_repo: "fixture/project".into(),
+        max_sessions_per_day: 14,
+        verification_commands: vec!["true".into()],
+        ..Default::default()
+    };
+    for route in config.roles.values_mut() {
+        *route = Route::new("fixture", "low");
+    }
+    std::fs::create_dir_all(config.repository.join(".git")).unwrap();
+    config.validate(true).unwrap();
+    store.put("settings", "config", &config).unwrap();
+    let router = octomus_agent::api::router(app.clone(), CONTROL_TOKEN, Some(tmp.path().into()));
+    let response = router
+        .oneshot(control_request("control/cycle"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let run = app.control().unwrap().batch.unwrap().id;
+    for role in ["executor", "reviewer"] {
+        store
+            .reserve_session(
+                0,
+                &Admission::new(
+                    "other-cycle",
+                    Some("task"),
+                    role,
+                    &Route::new("fixture", "low"),
+                ),
+            )
+            .unwrap();
+    }
+    {
+        let mut rt = app.runtime.lock().unwrap();
+        rt.last_retention_at = chrono::Utc::now().timestamp();
+        rt.last_observation_at = rt.last_retention_at;
+    }
+    let service = tokio::spawn(app.clone().run());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if app.control().unwrap().paused {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Run once did not pause on unaffordable planning");
+    let control = app.control().unwrap();
+    assert_eq!(control.mode, OperatingMode::Paused);
+    assert!(control.batch.is_none());
+    let error = control.error.as_deref().unwrap_or_default();
+    assert!(
+        error.contains("requires 13") && error.contains("12 remain"),
+        "{error}"
+    );
+    assert!(store.list::<Cycle>("cycle").unwrap().is_empty());
+    assert_eq!(store.sessions_today().unwrap(), 2);
+    assert_eq!(
+        store
+            .events(Some("system"))
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == "planning_capacity")
+            .count(),
+        1
+    );
+    assert_eq!(store.batch_counts(&run).unwrap(), (0, 0));
+    config.max_sessions_per_day = 150;
+    store.put("settings", "config", &config).unwrap();
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    assert!(app.control().unwrap().paused);
+    assert!(store.list::<Cycle>("cycle").unwrap().is_empty());
+    app.shutdown.cancel();
+    service.await.unwrap();
+}
+
+#[tokio::test]
+async fn continuous_waits_for_planning_allowance_without_failed_cycles() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let app = App::new(store.clone(), tmp.path().into());
+    let mut config = Config {
+        repository: tmp.path().join("checkout"),
+        github_repo: "fixture/project".into(),
+        codex_binary: "/nonexistent-octomus-test-runner".into(),
+        max_sessions_per_day: 13,
+        verification_commands: vec!["true".into()],
+        ..Default::default()
+    };
+    for route in config.roles.values_mut() {
+        *route = Route::new("fixture", "low");
+    }
+    std::fs::create_dir_all(config.repository.join(".git")).unwrap();
+    config.validate(true).unwrap();
+    store.put("settings", "config", &config).unwrap();
+    store
+        .reserve_session(
+            0,
+            &Admission::new("cycle", None, "executor", &Route::new("fixture", "low")),
+        )
+        .unwrap();
+    let mut control = Control::default();
+    control.set_mode(OperatingMode::Continuous);
+    store.put("settings", "control", &control).unwrap();
+    {
+        let mut rt = app.runtime.lock().unwrap();
+        rt.last_retention_at = chrono::Utc::now().timestamp();
+        rt.last_observation_at = rt.last_retention_at;
+    }
+    let service = tokio::spawn(app.clone().run());
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    let control = app.control().unwrap();
+    assert_eq!(control.mode, OperatingMode::Continuous);
+    assert!(!control.paused && control.error.is_none() && control.cycle_number == 0);
+    assert!(store.list::<Cycle>("cycle").unwrap().is_empty());
+    assert!(
+        !store
+            .events(None)
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "planning_capacity")
+    );
+    config.max_sessions_per_day = 150;
+    store.put("settings", "config", &config).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if !store.list::<Cycle>("cycle").unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Continuous operation did not reconsider after the allowance returned");
+    app.shutdown.cancel();
+    service.await.unwrap();
+}
+
 #[test]
 fn unresolved_problem_identity_survives_rewording() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1007,6 +1220,8 @@ fn unresolved_problem_identity_survives_rewording() {
     let g = Grounding {
         revision: "new-context".into(),
         prs: vec![],
+        external_prs: vec![],
+        pr_coverage: PrCoverage::default(),
         history: json!([]),
         maintenance_due: false,
         maintenance_targets: vec![],

@@ -42,7 +42,7 @@ The dashboard polls authoritative Rust state and never schedules work itself. Th
 
 ## Planning
 
-Each cycle records the remote default-branch revision, open prefixed PRs, their heads and accumulated scope, maintenance targets, and task history. The orchestrator inspects the repository and PR diffs. Each discovery and proposal-review role has a separate clone and runner session. Planning sessions are instructed to inspect rather than mutate, and their worktree/HEAD must remain unchanged.
+Each cycle records the remote default-branch revision, owned open PRs, their heads and accumulated scope, maintenance targets, task history, and separate read-only external PR summaries. The complete open inventory is paginated and fails explicitly if machine capture is incomplete. External context is ordered by PR number and limited to 100 entries, 200 title characters, 2,000 body characters, and 512 KiB serialized total; source/head references, omitted counts and truncation flags are recorded. External/fork PRs never become execution or maintenance targets. Old grounding records load with unknown external coverage. The orchestrator inspects the repository and PR diffs. Each discovery and proposal-review role has a separate clone and runner session. Planning sessions are instructed to inspect rather than mutate, and their worktree/HEAD must remain unchanged.
 
 The standard cycle runs nine discovery agents (configurable from eight to ten), followed by two adversarial reviewers and orchestrator consolidation. The final result must account for every original proposal ID, with a decision and reason. Accepted work needs project evidence, benefit, scope, a self-contained prompt, a supported tier, and an eligible target. Unknown dependencies, dependency cycles, unordered/forked same-PR plans, duplicate accepted titles, and unowned targets are rejected by the core. Same-PR proposals require a unique dependency order; unrelated branches remain parallelizable.
 
@@ -62,6 +62,12 @@ the same cycle numbering and maintenance cadence. Interrupted audits are recorde
 and never automatically replayed. Audit clones remain subject to admission limits,
 unsandboxed agent behavior and the normal cycle retention policy.
 
+Before creating a cycle, the scheduler compares live remaining daily admissions with
+`discovery_agents + REVIEWER_SLOTS.len() + 2`. Unaffordable manual starts change no
+cycle or batch state; continuous operation waits without failed-cycle churn. Run once
+rechecks after its queue drain and pauses instead of silently deferring planning.
+This preflight does not replace or pre-reserve the individual atomic role admissions.
+
 ## Tasks and dependencies
 
 A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies. Global admission limits come from current saved policy inside the reservation transaction. Separate attempt policy controls all timeouts, repair/no-progress limits and retry ceiling; explicit retry adopts current attempt limits and starts a fresh repair-round budget, while automatic recovery retains both. Task configuration, routes and verification commands remain immutable. Dependency-authorized source advancement retains the original grounding in the cycle. New workspaces use `.octomus/tasks/<task-id>/workspace` and are cloned before a runner session is created. Existing saved workspace paths, including legacy Codex thread-based paths, are retained. Native runner session IDs are recorded separately and never used to name new directories. Each task uses an independent Git clone. Review and repair threads work in that same task clone.
@@ -69,6 +75,16 @@ A task snapshots its configuration, route, source revision, default-branch conte
 Independent tasks can run concurrently. Existing PR branch writers are serialized. Dependent tasks on the same existing PR wait for their prerequisites to publish; the source revision is advanced only to a recorded prerequisite output and its ancestry is checked. External branch movement blocks stale work.
 
 Code-dependent default-branch proposals must be consolidated into a cohesive task or deferred until the prerequisite PR has merged. Merely publishing a separate PR does not make its code available on the default branch. Octomus does not auto-merge or implicitly create stacked PRs.
+
+New-PR dispatch also observes live `max_open_prs` (default five, including legacy
+configurations). Capacity counts complete observed owned-open PR identities plus
+unrepresented durable task reservations, not dashboard/history windows. Fresh
+asynchronous inventories authorize one admission batch; failures, obsolete responses
+and unknown state do not authorize new work. Existing-PR and reserved queued work
+remain selectable behind a large new-PR queue. Checkpoint publication replay retains
+its strict Git/publication checks without requiring another new-PR slot. Observed
+closure/merge releases capacity; lowering the ceiling neither closes PRs nor cancels
+in-flight work. External actors can still change remote backlog after observation.
 
 ## Review, verification and delivery
 
@@ -83,6 +99,36 @@ Publication requires recorded clean review and successful verification evidence 
 GitHub is the MVP provider. Existing PRs require the configured prefix, matching head repository, and an Octomus task marker in their body. Prefixed PRs without that marker contribute planning context but are not writable targets. New branch suffixes use unique task IDs. PR bodies record the objective, scope, benefit, verification, implementation summary and publication marker. Follow-ups append their task record to the existing PR.
 
 Creation resolves the exact returned PR number, then creation and updates share a final repository/ownership/branch/base/head/task-marker validator. A mismatched result remains blocked with its publication checkpoint. Before retrying a publication, the service searches all matching PR states, including closed and merged PRs; ambiguous branch associations fail closed. A matching task marker and output head confirm previously completed delivery without another push or duplicate PR. Changed remote state is surfaced for reconciliation.
+
+## Explicit baseline verification
+
+The authenticated baseline action runs only by operator request while paused and idle.
+It compares the expected saved configuration, records its fingerprint and the remote
+default SHA, then runs saved commands in a disposable clone with the ordinary process,
+timeout, output and worktree-integrity primitives. It creates no task, cycle, PR or model
+admission. Results are separate baseline records, never task publication evidence.
+Output is capped at 16 KiB per command and 1 MiB per check with explicit truncation;
+configuration and observed revision freshness remain distinct from a recorded pass.
+Cancellation, deadlines and restart interruption are terminal, never automatically
+replayed. Owned clones are cleaned up safely; cleanup failures are recorded and retried.
+
+## Attention notifications
+
+An optional `OCTOMUS_NOTIFICATION_WEBHOOK_URL` configures one outbound destination.
+SQLite triggers atomically capture new blocked/failed task and error-paused service
+episodes into a durable outbox. Repeated observation or unchanged record writes do not
+create new episodes. A separate worker sends only stable event/run/task identifiers,
+repository and allowlisted failure/action categories. No prompts, command output,
+transcripts, raw errors or destination secrets are sent.
+
+HTTPS is supported; plain HTTP is restricted to literal loopback IPs. Redirects and
+implicit proxies are disabled. Delivery has a ten-second request limit, five attempts,
+30/120/600/1,800-second retry delays, a one-per-second rate, 24-hour expiry and a
+1,000-pending-event cap. Overflow/expiry/failure is visible. Same-destination restarts
+retain retry state; destination changes cancel old pending delivery. Ambiguous acceptance
+can cause a retry with the same event ID: this is not an exactly-once service.
+The destination stays outside task/config snapshots, API observations and child-process
+environments. It is still sensitive host configuration under the dedicated-host trust model.
 
 ## Runtime and trust
 

@@ -85,6 +85,7 @@
   "task_timeout_seconds": 14400,
   "command_timeout_seconds": 600,
   "max_sessions_per_day": 150,
+  "max_open_prs": 5,
   "max_workspace_bytes": 20000000000,
   "runner_storage_paths": {},
   "retain_completed_days": 14,

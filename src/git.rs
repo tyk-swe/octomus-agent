@@ -1,6 +1,6 @@
 use crate::{
     config::Config,
-    model::{BlockedReason, PullRequest, Task},
+    model::{BlockedReason, OpenPrInventory, PullRequest, Task, now},
     process,
 };
 use anyhow::{Context, Result, ensure};
@@ -147,8 +147,9 @@ pub async fn at(
     Ok(clean(c, path, cancel).await?
         && git(c, path, &["rev-parse", "HEAD"], cancel).await? == revision)
 }
-pub async fn prs(c: &Config, cancel: &CancellationToken) -> Result<Vec<PullRequest>> {
+pub async fn open_pr_inventory(c: &Config, cancel: &CancellationToken) -> Result<OpenPrInventory> {
     // Paginate the API: never quietly omit older open work.
+    let observed_at = now();
     let out = gh(
         c,
         &[
@@ -159,25 +160,74 @@ pub async fn prs(c: &Config, cancel: &CancellationToken) -> Result<Vec<PullReque
         cancel,
     )
     .await?;
-    let mut prs = vec![];
-    for page in serde_json::Deserializer::from_str(&out).into_iter::<Vec<Value>>() {
+    let mut inventory = parse_inventory(&out, c)?;
+    inventory.observed_at = observed_at;
+    Ok(inventory)
+}
+pub fn parse_inventory(out: &str, c: &Config) -> Result<OpenPrInventory> {
+    let mut prs: std::collections::HashMap<u64, PullRequest> = std::collections::HashMap::new();
+    let mut pages = 0usize;
+    for page in serde_json::Deserializer::from_str(out).into_iter::<Vec<Value>>() {
+        pages += 1;
         for p in page? {
-            if p["head"]["ref"]
-                .as_str()
-                .is_some_and(|b| b.starts_with(&c.branch_prefix))
-            {
-                let detail = gh(
-                    c,
-                    &[
-                        "api",
-                        &format!("repos/{}/pulls/{}", c.github_repo, p["number"]),
-                    ],
-                    cancel,
-                )
-                .await?;
-                prs.push(parse_pr(&serde_json::from_str(&detail)?, c)?);
+            ensure!(
+                matches!(p["state"].as_str(), Some("open" | "closed")),
+                "Open PR entry has an unrecognized state"
+            );
+            let pr = parse_pr(&p, c)?;
+            ensure!(
+                !pr.branch.is_empty()
+                    && !pr.head.is_empty()
+                    && !pr.base.is_empty()
+                    && !pr.base_repository.is_empty()
+                    && !pr.url.is_empty(),
+                "Open PR entry is missing required identity"
+            );
+            ensure!(
+                pr.base_repository.eq_ignore_ascii_case(&c.github_repo),
+                "Open PR entry reports a different base repository"
+            );
+            if pr.state != "open" {
+                continue;
+            }
+            match prs.entry(pr.number) {
+                std::collections::hash_map::Entry::Occupied(existing) => {
+                    ensure!(
+                        serde_json::to_value(existing.get())? == serde_json::to_value(&pr)?,
+                        "Conflicting open PR inventory entries"
+                    );
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(pr);
+                }
             }
         }
+    }
+    ensure!(pages >= 1, "Open PR inventory response is empty");
+    let mut prs: Vec<PullRequest> = prs.into_values().collect();
+    prs.sort_by_key(|p| p.number);
+    Ok(OpenPrInventory {
+        repository: c.github_repo.clone(),
+        observed_at: now(),
+        prs,
+    })
+}
+pub async fn owned_pr_details(
+    c: &Config,
+    inventory: &OpenPrInventory,
+    cancel: &CancellationToken,
+) -> Result<Vec<PullRequest>> {
+    let mut prs = vec![];
+    for observed in inventory.prs.iter().filter(|p| p.owned) {
+        let detail = pr(c, observed.number, cancel).await?;
+        ensure!(
+            detail.owned
+                && detail.state == "open"
+                && detail.branch == observed.branch
+                && detail.base == observed.base,
+            "Owned PR changed while the open inventory was being read"
+        );
+        prs.push(detail);
     }
     Ok(prs)
 }
@@ -213,6 +263,9 @@ fn parse_pr(p: &Value, c: &Config) -> Result<PullRequest> {
         base_repository: text(&p["base"]["repo"]["full_name"]),
         owned: branch.starts_with(&c.branch_prefix)
             && p["head"]["repo"]["full_name"]
+                .as_str()
+                .is_some_and(|r| r.eq_ignore_ascii_case(&c.github_repo))
+            && p["base"]["repo"]["full_name"]
                 .as_str()
                 .is_some_and(|r| r.eq_ignore_ascii_case(&c.github_repo))
             && body.contains("<!-- octomus:task:"),

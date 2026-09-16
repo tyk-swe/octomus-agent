@@ -6,6 +6,7 @@ pub mod engine;
 pub mod evidence;
 pub mod git;
 pub mod model;
+pub mod notifications;
 pub mod opencode;
 pub mod process;
 pub mod report;

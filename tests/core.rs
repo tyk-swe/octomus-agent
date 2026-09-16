@@ -6,7 +6,7 @@ use octomus_agent::{
     api,
     config::{Backend, Config, Route},
     engine::{App, validate_proposals},
-    model::{Grounding, Proposal, PullRequest},
+    model::{Grounding, PrCoverage, Proposal, PullRequest},
     process,
     runner::{Model, validate_route},
     store::Store,
@@ -79,6 +79,8 @@ fn grounding() -> Grounding {
             base_repository: "fixture/project".into(),
         }],
         history: json!([]),
+        external_prs: vec![],
+        pr_coverage: PrCoverage::default(),
         maintenance_due: true,
         maintenance_targets: vec!["octomus/existing".into()],
     }
@@ -86,7 +88,10 @@ fn grounding() -> Grounding {
 
 #[test]
 fn proposal_dependencies_require_delivered_code_and_no_cycles() {
-    let c = Config::default();
+    let c = Config {
+        github_repo: "fixture/project".into(),
+        ..Default::default()
+    };
     let g = grounding();
     let mut a = proposal("a");
     let mut b = proposal("b");

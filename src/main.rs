@@ -122,6 +122,10 @@ async fn main() -> Result<()> {
             args.listen
         );
     }
+    let notifications = octomus_agent::notifications::start(
+        &app,
+        std::env::var(octomus_agent::notifications::WEBHOOK_ENV).ok(),
+    )?;
     app.recover()?;
     let worker = tokio::spawn(app.clone().run());
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
@@ -137,12 +141,18 @@ async fn main() -> Result<()> {
         })
         .await?;
     let _ = worker.await;
+    let _ = notifications.await;
     for _ in 0..100 {
         let drained = {
             let rt = app.runtime();
             rt.tasks.is_empty()
                 && rt.cycle.is_none()
                 && rt.housekeeping.as_ref().is_none_or(|h| h.is_finished())
+                && rt
+                    .pr_refresh
+                    .as_ref()
+                    .is_none_or(|j| j.handle.is_finished())
+                && rt.baseline.as_ref().is_none_or(|j| j.handle.is_finished())
         };
         if drained {
             break;

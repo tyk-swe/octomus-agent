@@ -63,6 +63,7 @@ reviewed revision before publication. Measure cold timings before changing limit
 
 - [ ] Choose enabled improvement categories, maintenance cadence, and resource/time limits appropriate to your host and account. Start with one concurrent task, one accepted task per cycle and a six-hour cycle interval for the initial live run. Discovery still requires 8–10 agents.
 - [ ] Confirm operation uses existing subscription allowance only and paid overage is disabled. Set the daily session budget, recognizing that admissions are not an allowance or dollar-spend cap.
+- [ ] Set **Open PR capacity** to match review bandwidth (default five owned open PRs). The ceiling also accounts for admitted deliveries; existing-PR maintenance can continue at capacity.
 - [ ] Save configuration and run **Check connection**. The **Setup checklist** at the top of Configuration labels each step as entered, saved, checked or ran and links to these controls; it starts nothing. Both connection checks validate saved values and are disabled while edits remain unsaved. Catalog loading uses the executable paths entered in the form. Correct any reported configuration, authentication, or route errors.
 
 Configuration drafts, verification commands and loaded catalogs stay in this tab
@@ -72,13 +73,21 @@ Revisiting a clean form refreshes saved configuration. Dirty edits and failed sa
 retain the draft. Disconnect, session expiry and page reload clear it. Retry a
 failed configuration load with **Retry**.
 
+Optionally use **Check clean baseline** before spending model admissions. Save or
+discard drafts, pause and wait for active work, then explicitly confirm the saved
+commands. They execute with the service user's permissions on an identified remote
+default-branch clone. Inspect bounded command results, checked SHA, configuration
+match and observation freshness. Cancel the check if needed; interrupted checks are
+not replayed. A pass is point-in-time environment evidence, not later task verification.
+
 ## 5. Validate the first real cycle
 
 - [ ] While paused with no active work, run **Check audit connection**, then **Run an audit**. Audits need the three planning-role routes but no verification commands. Inspect every decision and both assessments. Confirm the queue is unchanged and operation remains paused. An audit does not sandbox agents or guarantee absence of malicious external effects.
 - [ ] For execution, configure the code reviewer, execution tiers, repair route and verification commands, then use **Check connection**. Audit results are recommendations; an executing cycle plans afresh.
 
 - [ ] Select **Run once**. Confirm one planning cycle and its accepted task batch finish, then the service returns to paused. Select **Start continuous** separately when ready for ongoing scheduling.
-- [ ] Confirm discovery reads the repository and existing owned PRs, and proposal decisions include reasons.
+- [ ] Confirm discovery reads the repository, owned PRs and recorded read-only contributor/fork PR summaries. Inspect coverage/omissions and source links in run inspection; external branches must never become execution targets.
+- [ ] Confirm a planning pass has its full 12–14 admissions available (13 with nine discovery agents). Unaffordable manual starts are refused; continuous scheduling waits. A daily limit below the requirement needs a policy change, not just midnight.
 - [ ] Inspect the first task's workspace, executor/reviewer/repair sessions, verification output, and any blocked state.
 - [ ] Use **Inspect run** on the Overview, or `--export-run`, to review the recorded review and check evidence for that cycle; see [run evidence](launch/run-evidence.md).
 - [ ] Confirm a successfully reviewed task creates or updates the expected GitHub PR, with verification evidence, while leaving `main` untouched. An idle cycle with no worthwhile proposals is also a valid outcome.
@@ -89,6 +98,7 @@ failed configuration load with **Retry**.
 
 - [ ] Leave the system running once you are satisfied with the first live results; increase throughput only as needed.
 - [ ] Monitor blocked/failed tasks, model usage, host disk capacity, and the value of generated PRs.
+- [ ] Optionally set `OCTOMUS_NOTIFICATION_WEBHOOK_URL` in the protected service environment and restart. Use an HTTPS destination you control; inspect **Attention notifications** in Configuration. Notices contain minimal repository/run/task identifiers and failure categories, not diagnostics or transcripts. Confirm delivery on the dedicated host; local receiver tests do not prove live delivery. Expect bounded retries and possible duplicate event IDs, not exactly-once delivery.
 - [ ] Set up protected backups of the state directory, task workspaces, and the service account's selected runner session state (Codex home and/or OpenCode data directory) using the [backup procedure](deployment.md#backup-and-upgrade).
 - [ ] Review retention settings, including the selected runner's separate transcript storage. Unresolved workspaces are intentionally preserved and can require deliberate cleanup.
 - [ ] Continue reviewing and merging useful PRs yourself. Application upgrades and production deployments remain your responsibility; Octomus delivers PRs.
