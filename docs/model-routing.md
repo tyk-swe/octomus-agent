@@ -90,35 +90,3 @@ warnings. Codex version fields remain present when Codex is required. Errors
 identify the failing runner or route. Catalogs and diagnostics consume no session
 admissions and make no model calls; they do not prove paid inference access.
 
-## Verification
-
-`make test` runs deterministic OpenCode HTTP/SSE fixtures, mixed-runner workflows,
-restart recovery, legacy snapshots, publication gates, and browser tests. These
-fixtures are synthetic and do not use accounts or model calls.
-
-An optional check exercises the pinned CLI's actual startup, catalog, and session
-creation/resumption in temporary XDG directories with a synthetic provider:
-
-```bash
-OCTOMUS_OPENCODE_SMOKE_BINARY=/absolute/path/to/opencode \
-  cargo test --locked --test runners pinned_opencode_protocol_smoke_without_model_calls -- --ignored
-```
-
-This check makes no model calls and does not validate live operation. Live
-commissioning remains on the owner's dedicated VM and bot.
-
-CI additionally runs required pinned-client contracts for Codex 0.153.4 and
-OpenCode 1.18.30. They start actual clients in isolated temporary state directories
-against a synthetic loopback model provider, inspect Codex-generated request schemas
-and OpenCode's `/doc`, and exercise a completed turn, structured review, resumed
-session and cancellation. They use no operator credentials or live inference.
-
-```bash
-OCTOMUS_CONTRACT_CODEX_BINARY=/absolute/path/to/codex \
-OCTOMUS_CONTRACT_OPENCODE_BINARY=/absolute/path/to/opencode \
-  cargo test --locked --test contracts -- --ignored --nocapture
-```
-
-The synthetic provider validates client protocol behavior, not model quality,
-account authentication or live tool behavior. Authenticated commissioning remains
-separate.

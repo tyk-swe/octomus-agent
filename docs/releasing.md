@@ -1,4 +1,4 @@
-# Distribution and release preparation
+# Releasing
 
 Public GitHub releases and crates.io publication remain pending. Local packages,
 fixture tests and workflow definitions do not prove public download availability.

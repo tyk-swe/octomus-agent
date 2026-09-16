@@ -1,5 +1,5 @@
 /**
- * Display mapping for `RunEvidenceV1` (see docs/launch/run-evidence.md).
+ * Display mapping for `RunEvidenceV1` (see docs/run-evidence.md).
  *
  * Every label here is derived from the server's already-normalized evidence statuses.
  * Nothing in this module recomputes an optimistic boolean from raw records: unknown,

@@ -35,11 +35,13 @@ def exported(directory):
 
 
 def main():
-    backup = example_body('docs/launch/run-evidence.md', 'owner-sqlite-backup', 'PY')
-    validate = example_body('docs/launch/showcase.md', 'private-payload-check', 'JS')
+    backup = example_body('docs/run-evidence.md', 'owner-sqlite-backup', 'PY')
+    validate = example_body('docs/showcase.md', 'private-payload-check', 'JS')
     config_result = run([str(BINARY), '--print-config'])
     assert config_result.returncode == 0, config_result.stderr
     config = json.loads(config_result.stdout)
+    documented = json.loads((PROJECT / 'docs/configuration.example.json').read_text())
+    assert config == documented, 'docs/configuration.example.json is stale; regenerate it with --print-config'
     config['verification_commands'] = ['synthetic required check']
     timestamp = '2026-01-01T00:00:00Z'
     proposal = {

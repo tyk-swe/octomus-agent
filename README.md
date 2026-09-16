@@ -1,68 +1,58 @@
 # Octomus Agent
 
-Octomus finds useful improvements in a repository, challenges them with two
-independent reviewers, and delivers verified pull requests through Codex or OpenCode. It can
-reject every proposal and do nothing. Think **Dependabot, with features**: you
-choose the repository and boundaries; it discovers the work. Delivery stops at a
-PR for you to review and merge.
+[![Repository checks](https://github.com/tyk-swe/octomus-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/tyk-swe/octomus-agent/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+Octomus finds useful improvements in a repository, challenges them with two independent
+reviewers, and delivers verified pull requests through Codex or OpenCode. It can reject
+every proposal and do nothing.
+
+Think **Dependabot, with features**: you choose the repository and the boundaries, and it
+discovers the work. Delivery stops at a pull request for you to review and merge.
 
 ![Octomus dashboard](docs/dashboard.png)
 
 *This image uses synthetic browser-test data.*
 
-## Getting started
+## How it decides
 
-**Build from source today.** Public release binaries and the crates.io package are
-still pending publication: a read-only check on 2026-09-13 found no GitHub release
-and no `octomus-agent` crate. The source-build steps below install the available
-application; see [distribution](docs/distribution.md) for release preparation.
+Grounding inspects code, `AGENTS.md`, history and existing owned pull requests, with
+bounded, source-attributed contributor and fork context to help identify overlapping
+work. External pull requests are never writable targets, and recorded coverage names
+omitted or truncated context.
 
-### Prerequisites you must already have
+Eight to ten discovery agents explore complementary areas; two independent adversaries
+challenge their proposals. The orchestrator records a reason for every decision. An
+execution cycle queues accepted work; an audit only records recommendations, and a later
+execution cycle plans afresh rather than executing an old audit result.
 
-- A **dedicated Ubuntu 24.04 VM** (x86_64 or aarch64) that runs nothing else. Runner
-  and verification commands execute with the service user's permissions and are not
-  sandboxed. Do not use your workstation, and keep unrelated credentials off the VM.
-- **Owner-supplied accounts**, arranged and approved before you start: a Codex or
-  OpenCode provider login that exposes the models you intend to route, and a dedicated
-  GitHub identity whose access is restricted to the one target repository. Octomus never
-  creates accounts or performs logins; you run each login yourself as the service user.
-- The target repository, cloned to a persistent path writable by the service user, with
-  its own build and test tools installed on the VM.
-- Build tools, needed only to build Octomus itself: Git, gh, curl, OpenSSL, a C
-  compiler, Rust 1.88+, Node 22.12+ and npm. Python 3 is only needed for repository tests.
+Each task gets its own execution thread and checkout. Every code review uses a **fresh
+reviewer** and the **complete accumulated diff**. Repairs use one **persistent repair
+thread** per task. Configured verification must pass on the reviewed revision before
+Octomus publishes or updates a pull request. Interrupted work and publication are
+reconciled from durable state.
 
-The first run is four explicit moves: enter the configuration, save it, check the
-connection, then choose **Run an audit** or **Run once**. No model work starts before
-that last choice, and continuous operation is a separate control. An optional, explicit
-clean-baseline check can run saved verification commands before model work.
+## See a run before installing anything
 
-### 1. Install the tools and application
+The [showcase](docs/showcase.md) is a standalone static build of recorded run evidence —
+no service, account, token or database. Three commands from a clean checkout:
 
-As the VM administrator, install Git, gh, curl and OpenSSL. This npm-based Codex
-installation uses Node 22 from [NodeSource](https://github.com/nodesource/distributions)
-and the pinned [Codex release](https://github.com/openai/codex/releases/tag/rust-v0.153.4).
-Install the runners you intend to use. The Codex setup below is optional for an
-OpenCode-only installation. For OpenCode, install the pinned
-[1.18.30 release](https://github.com/anomalyco/opencode/releases/tag/v1.18.30)
-for your platform. Octomus's binary itself does not require Node or Rust at runtime.
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git gh curl ca-certificates openssl
-curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/octomus-node22.sh
-sudo bash /tmp/octomus-node22.sh
-sudo apt-get install -y nodejs
-sudo npm install -g @openai/codex@0.153.4
+```sh
+npm ci --prefix web
+npm run showcase --prefix web -- --mode fixture --input showcase/synthetic.public.json
+python3 -m http.server 4307 --bind 127.0.0.1 --directory dist
 ```
 
-Add Rust 1.88+ and a C compiler, then build the dashboard before Rust.
-Python is only needed for repository tests.
+Then open `http://127.0.0.1:4307/showcase/`.
 
-```bash
-sudo apt-get install -y build-essential
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/octomus-rustup.sh
-sh /tmp/octomus-rustup.sh -y --profile minimal
-. "$HOME/.cargo/env"
+## Getting started
+
+Octomus is built from source; release binaries and the crates.io package are not
+published yet. You need a dedicated Ubuntu 24.04 VM, your own Codex or OpenCode
+subscription, a GitHub identity reserved for the agent, and a clone of the target
+repository on a persistent path.
+
+```sh
 git clone https://github.com/tyk-swe/octomus-agent.git
 cd octomus-agent
 npm ci --prefix web
@@ -70,190 +60,39 @@ make build
 sudo install -m 755 target/release/octomus-agent /usr/local/bin/octomus-agent
 ```
 
-**Pending release options:** after binary releases are published, the installer
-will support the following command:
+The dashboard listens on loopback and starts paused. The first run is four explicit
+moves: enter the configuration, save it, check the connection, then choose **Run an
+audit** or **Run once**.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/tyk-swe/octomus-agent/main/install.sh | sh
-```
+**[Full installation and first-run walkthrough →](docs/getting-started.md)**
 
-The installer verifies the downloaded archive against release SHA-256 checksums
-and installs to `/usr/local/bin`. To select a version, download the script and run
-`sh install.sh v0.1.0`; an alternate writable absolute destination is supported
-through `INSTALL_DIR`. Checksums detect corruption; they are not independent
-signatures against a compromised release account.
+## Documentation
 
-`cargo install octomus-agent --locked` is also pending crates.io publication. The
-crate includes the built dashboard, so installing that package will not require npm.
-
-### 2. Connect as the service user
-
-Create a dedicated account without sudo access and a persistent checkout location:
-
-```bash
-sudo useradd --create-home --home-dir /var/lib/octomus --shell /bin/bash octomus
-sudo install -d -o octomus -g octomus /srv/projects
-sudo -iu octomus
-codex login
-gh auth login
-gh auth setup-git
-```
-
-If using OpenCode, run `opencode auth login` as this same service user and configure
-its providers in the user-level OpenCode configuration. Skip `codex login` when no
-Codex routes are selected. Octomus reads those provider settings and credentials;
-it does not manage provider logins in the dashboard.
-
-Use the dedicated identity and repository-restricted authentication arrangement,
-not an unrelated personal credential. As this same user, replace the sample
-repository identity and clone it. Configure Git identity if your project requires it.
-
-```bash
-git clone https://github.com/OWNER/REPOSITORY.git /srv/projects/project
-export OCTOMUS_TOKEN="$(openssl rand -hex 32)"
-printf '%s\n' "$OCTOMUS_TOKEN"
-```
-
-Save this token in your password manager; it grants operator access. Confirm paid
-overage is disabled for subscription-only operation. Then start the service:
-
-```bash
-octomus-agent --data-dir /var/lib/octomus/.octomus
-```
-
-From your own computer, forward the dashboard port (replace `your-vm` with the
-VM's SSH destination):
-
-```bash
-ssh -N -L 4200:127.0.0.1:4200 your-vm
-```
-
-Open **http://127.0.0.1:4200**, enter your saved token, and keep the service running
-in the VM terminal. It starts paused. Refreshing the page requires the token again.
-
-### 3. First run: enter, save, check, then choose
-
-Open **Configuration**. The **Setup checklist** at the top tracks six steps (including
-an optional clean-baseline check) and labels
-each one as entered (typed in this tab), saved (sent to the service), checked (the
-saved configuration passed an explicit connection check) or ran (a cycle actually
-executed). Its links move focus to the existing controls. Nothing on the checklist
-starts work, and populated fields, catalog matches or a passed check never prove
-repository push permission or model inference; only a run's recorded evidence does.
-
-1. **Repository details.** Enter `/srv/projects/project`, `OWNER/REPOSITORY`, the
-   default branch and an owned branch prefix. For this repository use `tyk/`; the
-   general product default is `octomus/`.
-2. **Model routes.** Set the executable paths, then use **Load Codex models** or
-   **Load OpenCode models**. For each role, choose a runner and model. Codex requires
-   reasoning effort; OpenCode requires a provider and offers the model's supported
-   variants, including **Provider default**. The same selectors apply to all execution
-   tiers and repair. Catalog checks use the executable paths currently entered, without
-   saving or making model calls. Custom providers configured for the OpenCode service
-   user appear in its catalog; models must support text and tool calling. Unsupported
-   routes fail visibly; select available routes explicitly instead of expecting a
-   fallback. See [model routing](docs/model-routing.md) for JSON examples.
-3. **Verification policy.** Enter meaningful verification commands, one shell command
-   per line; all must pass on the reviewed revision before a PR is published. Install
-   your project's build and test tools first. For Octomus itself, install Rust with
-   rustfmt and clippy, Node 22.12+, Python 3 and the Playwright prerequisites, then use:
-
-   ```bash
-   npm ci --prefix web && make check && make test
-   ```
-
-   An audit needs no commands; **Run once** refuses to start without at least one.
-4. **Save configuration**, then **Check connection** or **Check audit connection**.
-   Both stay disabled while edits are unsaved. The check validates the saved origin
-   remote, the GitHub CLI login and the runner catalogs for the saved routes. It does
-   not prove push permission and makes no model call. Correct any CLI version warning
-   before live work. Any later saved change invalidates the result, so check again.
-5. Optionally use **Check clean baseline** while paused and idle. Confirm the saved
-   commands will run with the service user's permissions in a disposable clone of the
-   remote default branch. This makes no model calls and creates no tasks or PRs. Inspect
-   the checked revision, bounded output, cancellation/timeout status and configuration
-   freshness. A baseline pass is never verification of a later task's changes.
-6. **Choose Audit or Run once** on the Overview while the service is paused and idle.
-   **Run an audit** runs one planning pass, records accepted, rejected and deferred
-   decisions with reasons, queues nothing and leaves execution paused; no later cycle
-   executes an audit's recommendations. With nine discovery agents a completed pass
-   normally consumes 13 session admissions, and audit agents still run unsandboxed.
-   Read the **Proposals** view before going further. **Run once** drains any existing
-   queue, plans one cycle, finishes its accepted tasks and pauses. Start conservatively:
-   one concurrent task, one task per cycle and a 21,600-second interval. This is a
-   conservative starting profile, not a measured replacement for shipped defaults.
-
-Unsaved edits, verification commands and loaded model catalogs survive dashboard
-navigation in this tab. **Discard changes** restores the last loaded or saved
-configuration without writing to the server. Revisiting a clean form refreshes saved
-values; dirty drafts and failed saves keep your edits. Disconnecting, session expiry or
-reloading the page clears the draft and the checklist's check result. Existing saved
-model IDs stay visible when a catalog changes or cannot be loaded.
-
-Use **Start continuous** only when you want ongoing scheduling; it is never the default
-first action. Inspect each task's review and verification evidence and its PR; only you
-decide to merge. A cycle with no worthwhile work is a valid outcome.
-
-A complete planning pass needs 12–14 admissions (13 with nine discovery agents).
-Unaffordable audits and Run once requests are refused before spending admissions.
-Continuous operation waits for allowance to return without creating failed cycles;
-Run once rechecks after draining queued work and pauses if planning is no longer affordable.
-
-**Open PR capacity** defaults to five owned open PRs. New-PR tasks wait when those PRs
-plus admitted deliveries fill the limit, or when remote state cannot be established.
-Existing-PR maintenance remains eligible. Lowering the limit never closes PRs or
-interrupts already admitted publication.
-
-For unattended attention notices, optionally set `OCTOMUS_NOTIFICATION_WEBHOOK_URL`
-in the protected service environment and restart. Only minimal task/run identity and
-failure categories are sent, with bounded retries; duplicate delivery is possible.
-The URL is not returned by the dashboard or inherited by runner/verification commands.
-Inspect delivery health in Configuration. See [deployment](docs/deployment.md).
-
-**Pause** stops new work; active tasks may finish and publish. Use **Cancel task** to
-stop an individual task, or stop the service to terminate its workers. Audits cannot
-start alongside active work. For durable service setup, follow
-[deployment](docs/deployment.md) and the [operator checklist](docs/operations.md).
-
-## How it decides
-
-Grounding inspects code, AGENTS.md, history and existing owned PRs, with bounded,
-source-attributed contributor/fork PR context to help identify overlapping work.
-External PRs are never writable targets, and recorded coverage names omitted or
-truncated context. Eight to ten
-discovery agents explore complementary areas; two independent adversaries
-challenge their proposals. The orchestrator records a reason for every decision.
-An execution cycle queues accepted work; an audit only records recommendations.
-A later execution cycle plans afresh, rather than executing an old audit result.
-
-Each task has its own execution thread and checkout. Every code review uses a
-**fresh reviewer** and the **complete accumulated diff**. Repairs use one
-**persistent repair thread** per task. Configured verification must pass on the
-reviewed revision before Octomus publishes or updates a PR. Interrupted work and
-publication are reconciled from durable state. See [architecture](docs/architecture.md).
-The Overview's **Inspect run** panel and `--export-run` show the recorded review and
-check evidence for one cycle; see [run evidence](docs/launch/run-evidence.md).
-
-## What a day costs
-
-**Live cost measurements are pending.** Session admissions are not dollars or a
-subscription-allowance cap. Default idle planning normally uses 13 admissions per
-completed cycle, and the shipped daily limit is 150; retries and tasks consume
-more. Use existing subscription allowance only, with no paid overage.
-[Cost methodology and measurement tables](docs/cost.md) distinguish observations,
-unavailable attribution, subscription fees and incremental charges.
+| Document | What it covers |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | Prerequisites, install, service user, first run |
+| [Architecture](docs/architecture.md) | Cycle, task and review contracts; storage and trust |
+| [Model routing](docs/model-routing.md) | Per-role Codex and OpenCode selection |
+| [Deployment](docs/deployment.md) | systemd, controls, limits, retention, backup, HTTP API |
+| [Run evidence](docs/run-evidence.md) | What `RunEvidenceV1` reports, and what it never claims |
+| [Showcase](docs/showcase.md) | The standalone static run explorer |
+| [Cost](docs/cost.md) | What a session admission is, and what is not measured |
+| [Threat model](docs/threat-model.md) | Trust boundaries, prompt injection, redaction limits |
+| [Releasing](docs/releasing.md) | Packaging, release workflow, crate handoff |
 
 ## Security
 
 The dedicated VM is the sandbox: runner and verification commands have the service
-user's permissions, and repository prompt injection is not prevented by design.
-Keep the single-operator dashboard on loopback behind SSH, with a random private
-token and repository-restricted GitHub authentication. Read the
-[threat model](docs/threat-model.md) before running work; report vulnerabilities
+user's permissions, and repository prompt injection is not prevented by design. Keep the
+single-operator dashboard on loopback behind SSH, with a random private token and
+repository-restricted GitHub authentication. Read the
+[threat model](docs/threat-model.md) before running work, and report vulnerabilities
 privately to **mail@mail.tyk.sh** using [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
 Octomus runs on Codex or OpenCode, single-operator and single-repository. See
-[contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md) and the
-[configuration example](docs/configuration.example.json). License: [Apache-2.0](LICENSE).
+[contributing](CONTRIBUTING.md), the [changelog](CHANGELOG.md) and the
+[configuration example](docs/configuration.example.json).
+
+License: [Apache-2.0](LICENSE).

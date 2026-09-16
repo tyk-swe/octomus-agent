@@ -46,8 +46,8 @@ Dashboard regressions cover configuration drafts in tab memory, saved-configurat
 checks, keyboard navigation and list recovery. Keep drafts across view changes,
 clear them at session boundaries, and use entered executable paths for catalogs.
 The dashboard browser tests include axe WCAG A/AA and overflow checks. To refresh
-`docs/dashboard.png`, take a 1440×1000 screenshot of the synthetic overview served by
-`python3 tests/serve_ui.py` and keep the synthetic-data caption.
+`docs/dashboard.png`, take a full-page screenshot of the synthetic overview served by
+`python3 tests/serve_ui.py` at a 1440×1100 viewport, and keep the synthetic-data caption.
 
 Run relevant behavior tests while editing and full `make check`/`make test` before
 delivery. Install `cargo-audit` with `cargo install cargo-audit --locked`, then run

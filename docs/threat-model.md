@@ -85,5 +85,5 @@ checked before admission, not continuous filesystem quotas. Exhaustion, service
 compromise, credential misuse and malicious dependency code remain possible.
 
 Use protected backups, monitor unresolved workspaces and disk growth, and stop the
-service if credentials may be compromised. Follow [operations](operations.md) for
+service if credentials may be compromised. Follow [deployment](deployment.md) for
 stopping/recovery and [SECURITY.md](../SECURITY.md) for private disclosure.

@@ -49,45 +49,18 @@ returns **before** directory creation, permission changes, service locking, migr
 JSON. It conflicts with `--doctor`, `--print-config` and `--usage-report`. A missing
 state database or a missing cycle is an explicit error, never an empty successful export.
 
+
 ### Exporting from a copy of saved state
 
-Use only a **specific offline snapshot or export explicitly authorized by the owner**.
-A narrative report, an archive mentioned in a previous note, or a discovered directory
-is not permission to read it. Do not search for archives or reconstruct records from
-prose.
+Export from a snapshot the owner explicitly authorized, never from a live database and
+never from an archive you merely found. Keep the authorized original untouched, work on
+a disposable copy in a private directory outside Git and any served root, and record the
+capture time, source identity and snapshot checksum privately.
 
-Keep the authorized original untouched. Work on a disposable copy in a private,
-owner-only directory outside Git and public build roots (including `dist`, `web/build`,
-`web/static` and capture directories). Git-ignore alone is not a privacy boundary.
-Use the existing exporter against that working copy:
+A plain file copy of a live SQLite database can lose recent writes still in the
+write-ahead log. The example below is owner-operated; `tests/evidence_snapshot.py` runs
+it against synthetic sources only.
 
-```
-octomus-agent --data-dir <copy-dir> --export-run <cycle-id> > <private-dir>/run-<cycle-id>.json
-```
-
-Use `umask 077` before creating copies or redirecting exports. An existing authorized
-`RunEvidenceV1` export needs no database access or second exporter. Cycle IDs are matched
-exactly, including case and whitespace.
-
-#### Running source: owner creates a SQLite backup
-
-**Sequentially copying `state.db`, `state.db-wal` and `state.db-shm` from a running
-source is not a consistent backup**, even if all three eventually arrive. Writers and
-checkpoints can change them between copies. Copying only `state.db` can silently omit
-committed WAL records; a successful export or `PRAGMA integrity_check` cannot prove that
-no records were lost. The exporter's read transaction cannot repair an inconsistent
-input copy.
-
-For a running source, the owner can use SQLite's supported
-[Online Backup API](https://www.sqlite.org/backup.html), for example Python's
-[`Connection.backup`](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup).
-It includes committed WAL data in a consistent destination database without sequential
-sidecar copying. This backs up the database only, not workspaces or runner state.
-
-The following is an **owner-operated example**, not authorization for an agent to read
-live state. The source path must be explicitly chosen by the owner; use a new private
-destination outside any checkout or served directory. Only synthetic sources are used
-to demonstrate this example in `tests/evidence_snapshot.py`.
 
 <!-- owner-sqlite-backup -->
 ```sh
@@ -119,26 +92,7 @@ PY
 ```
 
 Use the destination only after successful completion; discard an incomplete destination
-after an error and retry with a new private filename. Record the capture method, UTC
-time, source identity and snapshot checksum privately. The owner then supplies the
-offline snapshot and explicit read permission.
-
-#### Genuinely offline consistent archive
-
-An archive captured with all SQLite connections closed and no process changing the
-files during capture is a different case. After the owner identifies and authorizes it,
-copy its `state.db` and matching `state.db-wal` if present into a new writable private
-directory. Preserve any captured `state.db-shm` with that same set; it is a rebuildable
-WAL index, not a substitute for the WAL. Never mix sidecars from other captures or
-discard a WAL because the main database opens successfully. An archive made with
-sequential live copies does not become consistent merely by being offline now.
-
-Do not open the original archive with SQLite, checkpoint it, migrate it, or run the
-service against it. Even a read-only SQLite connection can create or update WAL-index
-sidecars on the working copy; a non-writable copy can fail with
-`attempt to write a readonly database`. The exporter issues no application writes, but
-that is not a promise of byte-for-byte filesystem immutability for SQLite sidecars.
-Record original and working-copy provenance privately and export only from the copy.
+after an error and retry with a new private filename.
 
 ## Consistency and joins
 
@@ -241,19 +195,3 @@ cycle's proposals are counted only in the run-level `gaps`; their review and che
 evidence is not exported. The overview's "Tasks from this run" counts come from the
 dashboard's bounded recent-task window, not from this scan; the Inspect run panel is
 the complete view.
-
-## Tests
-
-`tests/evidence.rs` covers complete and partial cycles, repeated proposal IDs across
-cycles, malformed and missing reviewer batches, duplicate and unconfirmed verdicts, audit
-cycles without tasks, incomplete and empty-summary reviews, later failed checks and
-mismatched revisions, unconfigured checks, unknown cycles, authentication enforcement,
-preserved cycle-action routes, omission of private fields, read-only export behavior, and
-agreement between the API and CLI. Every fixture is an explicitly synthetic temporary
-database.
-
-`tests/evidence_snapshot.py` exercises the exact documented backup example on a synthetic
-open WAL database, including committed task records and an uncommitted change. It exports
-through `--export-run`, checks adverse/missing evidence, and validates/hashes a private
-synthetic wrapper with the showcase's public contract without staging a build. Run after
-`cargo build --locked` with `python3 tests/evidence_snapshot.py`; also part of `make test`.
