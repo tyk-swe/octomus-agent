@@ -6,7 +6,7 @@ use crate::model::{
 use serde_json::{Value, json};
 
 /// Quotes statuses as a SQL IN-list literal derived from the model vocabulary.
-fn status_list(statuses: &[&'static str]) -> String {
+pub(super) fn status_list(statuses: &[&'static str]) -> String {
     statuses
         .iter()
         .map(|s| format!("'{s}'"))
@@ -53,7 +53,10 @@ fn page(c: &Connection, kind: &str, query: &HistoryQuery) -> Result<Page> {
             status_list(&Status::ACTIVE)
         ));
     } else if status == "attention" {
-        sql.push_str(" AND status IN ('blocked','failed') AND archived IS NULL");
+        sql.push_str(&format!(
+            " AND status IN ({}) AND archived IS NULL",
+            status_list(&Status::ATTENTION)
+        ));
     } else if !status.is_empty() {
         sql.push_str(" AND status=?3");
     } else {
@@ -296,7 +299,7 @@ impl Store {
     }
     pub fn has_unresolved_tasks(&self) -> Result<bool> {
         let c = self.conn();
-        Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM record_counts WHERE kind='task' AND status NOT IN ('published','cancelled') AND archived=0 AND count>0)",[],|r|r.get(0))?)
+        Ok(c.query_row(&format!("SELECT EXISTS(SELECT 1 FROM record_counts WHERE kind='task' AND status NOT IN ({}) AND archived=0 AND count>0)", status_list(&Status::TERMINAL)),[],|r|r.get(0))?)
     }
     pub fn start_batch(&self, control: &mut Control) -> Result<()> {
         let mut c = self.conn();
@@ -328,16 +331,17 @@ impl Store {
         // Pending work is queued plus every active status; the second list holds the
         // unresolved-terminal statuses.
         let pending = format!("'queued',{}", status_list(&Status::ACTIVE));
-        Ok(c.query_row(&format!("SELECT COALESCE(sum(status IN ({pending})),0), COALESCE(sum(status IN ('blocked','failed','cancelled')),0) FROM batch_members WHERE run_id=?1"),[id],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?)
+        Ok(c.query_row(&format!("SELECT COALESCE(sum(status IN ({pending})),0), COALESCE(sum(status IN ({})),0) FROM batch_members WHERE run_id=?1", status_list(&Status::UNRESOLVED)),[id],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?)
     }
     pub fn dashboard(&self) -> Result<Value> {
         let mut c = self.conn();
         let tx = c.transaction()?;
         let mut counts = serde_json::Map::new();
         {
-            let mut s = tx.prepare(
-                "SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN ('blocked','failed') OR archived=0) GROUP BY status HAVING sum(count)>0",
-            )?;
+            let mut s = tx.prepare(&format!(
+                "SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN ({}) OR archived=0) GROUP BY status HAVING sum(count)>0",
+                status_list(&Status::ATTENTION)
+            ))?;
             for row in s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
                 let (k, v) = row?;
                 counts.insert(k, json!(v));

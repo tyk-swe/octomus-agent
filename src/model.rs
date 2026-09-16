@@ -67,6 +67,15 @@ impl Status {
         "verifying",
         "publishing",
     ];
+    /// Statuses recorded in the dashboard's attention filter and unmatched by the
+    /// needs-attention count: work the operator has to look at.
+    pub const ATTENTION: [&'static str; 2] = ["blocked", "failed"];
+    /// Every status still owed an outcome. Unarchived attention rows join these in
+    /// the dashboard counts.
+    pub const UNRESOLVED: [&'static str; 3] = ["blocked", "failed", "cancelled"];
+    /// Statuses with nothing left to run or retry. The batch view treats a run whose
+    /// members all reached one of these as settled.
+    pub const TERMINAL: [&'static str; 2] = ["published", "cancelled"];
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

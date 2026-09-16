@@ -75,14 +75,15 @@ impl Store {
     }
     pub fn pr_reservation_candidates(&self) -> Result<Vec<Task>> {
         let c = self.conn();
-        let mut s = c.prepare(
+        let mut s = c.prepare(&format!(
             "SELECT r.data FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
                 WHERE m.kind='task' AND (
-                    m.status IN ('executing','reviewing','repairing','verifying','publishing')
+                    m.status IN ({})
                     OR (m.status='queued' AND json_extract(r.data,'$.execution_session') IS NOT NULL)
                     OR (m.status!='published' AND json_extract(r.data,'$.output_commit') IS NOT NULL)
                 )",
-        )?;
+            super::queries::status_list(&Status::ACTIVE)
+        ))?;
         s.query_map([], |r| r.get::<_, String>(0))?
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
@@ -145,8 +146,8 @@ impl Store {
             ],
         )?;
         tx.execute(
-            "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,'status','Executing')",
-            params![now(), task.id],
+            "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,'status',?3)",
+            params![now(), task.id, format!("{:?}", Status::Executing)],
         )?;
         tx.commit()?;
         Ok(true)
