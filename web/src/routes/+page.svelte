@@ -11,6 +11,7 @@
     ProposalDetail
   } from '$lib/types';
   import Icon from '$lib/Icon.svelte';
+  import LoginScreen from '$lib/LoginScreen.svelte';
   import Settings from '$lib/Settings.svelte';
   import type { SetupStatus } from '$lib/setup';
   import TaskDetail from '$lib/TaskDetail.svelte';
@@ -438,61 +439,7 @@
   /></svelte:head
 >
 {#if !connected}
-  <main class="login-page">
-    <div class="login-brand">
-      <img src="/favicon.svg" alt="" width="40" height="40" /><span
-        >octomus<span class="brand-light">agent</span></span
-      ><span class="version">MVP / 0.1</span>
-    </div>
-    <div class="login-layout">
-      <section class="login-story">
-        <span class="eyebrow">WHEN THE PROJECT BUILDS ITSELF</span>
-        <h1>Good projects<br />keep getting<br /><em>better.</em></h1>
-        <p>A little less coordination.<br />A lot more thoughtful progress.</p>
-        <div class="login-pipeline">
-          <span><Icon name="proposals" />Discover</span><i></i><span><Icon name="code" />Build</span
-          ><i></i><span><Icon name="shield" />Review</span><i></i><span
-            ><Icon name="prs" />Deliver</span
-          >
-        </div>
-      </section>
-      <section class="login-card">
-        <span class="login-mark"><Icon name="key" size={24} /></span>
-        <h2>Your project’s control room.</h2>
-        <p>
-          Connect to your Octomus service to follow the work, tune the system, and see what ships
-          next.
-        </p>
-        <form
-          onsubmit={(e) => {
-            e.preventDefault();
-            login();
-          }}
-        >
-          <label for="access-token">Operator access token</label><input
-            id="access-token"
-            type="password"
-            bind:value={accessToken}
-            placeholder="Enter your access token"
-            autocomplete="off"
-            required
-          />{#if error}<div class="notice error" role="alert">{error}</div>{/if}<button
-            class="button primary"
-            disabled={busy || !accessToken.trim()}
-            >{busy ? 'Connecting…' : 'Open dashboard'}<Icon name="arrow" size={18} /></button
-          >
-        </form>
-        <div class="login-security">
-          <Icon name="shield" size={16} /><span
-            >Private operator access. Your token stays in this tab’s memory.</span
-          >
-        </div>
-      </section>
-    </div>
-    <footer class="login-footer">
-      <span>Built for the long run.</span><span>Discover thoughtfully. Ship with confidence.</span>
-    </footer>
-  </main>
+  <LoginScreen bind:accessToken {error} {busy} onsubmit={login} />
 {:else if data}
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="app-shell">
