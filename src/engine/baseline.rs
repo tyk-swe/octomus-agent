@@ -147,10 +147,7 @@ impl App {
             chrono::DateTime::parse_from_rfc3339(observed_at)?.with_timezone(&chrono::Utc);
         let mut rt = self.runtime();
         if let Some(existing) = &rt.default_observation {
-            let same_target = existing
-                .repository
-                .eq_ignore_ascii_case(&config.github_repo)
-                && existing.default_branch == config.default_branch;
+            let same_target = existing.describes(config);
             let newer = chrono::DateTime::parse_from_rfc3339(&existing.observed_at)
                 .map(|at| at.with_timezone(&chrono::Utc) >= observed)
                 .unwrap_or(true);
@@ -274,10 +271,7 @@ impl App {
                     .contains(&(chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_seconds())
             })
             .unwrap_or(false);
-        let same_target = observation
-            .repository
-            .eq_ignore_ascii_case(&check.config.github_repo)
-            && observation.default_branch == check.config.default_branch;
+        let same_target = observation.describes(&check.config);
         match (&check.revision, fresh && same_target) {
             (Some(revision), true) if *revision == observation.revision => {
                 "matches_last_observation"

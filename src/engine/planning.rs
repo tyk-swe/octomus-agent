@@ -150,7 +150,7 @@ impl App {
                 proposal.id = format!("rediscover-{}", old.id);
                 proposal.dependencies.clear();
                 proposal.reconsiders = vec![old.id];
-                proposal.decision = "candidate".into();
+                proposal.decision = decision::CANDIDATE.into();
                 proposal.reason =
                     "Operator requested fresh assessment against current context".into();
                 cycle.proposals.push(proposal);
@@ -391,9 +391,7 @@ impl App {
                     .proposals
                     .iter()
                     .all(|p| a.iter().any(|v| v["id"] == p.id
-                        && ["accepted", "rejected", "deferred"]
-                            .iter()
-                            .any(|s| v["decision"] == *s)
+                        && decision::ASSESSMENTS.contains(&v["decision"].as_str().unwrap_or(""))
                         && v["reason"].as_str().is_some_and(|s| !s.is_empty()))),
                 "Adversarial reviewer omitted a proposal or rationale"
             );
@@ -536,8 +534,7 @@ pub fn resolve_target<'a>(
     }
     let mut eligible = prs.iter().filter(|pr| {
         pr.branch == target
-            && pr.owned
-            && pr.state == "open"
+            && pr.owned_open()
             && pr.base == config.default_branch
             && pr.base_repository.eq_ignore_ascii_case(&config.github_repo)
     });
@@ -568,8 +565,7 @@ pub fn validate_proposals(
     let mut accepted: Vec<&Proposal> = vec![];
     for p in proposals {
         ensure!(
-            ["accepted", "rejected", "deferred"].contains(&p.decision.as_str())
-                && !p.reason.trim().is_empty(),
+            decision::ASSESSMENTS.contains(&p.decision.as_str()) && !p.reason.trim().is_empty(),
             "Every proposal needs a decision and rationale"
         );
         if p.decision != "accepted" {

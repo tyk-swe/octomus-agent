@@ -210,7 +210,7 @@ impl App {
         if let Some(n) = task.pr_number {
             let p = git::pr(&config, n, cancel).await?;
             ensure!(
-                p.owned && p.state == "open" && p.base == config.default_branch,
+                p.owned_open() && p.base == config.default_branch,
                 BlockedReason::StaleBase
             );
         }
@@ -281,7 +281,7 @@ impl App {
             }
             // A freshly created thread is already active; Codex has no resumable
             // rollout until its first turn starts.
-            session_mut(task, &thread, "executor")?.status = session_status::RUNNING.into();
+            session_mut(task, &thread, "executor")?.mark_running();
             self.save_task(task)?;
             let prompt = format!(
                 "Implement this accepted task end to end in this workspace. Source revision: {}. Full comparison base: {}. Existing PR: {:?}. Preserve existing accumulated branch behavior; inspect its full diff. Do not push, publish, merge or deploy. Required repository verification commands: {:?}. Objective and constraints:\n{}\nProblem: {}\nBenefit: {}\nScope: {}\nEvidence: {:?}\nReturn a concise summary of actual changes, verification and material risks or migration notes.",
@@ -339,10 +339,7 @@ impl App {
         let review: Review = serde_json::from_str(&answer)
             .context("Unparseable review is not clean")
             .context(BlockedReason::InvalidReview)?;
-        ensure!(
-            review.completed && !review.summary.trim().is_empty(),
-            BlockedReason::InvalidReview
-        );
+        ensure!(review.valid(), BlockedReason::InvalidReview);
         Self::ensure_workspace_at(&config, &workspace, revision, cancel).await?;
         session_mut(task, &thread, "reviewer")?.mark_completed(redact(&review.summary));
         task.reviews.push(ReviewRound {
@@ -422,7 +419,7 @@ impl App {
                 .push(Session::new(thread.clone(), "repair", route.clone()));
             self.save_task(task)?;
         }
-        session_mut(task, &thread, "repair")?.status = session_status::RUNNING.into();
+        session_mut(task, &thread, "repair")?.mark_running();
         self.save_task(task)?;
         let prompt = format!(
             "Repair actionable findings and verification failures for this task. Preserve useful capabilities and meaningful tests. Do not push, publish, merge or deploy. If a finding is unsupported, explain the technical evidence in your final summary; the next fresh reviewer must independently assess it. Rerun relevant verification {:?}. Full comparison base: {}. Task: {}. Findings: {}. Verification failures: {:?}",

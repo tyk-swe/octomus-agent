@@ -1,6 +1,7 @@
 //! Local, read-only reporting. Never open through Store::open (which migrates state).
 use crate::{
-    model::{Cycle, Task, now, session_status},
+    config::TIERS,
+    model::{Cycle, Task, completed_sessions, decision, now},
     store::{Admission, Store, redact_json},
 };
 use anyhow::Result;
@@ -69,24 +70,29 @@ pub fn usage_report(path: &Path) -> Result<Value> {
             let end = chrono::DateTime::parse_from_rfc3339(end).ok()?;
             Some((end - start).num_milliseconds() as f64 / 1000.0)
         });
-        let decisions = ["accepted", "rejected", "deferred", "candidate"].map(|decision| {
+        let decisions = decision::ALL.map(|decision| {
             (decision, cycle.proposals.iter().filter(|p| p.decision == decision).count())
         }).into_iter().collect::<BTreeMap<_, _>>();
         json!({"id":cycle.id,"mode":cycle.mode,"number":cycle.number,"status":cycle.status,
             "started_at":cycle.started_at,"completed_at":cycle.completed_at,"wall_seconds":wall_seconds,
             "planning_admissions":planning,"task_admissions":task,
-            "recorded_completed_sessions":cycle.sessions.iter().filter(|s| s.status == session_status::COMPLETED).count(),
+            "recorded_completed_sessions":completed_sessions(&cycle.sessions),
             "decisions":decisions,"error":cycle.error})
     }).collect::<Vec<_>>();
-    let task_rows = tasks.iter().map(|task| json!({
-        "id":task.id,"cycle_id":task.cycle_id,"tier":task.proposal.tier,
-        "status":task.status,"route":task.route,"repair_route":task.config.repair_route,
-        "admissions":task_counts.get(&task.id).copied().unwrap_or(0),
-        "recorded_completed_sessions":task.sessions.iter().filter(|s| s.status == session_status::COMPLETED).count(),
-        "created_at":task.created_at,"updated_at":task.updated_at,
-        "pr_url":task.pr_url,"error":task.error
-    })).collect::<Vec<_>>();
-    let tiers = ["XS", "S", "M", "L", "XL"].map(|tier| {
+    let task_rows = tasks
+        .iter()
+        .map(|task| {
+            json!({
+                "id":task.id,"cycle_id":task.cycle_id,"tier":task.proposal.tier,
+                "status":task.status,"route":task.route,"repair_route":task.config.repair_route,
+                "admissions":task_counts.get(&task.id).copied().unwrap_or(0),
+                "recorded_completed_sessions":completed_sessions(&task.sessions),
+                "created_at":task.created_at,"updated_at":task.updated_at,
+                "pr_url":task.pr_url,"error":task.error
+            })
+        })
+        .collect::<Vec<_>>();
+    let tiers = TIERS.map(|tier| {
         let observed = tasks
             .iter()
             .filter(|t| t.proposal.tier == tier && task_counts.contains_key(&t.id))

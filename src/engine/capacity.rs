@@ -303,7 +303,7 @@ impl App {
         let represented: HashSet<&str> = inventory
             .prs
             .iter()
-            .filter(|p| p.owned && p.state == "open")
+            .filter(|p| p.owned_open())
             .map(|p| p.branch.as_str())
             .collect();
         let mut released = Vec::new();

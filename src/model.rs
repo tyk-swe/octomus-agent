@@ -35,15 +35,25 @@ pub enum Status {
     Cancelled,
 }
 impl Status {
+    /// The durable record's word for this status. Tasks and events are saved with
+    /// the serde name, so `as_str` and serialization must agree; the unit test at the
+    /// bottom of this file holds them together.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Executing => "executing",
+            Self::Reviewing => "reviewing",
+            Self::Repairing => "repairing",
+            Self::Verifying => "verifying",
+            Self::Publishing => "publishing",
+            Self::Published => "published",
+            Self::Blocked => "blocked",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
     pub fn active(&self) -> bool {
-        matches!(
-            self,
-            Self::Executing
-                | Self::Reviewing
-                | Self::Repairing
-                | Self::Verifying
-                | Self::Publishing
-        )
+        Self::ACTIVE.contains(&self.as_str())
     }
     pub fn retryable(&self) -> bool {
         matches!(self, Self::Failed | Self::Blocked)
@@ -256,8 +266,13 @@ pub struct Review {
     pub findings: Vec<Finding>,
 }
 impl Review {
+    /// A completed review that recorded a summary. Findings are allowed here: the
+    /// parse site keeps them so the repair round can address each one.
+    pub fn valid(&self) -> bool {
+        self.completed && !self.summary.trim().is_empty()
+    }
     pub fn clean(&self) -> bool {
-        self.completed && !self.summary.trim().is_empty() && self.findings.is_empty()
+        self.valid() && self.findings.is_empty()
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +330,14 @@ pub struct DefaultBranchObservation {
     pub revision: String,
     pub observed_at: String,
 }
+impl DefaultBranchObservation {
+    /// Whether this observation still describes the configured remote. Only the two
+    /// fields the observation was taken for are compared; freshness is the caller's.
+    pub fn describes(&self, c: &Config) -> bool {
+        self.repository.eq_ignore_ascii_case(&c.github_repo)
+            && self.default_branch == c.default_branch
+    }
+}
 /// Persisted `Session.status` values. These strings are the durable record's
 /// vocabulary; saved sessions stay readable, so they never change.
 pub mod session_status {
@@ -322,6 +345,17 @@ pub mod session_status {
     pub const COMPLETED: &str = "completed";
     pub const FAILED: &str = "failed";
     pub const INTERRUPTED: &str = "interrupted";
+}
+/// Persisted `Proposal.decision` values, likewise part of the durable vocabulary.
+/// `ALL` is every word a saved proposal can carry; `ASSESSMENTS` is every word an
+/// agent is allowed to return for one.
+pub mod decision {
+    pub const ACCEPTED: &str = "accepted";
+    pub const REJECTED: &str = "rejected";
+    pub const DEFERRED: &str = "deferred";
+    pub const CANDIDATE: &str = "candidate";
+    pub const ALL: [&str; 4] = [ACCEPTED, REJECTED, DEFERRED, CANDIDATE];
+    pub const ASSESSMENTS: [&str; 3] = [ACCEPTED, REJECTED, DEFERRED];
 }
 /// Persisted `Cycle.status` values, likewise part of the durable vocabulary.
 pub mod cycle_status {
@@ -343,14 +377,19 @@ pub struct Session {
 impl Session {
     /// A freshly started session record: running, started now, no summary yet.
     pub fn new(id: String, role: &str, route: Route) -> Self {
-        Self {
+        let mut session = Self {
             id,
             role: role.into(),
             route,
-            status: session_status::RUNNING.into(),
+            status: String::new(),
             started_at: now(),
             summary: String::new(),
-        }
+        };
+        session.mark_running();
+        session
+    }
+    pub fn mark_running(&mut self) {
+        self.status = session_status::RUNNING.into();
     }
     pub fn mark_completed(&mut self, summary: String) {
         self.status = session_status::COMPLETED.into();
@@ -372,6 +411,13 @@ pub fn interrupt_running(sessions: &mut [Session]) {
             session.mark_interrupted();
         }
     }
+}
+/// Sessions that reached the completed state.
+pub fn completed_sessions<'a>(sessions: impl IntoIterator<Item = &'a Session>) -> usize {
+    sessions
+        .into_iter()
+        .filter(|s| s.status == session_status::COMPLETED)
+        .count()
 }
 /// Marks every still-running session failed, backfilling an empty summary with
 /// the task's terminal error so the session record explains its ending.
@@ -516,6 +562,13 @@ pub struct PullRequest {
     pub head_repository: String,
     #[serde(default)]
     pub base_repository: String,
+}
+impl PullRequest {
+    /// An open pull request this service owns. Only these hold an admission slot,
+    /// so every inventory filter and branch guard tests exactly this pair.
+    pub fn owned_open(&self) -> bool {
+        self.owned && self.state == "open"
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -726,6 +779,26 @@ pub struct Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn every_status_word_matches_its_serialized_name() {
+        for status in [
+            Status::Queued,
+            Status::Executing,
+            Status::Reviewing,
+            Status::Repairing,
+            Status::Verifying,
+            Status::Publishing,
+            Status::Published,
+            Status::Blocked,
+            Status::Failed,
+            Status::Cancelled,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&status).unwrap(),
+                format!("\"{}\"", status.as_str())
+            );
+        }
+    }
     #[test]
     fn empty_or_incomplete_review_never_clean() {
         assert!(

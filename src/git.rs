@@ -221,10 +221,7 @@ pub async fn owned_pr_details(
     for observed in inventory.prs.iter().filter(|p| p.owned) {
         let detail = pr(c, observed.number, cancel).await?;
         ensure!(
-            detail.owned
-                && detail.state == "open"
-                && detail.branch == observed.branch
-                && detail.base == observed.base,
+            detail.owned_open() && detail.branch == observed.branch && detail.base == observed.base,
             "Owned PR changed while the open inventory was being read"
         );
         prs.push(detail);
@@ -396,8 +393,7 @@ async fn update_pr(
 ) -> Result<PullRequest> {
     let latest = pr(c, p.number, cancel).await?;
     ensure!(
-        latest.owned
-            && latest.state == "open"
+        latest.owned_open()
             && latest.base == c.default_branch
             && latest.head == commit
             && latest.body == p.body,
@@ -550,7 +546,7 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
             return Ok(p.clone());
         }
         ensure!(
-            p.owned && p.state == "open" && p.branch == task.branch && p.base == c.default_branch,
+            p.owned_open() && p.branch == task.branch && p.base == c.default_branch,
             blocked(
                 BlockedReason::RemoteConflict,
                 "PR ownership, base, or open state changed; reconcile before retrying"

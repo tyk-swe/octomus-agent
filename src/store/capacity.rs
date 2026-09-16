@@ -44,11 +44,7 @@ pub fn pr_union(
     reservations: &[PrReservation],
     limit: usize,
 ) -> (usize, usize, usize) {
-    let owned: Vec<_> = inventory
-        .prs
-        .iter()
-        .filter(|p| p.owned && p.state == "open")
-        .collect();
+    let owned: Vec<_> = inventory.prs.iter().filter(|p| p.owned_open()).collect();
     let observed_count = owned.iter().map(|p| p.number).collect::<HashSet<_>>().len();
     let represented_branches: HashSet<_> = owned.iter().map(|p| p.branch.as_str()).collect();
     let unrepresented = reservations
@@ -184,7 +180,7 @@ impl Store {
         let represented: HashSet<&str> = inventory
             .prs
             .iter()
-            .filter(|p| p.owned && p.state == "open")
+            .filter(|p| p.owned_open())
             .map(|p| p.branch.as_str())
             .collect();
         for reservation in reservation_rows(&tx, &config.github_repo)? {

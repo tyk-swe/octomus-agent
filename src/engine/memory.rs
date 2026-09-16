@@ -134,9 +134,7 @@ impl App {
                         && d["problem_key"] == p.problem_identity()
                         && d["reconsideration_due"] == false
                         && !(d["mode"] == "audit" && d["decision"] == "accepted")
-                        && ["rejected", "deferred", "accepted"]
-                            .iter()
-                            .any(|s| d["decision"] == *s)),
+                        && decision::ASSESSMENTS.contains(&d["decision"].as_str().unwrap_or(""))),
                     "Proposal repeats a recorded decision without changed context or elapsed reconsideration period"
                 );
             }

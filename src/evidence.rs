@@ -7,7 +7,8 @@
 use crate::{
     config::Route,
     model::{
-        Cycle, CycleMode, REVIEWER_SLOTS, Session, Status, Task, cycle_status, now, session_status,
+        Cycle, CycleMode, REVIEWER_SLOTS, Session, Status, Task, completed_sessions, cycle_status,
+        decision, now,
     },
     store::{Store, redact_json},
 };
@@ -18,7 +19,6 @@ use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
 
 pub const SCHEMA_VERSION: u32 = 1;
-const DECISIONS: [&str; 3] = ["accepted", "rejected", "deferred"];
 const LIMITATIONS: [&str; 9] = [
     "Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
     "Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
@@ -274,7 +274,7 @@ fn normalize_batches(cycle: &Cycle) -> (Vec<Batch>, Vec<String>) {
                 for item in items {
                     let id = item.get("id").and_then(Value::as_str).unwrap_or("").trim();
                     let decision = item.get("decision").and_then(Value::as_str).unwrap_or("");
-                    if id.is_empty() || !DECISIONS.contains(&decision) {
+                    if id.is_empty() || !decision::ASSESSMENTS.contains(&decision) {
                         batch.malformed_entries += 1;
                         continue;
                     }
@@ -294,10 +294,7 @@ fn normalize_batches(cycle: &Cycle) -> (Vec<Batch>, Vec<String>) {
     }
     for (slot, role) in REVIEWER_SLOTS.iter().enumerate() {
         let sessions = slot_sessions(cycle, role);
-        let completed = sessions
-            .iter()
-            .filter(|s| s.status == session_status::COMPLETED)
-            .count();
+        let completed = completed_sessions(sessions.iter().copied());
         let saved = batches.iter().any(|b| b.slot == Some(slot));
         if sessions.len() > 1 {
             gaps.push(format!(

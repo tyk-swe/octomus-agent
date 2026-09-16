@@ -19,6 +19,9 @@ pub const ROLES: [&str; 4] = [
     "proposal_reviewer",
     "code_reviewer",
 ];
+/// Execution tiers, smallest first. Configuration validation and the usage report
+/// both walk this single list.
+pub const TIERS: [&str; 5] = ["XS", "S", "M", "L", "XL"];
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Backend {
@@ -305,10 +308,7 @@ impl Config {
             "Configure exactly the four planning and review roles"
         );
         ensure!(
-            self.tiers.len() == 5
-                && ["XS", "S", "M", "L", "XL"]
-                    .iter()
-                    .all(|r| self.tiers.contains_key(*r)),
+            self.tiers.len() == TIERS.len() && TIERS.iter().all(|r| self.tiers.contains_key(*r)),
             "Configure all five execution tiers"
         );
         for route in self
