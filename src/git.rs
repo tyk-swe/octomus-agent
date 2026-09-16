@@ -336,6 +336,157 @@ pub async fn publish(task: &Task, cancel: &CancellationToken) -> Result<PullRequ
         .await
         .context(BlockedReason::PublicationUncertain)
 }
+/// The pull request description for a reviewed commit.
+///
+/// A task that already owns a pull request appends a follow-up section rather
+/// than replacing what is there, so earlier delivery notes and any maintainer
+/// conversation stay readable. The task marker makes that append idempotent: a
+/// republication of the same task rewrites nothing.
+fn pr_body(task: &Task, existing: Option<&PullRequest>, commit: &str) -> String {
+    let verification = task
+        .verification
+        .iter()
+        .filter(|v| v.revision == commit)
+        .map(|v| {
+            format!(
+                "- `{}`: {}",
+                v.command,
+                if v.success { "passed" } else { "failed" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let marker = format!("<!-- octomus:task:{} -->", task.id);
+    let update = format!(
+        "{}\n\n{}\n\nScope: {}\n\nVerification\n{}\n\n{}\n\nReviewed commit: `{commit}`. {} review round(s).\n\n{marker}",
+        task.proposal.problem,
+        task.proposal.benefit,
+        task.proposal.scope,
+        verification,
+        task.sessions
+            .iter()
+            .rev()
+            .find(|s| s.role == "executor" || s.role == "repair")
+            .map(|s| s.summary.as_str())
+            .unwrap_or(""),
+        task.reviews.len()
+    );
+    match existing {
+        Some(p) if p.body.contains(&marker) => p.body.clone(),
+        Some(p) => format!(
+            "{}\n\n---\n\nOctomus follow-up: {}\n\n{update}",
+            p.body, task.proposal.title
+        ),
+        None => update,
+    }
+}
+/// Rewrites the description of a pull request this task already owns.
+///
+/// The remote is re-read immediately before the edit: another writer moving the
+/// head, closing the request or editing the body between reconciliation and here
+/// means the edit would overwrite work nobody reviewed, so it is refused and the
+/// retry reconciles against whatever is now there.
+async fn update_pr(
+    c: &Config,
+    task: &Task,
+    p: &PullRequest,
+    commit: &str,
+    body_path: &Path,
+    cancel: &CancellationToken,
+) -> Result<PullRequest> {
+    let latest = pr(c, p.number, cancel).await?;
+    ensure!(
+        latest.owned
+            && latest.state == "open"
+            && latest.base == c.default_branch
+            && latest.head == commit
+            && latest.body == p.body,
+        blocked(
+            BlockedReason::RemoteConflict,
+            "PR changed around publication; retry will reconcile the current remote state"
+        )
+    );
+    gh(
+        c,
+        &[
+            "pr",
+            "edit",
+            &p.number.to_string(),
+            "--repo",
+            &c.github_repo,
+            "--body-file",
+            body_path.to_str().unwrap(),
+        ],
+        cancel,
+    )
+    .await?;
+    let published = pr(c, p.number, cancel).await?;
+    validate_publication(task, &published, false)?;
+    Ok(published)
+}
+
+/// Opens a new pull request and confirms what was actually created.
+///
+/// `gh` reports success as a URL, which is parsed rather than trusted: a URL on
+/// another host, or naming another repository, means the request was not created
+/// where this task believes it was.
+async fn create_pr(
+    c: &Config,
+    task: &Task,
+    body_path: &Path,
+    cancel: &CancellationToken,
+) -> Result<PullRequest> {
+    let created = gh(
+        c,
+        &[
+            "pr",
+            "create",
+            "--repo",
+            &c.github_repo,
+            "--head",
+            &task.branch,
+            "--base",
+            &c.default_branch,
+            "--title",
+            &task.proposal.title,
+            "--body-file",
+            body_path.to_str().unwrap(),
+        ],
+        cancel,
+    )
+    .await?;
+    let url = reqwest::Url::parse(created.trim())
+        .context(BlockedReason::RemoteConflict)
+        .context("PR creation returned no unambiguous URL; reconcile before retrying")?;
+    ensure!(
+        url.scheme() == "https"
+            && url.host_str() == Some("github.com")
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        blocked(BlockedReason::RemoteConflict, "Invalid PR creation URL")
+    );
+    let parts: Vec<_> = url
+        .path_segments()
+        .ok_or_else(|| blocked(BlockedReason::RemoteConflict, "Missing PR URL path"))?
+        .collect();
+    ensure!(
+        parts.len() == 4
+            && parts[2] == "pull"
+            && format!("{}/{}", parts[0], parts[1]).eq_ignore_ascii_case(&c.github_repo),
+        blocked(
+            BlockedReason::RemoteConflict,
+            "Created PR belongs to a different repository"
+        )
+    );
+    let number: u64 = parts[3]
+        .parse()
+        .context(BlockedReason::RemoteConflict)
+        .context("Missing created PR number")?;
+    let published = pr(c, number, cancel).await?;
+    validate_publication(task, &published, false)?;
+    Ok(published)
+}
+
 async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRequest> {
     let config = task.execution_config();
     let c = &config;
@@ -459,128 +610,11 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
         )
         .await?;
     }
-    let verification = task
-        .verification
-        .iter()
-        .filter(|v| v.revision == commit)
-        .map(|v| {
-            format!(
-                "- `{}`: {}",
-                v.command,
-                if v.success { "passed" } else { "failed" }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let update = format!(
-        "{}\n\n{}\n\nScope: {}\n\nVerification\n{}\n\n{}\n\nReviewed commit: `{commit}`. {} review round(s).\n\n<!-- octomus:task:{} -->",
-        task.proposal.problem,
-        task.proposal.benefit,
-        task.proposal.scope,
-        verification,
-        task.sessions
-            .iter()
-            .rev()
-            .find(|s| s.role == "executor" || s.role == "repair")
-            .map(|s| s.summary.as_str())
-            .unwrap_or(""),
-        task.reviews.len(),
-        task.id
-    );
-    let body = if let Some(p) = &existing {
-        if p.body
-            .contains(&format!("<!-- octomus:task:{} -->", task.id))
-        {
-            p.body.clone()
-        } else {
-            format!(
-                "{}\n\n---\n\nOctomus follow-up: {}\n\n{update}",
-                p.body, task.proposal.title
-            )
-        }
-    } else {
-        update
-    };
+    let body = pr_body(task, existing.as_ref(), commit);
     let body_path = path.parent().unwrap().join("pr-body.md");
     tokio::fs::write(&body_path, body).await?;
     if let Some(p) = existing {
-        let latest = pr(c, p.number, cancel).await?;
-        ensure!(
-            latest.owned
-                && latest.state == "open"
-                && latest.base == c.default_branch
-                && latest.head == commit
-                && latest.body == p.body,
-            blocked(
-                BlockedReason::RemoteConflict,
-                "PR changed around publication; retry will reconcile the current remote state"
-            )
-        );
-        gh(
-            c,
-            &[
-                "pr",
-                "edit",
-                &p.number.to_string(),
-                "--repo",
-                &c.github_repo,
-                "--body-file",
-                body_path.to_str().unwrap(),
-            ],
-            cancel,
-        )
-        .await?;
-        let published = pr(c, p.number, cancel).await?;
-        validate_publication(task, &published, false)?;
-        return Ok(published);
+        return update_pr(c, task, &p, commit, &body_path, cancel).await;
     }
-    let created = gh(
-        c,
-        &[
-            "pr",
-            "create",
-            "--repo",
-            &c.github_repo,
-            "--head",
-            &task.branch,
-            "--base",
-            &c.default_branch,
-            "--title",
-            &task.proposal.title,
-            "--body-file",
-            body_path.to_str().unwrap(),
-        ],
-        cancel,
-    )
-    .await?;
-    let url = reqwest::Url::parse(created.trim())
-        .context(BlockedReason::RemoteConflict)
-        .context("PR creation returned no unambiguous URL; reconcile before retrying")?;
-    ensure!(
-        url.scheme() == "https"
-            && url.host_str() == Some("github.com")
-            && url.query().is_none()
-            && url.fragment().is_none(),
-        blocked(BlockedReason::RemoteConflict, "Invalid PR creation URL")
-    );
-    let parts: Vec<_> = url
-        .path_segments()
-        .ok_or_else(|| blocked(BlockedReason::RemoteConflict, "Missing PR URL path"))?
-        .collect();
-    ensure!(
-        parts.len() == 4
-            && parts[2] == "pull"
-            && format!("{}/{}", parts[0], parts[1]).eq_ignore_ascii_case(&c.github_repo),
-        blocked(
-            BlockedReason::RemoteConflict,
-            "Created PR belongs to a different repository"
-        )
-    );
-    let number: u64 = parts[3]
-        .parse()
-        .context(BlockedReason::RemoteConflict)
-        .context("Missing created PR number")?;
-    let published = pr(c, number, cancel).await?;
-    validate_publication(task, &published, false)?;
-    Ok(published)
+    create_pr(c, task, &body_path, cancel).await
 }

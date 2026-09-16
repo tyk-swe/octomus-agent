@@ -430,69 +430,7 @@ impl App {
             let cancel = self.shutdown.child_token();
             self.runtime().tasks.insert(task.id.clone(), cancel.clone());
             let app = self.clone();
-            tokio::spawn(async move {
-                let _guard = app.task_guard(&task.id);
-                let mut timed_out = false;
-                let result = {
-                    let limit = Duration::from_secs(task.execution_config().task_timeout_seconds);
-                    match crate::process::with_deadline(
-                        limit,
-                        &cancel,
-                        app.execute(&mut task, &cancel),
-                    )
-                    .await
-                    {
-                        Deadline::Done(result) => Ok(result),
-                        Deadline::Expired { already_cancelled } => {
-                            timed_out = !already_cancelled;
-                            Err(())
-                        }
-                    }
-                };
-                let error = match result {
-                    Ok(Ok(())) => None,
-                    Ok(Err(e)) => {
-                        task.blocked_reason = Some(BlockedReason::from_error(&e));
-                        Some(format!("{e:#}"))
-                    }
-                    Err(_) => {
-                        task.blocked_reason = Some(BlockedReason::Timeout);
-                        Some("Task time limit exceeded".into())
-                    }
-                };
-                if let Some(error) = error {
-                    task.error = Some(redact(&error));
-                    for session in &mut task.sessions {
-                        if session.status == "running" {
-                            session.status = "failed".into();
-                            if session.summary.is_empty() {
-                                session.summary = redact(&error);
-                            }
-                        }
-                    }
-                    let operator_cancelled = app
-                        .store
-                        .get::<serde_json::Value>("cancel", &task.id)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|v| !v.is_null());
-                    let status = if cancel.is_cancelled()
-                        && !timed_out
-                        && task.output_commit.is_none()
-                        && (operator_cancelled || !app.shutdown.is_cancelled())
-                    {
-                        Status::Cancelled
-                    } else {
-                        Status::Blocked
-                    };
-                    if let Err(e) = app.transition(&mut task, status) {
-                        tracing::error!("Task {} final transition failed: {e:#}", task.id);
-                    }
-                    if let Err(e) = app.store.event(&task.id, "error", &error) {
-                        tracing::error!("Task {} error event failed: {e:#}", task.id);
-                    }
-                }
-            });
+            tokio::spawn(execution::supervise(app, task, cancel));
         }
         let busy = {
             let rt = self.runtime();

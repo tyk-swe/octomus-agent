@@ -1,7 +1,9 @@
 use super::App;
+use crate::process::Deadline;
 use crate::{git, model::*, runner::Runners, schemas, store::redact};
 use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 impl App {
@@ -479,4 +481,67 @@ fn session_mut<'a>(task: &'a mut Task, thread: &str, role: &str) -> Result<&'a m
                 task.id
             ))
         })
+}
+
+/// Runs one task to a terminal state and records why it ended there.
+///
+/// Every exit path writes a status: a deadline, a cancellation and a failure are
+/// all distinguishable afterwards, because a task that simply stopped being
+/// mentioned would be indistinguishable from one still running.
+pub(super) async fn supervise(app: App, mut task: Task, cancel: CancellationToken) {
+    let _guard = app.task_guard(&task.id);
+    let mut timed_out = false;
+    let result = {
+        let limit = Duration::from_secs(task.execution_config().task_timeout_seconds);
+        match crate::process::with_deadline(limit, &cancel, app.execute(&mut task, &cancel)).await {
+            Deadline::Done(result) => Ok(result),
+            Deadline::Expired { already_cancelled } => {
+                timed_out = !already_cancelled;
+                Err(())
+            }
+        }
+    };
+    let error = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => {
+            task.blocked_reason = Some(BlockedReason::from_error(&e));
+            Some(format!("{e:#}"))
+        }
+        Err(_) => {
+            task.blocked_reason = Some(BlockedReason::Timeout);
+            Some("Task time limit exceeded".into())
+        }
+    };
+    if let Some(error) = error {
+        task.error = Some(redact(&error));
+        for session in &mut task.sessions {
+            if session.status == "running" {
+                session.status = "failed".into();
+                if session.summary.is_empty() {
+                    session.summary = redact(&error);
+                }
+            }
+        }
+        let operator_cancelled = app
+            .store
+            .get::<serde_json::Value>("cancel", &task.id)
+            .ok()
+            .flatten()
+            .is_some_and(|v| !v.is_null());
+        let status = if cancel.is_cancelled()
+            && !timed_out
+            && task.output_commit.is_none()
+            && (operator_cancelled || !app.shutdown.is_cancelled())
+        {
+            Status::Cancelled
+        } else {
+            Status::Blocked
+        };
+        if let Err(e) = app.transition(&mut task, status) {
+            tracing::error!("Task {} final transition failed: {e:#}", task.id);
+        }
+        if let Err(e) = app.store.event(&task.id, "error", &error) {
+            tracing::error!("Task {} error event failed: {e:#}", task.id);
+        }
+    }
 }

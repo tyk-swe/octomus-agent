@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 mod capacity;
+mod migrate;
 pub mod notifications;
 mod queries;
 pub use capacity::{PrReservation, pr_union};
@@ -80,7 +81,7 @@ impl Store {
             END;
             "#,
         )?;
-        queries::migrate(&c)?;
+        migrate::migrate(&c)?;
         notifications::migrate(&c)?;
         Ok(Self(Arc::new(Mutex::new(c))))
     }
