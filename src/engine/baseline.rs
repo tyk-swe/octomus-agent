@@ -69,7 +69,7 @@ pub fn command_output(captured: &Result<process::ProcessOutput>) -> (String, boo
     };
     // The middle flag reports capture-level truncation only; bounded_output
     // measures and reports over-limit text itself, in the same byte unit.
-    (text.clone(), truncated, success)
+    (text, truncated, success)
 }
 /// One verification command's captured result plus the workspace-integrity
 /// check that follows it. `intact` carries the check's own failure so each
@@ -306,23 +306,37 @@ impl App {
     }
     pub fn recover_baselines(&self) -> Result<()> {
         for mut check in self.store.running_baselines()? {
-            check.status = if self.baseline_cancelled(&check.id)? {
-                BaselineStatus::Cancelled
-            } else {
-                BaselineStatus::Interrupted
-            };
-            check.completed_at = Some(now());
-            check.error = Some(
-                if check.status == BaselineStatus::Cancelled {
-                    "The operator cancelled this check before the service stopped"
-                } else {
-                    "The service stopped while the baseline check was running"
-                }
-                .into(),
-            );
-            self.store.put("baseline", &check.id, &check)?;
+            self.abandon_baseline(
+                &mut check,
+                "The operator cancelled this check before the service stopped",
+                "The service stopped while the baseline check was running",
+            )?;
         }
         Ok(())
+    }
+    /// Records that a running check was abandoned, with the operator-cancelled and
+    /// worker-interrupted wording each caller supplies.
+    fn abandon_baseline(
+        &self,
+        check: &mut BaselineCheck,
+        cancelled: &str,
+        interrupted: &str,
+    ) -> Result<()> {
+        check.status = if self.baseline_cancelled(&check.id)? {
+            BaselineStatus::Cancelled
+        } else {
+            BaselineStatus::Interrupted
+        };
+        check.completed_at = Some(now());
+        check.error = Some(
+            if check.status == BaselineStatus::Cancelled {
+                cancelled
+            } else {
+                interrupted
+            }
+            .into(),
+        );
+        self.store.put("baseline", &check.id, check)
     }
     pub async fn cleanup_baseline(&self, check: &mut BaselineCheck) -> Result<()> {
         let root = self.data_dir.join("baselines");
@@ -421,8 +435,7 @@ impl App {
         cancel: &CancellationToken,
     ) -> Result<BaselineStatus> {
         let c = check.config.clone();
-        let dir = self.data_dir.clone();
-        let measured = tokio::task::spawn_blocking(move || directory_size(&dir)).await??;
+        let measured = self.measured_data_dir().await?;
         ensure!(
             measured < c.max_workspace_bytes,
             crate::store::storage_limit_error(measured)
@@ -525,21 +538,11 @@ impl Drop for BaselineGuard {
             if let Some(mut check) = self.app.store.get::<BaselineCheck>("baseline", &self.id)?
                 && check.status == BaselineStatus::Running
             {
-                check.status = if self.app.baseline_cancelled(&self.id)? {
-                    BaselineStatus::Cancelled
-                } else {
-                    BaselineStatus::Interrupted
-                };
-                check.completed_at = Some(now());
-                check.error = Some(
-                    if check.status == BaselineStatus::Cancelled {
-                        "Cancelled by the operator; the check worker exited unexpectedly"
-                    } else {
-                        "Baseline check worker exited unexpectedly"
-                    }
-                    .into(),
-                );
-                self.app.store.put("baseline", &check.id, &check)?;
+                self.app.abandon_baseline(
+                    &mut check,
+                    "Cancelled by the operator; the check worker exited unexpectedly",
+                    "Baseline check worker exited unexpectedly",
+                )?;
             }
             Ok(())
         })();

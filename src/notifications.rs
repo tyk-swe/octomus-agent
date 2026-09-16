@@ -12,6 +12,10 @@ const MAX_URL_BYTES: usize = 8192;
 const MAX_PAYLOAD_BYTES: usize = 8192;
 const MAX_REPOSITORY_BYTES: usize = 256;
 const MAX_ID_BYTES: usize = 128;
+/// Delivery categories recorded in the outbox beside a failed attempt. `invalid_payload`
+/// is ours and never retried; every other failure is a remote condition.
+const HTTP_STATUS: &str = "http_status";
+const INVALID_PAYLOAD: &str = "invalid_payload";
 
 struct WebhookDestination {
     url: reqwest::Url,
@@ -89,19 +93,15 @@ pub fn payload(delivery: &NotificationDelivery) -> Result<Vec<u8>> {
             && event.task_id.as_deref().unwrap_or("").len() <= MAX_ID_BYTES
             && event.category.len() <= MAX_ID_BYTES
             && event.action.len() <= MAX_ID_BYTES,
-        "invalid_payload"
+        INVALID_PAYLOAD
     );
-    let bytes = serde_json::to_vec(&event).context("invalid_payload")?;
-    ensure!(bytes.len() <= MAX_PAYLOAD_BYTES, "invalid_payload");
+    let bytes = serde_json::to_vec(&event).context(INVALID_PAYLOAD)?;
+    ensure!(bytes.len() <= MAX_PAYLOAD_BYTES, INVALID_PAYLOAD);
     Ok(bytes)
 }
 
-fn classify(status: u16) -> (&'static str, bool) {
-    if status == 408 || status == 429 || status >= 500 {
-        ("http_status", true)
-    } else {
-        ("http_status", false)
-    }
+fn retryable(status: u16) -> bool {
+    status == 408 || status == 429 || status >= 500
 }
 
 async fn deliver(
@@ -109,7 +109,7 @@ async fn deliver(
     destination: &WebhookDestination,
     delivery: &NotificationDelivery,
 ) -> Result<u16, &'static str> {
-    let body = payload(delivery).map_err(|_| "invalid_payload")?;
+    let body = payload(delivery).map_err(|_| INVALID_PAYLOAD)?;
     let response = client
         .post(destination.url.clone())
         .header("content-type", "application/json")
@@ -195,20 +195,17 @@ pub fn start(app: &App, configured_url: Option<String>) -> Result<JoinHandle<()>
                     delivery.seq,
                     category,
                     None,
-                    category != "invalid_payload",
+                    category != INVALID_PAYLOAD,
                 ),
                 Ok(status) if (200..300).contains(&status) => app
                     .store
                     .finish_notification_delivered(delivery.seq, Utc::now()),
-                Ok(status) => {
-                    let (category, retryable) = classify(status);
-                    app.store.finish_notification_failure(
-                        delivery.seq,
-                        category,
-                        Some(status),
-                        retryable,
-                    )
-                }
+                Ok(status) => app.store.finish_notification_failure(
+                    delivery.seq,
+                    HTTP_STATUS,
+                    Some(status),
+                    retryable(status),
+                ),
             };
             if result.is_err() {
                 tracing::warn!("Notification delivery update failed");

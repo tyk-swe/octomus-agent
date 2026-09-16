@@ -29,6 +29,15 @@ pub use baseline::{BaselineConflict, BaselineJob, baseline_fingerprint};
 pub use capacity::{PrIdentity, PrRefresh};
 pub use planning::{external_context, resolve_target, validate_proposals};
 
+/// Whether a task has a workspace it can resume in: a recorded session, a
+/// comparison base and a real checkout. Recovery, admission and preflight all
+/// read those three facts.
+pub(super) fn workspace_initialized(task: &Task) -> bool {
+    task.execution_session.is_some()
+        && !task.comparison_base.is_empty()
+        && Path::new(&task.workspace).join(".git").exists()
+}
+
 #[derive(Default)]
 pub struct Runtime {
     pub tasks: HashMap<String, CancellationToken>,
@@ -132,9 +141,7 @@ impl App {
             if !task.status.active() {
                 continue;
             }
-            let initialized = task.execution_session.is_some()
-                && Path::new(&task.workspace).join(".git").exists()
-                && !task.comparison_base.is_empty();
+            let initialized = workspace_initialized(&task);
             interrupt_running(&mut task.sessions);
             // The marker only cancels work that never produced an output commit;
             // a task cancelled mid-publication keeps its commit for reconciliation.
@@ -347,10 +354,7 @@ impl App {
             .iter()
             .filter(|t| Self::queued_in_batch(t, control.batch.as_ref()))
         {
-            if t.proposal.target == t.config.default_branch
-                && t.output_commit.is_none()
-                && !self.store.has_pr_reservation(&t.id)?
-            {
+            if self.awaits_pr_admission(t)? {
                 unreserved_new = true;
                 break;
             }
@@ -417,10 +421,7 @@ impl App {
             {
                 continue;
             }
-            if task.proposal.target == task.config.default_branch
-                && task.output_commit.is_none()
-                && !self.store.has_pr_reservation(&task.id)?
-            {
+            if self.awaits_pr_admission(&task)? {
                 let Some(inventory) = &fresh_inventory else {
                     continue;
                 };
@@ -559,12 +560,23 @@ impl App {
         role: &str,
         route: &Route,
     ) -> Result<()> {
-        let dir = self.data_dir.clone();
-        let size = tokio::task::spawn_blocking(move || directory_size(&dir)).await??;
+        let size = self.measured_data_dir().await?;
         self.store.reserve_session(
             size,
             &crate::store::Admission::new(cycle_id, task_id, role, route),
         )
+    }
+    /// The current data-directory size, measured off the async runtime.
+    async fn measured_data_dir(&self) -> Result<u64> {
+        let dir = self.data_dir.clone();
+        tokio::task::spawn_blocking(move || directory_size(&dir)).await?
+    }
+    /// Whether a queued task still awaits admission to a default-branch PR slot.
+    /// Admission itself lives with the capacity rules; this is the scheduler's read.
+    fn awaits_pr_admission(&self, task: &Task) -> Result<bool> {
+        Ok(task.proposal.target == task.config.default_branch
+            && task.output_commit.is_none()
+            && !self.store.has_pr_reservation(&task.id)?)
     }
 }
 

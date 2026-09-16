@@ -1,12 +1,16 @@
-use super::App;
+use super::{App, workspace_initialized};
 use crate::config::Config;
 use crate::model::{OpenPrInventory, PrCapacity, Status, Task};
 use crate::store::error_message;
 use anyhow::{Result, ensure};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+/// Recorded on a refresh whose result no longer applies: the live configuration
+/// moved away from the identity the fetch started under.
+const CONFIG_CHANGED: &str = "Configuration changed during the open-PR refresh";
 
 #[derive(Debug, Clone)]
 pub struct PrIdentity {
@@ -94,7 +98,7 @@ impl App {
             return None;
         }
         rt.pr_refresh_last_attempt = job.last_attempt;
-        rt.pr_refresh_error = job.error.clone();
+        rt.pr_refresh_error = job.error;
         let inventory = job.result?;
         let live = self.config().ok()?;
         if !job.identity.matches(&live) {
@@ -136,7 +140,7 @@ impl App {
         };
         if !identity.matches(&live) {
             self.update_pr_refresh(job_id, |j| {
-                j.error = Some("Configuration changed during the open-PR refresh".into());
+                j.error = Some(CONFIG_CHANGED.into());
             });
             return;
         }
@@ -147,7 +151,7 @@ impl App {
                     j.error = None;
                 }),
                 Ok(false) => self.update_pr_refresh(job_id, |j| {
-                    j.error = Some("Configuration changed during the open-PR refresh".into());
+                    j.error = Some(CONFIG_CHANGED.into());
                 }),
                 Err(e) => self.update_pr_refresh(job_id, |j| {
                     j.error = Some(error_message(&e));
@@ -263,10 +267,7 @@ impl App {
             if task.proposal.target != task.config.default_branch {
                 continue;
             }
-            let initialized_queued = task.status == Status::Queued
-                && task.execution_session.is_some()
-                && Path::new(&task.workspace).join(".git").exists()
-                && !task.comparison_base.is_empty();
+            let initialized_queued = task.status == Status::Queued && workspace_initialized(&task);
             if task.status.active()
                 || initialized_queued
                 || (task.status != Status::Published && task.output_commit.is_some())

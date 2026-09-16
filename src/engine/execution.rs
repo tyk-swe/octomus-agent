@@ -1,4 +1,4 @@
-use super::{App, baseline};
+use super::{App, baseline, workspace_initialized};
 use crate::process::Deadline;
 use crate::{config::Config, git, model::*, runner::Runners, schemas, store::redact};
 use anyhow::{Context, Result, ensure};
@@ -149,13 +149,10 @@ impl App {
             }
         }
         ensure!(authorized, BlockedReason::StaleBase);
-        if task.execution_session.is_some() {
-            ensure!(
-                !task.comparison_base.is_empty()
-                    && Path::new(&task.workspace).join(".git").is_dir(),
-                BlockedReason::WorkspaceInvalid
-            );
-        }
+        ensure!(
+            !workspace_initialized(task),
+            BlockedReason::WorkspaceInvalid
+        );
         Ok(())
     }
     async fn initialize_task(
