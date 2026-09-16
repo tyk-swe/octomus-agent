@@ -149,10 +149,11 @@ impl App {
             }
         }
         ensure!(authorized, BlockedReason::StaleBase);
-        ensure!(
-            !workspace_initialized(task),
-            BlockedReason::WorkspaceInvalid
-        );
+        // A task that already started work must still hold the workspace it recorded;
+        // one that never started is retried into a fresh workspace.
+        if task.execution_session.is_some() {
+            ensure!(workspace_initialized(task), BlockedReason::WorkspaceInvalid);
+        }
         Ok(())
     }
     async fn initialize_task(
