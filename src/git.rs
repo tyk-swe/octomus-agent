@@ -5,7 +5,10 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
-use std::path::Path;
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    path::Path,
+};
 use tokio_util::sync::CancellationToken;
 /// Attaches a typed blocked reason as the innermost cause while keeping the
 /// detailed message outermost, so `BlockedReason::from_error` picks the reason.
@@ -29,8 +32,23 @@ pub async fn git(
 async fn gh(c: &Config, args: &[&str], cancel: &CancellationToken) -> Result<String> {
     process::run_machine("gh", args, &c.repository, c.command_timeout_seconds, cancel).await
 }
+/// The origin URL of a clone of the configured repository.
+async fn origin_url(c: &Config, repo: &Path, cancel: &CancellationToken) -> Result<String> {
+    git(c, repo, &["remote", "get-url", "origin"], cancel).await
+}
+/// The commit a checkout currently has checked out.
+async fn head(c: &Config, path: &Path, cancel: &CancellationToken) -> Result<String> {
+    git(c, path, &["rev-parse", "HEAD"], cancel).await
+}
+/// Decodes a `gh api --paginate` response: one document per page, streamed rather
+/// than buffered, so the caller can count pages and decide what an empty reply means.
+fn gh_pages(out: &str) -> impl Iterator<Item = Result<Vec<Value>>> + '_ {
+    serde_json::Deserializer::from_str(out)
+        .into_iter::<Vec<Value>>()
+        .map(|page| page.map_err(Into::into))
+}
 pub async fn validate_remote(c: &Config, cancel: &CancellationToken) -> Result<()> {
-    let remote = git(c, &c.repository, &["remote", "get-url", "origin"], cancel).await?;
+    let remote = origin_url(c, &c.repository, cancel).await?;
     let repo = remote
         .strip_prefix("git@github.com:")
         .or_else(|| remote.strip_prefix("https://github.com/"))
@@ -94,7 +112,7 @@ pub async fn clone_at(
     )
     .await?;
     git(c, path, &["checkout", "--detach", revision], cancel).await?;
-    let remote = git(c, &c.repository, &["remote", "get-url", "origin"], cancel).await?;
+    let remote = origin_url(c, &c.repository, cancel).await?;
     git(c, path, &["remote", "set-url", "origin", &remote], cancel).await?;
     git(c, path, &["config", "user.name", "Octomus Agent"], cancel).await?;
     git(
@@ -130,7 +148,7 @@ pub async fn snapshot(
         )
         .await?;
     }
-    git(c, path, &["rev-parse", "HEAD"], cancel).await
+    head(c, path, cancel).await
 }
 async fn clean(c: &Config, path: &Path, cancel: &CancellationToken) -> Result<bool> {
     Ok(git(c, path, &["status", "--porcelain"], cancel)
@@ -144,8 +162,7 @@ pub async fn at(
     revision: &str,
     cancel: &CancellationToken,
 ) -> Result<bool> {
-    Ok(clean(c, path, cancel).await?
-        && git(c, path, &["rev-parse", "HEAD"], cancel).await? == revision)
+    Ok(clean(c, path, cancel).await? && head(c, path, cancel).await? == revision)
 }
 pub async fn open_pr_inventory(c: &Config, cancel: &CancellationToken) -> Result<OpenPrInventory> {
     // Paginate the API: never quietly omit older open work.
@@ -165,9 +182,9 @@ pub async fn open_pr_inventory(c: &Config, cancel: &CancellationToken) -> Result
     Ok(inventory)
 }
 pub fn parse_inventory(out: &str, c: &Config) -> Result<OpenPrInventory> {
-    let mut prs: std::collections::HashMap<u64, PullRequest> = std::collections::HashMap::new();
+    let mut prs: HashMap<u64, PullRequest> = HashMap::new();
     let mut pages = 0usize;
-    for page in serde_json::Deserializer::from_str(out).into_iter::<Vec<Value>>() {
+    for page in gh_pages(out) {
         pages += 1;
         for p in page? {
             ensure!(
@@ -191,13 +208,13 @@ pub fn parse_inventory(out: &str, c: &Config) -> Result<OpenPrInventory> {
                 continue;
             }
             match prs.entry(pr.number) {
-                std::collections::hash_map::Entry::Occupied(existing) => {
+                Entry::Occupied(existing) => {
                     ensure!(
-                        serde_json::to_value(existing.get())? == serde_json::to_value(&pr)?,
+                        existing.get() == &pr,
                         "Conflicting open PR inventory entries"
                     );
                 }
-                std::collections::hash_map::Entry::Vacant(entry) => {
+                Entry::Vacant(entry) => {
                     entry.insert(pr);
                 }
             }
@@ -292,7 +309,7 @@ async fn publication_pr(
     )
     .await?;
     let mut matches = vec![];
-    for page in serde_json::Deserializer::from_str(&output).into_iter::<Vec<Value>>() {
+    for page in gh_pages(&output) {
         for value in page? {
             let candidate = parse_pr(&value, c)?;
             if candidate.branch == branch {
@@ -388,7 +405,7 @@ async fn update_pr(
     task: &Task,
     p: &PullRequest,
     commit: &str,
-    body_path: &Path,
+    body_path: &str,
     cancel: &CancellationToken,
 ) -> Result<PullRequest> {
     let latest = pr(c, p.number, cancel).await?;
@@ -411,7 +428,7 @@ async fn update_pr(
             "--repo",
             &c.github_repo,
             "--body-file",
-            body_path.to_str().unwrap(),
+            body_path,
         ],
         cancel,
     )
@@ -429,7 +446,7 @@ async fn update_pr(
 async fn create_pr(
     c: &Config,
     task: &Task,
-    body_path: &Path,
+    body_path: &str,
     cancel: &CancellationToken,
 ) -> Result<PullRequest> {
     let created = gh(
@@ -446,7 +463,7 @@ async fn create_pr(
             "--title",
             &task.proposal.title,
             "--body-file",
-            body_path.to_str().unwrap(),
+            body_path,
         ],
         cancel,
     )
@@ -487,7 +504,7 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
     let config = task.execution_config();
     let c = &config;
     validate_remote(c, cancel).await?;
-    let trusted_remote = git(c, &c.repository, &["remote", "get-url", "origin"], cancel).await?;
+    let trusted_remote = origin_url(c, &c.repository, cancel).await?;
     let path = Path::new(&task.workspace);
     let commit = task
         .output_commit
@@ -529,7 +546,7 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
         )
     );
     ensure!(
-        git(c, path, &["rev-parse", "HEAD"], cancel).await? == commit,
+        head(c, path, cancel).await? == commit,
         blocked(
             BlockedReason::WorkspaceInvalid,
             "Workspace HEAD changed after review"
@@ -607,10 +624,11 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
         .await?;
     }
     let body = pr_body(task, existing.as_ref(), commit);
-    let body_path = path.parent().unwrap().join("pr-body.md");
-    tokio::fs::write(&body_path, body).await?;
+    let body_file = path.parent().unwrap().join("pr-body.md");
+    tokio::fs::write(&body_file, body).await?;
+    let body_path = body_file.to_str().context("Non UTF-8 PR body path")?;
     if let Some(p) = existing {
-        return update_pr(c, task, &p, commit, &body_path, cancel).await;
+        return update_pr(c, task, &p, commit, body_path, cancel).await;
     }
-    create_pr(c, task, &body_path, cancel).await
+    create_pr(c, task, body_path, cancel).await
 }
