@@ -228,9 +228,17 @@ test('recorded mode displays the supplied byte binding without executing approva
 // the showcase, and take their appearance from whichever stylesheet is loaded.
 // A tone with no rule falls back to the neutral badge, so "no verdict recorded"
 // would look like every other fact on the page.
+/** A stylesheet's own text plus every file it imports, in cascade order. */
+function wholeSheet(entry: string): string {
+  const dir = entry.slice(0, entry.lastIndexOf('/'));
+  const text = readFileSync(entry, 'utf8');
+  const imports = [...text.matchAll(/@import\s+'([^']+)'/g)];
+  return text + imports.map(([, target]) => readFileSync(`${dir}/${target}`, 'utf8')).join('\n');
+}
+
 test('every surface styles every badge tone and the shared text classes', () => {
   for (const sheet of ['src/app.css', 'showcase/style.css']) {
-    const css = readFileSync(sheet, 'utf8');
+    const css = wholeSheet(sheet);
     for (const tone of TONES) {
       expect(css, `${sheet} is missing .badge.${tone}`).toContain(`.badge.${tone}`);
     }

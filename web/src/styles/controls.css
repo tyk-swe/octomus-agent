@@ -1,0 +1,69 @@
+/* Buttons and action rows, shared by every view. */
+.button {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 15px;
+  border: 1px solid #dfe5dd;
+  border-radius: 7px;
+  background: white;
+  font-size: 14px;
+  font-weight: 550;
+  white-space: nowrap;
+  transition:
+    background 0.15s,
+    transform 0.15s;
+}
+.button:hover {
+  background: #f0f4ed;
+}
+.button.primary {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+.button.primary:hover {
+  background: #174334;
+}
+.button.small {
+  font-size: 12px;
+  padding: 7px 10px;
+}
+.button.danger {
+  color: #a24a3d;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border-radius: 5px;
+  padding: 5px;
+}
+.icon-button:hover {
+  background: #eaf0e7;
+}
+.text-button {
+  background: none;
+  color: var(--green);
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 0;
+}
+.text-button:hover {
+  text-decoration: underline;
+}
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+}

@@ -1,0 +1,473 @@
+/* Width breakpoints and the reduced-motion preference, applied to everything above. */
+@media (min-width: 1500px) {
+  .content {
+    padding-top: 45px;
+  }
+  .onboarding {
+    min-height: 230px;
+  }
+  .overview-columns {
+    grid-template-columns: 1.8fr 1fr;
+  }
+  .stat {
+    padding: 24px;
+  }
+  .empty {
+    padding-top: 65px;
+    padding-bottom: 70px;
+  }
+}
+@media (max-width: 1200px) {
+  .sidebar {
+    width: 205px;
+    padding-inline: 14px;
+  }
+  .main-shell {
+    margin-left: 205px;
+  }
+  .content {
+    padding: 28px;
+  }
+  .topbar {
+    padding: 0 28px;
+  }
+  .page-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .page-heading .actions {
+    align-self: auto;
+  }
+  .pipeline-step {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 9px;
+  }
+  .pipeline-connector {
+    top: 13px;
+    right: 10px;
+  }
+  .onboarding-art {
+    width: 190px;
+    margin-right: 0;
+  }
+  .orbit-two {
+    width: 210px;
+    height: 210px;
+  }
+  .stats-grid {
+    gap: 10px;
+  }
+  .stat {
+    padding: 16px;
+  }
+  .stat > strong.status-value {
+    font-size: 23px;
+  }
+  .overview-columns {
+    gap: 16px;
+    grid-template-columns: 1.5fr 1fr;
+  }
+  .section-heading {
+    padding: 20px;
+  }
+  .task-row {
+    padding: 17px 20px;
+  }
+  .topbar-right {
+    gap: 15px;
+  }
+  .onboarding h2 {
+    font-size: 22px;
+  }
+  .onboarding p {
+    max-width: 380px;
+  }
+}
+@media (max-width: 900px) {
+  .overview-columns {
+    grid-template-columns: 1fr;
+  }
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .onboarding-art {
+    width: 140px;
+  }
+  .onboarding-art .orbit-two {
+    display: none;
+  }
+  .onboarding-art .node-one {
+    left: -5px;
+  }
+  .onboarding h2 {
+    font-size: 20px;
+  }
+  .list-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 13px;
+  }
+  .search-box {
+    max-width: none;
+  }
+  .login-layout {
+    gap: 5vw;
+  }
+  .login-page {
+    padding: 28px 5vw;
+  }
+  .login-card {
+    padding: 28px;
+  }
+  .login-story h1 {
+    font-size: 65px;
+  }
+  .login-pipeline {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .login-pipeline i {
+    width: 8px;
+  }
+  .login-card h2 {
+    font-size: 21px;
+  }
+  .pr-row {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 700px) {
+  button,
+  a,
+  summary,
+  .checkbox {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  input:not([type='checkbox']),
+  select,
+  textarea,
+  .login-card input,
+  .search-box input {
+    font-size: 16px;
+    min-height: 44px;
+  }
+  .checkbox input {
+    width: 18px;
+    height: 18px;
+  }
+  .tabs {
+    overflow-x: auto;
+  }
+  .sidebar {
+    visibility: hidden;
+    top: 60px;
+    transform: translateX(-100%);
+    transition: transform 0.2s;
+    width: 232px;
+    box-shadow: 15px 0 40px #183c3625;
+  }
+  .sidebar.mobile-open {
+    visibility: visible;
+    transform: translateX(0);
+  }
+  .sidebar.mobile-open .brand {
+    display: none;
+  }
+  .sidebar.mobile-open .workspace-label {
+    margin-top: 8px;
+  }
+  .main-shell {
+    margin-left: 0;
+  }
+  .mobile-toggle {
+    display: inline-flex;
+  }
+  .topbar {
+    height: 60px;
+    padding: 0 18px;
+    position: sticky;
+    top: 0;
+    z-index: 25;
+    background: #fafcf7;
+  }
+  .breadcrumbs {
+    gap: 8px;
+  }
+  .topbar-right {
+    gap: 12px;
+  }
+  .operator-avatar {
+    width: 26px;
+    height: 26px;
+  }
+  .content {
+    padding: 26px 18px 18px;
+  }
+  .page-heading h1 {
+    font-size: 27px;
+    letter-spacing: -0.8px;
+  }
+  .page-heading {
+    margin-bottom: 22px;
+  }
+  .onboarding {
+    padding: 23px;
+    min-height: 0;
+  }
+  .onboarding > div:first-child {
+    z-index: 1;
+  }
+  .onboarding p {
+    max-width: 270px;
+  }
+  .onboarding-art {
+    width: 60px;
+    height: 60px;
+    margin-left: 0;
+    opacity: 0.8;
+    position: absolute;
+    right: 18px;
+    bottom: 18px;
+  }
+  .onboarding-art img {
+    width: 52px;
+    height: 52px;
+  }
+  .onboarding-art .orbit,
+  .onboarding-art .art-node {
+    display: none;
+  }
+  .onboarding h2 {
+    max-width: 240px;
+    line-height: 1.35;
+    font-size: 22px;
+  }
+  .stats-grid {
+    gap: 10px;
+  }
+  .stat {
+    padding: 16px;
+  }
+  .stat > strong {
+    font-size: 28px;
+  }
+  .stat-label svg {
+    width: 15px;
+  }
+  .stat > strong.status-value {
+    font-size: 24px;
+  }
+  .pipeline {
+    grid-template-columns: 1fr 1fr;
+    padding: 0 20px 22px;
+    gap: 21px;
+  }
+  .pipeline-step {
+    flex-direction: row;
+    align-items: center;
+  }
+  .pipeline-step small {
+    max-width: 100px;
+    line-height: 1.6;
+  }
+  .pipeline-icon {
+    width: 34px;
+    height: 34px;
+  }
+  .pipeline-icon svg {
+    width: 18px;
+  }
+  .pipeline-connector {
+    display: none;
+  }
+  .section-heading {
+    padding: 21px 20px;
+  }
+  .row-title {
+    gap: 9px;
+  }
+  .section-icon {
+    display: none;
+  }
+  .overview-columns {
+    gap: 20px;
+  }
+  .content-footer {
+    line-height: 1.7;
+    gap: 12px;
+  }
+  .content-footer > span:last-child {
+    text-align: right;
+  }
+  .task-row {
+    gap: 9px;
+    padding: 17px 16px;
+    flex-wrap: wrap;
+  }
+  .task-row-body > span {
+    gap: 5px;
+  }
+  .task-row-body code {
+    max-width: 130px;
+  }
+  .task-row .badge {
+    padding: 3px 5px;
+  }
+  .task-type-icon {
+    width: 29px;
+    height: 29px;
+  }
+  .task-row > svg {
+    display: none;
+  }
+  .filter-tabs button {
+    padding: 6px 7px;
+  }
+  .list-toolbar {
+    padding: 16px;
+  }
+  .form-grid {
+    grid-template-columns: 1fr;
+    padding: 0 20px;
+    gap: 18px;
+  }
+  .settings-actions {
+    gap: 15px;
+  }
+  .settings-section .section-heading .button {
+    padding: 6px;
+  }
+  .category-options {
+    padding: 0 20px;
+    gap: 8px;
+  }
+  .checkbox {
+    padding: 9px;
+  }
+  .save-bar {
+    padding: 13px;
+    bottom: 8px;
+  }
+  .save-bar .actions {
+    width: 100%;
+  }
+  .save-bar .button {
+    flex: 1;
+  }
+  .notice {
+    flex-wrap: wrap;
+    padding: 12px;
+  }
+  .dialog-top {
+    padding: 18px 20px 6px;
+  }
+  .task-title {
+    padding: 10px 20px 18px;
+  }
+  .task-title h2 {
+    font-size: 22px;
+  }
+  .tabs {
+    padding: 0 20px;
+    gap: 16px;
+  }
+  .detail-content {
+    padding: 20px;
+  }
+  .dialog-footer {
+    padding: 15px 20px;
+    flex-wrap: wrap;
+  }
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .dialog-footer .actions {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .dialog-footer .button {
+    white-space: normal;
+  }
+  .task-dialog {
+    width: 100vw;
+  }
+  .login-page {
+    padding: 24px;
+  }
+  .login-layout {
+    grid-template-columns: 1fr;
+    padding: 45px 0;
+    gap: 36px;
+    max-width: 430px;
+  }
+  .login-story h1 {
+    font-size: 62px;
+    letter-spacing: -3px;
+    margin: 19px 0;
+  }
+  .login-story h1 br:nth-child(2) {
+    display: none;
+  }
+  .login-story h1 em {
+    margin-left: 12px;
+  }
+  .login-story .eyebrow {
+    letter-spacing: 1.7px;
+  }
+  .login-pipeline {
+    margin-top: 24px;
+    gap: 11px;
+  }
+  .login-card {
+    padding: 26px;
+  }
+  .login-mark {
+    display: none;
+  }
+  .login-card h2 {
+    font-size: 22px;
+  }
+  .login-footer {
+    gap: 20px;
+    line-height: 1.7;
+  }
+  .login-footer > span:last-child {
+    text-align: right;
+  }
+  .login-brand {
+    font-size: 24px;
+  }
+  .login-brand > img {
+    width: 33px;
+    height: 33px;
+  }
+  .proposal-card {
+    padding: 20px;
+  }
+  .pr-row {
+    padding: 20px;
+    gap: 12px;
+  }
+  .pr-row > div {
+    flex-basis: 75%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *:before,
+  *:after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.live-indicator.offline {
+  color: #8b5b35;
+}
+.live-indicator.offline span {
+  background: #b27b45;
+}
