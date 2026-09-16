@@ -1,5 +1,12 @@
 use super::App;
-use crate::{config::Config, git, model::*, runner::Runners, schemas, store::redact};
+use crate::{
+    config::Config,
+    git,
+    model::*,
+    runner::Runners,
+    schemas,
+    store::{error_message, redact},
+};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -63,7 +70,7 @@ impl App {
             }
             Err(e) => {
                 session.status = "failed".into();
-                session.summary = redact(&format!("{e:#}"));
+                session.summary = error_message(e);
             }
         }
         drop(client);
@@ -126,7 +133,7 @@ impl App {
             "failed"
         }
         .into();
-        cycle.error = result.as_ref().err().map(|e| redact(&format!("{e:#}")));
+        cycle.error = result.as_ref().err().map(error_message);
         self.store.put("cycle", &cycle.id, &cycle)?;
         result
     }

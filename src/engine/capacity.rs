@@ -1,6 +1,7 @@
 use super::App;
 use crate::config::Config;
 use crate::model::{OpenPrInventory, PrCapacity, Status, Task};
+use crate::store::error_message;
 use anyhow::{Result, ensure};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -143,7 +144,7 @@ impl App {
             Ok(c) => c,
             Err(e) => {
                 self.update_pr_refresh(job_id, |j| {
-                    j.error = Some(crate::store::redact(&format!("{e:#}")));
+                    j.error = Some(error_message(&e));
                 });
                 return;
             }
@@ -164,11 +165,11 @@ impl App {
                     j.error = Some("Configuration changed during the open-PR refresh".into());
                 }),
                 Err(e) => self.update_pr_refresh(job_id, |j| {
-                    j.error = Some(crate::store::redact(&format!("{e:#}")));
+                    j.error = Some(error_message(&e));
                 }),
             },
             Err(e) => self.update_pr_refresh(job_id, |j| {
-                j.error = Some(crate::store::redact(&format!("{e:#}")));
+                j.error = Some(error_message(&e));
             }),
         }
     }

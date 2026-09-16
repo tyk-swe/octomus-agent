@@ -3,7 +3,7 @@ use crate::{
     engine::App,
     model::{AttemptPolicy, BlockedReason, Cycle, CycleMode, OperatingMode, Status, Task},
     process::Deadline,
-    store::redact,
+    store::error_message,
 };
 use axum::{
     Json, Router,
@@ -79,7 +79,7 @@ impl From<anyhow::Error> for ApiError {
         } else {
             StatusCode::BAD_REQUEST
         };
-        Self(status, redact(&format!("{e:#}")))
+        Self(status, error_message(&e))
     }
 }
 impl IntoResponse for ApiError {
@@ -348,11 +348,7 @@ async fn config(State(s): State<Api>) -> Result<Json<Config>> {
 async fn save_config(State(s): State<Api>, Json(c): Json<Config>) -> Result<Json<Value>> {
     let _gate = s.app.gate.lock().await;
     let rt = s.app.runtime();
-    if !s.app.control()?.paused
-        || !rt.tasks.is_empty()
-        || rt.cycle.is_some()
-        || rt.baseline.is_some()
-    {
+    if !s.app.control()?.paused || !rt.idle() {
         return Err(ApiError(
             StatusCode::CONFLICT,
             "Pause and wait for active work to finish before changing configuration.".into(),
@@ -386,7 +382,7 @@ fn baseline_error(error: anyhow::Error) -> ApiError {
         .downcast_ref::<crate::engine::BaselineConflict>()
         .is_some()
     {
-        ApiError(StatusCode::CONFLICT, redact(&format!("{error:#}")))
+        ApiError(StatusCode::CONFLICT, error_message(&error))
     } else {
         error.into()
     }
@@ -421,8 +417,7 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
     let mut c = s.app.control()?;
     let rt = s.app.runtime();
     let baseline_active = rt.baseline.is_some();
-    if (matches!(action.as_str(), "audit" | "cycle")
-        && (!c.paused || !rt.tasks.is_empty() || rt.cycle.is_some() || baseline_active))
+    if (matches!(action.as_str(), "audit" | "cycle") && (!c.paused || !rt.idle()))
         || (matches!(action.as_str(), "resume" | "cycle")
             && rt.cycle_mode == Some(CycleMode::Audit))
         || (action.as_str() == "resume" && baseline_active)
@@ -567,7 +562,7 @@ async fn task_action(
                 }
                 if let Err(error) = preflight {
                     t.blocked_reason = Some(BlockedReason::from_error(&error));
-                    t.error = Some(redact(&format!("{error:#}")));
+                    t.error = Some(error_message(&error));
                     s.app.save_task(&mut t)?;
                     return Err(error.into());
                 }
@@ -660,7 +655,7 @@ async fn task_action(
                             Ok(pr) => app.published(&mut t, pr)?,
                             Err(error) => {
                                 t.blocked_reason = Some(BlockedReason::from_error(&error));
-                                t.error = Some(redact(&format!("{error:#}")));
+                                t.error = Some(error_message(&error));
                                 app.transition(&mut t, previous_status)?;
                             }
                         }
@@ -687,7 +682,7 @@ async fn task_action(
                     }
                     Err(error) => {
                         t.blocked_reason = Some(BlockedReason::from_error(&error));
-                        t.error = Some(redact(&format!("{error:#}")));
+                        t.error = Some(error_message(&error));
                     }
                 }
                 s.app.store.put("cancel", &id, &json!(null))?;

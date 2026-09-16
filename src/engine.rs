@@ -5,7 +5,7 @@ use crate::{
     model::*,
     process::Deadline,
     runner::{Runner, validate_route},
-    store::{Store, redact},
+    store::{Store, error_message, redact},
 };
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
@@ -45,6 +45,15 @@ pub struct Runtime {
     pub pr_observation: Option<(capacity::PrIdentity, i64)>,
     pub baseline: Option<BaselineJob>,
     pub default_observation: Option<DefaultBranchObservation>,
+}
+
+impl Runtime {
+    /// No tasks, no planning cycle and no baseline check are running. Pausing
+    /// stops new work from starting; this reports whether work already under way
+    /// has finished, which is what every "pause and wait" gate actually asks.
+    pub fn idle(&self) -> bool {
+        self.tasks.is_empty() && self.cycle.is_none() && self.baseline.is_none()
+    }
 }
 #[derive(Clone)]
 pub struct App {
@@ -238,8 +247,8 @@ impl App {
                 _ = self.shutdown.cancelled() => break,
                 _ = interval.tick() => {
                     if let Err(error) = self.tick().await {
-                        let message = format!("{error:#}");
-                        tracing::error!("Scheduler: {}", redact(&message));
+                        let message = error_message(&error);
+                        tracing::error!("Scheduler: {message}");
                         let _ = self.store.event("system", "error", &message);
                         if let Ok(mut control) = self.control() {
                             control.error = Some(redact(&message));
@@ -569,10 +578,7 @@ impl App {
         {
             let rt = self.runtime();
             ensure!(
-                control.paused
-                    && rt.tasks.is_empty()
-                    && rt.cycle.is_none()
-                    && rt.baseline.is_none(),
+                control.paused && rt.idle(),
                 "Pause and wait for active work before running an audit"
             );
         }
@@ -582,7 +588,7 @@ impl App {
     async fn finish_cycle(&self, mode: CycleMode, result: Result<()>) {
         let _gate = self.gate.lock().await;
         if let Ok(mut control) = self.control() {
-            control.error = result.err().map(|error| redact(&format!("{error:#}")));
+            control.error = result.err().map(|error| error_message(&error));
             if mode == CycleMode::Execution {
                 if control.error.is_some() && control.mode == OperatingMode::RunOnce {
                     control.set_mode(OperatingMode::Paused);

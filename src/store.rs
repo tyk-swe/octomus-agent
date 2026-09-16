@@ -399,6 +399,12 @@ impl Store {
         Ok(c)
     }
 }
+/// An error rendered for an operator, with secrets scrubbed. Errors reach
+/// operators through saved records and API responses, so every stored error
+/// message is built here rather than formatted at each site.
+pub fn error_message(error: &anyhow::Error) -> String {
+    redact(&format!("{error:#}"))
+}
 pub fn redact(input: &str) -> String {
     use std::sync::LazyLock;
     static TOKEN: LazyLock<regex::Regex> = LazyLock::new(|| {

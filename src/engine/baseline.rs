@@ -300,7 +300,7 @@ impl App {
                 check.cleanup_error = None;
             }
             Err(error) => {
-                check.cleanup_error = Some(redact(&format!("{error:#}")));
+                check.cleanup_error = Some(error_message(&error));
             }
         }
         self.store.put("baseline", &check.id, check)
@@ -324,7 +324,7 @@ impl App {
             let mut status = match outcome {
                 Deadline::Done(Ok(status)) => status,
                 Deadline::Done(Err(error)) => {
-                    check.error = Some(redact(&format!("{error:#}")));
+                    check.error = Some(error_message(&error));
                     if cancel.is_cancelled() {
                         BaselineStatus::Interrupted
                     } else if error
