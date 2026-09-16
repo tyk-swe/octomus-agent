@@ -1,9 +1,6 @@
 //! Run-evidence read model. Every database here is an explicitly synthetic temporary
 //! fixture; no live `.octomus/` state, credentials or runner accounts are touched.
-use axum::{
-    body::{Body, to_bytes},
-    http::{Request, StatusCode},
-};
+use axum::{body::to_bytes, http::StatusCode};
 use octomus_agent::{
     api,
     config::{Config, Route},
@@ -14,6 +11,9 @@ use octomus_agent::{
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+mod common;
+use common::*;
 
 const TOKEN: &str = "run-evidence-fixture-token-at-least-32-characters";
 
@@ -105,13 +105,11 @@ fn fixture(cycles: &[Cycle], tasks: &[Task]) -> (tempfile::TempDir, Store, std::
 async fn api_evidence(store: &Store, dir: &std::path::Path, cycle: &str) -> (StatusCode, Value) {
     let app = App::new(store.clone(), dir.to_path_buf());
     let response = api::router(app, TOKEN, None)
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/cycles/{cycle}/evidence"))
-                .header("authorization", format!("Bearer {TOKEN}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(api_request(
+            "GET",
+            &format!("/api/cycles/{cycle}/evidence"),
+            Some(TOKEN),
+        ))
         .await
         .unwrap();
     let status = response.status();
@@ -652,25 +650,18 @@ async fn evidence_route_requires_auth_and_reports_unknown_cycles() {
 
     let unauthenticated = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/cycles/cycle-a/evidence")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(api_request("GET", "/api/cycles/cycle-a/evidence", None))
         .await
         .unwrap();
     assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
 
     let wrong_token = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/cycles/cycle-a/evidence")
-                .header("authorization", "Bearer not-the-operator-token-000000000")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(api_request(
+            "GET",
+            "/api/cycles/cycle-a/evidence",
+            Some("not-the-operator-token-000000000"),
+        ))
         .await
         .unwrap();
     assert_eq!(wrong_token.status(), StatusCode::UNAUTHORIZED);
@@ -695,15 +686,11 @@ async fn existing_cycle_action_routes_are_preserved() {
     let app = App::new(store.clone(), temp.path().to_path_buf());
     let router = api::router(app, TOKEN, None);
     let action = |path: &str| {
-        router.clone().oneshot(
-            Request::builder()
-                .uri(format!("/api/cycles/cycle-a/{path}"))
-                .method("POST")
-                .header("authorization", format!("Bearer {TOKEN}"))
-                .header("content-type", "application/json")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        router.clone().oneshot(api_request(
+            "POST",
+            &format!("/api/cycles/cycle-a/{path}"),
+            Some(TOKEN),
+        ))
     };
     assert_eq!(action("archive").await.unwrap().status(), StatusCode::OK);
     let archived: Cycle = store.get("cycle", "cycle-a").unwrap().unwrap();
@@ -713,13 +700,7 @@ async fn existing_cycle_action_routes_are_preserved() {
     // which tests/review_regressions.rs covers.
     let detail = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/cycles/cycle-a")
-                .header("authorization", format!("Bearer {TOKEN}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(api_request("GET", "/api/cycles/cycle-a", Some(TOKEN)))
         .await
         .unwrap();
     assert_eq!(detail.status(), StatusCode::OK);

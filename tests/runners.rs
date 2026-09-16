@@ -13,8 +13,15 @@ use octomus_agent::{
     store::{Admission, Store},
 };
 use serde_json::{Value, json};
-use std::{os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
+use std::{
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tokio_util::sync::CancellationToken;
+
+mod common;
+use common::*;
 
 fn route() -> Route {
     Route {
@@ -28,6 +35,16 @@ fn route() -> Route {
 fn codex_route() -> Route {
     Route::new("gpt-6-astra", "medium")
 }
+/// Writes the `runpy` shim the fixture CLIs are launched through, and marks it executable.
+fn wrapper(root: &Path, name: &str, fixture: &str) -> PathBuf {
+    let path = root.join(name);
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    std::fs::write(&path, format!("#!/usr/bin/env python3\nimport os, runpy, sys\nos.environ['OCTOMUS_FIXTURE'] = {}\nsys.path.insert(0, {})\nrunpy.run_path({}, run_name='__main__')\n",
+        json!(root), json!(fixtures), json!(fixtures.join(fixture)))).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
 struct Fixture {
     temp: tempfile::TempDir,
     workspace: PathBuf,
@@ -35,70 +52,58 @@ struct Fixture {
     store: Store,
 }
 impl Fixture {
-    fn new() -> Self {
+    /// A fixture whose CLI is the `fixture` shim under `fixture.py`; the config
+    /// builder receives that shim's path.
+    fn with_wrapper(fixture: &str, config: impl FnOnce(&Path) -> Config) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let workspace = temp.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
-        let wrapper = temp.path().join("opencode");
-        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-        std::fs::write(&wrapper, format!("#!/usr/bin/env python3\nimport os, runpy, sys\nos.environ['OCTOMUS_FIXTURE'] = {}\nsys.path.insert(0, {})\nrunpy.run_path({}, run_name='__main__')\n",
-            json!(temp.path()), json!(fixtures), json!(fixtures.join("opencode.py")))).unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let config = Config {
-            opencode_binary: wrapper.to_string_lossy().into_owned(),
+        let shim = wrapper(temp.path(), fixture, &format!("{fixture}.py"));
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        Self {
+            temp,
+            workspace,
+            config: config(&shim),
+            store,
+        }
+    }
+    fn new() -> Self {
+        Self::with_wrapper("opencode", |shim| Config {
+            opencode_binary: shim.to_string_lossy().into_owned(),
             codex_binary: "/no-codex-installed".into(),
             session_timeout_seconds: 10,
             command_timeout_seconds: 2,
             ..Config::default()
-        };
-        let store = Store::open(&temp.path().join("state.db")).unwrap();
-        Self {
-            temp,
-            workspace,
-            config,
-            store,
-        }
+        })
     }
     fn codex() -> Self {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("workspace");
-        std::fs::create_dir(&workspace).unwrap();
-        let wrapper = temp.path().join("codex");
-        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-        std::fs::write(&wrapper, format!("#!/usr/bin/env python3\nimport os, runpy, sys\nos.environ['OCTOMUS_FIXTURE'] = {}\nsys.path.insert(0, {})\nrunpy.run_path({}, run_name='__main__')\n",
-            json!(temp.path()), json!(fixtures), json!(fixtures.join("codex.py")))).unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let config = Config {
+        Self::with_wrapper("codex", |shim| Config {
             opencode_binary: "/no-opencode-installed".into(),
-            codex_binary: wrapper.to_string_lossy().into_owned(),
+            codex_binary: shim.to_string_lossy().into_owned(),
             session_timeout_seconds: 3,
             command_timeout_seconds: 2,
             ..Config::default()
-        };
-        let store = Store::open(&temp.path().join("state.db")).unwrap();
-        Self {
-            temp,
-            workspace,
-            config,
-            store,
-        }
+        })
     }
     fn codex_mode(&self, mode: &str) {
         std::fs::write(self.temp.path().join("codex-mode"), mode).unwrap();
     }
     async fn codex_interrupt(&self) -> Value {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Ok(log) =
-                    std::fs::read_to_string(self.temp.path().join("codex-interrupts.jsonl"))
-                    && log.ends_with('\n')
-                {
-                    return serde_json::from_str(log.lines().next().unwrap()).unwrap();
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
+        let log = self.temp.path().join("codex-interrupts.jsonl");
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                std::fs::read_to_string(&log).is_ok_and(|text| text.ends_with('\n'))
+            })
+            .await,
+            "the fixture never recorded a codex interrupt"
+        );
+        serde_json::from_str(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
         .unwrap()
     }
     async fn connect_codex(&self, cancel: CancellationToken) -> anyhow::Result<Codex> {
@@ -337,13 +342,13 @@ async fn cancellation_stops_owned_server_and_descendants() {
         None,
     );
     let stop = async {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !fixture.temp.path().join("opencode-child-pid").exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                fixture.temp.path().join("opencode-child-pid").exists()
+            })
+            .await,
+            "the fixture never started its detached child"
+        );
         cancel.cancel();
     };
     let (result, _) = tokio::join!(turn, stop);
@@ -361,12 +366,8 @@ async fn cancellation_stops_owned_server_and_descendants() {
     )
     .unwrap();
     drop(client);
-    let stopped = tokio::time::timeout(Duration::from_secs(3), async {
-        while alive(pid) || alive(server["pid"].as_u64().unwrap() as u32) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
+    let server_pid = server["pid"].as_u64().unwrap() as u32;
+    let stopped = wait_until(Duration::from_secs(3), || !alive(pid) && !alive(server_pid)).await;
     // Clean up the fixture's own detached group even when this regression fails.
     if alive(pid) {
         unsafe {
@@ -374,7 +375,7 @@ async fn cancellation_stops_owned_server_and_descendants() {
         }
     }
     assert!(
-        stopped.is_ok(),
+        stopped,
         "Runner cleanup left a detached shell process alive"
     );
 }
@@ -467,13 +468,13 @@ async fn codex_cancellation_stops_the_turn() {
     let route = codex_route();
     let turn = client.turn(&session, &route, &fixture.workspace, "Fixture prompt", None);
     let stop = async {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !fixture.temp.path().join("codex-entered").exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                fixture.temp.path().join("codex-entered").exists()
+            })
+            .await,
+            "the fixture never entered the codex turn"
+        );
         cancel.cancel();
     };
     let (result, _) = tokio::join!(turn, stop);

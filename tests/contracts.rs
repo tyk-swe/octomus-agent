@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
 use tokio_util::sync::CancellationToken;
 
+mod common;
+use common::*;
+
 async fn contract(backend: Backend, binary: &str) -> Result<()> {
     let temp = tempfile::tempdir()?;
     let root = temp.path();
@@ -23,12 +26,13 @@ async fn contract(backend: Backend, binary: &str) -> Result<()> {
             .arg(root)
             .spawn()?,
     );
-    for _ in 0..100 {
-        if root.join("provider-port").exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            root.join("provider-port").exists()
+        })
+        .await,
+        "the synthetic provider never published its port"
+    );
     let port = std::fs::read_to_string(root.join("provider-port"))?;
     let wrapper = root.join("client");
     let provider_config = root.join("provider.json");
@@ -203,14 +207,15 @@ async fn contract(backend: Backend, binary: &str) -> Result<()> {
     let turn = client.turn(&session, &route, &workspace, "CANCEL_CONTRACT_TURN", None);
     tokio::pin!(turn);
     let interrupt = async {
-        for _ in 0..200 {
-            if root.join("turn-entered").exists() {
-                cancel.cancel();
-                return Ok::<_, anyhow::Error>(());
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        anyhow::bail!("Controlled cancellation request never reached the provider")
+        assert!(
+            wait_until(Duration::from_secs(10), || {
+                root.join("turn-entered").exists()
+            })
+            .await,
+            "Controlled cancellation request never reached the provider"
+        );
+        cancel.cancel();
+        Ok::<_, anyhow::Error>(())
     };
     let (result, interrupted) = tokio::time::timeout(Duration::from_secs(20), async {
         tokio::join!(turn, interrupt)

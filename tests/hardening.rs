@@ -11,6 +11,9 @@ use std::{os::unix::fs::PermissionsExt, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
+mod common;
+use common::*;
+
 const CONTROL_TOKEN: &str = "task-control-fixture-token-at-least-32-characters";
 /// Shipped defaults name no model, so fixtures that need a ready configuration
 /// fill every route the validator requires.
@@ -23,15 +26,6 @@ fn route_every_role(config: &mut Config) {
     {
         *route = Route::new("fixture", "low");
     }
-}
-fn control_request(path: &str) -> axum::http::Request<axum::body::Body> {
-    axum::http::Request::builder()
-        .uri(format!("/api/{path}"))
-        .method("POST")
-        .header("authorization", format!("Bearer {CONTROL_TOKEN}"))
-        .header("content-type", "application/json")
-        .body(axum::body::Body::empty())
-        .unwrap()
 }
 
 async fn held_preflight_fixture() -> (tempfile::TempDir, App, Task, axum::Router) {
@@ -95,27 +89,24 @@ async fn held_preflight_fixture() -> (tempfile::TempDir, App, Task, axum::Router
 }
 
 async fn wait_for_preflights(path: &std::path::Path, count: usize) {
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let entered = std::fs::read_dir(path)
-                .unwrap()
-                .filter(|entry| {
-                    entry
-                        .as_ref()
-                        .unwrap()
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("entered-")
-                })
-                .count();
-            if entered >= count {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("Git preflight did not reach the controlled remote");
+    let entered = || {
+        std::fs::read_dir(path)
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("entered-")
+            })
+            .count()
+            >= count
+    };
+    assert!(
+        common::wait_until(Duration::from_secs(3), entered).await,
+        "Git preflight did not reach the controlled remote"
+    );
 }
 
 #[tokio::test]
@@ -128,11 +119,10 @@ async fn remote_preflights_release_controls_and_preserve_concurrent_task_actions
                 t.blocked_reason = Some(BlockedReason::RemoteConflict);
                 app.save_task(&mut t).unwrap();
             }
-            let request = tokio::spawn(
-                router
-                    .clone()
-                    .oneshot(control_request(&format!("tasks/{}/{action}", t.id))),
-            );
+            let request = tokio::spawn(router.clone().oneshot(control_request(
+                &format!("tasks/{}/{action}", t.id),
+                CONTROL_TOKEN,
+            )));
             wait_for_preflights(temp.path(), 1).await;
             let mut unrelated = task();
             unrelated.status = Status::Executing;
@@ -150,7 +140,9 @@ async fn remote_preflights_release_controls_and_preserve_concurrent_task_actions
             ] {
                 let response = tokio::time::timeout(
                     Duration::from_secs(1),
-                    router.clone().oneshot(control_request(&path)),
+                    router
+                        .clone()
+                        .oneshot(control_request(&path, CONTROL_TOKEN)),
                 )
                 .await
                 .expect("Operator control waited for Git")
@@ -183,8 +175,12 @@ async fn concurrent_retries_queue_only_one_attempt() {
     use axum::http::StatusCode;
     let (temp, app, t, router) = held_preflight_fixture().await;
     let path = format!("tasks/{}/retry", t.id);
-    let first = tokio::spawn(router.clone().oneshot(control_request(&path)));
-    let second = tokio::spawn(router.oneshot(control_request(&path)));
+    let first = tokio::spawn(
+        router
+            .clone()
+            .oneshot(control_request(&path, CONTROL_TOKEN)),
+    );
+    let second = tokio::spawn(router.oneshot(control_request(&path, CONTROL_TOKEN)));
     wait_for_preflights(temp.path(), 2).await;
     std::fs::remove_file(temp.path().join("hold")).unwrap();
     let mut statuses = [
@@ -216,7 +212,7 @@ async fn retry_starts_a_fresh_repair_round_budget() {
     t.blocked_reason = Some(BlockedReason::VerificationFailed);
     app.store.put("task", &t.id, &t).unwrap();
     let path = format!("tasks/{}/retry", t.id);
-    let request = tokio::spawn(router.oneshot(control_request(&path)));
+    let request = tokio::spawn(router.oneshot(control_request(&path, CONTROL_TOKEN)));
     wait_for_preflights(temp.path(), 1).await;
     std::fs::remove_file(temp.path().join("hold")).unwrap();
     assert_eq!(
@@ -232,7 +228,10 @@ async fn retry_starts_a_fresh_repair_round_budget() {
 #[tokio::test]
 async fn retry_rechecks_policy_after_remote_checks() {
     let (temp, app, t, router) = held_preflight_fixture().await;
-    let request = tokio::spawn(router.oneshot(control_request(&format!("tasks/{}/retry", t.id))));
+    let request = tokio::spawn(router.oneshot(control_request(
+        &format!("tasks/{}/retry", t.id),
+        CONTROL_TOKEN,
+    )));
     wait_for_preflights(temp.path(), 1).await;
     {
         let _gate = tokio::time::timeout(Duration::from_secs(1), app.gate.lock())
@@ -251,13 +250,6 @@ async fn retry_rechecks_policy_after_remote_checks() {
     assert_eq!(json!(saved), json!(t));
 }
 
-fn task() -> Task {
-    serde_json::from_value(json!({
-        "id":id(),"cycle_id":"cycle","proposal":{"id":"a","title":"Concrete improvement","problem":"Missing behavior","benefit":"Useful behavior","scope":"one file","evidence":["README.md"],"category":"features","target":"main","tier":"M","dependencies":[],"prompt":"Implement the documented behavior","decision":"accepted","reason":"Grounded"},
-        "status":"queued","route":Route::new("fixture","low"),"config":Config {github_repo:"fixture/project".into(),..Config::default()},
-        "source_revision":"source","comparison_base":"source","default_revision":"source","branch":"octomus/work","workspace":"","execution_session":null,"repair_session":null,"sessions":[],"reviews":[],"verification":[],"output_commit":null,"pr_number":null,"pr_url":null,"attempts":0,"error":null,"created_at":now(),"updated_at":now()
-    })).unwrap()
-}
 #[test]
 fn live_policy_survives_restart_and_never_uses_task_snapshot() {
     let temp = tempfile::tempdir().unwrap();
@@ -314,10 +306,7 @@ fn live_policy_survives_restart_and_never_uses_task_snapshot() {
 }
 #[tokio::test]
 async fn retry_preflight_adopts_the_current_command_timeout() {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use std::os::unix::fs::PermissionsExt;
     use tower::ServiceExt;
 
@@ -384,13 +373,11 @@ async fn retry_preflight_adopts_the_current_command_timeout() {
     let token = "retry-test-operator-token-at-least-32-characters";
     let router = octomus_agent::api::router(app, token, Some(temp.path().into()));
     let request = || {
-        Request::builder()
-            .uri(format!("/api/tasks/{}/retry", task.id))
-            .method("POST")
-            .header("authorization", format!("Bearer {token}"))
-            .header("content-type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap()
+        common::api_request(
+            "POST",
+            &format!("/api/tasks/{}/retry", task.id),
+            Some(token),
+        )
     };
     assert_eq!(
         router.clone().oneshot(request()).await.unwrap().status(),
@@ -777,7 +764,10 @@ async fn paused_housekeeping_preserves_unresolved_evidence_and_rejects_symlinks(
     let router = octomus_agent::api::router(app.clone(), CONTROL_TOKEN, Some(tmp.path().into()));
     assert_eq!(
         router
-            .oneshot(control_request(&format!("tasks/{}/archive", completed.id)))
+            .oneshot(control_request(
+                &format!("tasks/{}/archive", completed.id),
+                CONTROL_TOKEN
+            ))
             .await
             .unwrap()
             .status(),
@@ -909,22 +899,18 @@ async fn queued_history_never_hides_active_branch_writers() {
     control.set_mode(OperatingMode::Continuous);
     store.put("settings", "control", &control).unwrap();
     let service = tokio::spawn(app.clone().run());
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if store
-                .get::<Task>("task", &sentinel.id)
-                .unwrap()
-                .unwrap()
-                .status
-                == Status::Blocked
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("Scheduler did not inspect the queue");
+    let inspected = || {
+        store
+            .get::<Task>("task", &sentinel.id)
+            .unwrap()
+            .unwrap()
+            .status
+            == Status::Blocked
+    };
+    assert!(
+        common::wait_until(Duration::from_secs(3), inspected).await,
+        "Scheduler did not inspect the queue"
+    );
     app.shutdown.cancel();
     service.await.unwrap();
     for id in queued_ids {
@@ -1030,7 +1016,7 @@ async fn unaffordable_planning_refuses_audit_and_run_once_without_side_effects()
     for action in ["audit", "cycle"] {
         let response = router
             .clone()
-            .oneshot(control_request(&format!("control/{action}")))
+            .oneshot(control_request(&format!("control/{action}"), CONTROL_TOKEN))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT, "{action}");
@@ -1081,7 +1067,7 @@ async fn run_once_pauses_when_the_drain_consumed_planning_allowance() {
     store.put("settings", "config", &config).unwrap();
     let router = octomus_agent::api::router(app.clone(), CONTROL_TOKEN, Some(tmp.path().into()));
     let response = router
-        .oneshot(control_request("control/cycle"))
+        .oneshot(control_request("control/cycle", CONTROL_TOKEN))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -1105,16 +1091,11 @@ async fn run_once_pauses_when_the_drain_consumed_planning_allowance() {
         rt.last_observation_at = rt.last_retention_at;
     }
     let service = tokio::spawn(app.clone().run());
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if app.control().unwrap().paused {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("Run once did not pause on unaffordable planning");
+    let paused = || app.control().unwrap().paused;
+    assert!(
+        common::wait_until(Duration::from_secs(10), paused).await,
+        "Run once did not pause on unaffordable planning"
+    );
     let control = app.control().unwrap();
     assert_eq!(control.mode, OperatingMode::Paused);
     assert!(control.batch.is_none());

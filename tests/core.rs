@@ -16,7 +16,9 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
-const TOKEN: &str = "operator-fixture-token-with-at-least-32-characters";
+mod common;
+use common::*;
+
 fn codex_models(models: &[(&str, &[&str])]) -> Vec<Model> {
     models
         .iter()
@@ -240,12 +242,7 @@ async fn private_api_enforces_auth_content_type_and_configuration_rules() {
     let router = api::router(app.clone(), TOKEN, Some(temp.path().into()));
     let response = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/state")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(common::api_request("GET", "/api/state", None))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -264,27 +261,17 @@ async fn private_api_enforces_auth_content_type_and_configuration_rules() {
     assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     let response = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/control/resume")
-                .method("POST")
-                .header("authorization", format!("Bearer {TOKEN}"))
-                .header("content-type", "application/json")
-                .body(Body::from("{}"))
-                .unwrap(),
-        )
+        .oneshot(common::api_request(
+            "POST",
+            "/api/control/resume",
+            Some(TOKEN),
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(app.control().unwrap().paused);
     let response = router
-        .oneshot(
-            Request::builder()
-                .uri("/api/state")
-                .header("authorization", format!("Bearer {TOKEN}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(common::api_request("GET", "/api/state", Some(TOKEN)))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -309,29 +296,25 @@ async fn cancellation_kills_the_command_process_group() {
         )
         .await
     });
-    for _ in 0..100 {
-        if temp.path().join("child.pid").exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let pid = std::fs::read_to_string(temp.path().join("child.pid"))
+    let pid_file = temp.path().join("child.pid");
+    assert!(
+        common::wait_until(Duration::from_secs(1), || pid_file.exists()).await,
+        "the command did not start its child process"
+    );
+    let pid = std::fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
         .to_owned();
     cancel.cancel();
     assert!(work.await.unwrap().is_err());
-    for _ in 0..100 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
-        if stat
-            .as_ref()
-            .map_or(true, |s| s.split_whitespace().nth(2) == Some("Z"))
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("Child process survived cancellation");
+    assert!(
+        common::wait_until(Duration::from_secs(1), || {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map_or(true, |s| s.split_whitespace().nth(2) == Some("Z"))
+        })
+        .await,
+        "Child process survived cancellation"
+    );
 }
 
 #[test]
@@ -375,7 +358,7 @@ async fn embedded_dashboard_and_overrides_preserve_http_boundaries() {
     ] {
         let response = router
             .clone()
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .oneshot(common::api_request("GET", uri, None))
             .await
             .unwrap();
         assert_eq!(response.status(), status, "{uri}");
@@ -391,20 +374,14 @@ async fn embedded_dashboard_and_overrides_preserve_http_boundaries() {
     }
     let head = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("HEAD")
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(common::api_request("HEAD", "/", None))
         .await
         .unwrap();
     assert_eq!(head.status(), StatusCode::OK);
     assert!(to_bytes(head.into_body(), 100000).await.unwrap().is_empty());
     std::fs::write(temp.path().join("200.html"), "override dashboard").unwrap();
     let response = api::router(app, TOKEN, Some(temp.path().into()))
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .oneshot(common::api_request("GET", "/", None))
         .await
         .unwrap();
     assert_eq!(
@@ -422,23 +399,14 @@ async fn valid_authentication_bypasses_pending_failure_delay_and_audit_controls_
     );
     let router = api::router(app.clone(), TOKEN, None);
     let bad = tokio::spawn(
-        router.clone().oneshot(
-            Request::builder()
-                .uri("/api/state")
-                .body(Body::empty())
-                .unwrap(),
-        ),
+        router
+            .clone()
+            .oneshot(common::api_request("GET", "/api/state", None)),
     );
     tokio::task::yield_now().await;
     let response = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/state")
-                .header("authorization", format!("Bearer {TOKEN}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(common::api_request("GET", "/api/state", Some(TOKEN)))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -468,15 +436,11 @@ async fn valid_authentication_bypasses_pending_failure_delay_and_audit_controls_
     ] {
         let response = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/control/{action}"))
-                    .header("authorization", format!("Bearer {TOKEN}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
+            .oneshot(common::api_request(
+                "POST",
+                &format!("/api/control/{action}"),
+                Some(TOKEN),
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
@@ -540,15 +504,11 @@ async fn control_conflicts_explain_the_requested_operation_without_changing_elig
                 }
             }
             let response = api::router(app.clone(), TOKEN, None)
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(format!("/api/control/{action}"))
-                        .header("authorization", format!("Bearer {TOKEN}"))
-                        .header("content-type", "application/json")
-                        .body(Body::from("{}"))
-                        .unwrap(),
-                )
+                .oneshot(common::api_request(
+                    "POST",
+                    &format!("/api/control/{action}"),
+                    Some(TOKEN),
+                ))
                 .await
                 .unwrap();
             let rejected = scenario != "idle" && matches!(action, "audit" | "cycle");

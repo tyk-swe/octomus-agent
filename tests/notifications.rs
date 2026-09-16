@@ -7,12 +7,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tower::ServiceExt;
 
+mod common;
+use common::*;
+
 const DEST: &str = "destination-a";
+
+/// The data directory of a fresh fixture, created before the store or app opens it.
+fn data_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    data
+}
 
 fn store() -> (tempfile::TempDir, Store, std::path::PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
-    let data = tmp.path().join("data");
-    std::fs::create_dir_all(&data).unwrap();
+    let data = data_dir(&tmp);
     let path = data.join("state.db");
     (tmp, Store::open(&path).unwrap(), path)
 }
@@ -69,8 +78,7 @@ fn disabled_policy_captures_nothing() {
 #[tokio::test]
 async fn webhook_url_policy_accepts_https_and_loopback_http_only() {
     let tmp = tempfile::tempdir().unwrap();
-    let data = tmp.path().join("data");
-    std::fs::create_dir_all(&data).unwrap();
+    let data = data_dir(&tmp);
     let app = App::new(Store::open(&data.join("state.db")).unwrap(), data);
     let cases = [
         (
@@ -329,16 +337,13 @@ async fn delivery_timeout_is_bounded_and_visible() {
     let worker = notifications::start(&app, Some(server.url.clone())).unwrap();
     put_task(&app.store, "task", "blocked", Some("timeout"));
     server.next().await;
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        loop {
-            if app.store.notification_health().unwrap()["last_error"] == "timeout" {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .unwrap();
+    assert!(
+        wait_until(std::time::Duration::from_secs(15), || {
+            app.store.notification_health().unwrap()["last_error"] == "timeout"
+        })
+        .await,
+        "the bounded delivery timeout was never reported on the destination"
+    );
     app.shutdown.cancel();
     worker.await.unwrap();
 }
@@ -549,8 +554,7 @@ async fn receiver(status: u16, first_delay: std::time::Duration) -> Receiver {
 #[tokio::test]
 async fn local_receiver_verifies_minimal_payload_and_delivery() {
     let tmp = tempfile::tempdir().unwrap();
-    let data = tmp.path().join("data");
-    std::fs::create_dir_all(&data).unwrap();
+    let data = data_dir(&tmp);
     let app = App::new(Store::open(&data.join("state.db")).unwrap(), data);
     let mut server = receiver(200, std::time::Duration::ZERO).await;
     let worker = notifications::start(&app, Some(server.url.clone())).unwrap();
@@ -588,14 +592,14 @@ async fn local_receiver_verifies_minimal_payload_and_delivery() {
         .into_iter()
         .collect()
     );
-    let mut health = app.store.notification_health().unwrap();
-    for _ in 0..50 {
-        if health["last_delivered_at"].is_string() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        health = app.store.notification_health().unwrap();
-    }
+    assert!(
+        wait_until(std::time::Duration::from_secs(5), || {
+            app.store.notification_health().unwrap()["last_delivered_at"].is_string()
+        })
+        .await,
+        "the delivered notification was never recorded"
+    );
+    let health = app.store.notification_health().unwrap();
     assert_eq!(health["pending"], 0);
     assert!(health["last_delivered_at"].is_string());
     worker.abort();
@@ -611,28 +615,25 @@ async fn retryable_and_terminal_statuses_are_classified() {
         (302, false),
     ] {
         let tmp = tempfile::tempdir().unwrap();
-        let data = tmp.path().join("data");
-        std::fs::create_dir_all(&data).unwrap();
+        let data = data_dir(&tmp);
         let db = data.join("state.db");
         let app = App::new(Store::open(&db).unwrap(), data);
         let mut server = receiver(status, std::time::Duration::ZERO).await;
         let worker = notifications::start(&app, Some(server.url.clone())).unwrap();
         put_task(&app.store, "task-1", "blocked", Some("timeout"));
         server.next().await;
-        let mut rows = pending(&db);
-        let mut failed = outbox(&db, "failed");
-        for _ in 0..50 {
-            if rows
-                .iter()
-                .chain(&failed)
+        let recorded = || {
+            pending(&db)
+                .into_iter()
+                .chain(outbox(&db, "failed"))
                 .any(|row| row["http_status"] == status)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            rows = pending(&db);
-            failed = outbox(&db, "failed");
-        }
+        };
+        assert!(
+            wait_until(std::time::Duration::from_secs(5), recorded).await,
+            "HTTP {status} was never recorded in the outbox"
+        );
+        let rows = pending(&db);
+        let failed = outbox(&db, "failed");
         if retryable {
             assert_eq!(rows.len(), 1, "HTTP {status} must retry");
             assert_eq!(rows[0]["http_status"], status);
@@ -648,8 +649,7 @@ async fn retryable_and_terminal_statuses_are_classified() {
 async fn held_http_does_not_block_scheduling_and_shutdown_recovers_the_row() {
     let mut server = receiver(200, std::time::Duration::from_secs(60)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let data = tmp.path().join("data");
-    std::fs::create_dir_all(&data).unwrap();
+    let data = data_dir(&tmp);
     let db = data.join("state.db");
     let app = App::new(Store::open(&db).unwrap(), data);
     let worker = notifications::start(&app, Some(server.url.clone())).unwrap();
@@ -657,13 +657,7 @@ async fn held_http_does_not_block_scheduling_and_shutdown_recovers_the_row() {
     server.next().await;
     let router = octomus_agent::api::router(app.clone(), "fixture-token", None);
     for (method, path) in [("GET", "/api/state"), ("POST", "/api/control/pause")] {
-        let request = axum::http::Request::builder()
-            .method(method)
-            .uri(path)
-            .header("authorization", "Bearer fixture-token")
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from("{}"))
-            .unwrap();
+        let request = api_request(method, path, Some("fixture-token"));
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             router.clone().oneshot(request),

@@ -1,6 +1,6 @@
 //! Regressions for the September 2026 source review findings F1–F6.
 use octomus_agent::{
-    config::{Config, Route},
+    config::Config,
     engine::{App, resolve_target, validate_proposals},
     git,
     model::*,
@@ -10,13 +10,8 @@ use octomus_agent::{
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-fn task() -> Task {
-    serde_json::from_value(json!({
-        "id":id(),"cycle_id":"cycle","proposal":{"id":"a","title":"Concrete improvement","problem":"Missing behavior","benefit":"Useful behavior","scope":"one file","evidence":["README.md"],"category":"features","target":"main","tier":"M","dependencies":[],"prompt":"Implement the documented behavior","decision":"accepted","reason":"Grounded"},
-        "status":"queued","route":Route::new("fixture","low"),"config":Config {github_repo:"fixture/project".into(),..Config::default()},
-        "source_revision":"source","comparison_base":"source","default_revision":"source","branch":"octomus/work","workspace":"","execution_session":null,"repair_session":null,"sessions":[],"reviews":[],"verification":[],"output_commit":null,"pr_number":null,"pr_url":null,"attempts":0,"error":null,"created_at":now(),"updated_at":now()
-    })).unwrap()
-}
+mod common;
+use common::*;
 
 fn proposal(id: &str, title: &str, key: &str) -> Proposal {
     Proposal {

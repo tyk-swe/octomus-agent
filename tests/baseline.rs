@@ -1,5 +1,5 @@
 use axum::{
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use octomus_agent::{
@@ -14,11 +14,12 @@ use octomus_agent::{
     store::{Store, redact},
 };
 use serde_json::{Value, json};
-use std::path::Path;
+use std::{path::Path, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
-const TOKEN: &str = "operator-fixture-token-with-at-least-32-characters";
+mod common;
+use common::*;
 
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
@@ -54,35 +55,6 @@ fn baseline_app() -> (tempfile::TempDir, App, Config) {
     (tmp, app, config)
 }
 
-async fn request(
-    router: &axum::Router,
-    method: &str,
-    path: &str,
-    body: Body,
-) -> (StatusCode, Value) {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(path)
-                .method(method)
-                .header("authorization", format!("Bearer {TOKEN}"))
-                .header("content-type", "application/json")
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
-        .await
-        .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
-}
-
 async fn start_check(router: &axum::Router, expected: &Config) -> (StatusCode, Value) {
     request(
         router,
@@ -94,20 +66,19 @@ async fn start_check(router: &axum::Router, expected: &Config) -> (StatusCode, V
 }
 
 async fn wait_terminal(app: &App, id: &str) -> BaselineCheck {
-    for _ in 0..400 {
-        if app.runtime().baseline.is_none() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    for _ in 0..400 {
-        let check: BaselineCheck = app.store.get("baseline", id).unwrap().unwrap();
-        if check.status != BaselineStatus::Running {
-            return check;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    panic!("baseline check did not finish")
+    // The runtime slot frees first; the stored record turns terminal after it, so
+    // only the second wait's outcome is asserted.
+    let _ = common::wait_until(Duration::from_secs(4), || app.runtime().baseline.is_none()).await;
+    assert!(
+        common::wait_until(Duration::from_secs(4), || {
+            let check: BaselineCheck = app.store.get("baseline", id).unwrap().unwrap();
+            check.status != BaselineStatus::Running
+        })
+        .await,
+        "baseline check did not finish"
+    );
+    let check: BaselineCheck = app.store.get("baseline", id).unwrap().unwrap();
+    check
 }
 
 #[test]

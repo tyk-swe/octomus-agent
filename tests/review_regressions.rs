@@ -1,19 +1,22 @@
 use octomus_agent::{
-    config::{Config, Route},
     engine::App,
-    model::{BlockedReason, Cycle, Status, Task, id, now},
+    model::{BlockedReason, Cycle, Status, Task, now},
     store::{HistoryQuery, Store},
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+mod common;
+use common::*;
+
+/// The fixture's own identities, layered on the shared task: the rediscovery
+/// lineage and the repository casing the history tests exercise.
 fn task() -> Task {
-    serde_json::from_value(json!({
-        "id":id(),"cycle_id":"original-cycle",
-        "proposal":{"id":"proposal","title":"Concrete improvement","problem":"Missing behavior","benefit":"Useful behavior","scope":"one file","evidence":["README.md"],"category":"features","target":"main","tier":"M","dependencies":[],"prompt":"Implement the documented behavior","decision":"accepted","reason":"Grounded","problem_key":"stable-problem"},
-        "status":"queued","route":Route::new("fixture","low"),"config":Config {github_repo:"Fixture/Project".into(),..Config::default()},
-        "source_revision":"source","comparison_base":"source","default_revision":"source","branch":"octomus/work","workspace":"","execution_session":null,"repair_session":null,"sessions":[],"reviews":[],"verification":[],"output_commit":null,"pr_number":null,"pr_url":null,"attempts":0,"error":null,"created_at":now(),"updated_at":now()
-    })).unwrap()
+    common::task_with(|t| {
+        t.cycle_id = "original-cycle".into();
+        t.proposal.problem_key = "stable-problem".into();
+        t.config.github_repo = "Fixture/Project".into();
+    })
 }
 
 fn cycle(t: &Task) -> Cycle {
@@ -37,15 +40,11 @@ async fn cancellation_requires_explicit_rediscovery_and_preserves_the_route() {
     for (action, expected) in [("cancel", 200), ("supersede", 200), ("supersede", 409)] {
         let response = router
             .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri(format!("/api/tasks/{}/{action}", original.id))
-                    .method("POST")
-                    .header("authorization", format!("Bearer {token}"))
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(api_request(
+                "POST",
+                &format!("/api/tasks/{}/{action}", original.id),
+                Some(token),
+            ))
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), expected, "{action}");
@@ -131,15 +130,11 @@ async fn cancellation_rechecks_publication_checkpoints_after_worker_saves() {
                 .unwrap();
             let token = "cancellation-fixture-token-at-least-32-characters";
             let response = octomus_agent::api::router(app.clone(), token, None)
-                .oneshot(
-                    axum::http::Request::builder()
-                        .uri(format!("/api/tasks/{}/cancel", original.id))
-                        .method("POST")
-                        .header("authorization", format!("Bearer {token}"))
-                        .header("content-type", "application/json")
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(api_request(
+                    "POST",
+                    &format!("/api/tasks/{}/cancel", original.id),
+                    Some(token),
+                ))
                 .await
                 .unwrap();
             assert_eq!(
@@ -783,15 +778,11 @@ async fn unknown_cycle_actions_are_not_reported_as_archive_conflicts() {
         let id = c.id.clone();
         async move {
             let response = router
-                .oneshot(
-                    axum::http::Request::builder()
-                        .uri(format!("/api/cycles/{id}/{action}"))
-                        .method("POST")
-                        .header("authorization", format!("Bearer {token}"))
-                        .header("content-type", "application/json")
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(api_request(
+                    "POST",
+                    &format!("/api/cycles/{id}/{action}"),
+                    Some(token),
+                ))
                 .await
                 .unwrap();
             let status = response.status().as_u16();

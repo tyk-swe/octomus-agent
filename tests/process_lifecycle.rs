@@ -5,6 +5,9 @@ use octomus_agent::process::{self, CaptureMode};
 use std::{path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
 
+mod common;
+use common::*;
+
 // Independent of capture's cleanup, including when an assertion unwinds.
 struct FixtureGroup(PathBuf);
 impl Drop for FixtureGroup {
@@ -69,18 +72,18 @@ sys.exit(int(sys.argv[2]))
     assert!(!output.stdout.truncated && !output.stderr.truncated);
 
     let pid = std::fs::read_to_string(temp.path().join("child.pid")).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
+    assert!(
+        wait_until(Duration::from_secs(5), || {
             match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                Ok(stat) if stat.split_whitespace().nth(2) == Some("Z") => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Ok(stat) if stat.split_whitespace().nth(2) == Some("Z") => true,
                 Err(error) => panic!("could not inspect descendant: {error}"),
-                Ok(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+                Ok(_) => false,
             }
-        }
-    })
-    .await
-    .expect("descendant survived leader completion");
+        })
+        .await,
+        "descendant survived leader completion"
+    );
 }
 
 #[tokio::test]

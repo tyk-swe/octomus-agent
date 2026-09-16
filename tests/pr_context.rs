@@ -1,17 +1,12 @@
 use octomus_agent::{
-    config::Config,
     engine::{external_context, resolve_target},
     git,
     model::{Grounding, PullRequest},
 };
 use serde_json::{Value, json};
 
-fn config() -> Config {
-    Config {
-        github_repo: "fixture/project".into(),
-        ..Default::default()
-    }
-}
+mod common;
+use common::*;
 
 fn entry(
     number: u64,

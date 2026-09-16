@@ -8,14 +8,8 @@ use serde_json::json;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
-fn task() -> Task {
-    serde_json::from_value(json!({
-        "id":octomus_agent::model::id(),"cycle_id":"cycle","proposal":{"id":"a","title":"Concrete improvement","problem":"Missing behavior","benefit":"Useful behavior","scope":"one file","evidence":["README.md"],"category":"features","target":"main","tier":"M","dependencies":[],"prompt":"Implement the documented behavior","decision":"accepted","reason":"Grounded","problem_key":"","relevant_paths":[],"reconsiders":[]},
-        "status":"queued","route":Route::new("fixture","low"),"config":Config {github_repo:"fixture/project".into(),..Config::default()},
-        "source_revision":"source","comparison_base":"source","default_revision":"source","branch":"octomus/work","workspace":"","execution_session":null,"repair_session":null,"sessions":[],"reviews":[],"verification":[],"output_commit":null,"pr_number":null,"pr_url":null,"attempts":0,"error":null,"created_at":now(),"updated_at":now()
-    }))
-    .unwrap()
-}
+mod common;
+use common::*;
 
 fn owned_pr(number: u64, branch: &str) -> PullRequest {
     serde_json::from_value(json!({
@@ -33,13 +27,6 @@ fn inventory(prs: Vec<PullRequest>) -> OpenPrInventory {
         repository: "fixture/project".into(),
         observed_at: now(),
         prs,
-    }
-}
-
-fn config() -> Config {
-    Config {
-        github_repo: "fixture/project".into(),
-        ..Default::default()
     }
 }
 
