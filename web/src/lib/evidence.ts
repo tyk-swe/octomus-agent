@@ -7,6 +7,7 @@
  * evidence panel and the task detail summary cannot describe the same record
  * differently.
  */
+import { ACTIVE_STATUSES } from './types';
 import type {
   CommandEvidence,
   CommandResult,
@@ -385,7 +386,7 @@ const OUTCOME_GROUPS: { label: (count: number) => string; tone: Tone; statuses: 
   {
     label: () => 'active',
     tone: 'running',
-    statuses: ['executing', 'reviewing', 'repairing', 'verifying', 'publishing']
+    statuses: ACTIVE_STATUSES
   },
   { label: () => 'queued', tone: '', statuses: ['queued'] },
   { label: () => 'blocked', tone: 'blocked', statuses: ['blocked'] },

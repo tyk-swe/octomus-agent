@@ -38,6 +38,8 @@ export type Config = {
   retain_completed_days: number;
   retain_events: number;
 };
+/** Mirrors `Status::ACTIVE` in src/model.rs: task statuses with work in flight. */
+export const ACTIVE_STATUSES = ['executing', 'reviewing', 'repairing', 'verifying', 'publishing'];
 export type TaskRow = {
   id: string;
   cycle_id: string;

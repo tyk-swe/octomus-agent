@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { api, setToken, onUnauthorized, relative, safeUrl } from '$lib/api';
+  import { ACTIVE_STATUSES } from '$lib/types';
   import type {
     Snapshot,
     TaskRow,
@@ -76,7 +77,6 @@
     { id: 'prs', label: 'Pull requests', icon: 'prs' },
     { id: 'settings', label: 'Configuration', icon: 'settings' }
   ];
-  const activeStatuses = ['executing', 'reviewing', 'repairing', 'verifying', 'publishing'];
   let filtered = $state<TaskRow[]>([]);
   let proposals = $state<ProposalRow[]>([]);
   let prRows = $state<PrObservation[]>([]);
@@ -827,7 +827,7 @@
               </div>
               {#if data.active_tasks > 0 || (data.counts.queued ?? 0) > 0}{@render taskList(
                   data.tasks
-                    .filter((t) => activeStatuses.includes(t.status) || t.status === 'queued')
+                    .filter((t) => ACTIVE_STATUSES.includes(t.status) || t.status === 'queued')
                     .slice(0, 5)
                 )}{:else}<div class="empty work-empty">
                   <div class="empty-illustration">
