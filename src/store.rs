@@ -101,6 +101,11 @@ impl Store {
     pub fn clear_cancel(&self, id: &str) -> Result<()> {
         self.put("cancel", id, &serde_json::Value::Null)
     }
+    /// Writes the durable operator-cancel marker: the running task never writes
+    /// this kind, so its final save cannot clobber the intent.
+    pub fn mark_cancel(&self, id: &str) -> Result<()> {
+        self.put("cancel", id, &serde_json::json!(crate::model::now()))
+    }
     pub fn commit_plan(
         &self,
         cycle: &crate::model::Cycle,

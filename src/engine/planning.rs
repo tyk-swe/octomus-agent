@@ -1,4 +1,4 @@
-use super::App;
+use super::{App, memory::rediscovery_requests};
 use crate::{
     config::Config,
     git,
@@ -134,12 +134,9 @@ impl App {
         let memory = self
             .planning_memory(config, grounding(cycle)?, cancel)
             .await?;
+        let rediscovery_requests = rediscovery_requests(&memory);
         if cycle.mode == CycleMode::Execution {
-            for request in memory["rediscovery_requests"]
-                .as_array()
-                .into_iter()
-                .flatten()
-            {
+            for request in &rediscovery_requests {
                 let old: Task = self
                     .store
                     .get(
@@ -181,11 +178,7 @@ impl App {
         validate_proposals(config, &proposals, grounding(cycle)?, &history)?;
         Self::validate_memory(&proposals, &memory)?;
         if cycle.mode == CycleMode::Execution {
-            for request in memory["rediscovery_requests"]
-                .as_array()
-                .into_iter()
-                .flatten()
-            {
+            for request in &rediscovery_requests {
                 let request_id = request["id"]
                     .as_str()
                     .context("Missing rediscovery identity")?;

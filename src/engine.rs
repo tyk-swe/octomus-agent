@@ -54,6 +54,21 @@ impl Runtime {
     pub fn idle(&self) -> bool {
         self.tasks.is_empty() && self.cycle.is_none() && self.baseline.is_none()
     }
+    /// Every shutdown-time handle has finished: tasks, the cycle, housekeeping,
+    /// the PR refresh and any baseline job.
+    pub fn drained(&self) -> bool {
+        self.tasks.is_empty()
+            && self.cycle.is_none()
+            && self.housekeeping.as_ref().is_none_or(|h| h.is_finished())
+            && self
+                .pr_refresh
+                .as_ref()
+                .is_none_or(|j| j.handle.is_finished())
+            && self
+                .baseline
+                .as_ref()
+                .is_none_or(|j| j.handle.is_finished())
+    }
 }
 #[derive(Clone)]
 pub struct App {

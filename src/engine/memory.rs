@@ -18,6 +18,14 @@ pub struct DecisionRecord {
     pub cycle_id: String,
 }
 
+/// The operator-requested rediscovery list inside a decision-memory document.
+pub(super) fn rediscovery_requests(memory: &Value) -> Vec<&Value> {
+    memory["rediscovery_requests"]
+        .as_array()
+        .map(|requests| requests.iter().collect())
+        .unwrap_or_default()
+}
+
 fn consolidated_decisions(records: &[DecisionRecord]) -> impl Iterator<Item = &DecisionRecord> {
     // Rejected alternatives to accepted work in the same consolidation are absorbed
     // candidates, not rejections of the problem. Keep other cycles independent.
@@ -134,11 +142,9 @@ impl App {
             }
             for id in &p.reconsiders {
                 ensure!(
-                    memory["rediscovery_requests"]
-                        .as_array()
-                        .is_some_and(|requests| requests
-                            .iter()
-                            .any(|r| r["id"] == *id && r["target"] == p.target)),
+                    rediscovery_requests(memory)
+                        .iter()
+                        .any(|r| r["id"] == *id && r["target"] == p.target),
                     "Unknown or mismatched rediscovery request"
                 );
             }

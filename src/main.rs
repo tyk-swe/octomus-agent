@@ -105,10 +105,14 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
-    let token=std::env::var("OCTOMUS_TOKEN").context("Set OCTOMUS_TOKEN to a random operator token of at least 32 characters (openssl rand -hex 32)")?;
+    let token = std::env::var(api::TOKEN_ENV).context(format!(
+        "Set {} to a random operator token of at least 32 characters (openssl rand -hex 32)",
+        api::TOKEN_ENV
+    ))?;
     ensure!(
         token.len() >= 32,
-        "OCTOMUS_TOKEN must contain at least 32 characters"
+        "{} must contain at least 32 characters",
+        api::TOKEN_ENV
     );
     if let Some(assets) = &args.assets {
         ensure!(
@@ -143,18 +147,7 @@ async fn main() -> Result<()> {
     let _ = worker.await;
     let _ = notifications.await;
     for _ in 0..100 {
-        let drained = {
-            let rt = app.runtime();
-            rt.tasks.is_empty()
-                && rt.cycle.is_none()
-                && rt.housekeeping.as_ref().is_none_or(|h| h.is_finished())
-                && rt
-                    .pr_refresh
-                    .as_ref()
-                    .is_none_or(|j| j.handle.is_finished())
-                && rt.baseline.as_ref().is_none_or(|j| j.handle.is_finished())
-        };
-        if drained {
+        if app.runtime().drained() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

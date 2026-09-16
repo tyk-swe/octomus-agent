@@ -128,35 +128,33 @@ async fn deliver(
     Ok(status)
 }
 
+fn webhook_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+}
+
 pub fn start(app: &App, configured_url: Option<String>) -> Result<JoinHandle<()>> {
-    let (destination, state, error) = match configured_url
+    let (destination, state, error, client) = match configured_url
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(WebhookDestination::parse)
     {
-        None => (None, "disabled", None),
-        Some(raw) => match WebhookDestination::parse(raw) {
-            Ok(destination) => (Some(destination), "enabled", None),
-            Err(error) => (None, "invalid", Some(error.to_string())),
+        None => (None, "disabled", None, None),
+        Some(Err(error)) => (None, "invalid", Some(error.to_string()), None),
+        Some(Ok(destination)) => match webhook_client() {
+            Ok(client) => (Some(destination), "enabled", None, Some(client)),
+            Err(_) => (
+                None,
+                "invalid",
+                Some("Notification webhook client could not be configured".to_owned()),
+                None,
+            ),
         },
-    };
-    let client = destination.as_ref().map(|_| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .timeout(Duration::from_secs(10))
-            .connect_timeout(Duration::from_secs(5))
-            .build()
-    });
-    let (destination, state, error, client) = match client {
-        Some(Ok(client)) => (destination, state, error, Some(client)),
-        Some(Err(_)) => (
-            None,
-            "invalid",
-            Some("Notification webhook client could not be configured".to_owned()),
-            None,
-        ),
-        None => (destination, state, error, None),
     };
     app.store.configure_notifications(
         destination.as_ref().map(|d| d.id.as_str()),

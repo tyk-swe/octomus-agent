@@ -36,7 +36,7 @@ pub fn command(binary: &str, cwd: &Path) -> Command {
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .process_group(0)
-        .env_remove("OCTOMUS_TOKEN")
+        .env_remove(crate::api::TOKEN_ENV)
         .env_remove(crate::notifications::WEBHOOK_ENV)
         .env("GIT_TERMINAL_PROMPT", "0");
     c

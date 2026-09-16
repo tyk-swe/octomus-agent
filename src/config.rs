@@ -326,10 +326,7 @@ impl Config {
             );
         }
         for binary in [&self.codex_binary, &self.opencode_binary] {
-            ensure!(
-                binary.len() <= 4096 && !binary.chars().any(char::is_control),
-                "Invalid runner executable path"
-            );
+            validate_binary(binary)?;
         }
         ensure!(
             self.verification_commands

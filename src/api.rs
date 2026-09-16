@@ -63,6 +63,8 @@ impl Drop for ReconcileGuard<'_> {
         self.app.runtime().reconciling_publication = false;
     }
 }
+pub const TOKEN_ENV: &str = "OCTOMUS_TOKEN";
+
 pub struct ApiError(pub StatusCode, pub String);
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
@@ -571,9 +573,7 @@ async fn task_action(
             }
             // The marker record is the durable intent: the running task never
             // writes this kind, so its final save cannot clobber it.
-            s.app
-                .store
-                .put("cancel", &id, &json!(crate::model::now()))?;
+            s.app.store.mark_cancel(&id)?;
             // The worker may have advanced or finished since eligibility was read.
             // Check the stored publication checkpoint in the same write as cancellation.
             if !s.app.store.cancel_task(&id)? {

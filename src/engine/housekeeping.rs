@@ -57,27 +57,41 @@ impl App {
     async fn measure_storage(&self, c: &Config) -> Result<()> {
         let dir = self.data_dir.clone();
         let roots = c.runner_storage_paths.clone();
-        let usage=tokio::task::spawn_blocking(move || -> Result<_> {
-            let mut runners=serde_json::Map::new();
-            let mut total=0u64;
-            let mut measured=0;
-            for backend in ["codex","opencode"] {
-                let (bytes,status)=match roots.get(backend) {
-                    None=>(None,"unconfigured"),
-                    Some(p) if !p.is_dir()=>(None,"unavailable"),
-                    Some(p)=>match directory_size(p) {
-                        Ok(b)=>(Some(b),"measured"),
-                        Err(_)=>(None,"error"),
+        let usage = tokio::task::spawn_blocking(move || -> Result<_> {
+            let mut runners = serde_json::Map::new();
+            let mut total = 0u64;
+            let mut measured = 0;
+            for backend in ["codex", "opencode"] {
+                let (bytes, status) = match roots.get(backend) {
+                    None => (None, "unconfigured"),
+                    Some(p) if !p.is_dir() => (None, "unavailable"),
+                    Some(p) => match directory_size(p) {
+                        Ok(b) => (Some(b), "measured"),
+                        Err(_) => (None, "error"),
                     },
                 };
-                if let Some(b)=bytes { total=total.saturating_add(b); measured+=1; }
-                runners.insert(backend.into(),json!({"bytes":bytes,"status":status}));
+                if let Some(b) = bytes {
+                    total = total.saturating_add(b);
+                    measured += 1;
+                }
+                runners.insert(backend.into(), json!({"bytes":bytes,"status":status}));
             }
-            let status=if measured==runners.len(){"measured"}else if measured==0{"unavailable"}else{"partial"};
-            Ok(StorageUsage { measured_at:now(),application_bytes:directory_size(&dir)?,
-                task_bytes:directory_size(&dir.join("tasks"))?,planning_bytes:directory_size(&dir.join("cycles"))?,
-                runner_transcripts:json!({"bytes":if measured>0{Some(total)}else{None},"status":status,"runners":runners,"message":"Runner storage reported separately. Application admission measures the data directory."}) })
-        }).await??;
+            let status = if measured == runners.len() {
+                "measured"
+            } else if measured == 0 {
+                "unavailable"
+            } else {
+                "partial"
+            };
+            Ok(StorageUsage {
+                measured_at: now(),
+                application_bytes: directory_size(&dir)?,
+                task_bytes: directory_size(&dir.join("tasks"))?,
+                planning_bytes: directory_size(&dir.join("cycles"))?,
+                runner_transcripts: json!({"bytes":if measured>0{Some(total)}else{None},"status":status,"runners":runners,"message":"Runner storage reported separately. Application admission measures the data directory."}),
+            })
+        })
+        .await??;
         self.store.put("settings", "storage", &usage)
     }
     async fn retention(&self, c: &Config) -> Result<()> {
