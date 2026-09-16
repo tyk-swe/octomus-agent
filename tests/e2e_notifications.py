@@ -152,8 +152,13 @@ def scenario(mode):
                 config = configuration(service) if mode == 'env-strip-opencode' else service.request('/config')
                 config.update(repository=str(root / 'checkout'), github_repo='fixture/project', cycle_interval_seconds=3600, verification_commands=[f'test -z "${{{ENV}+x}}"', 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], session_timeout_seconds=30, task_timeout_seconds=120, command_timeout_seconds=10)
                 if mode == 'env-strip':
+                    codex = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+                    # Shipped tiers and repair carry effort but no model.
                     for role in config['roles']:
-                        config['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+                        config['roles'][role] = dict(codex)
+                    for tier in config['tiers']:
+                        config['tiers'][tier] = dict(codex)
+                    config['repair_route'] = dict(codex)
                 service.request('/config', 'PUT', config)
                 service.request('/control/cycle', 'POST')
                 task = service.wait(service.terminal_task, 'published task')

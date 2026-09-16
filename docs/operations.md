@@ -21,7 +21,7 @@ gh auth setup-git
 
 - [ ] Confirm GitHub access can fetch and push branches and create/update PRs in the target repository. If using SSH, configure working non-interactive SSH credentials; the HTTPS credential helper is then optional.
 - [ ] Confirm the repository's `origin` uses SSH or credential-free HTTPS and points to the intended GitHub repository.
-- [ ] Confirm your provider account exposes the models and reasoning efforts you plan to use. Repair defaults to `gpt-6-astra` with `medium` and can be configured explicitly; unsupported routes are blocked rather than silently replaced.
+- [ ] Confirm your provider account exposes the models and reasoning efforts you plan to use. Repair ships with `medium` effort and no model, so choose one like any other route; unsupported routes are blocked rather than silently replaced.
 
 ## 3. Build and install
 

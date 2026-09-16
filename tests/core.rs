@@ -129,6 +129,13 @@ fn unsupported_effort_never_falls_back() {
             ]
             .map(|role| (role.into(), Route::new("gpt-6-astra", "medium"))),
         ),
+        tiers: BTreeMap::from_iter([
+            ("XS".to_string(), Route::new("gpt-5.6-luna", "xhigh")),
+            ("S".to_string(), Route::new("gpt-5.6-luna", "max")),
+            ("M".to_string(), Route::new("gpt-6-astra", "low")),
+            ("L".to_string(), Route::new("gpt-6-astra", "medium")),
+            ("XL".to_string(), Route::new("gpt-6-astra", "high")),
+        ]),
         ..Config::default()
     };
     let models = codex_models(&[
@@ -145,11 +152,16 @@ fn repair_routes_are_backward_compatible_and_validated() {
     let mut old = serde_json::to_value(Config::default()).unwrap();
     old.as_object_mut().unwrap().remove("repair_route");
     let mut config: Config = serde_json::from_value(old).unwrap();
-    assert_eq!(config.repair_route, Route::new("gpt-6-astra", "medium"));
+    // A config saved before repair routes existed still gains one, carrying the
+    // tier ladder's effort and no model for the operator to accept blindly.
+    assert_eq!(config.repair_route, Route::new("", "medium"));
     for route in config.roles.values_mut().chain(config.tiers.values_mut()) {
         *route = Route::new("available", "low");
     }
     let catalog = codex_models(&[("available", &["low"])]);
+    // The repair route is validated against the catalog like any other route,
+    // even when every role and tier around it is satisfiable.
+    config.repair_route = Route::new("gpt-6-astra", "medium");
     let error = validate_routes(&config, &catalog, false).unwrap_err();
     assert!(error.to_string().contains("gpt-6-astra / medium"));
     config.repair_route = Route::new("available", "high");
@@ -500,7 +512,14 @@ async fn control_conflicts_explain_the_requested_operation_without_changing_elig
                 verification_commands: vec!["true".into()],
                 ..Config::default()
             };
-            for route in config.roles.values_mut() {
+            // Defaults name no model, so the fixture supplies every route it
+            // needs for this configuration to count as ready.
+            for route in config
+                .roles
+                .values_mut()
+                .chain(config.tiers.values_mut())
+                .chain(std::iter::once(&mut config.repair_route))
+            {
                 *route = Route::new("gpt-6-astra", "medium");
             }
             app.store.put("settings", "config", &config).unwrap();

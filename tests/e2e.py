@@ -70,6 +70,10 @@ class Service:
             config['verification_commands'] = ['false']
         for role in config['roles']:
             config['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+        # Shipped tiers and repair carry effort but no model, so the fixture picks one.
+        for tier in config['tiers']:
+            config['tiers'][tier] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+        config['repair_route'] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
         if (self.root / 'custom-route').exists():
             config['repair_route'] = {'backend': 'codex', 'model': 'gpt-5.6-luna', 'effort': 'high'}
             config['tiers']['M'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}

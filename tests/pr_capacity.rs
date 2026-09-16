@@ -711,7 +711,13 @@ async fn admission_refresh_waits_for_an_execution_slot() {
         verification_commands: vec!["true".into()],
         ..Default::default()
     };
-    for route in c.roles.values_mut() {
+    // Shipped defaults name no model; a ready fixture fills every route.
+    for route in c
+        .roles
+        .values_mut()
+        .chain(c.tiers.values_mut())
+        .chain(std::iter::once(&mut c.repair_route))
+    {
         *route = Route::new("fixture", "low");
     }
     std::fs::create_dir_all(c.repository.join(".git")).unwrap();
@@ -780,7 +786,13 @@ async fn refresh_failure_is_reported_without_failing_the_engine() {
         verification_commands: vec!["true".into()],
         ..Default::default()
     };
-    for route in config.roles.values_mut() {
+    // Shipped defaults name no model; a ready fixture fills every route.
+    for route in config
+        .roles
+        .values_mut()
+        .chain(config.tiers.values_mut())
+        .chain(std::iter::once(&mut config.repair_route))
+    {
         *route = Route::new("fixture", "low");
     }
     std::fs::create_dir_all(config.repository.join(".git")).unwrap();

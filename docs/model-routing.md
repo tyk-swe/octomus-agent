@@ -10,7 +10,7 @@ turns reuse the task's repair session, while every review starts a fresh session
 Codex routes retain the existing model and effort fields:
 
 ```json
-{"backend":"codex","model":"gpt-6-astra","effort":"medium"}
+{"backend":"codex","model":"<model-id-from-the-catalog>","effort":"medium"}
 ```
 
 OpenCode routes specify a provider and its native model ID separately. Model IDs

@@ -90,7 +90,7 @@ in-flight work. External actors can still change remote backlog after observatio
 
 The executor's changes are committed locally. Review uses a fixed comparison base: the original default revision for new work, or the merge base with the default branch for existing PR work. Every review round examines the entire accumulated diff against that base.
 
-A reviewer is always a fresh session on its configured runner. A repair thread starts separately with the task’s saved configurable repair route (default `gpt-6-astra` / `medium`) and is resumed for subsequent repair turns. Interrupted, failed, missing, malformed, or explicitly incomplete results never count as clean reviews. Rounds and their revisions are recorded.
+A reviewer is always a fresh session on its configured runner. A repair thread starts separately with the task’s saved configurable repair route (shipped with `medium` effort and no model, so it must be configured before a run is ready) and is resumed for subsequent repair turns. Interrupted, failed, missing, malformed, or explicitly incomplete results never count as clean reviews. Rounds and their revisions are recorded.
 
 Configured shell verification runs after a completed clean review. Every command must pass on exactly the reviewed revision. Worktree cleanliness and HEAD are checked before the first command and after each command; a command that changes tracked state is recorded as failed evidence, stops the remaining commands and blocks the task, so no success is attributed to a revision the command did not actually run against. Successful commands keep bounded stdout and stderr as evidence. Commands run from the assigned workspace with Bash `pipefail`. Net-empty changes are not publishable, even if an executor made commits.
 

@@ -13,6 +13,13 @@ binary = project / 'target/debug/octomus-agent'
 with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     data = Path(directory)
     config = json.loads(subprocess.check_output([str(binary), '--print-config']))
+    # Shipped routes carry effort but no model, so the synthetic service picks one
+    # and the browser fixture shows a configured project rather than a blank form.
+    for role in config['roles']:
+        config['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+    for tier, effort in [('XS', 'xhigh'), ('S', 'max'), ('M', 'low'), ('L', 'medium'), ('XL', 'high')]:
+        config['tiers'][tier] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': effort}
+    config['repair_route'] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
     # Tasks embed the configuration they ran under; a configured check makes the recorded
     # check evidence exercisable instead of reporting "no checks configured".
     task_config = {**config, 'verification_commands': ['cargo test']}

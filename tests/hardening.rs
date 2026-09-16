@@ -12,6 +12,18 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 const CONTROL_TOKEN: &str = "task-control-fixture-token-at-least-32-characters";
+/// Shipped defaults name no model, so fixtures that need a ready configuration
+/// fill every route the validator requires.
+fn route_every_role(config: &mut Config) {
+    for route in config
+        .roles
+        .values_mut()
+        .chain(config.tiers.values_mut())
+        .chain(std::iter::once(&mut config.repair_route))
+    {
+        *route = Route::new("fixture", "low");
+    }
+}
 fn control_request(path: &str) -> axum::http::Request<axum::body::Body> {
     axum::http::Request::builder()
         .uri(format!("/api/{path}"))
@@ -829,9 +841,7 @@ async fn queued_history_never_hides_active_branch_writers() {
         verification_commands: vec!["true".into()],
         ..Default::default()
     };
-    for route in config.roles.values_mut() {
-        *route = Route::new("fixture", "low");
-    }
+    route_every_role(&mut config);
     std::fs::create_dir_all(config.repository.join(".git")).unwrap();
     config.validate(true).unwrap();
     store.put("settings", "config", &config).unwrap();
@@ -939,9 +949,7 @@ async fn one_shot_blocks_dependents_of_retries_excluded_from_the_batch() {
             verification_commands: vec!["true".into()],
             ..Config::default()
         };
-        for route in config.roles.values_mut() {
-            *route = Route::new("fixture", "low");
-        }
+        route_every_role(&mut config);
         std::fs::create_dir_all(config.repository.join(".git")).unwrap();
         config.validate(true).unwrap();
         store.put("settings", "config", &config).unwrap();
@@ -1010,9 +1018,7 @@ async fn unaffordable_planning_refuses_audit_and_run_once_without_side_effects()
         verification_commands: vec!["true".into()],
         ..Default::default()
     };
-    for route in config.roles.values_mut() {
-        *route = Route::new("fixture", "low");
-    }
+    route_every_role(&mut config);
     std::fs::create_dir_all(config.repository.join(".git")).unwrap();
     config.validate(true).unwrap();
     config.validate_audit().unwrap();
@@ -1069,9 +1075,7 @@ async fn run_once_pauses_when_the_drain_consumed_planning_allowance() {
         verification_commands: vec!["true".into()],
         ..Default::default()
     };
-    for route in config.roles.values_mut() {
-        *route = Route::new("fixture", "low");
-    }
+    route_every_role(&mut config);
     std::fs::create_dir_all(config.repository.join(".git")).unwrap();
     config.validate(true).unwrap();
     store.put("settings", "config", &config).unwrap();
@@ -1153,9 +1157,7 @@ async fn continuous_waits_for_planning_allowance_without_failed_cycles() {
         verification_commands: vec!["true".into()],
         ..Default::default()
     };
-    for route in config.roles.values_mut() {
-        *route = Route::new("fixture", "low");
-    }
+    route_every_role(&mut config);
     std::fs::create_dir_all(config.repository.join(".git")).unwrap();
     config.validate(true).unwrap();
     store.put("settings", "config", &config).unwrap();

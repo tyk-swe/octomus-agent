@@ -117,8 +117,10 @@ impl std::fmt::Display for Route {
         }
     }
 }
+/// Repair inherits the tier ladder's shape but names no model: the operator
+/// chooses every model, and an unconfigured route is refused, never guessed.
 pub fn default_repair_route() -> Route {
-    Route::new("gpt-6-astra", "medium")
+    Route::new("", "medium")
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -167,15 +169,17 @@ impl Default for Config {
                 .into_iter()
                 .map(|r| (r.into(), Route::new("", "")))
                 .collect(),
+            // Smaller tasks get more reasoning effort. The ladder ships; the
+            // models do not, so defaults name nothing that must be real.
             tiers: [
-                ("XS", "gpt-5.6-luna", "xhigh"),
-                ("S", "gpt-5.6-luna", "max"),
-                ("M", "gpt-6-astra", "low"),
-                ("L", "gpt-6-astra", "medium"),
-                ("XL", "gpt-6-astra", "high"),
+                ("XS", "xhigh"),
+                ("S", "max"),
+                ("M", "low"),
+                ("L", "medium"),
+                ("XL", "high"),
             ]
             .into_iter()
-            .map(|(t, m, e)| (t.into(), Route::new(m, e)))
+            .map(|(t, e)| (t.into(), Route::new("", e)))
             .collect(),
             repair_route: default_repair_route(),
             categories: CATEGORIES.map(String::from).to_vec(),
@@ -387,8 +391,17 @@ mod tests {
         let c = Config::default();
         c.validate(false).unwrap();
         assert!(c.validate(true).is_err());
-        assert_eq!(c.tiers["XS"], Route::new("gpt-5.6-luna", "xhigh"));
-        assert_eq!(c.tiers["XL"], Route::new("gpt-6-astra", "high"));
+        // Shipped defaults name no model, so --print-config never suggests a
+        // route that cannot exist. The effort ladder is still shipped advice.
+        assert!(
+            c.roles
+                .values()
+                .chain(c.tiers.values())
+                .chain(std::iter::once(&c.repair_route))
+                .all(|r| r.model.is_empty())
+        );
+        assert_eq!(c.tiers["XS"].effort, "xhigh");
+        assert_eq!(c.tiers["XL"].effort, "high");
     }
     #[test]
     fn branch_validation() {
