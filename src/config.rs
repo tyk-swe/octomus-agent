@@ -29,6 +29,16 @@ pub enum Backend {
     Codex,
     Opencode,
 }
+impl Backend {
+    /// The slug this backend is recorded and reported under. `Display` is capitalised
+    /// for the dashboard, so it cannot serve here.
+    pub fn slug(&self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Opencode => "opencode",
+        }
+    }
+}
 impl std::fmt::Display for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -321,7 +331,8 @@ impl Config {
         }
         for (backend, path) in &self.runner_storage_paths {
             ensure!(
-                ["codex", "opencode"].contains(&backend.as_str()) && path.is_absolute(),
+                [Backend::Codex.slug(), Backend::Opencode.slug()].contains(&backend.as_str())
+                    && path.is_absolute(),
                 "Runner storage measurement requires an absolute path for Codex or OpenCode"
             );
         }

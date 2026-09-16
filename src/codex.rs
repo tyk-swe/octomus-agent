@@ -16,13 +16,12 @@ use tokio_util::sync::CancellationToken;
 pub const TESTED_VERSION: &str = "0.153.4";
 
 pub fn version_warning(installed: &str) -> Option<String> {
-    (installed.trim() != format!("codex-cli {TESTED_VERSION}")).then(|| {
+    let expected = format!("codex-cli {TESTED_VERSION}");
+    (installed.trim() != expected).then(|| {
         crate::runner::version_warning(
             Backend::Codex,
             installed,
-            &format!(
-                "tested codex-cli {TESTED_VERSION}. Pin the tested CLI before live commissioning"
-            ),
+            &format!("tested {expected}. Pin the tested CLI before live commissioning"),
         )
     })
 }
@@ -104,9 +103,12 @@ impl Codex {
         .await?
         .trim()
         .to_owned();
-        Ok(
-            json!({"backend":"codex","version":version,"protocol_version":TESTED_VERSION,"warning":version_warning(&version)}),
-        )
+        Ok(crate::runner::diagnostics_value(
+            Backend::Codex,
+            &version,
+            TESTED_VERSION,
+            version_warning(&version),
+        ))
     }
     async fn send(&mut self, value: Value) -> Result<()> {
         let payload = format!("{value}\n");

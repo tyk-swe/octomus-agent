@@ -177,7 +177,12 @@ impl OpenCode {
     }
     /// Server version against the documented protocol baseline.
     pub fn diagnostics(&self) -> Value {
-        json!({"backend":"opencode","version":self.version(),"protocol_version":PROTOCOL_VERSION,"warning":version_warning(self.version())})
+        crate::runner::diagnostics_value(
+            Backend::Opencode,
+            self.version(),
+            PROTOCOL_VERSION,
+            version_warning(self.version()),
+        )
     }
 
     fn request(&self, method: Method, path: &str, cwd: &Path) -> reqwest::RequestBuilder {

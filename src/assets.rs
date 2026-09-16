@@ -6,6 +6,13 @@ use axum::{
 use include_dir::{Dir, include_dir};
 
 static DASHBOARD: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/build");
+const INDEX: &str = "200.html";
+
+/// The single-page entry point. An empty path and any extensionless path the
+/// dashboard router owns resolve here.
+fn index() -> &'static include_dir::File<'static> {
+    DASHBOARD.get_file(INDEX).expect("embedded dashboard")
+}
 
 pub async fn serve(method: Method, uri: Uri) -> Response {
     if method != Method::GET && method != Method::HEAD {
@@ -18,11 +25,11 @@ pub async fn serve(method: Method, uri: Uri) -> Response {
     if path.split('/').any(|part| part == ".." || part == ".") || path.contains(['\\', '\0']) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let file = DASHBOARD.get_file(if path.is_empty() { "200.html" } else { path });
+    let file = DASHBOARD.get_file(if path.is_empty() { INDEX } else { path });
     let file = match file {
         Some(file) => file,
         None if !path.starts_with("_app/") && std::path::Path::new(path).extension().is_none() => {
-            DASHBOARD.get_file("200.html").expect("embedded dashboard")
+            index()
         }
         None => return StatusCode::NOT_FOUND.into_response(),
     };

@@ -28,6 +28,21 @@ pub fn version_warning(backend: Backend, installed: &str, expected: &str) -> Str
     )
 }
 
+/// The diagnostics document both backends report; the dashboard reads one shape.
+pub(crate) fn diagnostics_value(
+    backend: Backend,
+    version: &str,
+    protocol_version: &str,
+    warning: Option<String>,
+) -> Value {
+    serde_json::json!({
+        "backend": backend.slug(),
+        "version": version,
+        "protocol_version": protocol_version,
+        "warning": warning,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model {
     pub backend: Backend,
