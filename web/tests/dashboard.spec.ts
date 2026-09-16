@@ -91,6 +91,22 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await expect(
     page.getByRole('link', { name: /Explain the local development workflow/ })
   ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/12');
+  // An unowned request is reported as such, and a pull request left in the
+  // pre-upgrade settings list still appears after the store converts it.
+  await expect(page.getByText('open · external head change')).toBeVisible();
+  await expect(
+    page.getByRole('link', { name: /Record the first delivered change/ })
+  ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/7');
+  await navigate('Overview');
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  // Read-only overlap context: the repository an external branch came from is
+  // what tells a reviewer the change is not ours.
+  await expect(
+    page.getByRole('heading', { name: 'External pull requests observed' })
+  ).toBeVisible();
+  await expect(page.getByText('1 external of 2 open · 1 included')).toBeVisible();
+  await expect(page.getByText('contributor/project:contributor/backoff')).toBeVisible();
+  await page.getByRole('button', { name: 'Close run evidence' }).click();
   await navigate('Configuration');
   await page.getByLabel('Orchestrator runner').selectOption('codex');
   await page.getByLabel('Repair runner').selectOption('codex');

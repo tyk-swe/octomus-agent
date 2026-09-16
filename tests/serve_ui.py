@@ -40,8 +40,18 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     slots = ['adversary-a', 'adversary-b']
     reviewer_sessions = [{'id': f'{slot}-session', 'role': slot, 'route': config['roles']['proposal_reviewer'], 'status': 'completed', 'started_at': now, 'summary': f'Synthetic browser-test review recorded for {slot}.'} for slot in slots]
     batches = [{'assessments': [{'id': p['id'], 'decision': 'accepted', 'reason': f'Synthetic browser-test verdict recorded for {slot}: the saved scope is concrete and bounded.'} for p in proposals]} for slot in slots]
-    put('cycle', 'cycle-1', {'id': 'cycle-1', 'number': 1, 'status': 'completed', 'started_at': now, 'completed_at': now, 'grounding': {'revision': 'a' * 40, 'prs': [], 'history': [], 'maintenance_due': False, 'maintenance_targets': []}, 'proposals': proposals, 'assessments': batches, 'sessions': reviewer_sessions, 'error': None})
-    put('settings', 'prs', [{'number': 12, 'title': rows[1][1], 'branch': 'octomus/task-reviewed', 'head': 'b' * 40, 'base': 'main', 'url': 'https://github.com/fixture/project/pull/12', 'body': 'Synthetic browser test PR.', 'state': 'open', 'changed_lines': 42, 'created_at': now, 'owned': True}])
+    put('cycle', 'cycle-1', {'id': 'cycle-1', 'number': 1, 'status': 'completed', 'started_at': now, 'completed_at': now, 'grounding': {'revision': 'a' * 40, 'prs': [], 'external_prs': [{'number': 31, 'url': 'https://github.com/fixture/project/pull/31', 'title': 'Adjust the retry backoff', 'body': 'Synthetic browser test context.', 'branch': 'contributor/backoff', 'head': 'c' * 40, 'base': 'main', 'head_repository': 'contributor/project', 'base_repository': 'fixture/project', 'title_truncated': False, 'body_truncated': False}], 'pr_coverage': {'observed_at': now, 'complete': True, 'total_open': 2, 'total_external': 1, 'included_external': 1, 'omitted_external': 0, 'max_external': 20, 'max_title_chars': 200, 'max_body_chars': 2000, 'max_context_bytes': 20000}, 'history': [], 'maintenance_due': False, 'maintenance_targets': []}, 'proposals': proposals, 'assessments': batches, 'sessions': reviewer_sessions, 'error': None})
+    # Pull requests are observations, the shape a running service saves, not the
+    # legacy settings list an upgrade converts once. One owned delivery and one
+    # external request so both badge states and the repository fields render.
+    def observation(number, title, branch, owned, head):
+        pull = {'number': number, 'title': title, 'branch': branch, 'head': head, 'base': 'main', 'url': f'https://github.com/fixture/project/pull/{number}', 'body': 'Synthetic browser test pull request.', 'state': 'open', 'changed_lines': 42, 'created_at': now, 'owned': owned, 'head_repository': 'fixture/project' if owned else 'contributor/project', 'base_repository': 'fixture/project'}
+        return {'repository': 'fixture/project', 'pr': pull, 'observed_at': now, 'delivered_head': head if owned else None, 'external_head_movement': not owned}
+    put('pr', 'fixture/project:12', observation(12, rows[1][1], 'octomus/task-reviewed', True, 'b' * 40))
+    put('pr', 'fixture/project:31', observation(31, 'Adjust the retry backoff', 'contributor/backoff', False, 'c' * 40))
+    # One pull request still in the pre-upgrade settings list, so opening this
+    # database exercises the one-time conversion the store performs on upgrade.
+    put('settings', 'prs', [{'number': 7, 'title': 'Record the first delivered change', 'branch': 'octomus/first-delivery', 'head': 'd' * 40, 'base': 'main', 'url': 'https://github.com/fixture/project/pull/7', 'body': 'Synthetic browser test pull request.', 'state': 'open', 'changed_lines': 8, 'created_at': now, 'owned': True}])
     db.commit()
     db.close()
     env = {key: value for key, value in os.environ.items() if key != 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'}

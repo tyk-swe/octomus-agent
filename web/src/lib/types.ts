@@ -208,6 +208,8 @@ export type Cycle = {
     prs: PR[];
     external_prs?: ExternalPrContext[];
     pr_coverage?: PrCoverage;
+    /** Repository history the planning pass read. Shape is owned by the planner. */
+    history: unknown;
     maintenance_due: boolean;
     maintenance_targets: string[];
   } | null;

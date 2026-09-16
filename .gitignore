@@ -4,6 +4,7 @@
 /web/.svelte-kit/
 /web/build/
 /web/test-results/
+/test-results/
 /web/playwright-report/
 .env
 .env.*
