@@ -90,6 +90,12 @@ impl IntoResponse for ApiError {
         (self.0, Json(json!({"error":self.1}))).into_response()
     }
 }
+fn not_found(message: &str) -> ApiError {
+    ApiError(StatusCode::NOT_FOUND, message.into())
+}
+fn conflict(message: &str) -> ApiError {
+    ApiError(StatusCode::CONFLICT, message.into())
+}
 type Result<T> = std::result::Result<T, ApiError>;
 pub fn router(app: App, token: &str, assets: Option<PathBuf>) -> Router {
     let state = Api {
@@ -303,7 +309,7 @@ async fn task(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value
         .app
         .store
         .get("task", &id)?
-        .ok_or(ApiError(StatusCode::NOT_FOUND, "Task not found".into()))?;
+        .ok_or_else(|| not_found("Task not found"))?;
     let mut value = serde_json::to_value(&task).map_err(anyhow::Error::from)?;
     value["allowed_actions"] = json!(task.allowed_actions());
     value["effective_attempt_policy"] = json!(AttemptPolicy::from_config(&task.execution_config()));
@@ -340,9 +346,12 @@ async fn proposal_detail(
     State(s): State<Api>,
     Path((cycle, id)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
-    Ok(Json(s.app.store.proposal_detail(&cycle, &id)?.ok_or(
-        ApiError(StatusCode::NOT_FOUND, "Proposal not found".into()),
-    )?))
+    Ok(Json(
+        s.app
+            .store
+            .proposal_detail(&cycle, &id)?
+            .ok_or(not_found("Proposal not found"))?,
+    ))
 }
 async fn pr_history(
     State(s): State<Api>,
@@ -351,18 +360,22 @@ async fn pr_history(
     history(&s, "pr", &q)
 }
 async fn cycle_detail(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Cycle>> {
-    Ok(Json(s.app.store.get("cycle", &id)?.ok_or(ApiError(
-        StatusCode::NOT_FOUND,
-        "Cycle not found".into(),
-    ))?))
+    Ok(Json(
+        s.app
+            .store
+            .get("cycle", &id)?
+            .ok_or_else(|| not_found("Cycle not found"))?,
+    ))
 }
 /// Recorded review and check evidence for one run, assembled from a single consistent
 /// database snapshot by the same assembler the CLI export uses. Read-only.
 async fn cycle_evidence(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
-    Ok(Json(s.app.store.run_evidence(&id)?.ok_or(ApiError(
-        StatusCode::NOT_FOUND,
-        "Cycle not found".into(),
-    ))?))
+    Ok(Json(
+        s.app
+            .store
+            .run_evidence(&id)?
+            .ok_or_else(|| not_found("Cycle not found"))?,
+    ))
 }
 async fn cycle_action(
     State(s): State<Api>,
@@ -373,12 +386,9 @@ async fn cycle_action(
         .app
         .store
         .get("cycle", &id)?
-        .ok_or(ApiError(StatusCode::NOT_FOUND, "Cycle not found".into()))?;
+        .ok_or_else(|| not_found("Cycle not found"))?;
     if c.status == crate::model::cycle_status::RUNNING {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "Wait for planning to finish".into(),
-        ));
+        return Err(conflict("Wait for planning to finish"));
     }
     match action.as_str() {
         "archive" => {
@@ -387,16 +397,12 @@ async fn cycle_action(
         }
         "discard" if c.lifecycle.archived_at.is_some() => s.app.discard_cycle(&mut c).await?,
         "discard" => {
-            return Err(ApiError(
-                StatusCode::CONFLICT,
-                "Archive the cycle before discarding its workspace".into(),
+            return Err(conflict(
+                "Archive the cycle before discarding its workspace",
             ));
         }
         _ => {
-            return Err(ApiError(
-                StatusCode::NOT_FOUND,
-                "Unknown cycle action".into(),
-            ));
+            return Err(not_found("Unknown cycle action"));
         }
     }
     s.app.store.event(&id, "operator", &action)?;
@@ -409,9 +415,8 @@ async fn save_config(State(s): State<Api>, Json(c): Json<Config>) -> Result<Json
     let _gate = s.app.gate.lock().await;
     let rt = s.app.runtime();
     if !s.app.control()?.paused || !rt.idle() {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "Pause and wait for active work to finish before changing configuration.".into(),
+        return Err(conflict(
+            "Pause and wait for active work to finish before changing configuration.",
         ));
     }
     c.validate(false)?;
@@ -422,7 +427,9 @@ async fn save_config(State(s): State<Api>, Json(c): Json<Config>) -> Result<Json
         || old.default_branch != c.default_branch)
         && s.app.store.has_unresolved_tasks()?
     {
-        return Err(ApiError(StatusCode::CONFLICT,"Resolve or cancel existing tasks before changing repository identity or branch policy.".into()));
+        return Err(conflict(
+            "Resolve or cancel existing tasks before changing repository identity or branch policy.",
+        ));
     }
     s.app.store.put("settings", "config", &c)?;
     drop(rt);
@@ -442,7 +449,7 @@ fn baseline_error(error: anyhow::Error) -> ApiError {
         .downcast_ref::<crate::engine::BaselineConflict>()
         .is_some()
     {
-        ApiError(StatusCode::CONFLICT, error_message(&error))
+        conflict(&error_message(&error))
     } else {
         error.into()
     }
@@ -460,10 +467,7 @@ async fn baseline_latest(State(s): State<Api>) -> Result<Json<Value>> {
 }
 async fn baseline_detail(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
     if s.app.store.get::<Value>("baseline", &id)?.is_none() {
-        return Err(ApiError(
-            StatusCode::NOT_FOUND,
-            "Baseline check not found".into(),
-        ));
+        return Err(not_found("Baseline check not found"));
     }
     Ok(Json(s.app.baseline_view(Some(&id))?))
 }
@@ -495,7 +499,7 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
                 _ => "Wait for the audit to finish before starting continuous operation.",
             }
         };
-        return Err(ApiError(StatusCode::CONFLICT, message.into()));
+        return Err(conflict(message));
     }
     drop(rt);
     match action.as_str() {
@@ -518,7 +522,7 @@ async fn control(State(s): State<Api>, Path(action): Path<String>) -> Result<Jso
             s.app.store.planning_capacity()?.ensure_available()?;
             s.app.store.start_batch(&mut c)?;
         }
-        _ => return Err(ApiError(StatusCode::NOT_FOUND, "Unknown control".into())),
+        _ => return Err(not_found("Unknown control")),
     }
     s.app.store.save_control(&c)?;
     s.app.store.event("system", "operator", &action)?;
@@ -533,29 +537,22 @@ fn eligible_task(app: &App, id: &str, action: &str) -> Result<Task> {
     let t: Task = app
         .store
         .get("task", id)?
-        .ok_or(ApiError(StatusCode::NOT_FOUND, "Task not found".into()))?;
+        .ok_or_else(|| not_found("Task not found"))?;
     if !t.allowed_actions().contains(&action) {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "This action is not eligible for the task's recorded failure and workspace state"
-                .into(),
+        return Err(conflict(
+            "This action is not eligible for the task's recorded failure and workspace state",
         ));
     }
     if action != "cancel" && app.runtime().tasks.contains_key(id) {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "Wait for active task work to finish".into(),
-        ));
+        return Err(conflict("Wait for active task work to finish"));
     }
     Ok(t)
 }
 fn revalidate_task_action(app: &App, task: &Task, action: &str) -> Result<()> {
     let current = eligible_task(app, &task.id, action)?;
     if json!(current) != json!(task) {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "Task changed during remote checks; inspect its current state before trying again"
-                .into(),
+        return Err(conflict(
+            "Task changed during remote checks; inspect its current state before trying again",
         ));
     }
     Ok(())
@@ -580,26 +577,19 @@ async fn task_action(
             // The worker may have advanced or finished since eligibility was read.
             // Check the stored publication checkpoint in the same write as cancellation.
             if !s.app.store.cancel_task(&id)? {
-                return Err(ApiError(
-                    StatusCode::CONFLICT,
-                    "Publication has started; inspect the task and reconcile unfinished publication."
-                        .into(),
+                return Err(conflict(
+                    "Publication has started; inspect the task and reconcile unfinished publication.",
                 ));
             }
         }
         "retry" => {
             if !t.status.retryable() {
-                return Err(ApiError(
-                    StatusCode::CONFLICT,
-                    "Only failed or blocked tasks can be retried.".into(),
-                ));
+                return Err(conflict("Only failed or blocked tasks can be retried."));
             }
             let config = s.app.config()?;
             if t.attempts >= config.max_retries {
-                return Err(ApiError(
-                    StatusCode::CONFLICT,
-                    "Retry limit reached. Adjust the operating limit after inspecting the failure."
-                        .into(),
+                return Err(conflict(
+                    "Retry limit reached. Adjust the operating limit after inspecting the failure.",
                 ));
             }
             let original = t.clone();
@@ -614,10 +604,8 @@ async fn task_action(
                 revalidate_task_action(&s.app, &original, &action)?;
                 if t.attempt_policy.as_ref() != Some(&AttemptPolicy::from_config(&s.app.config()?))
                 {
-                    return Err(ApiError(
-                        StatusCode::CONFLICT,
-                        "Retry policy changed during remote checks; try again with the current limits"
-                            .into(),
+                    return Err(conflict(
+                        "Retry policy changed during remote checks; try again with the current limits",
                     ));
                 }
                 if let Err(error) = preflight {
@@ -657,107 +645,107 @@ async fn task_action(
             s.app.save_task(&mut t)?;
         }
         "discard" => s.app.discard_task(&mut t).await?,
-        "reconcile" => {
-            if s.app.runtime().baseline.is_some() {
-                return Err(ApiError(
-                    StatusCode::CONFLICT,
-                    "Wait for the baseline check to finish".into(),
-                ));
-            }
-            if !s.app.runtime().tasks.is_empty() {
-                return Err(ApiError(
-                    StatusCode::CONFLICT,
-                    "Wait for active tasks before publication reconciliation".into(),
-                ));
-            }
-            if t.output_commit.is_some() {
-                // Reconciliation revives the task; the operator-cancel marker is spent.
-                s.app.store.clear_cancel(&id)?;
-                let previous_status = t.status.clone();
-                s.app.transition(&mut t, Status::Publishing)?;
-                let cancel = s.app.shutdown.child_token();
-                {
-                    let mut rt = s.app.runtime();
-                    rt.tasks.insert(id.clone(), cancel.clone());
-                    rt.reconciling_publication = true;
-                }
-                let app = s.app.clone();
-                // Own completion independently of the HTTP request so a disconnected
-                // operator cannot release the reservation while publication is running.
-                let work = tokio::spawn(async move {
-                    let _guard = app.task_guard(&id);
-                    let _reconcile = ReconcileGuard { app: &app };
-                    let published = {
-                        let limit = Duration::from_secs(t.execution_config().task_timeout_seconds);
-                        // Uses the normal task deadline cleanup, so a stalled publication
-                        // stops its owned process groups before it is reported.
-                        match crate::process::with_deadline(
-                            limit,
-                            &cancel,
-                            crate::git::publish(&t, &cancel),
-                        )
-                        .await
-                        {
-                            Deadline::Done(result) => result,
-                            Deadline::Expired { already_cancelled } => {
-                                if already_cancelled {
-                                    Err(anyhow::Error::new(BlockedReason::PublicationUncertain)
-                                        .context("Publication reconciliation was interrupted; reconcile again"))
-                                } else {
-                                    Err(anyhow::Error::new(BlockedReason::Timeout))
-                                }
-                            }
-                        }
-                    };
-                    let _gate = app.gate.lock().await;
-                    (|| -> Result<()> {
-                        match published {
-                            Ok(pr) => app.published(&mut t, pr)?,
-                            Err(error) => {
-                                t.blocked_reason = Some(BlockedReason::from_error(&error));
-                                t.error = Some(error_message(&error));
-                                app.transition(&mut t, previous_status)?;
-                            }
-                        }
-                        app.store.event(&id, "operator", &action)?;
-                        Ok(())
-                    })()
-                });
-                drop(gate);
-                work.await.map_err(anyhow::Error::from)??;
-                return Ok(Json(json!({"ok":true})));
-            } else {
-                drop(gate);
-                let preflight = s
-                    .app
-                    .retry_preflight(&t, &s.app.shutdown.child_token())
-                    .await;
-                gate = s.app.gate.lock().await;
-                revalidate_task_action(&s.app, &t, &action)?;
-                match preflight {
-                    Ok(()) => {
-                        t.blocked_reason = Some(BlockedReason::Unknown);
-                        t.error =
-                            Some("Remote prerequisites are restored; task can be retried".into());
-                    }
-                    Err(error) => {
-                        t.blocked_reason = Some(BlockedReason::from_error(&error));
-                        t.error = Some(error_message(&error));
-                    }
-                }
-                s.app.store.clear_cancel(&id)?;
-                s.app.save_task(&mut t)?;
-            }
-        }
+        "reconcile" => return reconcile_task(&s, gate, &id, t).await,
         _ => {
-            return Err(ApiError(
-                StatusCode::NOT_FOUND,
-                "Unknown task action".into(),
-            ));
+            return Err(not_found("Unknown task action"));
         }
     }
     s.app.store.event(&id, "operator", &action)?;
     drop(gate);
+    Ok(Json(json!({"ok":true})))
+}
+/// Publication reconciliation runs the same publish path as task completion. The
+/// caller's gate stays held through eligibility, drops for remote work, and is
+/// re-acquired for the revalidation and saves; publication completion owns its
+/// operator event so a disconnected request cannot skip it.
+async fn reconcile_task(
+    s: &Api,
+    gate: tokio::sync::MutexGuard<'_, ()>,
+    id: &str,
+    mut t: Task,
+) -> Result<Json<Value>> {
+    if s.app.runtime().baseline.is_some() {
+        return Err(conflict("Wait for the baseline check to finish"));
+    }
+    if !s.app.runtime().tasks.is_empty() {
+        return Err(conflict(
+            "Wait for active tasks before publication reconciliation",
+        ));
+    }
+    if t.output_commit.is_none() {
+        drop(gate);
+        let preflight = s
+            .app
+            .retry_preflight(&t, &s.app.shutdown.child_token())
+            .await;
+        let _gate = s.app.gate.lock().await;
+        revalidate_task_action(&s.app, &t, "reconcile")?;
+        match preflight {
+            Ok(()) => {
+                t.blocked_reason = Some(BlockedReason::Unknown);
+                t.error = Some("Remote prerequisites are restored; task can be retried".into());
+            }
+            Err(error) => {
+                t.blocked_reason = Some(BlockedReason::from_error(&error));
+                t.error = Some(error_message(&error));
+            }
+        }
+        s.app.store.clear_cancel(id)?;
+        s.app.save_task(&mut t)?;
+        s.app.store.event(id, "operator", "reconcile")?;
+        return Ok(Json(json!({"ok":true})));
+    }
+    // Reconciliation revives the task; the operator-cancel marker is spent.
+    s.app.store.clear_cancel(id)?;
+    let previous_status = t.status.clone();
+    s.app.transition(&mut t, Status::Publishing)?;
+    let cancel = s.app.shutdown.child_token();
+    {
+        let mut rt = s.app.runtime();
+        rt.tasks.insert(id.to_owned(), cancel.clone());
+        rt.reconciling_publication = true;
+    }
+    let app = s.app.clone();
+    let id = id.to_owned();
+    // Own completion independently of the HTTP request so a disconnected
+    // operator cannot release the reservation while publication is running.
+    let work = tokio::spawn(async move {
+        let _guard = app.task_guard(&id);
+        let _reconcile = ReconcileGuard { app: &app };
+        let published = {
+            let limit = Duration::from_secs(t.execution_config().task_timeout_seconds);
+            // Uses the normal task deadline cleanup, so a stalled publication
+            // stops its owned process groups before it is reported.
+            match crate::process::with_deadline(limit, &cancel, crate::git::publish(&t, &cancel))
+                .await
+            {
+                Deadline::Done(result) => result,
+                Deadline::Expired { already_cancelled } => {
+                    if already_cancelled {
+                        Err(anyhow::Error::new(BlockedReason::PublicationUncertain)
+                            .context("Publication reconciliation was interrupted; reconcile again"))
+                    } else {
+                        Err(anyhow::Error::new(BlockedReason::Timeout))
+                    }
+                }
+            }
+        };
+        let _gate = app.gate.lock().await;
+        (|| -> Result<()> {
+            match published {
+                Ok(pr) => app.published(&mut t, pr)?,
+                Err(error) => {
+                    t.blocked_reason = Some(BlockedReason::from_error(&error));
+                    t.error = Some(error_message(&error));
+                    app.transition(&mut t, previous_status)?;
+                }
+            }
+            app.store.event(&id, "operator", "reconcile")?;
+            Ok(())
+        })()
+    });
+    drop(gate);
+    work.await.map_err(anyhow::Error::from)??;
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Default, Deserialize)]
