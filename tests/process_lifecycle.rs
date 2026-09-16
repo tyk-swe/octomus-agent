@@ -1,3 +1,6 @@
+//! Asserting that a killed worker leaves no descendants means signalling a
+//! process group directly, which is what the unsafe call below does.
+#![allow(unsafe_code)]
 use octomus_agent::process::{self, CaptureMode};
 use std::{path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;

@@ -21,6 +21,7 @@ impl Drop for GroupChild {
         // group ID is the one recorded at spawn, so it stays valid even after wait()
         // reaps the leader. This also terminates background descendants after normal
         // completion.
+        #[allow(unsafe_code)]
         unsafe {
             libc::kill(-(self.1 as i32), libc::SIGKILL);
         }

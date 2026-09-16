@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "octomus_agent=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "octomus_agent=info".into()),
         )
         .init();
     let args = Args::parse();

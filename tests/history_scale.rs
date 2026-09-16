@@ -1,4 +1,8 @@
 //! Explicit scale check: cargo test --test history_scale -- --ignored --nocapture
+//!
+//! Measuring peak memory needs a counting global allocator, which is the one
+//! place outside the process-group kill where unsafe code is warranted.
+#![allow(unsafe_code)]
 use octomus_agent::{
     config::{Config, Route},
     model::{Proposal, Task},
