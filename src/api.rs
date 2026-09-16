@@ -1,7 +1,10 @@
 use crate::{
     config::{Backend, Config, validate_binary},
     engine::App,
-    model::{AttemptPolicy, BlockedReason, Cycle, CycleMode, OperatingMode, Status, Task},
+    model::{
+        AttemptPolicy, BaselineStatus, BlockedReason, Control, Cycle, CycleMode, OperatingMode,
+        PlanningCapacity, PrCapacity, Status, Task,
+    },
     process::Deadline,
     store::error_message,
 };
@@ -13,7 +16,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -206,9 +209,49 @@ async fn authenticate(State(s): State<Api>, req: Request, next: Next) -> Respons
     }
     response
 }
-async fn state_view(State(s): State<Api>) -> Result<Json<Value>> {
+/// The live half of the dashboard state document, merged over the stored
+/// snapshot. The snapshot is flattened because the dashboard reads one flat
+/// object; naming the live fields here keeps that shape without spelling it out
+/// in a single wide expression.
+#[derive(Serialize)]
+struct StateView {
+    #[serde(flatten)]
+    snapshot: Value,
+    status: &'static str,
+    control: Control,
+    repository: String,
+    configured: bool,
+    audit_configured: bool,
+    active_cycle_mode: Option<CycleMode>,
+    active_tasks: usize,
+    cycle_active: bool,
+    baseline_active: bool,
+    baseline: Option<BaselineView>,
+    notifications: Value,
+    session_limit: u64,
+    storage_limit: u64,
+    storage: Option<Value>,
+    planning_capacity: PlanningCapacity,
+    pr_capacity: PrCapacity,
+}
+
+/// What the overview shows about the last clean-baseline check. The saved record
+/// also carries the configuration it ran under and every command result, which
+/// the overview does not display.
+#[derive(Serialize)]
+struct BaselineView {
+    id: String,
+    status: BaselineStatus,
+    started_at: String,
+    completed_at: Option<String>,
+    error: Option<String>,
+    config_matches: bool,
+    revision_status: &'static str,
+}
+
+async fn state_view(State(s): State<Api>) -> Result<Json<StateView>> {
     let c = s.app.control()?;
-    let mut snapshot = s.app.store.dashboard()?;
+    let snapshot = s.app.store.dashboard()?;
     let config = s.app.config()?;
     let planning_capacity = s.app.store.planning_capacity()?;
     let pr_capacity = s.app.pr_capacity()?;
@@ -226,17 +269,34 @@ async fn state_view(State(s): State<Api>) -> Result<Json<Value>> {
     } else {
         "idle"
     };
-    let baseline_summary = baseline.map(|check| {
-        let config_matches = s.app.baseline_config_matches(&check, &config);
-        let revision_status = s.app.baseline_revision_status(&rt, &check, &config);
-        json!({"id":check.id,"status":check.status,"started_at":check.started_at,"completed_at":check.completed_at,"error":check.error,"config_matches":config_matches,"revision_status":revision_status})
+    let baseline = baseline.map(|check| BaselineView {
+        config_matches: s.app.baseline_config_matches(&check, &config),
+        revision_status: s.app.baseline_revision_status(&rt, &check, &config),
+        id: check.id,
+        status: check.status,
+        started_at: check.started_at,
+        completed_at: check.completed_at,
+        error: check.error,
     });
-    let fields = json!({"status":status,"control":c,"repository":config.github_repo,"configured":config.validate(true).is_ok(),"audit_configured":config.validate_audit().is_ok(),"active_cycle_mode":rt.cycle_mode,"active_tasks":rt.tasks.len(),"cycle_active":rt.cycle.is_some(),"baseline_active":rt.baseline.is_some(),"baseline":baseline_summary,"notifications":notifications,"session_limit":config.max_sessions_per_day,"storage_limit":config.max_workspace_bytes,"storage":s.app.store.get::<Value>("settings","storage")?,"planning_capacity":planning_capacity,"pr_capacity":pr_capacity});
-    snapshot
-        .as_object_mut()
-        .unwrap()
-        .extend(fields.as_object().unwrap().clone());
-    Ok(Json(snapshot))
+    Ok(Json(StateView {
+        snapshot,
+        status,
+        repository: config.github_repo.clone(),
+        configured: config.validate(true).is_ok(),
+        audit_configured: config.validate_audit().is_ok(),
+        active_cycle_mode: rt.cycle_mode,
+        active_tasks: rt.tasks.len(),
+        cycle_active: rt.cycle.is_some(),
+        baseline_active: rt.baseline.is_some(),
+        baseline,
+        notifications,
+        session_limit: config.max_sessions_per_day,
+        storage_limit: config.max_workspace_bytes,
+        storage: s.app.store.get::<Value>("settings", "storage")?,
+        planning_capacity,
+        pr_capacity,
+        control: c,
+    }))
 }
 async fn task(State(s): State<Api>, Path(id): Path<String>) -> Result<Json<Value>> {
     let task: Task = s
