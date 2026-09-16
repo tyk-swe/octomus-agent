@@ -951,3 +951,20 @@ fn committed_plan_attributes_verdicts_to_reviewer_slots() {
     assert_eq!(p2["reviewer_verdicts"][1]["decision"], "rejected");
     assert!(p2["linked_tasks"].as_array().unwrap().is_empty());
 }
+
+/// The public showcase wrapper is the only artifact derived from this module that ships
+/// to readers, so every limitation and the review requirement must survive verbatim.
+#[test]
+fn public_showcase_wrapper_keeps_every_limitation_verbatim() {
+    let fixture = include_str!("../web/showcase/synthetic.public.json");
+    assert!(
+        fixture.contains(evidence::REVIEW_REQUIREMENT),
+        "The showcase wrapper drops the review requirement"
+    );
+    for limitation in evidence::LIMITATIONS {
+        assert!(
+            fixture.contains(limitation),
+            "The showcase wrapper drops a limitation: {limitation}"
+        );
+    }
+}

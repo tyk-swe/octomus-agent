@@ -210,6 +210,9 @@ export function proposalRow(
     prompt: 'Synthetic execution prompt for browser tests.',
     decision: 'accepted',
     reason: 'Synthetic recorded decision reason for browser tests.',
+    problem_key: '',
+    relevant_paths: [],
+    reconsiders: [],
     ...over
   };
 }

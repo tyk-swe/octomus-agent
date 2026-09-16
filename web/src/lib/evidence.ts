@@ -9,6 +9,7 @@
  */
 import { ACTIVE_STATUSES } from './types';
 import type {
+  BaselineStatus,
   CommandEvidence,
   CommandResult,
   CommandState,
@@ -57,6 +58,35 @@ export function decisionTone(decision: string | null): Tone {
       : decision === 'deferred'
         ? 'blocked'
         : 'cancelled';
+}
+
+/**
+ * Persisted `decision::ALL` words in src/model.rs, in the order the dashboard shows
+ * them. Mirrors the server vocabulary the way `ACTIVE_STATUSES` mirrors `Status::ACTIVE`.
+ */
+export const DECISIONS = ['accepted', 'rejected', 'deferred', 'candidate'] as const;
+
+/** The mode word every surface names a cycle with. */
+export function modeLabel(mode: string): string {
+  return mode === 'audit' ? 'Audit' : 'Execution';
+}
+
+/** One cycle heading, e.g. `Execution cycle #001`. */
+export function cycleLabel(cycle: { mode: string; number: number }): string {
+  return `${modeLabel(cycle.mode)} cycle #${String(cycle.number).padStart(3, '0')}`;
+}
+
+/** Saved baseline statuses, spelled the way the check panel shows them. */
+export function baselineStatusLabel(status: BaselineStatus): string {
+  const labels: Record<BaselineStatus, string> = {
+    running: 'Running',
+    passed: 'Passed',
+    failed: 'Failed',
+    cancelled: 'Cancelled',
+    timed_out: 'Timed out',
+    interrupted: 'Interrupted'
+  };
+  return labels[status];
 }
 
 const VERDICT_STATES: Record<VerdictState, { label: string; tone: Tone }> = {
@@ -177,7 +207,8 @@ export function outcomeVerdict(task: {
   };
 }
 
-const UNKNOWN: Verdict = {
+/** The shared fallback for evidence that has not loaded; never an optimistic pass. */
+export const UNKNOWN_VERDICT: Verdict = {
   label: 'Unknown',
   tone: 'cancelled',
   detail:
@@ -189,7 +220,7 @@ const UNKNOWN: Verdict = {
  * `clean_at_output_revision` rather than recomputed here.
  */
 export function reviewVerdict(evidence: TaskEvidence | null): Verdict {
-  if (!evidence) return UNKNOWN;
+  if (!evidence) return UNKNOWN_VERDICT;
   const review = evidence.latest_review;
   const rounds = `${review.rounds_recorded} recorded round${review.rounds_recorded === 1 ? '' : 's'}`;
   if (review.rounds_recorded === 0 || !review.latest)
@@ -259,7 +290,7 @@ export function commandBadge(state: CommandState): { label: string; tone: Tone }
 
 /** Configured-check standing. No configured commands is never reported as passing. */
 export function checksVerdict(evidence: TaskEvidence | null): Verdict {
-  if (!evidence) return UNKNOWN;
+  if (!evidence) return UNKNOWN_VERDICT;
   const checks: CommandEvidence = evidence.required_commands;
   if (checks.state === 'not_configured')
     return {
@@ -295,7 +326,7 @@ export function checksVerdict(evidence: TaskEvidence | null): Verdict {
  * time; it is never presented as a fresh observation of the GitHub head.
  */
 export function prVerdict(evidence: TaskEvidence | null): Verdict {
-  if (!evidence) return UNKNOWN;
+  if (!evidence) return UNKNOWN_VERDICT;
   const pr = evidence.pull_request;
   if (!pr)
     return {
@@ -362,15 +393,14 @@ export function planningVerdict(cycle: { status: string; mode: 'execution' | 'au
   }
 }
 
-const DECISION_ORDER = ['accepted', 'rejected', 'deferred'];
 /** Decision counts in a fixed order, so accepted never trades places with deferred. */
 export function decisionCounts(
   decisions: Record<string, number>
 ): { decision: string; count: number; tone: Tone }[] {
   const extra = Object.keys(decisions)
-    .filter((key) => !DECISION_ORDER.includes(key))
+    .filter((key) => !DECISIONS.some((decision) => decision === key))
     .sort();
-  return [...DECISION_ORDER.filter((key) => key in decisions), ...extra].map((decision) => ({
+  return [...DECISIONS.filter((key) => key in decisions), ...extra].map((decision) => ({
     decision,
     count: decisions[decision] ?? 0,
     tone: decisionTone(decision)

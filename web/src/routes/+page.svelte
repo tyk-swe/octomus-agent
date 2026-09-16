@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { api, setToken, onUnauthorized, relative, safeUrl } from '$lib/api';
+  import { api, clockTime, gb, setToken, onUnauthorized, relative, safeUrl } from '$lib/api';
   import { ACTIVE_STATUSES } from '$lib/types';
   import type {
     Snapshot,
@@ -11,6 +11,7 @@
     CycleSummary,
     ProposalDetail
   } from '$lib/types';
+  import Badge from '$lib/Badge.svelte';
   import Icon from '$lib/Icon.svelte';
   import LoginScreen from '$lib/LoginScreen.svelte';
   import Settings from '$lib/Settings.svelte';
@@ -18,7 +19,11 @@
   import TaskDetail from '$lib/TaskDetail.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
   import {
+    DECISIONS,
+    cycleLabel,
     decisionCounts as decisionEntries,
+    decisionTone,
+    modeLabel,
     planningVerdict,
     taskOutcomeCounts
   } from '$lib/evidence';
@@ -69,7 +74,6 @@
   function inspectLatestRun() {
     if (latestCycle) inspectRun(latestCycle.id, null);
   }
-  const gb = (bytes: number) => (bytes / 1e9).toFixed(2);
   const navigation = [
     { id: 'overview', label: 'Overview', icon: 'overview' },
     { id: 'queue', label: 'Task queue', icon: 'queue' },
@@ -299,7 +303,7 @@
       if (!listLoading) listRefresh++;
       if (view === 'proposals') await loadCycles();
       connectionError = '';
-      lastUpdated = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      lastUpdated = clockTime();
     } catch (e) {
       if (connected && currentSession === sessionGeneration) connectionError = (e as Error).message;
     } finally {
@@ -317,7 +321,7 @@
       accessToken = '';
       await tick();
       window.scrollTo(0, 0);
-      lastUpdated = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      lastUpdated = clockTime();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -705,7 +709,7 @@
                 <div>
                   <h2 id="latest-run-heading">
                     {latestCycle
-                      ? `Latest run · ${latestCycle.mode === 'audit' ? 'Audit' : 'Execution'} cycle ${String(latestCycle.number).padStart(3, '0')}`
+                      ? `Latest run · ${modeLabel(latestCycle.mode)} cycle ${latestCycle.number}`
                       : 'The improvement loop'}
                   </h2>
                   <p>
@@ -718,7 +722,7 @@
               <div class="row-title">
                 {#if latestCycle}
                   {@const planning = planningVerdict(latestCycle)}
-                  <span class={'badge ' + planning.tone}>{planning.label}</span>
+                  <Badge label={planning.label} tone={planning.tone} />
                   <button class="button primary small" onclick={inspectLatestRun}
                     ><Icon name="search" size={15} />Inspect run</button
                   >
@@ -738,9 +742,10 @@
                   <span class="eyebrow">PROPOSAL DECISIONS</span>
                   <ul class="outcome-counts" aria-label="Proposal decisions">
                     {#each decisionEntries(cycle.decisions) as entry (entry.decision)}<li>
-                        <strong>{entry.count}</strong><span class={'badge ' + entry.tone}
-                          >{entry.decision}</span
-                        >
+                        <strong>{entry.count}</strong><Badge
+                          label={entry.decision}
+                          tone={entry.tone}
+                        />
                       </li>{:else}<li class="muted">No decisions recorded</li>{/each}
                   </ul>
                   <small>{planning.detail}</small>
@@ -750,9 +755,10 @@
                   {#if runTasks.length}
                     <ul class="outcome-counts" aria-label="Recent tasks from this run">
                       {#each runTasks as entry (entry.label)}<li>
-                          <strong>{entry.count}</strong><span class={'badge ' + entry.tone}
-                            >{entry.label}</span
-                          >
+                          <strong>{entry.count}</strong><Badge
+                            label={entry.label}
+                            tone={entry.tone}
+                          />
                         </li>{/each}
                     </ul>
                     <small
@@ -946,13 +952,12 @@
         {:else if view === 'queue'}
           <section class="panel">
             <div class="list-toolbar">
-              <div class="filter-tabs" role="group" aria-label="Task filters">
-                {#each ['all', 'active', 'queued', 'published', 'attention', 'blocked', 'cancelled'] as state}<button
-                    class:active={filter === state}
-                    aria-pressed={filter === state}
-                    onclick={() => (filter = state)}>{state}</button
-                  >{/each}
-              </div>
+              {@render filterTabs(
+                ['all', 'active', 'queued', 'published', 'attention', 'blocked', 'cancelled'],
+                filter,
+                'Task filters',
+                (state) => (filter = state)
+              )}
               {@render searchBox()}
             </div>
             {#if filtered.length}{@render taskList(filtered)}{:else if listLoaded}<div
@@ -1000,25 +1005,26 @@
               <select id="proposal-cycle" bind:value={proposalCycle}>
                 <option value="all">All cycles</option>
                 {#each cycleRows as cycle}<option value={cycle.id}
-                    >{cycle.mode === 'audit' ? 'Audit' : 'Execution'} #{cycle.number} · {cycle.status}</option
+                    >{cycleLabel(cycle)} · {cycle.status}</option
                   >{/each}
               </select>
             </div>
             <div class="decision-counts" role="group" aria-label="Decision counts">
-              {#each ['accepted', 'rejected', 'deferred', 'candidate'] as decision}
-                <span class={'badge ' + decision}>{decision}: {decisionCounts[decision] ?? 0}</span>
+              {#each DECISIONS as decision}
+                <span class={'badge ' + decisionTone(decision)}
+                  >{decision}: {decisionCounts[decision] ?? 0}</span
+                >
               {/each}
             </div>
           </div>
           <section class="panel">
             <div class="list-toolbar">
-              <div class="filter-tabs" role="group" aria-label="Proposal filters">
-                {#each ['all', 'accepted', 'rejected', 'deferred', 'candidate'] as state}<button
-                    class:active={proposalFilter === state}
-                    aria-pressed={proposalFilter === state}
-                    onclick={() => (proposalFilter = state)}>{state}</button
-                  >{/each}
-              </div>
+              {@render filterTabs(
+                ['all', ...DECISIONS],
+                proposalFilter,
+                'Proposal filters',
+                (state) => (proposalFilter = state)
+              )}
               {@render searchBox()}
             </div>
             <div class="proposal-list">
@@ -1028,7 +1034,7 @@
                   <div class="row-between">
                     <div class="proposal-meta">
                       <span class={'badge ' + p.decision}>{p.decision}</span><span
-                        >{p.mode === 'audit' ? 'Audit' : 'Execution'} #{p.cycle}</span
+                        >{cycleLabel({ mode: p.mode, number: p.cycle })}</span
                       ><span class="tier">{p.tier}</span>
                     </div>
                     <span class="category">{p.category}</span>
@@ -1085,13 +1091,12 @@
             >
           </div>
           <div class="list-toolbar">
-            <div class="filter-tabs" role="group" aria-label="PR filters">
-              {#each ['all', 'open', 'merged', 'closed'] as state}<button
-                  class:active={filter === state}
-                  aria-pressed={filter === state}
-                  onclick={() => (filter = state)}>{state}</button
-                >{/each}
-            </div>
+            {@render filterTabs(
+              ['all', 'open', 'merged', 'closed'],
+              filter,
+              'PR filters',
+              (state) => (filter = state)
+            )}
             {@render searchBox()}
           </div>
           <section class="panel">
@@ -1200,6 +1205,18 @@
       onclose={closePanels}
     />{/if}
 {/if}
+{#snippet filterTabs(
+  labels: string[],
+  current: string,
+  aria: string,
+  onselect: (state: string) => void
+)}<div class="filter-tabs" role="group" aria-label={aria}>
+    {#each labels as state}<button
+        class:active={current === state}
+        aria-pressed={current === state}
+        onclick={() => onselect(state)}>{state}</button
+      >{/each}
+  </div>{/snippet}
 {#snippet listFeedback(noun: string, count: number)}
   {#if listError}<div class="notice error list-feedback" role="alert">
       <span

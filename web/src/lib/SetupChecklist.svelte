@@ -3,6 +3,7 @@
   import {
     baselineStep,
     chooseStep,
+    parseCommands,
     preflightStep,
     repositoryStep,
     routesStep,
@@ -40,12 +41,7 @@
   } = $props();
   // Tab-local only: collapsing the checklist is not persisted and starts nothing.
   let open = $state(true);
-  const draftCommands = $derived(
-    commands
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-  );
+  const draftCommands = $derived(parseCommands(commands));
   type Link = { label: string; target?: string; choose?: 'audit' | 'cycle' };
   const steps = $derived<{ id: string; title: string; step: SetupStep; links: Link[] }[]>([
     {

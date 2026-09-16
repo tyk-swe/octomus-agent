@@ -61,6 +61,14 @@ export function relative(value: string) {
         ? `${Math.floor(seconds / 3600)}h ago`
         : `${Math.floor(seconds / 86400)}d ago`;
 }
+/** Gigabytes with the two decimals every storage figure is shown with. */
+export function gb(bytes: number): string {
+  return (bytes / 1e9).toFixed(2);
+}
+/** Wall-clock time of a dashboard refresh, e.g. `14:03`. */
+export function clockTime(date = new Date()): string {
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
 export function safeUrl(value: string | null): string {
   try {
     const url = new URL(value ?? '');

@@ -9,17 +9,21 @@
   import { onMount } from 'svelte';
   import { api, ApiError, relative, safeUrl } from './api';
   import { routeLabel } from './routes';
-  import { copyMessage, copyText } from './clipboard';
+  import { createCopyFeedback } from './copyFeedback.svelte';
   import Icon from './Icon.svelte';
   import Sha from './Sha.svelte';
+  import Badge from './Badge.svelte';
   import EvidenceText from './EvidenceText.svelte';
   import EvidenceFact from './EvidenceFact.svelte';
+  import FindingCard from './FindingCard.svelte';
   import PrContext from './PrContext.svelte';
+  import ReviewChangeSet from './ReviewChangeSet.svelte';
   import type { Cycle, ProposalEvidence, RunEvidenceV1, TaskEvidence } from './types';
   import {
     checksVerdict,
     commandBadge,
     commandExplanation,
+    cycleLabel,
     decisionCounts,
     decisionTone,
     outcomeVerdict,
@@ -31,8 +35,7 @@
     reviewerSlot,
     revisionMatchLabel,
     shortCommit,
-    verdictBadge,
-    type Tone
+    verdictBadge
   } from './evidence';
   let {
     cycleId,
@@ -54,11 +57,10 @@
     loading = $state(true),
     focus = $state<string | null>(null),
     taskFocus = $state<{ proposal: string; task: string } | null>(null),
-    copyStatus = $state(''),
     rawOpen = $state(false);
   let generation = 0;
   let request: AbortController | null = null;
-  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  const feedback = createCopyFeedback();
   let proposals = $derived<ProposalEvidence[]>(run?.proposals ?? []);
   let focused = $derived<ProposalEvidence | null>(proposals.find((p) => p.id === focus) ?? null);
   let missingFocus = $derived(!!run && !!focus && !focused);
@@ -148,7 +150,7 @@
   onMount(() => {
     dialog.showModal();
     return () => {
-      clearTimeout(copyTimer);
+      feedback.dispose();
       generation++;
       request?.abort();
     };
@@ -166,14 +168,8 @@
     // Released after the browser has taken the blob, never before the click is handled.
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
-  async function copy(value: string, label: string) {
-    clearTimeout(copyTimer);
-    copyStatus = copyMessage(label, await copyText(value));
-    copyTimer = setTimeout(() => (copyStatus = ''), 4000);
-  }
 </script>
 
-{#snippet tone(label: string, value: Tone)}<span class={'badge ' + value}>{label}</span>{/snippet}
 {#snippet gapList(title: string, gaps: string[])}{#if gaps.length}<details class="evidence-gaps">
       <summary>{title} ({gaps.length})</summary>
       <ul>
@@ -199,11 +195,11 @@
   {#if run && planning}
     <div class="task-title">
       <div class="badge-row">
-        {@render tone(planning.label, planning.tone)}
+        <Badge label={planning.label} tone={planning.tone} />
         {#if stale}<span class="badge blocked">Retained · stale</span>{/if}
       </div>
       <h2 id="run-evidence-title">
-        {audit ? 'Audit' : 'Execution'} cycle #{String(run.cycle.number).padStart(3, '0')}
+        {cycleLabel(run.cycle)}
       </h2>
       <p>
         <code>{run.cycle.repository || 'Repository not recorded'}</code>
@@ -233,7 +229,7 @@
       <section class="evidence-section run-summary" aria-labelledby="run-outcome-heading">
         <div class="row-between">
           <h3 id="run-outcome-heading">Run outcome</h3>
-          {@render tone(planning.label, planning.tone)}
+          <Badge label={planning.label} tone={planning.tone} />
         </div>
         <p>
           {run.cycle.planning.proposal_count} proposal{run.cycle.planning.proposal_count === 1
@@ -242,14 +238,18 @@
         </p>
         <ul class="outcome-counts" aria-label="Proposal decisions">
           {#each decisionCounts(run.cycle.planning.decisions) as entry (entry.decision)}<li>
-              <strong>{entry.count}</strong>{@render tone(entry.decision, entry.tone)}
+              <strong>{entry.count}</strong><Badge label={entry.decision} tone={entry.tone} />
             </li>{:else}<li class="muted">No decisions recorded</li>{/each}
         </ul>
         <dl class="fact-row">
           <div>
             <dt>Grounding revision</dt>
             <dd>
-              <Sha value={run.cycle.grounding_revision} label="Grounding revision" oncopy={copy} />
+              <Sha
+                value={run.cycle.grounding_revision}
+                label="Grounding revision"
+                oncopy={feedback.copy}
+              />
             </dd>
           </div>
           <div>
@@ -352,7 +352,7 @@
                     <span class="reviewer-slot">{reviewerSlot(verdict.reviewer)}</span>
                     <span class="reviewer-role">{reviewerLabel(verdict.reviewer)}</span>
                   </h4>
-                  <div>{@render tone(badge.label, badge.tone)}</div>
+                  <div><Badge label={badge.label} tone={badge.tone} /></div>
                   {#if verdict.state === 'recorded'}
                     <EvidenceText label="Reviewer reason" value={verdict.reason ?? ''} />
                   {:else}
@@ -387,7 +387,7 @@
             <dl class="fact-row">
               <div>
                 <dt>Reviewer agreement</dt>
-                <dd>{@render tone(agreement.label, agreement.tone)}</dd>
+                <dd><Badge label={agreement.label} tone={agreement.tone} /></dd>
               </div>
             </dl>
             <p class="muted">{agreement.detail}</p>
@@ -400,10 +400,10 @@
           <section class="evidence-section" aria-labelledby="task-heading">
             <div class="row-between">
               <h3 id="task-heading">Linked task</h3>
-              {#if linked.length !== 1}{@render tone(
-                  linked.length === 0 ? 'No linked task' : `${linked.length} matches`,
-                  linked.length === 0 ? 'cancelled' : 'blocked'
-                )}{/if}
+              {#if linked.length !== 1}<Badge
+                  label={linked.length === 0 ? 'No linked task' : `${linked.length} matches`}
+                  tone={linked.length === 0 ? 'cancelled' : 'blocked'}
+                />{/if}
             </div>
             {#if taskFocus?.proposal === focused.id && !selectedTask}
               <p role="status">
@@ -448,7 +448,7 @@
                         ></span
                       ></span
                     >
-                    {@render tone(outcome.label, outcome.tone)}
+                    <Badge label={outcome.label} tone={outcome.tone} />
                   </button>
                 {/each}
               </div>
@@ -464,7 +464,11 @@
                 <div>
                   <dt>Source revision</dt>
                   <dd>
-                    <Sha value={task.revisions.source} label="Source revision" oncopy={copy} />
+                    <Sha
+                      value={task.revisions.source}
+                      label="Source revision"
+                      oncopy={feedback.copy}
+                    />
                   </dd>
                 </div>
                 <div>
@@ -473,13 +477,19 @@
                     <Sha
                       value={task.revisions.comparison_base}
                       label="Comparison base"
-                      oncopy={copy}
+                      oncopy={feedback.copy}
                     />
                   </dd>
                 </div>
                 <div>
                   <dt>Output commit</dt>
-                  <dd><Sha value={task.revisions.output} label="Output commit" oncopy={copy} /></dd>
+                  <dd>
+                    <Sha
+                      value={task.revisions.output}
+                      label="Output commit"
+                      oncopy={feedback.copy}
+                    />
+                  </dd>
                 </div>
                 <div>
                   <dt>Last updated</dt>
@@ -541,7 +551,7 @@
                 <article class="history-card">
                   <div class="row-between">
                     <h4>Latest recorded review round</h4>
-                    {@render tone(marker.label, marker.tone)}
+                    <Badge label={marker.label} tone={marker.tone} />
                   </div>
                   <p>
                     {review.completed ? 'Completed' : 'Never completed'} · {review.summary_present
@@ -549,20 +559,12 @@
                       : 'no summary recorded'} · {review.findings.length} findings. Round {task
                       .latest_review.rounds_recorded} of {task.latest_review.rounds_recorded}.
                   </p>
-                  <dl class="fact-row">
-                    <div>
-                      <dt>Reviewed change set</dt>
-                      <dd>
-                        <Sha value={review.comparison_base} label="Comparison base" oncopy={copy} />
-                        <span aria-hidden="true">→</span>
-                        <Sha value={review.revision} label="Reviewed revision" oncopy={copy} />
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Recorded</dt>
-                      <dd>{relative(review.created_at)}</dd>
-                    </div>
-                  </dl>
+                  <ReviewChangeSet
+                    comparisonBase={review.comparison_base}
+                    revision={review.revision}
+                    createdAt={review.created_at}
+                    oncopy={feedback.copy}
+                  />
                   {#if review.matches_output_revision === false && task.revisions.output}
                     <p class="muted">
                       This round reviewed {shortCommit(review.revision)}, but the recorded output
@@ -574,12 +576,7 @@
                     The review summary text is not part of this export; only whether one was
                     recorded, and the structured findings.
                   </p>
-                  {#each review.findings as finding}<div class="finding">
-                      <span class="tier">{finding.priority}</span>
-                      <h4>{finding.title}</h4>
-                      <code>{finding.file}</code>
-                      <EvidenceText label="Finding detail" value={finding.detail} />
-                    </div>{/each}
+                  {#each review.findings as finding}<FindingCard {finding} />{/each}
                 </article>
               {:else}
                 <p class="muted">No review round is recorded for this task.</p>
@@ -610,7 +607,7 @@
                     {@const badge = commandBadge(command.state)}
                     <li class="command-row">
                       <code class="command">{command.command}</code>
-                      {@render tone(badge.label, badge.tone)}
+                      <Badge label={badge.label} tone={badge.tone} />
                       <p class="command-meta">
                         {commandExplanation(command, task.revisions.output)}
                         {command.results_recorded} recorded result{command.results_recorded === 1
@@ -683,10 +680,10 @@
     </div>
     <div class="dialog-footer">
       <span class="muted" aria-live="polite"
-        >{copyStatus || 'Private operator export of saved records.'}</span
+        >{feedback.status || 'Private operator export of saved records.'}</span
       >
       <div class="actions">
-        <button class="button" onclick={() => copy(run?.cycle.id ?? '', 'Cycle identity')}
+        <button class="button" onclick={() => feedback.copy(run?.cycle.id ?? '', 'Cycle identity')}
           >Copy cycle ID</button
         ><button class="button primary" onclick={download}
           >Download evidence JSON (review before sharing)<Icon name="arrow" size={16} /></button

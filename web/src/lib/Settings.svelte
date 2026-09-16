@@ -5,7 +5,7 @@
   import RouteEditor from './RouteEditor.svelte';
   import SetupChecklist from './SetupChecklist.svelte';
   import BaselineCheck from './BaselineCheck.svelte';
-  import { configIdentity, type Preflight, type SetupStatus } from './setup';
+  import { configIdentity, parseCommands, type Preflight, type SetupStatus } from './setup';
   import Icon from './Icon.svelte';
   import { LIMITS } from './limits';
   let {
@@ -106,10 +106,7 @@
     try {
       const saved = {
         ...config,
-        verification_commands: commands
-          .split('\n')
-          .map((s) => s.trim())
-          .filter(Boolean)
+        verification_commands: parseCommands(commands)
       };
       await api('/config', 'PUT', saved);
       acceptSaved(saved);

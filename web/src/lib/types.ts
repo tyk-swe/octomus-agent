@@ -72,6 +72,9 @@ export type Proposal = {
   category: string;
   decision: string;
   reason: string;
+  problem_key: string;
+  relevant_paths: string[];
+  reconsiders: string[];
 };
 export type Session = {
   id: string;
@@ -138,6 +141,9 @@ export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   route: Route;
   source_revision: string;
   comparison_base: string;
+  default_revision: string;
+  run_id: string | null;
+  attempt_policy: AttemptPolicy | null;
   workspace: string;
   output_commit: string | null;
   execution_session: string | null;
@@ -425,6 +431,12 @@ export type Snapshot = {
     next_cycle_at: number;
     error: string | null;
     idle_streak: number;
+    batch: {
+      id: string;
+      phase: 'draining' | 'planning' | 'executing';
+      cycle_id: string | null;
+    } | null;
+    context_fingerprint: string;
   };
   repository: string;
   configured: boolean;

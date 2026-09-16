@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, relative } from './api';
+  import { baselineStatusLabel, type Tone } from './evidence';
   import { configIdentity } from './setup';
   import type { BaselineCheck, BaselineView, Config } from './types';
   import Sha from './Sha.svelte';
@@ -32,14 +33,10 @@
       ? false
       : (view?.config_matches ?? null)
   );
-  const statusLabel: Record<BaselineCheck['status'], string> = {
-    running: 'Running',
-    passed: 'Passed',
-    failed: 'Failed',
-    cancelled: 'Cancelled',
-    timed_out: 'Timed out',
-    interrupted: 'Interrupted'
-  };
+  // A running check is not a failure: only the statuses that stopped without passing
+  // take the failed tone.
+  const statusTone = (status: BaselineCheck['status']): Tone =>
+    status === 'passed' ? 'clean' : status === 'running' ? 'running' : 'failed';
   async function load(force = false) {
     if (request && !force) return;
     request?.abort();
@@ -141,13 +138,8 @@
       <div>
         <dt>Status</dt>
         <dd>
-          <span
-            class={'badge ' +
-              (check.status === 'passed'
-                ? 'accepted'
-                : check.status === 'running'
-                  ? 'candidate'
-                  : 'rejected')}>{statusLabel[check.status]}</span
+          <span class={'badge ' + statusTone(check.status)}
+            >{baselineStatusLabel(check.status)}</span
           >
         </dd>
       </div>

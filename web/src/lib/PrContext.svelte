@@ -1,6 +1,7 @@
 <script lang="ts">
   import { relative, safeUrl } from './api';
   import type { Cycle } from './types';
+  import Sha from './Sha.svelte';
   let { grounding }: { grounding: Cycle['grounding'] } = $props();
   let external = $derived(grounding?.external_prs ?? []);
   let coverage = $derived(grounding?.pr_coverage);
@@ -32,7 +33,7 @@
             >
             <span class="muted">
               <code>{pr.head_repository || 'deleted repository'}:{pr.branch}</code>
-              <code>{pr.head.slice(0, 7)}</code> → {pr.base}{pr.body_truncated
+              <Sha value={pr.head} label="Head revision" /> → {pr.base}{pr.body_truncated
                 ? ' · body truncated in context'
                 : ''}
             </span>

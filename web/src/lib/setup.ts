@@ -1,4 +1,5 @@
 import { relative } from './api';
+import { baselineStatusLabel } from './evidence';
 import type {
   Backend,
   BaselineSummary,
@@ -213,6 +214,13 @@ export function preflightStep(
   };
 }
 
+export function parseCommands(text: string): string[] {
+  return text
+    .split('\n')
+    .map((command) => command.trim())
+    .filter(Boolean);
+}
+
 export function baselineStep(status: SetupStatus | null): SetupStep {
   const contract =
     'Runs the saved verification commands on a disposable clone of the remote default branch. Optional; a pass is not publication evidence and does not prove later host or remote health.';
@@ -259,7 +267,7 @@ export function baselineStep(status: SetupStatus | null): SetupStep {
   }
   return {
     tone: 'failed',
-    label: `${baseline.status.replace('_', ' ')} · ${relative(baseline.started_at)}`,
+    label: `${baselineStatusLabel(baseline.status)} · ${relative(baseline.started_at)}`,
     detail: `The last baseline check did not pass. ${contract}`
   };
 }

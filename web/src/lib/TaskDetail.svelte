@@ -1,22 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, ApiError, relative, safeUrl } from './api';
+  import { api, ApiError, gb, relative, safeUrl } from './api';
   import { routeLabel } from './routes';
-  import { copyMessage, copyText } from './clipboard';
+  import { createCopyFeedback } from './copyFeedback.svelte';
   import type { Task, Event, RunEvidenceV1, TaskEvidence } from './types';
   import Icon from './Icon.svelte';
   import Sha from './Sha.svelte';
+  import Badge from './Badge.svelte';
   import EvidenceText from './EvidenceText.svelte';
   import EvidenceFact from './EvidenceFact.svelte';
+  import FindingCard from './FindingCard.svelte';
+  import ReviewChangeSet from './ReviewChangeSet.svelte';
   import {
+    UNKNOWN_VERDICT,
     checksVerdict,
     findTaskEvidence,
     outcomeVerdict,
     prVerdict,
     reviewRoundBadge,
     reviewVerdict,
-    roundRevisionLabel,
-    type Tone
+    roundRevisionLabel
   } from './evidence';
   let {
     id,
@@ -30,8 +33,7 @@
     error = $state(''),
     tab = $state('Overview'),
     busy = $state(false),
-    events = $state<Event[]>([]),
-    copyStatus = $state('');
+    events = $state<Event[]>([]);
   let evidence = $state<TaskEvidence | null>(null),
     evidenceError = $state(''),
     evidenceStale = $state(false),
@@ -43,7 +45,7 @@
   let evidenceKey = '';
   let evidenceGeneration = 0;
   let evidenceRequest: AbortController | null = null;
-  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  const feedback = createCopyFeedback();
   /**
    * Recorded evidence is fetched per (cycle, task, task revision) and skipped while that
    * key is unchanged. Awaiting it keeps slow evidence reads from being restarted on
@@ -125,7 +127,7 @@
     const timer = setInterval(() => load(), 4000);
     return () => {
       clearInterval(timer);
-      clearTimeout(copyTimer);
+      feedback.dispose();
       generation++;
       request?.abort();
       evidenceGeneration++;
@@ -152,14 +154,7 @@
       busy = false;
     }
   }
-  async function copy(value: string, label: string) {
-    clearTimeout(copyTimer);
-    copyStatus = copyMessage(label, await copyText(value));
-    copyTimer = setTimeout(() => (copyStatus = ''), 4000);
-  }
 </script>
-
-{#snippet tone(label: string, value: Tone)}<span class={'badge ' + value}>{label}</span>{/snippet}
 
 <dialog
   bind:this={dialog}
@@ -219,21 +214,14 @@
             >{evidenceLoading ? 'Retrying evidence…' : 'Retry evidence'}</button
           >{/if}
         <dl class="detail-grid">
-          <EvidenceFact
-            label="Recorded outcome"
-            verdict={outcome ?? {
-              label: 'Unknown',
-              tone: 'cancelled',
-              detail: 'Recorded outcome evidence has not loaded.'
-            }}
-          />
+          <EvidenceFact label="Recorded outcome" verdict={outcome ?? UNKNOWN_VERDICT} />
           <div>
             <dt>Output commit</dt>
             <dd>
               {#if evidence}<Sha
                   value={outputSha}
                   label="Output commit"
-                  oncopy={copy}
+                  oncopy={feedback.copy}
                 />{:else}<span class="badge cancelled">Unknown</span>{/if}<small
                 >{evidence
                   ? outputSha
@@ -248,7 +236,10 @@
           <div>
             <dt>Recorded PR</dt>
             <dd>
-              {@render tone(delivery.label, delivery.tone)}{#if evidence?.pull_request?.url}<a
+              <Badge
+                label={delivery.label}
+                tone={delivery.tone}
+              />{#if evidence?.pull_request?.url}<a
                   href={safeUrl(evidence.pull_request.url)}
                   target="_blank"
                   rel="noreferrer">Open on GitHub<Icon name="external" size={13} /></a
@@ -294,7 +285,9 @@
           </div>
           <div>
             <dt>Source revision</dt>
-            <dd><Sha value={task.source_revision} label="Source revision" oncopy={copy} /></dd>
+            <dd>
+              <Sha value={task.source_revision} label="Source revision" oncopy={feedback.copy} />
+            </dd>
           </div>
           <div>
             <dt>Comparison base</dt>
@@ -302,7 +295,7 @@
               {#if task.comparison_base}<Sha
                   value={task.comparison_base}
                   label="Comparison base"
-                  oncopy={copy}
+                  oncopy={feedback.copy}
                 />{:else}Assigned at execution{/if}
             </dd>
           </div>
@@ -334,9 +327,9 @@
           <summary>Effective operating limits</summary>
           <p>
             Daily admissions: {task.operating_policy.max_sessions_per_day} (original snapshot: {task
-              .config.max_sessions_per_day}). Storage admission: {(
-              task.operating_policy.max_workspace_bytes / 1e9
-            ).toFixed(2)} GB.
+              .config.max_sessions_per_day}). Storage admission: {gb(
+              task.operating_policy.max_workspace_bytes
+            )} GB.
           </p>
           <p>
             This attempt allows {task.effective_attempt_policy.max_repair_rounds} repair rounds and {task
@@ -372,36 +365,23 @@
             <div class="row-between">
               <h3>Review {index + 1}</h3>
               <span class="review-badges"
-                >{@render tone(badge.label, badge.tone)}{@render tone(
-                  marker.label,
-                  marker.tone
-                )}</span
+                ><Badge label={badge.label} tone={badge.tone} /><Badge
+                  label={marker.label}
+                  tone={marker.tone}
+                /></span
               >
             </div>
             {#if round.result.summary.trim()}<EvidenceText
                 label="Review summary"
                 value={round.result.summary}
               />{:else}<p>No review summary was recorded for this round.</p>{/if}
-            <dl class="fact-row">
-              <div>
-                <dt>Reviewed change set</dt>
-                <dd>
-                  <Sha value={round.comparison_base} label="Comparison base" oncopy={copy} />
-                  <span aria-hidden="true">→</span>
-                  <Sha value={round.revision} label="Reviewed revision" oncopy={copy} />
-                </dd>
-              </div>
-              <div>
-                <dt>Recorded</dt>
-                <dd>{relative(round.created_at)}</dd>
-              </div>
-            </dl>
-            {#each round.result.findings as finding}<div class="finding">
-                <span class="tier">{finding.priority}</span>
-                <h4>{finding.title}</h4>
-                <code>{finding.file}</code>
-                <EvidenceText label="Finding detail" value={finding.detail} />
-              </div>{/each}
+            <ReviewChangeSet
+              comparisonBase={round.comparison_base}
+              revision={round.revision}
+              createdAt={round.created_at}
+              oncopy={feedback.copy}
+            />
+            {#each round.result.findings as finding}<FindingCard {finding} />{/each}
           </article>{:else}<div class="empty">
             <Icon name="shield" size={32} />
             <h3>Review is ahead</h3>
@@ -421,13 +401,13 @@
                 <span class="review-badges"
                   ><span class={'badge ' + (verification.success ? 'clean' : 'failed')}
                     >{verification.success ? 'Passed' : 'Failed'}</span
-                  >{@render tone(marker.label, marker.tone)}</span
+                  ><Badge label={marker.label} tone={marker.tone} /></span
                 >
                 <p class="command-meta">
                   Ran at <Sha
                     value={verification.revision}
                     label="Verified revision"
-                    oncopy={copy}
+                    oncopy={feedback.copy}
                   /> · {relative(verification.created_at)}
                 </p>
                 <details class="command-output" open={!verification.success}>
@@ -459,7 +439,7 @@
     </div>
     <div class="dialog-footer">
       <span class="muted" aria-live="polite"
-        >{copyStatus || `Created ${relative(task.created_at)}`}</span
+        >{feedback.status || `Created ${relative(task.created_at)}`}</span
       >
       <div class="actions">
         {#if task.pr_url}<a

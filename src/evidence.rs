@@ -19,7 +19,9 @@ use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
 
 pub const SCHEMA_VERSION: u32 = 1;
-const LIMITATIONS: [&str; 9] = [
+/// What this export cannot claim. Every entry must survive verbatim into the public
+/// showcase wrapper, which the `tests/evidence.rs` guard checks.
+pub const LIMITATIONS: [&str; 9] = [
     "Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
     "Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
     "Deferred is not rejected.",
@@ -30,6 +32,8 @@ const LIMITATIONS: [&str; 9] = [
     "Zero or multiple task matches are preserved as recorded. No single task is selected on the caller's behalf.",
     "Free text carried here (proposal problem, benefit, scope and evidence, and code-review findings) is model-authored and still requires manual review before sharing.",
 ];
+/// The one sentence every export carries above its records.
+pub const REVIEW_REQUIREMENT: &str = "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -702,7 +706,7 @@ pub fn assemble(cycle: &Cycle, tasks: &[Task]) -> RunEvidenceV1 {
         generated_at: now(),
         kind: "recorded_review_check_evidence",
         review_required_before_sharing: true,
-        review_requirement: "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.",
+        review_requirement: REVIEW_REQUIREMENT,
         limitations: LIMITATIONS,
         cycle: CycleEvidence {
             id: cycle.id.clone(),
