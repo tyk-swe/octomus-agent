@@ -642,6 +642,118 @@ fn recover_seeds_reservations_for_active_recovery_and_checkpointed_work() {
 }
 
 #[test]
+fn cancelled_checkpoints_are_never_reseeded() {
+    // Archiving an uncertain checkpoint ends at cancelled; the durable
+    // reservation it left behind can only be resolved by remote inspection,
+    // so recovery must not resurrect a released one.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    store.put("settings", "config", &config()).unwrap();
+    let mut archived = task();
+    archived.branch = "octomus/archived-uncertain".into();
+    archived.status = Status::Cancelled;
+    archived.output_commit = Some("e".repeat(40));
+    archived.lifecycle.archived_at = Some(now());
+    store.put("task", &archived.id, &archived).unwrap();
+    let mut delivered = task();
+    delivered.branch = "octomus/delivered".into();
+    delivered.status = Status::Published;
+    delivered.output_commit = Some("f".repeat(40));
+    store.put("task", &delivered.id, &delivered).unwrap();
+    let app = App::new(store.clone(), tmp.path().into());
+    app.recover().unwrap();
+    assert!(!store.has_pr_reservation(&archived.id).unwrap());
+    assert!(!store.has_pr_reservation(&delivered.id).unwrap());
+}
+
+#[test]
+fn stale_pr_poll_never_overwrites_a_newer_delivered_head() {
+    // Publication records the new delivery head first; a slower poll that still
+    // reports the pre-delivery head must keep that baseline and flag the drift.
+    let (_tmp, store) = store_with_limit(3);
+    let mut delivered = task();
+    delivered.status = Status::Published;
+    delivered.output_commit = Some("f".repeat(40));
+    delivered.pr_number = Some(9);
+    store.put("task", &delivered.id, &delivered).unwrap();
+    let mut published = owned_pr(9, "octomus/delivered");
+    published.head = delivered.output_commit.clone().unwrap();
+    store
+        .record_pr_observation("fixture/project", published, true)
+        .unwrap();
+    let mut stale = owned_pr(9, "octomus/delivered");
+    stale.head = "e".repeat(40);
+    store
+        .record_pr_observation("fixture/project", stale, false)
+        .unwrap();
+    let (_, observation) = store.pr_observation("fixture/project", 9).unwrap().unwrap();
+    assert_eq!(observation.delivered_head, delivered.output_commit);
+    assert!(observation.external_head_movement);
+    assert_eq!(observation.pr.head, "e".repeat(40));
+}
+
+#[test]
+fn pr_observation_falls_back_to_the_latest_published_output() {
+    // With no prior delivery record, a poll adopts the newest published output
+    // for that PR rather than treating the observed remote head as delivered.
+    let (_tmp, store) = store_with_limit(3);
+    let mut delivered = task();
+    delivered.status = Status::Published;
+    delivered.output_commit = Some("f".repeat(40));
+    delivered.pr_number = Some(9);
+    store.put("task", &delivered.id, &delivered).unwrap();
+    let mut remote = owned_pr(9, "octomus/delivered");
+    remote.head = "d".repeat(40);
+    store
+        .record_pr_observation("fixture/project", remote, false)
+        .unwrap();
+    let (_, observation) = store.pr_observation("fixture/project", 9).unwrap().unwrap();
+    assert_eq!(observation.delivered_head, delivered.output_commit);
+    assert!(observation.external_head_movement);
+}
+
+#[test]
+fn concurrent_observations_never_lose_the_delivery_baseline() {
+    // The delivery write and a stale poll merge under one store lock, so no
+    // interleaving can swap the newer baseline for the older observed head.
+    let (_tmp, store) = store_with_limit(3);
+    let mut delivered = task();
+    delivered.status = Status::Published;
+    delivered.output_commit = Some("f".repeat(40));
+    delivered.pr_number = Some(9);
+    store.put("task", &delivered.id, &delivered).unwrap();
+    let mut latest = owned_pr(9, "octomus/delivered");
+    latest.head = delivered.output_commit.clone().unwrap();
+    let mut stale = owned_pr(9, "octomus/delivered");
+    stale.head = "e".repeat(40);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            let delivery_store = store.clone();
+            let latest = latest.clone();
+            scope.spawn(move || {
+                delivery_store
+                    .record_pr_observation("fixture/project", latest, true)
+                    .unwrap();
+            });
+            let poll_store = store.clone();
+            let stale = stale.clone();
+            scope.spawn(move || {
+                poll_store
+                    .record_pr_observation("fixture/project", stale, false)
+                    .unwrap();
+            });
+        }
+    });
+    let (_, observation) = store.pr_observation("fixture/project", 9).unwrap().unwrap();
+    assert_eq!(observation.delivered_head, delivered.output_commit);
+    // Either writer can finish last; drift must match the final observed head.
+    assert_eq!(
+        observation.external_head_movement,
+        observation.pr.head != latest.head
+    );
+}
+
+#[test]
 fn seed_candidates_cover_checkpoints_at_any_history_size_and_ignore_malformed_records() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(&tmp.path().join("state.db")).unwrap();

@@ -167,33 +167,33 @@ impl App {
         let current = git::remote_revision(&config, &task.proposal.target, cancel)
             .await?
             .context(BlockedReason::StaleBase)?;
+        // Declared dependencies are validated against the selected head on every
+        // initialization, not only when the head moved: a branch reset back to
+        // the recorded source would otherwise skip the check entirely while the
+        // scheduler still regards the dependency as delivered.
+        let mut dependency_outputs = Vec::new();
+        for identity in &task.proposal.dependencies {
+            let dependency = self.published_dependency(identity)?;
+            ensure!(
+                dependency.branch == task.proposal.target,
+                BlockedReason::DependencyBlocked
+            );
+            let output = dependency
+                .output_commit
+                .context("Dependency output revision is missing")?;
+            ensure!(
+                git::is_ancestor(&config, &config.repository, &output, &current, cancel).await?,
+                BlockedReason::DependencyBlocked
+            );
+            dependency_outputs.push(output);
+        }
         if current != task.source_revision {
-            let mut dependency_outputs = Vec::new();
-            for identity in &task.proposal.dependencies {
-                let dependency = self.published_dependency(identity)?;
-                ensure!(
-                    dependency.branch == task.proposal.target,
-                    BlockedReason::DependencyBlocked
-                );
-                dependency_outputs.push(
-                    dependency
-                        .output_commit
-                        .context("Dependency output revision is missing")?,
-                );
-            }
+            // Only the recorded source may advance, and only onto a dependency's
+            // recorded output; any other remote movement remains a stale base.
             ensure!(
                 dependency_outputs.contains(&current),
                 BlockedReason::StaleBase
             );
-            for output in &dependency_outputs {
-                git::git(
-                    &config,
-                    &config.repository,
-                    &["merge-base", "--is-ancestor", output, &current],
-                    cancel,
-                )
-                .await?;
-            }
             task.source_revision = current;
 
             self.save_task(task)?;

@@ -409,7 +409,7 @@ export function decisionCounts(
 
 const OUTCOME_GROUPS: { label: (count: number) => string; tone: Tone; statuses: string[] }[] = [
   {
-    label: (n) => (n === 1 ? 'published PR' : 'published PRs'),
+    label: (n) => (n === 1 ? 'published task' : 'published tasks'),
     tone: 'clean',
     statuses: ['published']
   },
@@ -423,7 +423,7 @@ const OUTCOME_GROUPS: { label: (count: number) => string; tone: Tone; statuses: 
   { label: () => 'failed', tone: 'failed', statuses: ['failed'] },
   { label: () => 'cancelled', tone: 'cancelled', statuses: ['cancelled'] }
 ];
-/** Task outcomes grouped for a run summary. Published counts delivered PRs, never merges. */
+/** Task outcomes grouped for a run summary. Several tasks can deliver one PR, so the count stays in task units. */
 export function taskOutcomeCounts(
   tasks: { status: string }[]
 ): { label: string; count: number; tone: Tone }[] {

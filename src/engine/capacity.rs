@@ -267,6 +267,13 @@ impl App {
             if task.proposal.target != task.config.default_branch {
                 continue;
             }
+            if task.status == Status::Cancelled {
+                // Cancelled is terminal: the task can never publish again, and a
+                // surviving open PR is already counted through the inventory.
+                // Re-seeding would resurrect a reservation that reconciliation
+                // released, stranding the capacity slot permanently.
+                continue;
+            }
             let initialized_queued = task.status == Status::Queued && workspace_initialized(&task);
             if task.status.active()
                 || initialized_queued
@@ -328,30 +335,71 @@ impl App {
             let Some(task) = task else {
                 continue;
             };
-            if !(task.status == Status::Published && task.pr_number.is_some())
-                && task.output_commit.is_none()
-            {
+            // Only tasks whose publication state can no longer change are
+            // re-observed here: a published task's numbered PR, or a checkpointed
+            // task that reached the terminal cancelled state. A cancelled task
+            // can never publish again, so its reservation is resolved by what
+            // the remote actually shows for the admitted branch — including the
+            // no-recorded-PR case, which only remote inspection can settle.
+            let published_checkpoint = task.status == Status::Published && task.pr_number.is_some();
+            let terminal_checkpoint =
+                task.status == Status::Cancelled && task.output_commit.is_some();
+            if !published_checkpoint && !terminal_checkpoint {
                 continue;
             }
-            let Some(number) = task.pr_number else {
-                continue;
+            let detail = match task.pr_number {
+                Some(number) => match crate::git::pr(c, number, cancel).await {
+                    Ok(detail) => Some(detail),
+                    Err(e) => {
+                        tracing::warn!("PR {} could not be reobserved: {e:#}", reservation.branch);
+                        continue;
+                    }
+                },
+                None => match crate::git::publication_pr(c, &reservation.branch, cancel).await {
+                    Ok(detail) => detail,
+                    Err(e) => {
+                        tracing::warn!("PR {} could not be reobserved: {e:#}", reservation.branch);
+                        continue;
+                    }
+                },
             };
-            match crate::git::pr(c, number, cancel).await {
-                Ok(detail)
-                    if ["closed", "merged"].contains(&detail.state.as_str())
+            let resolved = match &detail {
+                // The remote holds no pull request on the admitted branch, so the
+                // cancelled task's publication never landed.
+                None => true,
+                Some(detail) => {
+                    let settled = ["closed", "merged"].contains(&detail.state.as_str())
                         && detail.head_repository.eq_ignore_ascii_case(&c.github_repo)
                         && detail.base_repository.eq_ignore_ascii_case(&c.github_repo)
-                        && detail.branch == reservation.branch
-                        && detail
-                            .body
-                            .contains(&format!("<!-- octomus:task:{} -->", task.id)) =>
-                {
-                    released.push(reservation.task_id)
+                        && detail.branch == reservation.branch;
+                    if !settled {
+                        false
+                    } else if task
+                        .output_commit
+                        .as_deref()
+                        .is_some_and(|output| output == detail.head)
+                    {
+                        // The request's final head is this task's own reviewed output.
+                        true
+                    } else {
+                        // A later delivery may have moved the head; the task's
+                        // marker in the description or a follow-up comment still
+                        // proves its delivery landed.
+                        match crate::git::task_marker(c, &task.id, detail, cancel).await {
+                            Ok(marker) => marker,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "PR {} could not be reobserved: {e:#}",
+                                    reservation.branch
+                                );
+                                continue;
+                            }
+                        }
+                    }
                 }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!("PR {} could not be reobserved: {e:#}", reservation.branch)
-                }
+            };
+            if resolved {
+                released.push(reservation.task_id)
             }
         }
         released

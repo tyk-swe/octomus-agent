@@ -203,26 +203,11 @@ impl App {
         self.persist_observation(c, p, true)
     }
     fn persist_observation(&self, c: &Config, p: PullRequest, delivered_now: bool) -> Result<()> {
-        let previous = self.store.pr_observation(&c.github_repo, p.number)?;
-        let record_id = previous
-            .as_ref()
-            .map(|(id, _)| id.clone())
-            .unwrap_or_else(|| format!("{}:{}", c.github_repo.to_ascii_lowercase(), p.number));
-        let delivered = if delivered_now {
-            Some(p.head.clone())
-        } else if let Some(head) = previous.and_then(|(_, p)| p.delivered_head) {
-            Some(head)
-        } else {
-            self.store.latest_pr_output(&c.github_repo, p.number)?
-        };
-        let observation = PrObservation {
-            repository: c.github_repo.clone(),
-            observed_at: now(),
-            external_head_movement: delivered.as_ref().is_some_and(|head| head != &p.head),
-            delivered_head: delivered,
-            pr: p,
-        };
-        self.store.put("pr", &record_id, &observation)
+        // The previous-observation read, delivery-baseline merge and write run
+        // under one store lock: a background poll must not overwrite a newer
+        // delivered_head recorded by a concurrent publication.
+        self.store
+            .record_pr_observation(&c.github_repo, p, delivered_now)
     }
     async fn observe_remote(&self, c: &Config) -> Result<()> {
         let cancel = self.shutdown.child_token();

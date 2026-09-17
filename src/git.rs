@@ -155,6 +155,26 @@ async fn clean(c: &Config, path: &Path, cancel: &CancellationToken) -> Result<bo
         .await?
         .is_empty())
 }
+/// Whether `ancestor` is an ancestor of `descendant`. `merge-base --is-ancestor`
+/// reports a false predicate as exit 1; every other nonzero status is a real
+/// command failure and propagates instead of reading as false.
+pub async fn is_ancestor(
+    c: &Config,
+    cwd: &Path,
+    ancestor: &str,
+    descendant: &str,
+    cancel: &CancellationToken,
+) -> Result<bool> {
+    process::run_predicate(
+        "git",
+        &["merge-base", "--is-ancestor", ancestor, descendant],
+        cwd,
+        c.command_timeout_seconds,
+        cancel,
+        &[1],
+    )
+    .await
+}
 /// True when the worktree is clean and HEAD is exactly `revision`.
 pub async fn at(
     c: &Config,
@@ -254,6 +274,51 @@ pub async fn pr(c: &Config, number: u64, cancel: &CancellationToken) -> Result<P
     .await?;
     parse_pr(&serde_json::from_str(&out)?, c)
 }
+/// Bodies of a pull request's comments, paginated like every other list read.
+pub(crate) async fn pr_comments(
+    c: &Config,
+    number: u64,
+    cancel: &CancellationToken,
+) -> Result<Vec<String>> {
+    let out = gh(
+        c,
+        &[
+            "api",
+            "--paginate",
+            &format!(
+                "repos/{}/issues/{number}/comments?per_page=100",
+                c.github_repo
+            ),
+        ],
+        cancel,
+    )
+    .await?;
+    let mut bodies = vec![];
+    for page in gh_pages(&out) {
+        for value in page? {
+            bodies.push(value["body"].as_str().unwrap_or("").to_owned());
+        }
+    }
+    Ok(bodies)
+}
+/// Whether the task's publication marker is attached to the pull request: in the
+/// description when this task originated the request, or in an append-only
+/// comment when it delivered a follow-up.
+pub(crate) async fn task_marker(
+    c: &Config,
+    task_id: &str,
+    p: &PullRequest,
+    cancel: &CancellationToken,
+) -> Result<bool> {
+    let marker = format!("<!-- octomus:task:{task_id} -->");
+    if p.body.contains(&marker) {
+        return Ok(true);
+    }
+    Ok(pr_comments(c, p.number, cancel)
+        .await?
+        .iter()
+        .any(|body| body.contains(&marker)))
+}
 fn parse_pr(p: &Value, c: &Config) -> Result<PullRequest> {
     let text = |v: &Value| v.as_str().unwrap_or("").to_owned();
     let branch = text(&p["head"]["ref"]);
@@ -285,7 +350,7 @@ fn parse_pr(p: &Value, c: &Config) -> Result<PullRequest> {
             && body.contains("<!-- octomus:task:"),
     })
 }
-async fn publication_pr(
+pub(crate) async fn publication_pr(
     c: &Config,
     branch: &str,
     cancel: &CancellationToken,
@@ -327,7 +392,15 @@ async fn publication_pr(
     Ok(matches.pop())
 }
 
-pub fn validate_publication(task: &Task, p: &PullRequest, reconcile: bool) -> Result<()> {
+/// `marker` carries the caller's check of `task_marker`: the marker may live in
+/// the description or in a follow-up comment, which this synchronous check
+/// cannot fetch for itself.
+pub fn validate_publication(
+    task: &Task,
+    p: &PullRequest,
+    marker: bool,
+    reconcile: bool,
+) -> Result<()> {
     let c = &task.config;
     ensure!(
         p.head_repository.eq_ignore_ascii_case(&c.github_repo)
@@ -336,8 +409,7 @@ pub fn validate_publication(task: &Task, p: &PullRequest, reconcile: bool) -> Re
             && p.branch == task.branch
             && p.base == c.default_branch
             && Some(p.head.as_str()) == task.output_commit.as_deref()
-            && p.body
-                .contains(&format!("<!-- octomus:task:{} -->", task.id))
+            && marker
             && (p.state == "open"
                 || (reconcile && ["closed", "merged"].contains(&p.state.as_str()))),
         "PR publication result does not match repository, ownership, branch, base, reviewed head, task marker or state"
@@ -350,12 +422,12 @@ pub async fn publish(task: &Task, cancel: &CancellationToken) -> Result<PullRequ
         .await
         .context(BlockedReason::PublicationUncertain)
 }
-/// The pull request description for a reviewed commit.
+/// The pull request text for a reviewed commit.
 ///
-/// A task that already owns a pull request appends a follow-up section rather
-/// than replacing what is there, so earlier delivery notes and any maintainer
-/// conversation stay readable. The task marker makes that append idempotent: a
-/// republication of the same task rewrites nothing.
+/// A task that already owns a pull request posts a follow-up comment rather
+/// than rewriting the description, so earlier delivery notes and any maintainer
+/// conversation are never replaced. The task marker makes that append
+/// idempotent: a republication of the same task adds nothing.
 fn pr_body(task: &Task, existing: Option<&PullRequest>, commit: &str) -> String {
     let verification = task
         .verification
@@ -386,20 +458,20 @@ fn pr_body(task: &Task, existing: Option<&PullRequest>, commit: &str) -> String 
         task.reviews.len()
     );
     match existing {
-        Some(p) if p.body.contains(&marker) => p.body.clone(),
-        Some(p) => format!(
-            "{}\n\n---\n\nOctomus follow-up: {}\n\n{update}",
-            p.body, task.proposal.title
-        ),
+        Some(_) => format!("Octomus follow-up: {}\n\n{update}", task.proposal.title),
         None => update,
     }
 }
-/// Rewrites the description of a pull request this task already owns.
+/// Attaches follow-up evidence to a pull request this task already owns.
 ///
-/// The remote is re-read immediately before the edit: another writer moving the
-/// head, closing the request or editing the body between reconciliation and here
-/// means the edit would overwrite work nobody reviewed, so it is refused and the
-/// retry reconciles against whatever is now there.
+/// The remote is re-read immediately before the comment: another writer moving
+/// the head or closing the request between reconciliation and here means the
+/// delivery no longer matches what was reviewed, so it is refused and the retry
+/// reconciles against whatever is now there. The evidence itself is posted as a
+/// comment rather than rewritten into the description — the body is shared,
+/// maintainer-editable text with no conditional-replace API, so a check-then-
+/// edit could silently drop a concurrent maintainer edit while a comment can
+/// only ever append.
 async fn update_pr(
     c: &Config,
     task: &Task,
@@ -410,31 +482,33 @@ async fn update_pr(
 ) -> Result<PullRequest> {
     let latest = pr(c, p.number, cancel).await?;
     ensure!(
-        latest.owned_open()
-            && latest.base == c.default_branch
-            && latest.head == commit
-            && latest.body == p.body,
+        latest.owned_open() && latest.base == c.default_branch && latest.head == commit,
         blocked(
             BlockedReason::RemoteConflict,
             "PR changed around publication; retry will reconcile the current remote state"
         )
     );
-    gh(
-        c,
-        &[
-            "pr",
-            "edit",
-            &p.number.to_string(),
-            "--repo",
-            &c.github_repo,
-            "--body-file",
-            body_path,
-        ],
-        cancel,
-    )
-    .await?;
+    let marker = task_marker(c, &task.id, &latest, cancel).await?;
+    if !marker {
+        gh(
+            c,
+            &[
+                "pr",
+                "comment",
+                &p.number.to_string(),
+                "--repo",
+                &c.github_repo,
+                "--body-file",
+                body_path,
+            ],
+            cancel,
+        )
+        .await?;
+    }
     let published = pr(c, p.number, cancel).await?;
-    validate_publication(task, &published, false)?;
+    // The marker is attached by construction: it was either already present or
+    // posted by the comment above.
+    validate_publication(task, &published, true, false)?;
     Ok(published)
 }
 
@@ -496,7 +570,8 @@ async fn create_pr(
         .context(BlockedReason::RemoteConflict)
         .context("Missing created PR number")?;
     let published = pr(c, number, cancel).await?;
-    validate_publication(task, &published, false)?;
+    let marker = format!("<!-- octomus:task:{} -->", task.id);
+    validate_publication(task, &published, published.body.contains(&marker), false)?;
     Ok(published)
 }
 
@@ -558,7 +633,8 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
         publication_pr(c, &task.branch, cancel).await?
     };
     if let Some(p) = &existing {
-        if validate_publication(task, p, true).is_ok() {
+        let marker = task_marker(c, &task.id, p, cancel).await?;
+        if validate_publication(task, p, marker, true).is_ok() {
             // Delivery already happened, even if a maintainer has since closed or merged the PR.
             return Ok(p.clone());
         }
@@ -571,8 +647,7 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
         );
         if task.pr_number.is_none() {
             ensure!(
-                p.body
-                    .contains(&format!("<!-- octomus:task:{} -->", task.id)),
+                marker,
                 blocked(
                     BlockedReason::RemoteConflict,
                     "Branch is already associated with another task"
@@ -598,13 +673,13 @@ async fn publish_inner(task: &Task, cancel: &CancellationToken) -> Result<PullRe
             ensure!(remote.is_none(), BlockedReason::RemoteConflict);
         }
         // An exact lease protects the check/push race. The local ancestry must also be preserved.
-        git(
-            c,
-            path,
-            &["merge-base", "--is-ancestor", &task.source_revision, commit],
-            cancel,
-        )
-        .await?;
+        ensure!(
+            is_ancestor(c, path, &task.source_revision, commit, cancel).await?,
+            blocked(
+                BlockedReason::RemoteConflict,
+                "Reviewed output does not contain the recorded source; reconcile the branch"
+            )
+        );
         let expected = remote.as_deref().unwrap_or("");
         git(
             c,

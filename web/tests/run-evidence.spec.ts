@@ -106,6 +106,47 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
   expect(errors).toEqual([]);
 });
 
+test('the queue fact reflects committed tasks, and published outcomes stay in task units', async ({
+  page
+}, testInfo) => {
+  // The served cycle-1 run committed three tasks; the fact reports them, not a
+  // bare capability flag.
+  await login(page);
+  await expect(page.getByText('published task', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('published PR', { exact: false })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  await expect(page.getByText('Created — 3 tasks committed')).toBeVisible();
+  await page.getByRole('button', { name: 'Close run evidence' }).click();
+
+  // An execution-enabled run that finished planning without committing work is
+  // not displayed as a created queue.
+  await serveProposals(page, [proposalRow('accepted-only', 'synthetic-cycle', 7)]);
+  await page.route('**/api/cycles/synthetic-cycle/evidence', async (route: Route) => {
+    await route.fulfill({
+      json: runEvidence({ proposals: [proposalEvidence('accepted-only')] })
+    });
+  });
+  await openProposalEvidence(page, 0, testInfo);
+  await expect(page.getByText('Execution-enabled run; no tasks were committed')).toBeVisible();
+  await expect(page.getByText('Created from accepted proposals')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close run evidence' }).click();
+});
+
+test('a still-planning execution run does not pre-commit a queue', async ({ page }, testInfo) => {
+  await serveProposals(page, [proposalRow('accepted-only', 'synthetic-cycle', 7)]);
+  await page.route('**/api/cycles/synthetic-cycle/evidence', async (route: Route) => {
+    const body = runEvidence({ proposals: [proposalEvidence('accepted-only')] });
+    body.cycle.planning.planning_finished = false;
+    body.cycle.planning.status = 'running';
+    body.cycle.status = 'running';
+    body.cycle.completed_at = null;
+    await route.fulfill({ json: body });
+  });
+  await login(page);
+  await openProposalEvidence(page, 0, testInfo);
+  await expect(page.getByText('Execution-enabled run; no tasks committed yet')).toBeVisible();
+});
+
 test('accepted, rejected, deferred and missing reviewer assessments each render honestly', async ({
   page
 }, testInfo) => {

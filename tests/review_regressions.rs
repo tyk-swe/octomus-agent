@@ -1,6 +1,7 @@
 use octomus_agent::{
+    config::Route,
     engine::App,
-    model::{BlockedReason, Cycle, Status, Task, now},
+    model::{BlockedReason, Cycle, Session, Status, Task, now},
     store::{HistoryQuery, Store},
 };
 use serde_json::{Value, json};
@@ -26,6 +27,41 @@ fn cycle(t: &Task) -> Cycle {
         "repository":t.config.github_repo
     }))
     .unwrap()
+}
+
+#[test]
+fn concurrent_planning_sessions_append_without_losing_evidence() {
+    // Terminal role evidence lands per session under the store lock, so a
+    // concurrent role finishing on the same cycle cannot drop another role's
+    // recorded outcome, and re-appending is idempotent across restarts.
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(&temp.path().join("state.db")).unwrap();
+    let t = task();
+    let c = cycle(&t);
+    store.put("cycle", &c.id, &c).unwrap();
+    let route = Route::new("fixture", "low");
+    std::thread::scope(|scope| {
+        for i in 0..6 {
+            let store = store.clone();
+            let cycle_id = c.id.clone();
+            let route = route.clone();
+            scope.spawn(move || {
+                store
+                    .append_cycle_session(
+                        &cycle_id,
+                        &Session::new(format!("session-{i}"), &format!("discovery-{i}"), route),
+                    )
+                    .unwrap();
+            });
+        }
+    });
+    let saved: Cycle = store.get("cycle", &c.id).unwrap().unwrap();
+    assert_eq!(saved.sessions.len(), 6);
+    store
+        .append_cycle_session(&c.id, &saved.sessions[0].clone())
+        .unwrap();
+    let saved: Cycle = store.get("cycle", &c.id).unwrap().unwrap();
+    assert_eq!(saved.sessions.len(), 6);
 }
 
 #[tokio::test]

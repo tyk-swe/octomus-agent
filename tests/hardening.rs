@@ -408,12 +408,13 @@ fn publication_checks_every_identity_field_and_closed_reconciliation() {
     let mut t = task();
     t.output_commit = Some("reviewed".into());
     let p:PullRequest=serde_json::from_value(json!({"number":1,"title":"x","branch":t.branch,"head":"reviewed","base":"main","url":"https://github.com/fixture/project/pull/1","body":format!("<!-- octomus:task:{} -->",t.id),"state":"open","changed_lines":1,"created_at":now(),"owned":true,"head_repository":"fixture/project","base_repository":"fixture/project"})).unwrap();
-    git::validate_publication(&t, &p, false).unwrap();
+    git::validate_publication(&t, &p, true, false).unwrap();
+    // A missing task marker fails publication even when every field matches.
+    assert!(git::validate_publication(&t, &p, false, false).is_err());
     for field in [
         "head",
         "branch",
         "base",
-        "body",
         "head_repository",
         "base_repository",
         "owned",
@@ -425,15 +426,16 @@ fn publication_checks_every_identity_field_and_closed_reconciliation() {
             json!("mismatch")
         };
         assert!(
-            git::validate_publication(&t, &serde_json::from_value(value).unwrap(), false).is_err(),
+            git::validate_publication(&t, &serde_json::from_value(value).unwrap(), true, false)
+                .is_err(),
             "{field}"
         );
     }
     for state in ["closed", "merged"] {
         let mut p = p.clone();
         p.state = state.into();
-        assert!(git::validate_publication(&t, &p, false).is_err());
-        git::validate_publication(&t, &p, true).unwrap();
+        assert!(git::validate_publication(&t, &p, true, false).is_err());
+        git::validate_publication(&t, &p, true, true).unwrap();
     }
 }
 #[test]
@@ -520,6 +522,168 @@ async fn machine_capture_never_corrupts_successful_json() {
     .unwrap();
     assert!(out.status.success() && out.stdout.truncated);
     assert_eq!(out.stdout.bytes.len(), process::DIAGNOSTIC_LIMIT);
+}
+#[tokio::test]
+async fn machine_capture_fails_closed_on_any_command_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let token = CancellationToken::new();
+    // Empty stdout plus exit 1 is a failed command, not a successful empty result.
+    assert!(
+        process::run_machine(
+            "python3",
+            &["-c", "import sys; sys.exit(1)"],
+            tmp.path(),
+            10,
+            &token
+        )
+        .await
+        .is_err()
+    );
+    // Well-formed JSON on stdout does not rescue a nonzero status.
+    assert!(
+        process::run_machine(
+            "python3",
+            &[
+                "-c",
+                "import json, sys; print(json.dumps({'ok': True})); sys.exit(7)"
+            ],
+            tmp.path(),
+            10,
+            &token
+        )
+        .await
+        .is_err()
+    );
+    // Signal termination cannot read as a successful capture either.
+    assert!(
+        process::run_machine(
+            "python3",
+            &[
+                "-c",
+                "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+            ],
+            tmp.path(),
+            10,
+            &token
+        )
+        .await
+        .is_err()
+    );
+}
+#[tokio::test]
+async fn predicate_commands_interpret_only_documented_false_statuses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let token = CancellationToken::new();
+    assert!(
+        process::run_predicate(
+            "python3",
+            &["-c", "print('true')"],
+            tmp.path(),
+            10,
+            &token,
+            &[1]
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        !process::run_predicate(
+            "python3",
+            &["-c", "import sys; sys.exit(1)"],
+            tmp.path(),
+            10,
+            &token,
+            &[1]
+        )
+        .await
+        .unwrap()
+    );
+    // An unexpected status is a command failure, never a false predicate.
+    assert!(
+        process::run_predicate(
+            "python3",
+            &["-c", "import sys; sys.exit(2)"],
+            tmp.path(),
+            10,
+            &token,
+            &[1]
+        )
+        .await
+        .is_err()
+    );
+}
+#[tokio::test]
+async fn git_ancestry_is_a_predicate_and_command_errors_fail_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repository = tmp.path().join("repository");
+    std::fs::create_dir(&repository).unwrap();
+    let config = Config {
+        command_timeout_seconds: 10,
+        ..Default::default()
+    };
+    let cancel = CancellationToken::new();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "one",
+        ],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "two",
+        ],
+    ] {
+        git::git(&config, &repository, &args, &cancel)
+            .await
+            .unwrap();
+    }
+    let first = git::git(&config, &repository, &["rev-parse", "HEAD~1"], &cancel)
+        .await
+        .unwrap();
+    let second = git::git(&config, &repository, &["rev-parse", "HEAD"], &cancel)
+        .await
+        .unwrap();
+    assert!(
+        git::is_ancestor(&config, &repository, &first, &second, &cancel)
+            .await
+            .unwrap()
+    );
+    // Exit status 1 is Git's documented "not an ancestor" answer: false, not error.
+    assert!(
+        !git::is_ancestor(&config, &repository, &second, &first, &cancel)
+            .await
+            .unwrap()
+    );
+    // A missing object is a real command failure (exit 128) and must not read
+    // as a false ancestry predicate.
+    assert!(
+        git::is_ancestor(&config, &repository, &"0".repeat(40), &second, &cancel)
+            .await
+            .is_err()
+    );
+    // A failed rev-parse cannot be an empty revision either.
+    assert!(
+        git::git(
+            &config,
+            &repository,
+            &["rev-parse", "refs/heads/missing"],
+            &cancel
+        )
+        .await
+        .is_err()
+    );
 }
 #[test]
 fn old_attention_survives_bounded_dashboard_and_pages() {

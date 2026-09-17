@@ -60,15 +60,31 @@ impl App {
             Ok(answer) => session.mark_completed(redact(answer)),
             Err(e) => session.mark_failed(error_message(e)),
         }
+        // Terminal session evidence must be durable before the workspace can be
+        // removed: a crash after cleanup but before the batch attach would
+        // otherwise leave a started role with no recorded outcome.
+        self.store.append_cycle_session(&cycle.id, &session)?;
         drop(client);
-        if result.is_ok() {
-            super::housekeeping::remove_owned_dir(
+        if result.is_ok()
+            && let Err(e) = super::housekeeping::remove_owned_dir(
                 workspace
                     .parent()
                     .context("Missing planning workspace parent")?,
                 &workspace,
             )
-            .await?;
+            .await
+        {
+            // The session is already durable, so a cleanup failure is recorded
+            // separately and the workspace is left for housekeeping instead of
+            // turning a finished role into missing evidence. The event itself is
+            // best-effort: the role must still return its terminal evidence.
+            if let Err(e) = self.store.event(
+                &cycle.id,
+                "cleanup_error",
+                &format!("{label}: {}", error_message(&e)),
+            ) {
+                tracing::warn!("Planning cleanup event could not be recorded: {e:#}");
+            }
         }
         Ok((session, result))
     }

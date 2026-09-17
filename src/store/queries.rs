@@ -451,23 +451,46 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
     pub fn latest_pr_output(&self, repository: &str, number: u64) -> Result<Option<String>> {
-        let c = self.conn();
-        Ok(c.query_row("SELECT json_extract(r.data,'$.output_commit') FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='published' AND json_extract(m.summary,'$.pr_number')=?2 ORDER BY json_extract(m.summary,'$.updated_at') DESC LIMIT 1",params![repository,number as i64],|r|r.get(0)).optional()?.flatten())
+        latest_pr_output_at(&self.conn(), repository, number)
     }
     pub fn pr_observation(
         &self,
         repository: &str,
         number: u64,
     ) -> Result<Option<(String, crate::model::PrObservation)>> {
+        pr_observation_at(&self.conn(), repository, number)
+    }
+    /// Records a PR observation atomically with the delivery-baseline merge. The
+    /// previous observation and latest published output are read under the same
+    /// store lock as the write, so a stale poll can never overwrite a newer
+    /// `delivered_head` recorded by a concurrent publication.
+    pub fn record_pr_observation(
+        &self,
+        repository: &str,
+        p: crate::model::PullRequest,
+        delivered_now: bool,
+    ) -> Result<()> {
         let c = self.conn();
-        let saved: Option<(String, String)> = c.query_row(
-            "SELECT m.id,r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='pr' AND m.repository=?1 COLLATE NOCASE AND json_extract(m.summary,'$.pr.number')=?2 ORDER BY m.seq DESC LIMIT 1",
-            params![repository, number as i64],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).optional()?;
-        saved
-            .map(|(id, data)| Ok((id, serde_json::from_str(&data)?)))
-            .transpose()
+        let previous = pr_observation_at(&c, repository, p.number)?;
+        let record_id = previous
+            .as_ref()
+            .map(|(id, _)| id.clone())
+            .unwrap_or_else(|| format!("{}:{}", repository.to_ascii_lowercase(), p.number));
+        let delivered = if delivered_now {
+            Some(p.head.clone())
+        } else if let Some(head) = previous.and_then(|(_, p)| p.delivered_head) {
+            Some(head)
+        } else {
+            latest_pr_output_at(&c, repository, p.number)?
+        };
+        let observation = crate::model::PrObservation {
+            repository: repository.to_owned(),
+            observed_at: crate::model::now(),
+            external_head_movement: delivered.as_ref().is_some_and(|head| head != &p.head),
+            delivered_head: delivered,
+            pr: p,
+        };
+        tx_put(&c, "pr", &record_id, &observation)
     }
     pub fn decision_memory(&self, repository: &str) -> Result<Vec<Value>> {
         let c = self.conn();
@@ -487,4 +510,21 @@ impl Store {
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
     }
+}
+fn latest_pr_output_at(c: &Connection, repository: &str, number: u64) -> Result<Option<String>> {
+    Ok(c.query_row("SELECT json_extract(r.data,'$.output_commit') FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='published' AND json_extract(m.summary,'$.pr_number')=?2 ORDER BY json_extract(m.summary,'$.updated_at') DESC LIMIT 1",params![repository,number as i64],|r|r.get(0)).optional()?.flatten())
+}
+fn pr_observation_at(
+    c: &Connection,
+    repository: &str,
+    number: u64,
+) -> Result<Option<(String, crate::model::PrObservation)>> {
+    let saved: Option<(String, String)> = c.query_row(
+        "SELECT m.id,r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='pr' AND m.repository=?1 COLLATE NOCASE AND json_extract(m.summary,'$.pr.number')=?2 ORDER BY m.seq DESC LIMIT 1",
+        params![repository, number as i64],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional()?;
+    saved
+        .map(|(id, data)| Ok((id, serde_json::from_str(&data)?)))
+        .transpose()
 }

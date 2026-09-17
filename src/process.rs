@@ -183,6 +183,7 @@ async fn checked(
     match mode {
         CaptureMode::Diagnostic => diagnostic_text(binary, &output),
         CaptureMode::Machine => {
+            ensure_success(binary, &output)?;
             if output.stdout.truncated {
                 return Err(OutputTooLarge {
                     limit: MACHINE_LIMIT,
@@ -211,6 +212,32 @@ pub async fn run_machine(
     cancel: &CancellationToken,
 ) -> Result<String> {
     checked(binary, args, cwd, seconds, cancel, CaptureMode::Machine).await
+}
+/// Runs a command whose exit status is itself the answer. Success means true,
+/// `false_codes` are the documented "predicate is false" statuses, and every
+/// other failure — spawn, timeout, signal, an unexpected code — still fails
+/// closed rather than reading as a false predicate.
+pub async fn run_predicate(
+    binary: &str,
+    args: &[&str],
+    cwd: &Path,
+    seconds: u64,
+    cancel: &CancellationToken,
+    false_codes: &[i32],
+) -> Result<bool> {
+    let output = capture(binary, args, cwd, seconds, cancel, CaptureMode::Machine).await?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output
+        .status
+        .code()
+        .is_some_and(|code| false_codes.contains(&code))
+    {
+        return Ok(false);
+    }
+    ensure_success(binary, &output)?;
+    Ok(false)
 }
 
 // Bounded window for a cancelled future to unwind before the caller reports expiry.

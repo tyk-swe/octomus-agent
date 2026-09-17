@@ -7,11 +7,11 @@ use octomus_agent::{
     config::Config,
     engine::{
         App,
-        baseline::{baseline_fingerprint, bounded_output, command_output},
+        baseline::{baseline_fingerprint, bounded_output, command_output, run_check_command},
     },
     model::{BaselineCheck, BaselineStatus, DefaultBranchObservation, Task, now},
     process::{self, CaptureMode},
-    store::{Store, redact},
+    store::{Store, redact, redact_secrets},
 };
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
@@ -190,6 +190,40 @@ async fn baseline_command_output_preserves_real_capture_truncation() {
     let (text, diagnostic_truncated, success) = command_output(&captured);
     assert!(!success && !diagnostic_truncated);
     assert!(text.contains("out") && text.contains("[stderr]") && text.contains("err"));
+}
+
+#[tokio::test]
+async fn baseline_output_flags_shortening_below_the_capture_limit() {
+    let (_tmp, _app, config) = baseline_app();
+    let cancel = CancellationToken::new();
+    let revision = git(&config.repository, &["rev-parse", "HEAD"]);
+    // 20 KiB of ASCII output plus a failure status line: above the 16 KiB
+    // per-command cap but far below capture's diagnostic limit. The persisted
+    // evidence must flag the shortened tail, not record it as complete.
+    let outcome = run_check_command(
+        &config,
+        &config.repository,
+        "yes x | head -c 20480; exit 3",
+        &revision,
+        &cancel,
+    )
+    .await;
+    let (text, diagnostic_truncated, success) = command_output(&outcome.captured);
+    assert!(!success && !diagnostic_truncated);
+    assert!(text.contains("exit status: 3"));
+    // This is the exact composition execute_baseline applies per command:
+    // the 16 KiB per-command bound inside the 1 MiB aggregate budget.
+    let (output, output_truncated) =
+        bounded_output(&redact_secrets(&text), 16 * 1024, diagnostic_truncated);
+    assert!(output_truncated);
+    assert!(output.ends_with("[output truncated]") && output.len() <= 16 * 1024);
+    // Secret scrubbing still applies within the kept bytes.
+    let (redacted, _) = bounded_output(
+        &redact_secrets("token ghp_abcdefghijklmnop"),
+        16 * 1024,
+        false,
+    );
+    assert!(redacted.contains("[redacted]") && !redacted.contains("ghp_"));
 }
 
 #[tokio::test]

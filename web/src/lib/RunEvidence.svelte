@@ -259,9 +259,16 @@
           <div>
             <dt>Execution queue</dt>
             <dd>
-              {run.cycle.planning.creates_execution_queue
-                ? 'Created from accepted proposals'
-                : 'Not created by this run'}
+              {#if !run.cycle.planning.creates_execution_queue}
+                Not created by this run
+              {:else}
+                {@const committed = proposals.reduce((n, p) => n + p.linked_tasks.length, 0)}
+                {committed > 0
+                  ? `Created — ${committed} task${committed === 1 ? '' : 's'} committed`
+                  : run.cycle.planning.planning_finished
+                    ? 'Execution-enabled run; no tasks were committed'
+                    : 'Execution-enabled run; no tasks committed yet'}
+              {/if}
             </dd>
           </div>
           {#if run.cycle.planning.error_recorded}<div>

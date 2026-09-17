@@ -311,7 +311,7 @@ def scenario(mode):
             if mode in ['existing-pr', 'dependencies']:
                 assert task['pr_number'] == 42 and task['branch'] == 'octomus/existing'
                 assert (Path(task['workspace']) / 'earlier.txt').exists()
-                assert json.loads((root / 'publications.jsonl').read_text().splitlines()[0])['action'] == 'edit'
+                assert json.loads((root / 'publications.jsonl').read_text().splitlines()[0])['action'] == 'comment'
             assert len((root / 'publications.jsonl').read_text().splitlines()) == (2 if mode in ['parallel', 'dependencies'] else 1)
             assert git('rev-parse', 'main', cwd=root / 'remote.git') == task['default_revision'], 'Default branch must never be pushed'
             protocol = [json.loads(line) for line in (root / 'protocol.jsonl').read_text().splitlines()]

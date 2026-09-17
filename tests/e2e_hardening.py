@@ -13,12 +13,14 @@ def run(mode):
     with tempfile.TemporaryDirectory(prefix='octomus-hardening-') as directory:
         root = Path(directory)
         setup(root)
-        if mode in ['chain', 'fork', 'unordered']:
+        if mode in ['chain', 'fork', 'unordered', 'dependency-rollback', 'publication-body-edit']:
             existing_pr(root)
         (root / mode).touch()
+        if mode == 'dependency-rollback':
+            (root / 'chain').touch()
         if mode == 'audit-absorbed':
             (root / 'idle').touch()
-        if mode == 'reconcile-controls':
+        if mode in ['reconcile-controls', 'archive-uncertain']:
             (root / 'publication-body').touch()
         if mode == 'published-trimmed-title':
             (root / 'proposal-override.json').write_text(json.dumps({'title': '\t Complete the fixture feature \u2003', 'problem_key': 'original-feature-key'}))
@@ -74,6 +76,29 @@ def run(mode):
                     assert saved['output_commit'] == task['output_commit']
                     assert saved['attempts'] == task['attempts'] and saved['sessions'] == task['sessions']
                 assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+                return
+            if mode == 'archive-uncertain':
+                task = service.wait(service.terminal_task, 'uncertain publication')
+                assert task['status'] == 'blocked' and task['blocked_reason'] == 'publication_uncertain', task
+                assert task['output_commit'] and task['pr_number'] is None, task
+                service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'uncertain publication paused')
+                assert service.request('/state')['pr_capacity']['reserved'] == 1
+                service.request('/tasks/' + task['id'] + '/archive', 'POST')
+                archived = service.request('/tasks/' + task['id'])
+                assert archived['status'] == 'cancelled' and archived['allowed_actions'] == ['discard'], archived
+                # The remote side of the checkpoint settles closed. Remote
+                # inspection must release the reservation rather than stranding
+                # the slot on an archived task. The follow-up cycle discovers no
+                # new work so the released count cannot race a fresh admission.
+                prs = json.loads((root / 'prs.json').read_text())
+                prs[0]['state'] = 'closed'
+                (root / 'prs.json').write_text(json.dumps(prs))
+                (root / 'idle').touch()
+                service.request('/control/cycle', 'POST')
+                service.wait(lambda: service.request('/state')['pr_capacity']['reserved'] == 0, 'archived checkpoint reservation released')
+                service.stop(); service.start(); time.sleep(1)
+                assert service.request('/state')['pr_capacity']['reserved'] == 0, 'released reservation resurrected at restart'
+                assert service.request('/tasks/' + task['id'])['status'] == 'cancelled'
                 return
             if mode == 'audit-absorbed':
                 service.wait(lambda: (s := service.request('/state'))['cycles'] and s['control']['paused'] and not s['cycle_active'], 'initial idle cycle')
@@ -260,7 +285,36 @@ def run(mode):
                 service.wait(lambda: bool(service.request('/state')['prs']), 'archived predecessor observation')
                 time.sleep(1)
                 assert not service.request('/state')['prs'][0]['external_head_movement'], 'Archival must not replace the latest known delivery head'
-
+            elif mode == 'dependency-rollback':
+                # The first follow-up lands on the shared branch; the remote then
+                # reports the branch rewound to its parent, so the delivered
+                # commit is no longer an ancestor of the head. Both dependents
+                # must block on the dependency instead of planning over it.
+                service.wait(lambda: service.request('/state')['control']['paused'], 'rollback drain paused')
+                tasks = [service.request('/tasks/' + r['id']) for r in service.request('/state')['tasks']]
+                published = [t for t in tasks if t['status'] == 'published']
+                blocked = [t for t in tasks if t['status'] == 'blocked']
+                assert len(tasks) == 3 and len(published) == 1 and len(blocked) == 2, [(t['status'], t['blocked_reason']) for t in tasks]
+                assert not published[0]['proposal']['dependencies']
+                assert all(t['blocked_reason'] == 'dependency_blocked' for t in blocked), [t['blocked_reason'] for t in blocked]
+                assert not (root / 'dependency-rollback').exists(), 'the injected rollback never fired'
+                assert git('rev-parse', 'octomus/existing', cwd=root / 'remote.git') == published[0]['source_revision']
+                actions = [json.loads(line)['action'] for line in (root / 'publications.jsonl').read_text().splitlines()]
+                assert actions == ['comment'], actions
+                return
+            elif mode == 'publication-body-edit':
+                # The maintainer's concurrent description edit survives the
+                # follow-up: evidence lands as a comment, never a body rewrite.
+                task = service.wait(service.terminal_task, 'follow-up publication')
+                assert task['status'] == 'published' and task['pr_number'] == 42, task
+                pr = json.loads((root / 'prs.json').read_text())[0]
+                assert pr['body'].startswith('Maintainer edit during follow-up.'), pr['body']
+                assert '<!-- octomus:task:earlier -->' in pr['body'], pr['body']
+                assert any(task['id'] in c['body'] for c in pr['comments']), pr['comments']
+                actions = [json.loads(line)['action'] for line in (root / 'publications.jsonl').read_text().splitlines()]
+                assert actions == ['comment'], actions
+                service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot paused')
+                return
             else:
                 task = service.wait(service.terminal_task, mode)
                 assert task['status'] == 'blocked' and task['output_commit'] and task['blocked_reason'] == 'publication_uncertain', task
@@ -349,7 +403,7 @@ def reconciliation_deadline():
 
 
 if __name__ == '__main__':
-    for mode in ['reconcile-controls', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner']:
+    for mode in ['reconcile-controls', 'archive-uncertain', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'dependency-rollback', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner', 'publication-body-edit']:
         run(mode)
         print(f'PASS hardening {mode}', flush=True)
     reconciliation_deadline()

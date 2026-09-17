@@ -111,7 +111,7 @@
         run.cycle.completed_at
       )}
       {@render fact('Grounding revision', run.cycle.grounding_revision)}{@render fact(
-        'Creates execution queue',
+        'Execution-enabled run',
         run.cycle.planning.creates_execution_queue
       )}
       {@render fact('Planning error recorded', run.cycle.planning.error_recorded)}{@render fact(

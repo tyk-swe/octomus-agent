@@ -185,6 +185,24 @@ impl Store {
         transaction.commit()?;
         Ok(())
     }
+    /// Appends a terminal planning session to the cycle record under the store
+    /// lock. Role evidence becomes durable before its workspace may be cleaned
+    /// up, and concurrent roles merge per-session rather than overwriting a
+    /// shared full-cycle snapshot.
+    pub fn append_cycle_session(
+        &self,
+        cycle_id: &str,
+        session: &crate::model::Session,
+    ) -> Result<()> {
+        let c = self.conn();
+        let mut cycle: crate::model::Cycle =
+            tx_get(&c, "cycle", cycle_id)?.with_context(|| format!("Missing cycle {cycle_id}"))?;
+        if !cycle.sessions.iter().any(|s| s.id == session.id) {
+            cycle.sessions.push(session.clone());
+            tx_put(&c, "cycle", cycle_id, &cycle)?;
+        }
+        Ok(())
+    }
     pub fn get<T: DeserializeOwned>(&self, kind: &str, id: &str) -> Result<Option<T>> {
         tx_get(&self.conn(), kind, id)
     }
@@ -393,7 +411,9 @@ pub fn storage_limit_error(measured_bytes: u64) -> anyhow::Error {
         "Workspace storage limit reached ({measured_bytes} bytes). Resolve retained tasks or increase the limit"
     ))
 }
-pub fn redact(input: &str) -> String {
+/// Secret-scrubbing without any length limit. Persisted results must be bounded
+/// by the caller (for example `bounded_output`) so shortening is always flagged.
+pub fn redact_secrets(input: &str) -> String {
     use std::sync::LazyLock;
     static TOKEN: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+|(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]{10,}|[a-z]+://[^\s/@]+:[^\s/@]+@").unwrap()
@@ -414,7 +434,10 @@ pub fn redact(input: &str) -> String {
     for value in SECRETS.iter() {
         s = s.replace(value, "[redacted]");
     }
-    s.chars().take(16384).collect()
+    s
+}
+pub fn redact(input: &str) -> String {
+    redact_secrets(input).chars().take(16384).collect()
 }
 pub fn redact_json(value: &mut serde_json::Value) {
     match value {

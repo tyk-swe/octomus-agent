@@ -40,7 +40,10 @@ elif args[0] == 'api':
     route = args[-1]
     with (root / 'gh-api.jsonl').open('a') as log:
         log.write(json.dumps({'route': route}) + '\n')
-    if '?' in route:
+    if '/comments' in route:
+        number = int(route.split('/')[-2])
+        print(json.dumps(next(p for p in prs if p['number'] == number).get('comments', [])))
+    elif '?' in route:
         print(json.dumps([refresh(p) for p in prs if p['state'] == 'open' or 'state=all' in route]))
     else:
         number = int(route.split('/')[-1])
@@ -73,12 +76,19 @@ elif args[:2] == ['pr', 'create']:
                 pr['head']['repo']['full_name'] = 'external/project'
             file.write_text(json.dumps(prs))
     print(pr['html_url'])
-elif args[:2] == ['pr', 'edit']:
+elif args[:2] == ['pr', 'comment']:
     number = int(args[2])
     pr = next(p for p in prs if p['number'] == number)
-    pr['body'] = Path(arg('--body-file')).read_text()
+    pr.setdefault('comments', []).append({'body': Path(arg('--body-file')).read_text()})
     with (root / 'publications.jsonl').open('a') as log:
-        log.write(json.dumps({'action': 'edit', 'number': number}) + '\n')
+        log.write(json.dumps({'action': 'comment', 'number': number}) + '\n')
+    # A maintainer editing the description concurrently with the follow-up must
+    # survive: comments append and never touch the body. The edit keeps the
+    # recorded ownership marker, the way a maintainer editing prose would.
+    if (root / 'publication-body-edit').exists():
+        pr['body'] = 'Maintainer edit during follow-up.\n\n' + pr['body']
+    if (root / 'dependency-rollback').exists():
+        (root / 'first-comment-done').touch()
     file.write_text(json.dumps(prs))
     print(pr['html_url'])
 else:

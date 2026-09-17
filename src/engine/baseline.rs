@@ -496,8 +496,11 @@ impl App {
                     }
                 }
             }
+            // Scrub secrets without the persistence cap so a long command's
+            // output reaches bounded_output at its true length: truncating here
+            // first would silently drop the tail while marking it complete.
             let (output, output_truncated) = bounded_output(
-                &redact(&text),
+                &crate::store::redact_secrets(&text),
                 remaining.min(COMMAND_OUTPUT_LIMIT),
                 diagnostic_truncated,
             );
