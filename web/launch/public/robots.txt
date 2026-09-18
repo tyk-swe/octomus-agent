@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://tyk-swe.github.io/octomus-agent/sitemap.xml

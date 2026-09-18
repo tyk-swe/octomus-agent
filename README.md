@@ -3,12 +3,13 @@
 [![Repository checks](https://github.com/tyk-swe/octomus-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/tyk-swe/octomus-agent/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Octomus finds useful improvements in a repository, challenges them with two independent
-reviewers, and delivers verified pull requests through Codex or OpenCode. It can reject
-every proposal and do nothing.
+**Your repo’s next improvement. Ready for review.**
 
-Think **Dependabot, with features**: you choose the repository and the boundaries, and it
-discovers the work. Delivery stops at a pull request for you to review and merge.
+Octomus finds useful improvements in your repository, challenges them with two independent
+reviewers, and turns accepted work into reviewed, verified pull requests through Codex or
+OpenCode. It can reject every proposal and do nothing. You decide what merges.
+
+**Self-hosted preview · One operator · One repository · Your Codex or OpenCode access**
 
 ![Octomus dashboard](docs/dashboard.png)
 
@@ -34,22 +35,27 @@ reconciled from durable state.
 
 ## See a run before installing anything
 
-The [showcase](docs/showcase.md) is a standalone static build of recorded run evidence —
-no service, account, token or database. Three commands from a clean checkout:
+Explore a useful fix, a rejected rewrite, a deferred optimization, and a blocked task in the
+guided sample. The public site and [showcase](docs/showcase.md) need no service, account,
+token, or database. All sample records and screenshots are explicitly synthetic.
 
 ```sh
 npm ci --prefix web
-npm run showcase --prefix web -- --mode fixture --input showcase/synthetic.public.json
-python3 -m http.server 4307 --bind 127.0.0.1 --directory dist
+npm run site:build --prefix web
+python3 tests/serve_site.py
 ```
 
-Then open `http://127.0.0.1:4307/showcase/`.
+Then open **http://127.0.0.1:4310/octomus-agent/**.
+
+The site is prepared for `https://tyk-swe.github.io/octomus-agent/`; publishing is a manual
+step. The [launch guide](docs/product-hunt.md) contains the deployment instructions,
+Product Hunt copy, and gallery assets.
 
 ## Getting started
 
 Octomus is built from source; release binaries and the crates.io package are not
 published yet. You need a dedicated Ubuntu 24.04 VM, your own Codex or OpenCode
-subscription, a GitHub identity reserved for the agent, and a clone of the target
+provider access, a GitHub identity reserved for the agent, and a clone of the target
 repository on a persistent path.
 
 ```sh
@@ -62,7 +68,11 @@ sudo install -m 755 target/release/octomus-agent /usr/local/bin/octomus-agent
 
 The dashboard listens on loopback and starts paused. The first run is four explicit
 moves: enter the configuration, save it, check the connection, then choose **Run an
-audit** or **Run once**.
+audit** or **Run once**. Start with an audit to inspect recommendations without queuing
+code changes. A later execution run plans afresh.
+
+VM and provider costs depend on your setup. Session admissions are operating limits,
+not dollar caps; validated per-task and daily cost figures are not available yet.
 
 **[Full installation and first-run walkthrough →](docs/getting-started.md)**
 
@@ -76,6 +86,7 @@ audit** or **Run once**.
 | [Deployment](docs/deployment.md) | systemd, controls, limits, retention, backup, HTTP API |
 | [Run evidence](docs/run-evidence.md) | What `RunEvidenceV1` reports, and what it never claims |
 | [Showcase](docs/showcase.md) | The standalone static run explorer |
+| [Product Hunt launch](docs/product-hunt.md) | Public site, launch copy, gallery, and publishing checklist |
 | [Cost](docs/cost.md) | What a session admission is, and what is not measured |
 | [Threat model](docs/threat-model.md) | Trust boundaries, prompt injection, redaction limits |
 | [Releasing](docs/releasing.md) | Packaging, release workflow, crate handoff |

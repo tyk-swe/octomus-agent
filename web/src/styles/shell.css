@@ -102,8 +102,8 @@ nav button:hover {
   background: #1d4b3e;
 }
 nav button.active {
-  color: #dceece;
-  background: #315a45;
+  color: #163e35;
+  background: #d6edb1;
 }
 nav button b {
   font-size: 12px;

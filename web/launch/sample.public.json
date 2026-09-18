@@ -1,0 +1,326 @@
+{
+  "public_schema_version": 1,
+  "mode": "fixture",
+  "evidence": {
+    "schema_version": 1,
+    "kind": "recorded_review_check_evidence",
+    "generated_at": "2026-09-13T12:00:00Z",
+    "review_required_before_sharing": true,
+    "review_requirement": "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.",
+    "limitations": [
+      "Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
+      "Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
+      "Deferred is not rejected.",
+      "A recorded pull request describes delivery, not merge. Published is not merged.",
+      "Audit acceptance is a recommendation. Audit cycles never create an execution queue, so an accepted audit proposal has no linked task by design.",
+      "Saved session routes are requested routes. Runtime model identity is not independently reported here.",
+      "Costs, delivery time and any replay timeline are not inferred from these records.",
+      "Zero or multiple task matches are preserved as recorded. No single task is selected on the caller's behalf.",
+      "Free text carried here (proposal problem, benefit, scope and evidence, and code-review findings) is model-authored and still requires manual review before sharing."
+    ],
+    "gaps": [
+      "Every record in this walkthrough is fabricated to explain the workflow. No real model run, code change or pull request is represented."
+    ],
+    "cycle": {
+      "id": "synthetic-launch-cycle",
+      "number": 1,
+      "mode": "execution",
+      "status": "completed",
+      "started_at": "2026-09-13T12:00:00Z",
+      "completed_at": "2026-09-13T12:00:00Z",
+      "repository": "synthetic-example/field-notes",
+      "grounding_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "planning": {
+        "status": "completed",
+        "planning_finished": true,
+        "proposal_count": 4,
+        "decisions": {
+          "accepted": 2,
+          "deferred": 1,
+          "rejected": 1
+        },
+        "creates_execution_queue": true,
+        "error_recorded": false,
+        "reviewer_batches_saved": 2
+      }
+    },
+    "proposals": [
+      {
+        "id": "synthetic-export",
+        "title": "Keep the final line of an export",
+        "target": "main",
+        "tier": "S",
+        "category": "correctness",
+        "problem": "In this synthetic notes app, exporting a file without a trailing newline drops the final note.",
+        "benefit": "Keep every saved note in the exported file, including a one-line file.",
+        "scope": "Flush the remaining buffer in src/export.rs and add regression cases for empty, one-line and multi-line files.",
+        "evidence": [
+          "Synthetic source: src/export.rs \u2014 buffered export loop",
+          "Synthetic regression: tests/export.rs \u2014 final line without newline"
+        ],
+        "final_decision": "accepted",
+        "final_reason": "A reproducible data-loss case with a small fix and specific regression coverage is worth implementing.",
+        "reviewer_verdicts": [
+          {
+            "reviewer": "adversary-a",
+            "state": "recorded",
+            "decision": "accepted",
+            "reason": "Synthetic assessment: The final buffer is never emitted at EOF. This is a concrete correctness problem with a bounded fix.",
+            "note": null
+          },
+          {
+            "reviewer": "adversary-b",
+            "state": "recorded",
+            "decision": "accepted",
+            "reason": "Synthetic assessment: Cover both trailing-newline and no-trailing-newline inputs so the fix cannot duplicate the last note.",
+            "note": null
+          }
+        ],
+        "linked_tasks": [
+          {
+            "id": "synthetic-export-task",
+            "cycle_id": "synthetic-launch-cycle",
+            "proposal_id": "synthetic-export",
+            "status": "published",
+            "branch": "tyk/synthetic-export",
+            "attempts": 0,
+            "blocked_reason": null,
+            "error_recorded": false,
+            "created_at": "2026-09-13T12:00:00Z",
+            "updated_at": "2026-09-13T12:00:00Z",
+            "gaps": ["PR #12 is a fabricated delivery reference. No live GitHub URL is supplied."],
+            "revisions": {
+              "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "default_branch": "main",
+              "output": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "sessions": [
+              {
+                "id": "synthetic-delivered-session",
+                "role": "executor",
+                "status": "completed",
+                "requested_route": {
+                  "backend": "codex",
+                  "model": "synthetic-requested-model",
+                  "effort": "medium"
+                },
+                "started_at": "2026-09-13T12:00:00Z"
+              }
+            ],
+            "latest_review": {
+              "rounds_recorded": 1,
+              "clean": true,
+              "clean_at_output_revision": true,
+              "latest": {
+                "session_id": "synthetic-delivered-review",
+                "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "created_at": "2026-09-13T12:00:00Z",
+                "completed": true,
+                "summary_present": true,
+                "matches_output_revision": true,
+                "findings": []
+              }
+            },
+            "required_commands": {
+              "state": "recorded",
+              "all_passed_at_output_revision": true,
+              "commands": [
+                {
+                  "command": "cargo test --locked --test export",
+                  "state": "passed",
+                  "results_recorded": 1,
+                  "latest_success": true,
+                  "latest_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "latest_created_at": "2026-09-13T12:00:00Z",
+                  "matches_output_revision": true
+                }
+              ]
+            },
+            "pull_request": {
+              "number": 12,
+              "url": null,
+              "source": "recorded_task_reference"
+            }
+          }
+        ],
+        "gaps": []
+      },
+      {
+        "id": "synthetic-rewrite",
+        "title": "Skip the speculative rewrite",
+        "target": "main",
+        "tier": "S",
+        "category": "correctness",
+        "problem": "A proposed generic validation framework would replace two short validation functions in this synthetic app.",
+        "benefit": "The proposal hopes to make future validation easier to extend.",
+        "scope": "Replace the existing functions with a plugin registry and configurable validation pipeline.",
+        "evidence": [
+          "Synthetic source: src/validation.rs \u2014 two short, independent validators"
+        ],
+        "final_decision": "rejected",
+        "final_reason": "No demonstrated user problem or repeated complexity justifies a new framework. Keep the small functions.",
+        "reviewer_verdicts": [
+          {
+            "reviewer": "adversary-a",
+            "state": "recorded",
+            "decision": "rejected",
+            "reason": "Synthetic assessment: The proposed abstraction is larger than the behavior it replaces and adds another configuration surface.",
+            "note": null
+          },
+          {
+            "reviewer": "adversary-b",
+            "state": "recorded",
+            "decision": "rejected",
+            "reason": "Synthetic assessment: There is no current extension requirement. The maintenance cost outweighs the speculative benefit.",
+            "note": null
+          }
+        ],
+        "linked_tasks": [],
+        "gaps": []
+      },
+      {
+        "id": "synthetic-cache",
+        "title": "Measure before adding a cache",
+        "target": "main",
+        "tier": "S",
+        "category": "correctness",
+        "problem": "The synthetic search path rebuilds its index, but the proposal includes no measurements at realistic project sizes.",
+        "benefit": "Caching might reduce repeated search latency if index construction is the bottleneck.",
+        "scope": "Cache the search index and invalidate it when notes change.",
+        "evidence": [
+          "Synthetic source: src/search.rs \u2014 index construction",
+          "Missing evidence: a representative benchmark and invalidation requirements"
+        ],
+        "final_decision": "deferred",
+        "final_reason": "Gather representative timings and define invalidation behavior before deciding whether a cache is worthwhile.",
+        "reviewer_verdicts": [
+          {
+            "reviewer": "adversary-a",
+            "state": "recorded",
+            "decision": "deferred",
+            "reason": "Synthetic assessment: A cache could help, but first measure index construction separately from disk reads.",
+            "note": null
+          },
+          {
+            "reviewer": "adversary-b",
+            "state": "recorded",
+            "decision": "deferred",
+            "reason": "Synthetic assessment: Stale search results are a correctness risk. Defer implementation until the benchmark and invalidation contract exist.",
+            "note": null
+          }
+        ],
+        "linked_tasks": [],
+        "gaps": []
+      },
+      {
+        "id": "synthetic-retry",
+        "title": "A failing check stops delivery",
+        "target": "main",
+        "tier": "S",
+        "category": "correctness",
+        "problem": "In this synthetic sync queue, transient write errors drop pending work instead of allowing a bounded retry.",
+        "benefit": "Preserve queued work through a transient failure and retry without duplicating successful writes.",
+        "scope": "Add bounded retry handling and test pending-result preservation in src/sync.rs.",
+        "evidence": [
+          "Synthetic source: src/sync.rs \u2014 pending write queue",
+          "Synthetic regression: tests/sync_retry.rs \u2014 interrupted write followed by retry"
+        ],
+        "final_decision": "accepted",
+        "final_reason": "The proposal addresses a concrete failure mode. Implementation still needs clean review and passing checks.",
+        "reviewer_verdicts": [
+          {
+            "reviewer": "adversary-a",
+            "state": "recorded",
+            "decision": "accepted",
+            "reason": "Synthetic assessment: Preserving pending work is useful; test both retry success and exhausted attempts.",
+            "note": null
+          },
+          {
+            "reviewer": "adversary-b",
+            "state": "recorded",
+            "decision": "accepted",
+            "reason": "Synthetic assessment: Accept the bounded fix, with explicit coverage that a new attempt cannot overwrite an unresolved result.",
+            "note": null
+          }
+        ],
+        "linked_tasks": [
+          {
+            "id": "synthetic-retry-task",
+            "cycle_id": "synthetic-launch-cycle",
+            "proposal_id": "synthetic-retry",
+            "status": "blocked",
+            "branch": "tyk/synthetic-retry",
+            "attempts": 2,
+            "blocked_reason": "verification_failed",
+            "error_recorded": true,
+            "created_at": "2026-09-13T12:00:00Z",
+            "updated_at": "2026-09-13T12:00:00Z",
+            "gaps": [
+              "Synthetic adverse evidence: the latest check failed and the latest review contains a finding."
+            ],
+            "revisions": {
+              "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "default_branch": "main",
+              "output": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "sessions": [
+              {
+                "id": "synthetic-blocked-a-session",
+                "role": "executor",
+                "status": "completed",
+                "requested_route": {
+                  "backend": "codex",
+                  "model": "synthetic-requested-model",
+                  "effort": "medium"
+                },
+                "started_at": "2026-09-13T12:00:00Z"
+              }
+            ],
+            "latest_review": {
+              "rounds_recorded": 3,
+              "clean": false,
+              "clean_at_output_revision": false,
+              "latest": {
+                "session_id": "synthetic-blocked-a-review",
+                "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "comparison_base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "created_at": "2026-09-13T12:00:00Z",
+                "completed": true,
+                "summary_present": true,
+                "matches_output_revision": true,
+                "findings": [
+                  {
+                    "title": "Synthetic retry loses a pending result",
+                    "file": "src/sync.rs",
+                    "priority": "P1",
+                    "detail": "Synthetic finding: starting the next attempt overwrites an unresolved result. The regression for pending-result preservation still fails; delivery remains blocked."
+                  }
+                ]
+              }
+            },
+            "required_commands": {
+              "state": "recorded",
+              "all_passed_at_output_revision": false,
+              "commands": [
+                {
+                  "command": "cargo test --locked --test sync_retry",
+                  "state": "failed",
+                  "results_recorded": 2,
+                  "latest_success": false,
+                  "latest_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "latest_created_at": "2026-09-13T12:00:00Z",
+                  "matches_output_revision": true
+                }
+              ]
+            },
+            "pull_request": null
+          }
+        ],
+        "gaps": []
+      }
+    ]
+  }
+}

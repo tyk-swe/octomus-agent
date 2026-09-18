@@ -6,6 +6,16 @@ request. It does not mount `RunEvidence.svelte`. It shares only the pure evidenc
 labels and `EvidenceFact` / `EvidenceText` presentation components with the dashboard.
 No framework or runtime dependency was added.
 
+The [launch site](product-hunt.md) embeds a separate guided sample with four outcomes:
+delivered, rejected, deferred, and blocked. To build only that sample, use
+`npm run showcase --prefix web -- --mode fixture --input launch/sample.public.json`.
+The original fixture below remains the regression example for duplicated, missing,
+and inconsistent evidence. Both are synthetic and visibly labeled.
+
+The explorer's numbered controls move keyboard focus through the idea, both reviewers,
+the decision, and linked tasks. Raw cycle metadata is available in an expandable section;
+gaps and adverse evidence remain visible. Navigation does not change the selected record.
+
 ## Exact local commands
 
 From the repository root, using Node 22.12+ and the locked dependencies:

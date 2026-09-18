@@ -647,9 +647,9 @@
                 <span class="eyebrow">LET’S SET THINGS IN MOTION</span>
                 <h2>A home for your next improvement.</h2>
                 <p>
-                  Connect a repository, choose your models, and define the checks that every change
-                  needs to pass. The setup checklist in Configuration tracks what is entered, saved,
-                  checked and run; nothing starts until you choose Audit or Run once.
+                  Connect your repository, choose model routes, and set the checks every change must
+                  pass. Save, check the connection, then try an audit. Setup never starts work on
+                  its own.
                 </p>
                 <button class="button primary" onclick={() => navigate('settings')}
                   >Set up your project<Icon name="arrow" size={17} /></button
@@ -664,6 +664,32 @@
                 <img src="/favicon.svg" alt="" width="82" height="82" />
               </div>
             </section>{/if}
+          {#if data.cycles.length === 0}
+            <section class="first-run-guide" aria-label="Choose your first run">
+              <div class="first-run-heading">
+                <span class="eyebrow">START WITH A LOOK AROUND</span>
+                <h2>Your first move: an audit.</h2>
+                <p>
+                  Read the recommendations before choosing an execution run. Each new run plans
+                  afresh.
+                </p>
+              </div>
+              <dl class="run-options">
+                <div>
+                  <dt>Run an audit <span>Recommended first</span></dt>
+                  <dd>Discover and review proposals. No execution queue or PRs.</dd>
+                </div>
+                <div>
+                  <dt>Run once</dt>
+                  <dd>Drain queued work, plan one cycle, finish accepted tasks, then pause.</dd>
+                </div>
+                <div>
+                  <dt>Start continuous</dt>
+                  <dd>Keep scheduling work within your configured limits until paused.</dd>
+                </div>
+              </dl>
+            </section>
+          {/if}
           <div class="stats-grid">
             <article class="stat">
               <div class="stat-label">System status<Icon name="activity" size={17} /></div>

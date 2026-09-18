@@ -100,9 +100,8 @@
     <div>
       <h2 id="setup-heading">Setup checklist</h2>
       <p>
-        {progress} of {steps.length} steps saved, checked or run. Entered means typed here; saved means
-        sent to the service; checked means the saved configuration passed an explicit connection check;
-        ran means a cycle actually executed.
+        {progress} of {steps.length} steps saved, checked or run. Start with your repository and model
+        routes; save before checking the connection.
       </p>
     </div>
     <button
@@ -114,6 +113,24 @@
     >
   </div>
   {#if open}
+    <dl class="setup-legend" aria-label="Setup status meanings">
+      <div>
+        <dt>Entered</dt>
+        <dd>In this draft</dd>
+      </div>
+      <div>
+        <dt>Saved</dt>
+        <dd>Sent to the service</dd>
+      </div>
+      <div>
+        <dt>Checked</dt>
+        <dd>Saved settings passed a connection check</dd>
+      </div>
+      <div>
+        <dt>Ran</dt>
+        <dd>A cycle actually executed</dd>
+      </div>
+    </dl>
     <ol id="setup-steps" class="steps">
       {#each steps as entry, index (entry.id)}
         <li class="step" data-step={entry.id} data-tone={entry.step.tone}>
@@ -155,6 +172,24 @@
     padding: 0 24px;
     display: grid;
     gap: 14px;
+  }
+  .setup-legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+    gap: 12px;
+    margin: 0 24px 14px;
+    padding: 14px;
+    border-radius: 9px;
+    background: #f5f0fc;
+    font-size: 12px;
+  }
+  .setup-legend dt {
+    font-weight: 650;
+    color: #49365f;
+  }
+  .setup-legend dd {
+    margin: 3px 0 0;
+    color: var(--ink);
   }
   .step {
     display: flex;

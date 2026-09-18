@@ -7,13 +7,15 @@
     'Segoe UI',
     sans-serif;
   color: #233c36;
-  background: #f7f8f5;
+  background: #fffaf0;
   font-synthesis: none;
   --green: #235a49;
   --ink: #233c36;
   --muted: #66736b;
-  --line: #e5e9e2;
-  --soft: #f7f8f5;
+  --line: #dfe3d7;
+  --soft: #fffaf0;
+  --lilac: #e2d4f4;
+  --orange: #ff9365;
   --sidebar: #123e36;
 }
 * {
@@ -68,7 +70,7 @@ p {
 }
 h1 {
   font-size: 32px;
-  font-weight: 580;
+  font-weight: 700;
   letter-spacing: -1.1px;
   line-height: 1.2;
 }

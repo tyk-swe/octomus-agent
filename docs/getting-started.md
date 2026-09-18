@@ -1,10 +1,20 @@
 # Getting started
 
-Octomus is built from source. Public release binaries and the crates.io package are
-not published yet; [releasing](releasing.md) describes what is prepared for them.
+Octomus is a self-hosted preview for one operator and one repository. Installation
+currently means building from source. Public release binaries and the crates.io package
+are not published yet; [releasing](releasing.md) describes what is prepared for them.
 
-The first run is four explicit moves: enter the configuration, save it, check the
-connection, then choose **Run an audit** or **Run once**.
+Your first run has four explicit steps:
+
+1. **Enter** your repository, model routes, and verification commands.
+2. **Save** the configuration to the service.
+3. **Check** the connection using the saved configuration.
+4. **Run an audit** to discover and review recommendations without queuing code changes.
+
+An audit is the recommended starting point. **Run once** executes accepted work from a
+fresh planning cycle; continuous operation is a separate choice. Nothing in setup starts
+model work automatically. The optional clean-baseline check runs saved verification
+commands before model work and is separate from verifying a task's changes.
 
 ## Prerequisites you must already have
 
@@ -20,10 +30,9 @@ connection, then choose **Run an audit** or **Run once**.
 - Build tools, needed only to build Octomus itself: Git, gh, curl, OpenSSL, a C
   compiler, Rust 1.88+, Node 22.12+ and npm. Python 3 is only needed for repository tests.
 
-The first run is four explicit moves: enter the configuration, save it, check the
-connection, then choose **Run an audit** or **Run once**. No model work starts before
-that last choice, and continuous operation is a separate control. An optional, explicit
-clean-baseline check can run saved verification commands before model work.
+You supply VM and provider access. Their charges depend on usage and your subscriptions;
+Octomus's session-admission limit is not a dollar budget. See [cost](cost.md) for what is
+measured and what remains unvalidated.
 
 ## 1. Install the tools and application
 

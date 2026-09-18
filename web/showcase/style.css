@@ -1,7 +1,7 @@
 :root {
   font-family: system-ui, sans-serif;
   color: #203a32;
-  background: #f4f5ee;
+  background: #fffaf0;
   font-synthesis: none;
   line-height: 1.55;
 }
@@ -16,7 +16,9 @@ a {
   text-underline-offset: 0.2em;
 }
 a:focus-visible,
-summary:focus-visible {
+summary:focus-visible,
+button:focus-visible,
+h2:focus {
   outline: 3px solid #b24e21;
   outline-offset: 4px;
 }
@@ -31,7 +33,7 @@ footer {
 }
 .brand {
   font-weight: 800;
-  letter-spacing: 0.1em;
+  letter-spacing: -0.02em;
   text-decoration: none;
 }
 .brand span,
@@ -93,14 +95,14 @@ small {
   grid-template-columns: 1.6fr 1fr;
   align-items: center;
   gap: 3rem;
-  padding: 2.5rem 0 1rem;
+  padding: 1.5rem 0;
 }
 .provenance {
-  background: #fcdf9c;
+  background: #ffe8c6;
   color: #483714;
   padding: 1rem 1.4rem;
   border: 1px solid #bf9750;
-  border-radius: 0.5rem;
+  border-radius: 0.8rem;
 }
 .provenance p {
   margin: 0.35rem 0 0;
@@ -109,7 +111,7 @@ small {
   background: #fffef9;
   padding: 1.5rem;
   border: 1px solid #d3dbcf;
-  border-radius: 0.6rem;
+  border-radius: 0.9rem;
   margin-bottom: 1rem;
   min-width: 0;
 }
@@ -178,6 +180,39 @@ dd {
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
+}
+.run-metadata {
+  margin-top: 1rem;
+  border-top: 1px solid #d3dbcf;
+  padding-top: 1rem;
+}
+summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+.walkthrough {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.walkthrough button {
+  font:
+    650 0.8rem system-ui,
+    sans-serif;
+  color: #203a32;
+  background: #e2d4f4;
+  border: 1px solid #b4a8c6;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  min-height: 44px;
+  cursor: pointer;
+}
+.walkthrough button:hover {
+  background: #d5c1ee;
+}
+h2[id] {
+  scroll-margin-top: 1.5rem;
 }
 .badge.clean {
   background: #dcecd9;

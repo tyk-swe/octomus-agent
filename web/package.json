@@ -13,7 +13,11 @@
     "format:check": "prettier --check .",
     "showcase": "node scripts/build-showcase.mjs",
     "showcase:check": "svelte-check --tsconfig ./showcase/tsconfig.json",
-    "showcase:test": "node --test showcase-tests/contract.test.mjs && playwright test --config showcase.playwright.config.ts"
+    "showcase:test": "node --test showcase-tests/contract.test.mjs && playwright test --config showcase.playwright.config.ts",
+    "site:build": "node scripts/build-site.mjs",
+    "site:check": "tsc --project launch/tsconfig.json",
+    "site:test": "npm run site:build && playwright test --config site.playwright.config.ts",
+    "launch:assets": "node scripts/render-launch-assets.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

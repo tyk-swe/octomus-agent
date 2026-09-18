@@ -1,7 +1,7 @@
 /* The unauthenticated screen, which shares nothing with the frame behind it. */
 .login-page {
   min-height: 100vh;
-  background: #f5f7f0;
+  background: #fffaf0;
   padding: 34px 6vw 24px;
   display: flex;
   flex-direction: column;
@@ -12,7 +12,7 @@
   content: '';
   width: 700px;
   height: 700px;
-  background: radial-gradient(ellipse, #e3ebd5 0%, transparent 67%);
+  background: radial-gradient(ellipse, #e2d4f4 0%, transparent 67%);
   position: absolute;
   left: -170px;
   bottom: -240px;
@@ -41,7 +41,7 @@
   display: grid;
   grid-template-columns: 1.2fr 1fr;
   align-items: center;
-  gap: 9vw;
+  gap: 6vw;
   max-width: 1180px;
   width: 100%;
   margin: auto;
@@ -54,17 +54,17 @@
   letter-spacing: 2px;
 }
 .login-story h1 {
-  font-size: clamp(58px, 6.3vw, 86px);
-  font-weight: 520;
-  letter-spacing: -4px;
+  font-size: clamp(50px, 5.4vw, 76px);
+  font-weight: 750;
+  letter-spacing: -3px;
   line-height: 1.04;
   color: #254c36;
   margin: 28px 0;
 }
 .login-story h1 em {
-  font-family: Georgia, serif;
-  font-weight: 400;
-  color: #556c34;
+  font-style: normal;
+  font-weight: 750;
+  color: #8c3c20;
   letter-spacing: -3px;
 }
 .login-story p {
@@ -96,19 +96,19 @@
 }
 .login-card {
   background: #fff;
-  border: 1px solid #e0e8d6;
-  border-radius: 15px;
+  border: 1px solid #a8b5a6;
+  border-radius: 18px;
   padding: 38px;
-  box-shadow: 0 12px 50px #5b764008;
+  box-shadow: 7px 7px 0 #e2d4f4;
 }
 .login-mark {
   width: 47px;
   height: 47px;
   display: grid;
   place-items: center;
-  background: #f1f6e9;
-  color: #506d30;
-  border: 1px solid #e0eacd;
+  background: #e2d4f4;
+  color: #49365f;
+  border: 1px solid #b4a8c6;
   border-radius: 12px;
   margin-bottom: 27px;
 }

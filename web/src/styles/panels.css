@@ -2,7 +2,7 @@
 .panel {
   background: #fff;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: 12px;
   min-width: 0;
   overflow: hidden;
 }
@@ -53,13 +53,13 @@
   position: relative;
   border: 1px solid #dce6ce;
   border-radius: 9px;
-  background: #eef3e6;
+  background: #e2d4f4;
   padding: 27px 31px;
   margin-bottom: 23px;
   min-height: 217px;
 }
 .onboarding .eyebrow {
-  color: #5e694b;
+  color: var(--ink);
   font-size: 12px;
 }
 .onboarding h2 {
@@ -70,7 +70,7 @@
 }
 .onboarding p {
   max-width: 460px;
-  color: #5d6856;
+  color: var(--ink);
   font-size: 14px;
   margin-bottom: 21px;
 }
@@ -300,6 +300,7 @@
 }
 .overview-columns {
   display: grid;
+  align-items: start;
   grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
   gap: 23px;
 }
@@ -337,7 +338,7 @@
   margin-top: 19px;
 }
 .work-empty {
-  padding: 38px 30px 48px;
+  padding: 22px 24px 30px;
 }
 .empty-illustration {
   width: 63px;

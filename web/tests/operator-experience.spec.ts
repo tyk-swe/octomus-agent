@@ -440,8 +440,15 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   const step = (id: string) => page.locator(`[data-step="${id}"]`);
   const badge = (id: string) => step(id).locator('.badge');
   await login(page);
+  await expect(page.getByRole('region', { name: 'Choose your first run' })).toContainText(
+    'Your first move: an audit.'
+  );
+  await expect(page.getByRole('button', { name: 'Set up your project' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Run an audit', exact: true })).toBeDisabled();
+  expect(writes).toEqual([]);
   await navigate('Configuration');
   await expect(page.getByRole('heading', { name: 'Setup checklist' })).toBeVisible();
+  await expect(page.getByLabel('Setup status meanings')).toContainText('Saved');
   await expect(badge('repository')).toHaveText('Incomplete');
   await expect(badge('routes')).toHaveText('Incomplete');
   await expect(badge('verification')).toHaveText('None');

@@ -37,6 +37,9 @@
   );
   const task = $derived(proposal?.linked_tasks[taskIndex] ?? null);
   const planning = planningVerdict(run.cycle);
+  function jumpTo(section: string) {
+    document.getElementById(`walkthrough-${section}`)?.focus();
+  }
 </script>
 
 <svelte:window onhashchange={() => (fragment = window.location.hash)} />
@@ -66,7 +69,11 @@
 >
 <header>
   <a class="brand" href="#proposal=0">OCTOMUS <span> / Explore a run</span></a>
-  <span>Public · static · recorded evidence</span>
+  <span
+    >{bundle.payload.mode === 'fixture'
+      ? 'A guided sample · no account needed'
+      : 'Public · static · recorded evidence'}</span
+  >
 </header>
 <main id="content" tabindex="-1">
   <div class="provenance" data-testid="provenance">
@@ -84,46 +91,51 @@
   <section class="intro">
     <div>
       <span class="eyebrow">FROM PROPOSAL TO RECORDED RESULT</span>
-      <h1>Explore a run.</h1>
-      <p class="lead">Follow the decisions. Inspect the evidence. See what is missing.</p>
+      <h1>{bundle.payload.mode === 'fixture' ? 'Good ideas earn their PR.' : 'Explore a run.'}</h1>
+      <p class="lead">
+        Choose an idea. Read both reviews. Follow the result, including the work that didn’t ship.
+      </p>
     </div>
     <dl>
       <EvidenceFact label={`${run.cycle.mode} cycle #${run.cycle.number}`} verdict={planning} />
     </dl>
   </section>
-  <p>
-    No full review history, command-output transcript or complete replay timeline is provided by
-    this schema.
-  </p>
   <section class="panel" aria-label="Run record">
-    <h2>Run record</h2>
-    <dl class="facts">
-      {@render fact('Repository', run.cycle.repository)}{@render fact(
-        'Cycle identity',
-        run.cycle.id
-      )}
-      {@render fact('Saved planning status', run.cycle.status)}{@render fact(
-        'Planning finished',
-        run.cycle.planning.planning_finished
-      )}
-      {@render fact('Started', run.cycle.started_at)}{@render fact(
-        'Planning ended',
-        run.cycle.completed_at
-      )}
-      {@render fact('Grounding revision', run.cycle.grounding_revision)}{@render fact(
-        'Execution-enabled run',
-        run.cycle.planning.creates_execution_queue
-      )}
-      {@render fact('Planning error recorded', run.cycle.planning.error_recorded)}{@render fact(
-        'Reviewer batches saved',
-        run.cycle.planning.reviewer_batches_saved
-      )}
-    </dl>
+    <h2>The run at a glance</h2>
+    <p class="muted">
+      Planning records a decision for every proposal. Accepted work still needs code review and
+      passing checks before a PR can be delivered.
+    </p>
     <div class="badges">
       {#each decisionCounts(run.cycle.planning.decisions) as count}<span
           class={'badge ' + count.tone}>{count.count} {count.decision}</span
         >{/each}
     </div>
+    <details class="run-metadata">
+      <summary>Run metadata and grounding revision</summary>
+      <dl class="facts">
+        {@render fact('Repository', run.cycle.repository)}{@render fact(
+          'Cycle identity',
+          run.cycle.id
+        )}
+        {@render fact('Saved planning status', run.cycle.status)}{@render fact(
+          'Planning finished',
+          run.cycle.planning.planning_finished
+        )}
+        {@render fact('Started', run.cycle.started_at)}{@render fact(
+          'Planning ended',
+          run.cycle.completed_at
+        )}
+        {@render fact('Grounding revision', run.cycle.grounding_revision)}{@render fact(
+          'Execution-enabled run',
+          run.cycle.planning.creates_execution_queue
+        )}
+        {@render fact('Planning error recorded', run.cycle.planning.error_recorded)}{@render fact(
+          'Reviewer batches saved',
+          run.cycle.planning.reviewer_batches_saved
+        )}
+      </dl>
+    </details>
     {#if run.cycle.mode === 'audit'}<p>
         Audit acceptance is a recommendation. Audit cycles do not create an execution queue.
       </p>{/if}
@@ -142,9 +154,15 @@
     </nav>
     <div class="detail">
       {#if proposal}
+        <div class="walkthrough" role="group" aria-label="Follow this proposal">
+          <button onclick={() => jumpTo('idea')}>01 · The idea</button>
+          <button onclick={() => jumpTo('review')}>02 · Both reviewers</button>
+          <button onclick={() => jumpTo('decision')}>03 · The decision</button>
+          <button onclick={() => jumpTo('result')}>04 · The result</button>
+        </div>
         <section class="panel">
           <span class="eyebrow">PROPOSAL RECORD {proposalIndex + 1}</span>
-          <h2>{proposal.title}</h2>
+          <h2 id="walkthrough-idea" tabindex="-1">{proposal.title}</h2>
           <dl class="facts">
             {@render fact('Identity', proposal.id)}{@render fact(
               'Target',
@@ -161,7 +179,7 @@
           </ul>
         </section>
         <section class="panel">
-          <h2>Both reviewer slots</h2>
+          <h2 id="walkthrough-review" tabindex="-1">Both reviewer slots</h2>
           <p>Slots are fixed and positional; missing or malformed evidence is never reassigned.</p>
           <div class="reviewers">
             {#each proposal.reviewer_verdicts as v}
@@ -180,7 +198,7 @@
           </div>
         </section>
         <section class="panel">
-          <h2>Final decision</h2>
+          <h2 id="walkthrough-decision" tabindex="-1">Final decision</h2>
           <span class={'badge ' + decisionTone(proposal.final_decision)}
             >{proposal.final_decision}</span
           >
@@ -195,7 +213,7 @@
           {@render gaps('Recorded proposal gaps', proposal.gaps)}
         </section>
         <section class="panel">
-          <h2>Linked tasks</h2>
+          <h2 id="walkthrough-result" tabindex="-1">Linked tasks</h2>
           {#if proposal.linked_tasks.length === 0}<p>
               No linked task recorded.{run.cycle.mode === 'audit'
                 ? ' An accepted audit proposal has no linked task by design.'
@@ -342,6 +360,10 @@
   </div>
   <section class="panel">
     <h2>Limitations and provenance</h2>
+    <p>
+      No full review history, command-output transcript or complete replay timeline is provided by
+      this schema.
+    </p>
     <ul>
       {#each run.limitations as limitation}<li>{limitation}</li>{/each}
     </ul>
