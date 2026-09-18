@@ -53,6 +53,7 @@ export async function api<T>(
 }
 export function relative(value: string) {
   const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000);
+  if (!Number.isFinite(seconds)) return '';
   return seconds < 60
     ? 'just now'
     : seconds < 3600

@@ -1,7 +1,7 @@
 /* The frame around a view: sidebar, navigation, top bar and page heading. */
 .sidebar {
   width: 232px;
-  background: var(--sidebar);
+  background: linear-gradient(178deg, #143f37 0%, #103830 55%, #0d302a 100%);
   color: #b5c9bc;
   position: fixed;
   inset: 0 auto 0 0;
@@ -10,6 +10,7 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  box-shadow: inset -1px 0 0 rgb(255 255 255 / 0.05);
 }
 .brand {
   display: flex;
@@ -38,9 +39,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  background: #1e4a3f;
-  border: 1px solid #305448;
-  border-radius: 7px;
+  background: #1b4639;
+  border: 1px solid #2e5145;
+  border-radius: 10px;
   padding: 11px 10px;
   margin-bottom: 28px;
   min-width: 0;
@@ -51,7 +52,7 @@
   background: #385d4c;
   color: #d0e3be;
   border: 1px solid #547459;
-  border-radius: 6px;
+  border-radius: 8px;
   width: 31px;
   height: 31px;
 }
@@ -91,27 +92,38 @@ nav button {
   gap: 12px;
   width: 100%;
   padding: 12px 13px;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   text-align: left;
   font-size: 14px;
   font-weight: 450;
   color: #a7c1b2;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
 }
 nav button:hover {
   background: #1d4b3e;
+  color: #dce8d4;
 }
 nav button.active {
   color: #163e35;
   background: #d6edb1;
+  font-weight: 560;
+  box-shadow: 0 1px 8px rgb(8 26 22 / 0.28);
 }
 nav button b {
   font-size: 12px;
-  border-radius: 4px;
-  padding: 1px 5px;
-  background: #60816a;
-  color: #fff;
+  font-weight: 600;
+  border-radius: 5px;
+  padding: 1px 6px;
+  background: #35594c;
+  color: #d3e2c4;
   margin-left: auto;
+}
+nav button.active b {
+  background: rgb(18 62 54 / 0.14);
+  color: #163e35;
 }
 .sidebar-bottom {
   margin-top: auto;
@@ -151,7 +163,15 @@ nav button b {
   background: none;
   width: 100%;
   padding: 10px 10px;
+  border-radius: 7px;
   color: #9abbab;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.disconnect:hover {
+  background: #1d4b3e;
+  color: #e4efe0;
 }
 .version {
   font-size: 12px;
@@ -170,11 +190,16 @@ nav button b {
 .topbar {
   height: 72px;
   border-bottom: 1px solid var(--line);
-  background: #ffffffa0;
+  background: rgb(255 250 240 / 0.78);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 38px;
+  position: sticky;
+  top: 0;
+  z-index: 15;
 }
 .breadcrumbs {
   display: flex;
@@ -184,8 +209,8 @@ nav button b {
   color: #5d6760;
 }
 .breadcrumbs strong {
-  font-weight: 500;
-  color: #4d5e54;
+  font-weight: 550;
+  color: var(--ink-2);
 }
 .topbar-right {
   display: flex;
@@ -199,6 +224,10 @@ nav button b {
   gap: 7px;
   color: #58685c;
 }
+.topbar-updated {
+  font-size: 12px;
+  color: var(--muted);
+}
 .live-indicator span,
 .footer-dot {
   width: 5px;
@@ -206,6 +235,32 @@ nav button b {
   border-radius: 50%;
   background: #7f9f69;
   display: inline-block;
+}
+.live-indicator > span {
+  position: relative;
+}
+.live-indicator > span::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1.5px solid #7f9f69;
+  animation: live-pulse 2.4s var(--ease) infinite;
+}
+.live-indicator.offline > span::after {
+  border-color: #b27b45;
+  animation: none;
+}
+@keyframes live-pulse {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.8;
+  }
+  70%,
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
 }
 .topbar-divider {
   width: 1px;

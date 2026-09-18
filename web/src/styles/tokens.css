@@ -9,14 +9,55 @@
   color: #233c36;
   background: #fffaf0;
   font-synthesis: none;
-  --green: #235a49;
+
+  /* Surfaces: cream page, raised white panels, tinted wells. */
+  --paper: #fffaf0;
+  --surface: #ffffff;
+  --well: #f7f9f2;
+
+  /* Ink scale: primary text, secondary text, quiet labels. */
   --ink: #233c36;
+  --ink-2: #42554b;
   --muted: #66736b;
+
+  /* Lines and the pale washes behind badges and rows. */
   --line: #dfe3d7;
-  --soft: #fffaf0;
+  --line-soft: #edf1e6;
+
+  /* Brand accents. */
+  --green: #235a49;
+  --green-deep: #174334;
+  --green-soft: #edf3e5;
+  --sidebar: #123e36;
+  --sidebar-edge: #0c2f29;
   --lilac: #e2d4f4;
   --orange: #ff9365;
-  --sidebar: #123e36;
+
+  /* Semantic tones: foreground, wash, and border for badges and notices. */
+  --good-fg: #3f6b41;
+  --good-bg: #eef5e9;
+  --good-line: #dfead3;
+  --info-fg: #3d6780;
+  --info-bg: #edf3f6;
+  --info-line: #dbe8ee;
+  --warn-fg: #82591f;
+  --warn-bg: #fbf3e4;
+  --warn-line: #f0e2c9;
+  --bad-fg: #905040;
+  --bad-bg: #fbefeb;
+  --bad-line: #eedcd4;
+
+  /* Corners, elevation, focus and motion. */
+  --r-sm: 6px;
+  --r-md: 9px;
+  --r-lg: 14px;
+  --shadow-1: 0 1px 2px rgb(18 62 54 / 0.05), 0 3px 14px rgb(18 62 54 / 0.05);
+  --shadow-2: 0 10px 34px rgb(18 62 54 / 0.12);
+  --ring: 0 0 0 3px rgb(114 173 148 / 0.5);
+  --ring-color: #72ad94;
+  --t-fast: 140ms;
+  --t-med: 220ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 * {
   box-sizing: border-box;
@@ -25,6 +66,11 @@ body {
   margin: 0;
   font-size: 14px;
   line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  background:
+    radial-gradient(760px 330px at 82% -170px, rgb(226 212 244 / 0.4), transparent 72%),
+    radial-gradient(680px 300px at 4% -180px, rgb(214 237 177 / 0.35), transparent 72%);
+  background-attachment: fixed;
 }
 button,
 input,
@@ -75,8 +121,8 @@ h1 {
   line-height: 1.2;
 }
 h2 {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 650;
   letter-spacing: -0.3px;
 }
 h3 {
@@ -99,6 +145,13 @@ code {
   font-family: 'SFMono-Regular', Consolas, monospace;
   font-size: 12px;
   overflow-wrap: anywhere;
+  background: #f3f5ec;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+pre code {
+  background: none;
+  padding: 0;
 }
 svg {
   flex-shrink: 0;
@@ -106,12 +159,12 @@ svg {
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible {
-  outline: 3px solid #72ad94;
+  outline: 3px solid var(--ring-color);
   outline-offset: 3px;
 }
 input:focus,
 textarea:focus {
-  outline: 2px solid #72ad94;
+  outline: 2px solid var(--ring-color);
   outline-offset: 1px;
 }
 ::selection {

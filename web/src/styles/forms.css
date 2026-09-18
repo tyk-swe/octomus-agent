@@ -17,7 +17,7 @@ input,
 textarea,
 select {
   border: 1px solid #dfe7d5;
-  border-radius: 6px;
+  border-radius: 7px;
   background: #fff;
   color: #576a4a;
   padding: 10px 12px;
@@ -25,6 +25,19 @@ select {
   line-height: 1.5;
   width: 100%;
   scroll-margin-block: 100px 260px;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
+}
+input:hover:not(:disabled),
+textarea:hover:not(:disabled),
+select:hover:not(:disabled) {
+  border-color: #c9d4b8;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--ring-color);
 }
 input::placeholder,
 textarea::placeholder {
@@ -32,6 +45,13 @@ textarea::placeholder {
 }
 textarea {
   resize: vertical;
+}
+select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23576a4a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  padding-right: 34px;
 }
 input:disabled,
 textarea:disabled {
@@ -65,10 +85,17 @@ textarea:disabled {
   gap: 8px;
   border: 1px solid #e3ead8;
   padding: 10px 13px;
-  border-radius: 6px;
+  border-radius: 7px;
   font-size: 12px;
   font-weight: 450;
   text-transform: capitalize;
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.checkbox:hover {
+  border-color: #cfdcc0;
+  background: #f7faf0;
 }
 .checkbox:has(input:checked) {
   background: #f3f7eb;
@@ -89,10 +116,12 @@ textarea:disabled {
   gap: 12px 20px;
   position: sticky;
   bottom: 16px;
-  background: #fffffff2;
+  background: rgb(255 255 255 / 0.92);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
   border: 1px solid #dde6d2;
-  box-shadow: 0 5px 20px #556d4610;
-  border-radius: 8px;
+  box-shadow: 0 8px 30px rgb(18 62 54 / 0.13);
+  border-radius: 10px;
   padding: 14px 20px;
 }
 .save-summary {
@@ -126,9 +155,24 @@ textarea:disabled {
   color: var(--ink);
   box-shadow: -20px 0 80px #123e3620;
 }
+.task-dialog[open] {
+  animation: dialog-in 0.26s var(--ease);
+}
 .task-dialog::backdrop {
   background: #18352855;
   backdrop-filter: blur(2px);
+  animation: backdrop-in 0.26s ease;
+}
+@keyframes dialog-in {
+  from {
+    transform: translateX(42px);
+    opacity: 0.4;
+  }
+}
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
 }
 .dialog-top {
   display: flex;
@@ -167,10 +211,16 @@ textarea:disabled {
   font-size: 12px;
   color: #5a694c;
   white-space: nowrap;
+  transition:
+    color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.tabs button:hover {
+  color: var(--ink-2);
 }
 .tabs button.active {
   color: #4e6d32;
-  border-color: #89a968;
+  border-color: #7ba25d;
 }
 .tabs button span {
   font-size: 12px;
@@ -305,4 +355,32 @@ pre {
   to {
     transform: rotate(360deg);
   }
+}
+/* Quiet scrollbars for the rails and scrollable regions. */
+.sidebar,
+.detail-content,
+.tabs,
+pre {
+  scrollbar-width: thin;
+  scrollbar-color: #b9c4ac transparent;
+}
+.sidebar::-webkit-scrollbar,
+.detail-content::-webkit-scrollbar,
+.tabs::-webkit-scrollbar,
+pre::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.sidebar::-webkit-scrollbar-thumb,
+.detail-content::-webkit-scrollbar-thumb,
+.tabs::-webkit-scrollbar-thumb,
+pre::-webkit-scrollbar-thumb {
+  background: #b9c4ac;
+  border-radius: 8px;
+}
+.sidebar::-webkit-scrollbar-thumb {
+  background: #3c5f50;
+}
+.sidebar {
+  scrollbar-color: #3c5f50 transparent;
 }

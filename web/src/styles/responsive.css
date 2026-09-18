@@ -110,7 +110,11 @@
     gap: 13px;
   }
   .search-box {
+    width: 100%;
     max-width: none;
+  }
+  .topbar-updated {
+    display: none;
   }
   .login-layout {
     gap: 5vw;
@@ -191,7 +195,7 @@
     position: sticky;
     top: 0;
     z-index: 25;
-    background: #fafcf7;
+    background: rgb(255 250 240 / 0.88);
   }
   .breadcrumbs {
     gap: 8px;
@@ -286,11 +290,20 @@
   .section-heading {
     padding: 21px 20px;
   }
+  .section-heading > svg {
+    display: none;
+  }
   .row-title {
     gap: 9px;
   }
   .section-icon {
     display: none;
+  }
+  .search-hint {
+    display: none;
+  }
+  .stat-label svg {
+    padding: 5px;
   }
   .overview-columns {
     gap: 20px;

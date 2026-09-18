@@ -132,7 +132,7 @@
   margin-bottom: 9px;
 }
 .login-card input {
-  font-size: 12px;
+  font-size: 14px;
   padding: 12px 13px;
 }
 .login-card .button {
@@ -140,6 +140,12 @@
   width: 100%;
   justify-content: space-between;
   padding: 12px 15px;
+}
+.login-card .button svg {
+  transition: transform var(--t-fast) var(--ease);
+}
+.login-card .button:hover:not(:disabled) svg {
+  transform: translateX(3px);
 }
 .login-card .notice {
   font-size: 12px;

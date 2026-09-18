@@ -102,6 +102,25 @@
   let sessionGeneration = 0;
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
+  /** Status totals behind the queue filter tabs; 'active' and 'attention' are status groups. */
+  let queueTabCounts = $derived.by(() => {
+    const counts = data?.counts ?? {};
+    const sum = (keys: string[]) => keys.reduce((n, k) => n + (counts[k] ?? 0), 0);
+    return {
+      all: sum(Object.keys(counts)),
+      active: sum(ACTIVE_STATUSES),
+      queued: counts.queued,
+      published: counts.published,
+      attention: attentionCount,
+      blocked: counts.blocked,
+      cancelled: counts.cancelled
+    } as Record<string, number | undefined>;
+  });
+  /** Decision totals behind the proposal filter tabs, scoped to the selected cycle. */
+  let proposalTabCounts = $derived({
+    all: Object.values(decisionCounts).reduce((n, v) => n + v, 0),
+    ...decisionCounts
+  } as Record<string, number | undefined>);
   let latestCycle = $derived(data?.cycles[0]);
   type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
   const canControl = $derived({
@@ -359,12 +378,22 @@
       }
     }
   }
-  async function closeNavigation(event: KeyboardEvent) {
-    if (event.key !== 'Escape' || !mobileOpen) return;
+  async function onWindowKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && mobileOpen) {
+      event.preventDefault();
+      mobileOpen = false;
+      await tick();
+      document.getElementById('navigation-toggle')?.focus();
+      return;
+    }
+    // "/" jumps to the list search on the views that have one.
+    if (event.key !== '/' || event.defaultPrevented || mobileOpen) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
+    const box = document.querySelector<HTMLInputElement>('.search-box input');
+    if (!box) return;
     event.preventDefault();
-    mobileOpen = false;
-    await tick();
-    document.getElementById('navigation-toggle')?.focus();
+    box.focus();
   }
   async function toggleNavigation() {
     mobileOpen = !mobileOpen;
@@ -435,7 +464,7 @@
   }
 </script>
 
-<svelte:window onkeydown={closeNavigation} />
+<svelte:window onkeydown={onWindowKeydown} />
 <svelte:head
   ><title>Octomus Agent · Your project, moving forward</title><meta
     name="description"
@@ -505,10 +534,9 @@
         <div class="topbar-right">
           <span class="live-indicator" class:offline={!!connectionError}
             ><span></span>{connectionError ? 'Reconnecting' : 'Connected'}</span
-          ><span class="topbar-divider"></span><span
-            class="operator-avatar"
-            title="Private operator">OP</span
-          >
+          >{#if lastUpdated}<span class="topbar-updated">Updated {lastUpdated}</span>{/if}<span
+            class="topbar-divider"
+          ></span><span class="operator-avatar" title="Private operator">OP</span>
         </div>
       </header>
       <main class="content" id="main-content" tabindex="-1">
@@ -982,7 +1010,8 @@
                 ['all', 'active', 'queued', 'published', 'attention', 'blocked', 'cancelled'],
                 filter,
                 'Task filters',
-                (state) => (filter = state)
+                (state) => (filter = state),
+                queueTabCounts
               )}
               {@render searchBox()}
             </div>
@@ -1049,7 +1078,8 @@
                 ['all', ...DECISIONS],
                 proposalFilter,
                 'Proposal filters',
-                (state) => (proposalFilter = state)
+                (state) => (proposalFilter = state),
+                proposalTabCounts
               )}
               {@render searchBox()}
             </div>
@@ -1141,10 +1171,15 @@
                 href={safeUrl(pr.url)}
                 target="_blank"
                 rel="noreferrer"
-                ><span class="pr-icon"><Icon name="prs" /></span>
+                ><span class={'pr-icon ' + pr.state}><Icon name="prs" /></span>
                 <div>
                   <h3>{pr.title}<span class="pr-number">#{pr.number}</span></h3>
-                  <p><code>{pr.branch}</code><span>→</span><code>{pr.base}</code></p>
+                  <p>
+                    <code>{pr.branch}</code><span>→</span><code>{pr.base}</code
+                    >{#if observed.observed_at}<span class="pr-observed"
+                        >· observed {relative(observed.observed_at)}</span
+                      >{/if}
+                  </p>
                 </div>
                 <span class={'badge ' + (pr.owned ? 'published' : 'queued')}
                   >{pr.state}{observed.external_head_movement
@@ -1235,12 +1270,15 @@
   labels: string[],
   current: string,
   aria: string,
-  onselect: (state: string) => void
+  onselect: (state: string) => void,
+  counts: Record<string, number | undefined> = {}
 )}<div class="filter-tabs" role="group" aria-label={aria}>
     {#each labels as state}<button
         class:active={current === state}
         aria-pressed={current === state}
-        onclick={() => onselect(state)}>{state}</button
+        onclick={() => onselect(state)}
+        >{state}{#if counts[state]}<b class="tab-count" aria-hidden="true">{counts[state]}</b
+          >{/if}</button
       >{/each}
   </div>{/snippet}
 {#snippet listFeedback(noun: string, count: number)}
@@ -1274,11 +1312,18 @@
       bind:value={search}
       placeholder="Search…"
       aria-label="Search work"
+      aria-keyshortcuts="/"
+      onkeydown={(event) => {
+        if (event.key === 'Escape' && search) {
+          search = '';
+          event.stopPropagation();
+        }
+      }}
     />{#if search}<button
         class="icon-button"
         aria-label="Clear search"
         onclick={() => (search = '')}><Icon name="close" size={14} /></button
-      >{/if}</label
+      >{:else}<kbd class="search-hint" aria-hidden="true">/</kbd>{/if}</label
   >{/snippet}
 {#snippet taskList(tasks: TaskRow[])}<div class="task-list">
     {#each tasks as task}<button class="task-row" onclick={() => inspectTask(task.id)}
@@ -1286,16 +1331,22 @@
           ><Icon
             name={task.status === 'published'
               ? 'check'
-              : task.status === 'blocked'
+              : task.status === 'blocked' || task.status === 'failed'
                 ? 'alert'
-                : 'code'}
+                : task.status === 'queued'
+                  ? 'clock'
+                  : ACTIVE_STATUSES.includes(task.status)
+                    ? 'activity'
+                    : 'code'}
             size={18}
           /></span
         ><span class="task-row-body"
           ><strong>{task.title}</strong><span
             ><span class="tier">{task.tier}</span><span>{task.category}</span><span
               class="dot-separator">·</span
-            ><code>{task.target}</code></span
+            ><code>{task.target}</code><span class="dot-separator">·</span><span
+              >updated {relative(task.updated_at)}</span
+            ></span
           ></span
         ><span class={'badge ' + task.status}>{task.status}</span><Icon
           name="chevron"

@@ -6,25 +6,34 @@
   justify-content: center;
   padding: 10px 15px;
   border: 1px solid #dfe5dd;
-  border-radius: 9px;
-  background: white;
+  border-radius: var(--r-md);
+  background: var(--surface);
   font-size: 14px;
   font-weight: 550;
   white-space: nowrap;
+  box-shadow: 0 1px 2px rgb(18 62 54 / 0.05);
   transition:
-    background 0.15s,
-    transform 0.15s;
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
 }
 .button:hover {
   background: #f0f4ed;
+  border-color: #d3dccb;
+}
+.button:active {
+  transform: translateY(0.5px);
 }
 .button.primary {
   background: var(--green);
   border-color: var(--green);
   color: #fff;
+  box-shadow: 0 2px 8px rgb(35 90 73 / 0.28);
 }
 .button.primary:hover {
-  background: #174334;
+  background: var(--green-deep);
+  border-color: var(--green-deep);
 }
 .button.small {
   font-size: 12px;
@@ -32,6 +41,10 @@
 }
 .button.danger {
   color: #a24a3d;
+}
+.button.danger:hover {
+  background: var(--bad-bg);
+  border-color: var(--bad-line);
 }
 .actions {
   display: flex;
@@ -46,6 +59,7 @@
   background: transparent;
   border-radius: 5px;
   padding: 5px;
+  transition: background var(--t-fast) var(--ease);
 }
 .icon-button:hover {
   background: #eaf0e7;
@@ -62,6 +76,12 @@
 }
 .text-button:hover {
   text-decoration: underline;
+}
+.text-button svg {
+  transition: transform var(--t-fast) var(--ease);
+}
+.text-button:hover svg {
+  transform: translateX(2px);
 }
 .app-shell {
   min-height: 100vh;
