@@ -15,9 +15,11 @@ are manual owner actions; this document does not claim that either has happened.
 Octomus finds useful work in your repo, challenges each proposal with two independent
 reviewers, and delivers reviewed, verified PRs through Codex or OpenCode. You decide what
 merges. Self-hosted preview: bring a dedicated VM and your provider access. Explore the
-labeled synthetic demo before installing.
+labeled synthetic demo at https://octomus.tyk.sh/ before installing.
 
-**Intended product URL:** https://tyk-swe.github.io/octomus-agent/
+**Product URL:** https://octomus-agent.tyk.sh/
+
+**Demo:** https://octomus.tyk.sh/
 
 **Source:** https://github.com/tyk-swe/octomus-agent
 

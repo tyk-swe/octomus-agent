@@ -7,7 +7,9 @@ labels and `EvidenceFact` / `EvidenceText` presentation components with the dash
 It adds no framework or runtime dependency.
 
 The [launch site](product-hunt.md) embeds a separate guided sample with four outcomes:
-delivered, rejected, deferred, and blocked. To build only that sample, use
+delivered, rejected, deferred, and blocked. The hosted demo is published at
+[octomus.tyk.sh](https://octomus.tyk.sh/) and the homepage at
+[octomus-agent.tyk.sh](https://octomus-agent.tyk.sh/). To build only that sample, use
 `npm run showcase --prefix web -- --mode fixture --input launch/sample.public.json`.
 The original fixture below remains the regression example for duplicated, missing,
 and inconsistent evidence. Both are synthetic and visibly labeled.

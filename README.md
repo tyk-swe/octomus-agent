@@ -36,8 +36,10 @@ reconciled from durable state.
 ## See a run before installing anything
 
 Explore a useful fix, a rejected rewrite, a deferred optimization, and a blocked task in the
-guided sample. The public site and [showcase](docs/showcase.md) need no service, account,
-token, or database. All sample records and screenshots are explicitly synthetic.
+guided demo at [octomus.tyk.sh](https://octomus.tyk.sh/). The public homepage at
+[octomus-agent.tyk.sh](https://octomus-agent.tyk.sh/) and [showcase](docs/showcase.md) need
+no service, account, token, or database. All sample records and screenshots are explicitly
+synthetic.
 
 ```sh
 npm ci --prefix web
@@ -47,9 +49,10 @@ python3 tests/serve_site.py
 
 Then open **http://127.0.0.1:4310/octomus-agent/**.
 
-The site is prepared for `https://tyk-swe.github.io/octomus-agent/`; publishing is a manual
-step. The [launch guide](docs/product-hunt.md) contains the deployment instructions,
-Product Hunt copy, and gallery assets.
+The site is published at `https://octomus-agent.tyk.sh/` with the demo at
+`https://octomus.tyk.sh/`; publishing is a manual step. The [launch
+guide](docs/product-hunt.md) contains the deployment instructions, Product Hunt copy, and
+gallery assets.
 
 ## Getting started
 
