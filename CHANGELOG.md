@@ -41,6 +41,9 @@ Nothing has been published yet; this section describes what the first release co
   the run, so incomplete planning is still inspectable.
 - Pull-request targets resolve once through a shared owned-PR resolver, and ambiguous
   matches are rejected rather than guessed.
+- Follow-up deliveries comment on the owned pull request instead of rewriting its
+  description, so maintainer edits are never replaced; a cancelled task's reserved
+  pull-request capacity is released once the remote settles its admitted branch.
 - The dashboard build precedes the Rust build; `--assets` is an explicit override.
 
 ### Removed

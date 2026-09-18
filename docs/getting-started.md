@@ -14,7 +14,7 @@ Your first run has four explicit steps:
 An audit is the recommended starting point. **Run once** executes accepted work from a
 fresh planning cycle; continuous operation is a separate choice. Nothing in setup starts
 model work automatically. The optional clean-baseline check runs saved verification
-commands before model work and is separate from verifying a task's changes.
+commands ahead of any model work and is separate from verifying a task's changes.
 
 ## Prerequisites you must already have
 

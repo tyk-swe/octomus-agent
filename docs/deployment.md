@@ -1,6 +1,6 @@
 # Dedicated-host deployment
 
-Octomus is a single-operator, single-repository service for a dedicated Linux VM. Codex and repository verification commands run with the service account's full host permissions. Task clones separate mutable work; they are not a sandbox. Keep unrelated production credentials and services off this host.
+Octomus is a single-operator, single-repository service for a dedicated Linux VM. Runner sessions and repository verification commands run with the service account's full host permissions. Task clones separate mutable work; they are not a sandbox. Keep unrelated production credentials and services off this host.
 
 ## Install
 
@@ -113,13 +113,14 @@ Per-role atomic limits still apply, and the preflight is not an execution-budget
 The owned-open-PR ceiling is live policy, including for queued work. Complete remote
 observations plus durable admitted-delivery reservations govern new-PR dispatch;
 unknown state is not zero. Existing-PR maintenance and preserved publication replay
-remain eligible. Capacity returns after observed closure/merge. A lowered limit does
-not close existing PRs or interrupt already admitted work, which can finish above the
-new ceiling. External PR changes can also alter backlog after observation.
+remain eligible. Capacity returns after observed closure/merge, or once remote
+inspection settles a cancelled task's admitted branch. A lowered limit does not close
+existing PRs or interrupt already admitted work, which can finish above the new
+ceiling. External PR changes can also alter backlog after observation.
 
 The workspace budget is an **admission limit**, checked before launching model work. Active commands can grow beyond it; set host disk and process limits appropriate to the repository. The MVP does not estimate dollar spend or interrupt a provider's in-flight token billing. Use account-level spending limits as appropriate.
 
-Housekeeping runs every 15 minutes, including while paused or configured only for audits. Published task workspaces and completed cycle directories follow the configured retention period (14 days by default). Successful planning-role clones are disposed after structured results, session evidence and unchanged-source checks are persisted. Failed or modified clones and unresolved task workspaces remain retained. **Archive task/cycle** resolves retained work and makes its workspace eligible for retention; **Discard workspace** explicitly removes an archived workspace. Database evidence, identities and lineage remain available. Active workspaces and symlink paths are excluded from cleanup. Activity events are capped at the configured count. Command output is drained and bounded; raw app-server tool arguments and output streams are not stored in the dashboard event log. Runner transcript storage is separate: Codex uses the service account's Codex home, and OpenCode uses its data directory. Configure host retention for the selected runners separately.
+Housekeeping runs every 15 minutes, including while paused or configured only for audits. Published task workspaces and completed cycle directories follow the configured retention period (14 days by default). Successful planning-role clones are disposed after structured results, session evidence and unchanged-source checks are persisted. Failed or modified clones and unresolved task workspaces remain retained. **Archive task/cycle** resolves retained work and makes its workspace eligible for retention; **Discard workspace** explicitly removes an archived workspace. Database evidence, identities and lineage remain available. Active workspaces and symlink paths are excluded from cleanup. Activity events are capped at the configured count. Command output is drained and bounded; raw runner tool arguments and output streams are not stored in the dashboard event log. Runner transcript storage is separate: Codex uses the service account's Codex home, and OpenCode uses its data directory. Configure host retention for the selected runners separately.
 
 Logs: `journalctl -u octomus-agent`. Task errors and session metadata also appear in the dashboard. Known credential patterns and values from token/secret/password/API-key environment variables are redacted from dashboard JSON and summaries. Keep secrets out of project documentation and task prompts; this redaction is not a secret-detection guarantee.
 

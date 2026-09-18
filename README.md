@@ -83,6 +83,7 @@ not dollar caps; validated per-task and daily cost figures are not available yet
 | [Getting started](docs/getting-started.md) | Prerequisites, install, service user, first run |
 | [Architecture](docs/architecture.md) | Cycle, task and review contracts; storage and trust |
 | [Model routing](docs/model-routing.md) | Per-role Codex and OpenCode selection |
+| [Configuration example](docs/configuration.example.json) | Every saved policy field with its shipped default |
 | [Deployment](docs/deployment.md) | systemd, controls, limits, retention, backup, HTTP API |
 | [Run evidence](docs/run-evidence.md) | What `RunEvidenceV1` reports, and what it never claims |
 | [Showcase](docs/showcase.md) | The standalone static run explorer |

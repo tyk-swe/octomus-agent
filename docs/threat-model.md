@@ -64,7 +64,7 @@ through redaction; this is not an encryption or data-loss-prevention system.
 
 It can miss encoded, split, unfamiliar or short secrets, credentials read from
 files, and private source/text that is not a recognized token. Raw task records,
-workspaces, process output and Codex transcripts may retain sensitive content.
+workspaces, process output and runner transcripts may retain sensitive content.
 Review every shared screenshot, JSON export and log manually. Never commit private
 billing screenshots, credentials or raw transcripts. Record redacted observations
 and private evidence references instead.

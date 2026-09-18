@@ -4,7 +4,7 @@ The showcase is a standalone Svelte/Vite build of recorded `RunEvidenceV1`
 evidence. It requires no Rust service, account, token, model, database or live GitHub
 request. It does not mount `RunEvidence.svelte`. It shares only the pure evidence/route
 labels and `EvidenceFact` / `EvidenceText` presentation components with the dashboard.
-No framework or runtime dependency was added.
+It adds no framework or runtime dependency.
 
 The [launch site](product-hunt.md) embeds a separate guided sample with four outcomes:
 delivered, rejected, deferred, and blocked. To build only that sample, use
@@ -71,7 +71,6 @@ Unknown keys at every object boundary are errors, including prompts, transcripts
 configuration, logs and command output. The gate constructs allowlisted objects; it
 never silently strips a field, filters a record, upgrades a verdict or repairs evidence.
 It consumes normalized exporter output; it does not rebuild the exporter or read state.
-
 
 ## Preparing a recorded run
 

@@ -14,12 +14,13 @@ measurement is **unavailable**, not zero.
 `octomus-agent --data-dir PATH --usage-report` exports a read-only JSON snapshot.
 Its schema version is 1. `daily` includes the original daily budget counter,
 attributed admissions and historical unattributed admissions. `cycles` includes
-planning wall time (not subsequent task execution), mode (audit/execution), status, proposal counts,
-planning admissions and task admissions associated with that cycle. `tasks`
-includes execution tier, saved routes, admissions, status and PR URL. `tiers`
-counts observed tasks and their admissions. `admissions` retains each reservation's
-UTC timestamp, cycle, optional task, role and exact route, including the runner
-and any OpenCode provider/variant. Legacy routes are reported as Codex.
+planning wall time (not subsequent task execution), mode (audit/execution), status,
+per-decision proposal counts, planning admissions and task admissions associated
+with that cycle. `tasks` includes execution tier, saved routes, admissions, status
+and PR URL. `tiers` counts observed tasks and their admissions. `admissions`
+retains each reservation's UTC timestamp, cycle, optional task, role and exact
+route, including the runner and any OpenCode provider/variant. Legacy routes are
+reported as Codex.
 
 An **admission** reserves budget before starting work. Failed thread starts,
 failed clone setup and interrupted attempts can consume admissions without a

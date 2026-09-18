@@ -28,9 +28,10 @@ variant fields; OpenCode routes must leave Codex effort empty. Unknown models an
 unsupported efforts/variants block readiness and execution; no fallback is applied.
 
 `codex_binary` defaults to `codex`; `opencode_binary` defaults to `opencode`. These
-are executable paths, not shell commands or argument lists. Only runners selected
-by required routes must be installed. An audit requires the orchestrator, discovery,
-and proposal reviewer routes; normal execution requires every configured route.
+are executable paths, not shell commands or argument lists. Only the runners that
+required routes select need to be installed. An audit requires the orchestrator,
+discovery and proposal reviewer routes; normal execution requires every configured
+route.
 
 Old configuration, task snapshots, sessions, and admission records without a
 `backend` load as Codex. No migration is required. Existing saved workspace paths

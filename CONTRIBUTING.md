@@ -74,4 +74,5 @@ migrate production systems, edit live `.octomus/` state, or commit credentials,
 raw transcripts or private billing images. Octomus-created branches use `tyk/`.
 License/NOTICE ownership changes await owner-cleared facts.
 
-Backend requests are welcome; Codex and OpenCode are the supported backends.
+Requests for additional backends are welcome; Codex and OpenCode are the supported
+backends.

@@ -49,7 +49,6 @@ returns **before** directory creation, permission changes, service locking, migr
 JSON. It conflicts with `--doctor`, `--print-config` and `--usage-report`. A missing
 state database or a missing cycle is an explicit error, never an empty successful export.
 
-
 ### Exporting from a copy of saved state
 
 Export from a snapshot the owner explicitly authorized, never from a live database and
@@ -60,7 +59,6 @@ capture time, source identity and snapshot checksum privately.
 A plain file copy of a live SQLite database can lose recent writes still in the
 write-ahead log. The example below is owner-operated; `tests/evidence_snapshot.py` runs
 it against synthetic sources only.
-
 
 <!-- owner-sqlite-backup -->
 ```sh

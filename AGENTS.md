@@ -15,15 +15,17 @@ GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
   (retention, workspace and disk limits).
 - `src/runner.rs`: runner-neutral model discovery, exact routing and dispatch;
   `src/codex.rs` (app-server protocol) and `src/opencode.rs` (HTTP/SSE) implement it.
-- `src/config.rs`, `src/model.rs`, `src/store.rs` with `src/store/queries.rs`:
-  policy, durable records, SQLite and indexed operational views.
+- `src/config.rs`, `src/model.rs`, `src/store.rs` with `src/store/queries.rs` and
+  `src/store/migrate.rs`: policy, durable records, SQLite, schema migrations and
+  indexed operational views.
 - `src/report.rs`: read-only usage reporting; `src/evidence.rs`: read-only
   `RunEvidenceV1` export; `src/api.rs`: authenticated controls; `src/assets.rs`:
   embedded dashboard serving; `src/schemas.rs`: structured output.
 - `src/git.rs`, `src/process.rs`: Git/GitHub publication and owned process groups.
 - `web/src`: dashboard, shared TypeScript types, settings, setup checklist and
   run/task evidence. `web/showcase`: standalone public showcase build of an approved
-  evidence wrapper (`docs/showcase.md`).
+  evidence wrapper (`docs/showcase.md`). `web/launch`: public launch site source
+  embedding a guided synthetic sample (`docs/product-hunt.md`).
 - Rust behavior tests: `tests/core.rs`, `usage.rs`, `runners.rs`, `hardening.rs`,
   `review_findings.rs`, `review_regressions.rs`, `evidence.rs`, `process_lifecycle.rs`,
   `history_scale.rs`, and `contracts.rs` (ignored unless a pinned real client binary
@@ -36,7 +38,8 @@ GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
   `crate.py`, `crate_guards.py` and `systemd.py` cover packaging and deployment;
   `evidence_snapshot.py` runs the documented backup and export examples on synthetic data.
 - `web/tests`: dashboard browser tests served by `tests/serve_ui.py`;
-  `web/showcase-tests`: showcase contract and browser tests. `docs/architecture.md`
+  `web/showcase-tests`: showcase contract and browser tests; `web/site-tests`: public
+  site browser tests served by `tests/serve_site.py`. `docs/architecture.md`
   describes the operating contract.
 
 ## Build and verify
@@ -45,9 +48,10 @@ Use Rust 1.88+ with rustfmt/clippy, Node 22.12+, npm, Python 3, Git and a C comp
 Install dashboard dependencies with `npm ci --prefix web`. Install browser test
 prerequisites with `npx --prefix web playwright install --with-deps chromium`.
 
-- `make check`: Rust formatting/clippy, Svelte/TypeScript, showcase and Prettier checks.
-- `make test`: Rust tests, debug binary, dashboard build, integration, browser and
-  showcase tests.
+- `make check`: Rust formatting/clippy, Svelte/TypeScript, showcase, site and
+  Prettier checks.
+- `make test`: Rust tests, debug binary, dashboard build, integration, browser,
+  showcase and public-site tests.
 - `make build`: production binary and dashboard.
 - Focused integration: `npm run build --prefix web`, `cargo build --locked`, then
   `python3 tests/e2e.py`. These tests use fixtures, not live accounts or model calls.
