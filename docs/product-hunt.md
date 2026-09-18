@@ -1,7 +1,7 @@
 # Octomus Product Hunt launch
 
 This package presents a **self-hosted preview for solo developers**. The public homepage,
-documentation, and guided walkthrough target Cloudflare Workers at
+documentation, and guided walkthrough are live on Cloudflare Workers at
 **https://octomus-agent.tyk.sh/**. Product Hunt submission is a separate owner action;
 deploying the website does not submit a listing or book a launch slot.
 
@@ -164,9 +164,10 @@ The token needs Workers Scripts edit, Workers Routes edit, and Zone read permiss
 the account and `tyk.sh` zone. Keep it out of source files, build output, and commit history.
 The checked-in Cloudflare account ID is an identifier, not a credential.
 
-The existing **Publish launch site** workflow remains an optional manual GitHub Pages
+The **Publish GitHub Pages mirror** workflow remains an optional manual GitHub Pages
 mirror. It runs full CI and uploads only `dist/site`. Canonical URLs and social metadata
-point to the Cloudflare domain. There is no automatic push-triggered deployment.
+point to the Cloudflare domain. After updating `main`, rebuild and redeploy the Workers
+site to publish the changes; pushing a commit alone does not update the live site.
 
 ### Launch-day checklist
 
@@ -175,7 +176,7 @@ point to the Cloudflare domain. There is no automatic push-triggered deployment.
 - [ ] Review the final copy, synthetic payload, gallery, social card, and both mobile and
       desktop previews. Remove any claim that does not have evidence behind it.
 - [ ] Commit the reviewed source and generated assets; require successful repository checks.
-- [ ] Run `npm run site:deploy --prefix web` with the Cloudflare token in the environment.
+- [x] Run `npm run site:deploy --prefix web` with the Cloudflare token in the environment.
       Confirm the custom domain and TLS certificate are active.
 - [ ] Open the live URL, follow every sample and setup link, download the public payload,
       and inspect the social-card URL. Confirm there is no login or operator API on the site.

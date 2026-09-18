@@ -24,8 +24,10 @@ GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
 - `src/git.rs`, `src/process.rs`: Git/GitHub publication and owned process groups.
 - `web/src`: dashboard, shared TypeScript types, settings, setup checklist and
   run/task evidence. `web/showcase`: standalone public showcase build of an approved
-  evidence wrapper (`docs/showcase.md`). `web/launch`: public launch site source
-  embedding a guided synthetic sample (`docs/product-hunt.md`).
+  evidence wrapper (`docs/showcase.md`). `web/launch`: public homepage and docs styles,
+  with a guided synthetic sample (`docs/product-hunt.md`). `web/scripts/site-docs.mjs`
+  renders the public Markdown guides; `web/wrangler.jsonc` deploys `dist/site` to
+  `octomus-agent.tyk.sh` through Cloudflare Workers.
 - Rust behavior tests: `tests/core.rs`, `usage.rs`, `runners.rs`, `hardening.rs`,
   `review_findings.rs`, `review_regressions.rs`, `evidence.rs`, `process_lifecycle.rs`,
   `history_scale.rs`, and `contracts.rs` (ignored unless a pinned real client binary

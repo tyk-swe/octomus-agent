@@ -5,7 +5,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing has been published yet; this section describes what the first release contains.
+Binary releases and crates.io publication remain pending; this section describes what
+the first release contains. The public homepage and documentation are live at
+[octomus-agent.tyk.sh](https://octomus-agent.tyk.sh/).
 
 ### Added
 
@@ -20,8 +22,10 @@ Nothing has been published yet; this section describes what the first release co
   `--export-run`, with a documented consistent SQLite snapshot procedure.
 - A standalone static showcase build (`web/showcase`) of recorded evidence, with
   allowlist and duplicate-key gates, hash-bound approval and network isolation.
-- A public preview site with a guided synthetic sample, reproducible Product Hunt
-  gallery assets, launch copy, and a manually triggered GitHub Pages workflow.
+- A Cloudflare Workers homepage and searchable documentation generated from the public
+  Markdown guides, with mobile navigation, heading links, and code copying.
+- A guided synthetic sample, reproducible Product Hunt gallery assets, launch copy,
+  and an optional manually triggered GitHub Pages mirror.
 - Durable admission accounting, owned pull-request capacity limits, decision memory,
   attention notifications and read-only usage reports.
 - Linux x86_64 and aarch64 release packaging, a checksum-verifying installer and Cargo
@@ -32,7 +36,9 @@ Nothing has been published yet; this section describes what the first release co
 ### Changed
 
 - Refreshed dashboard and login styling, clearer setup-state explanations, and audit-first
-  guidance for installations without a recorded cycle.
+  guidance for installations without a recorded cycle. Public dashboard screenshots and
+  gallery assets reflect the current interface using synthetic data.
+- Documentation tools and navigation sidebars have distinct labels for screen readers.
 - Verification runs on the reviewed revision, and a command that changes tracked state
   is recorded as failed evidence rather than passing silently.
 - Repair rounds are budgeted per attempt: an explicit retry starts a fresh budget and

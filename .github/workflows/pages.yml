@@ -1,4 +1,4 @@
-name: Publish launch site
+name: Publish GitHub Pages mirror
 on:
   workflow_dispatch:
 permissions:

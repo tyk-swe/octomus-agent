@@ -39,7 +39,9 @@ Browser tests use clearly synthetic data; their screenshots are not
 live operating evidence. `tests/evidence_snapshot.py` runs the documented SQLite backup
 and `--export-run` examples on a synthetic database, and the showcase tests
 (`npm run showcase:test --prefix web`) cover the public showcase's input contract and
-rendering. `tests/systemd.py` requires root on a disposable systemd
+rendering. Public-site tests (`npm run site:test --prefix web`) cover homepage and docs
+navigation, local search, code copying, accessibility, links, and nested 404 pages at the
+domain root and legacy Pages subdirectory. `tests/systemd.py` requires root on a disposable systemd
 VM and exercises the unit's write restrictions and child cleanup.
 
 Four checks run in CI rather than in `make test`, because each needs something a
@@ -53,8 +55,16 @@ Dashboard regressions cover configuration drafts in tab memory, saved-configurat
 checks, keyboard navigation and list recovery. Keep drafts across view changes,
 clear them at session boundaries, and use entered executable paths for catalogs.
 The dashboard browser tests include axe WCAG A/AA and overflow checks. To refresh
-`docs/dashboard.png`, take a full-page screenshot of the synthetic overview served by
-`python3 tests/serve_ui.py` at a 1440×1100 viewport, and keep the synthetic-data caption.
+`docs/dashboard.png` and the Product Hunt gallery, build the current dashboard and binary,
+then run `npm run launch:assets --prefix web`. The capture script starts temporary
+fixture servers, blocks dashboard writes, and labels the screenshots as synthetic.
+Inspect the generated images before committing them; see the
+[launch guide](docs/product-hunt.md#build-verify-and-publish) for the complete commands.
+
+The public docs are generated from the allowlisted `docs/*.md` sources in
+`web/scripts/site-docs.mjs`. Run `npm run site:build --prefix web` after editing a guide.
+The live homepage, documentation, and sample use `https://octomus-agent.tyk.sh/`;
+publishing them requires a separate `npm run site:deploy --prefix web` after checks pass.
 
 Run relevant behavior tests while editing and full `make check`/`make test` before
 delivery. Install `cargo-audit` with `cargo install cargo-audit --locked`, then run

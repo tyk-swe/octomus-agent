@@ -255,7 +255,7 @@ export async function buildDocs(root, sourceDir, publicDir) {
       `<!doctype html>
 <html lang="en"><head>${head(doc.label, doc.description, docPath(doc))}<script type="module" src="/docs.ts"></script></head>
 <body class="docs-page">${masthead(rootHref)}
-  <div class="docs-topbar wrap">
+  <div class="docs-topbar wrap" role="region" aria-label="Documentation tools">
     <p><a href="${rootHref}docs/">Documentation</a><span aria-hidden="true"> / </span>${escape(doc.label)}</p>
     <div class="docs-search" hidden data-root="${rootHref}">
       <label for="docs-search">Search the docs</label>
@@ -265,7 +265,7 @@ export async function buildDocs(root, sourceDir, publicDir) {
   </div>
   <details class="docs-mobile-nav wrap"><summary>Browse documentation <span aria-hidden="true">↓</span></summary><nav aria-label="Mobile documentation">${navigation(rootHref, doc.slug)}</nav></details>
   <div class="docs-layout wrap">
-    <aside class="docs-sidebar"><nav aria-label="Documentation">${navigation(rootHref, doc.slug)}</nav><a class="sidebar-sample" href="${rootHref}showcase/"><span aria-hidden="true">✳</span> Curious first?<strong>Explore a sample run ↗</strong></a></aside>
+    <aside class="docs-sidebar" aria-label="Documentation sidebar"><nav aria-label="Documentation">${navigation(rootHref, doc.slug)}</nav><a class="sidebar-sample" href="${rootHref}showcase/"><span aria-hidden="true">✳</span> Curious first?<strong>Explore a sample run ↗</strong></a></aside>
     <main id="main" class="docs-article" tabindex="-1">
       <p class="doc-kicker"><span>${escape(doc.group)}</span><span>${String(groups.indexOf(doc.group) + 1).padStart(2, '0')} / FIELD GUIDE</span></p>
       <article class="prose">${body}</article>
@@ -275,7 +275,7 @@ export async function buildDocs(root, sourceDir, publicDir) {
         ${next ? `<a href="${rootHref}${docPath(next)}"><span>Next →</span><strong>${escape(next.label)}</strong></a>` : ''}
       </nav>
     </main>
-    <aside class="docs-toc"><nav aria-label="On this page"><p>ON THIS PAGE</p><ul>${toc.map((heading) => `<li><a href="#${escape(heading.id)}">${heading.title}</a></li>`).join('')}</ul></nav><a class="back-top" href="#main">Back to top ↑</a></aside>
+    <aside class="docs-toc" aria-label="Table of contents"><nav aria-label="On this page"><p>ON THIS PAGE</p><ul>${toc.map((heading) => `<li><a href="#${escape(heading.id)}">${heading.title}</a></li>`).join('')}</ul></nav><a class="back-top" href="#main">Back to top ↑</a></aside>
   </div>${footer(rootHref)}
 </body></html>`
     );
