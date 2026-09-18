@@ -1,4 +1,4 @@
 {
   "extends": "../showcase/tsconfig.json",
-  "include": ["../site-tests/**/*.ts", "../site.playwright.config.ts"]
+  "include": ["./**/*.ts", "../site-tests/**/*.ts", "../site.playwright.config.ts"]
 }

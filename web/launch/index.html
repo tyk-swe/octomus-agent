@@ -14,7 +14,7 @@
       name="description"
       content="Octomus finds useful repo improvements, challenges proposals, and delivers reviewed, verified PRs through Codex or OpenCode. A self-hosted preview for solo developers."
     />
-    <link rel="canonical" href="https://tyk-swe.github.io/octomus-agent/" />
+    <link rel="canonical" href="https://octomus-agent.tyk.sh/" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Octomus" />
     <meta property="og:title" content="Your repo’s next improvement. Ready for review." />
@@ -22,8 +22,8 @@
       property="og:description"
       content="A few extra arms for your repository. Discover useful work, challenge the ideas, and get reviewed PRs. Self-hosted. Powered by Codex or OpenCode."
     />
-    <meta property="og:url" content="https://tyk-swe.github.io/octomus-agent/" />
-    <meta property="og:image" content="https://tyk-swe.github.io/octomus-agent/social-card.png" />
+    <meta property="og:url" content="https://octomus-agent.tyk.sh/" />
+    <meta property="og:image" content="https://octomus-agent.tyk.sh/social-card.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta
@@ -36,7 +36,7 @@
       name="twitter:description"
       content="AI that finds repo improvements and opens reviewed PRs. Self-hosted preview."
     />
-    <meta name="twitter:image" content="https://tyk-swe.github.io/octomus-agent/social-card.png" />
+    <meta name="twitter:image" content="https://octomus-agent.tyk.sh/social-card.png" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="./style.css" />
   </head>
@@ -51,6 +51,7 @@
       <nav aria-label="Main navigation">
         <a href="#how-it-works">How it works</a>
         <a href="#sample">The sample</a>
+        <a href="./docs/">Docs</a>
         <a class="nav-github" href="https://github.com/tyk-swe/octomus-agent"
           >GitHub <span aria-hidden="true">↗</span></a
         >
@@ -230,10 +231,8 @@
             Octomus is a self-hosted preview for one operator and one repository. Today,
             installation means building from source on your own dedicated VM.
           </p>
-          <a
-            class="button primary"
-            href="https://github.com/tyk-swe/octomus-agent/blob/main/docs/getting-started.md"
-            >Read the setup guide <span aria-hidden="true">↗</span></a
+          <a class="button primary" href="./docs/getting-started/"
+            >Read the setup guide <span aria-hidden="true">→</span></a
           >
           <p class="setup-note">
             No hosted service. Public binaries and crates.io installation are pending.
@@ -279,6 +278,36 @@
           </div>
         </div>
       </section>
+      <section class="section wrap docs-preview" aria-labelledby="docs-title">
+        <div class="section-intro">
+          <p class="eyebrow">A CLEAR PATH FROM CURIOUS TO CONFIGURED</p>
+          <h2 id="docs-title">A few extra arms.<br />An open book.</h2>
+          <p>Everything you need to run Octomus, understand its decisions, and make it your own.</p>
+        </div>
+        <div class="guide-grid">
+          <a class="guide-card" href="./docs/getting-started/">
+            <span class="guide-number">01 / START HERE</span>
+            <h3>Your first audit.</h3>
+            <p>Build from source, connect your repository, and see what’s worth improving.</p>
+            <span class="guide-link">Get started <span aria-hidden="true">→</span></span>
+          </a>
+          <a class="guide-card" href="./docs/model-routing/">
+            <span class="guide-number">02 / MAKE IT YOURS</span>
+            <h3>Your models. Your rules.</h3>
+            <p>Choose Codex or OpenCode for each role, then set checks and operating limits.</p>
+            <span class="guide-link">Explore model routing <span aria-hidden="true">→</span></span>
+          </a>
+          <a class="guide-card" href="./docs/architecture/">
+            <span class="guide-number">03 / UNDER THE HOOD</span>
+            <h3>Understand every step.</h3>
+            <p>Follow discovery, independent reviews, repairs, and the checks before delivery.</p>
+            <span class="guide-link">Read the architecture <span aria-hidden="true">→</span></span>
+          </a>
+        </div>
+        <a class="text-link" href="./docs/"
+          >Browse all documentation <span aria-hidden="true">↗</span></a
+        >
+      </section>
       <section class="section wrap faq" aria-labelledby="faq-title">
         <div>
           <p class="eyebrow">A FEW GOOD QUESTIONS</p>
@@ -317,9 +346,7 @@
               credentials. Repository instructions and commands run with the service user’s
               permissions. Keep the private dashboard on loopback and access it through SSH
               forwarding. Read the
-              <a href="https://github.com/tyk-swe/octomus-agent/blob/main/docs/threat-model.md"
-                >threat model</a
-              >
+              <a href="./docs/threat-model/">threat model</a>
               before setup.
             </p>
           </details>
@@ -359,9 +386,7 @@
       <a class="brand" href="./"><img src="/favicon.svg" width="32" height="32" alt="" />octomus</a>
       <p>Self-hosted preview. Built for the work worth doing.</p>
       <div>
-        <a href="https://github.com/tyk-swe/octomus-agent">Source</a
-        ><a href="https://github.com/tyk-swe/octomus-agent/blob/main/docs/getting-started.md"
-          >Docs</a
+        <a href="https://github.com/tyk-swe/octomus-agent">Source</a><a href="./docs/">Docs</a
         ><a href="https://github.com/tyk-swe/octomus-agent/issues">Feedback</a>
       </div>
     </footer>

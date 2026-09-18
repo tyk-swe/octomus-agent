@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview the static site at the exact GitHub Pages subdirectory, without an API."""
+"""Preview the public site at the domain root and legacy Pages subdirectory."""
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -12,11 +12,20 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(site), **kwargs)
 
     def do_GET(self):
-        if not self.path.startswith(prefix):
-            self.send_error(404)
-            return
-        self.path = '/' + self.path[len(prefix):]
+        if self.path.startswith(prefix):
+            self.path = '/' + self.path[len(prefix):]
         super().do_GET()
+
+    def send_error(self, code, message=None, explain=None):
+        if code != 404:
+            return super().send_error(code, message, explain)
+        content = (site / '404.html').read_bytes()
+        self.send_response(404)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(content)))
+        self.end_headers()
+        if self.command != 'HEAD':
+            self.wfile.write(content)
 
 
 if __name__ == '__main__':

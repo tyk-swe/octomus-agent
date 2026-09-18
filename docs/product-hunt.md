@@ -1,8 +1,9 @@
 # Octomus Product Hunt launch
 
-This package prepares a **self-hosted preview for solo developers**. The site, screenshots,
-and guided walkthrough are ready to review locally. Publication and Product Hunt submission
-are manual owner actions; this document does not claim that either has happened.
+This package presents a **self-hosted preview for solo developers**. The public homepage,
+documentation, and guided walkthrough target Cloudflare Workers at
+**https://octomus-agent.tyk.sh/**. Product Hunt submission is a separate owner action;
+deploying the website does not submit a listing or book a launch slot.
 
 ## Listing copy
 
@@ -20,6 +21,8 @@ labeled synthetic demo at https://octomus.tyk.sh/ before installing.
 **Product URL:** https://octomus-agent.tyk.sh/
 
 **Demo:** https://octomus.tyk.sh/
+
+**Documentation:** https://octomus-agent.tyk.sh/docs/
 
 **Source:** https://github.com/tyk-swe/octomus-agent
 
@@ -94,9 +97,15 @@ fabricated evidence, not something that happened on a live repository.
 
 ## Build, verify, and publish
 
-The landing page has no JavaScript requirement, analytics, forms, or account flow. The
-interactive showcase embeds only the explicit allowlisted synthetic payload and retains
-its restrictive network policy. The build never reads operator configuration or live data.
+The homepage and documentation work without JavaScript. Optional documentation search
+runs in the browser over a local static index, and code blocks offer a copy button.
+There are no analytics, account flows, or operator APIs on the public site. The interactive
+showcase embeds only the explicit allowlisted synthetic payload and retains its restrictive
+network policy. The build never reads operator configuration or live data.
+
+Documentation pages are generated from the explicit source list in
+`web/scripts/site-docs.mjs`. Edit the corresponding `docs/*.md` file to update a guide;
+the build also regenerates navigation, heading links, the search index, and sitemap.
 
 ```sh
 npm ci --prefix web
@@ -104,9 +113,11 @@ npm run site:build --prefix web
 python3 tests/serve_site.py
 ```
 
-Open **http://127.0.0.1:4310/octomus-agent/**. Stop the preview with Ctrl-C before running
-the site tests, which use the same port. The output is `dist/site/`, including the sample
-at `showcase/`. Relative assets and navigation work at the repository's Pages subdirectory.
+Open **http://127.0.0.1:4310/**. Stop the preview with Ctrl-C before running
+the site tests, which use the same port. The output is `dist/site/`, including the guides
+at `docs/` and the sample at `showcase/`. The preview and browser tests also cover the
+legacy `/octomus-agent/` subdirectory. To preview Cloudflare's routing and response headers,
+use `npm run site:dev --prefix web` and open **http://127.0.0.1:4311/**.
 
 ```sh
 npx --prefix web playwright install --with-deps chromium
@@ -134,9 +145,28 @@ It uses Playwright and the existing SVG mark, with no remote images or fonts.
 The dashboard image uses a configured, paused sample state supplied in the browser;
 capture blocks dashboard writes and external requests.
 
-The **Publish launch site** workflow is manually triggered. It runs the repository's
-full CI, builds a fresh public site, and uploads only `dist/site`. Only the deployment job
-receives Pages write and OIDC permissions. There is no automatic push-triggered publishing.
+### Deploy to Cloudflare Workers
+
+`web/wrangler.jsonc` defines the `octomus-agent-site` Worker and the
+`octomus-agent.tyk.sh` custom domain. It uploads only `dist/site/` as Workers static assets.
+No application server, database, runtime secret, or private Octomus service is deployed.
+Cloudflare manages the custom domain's DNS and TLS certificate. Missing paths return the
+custom 404 page with a 404 status; nested guides use directory URLs and work on refresh.
+
+After the checks above, authenticate Wrangler using `CLOUDFLARE_API_TOKEN` supplied by
+your shell or secret manager, then run from the repository root:
+
+```sh
+npm run site:deploy --prefix web
+```
+
+The token needs Workers Scripts edit, Workers Routes edit, and Zone read permissions for
+the account and `tyk.sh` zone. Keep it out of source files, build output, and commit history.
+The checked-in Cloudflare account ID is an identifier, not a credential.
+
+The existing **Publish launch site** workflow remains an optional manual GitHub Pages
+mirror. It runs full CI and uploads only `dist/site`. Canonical URLs and social metadata
+point to the Cloudflare domain. There is no automatic push-triggered deployment.
 
 ### Launch-day checklist
 
@@ -145,9 +175,8 @@ receives Pages write and OIDC permissions. There is no automatic push-triggered 
 - [ ] Review the final copy, synthetic payload, gallery, social card, and both mobile and
       desktop previews. Remove any claim that does not have evidence behind it.
 - [ ] Commit the reviewed source and generated assets; require successful repository checks.
-- [ ] In GitHub **Settings → Pages**, choose **GitHub Actions** as the publishing source.
-      Restrict the `github-pages` environment to the reviewed publishing branch.
-- [ ] Manually run **Publish launch site** on that branch and wait for its deployment URL.
+- [ ] Run `npm run site:deploy --prefix web` with the Cloudflare token in the environment.
+      Confirm the custom domain and TLS certificate are active.
 - [ ] Open the live URL, follow every sample and setup link, download the public payload,
       and inspect the social-card URL. Confirm there is no login or operator API on the site.
 - [ ] Confirm Product Hunt's current listing and image requirements, upload the reviewed
@@ -156,6 +185,7 @@ receives Pages write and OIDC permissions. There is no automatic push-triggered 
 - [ ] Use GitHub issues for public feedback and SECURITY.md for private vulnerability reports.
       Record the live URL and launch date only after publication.
 
-Rollback: manually deploy a previously reviewed commit through the same workflow, or
-unpublish the Pages site in repository settings. Binary releases and registry publication
+Rollback: from a clean checkout of a previously reviewed commit, install its locked web
+dependencies and rerun `npm run site:deploy --prefix web`. Alternatively select a prior
+deployment in the Worker's Cloudflare dashboard. Binary releases and registry publication
 use their separate release process.

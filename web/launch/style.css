@@ -56,7 +56,9 @@ h3 {
   letter-spacing: -0.035em;
 }
 a:focus-visible,
-summary:focus-visible {
+summary:focus-visible,
+button:focus-visible,
+input:focus-visible {
   outline: 3px solid #a43813;
   outline-offset: 5px;
 }
@@ -541,6 +543,50 @@ summary:focus-visible {
   grid-template-columns: 0.8fr 1.2fr;
   gap: 50px;
 }
+.guide-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+  margin-block: 36px 26px;
+}
+.guide-card {
+  display: flex;
+  flex-direction: column;
+  padding: 30px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fffdf8;
+  text-decoration: none;
+}
+.guide-card:hover {
+  border-color: var(--ink);
+  background: #f3f4e8;
+}
+.guide-number {
+  font: 600 11px monospace;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-bottom: 30px;
+}
+.guide-card p {
+  margin-block: 16px 24px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.guide-link {
+  display: flex;
+  justify-content: space-between;
+  margin-top: auto;
+  font-size: 13px;
+  font-weight: 700;
+}
+.text-link {
+  font-size: 14px;
+  font-weight: 650;
+}
+.docs-preview + .faq {
+  padding-top: 0;
+}
 .faq-star {
   display: block;
   font-size: 95px;
@@ -734,7 +780,8 @@ summary:focus-visible {
   }
   .product-heading,
   .setup-section,
-  .faq {
+  .faq,
+  .guide-grid {
     grid-template-columns: 1fr;
     gap: 26px;
   }

@@ -35,6 +35,8 @@ reconciled from durable state.
 
 ## See a run before installing anything
 
+**[Homepage](https://octomus-agent.tyk.sh/) · [Documentation](https://octomus-agent.tyk.sh/docs/) · [Explore a sample run](https://octomus-agent.tyk.sh/showcase/)**
+
 Explore a useful fix, a rejected rewrite, a deferred optimization, and a blocked task in the
 guided demo at [octomus.tyk.sh](https://octomus.tyk.sh/). The public homepage at
 [octomus-agent.tyk.sh](https://octomus-agent.tyk.sh/) and [showcase](docs/showcase.md) need
@@ -47,12 +49,12 @@ npm run site:build --prefix web
 python3 tests/serve_site.py
 ```
 
-Then open **http://127.0.0.1:4310/octomus-agent/**.
+Then open **http://127.0.0.1:4310/**.
 
-The site is published at `https://octomus-agent.tyk.sh/` with the demo at
-`https://octomus.tyk.sh/`; publishing is a manual step. The [launch
-guide](docs/product-hunt.md) contains the deployment instructions, Product Hunt copy, and
-gallery assets.
+The homepage and searchable documentation are published through Cloudflare Workers at
+`https://octomus-agent.tyk.sh/`, with the hosted demo also at `https://octomus.tyk.sh/`.
+Publishing is a manual step. The [launch guide](docs/product-hunt.md) contains deployment
+instructions, Product Hunt copy, and gallery assets.
 
 ## Getting started
 
@@ -83,7 +85,9 @@ not dollar caps; validated per-task and daily cost figures are not available yet
 
 | Document | What it covers |
 | --- | --- |
+| [Documentation overview](docs/index.md) | Find your path through the guides |
 | [Getting started](docs/getting-started.md) | Prerequisites, install, service user, first run |
+| [Configuration](docs/configuration.md) | Repository, routes, checks, and operating limits |
 | [Architecture](docs/architecture.md) | Cycle, task and review contracts; storage and trust |
 | [Model routing](docs/model-routing.md) | Per-role Codex and OpenCode selection |
 | [Configuration example](docs/configuration.example.json) | Every saved policy field with its shipped default |
