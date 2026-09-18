@@ -16,11 +16,11 @@ deploying the website does not submit a listing or book a launch slot.
 Octomus finds useful work in your repo, challenges each proposal with two independent
 reviewers, and delivers reviewed, verified PRs through Codex or OpenCode. You decide what
 merges. Self-hosted preview: bring a dedicated VM and your provider access. Explore the
-labeled synthetic demo at https://octomus.tyk.sh/ before installing.
+labeled synthetic demo at https://octomus-agent.tyk.sh/showcase/ before installing.
 
 **Product URL:** https://octomus-agent.tyk.sh/
 
-**Demo:** https://octomus.tyk.sh/
+**Demo:** https://octomus-agent.tyk.sh/showcase/
 
 **Documentation:** https://octomus-agent.tyk.sh/docs/
 

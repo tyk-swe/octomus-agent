@@ -38,7 +38,7 @@ reconciled from durable state.
 **[Homepage](https://octomus-agent.tyk.sh/) · [Documentation](https://octomus-agent.tyk.sh/docs/) · [Explore a sample run](https://octomus-agent.tyk.sh/showcase/)**
 
 Explore a useful fix, a rejected rewrite, a deferred optimization, and a blocked task in the
-guided demo at [octomus.tyk.sh](https://octomus.tyk.sh/). The public homepage at
+guided demo at [octomus-agent.tyk.sh/showcase](https://octomus-agent.tyk.sh/showcase/). The public homepage at
 [octomus-agent.tyk.sh](https://octomus-agent.tyk.sh/) and [showcase](docs/showcase.md) need
 no service, account, token, or database. All sample records and screenshots are explicitly
 synthetic.
@@ -52,7 +52,7 @@ python3 tests/serve_site.py
 Then open **http://127.0.0.1:4310/**.
 
 The homepage and searchable documentation are published through Cloudflare Workers at
-`https://octomus-agent.tyk.sh/`, with the hosted demo also at `https://octomus.tyk.sh/`.
+`https://octomus-agent.tyk.sh/`, with the hosted demo at `https://octomus-agent.tyk.sh/showcase/`.
 Publishing is a manual step. The [launch guide](docs/product-hunt.md) contains deployment
 instructions, Product Hunt copy, and gallery assets.
 
