@@ -98,6 +98,7 @@ not dollar caps; validated per-task and daily cost figures are not available yet
 | [Cost](docs/cost.md) | What a session admission is, and what is not measured |
 | [Threat model](docs/threat-model.md) | Trust boundaries, prompt injection, redaction limits |
 | [Releasing](docs/releasing.md) | Packaging, release workflow, crate handoff |
+| [Rust → Go roadmap](docs/roadmap/README.md) | Proposed backend rewrite, milestones, and acceptance gates |
 
 ## Security
 
