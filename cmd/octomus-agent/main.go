@@ -85,10 +85,10 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--help" || arg == "-h" {
+		if arg == "--help" || strings.HasPrefix(arg, "-h") {
 			return a, "help", nil
 		}
-		if arg == "--version" || arg == "-V" {
+		if arg == "--version" || strings.HasPrefix(arg, "-V") {
 			return a, "version", nil
 		}
 		name, value, hasValue := strings.Cut(arg, "=")

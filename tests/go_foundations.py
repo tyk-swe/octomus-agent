@@ -40,7 +40,7 @@ def cli_contracts():
                 assert not result.stdout and result.stderr, case['name']
             else:
                 assert not result.stderr, (case['name'], result.stderr)
-                if any(flag in case['args'] for flag in ('--help', '-h')):
+                if 'Usage: octomus-agent [OPTIONS]' in expected['stdout']:
                     for flag in ['data-dir', 'listen', 'assets', 'print-config', 'doctor', 'audit', 'usage-report', 'export-run', 'help', 'version']:
                         assert f'--{flag}' in result.stdout, flag
                 else:

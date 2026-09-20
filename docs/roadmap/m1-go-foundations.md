@@ -78,13 +78,15 @@ Compilation fails without `web/build/200.html` or the `_app` entry bundles;
 lost. Tests compare every embedded production file with its source bytes and
 exercise a relocated executable from an unrelated working directory.
 
-`--print-config`, `--help`/`-h`, and `--version`/`-V` work. Flags, environment
-overrides, conflicts, parse-error exit 2, and output streams have frozen CLI
-coverage, including decimal IPv6 scope IDs through `u32::MAX` for both flags
-and environment variables; named scopes remain invalid. Service startup,
-doctor/audit, usage reporting and run export return
-exit 1 with an explicit unimplemented-milestone diagnostic, before creating a
-data directory or lock. These are deliberate M1 boundaries, not mock successes.
+`--print-config`, `--help`/`-h`, and `--version`/`-V` work. Short help/version
+options preserve reference short-circuit behavior for clusters and attached
+values (`-hV`, `-Vh`, `-hh`, `-h=anything`, and `-V=anything`). Flags,
+environment overrides, conflicts, parse-error exit 2, and output streams have
+frozen CLI coverage, including decimal IPv6 scope IDs through `u32::MAX` for
+both flags and environment variables; named scopes remain invalid. Service
+startup, doctor/audit, usage reporting and run export return exit 1 with an
+explicit unimplemented-milestone diagnostic, before creating a data directory
+or lock. These are deliberate M1 boundaries, not mock successes.
 No runner, GitHub, database, or service operations are implemented by this gate.
 
 `internal/config` and `internal/model` retain declaration-order serialization,
@@ -121,10 +123,10 @@ not create any branches.
 ```text
 Milestone: M1
 Status: DONE
-Implementation revision: Working tree based on 3c2b5cd50924033873d7f740f9df44daee5685db.
+Implementation revision: Working tree based on 15466e4; frozen behavior reference remains 3c2b5cd50924033873d7f740f9df44daee5685db.
 Delivered output: Go CLI, configuration/domain records and behavior, strict structured-result validation, exact identities, owned snapshots, real dashboard embedding, Rust-derived fixtures and migration CI/Make targets.
-Acceptance tests and commands: make check-go test-go; cargo test --locked --test compatibility; Rust-default and Go-selected tests/go_foundations.py; reference checks and all full-suite components recorded in M0.
-Results: PASS. 1421 Rust-derived wire cases, including signed-zero rejection in integer fields, 115 structured-result cases, 79 CLI cases, exact identity fixtures, ownership/domain tests, real embedded-file/binary checks and absent-asset build failures. gofmt, go vet ./..., go test ./..., and CGO_ENABLED=1 go test -race ./... all passed. Go executable built with CGO_ENABLED=0.
+Acceptance tests and commands: make check-go; make test-go; Rust-default tests/go_foundations.py; complete make check and make test as recorded in M0. After the CLI parity fix: go vet ./...; go test ./cmd/octomus-agent -count=1; CGO_ENABLED=1 go test -race ./cmd/octomus-agent -count=1; static Go build; shared CLI/embed contracts against both binaries; git diff --check.
+Results: PASS. 1421 Rust-derived wire cases, including signed-zero rejection in integer fields, 115 structured-result cases, 84 CLI cases, exact identity fixtures, ownership/domain tests, real embedded-file/binary checks and absent-asset build failures. gofmt, go vet ./..., go test ./..., and CGO_ENABLED=1 go test -race ./... all passed. Go executable built with CGO_ENABLED=0. The five added short help/version regressions failed before the fix and passed afterward; fresh full-suite verification is recorded in M0.
 Intentional behavior differences: None approved.
 Unrun required checks and blockers: None for M1. Later service/database/runner commands explicitly fail as required by this milestone; Rust remains the default.
 Next eligible milestone: M2 and M3.

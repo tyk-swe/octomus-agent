@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -42,7 +43,13 @@ func TestFrozenCLIContracts(t *testing.T) {
 			if stderr.Len() != 0 {
 				t.Fatal(stderr.String())
 			}
-			if c.Name != "help" && c.Name != "short-help" && c.Name != "help ignores bad environment" && stdout.String() != c.Expected.Stdout {
+			if strings.Contains(c.Expected.Stdout, "Usage: octomus-agent [OPTIONS]") {
+				for _, flag := range []string{"data-dir", "listen", "assets", "print-config", "doctor", "audit", "usage-report", "export-run", "help", "version"} {
+					if !strings.Contains(stdout.String(), "--"+flag) {
+						t.Errorf("help omitted --%s", flag)
+					}
+				}
+			} else if stdout.String() != c.Expected.Stdout {
 				t.Errorf("stdout differs: %s", stdout.String())
 			}
 		})

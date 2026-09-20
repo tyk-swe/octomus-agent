@@ -196,10 +196,10 @@ they are not committed evidence artifacts.
 ```text
 Milestone: M0
 Status: DONE
-Implementation revision: Working tree based on 3c2b5cd50924033873d7f740f9df44daee5685db.
+Implementation revision: Working tree based on 15466e4; frozen behavior reference remains 3c2b5cd50924033873d7f740f9df44daee5685db.
 Delivered output: Frozen reference/toolchain/dependencies/budgets; complete test allocation; Rust wire/CLI/state/API/export goldens; executable-selectable shared helpers.
-Acceptance tests and commands: make check; make test through its dashboard stage, then the failed browser case and remaining showcase/site commands individually; cargo fmt --check; cargo clippy --all-targets --locked -- -D warnings; cargo test --locked --test compatibility; python3 tests/compatibility_capture.py; python3 tests/go_foundations.py; make check-go test-go.
-Results: All required components passed. Rust unit/integration/doc suite: 168 passed, 5 pre-existing ignored (pinned-client/history-scale gates remain assigned to M4/M8). Python evidence, end-to-end, baseline, notification, runner, hardening, distribution and crate-guard tests passed. Dashboard: 114 initially passed; its one failed case passed on targeted retry; one desktop-only case is intentionally skipped on mobile. Showcase contract tests plus 8 browser tests and 16 site tests passed. New Rust/Go compatibility and race gates passed. Environment failures and recovery are recorded below.
+Acceptance tests and commands: make check; make test; make check-go; make test-go; python3 tests/go_foundations.py. After the CLI parity fix: go vet ./...; go test ./cmd/octomus-agent -count=1; CGO_ENABLED=1 go test -race ./cmd/octomus-agent -count=1; CGO_ENABLED=0 go build -trimpath -o bin/octomus-agent-go ./cmd/octomus-agent; Rust-default and Go-selected tests/go_foundations.py; git diff --check.
+Results: PASS. Fresh 2026-09-20 make check and make test both exited 0 without retries: 168 Rust tests passed, 5 pre-existing ignored; all Python integration stages passed; 115 dashboard, 8 showcase and 16 site browser tests passed. Go formatting, vet, unit/race and embedding gates passed. Five additional Rust-captured short help/version cases reproduced a Go CLI mismatch before the fix; all 84 CLI cases now pass against both executables. No assertion or qualification budget was weakened.
 Intentional behavior differences: None approved.
 Unrun required checks and blockers: None for M0/M1. No live validation, archive-equivalence claim, or later-milestone ignored-test qualification is implied.
 Next eligible milestone: M1 is complete; M2 and M3 are eligible.
@@ -223,3 +223,24 @@ was weakened to obtain the result. The `make test` process itself exited on the
 environment failure; the completed qualification is the recorded run plus these
 explicit resumed stages. The newly added state/API fixture verifier was also run
 separately after its addition to the Make target and passed.
+
+### Fresh completion verification — 2026-09-20
+
+The earlier environment-failure account above is historical. The fresh complete
+`make check` and `make test` invocations both exited successfully, as did
+`make check-go`, `make test-go`, and the Rust-default shared CLI/embed contracts.
+After extending the CLI corpus and fixing short help/version handling, the
+focused Go CLI and race tests, vet, static binary build, and both executable
+selections of the shared contracts passed again (84 frozen CLI cases).
+
+Fresh local logs use `/tmp/octomus-verify-20260920-122744-` with
+`check.log`, `test.log`, `check-go.log`, `test-go.log`,
+`go-foundations-rust.log`, `environment.log`, and `parity-verify.log` suffixes.
+The additional frozen CLI outputs came from `probes.json` under the same prefix;
+Go output was never used to set expected results. These local logs are not
+committed evidence or live validation.
+
+The checked-out `src/`, `Cargo.lock`, and `build.rs` are identical to the frozen
+reference. The only `Cargo.toml` difference is the package include entry for
+`tests/fixtures/compatibility/*.json`; it does not change executable behavior.
+The reference revision and qualification budgets remain unchanged.

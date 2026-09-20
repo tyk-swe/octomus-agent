@@ -1072,6 +1072,66 @@
         "stdout": "",
         "stderr": "error: invalid value '127.0.0.1%42:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
       }
+    },
+    {
+      "name": "short help before version",
+      "args": [
+        "-hV"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "Continuous repository improvement through reviewed pull requests\n\nUsage: octomus-agent [OPTIONS]\n\nOptions:\n      --data-dir <DATA_DIR>    [env: OCTOMUS_DATA_DIR=] [default: .octomus]\n      --listen <LISTEN>        [env: OCTOMUS_LISTEN=] [default: 127.0.0.1:4200]\n      --assets <ASSETS>        Override the embedded dashboard with a build directory [env: OCTOMUS_ASSETS=]\n      --print-config           Print configuration defaults and exit\n      --doctor                 Validate saved repository, authentication and model routes, then exit\n      --audit                  Check only audit prerequisites with --doctor\n      --usage-report           Export a read-only JSON usage report from saved state and exit\n      --export-run <CYCLE_ID>  Export read-only JSON run evidence for one saved cycle and exit\n  -h, --help                   Print help\n  -V, --version                Print version\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "short version before help",
+      "args": [
+        "-Vh"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "octomus-agent 0.1.0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "repeated short help",
+      "args": [
+        "-hh"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "Continuous repository improvement through reviewed pull requests\n\nUsage: octomus-agent [OPTIONS]\n\nOptions:\n      --data-dir <DATA_DIR>    [env: OCTOMUS_DATA_DIR=] [default: .octomus]\n      --listen <LISTEN>        [env: OCTOMUS_LISTEN=] [default: 127.0.0.1:4200]\n      --assets <ASSETS>        Override the embedded dashboard with a build directory [env: OCTOMUS_ASSETS=]\n      --print-config           Print configuration defaults and exit\n      --doctor                 Validate saved repository, authentication and model routes, then exit\n      --audit                  Check only audit prerequisites with --doctor\n      --usage-report           Export a read-only JSON usage report from saved state and exit\n      --export-run <CYCLE_ID>  Export read-only JSON run evidence for one saved cycle and exit\n  -h, --help                   Print help\n  -V, --version                Print version\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "short help attached value",
+      "args": [
+        "-h=anything"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "Continuous repository improvement through reviewed pull requests\n\nUsage: octomus-agent [OPTIONS]\n\nOptions:\n      --data-dir <DATA_DIR>    [env: OCTOMUS_DATA_DIR=] [default: .octomus]\n      --listen <LISTEN>        [env: OCTOMUS_LISTEN=] [default: 127.0.0.1:4200]\n      --assets <ASSETS>        Override the embedded dashboard with a build directory [env: OCTOMUS_ASSETS=]\n      --print-config           Print configuration defaults and exit\n      --doctor                 Validate saved repository, authentication and model routes, then exit\n      --audit                  Check only audit prerequisites with --doctor\n      --usage-report           Export a read-only JSON usage report from saved state and exit\n      --export-run <CYCLE_ID>  Export read-only JSON run evidence for one saved cycle and exit\n  -h, --help                   Print help\n  -V, --version                Print version\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "short version attached value",
+      "args": [
+        "-V=anything"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "octomus-agent 0.1.0\n",
+        "stderr": ""
+      }
     }
   ]
 }
