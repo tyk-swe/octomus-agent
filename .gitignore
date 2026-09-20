@@ -16,3 +16,4 @@
 __pycache__/
 /web/artifacts/
 /web/.wrangler/
+/bin/

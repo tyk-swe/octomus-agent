@@ -1,7 +1,7 @@
 # Octomus Agent roadmap: Rust → Go
 
-**Status: proposed.** Every milestone starts at `TODO`; this roadmap records no
-completed implementation or verification gate.
+**Status: implementation underway.** Individual milestone progress records are
+authoritative. Rust remains the default build and release implementation.
 
 Replace Octomus Agent’s Rust backend with an idiomatic, maintainable Go service
 while preserving supported behavior, durable state, the dashboard, both runner

@@ -1,0 +1,1296 @@
+{
+  "reference": "3c2b5cd50924033873d7f740f9df44daee5685db",
+  "records": [
+    [
+      "settings",
+      "config",
+      {
+        "github_repo": "Fixture/Project"
+      }
+    ],
+    [
+      "settings",
+      "control",
+      {
+        "paused": true,
+        "cycle_number": 1,
+        "next_cycle_at": 0,
+        "error": null
+      }
+    ],
+    [
+      "cycle",
+      "11111111-1111-4111-8111-111111111111",
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "number": 1,
+        "status": "completed",
+        "started_at": "2026-01-01T00:00:00Z",
+        "completed_at": "2026-01-01T00:01:00Z",
+        "grounding": null,
+        "proposals": [
+          {
+            "id": "synthetic-proposal",
+            "title": "  İΣ CACHE  ",
+            "problem": "fixture",
+            "evidence": [],
+            "benefit": "fixture",
+            "category": "fixture",
+            "target": "main",
+            "tier": "M",
+            "scope": "fixture",
+            "dependencies": [],
+            "prompt": "SYNTHETIC-PRIVATE-PROMPT",
+            "decision": "accepted",
+            "reason": "fixture"
+          }
+        ],
+        "assessments": [],
+        "sessions": [],
+        "error": null,
+        "repository": "Fixture/Project",
+        "decision_memory": [],
+        "run_id": null,
+        "lifecycle": {
+          "archived_at": null,
+          "discarded_at": "2026-01-01T00:02:00Z"
+        }
+      }
+    ],
+    [
+      "task",
+      "22222222-2222-4222-8222-222222222222",
+      {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "cycle_id": "11111111-1111-4111-8111-111111111111",
+        "proposal": {
+          "id": "synthetic-proposal",
+          "title": "  İΣ CACHE  ",
+          "problem": "fixture",
+          "evidence": [],
+          "benefit": "fixture",
+          "category": "fixture",
+          "target": "main",
+          "tier": "M",
+          "scope": "fixture",
+          "dependencies": [],
+          "prompt": "SYNTHETIC-PRIVATE-PROMPT",
+          "decision": "accepted",
+          "reason": "fixture"
+        },
+        "status": "blocked",
+        "route": {
+          "model": "legacy",
+          "effort": "low"
+        },
+        "config": {
+          "github_repo": "Fixture/Project"
+        },
+        "source_revision": "fixture",
+        "comparison_base": "fixture",
+        "default_revision": "fixture",
+        "branch": "tyk/synthetic-frozen",
+        "workspace": "/synthetic-private-workspace",
+        "execution_session": null,
+        "repair_session": null,
+        "sessions": [],
+        "reviews": [],
+        "verification": [],
+        "output_commit": null,
+        "pr_number": null,
+        "pr_url": null,
+        "attempts": 1,
+        "error": null,
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:01:00Z",
+        "attempt_policy": null
+      }
+    ]
+  ],
+  "legacy_schema": [
+    [
+      "table",
+      "records",
+      "records",
+      "CREATE TABLE records(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id))"
+    ],
+    [
+      "table",
+      "usage",
+      "usage",
+      "CREATE TABLE usage(day TEXT PRIMARY KEY,sessions INTEGER NOT NULL)"
+    ]
+  ],
+  "legacy_usage": {
+    "admissions": [],
+    "cycles": [
+      {
+        "completed_at": "2026-01-01T00:01:00Z",
+        "decisions": {
+          "accepted": 1,
+          "candidate": 0,
+          "deferred": 0,
+          "rejected": 0
+        },
+        "error": null,
+        "id": "11111111-1111-4111-8111-111111111111",
+        "mode": "execution",
+        "number": 1,
+        "planning_admissions": 0,
+        "recorded_completed_sessions": 0,
+        "started_at": "2026-01-01T00:00:00Z",
+        "status": "completed",
+        "task_admissions": 0,
+        "wall_seconds": 60.0
+      }
+    ],
+    "daily": [
+      {
+        "admissions": 3,
+        "attributed_admissions": 0,
+        "day": "2026-01-01",
+        "unattributed_admissions": 3
+      }
+    ],
+    "generated_at": "<export-time>",
+    "has_admission_ledger": false,
+    "measurement": "Admissions reserve budget before work starts. They include failed starts and retries; they are not completed turns or billed usage. Completed session counts describe persisted thread records; a repair thread can contain multiple turns. Historical admissions without a ledger remain unattributed. Cycle wall time excludes subsequent task execution. No provider charges or merge status are inferred.",
+    "schema_version": 1,
+    "tasks": [
+      {
+        "admissions": 0,
+        "created_at": "2026-01-01T00:00:00Z",
+        "cycle_id": "11111111-1111-4111-8111-111111111111",
+        "error": null,
+        "id": "22222222-2222-4222-8222-222222222222",
+        "pr_url": null,
+        "recorded_completed_sessions": 0,
+        "repair_route": {
+          "backend": "codex",
+          "effort": "medium",
+          "model": ""
+        },
+        "route": {
+          "backend": "codex",
+          "effort": "low",
+          "model": "legacy"
+        },
+        "status": "blocked",
+        "tier": "M",
+        "updated_at": "2026-01-01T00:01:00Z"
+      }
+    ],
+    "tiers": [
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "XS"
+      },
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "S"
+      },
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "M"
+      },
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "L"
+      },
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "XL"
+      }
+    ]
+  },
+  "legacy_evidence": {
+    "cycle": {
+      "completed_at": "2026-01-01T00:01:00Z",
+      "grounding_revision": null,
+      "id": "11111111-1111-4111-8111-111111111111",
+      "mode": "execution",
+      "number": 1,
+      "planning": {
+        "creates_execution_queue": true,
+        "decisions": {
+          "accepted": 1
+        },
+        "error_recorded": false,
+        "planning_finished": true,
+        "proposal_count": 1,
+        "reviewer_batches_saved": 0,
+        "status": "completed"
+      },
+      "repository": "Fixture/Project",
+      "started_at": "2026-01-01T00:00:00Z",
+      "status": "completed"
+    },
+    "gaps": [
+      "Reviewer adversary-a has neither a completed session nor a saved assessment batch.",
+      "Reviewer adversary-b has neither a completed session nor a saved assessment batch.",
+      "The cycle has no saved grounding revision."
+    ],
+    "generated_at": "<export-time>",
+    "kind": "recorded_review_check_evidence",
+    "limitations": [
+      "Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
+      "Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
+      "Deferred is not rejected.",
+      "A recorded pull request describes delivery, not merge. Published is not merged.",
+      "Audit acceptance is a recommendation. Audit cycles never create an execution queue, so an accepted audit proposal has no linked task by design.",
+      "Saved session routes are requested routes. Runtime model identity is not independently reported here.",
+      "Costs, delivery time and any replay timeline are not inferred from these records.",
+      "Zero or multiple task matches are preserved as recorded. No single task is selected on the caller's behalf.",
+      "Free text carried here (proposal problem, benefit, scope and evidence, and code-review findings) is model-authored and still requires manual review before sharing."
+    ],
+    "proposals": [
+      {
+        "benefit": "fixture",
+        "category": "fixture",
+        "evidence": [],
+        "final_decision": "accepted",
+        "final_reason": "fixture",
+        "gaps": [],
+        "id": "synthetic-proposal",
+        "linked_tasks": [
+          {
+            "attempts": 1,
+            "blocked_reason": null,
+            "branch": "tyk/synthetic-frozen",
+            "created_at": "2026-01-01T00:00:00Z",
+            "cycle_id": "11111111-1111-4111-8111-111111111111",
+            "error_recorded": false,
+            "gaps": [
+              "The task's saved execution configuration requires no verification commands, so no check evidence exists."
+            ],
+            "id": "22222222-2222-4222-8222-222222222222",
+            "latest_review": {
+              "clean": false,
+              "clean_at_output_revision": false,
+              "latest": null,
+              "rounds_recorded": 0
+            },
+            "proposal_id": "synthetic-proposal",
+            "pull_request": null,
+            "required_commands": {
+              "all_passed_at_output_revision": false,
+              "commands": [],
+              "state": "not_configured"
+            },
+            "revisions": {
+              "comparison_base": "fixture",
+              "default_branch": "fixture",
+              "output": null,
+              "source": "fixture"
+            },
+            "sessions": [],
+            "status": "blocked",
+            "updated_at": "2026-01-01T00:01:00Z"
+          }
+        ],
+        "problem": "fixture",
+        "reviewer_verdicts": [
+          {
+            "decision": null,
+            "note": "No saved assessment batch is attributed to adversary-a.",
+            "reason": null,
+            "reviewer": "adversary-a",
+            "state": "missing"
+          },
+          {
+            "decision": null,
+            "note": "No saved assessment batch is attributed to adversary-b.",
+            "reason": null,
+            "reviewer": "adversary-b",
+            "state": "missing"
+          }
+        ],
+        "scope": "fixture",
+        "target": "main",
+        "tier": "M",
+        "title": "  İΣ CACHE  "
+      }
+    ],
+    "review_required_before_sharing": true,
+    "review_requirement": "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.",
+    "schema_version": 1
+  },
+  "api": {
+    "/config": {
+      "branch_prefix": "octomus/",
+      "categories": [
+        "features",
+        "correctness",
+        "performance",
+        "ux-dx",
+        "refactoring",
+        "simplification",
+        "tests",
+        "dependencies",
+        "documentation"
+      ],
+      "codex_binary": "codex",
+      "command_timeout_seconds": 600,
+      "cycle_interval_seconds": 1800,
+      "default_branch": "main",
+      "discovery_agents": 9,
+      "execution_concurrency": 2,
+      "github_repo": "Fixture/Project",
+      "large_pr_lines": 1000,
+      "long_lived_pr_days": 7,
+      "maintenance_every_cycles": 3,
+      "max_no_progress_rounds": 2,
+      "max_open_prs": 5,
+      "max_repair_rounds": 4,
+      "max_retries": 2,
+      "max_sessions_per_day": 150,
+      "max_tasks_per_cycle": 5,
+      "max_workspace_bytes": 20000000000,
+      "opencode_binary": "opencode",
+      "repair_route": {
+        "backend": "codex",
+        "effort": "medium",
+        "model": ""
+      },
+      "repository": "",
+      "retain_completed_days": 14,
+      "retain_events": 10000,
+      "roles": {
+        "code_reviewer": {
+          "backend": "codex",
+          "effort": "",
+          "model": ""
+        },
+        "discovery": {
+          "backend": "codex",
+          "effort": "",
+          "model": ""
+        },
+        "orchestrator": {
+          "backend": "codex",
+          "effort": "",
+          "model": ""
+        },
+        "proposal_reviewer": {
+          "backend": "codex",
+          "effort": "",
+          "model": ""
+        }
+      },
+      "runner_storage_paths": {},
+      "session_timeout_seconds": 1800,
+      "task_timeout_seconds": 14400,
+      "tiers": {
+        "L": {
+          "backend": "codex",
+          "effort": "medium",
+          "model": ""
+        },
+        "M": {
+          "backend": "codex",
+          "effort": "low",
+          "model": ""
+        },
+        "S": {
+          "backend": "codex",
+          "effort": "max",
+          "model": ""
+        },
+        "XL": {
+          "backend": "codex",
+          "effort": "high",
+          "model": ""
+        },
+        "XS": {
+          "backend": "codex",
+          "effort": "xhigh",
+          "model": ""
+        }
+      },
+      "verification_commands": []
+    },
+    "/state": {
+      "active_cycle_mode": null,
+      "active_tasks": 0,
+      "attention_tasks": [
+        {
+          "blocked_reason": null,
+          "branch": "tyk/synthetic-frozen",
+          "category": "fixture",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cycle_id": "11111111-1111-4111-8111-111111111111",
+          "error": null,
+          "id": "22222222-2222-4222-8222-222222222222",
+          "lifecycle": {},
+          "pr_number": null,
+          "pr_url": null,
+          "status": "blocked",
+          "superseded_by": [],
+          "target": "main",
+          "tier": "M",
+          "title": "  İΣ CACHE  ",
+          "updated_at": "2026-01-01T00:01:00Z"
+        }
+      ],
+      "audit_configured": false,
+      "baseline": null,
+      "baseline_active": false,
+      "configured": false,
+      "control": {
+        "batch": null,
+        "context_fingerprint": "",
+        "cycle_number": 1,
+        "error": null,
+        "idle_streak": 0,
+        "mode": "paused",
+        "next_cycle_at": 0,
+        "paused": true
+      },
+      "counts": {
+        "blocked": 1
+      },
+      "cycle_active": false,
+      "cycles": [
+        {
+          "completed_at": "2026-01-01T00:01:00Z",
+          "decisions": {
+            "accepted": 1,
+            "candidate": 0,
+            "deferred": 0,
+            "rejected": 0
+          },
+          "error": null,
+          "id": "11111111-1111-4111-8111-111111111111",
+          "lifecycle": {
+            "archived_at": null,
+            "discarded_at": "2026-01-01T00:02:00Z"
+          },
+          "mode": "execution",
+          "number": 1,
+          "session_count": 0,
+          "started_at": "2026-01-01T00:00:00Z",
+          "status": "completed"
+        }
+      ],
+      "events": [],
+      "merged_prs": 0,
+      "notifications": {
+        "configured": false,
+        "failed": 0,
+        "last_delivered_at": null,
+        "last_error": null,
+        "last_http_status": null,
+        "pending": 0,
+        "state": "disabled"
+      },
+      "planning_capacity": {
+        "day": "<UTC-day>",
+        "limit": 150,
+        "next_reset_at": "<next-UTC-midnight>",
+        "remaining": 150,
+        "required": 13,
+        "status": "ready",
+        "used": 0
+      },
+      "pr_capacity": {
+        "limit": 5,
+        "observed_at": null,
+        "owned_open": null,
+        "reason": "No complete open-PR inventory has been observed",
+        "remaining": null,
+        "reserved": 0,
+        "status": "unavailable"
+      },
+      "prs": [],
+      "repository": "Fixture/Project",
+      "session_limit": 150,
+      "sessions_today": 0,
+      "status": "paused",
+      "storage": {
+        "application_bytes": 568280,
+        "measured_at": "<measurement-time>",
+        "planning_bytes": 0,
+        "runner_transcripts": {
+          "bytes": null,
+          "message": "Runner storage reported separately. Application admission measures the data directory.",
+          "runners": {
+            "codex": {
+              "bytes": null,
+              "status": "unconfigured"
+            },
+            "opencode": {
+              "bytes": null,
+              "status": "unconfigured"
+            }
+          },
+          "status": "unavailable"
+        },
+        "task_bytes": 0
+      },
+      "storage_limit": 20000000000,
+      "tasks": [
+        {
+          "blocked_reason": null,
+          "branch": "tyk/synthetic-frozen",
+          "category": "fixture",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cycle_id": "11111111-1111-4111-8111-111111111111",
+          "error": null,
+          "id": "22222222-2222-4222-8222-222222222222",
+          "lifecycle": {},
+          "pr_number": null,
+          "pr_url": null,
+          "status": "blocked",
+          "superseded_by": [],
+          "target": "main",
+          "tier": "M",
+          "title": "  İΣ CACHE  ",
+          "updated_at": "2026-01-01T00:01:00Z"
+        }
+      ]
+    },
+    "/tasks/22222222-2222-4222-8222-222222222222": {
+      "allowed_actions": [
+        "cancel",
+        "archive",
+        "retry"
+      ],
+      "attempt_policy": null,
+      "attempts": 1,
+      "blocked_reason": null,
+      "branch": "tyk/synthetic-frozen",
+      "comparison_base": "fixture",
+      "config": {
+        "branch_prefix": "octomus/",
+        "categories": [
+          "features",
+          "correctness",
+          "performance",
+          "ux-dx",
+          "refactoring",
+          "simplification",
+          "tests",
+          "dependencies",
+          "documentation"
+        ],
+        "codex_binary": "codex",
+        "command_timeout_seconds": 600,
+        "cycle_interval_seconds": 1800,
+        "default_branch": "main",
+        "discovery_agents": 9,
+        "execution_concurrency": 2,
+        "github_repo": "Fixture/Project",
+        "large_pr_lines": 1000,
+        "long_lived_pr_days": 7,
+        "maintenance_every_cycles": 3,
+        "max_no_progress_rounds": 2,
+        "max_open_prs": 5,
+        "max_repair_rounds": 4,
+        "max_retries": 2,
+        "max_sessions_per_day": 150,
+        "max_tasks_per_cycle": 5,
+        "max_workspace_bytes": 20000000000,
+        "opencode_binary": "opencode",
+        "repair_route": {
+          "backend": "codex",
+          "effort": "medium",
+          "model": ""
+        },
+        "repository": "",
+        "retain_completed_days": 14,
+        "retain_events": 10000,
+        "roles": {
+          "code_reviewer": {
+            "backend": "codex",
+            "effort": "",
+            "model": ""
+          },
+          "discovery": {
+            "backend": "codex",
+            "effort": "",
+            "model": ""
+          },
+          "orchestrator": {
+            "backend": "codex",
+            "effort": "",
+            "model": ""
+          },
+          "proposal_reviewer": {
+            "backend": "codex",
+            "effort": "",
+            "model": ""
+          }
+        },
+        "runner_storage_paths": {},
+        "session_timeout_seconds": 1800,
+        "task_timeout_seconds": 14400,
+        "tiers": {
+          "L": {
+            "backend": "codex",
+            "effort": "medium",
+            "model": ""
+          },
+          "M": {
+            "backend": "codex",
+            "effort": "low",
+            "model": ""
+          },
+          "S": {
+            "backend": "codex",
+            "effort": "max",
+            "model": ""
+          },
+          "XL": {
+            "backend": "codex",
+            "effort": "high",
+            "model": ""
+          },
+          "XS": {
+            "backend": "codex",
+            "effort": "xhigh",
+            "model": ""
+          }
+        },
+        "verification_commands": []
+      },
+      "created_at": "2026-01-01T00:00:00Z",
+      "cycle_id": "11111111-1111-4111-8111-111111111111",
+      "default_revision": "fixture",
+      "effective_attempt_policy": {
+        "command_timeout_seconds": 600,
+        "max_no_progress_rounds": 2,
+        "max_repair_rounds": 4,
+        "max_retries": 2,
+        "session_timeout_seconds": 1800,
+        "task_timeout_seconds": 14400
+      },
+      "error": null,
+      "execution_session": null,
+      "id": "22222222-2222-4222-8222-222222222222",
+      "lifecycle": {
+        "archived_at": null,
+        "discarded_at": null
+      },
+      "operating_policy": {
+        "max_sessions_per_day": 150,
+        "max_workspace_bytes": 20000000000
+      },
+      "output_commit": null,
+      "pr_number": null,
+      "pr_url": null,
+      "proposal": {
+        "benefit": "fixture",
+        "category": "fixture",
+        "decision": "accepted",
+        "dependencies": [],
+        "evidence": [],
+        "id": "synthetic-proposal",
+        "problem": "fixture",
+        "problem_key": "",
+        "prompt": "SYNTHETIC-PRIVATE-PROMPT",
+        "reason": "fixture",
+        "reconsiders": [],
+        "relevant_paths": [],
+        "scope": "fixture",
+        "target": "main",
+        "tier": "M",
+        "title": "  İΣ CACHE  "
+      },
+      "rediscovery_requested": false,
+      "rediscovery_result": null,
+      "repair_session": null,
+      "review_baseline": 0,
+      "reviews": [],
+      "route": {
+        "backend": "codex",
+        "effort": "low",
+        "model": "legacy"
+      },
+      "run_id": null,
+      "sessions": [],
+      "source_revision": "fixture",
+      "status": "blocked",
+      "superseded_by": [],
+      "supersedes": [],
+      "updated_at": "2026-01-01T00:01:00Z",
+      "verification": [],
+      "workspace": "/synthetic-private-workspace"
+    },
+    "/cycles/11111111-1111-4111-8111-111111111111/evidence": {
+      "cycle": {
+        "completed_at": "2026-01-01T00:01:00Z",
+        "grounding_revision": null,
+        "id": "11111111-1111-4111-8111-111111111111",
+        "mode": "execution",
+        "number": 1,
+        "planning": {
+          "creates_execution_queue": true,
+          "decisions": {
+            "accepted": 1
+          },
+          "error_recorded": false,
+          "planning_finished": true,
+          "proposal_count": 1,
+          "reviewer_batches_saved": 0,
+          "status": "completed"
+        },
+        "repository": "Fixture/Project",
+        "started_at": "2026-01-01T00:00:00Z",
+        "status": "completed"
+      },
+      "gaps": [
+        "Reviewer adversary-a has neither a completed session nor a saved assessment batch.",
+        "Reviewer adversary-b has neither a completed session nor a saved assessment batch.",
+        "The cycle has no saved grounding revision."
+      ],
+      "generated_at": "<export-time>",
+      "kind": "recorded_review_check_evidence",
+      "limitations": [
+        "Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
+        "Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
+        "Deferred is not rejected.",
+        "A recorded pull request describes delivery, not merge. Published is not merged.",
+        "Audit acceptance is a recommendation. Audit cycles never create an execution queue, so an accepted audit proposal has no linked task by design.",
+        "Saved session routes are requested routes. Runtime model identity is not independently reported here.",
+        "Costs, delivery time and any replay timeline are not inferred from these records.",
+        "Zero or multiple task matches are preserved as recorded. No single task is selected on the caller's behalf.",
+        "Free text carried here (proposal problem, benefit, scope and evidence, and code-review findings) is model-authored and still requires manual review before sharing."
+      ],
+      "proposals": [
+        {
+          "benefit": "fixture",
+          "category": "fixture",
+          "evidence": [],
+          "final_decision": "accepted",
+          "final_reason": "fixture",
+          "gaps": [],
+          "id": "synthetic-proposal",
+          "linked_tasks": [
+            {
+              "attempts": 1,
+              "blocked_reason": null,
+              "branch": "tyk/synthetic-frozen",
+              "created_at": "2026-01-01T00:00:00Z",
+              "cycle_id": "11111111-1111-4111-8111-111111111111",
+              "error_recorded": false,
+              "gaps": [
+                "The task's saved execution configuration requires no verification commands, so no check evidence exists."
+              ],
+              "id": "22222222-2222-4222-8222-222222222222",
+              "latest_review": {
+                "clean": false,
+                "clean_at_output_revision": false,
+                "latest": null,
+                "rounds_recorded": 0
+              },
+              "proposal_id": "synthetic-proposal",
+              "pull_request": null,
+              "required_commands": {
+                "all_passed_at_output_revision": false,
+                "commands": [],
+                "state": "not_configured"
+              },
+              "revisions": {
+                "comparison_base": "fixture",
+                "default_branch": "fixture",
+                "output": null,
+                "source": "fixture"
+              },
+              "sessions": [],
+              "status": "blocked",
+              "updated_at": "2026-01-01T00:01:00Z"
+            }
+          ],
+          "problem": "fixture",
+          "reviewer_verdicts": [
+            {
+              "decision": null,
+              "note": "No saved assessment batch is attributed to adversary-a.",
+              "reason": null,
+              "reviewer": "adversary-a",
+              "state": "missing"
+            },
+            {
+              "decision": null,
+              "note": "No saved assessment batch is attributed to adversary-b.",
+              "reason": null,
+              "reviewer": "adversary-b",
+              "state": "missing"
+            }
+          ],
+          "scope": "fixture",
+          "target": "main",
+          "tier": "M",
+          "title": "  İΣ CACHE  "
+        }
+      ],
+      "review_required_before_sharing": true,
+      "review_requirement": "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.",
+      "schema_version": 1
+    }
+  },
+  "current_schema": [
+    [
+      "index",
+      "admissions_day",
+      "admissions",
+      "CREATE INDEX admissions_day ON admissions(day)"
+    ],
+    [
+      "index",
+      "batch_status",
+      "batch_members",
+      "CREATE INDEX batch_status ON batch_members(run_id,status)"
+    ],
+    [
+      "index",
+      "memory_repository",
+      "records",
+      "CREATE INDEX memory_repository ON records(kind,json_extract(data,'$.repository') COLLATE NOCASE)"
+    ],
+    [
+      "index",
+      "meta_attention",
+      "record_meta",
+      "CREATE INDEX meta_attention ON record_meta(kind,seq DESC) WHERE status IN ('blocked','failed') AND archived IS NULL"
+    ],
+    [
+      "index",
+      "meta_counts",
+      "record_meta",
+      "CREATE INDEX meta_counts ON record_meta(kind,archived,status)"
+    ],
+    [
+      "index",
+      "meta_cycle",
+      "record_meta",
+      "CREATE INDEX meta_cycle ON record_meta(kind,cycle_id,seq)"
+    ],
+    [
+      "index",
+      "meta_duplicate",
+      "record_meta",
+      "CREATE INDEX meta_duplicate ON record_meta(kind,repository COLLATE NOCASE,target,trim(title,char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)) COLLATE NOCASE,status)"
+    ],
+    [
+      "index",
+      "meta_history",
+      "record_meta",
+      "CREATE INDEX meta_history ON record_meta(kind,seq DESC)"
+    ],
+    [
+      "index",
+      "meta_pr_identity",
+      "record_meta",
+      "CREATE INDEX meta_pr_identity ON record_meta(repository COLLATE NOCASE,json_extract(summary,'$.pr.number')) WHERE kind='pr'"
+    ],
+    [
+      "index",
+      "meta_run",
+      "record_meta",
+      "CREATE INDEX meta_run ON record_meta(kind,run_id,status,seq)"
+    ],
+    [
+      "index",
+      "meta_status",
+      "record_meta",
+      "CREATE INDEX meta_status ON record_meta(kind,status,seq)"
+    ],
+    [
+      "index",
+      "notification_due",
+      "notification_outbox",
+      "CREATE INDEX notification_due ON notification_outbox(destination_id,status,next_attempt_at,seq)"
+    ],
+    [
+      "index",
+      "pr_reservations_repository",
+      "pr_reservations",
+      "CREATE INDEX pr_reservations_repository ON pr_reservations(repository)"
+    ],
+    [
+      "index",
+      "proposal_cycle",
+      "proposal_records",
+      "CREATE INDEX proposal_cycle ON proposal_records(cycle_id,seq DESC)"
+    ],
+    [
+      "index",
+      "proposal_history",
+      "proposal_records",
+      "CREATE INDEX proposal_history ON proposal_records(decision,seq DESC)"
+    ],
+    [
+      "index",
+      "task_problem_identity",
+      "records",
+      "CREATE INDEX task_problem_identity ON records(kind,json_extract(data,'$.config.github_repo') COLLATE NOCASE,json_extract(data,'$.proposal.target'),json_extract(data,'$.proposal.title'),COALESCE(json_extract(data,'$.proposal.problem_key'),''),json_extract(data,'$.status'),json_extract(data,'$.lifecycle.archived_at'),id)"
+    ],
+    [
+      "table",
+      "admissions",
+      "admissions",
+      "CREATE TABLE admissions (\n                id TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, data TEXT NOT NULL\n            )"
+    ],
+    [
+      "table",
+      "batch_members",
+      "batch_members",
+      "CREATE TABLE batch_members(run_id TEXT NOT NULL,task_id TEXT NOT NULL,status TEXT NOT NULL,PRIMARY KEY(run_id,task_id))"
+    ],
+    [
+      "table",
+      "events",
+      "events",
+      "CREATE TABLE events (\n                id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,\n                entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL\n            )"
+    ],
+    [
+      "table",
+      "notification_outbox",
+      "notification_outbox",
+      "CREATE TABLE notification_outbox (\n            seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,\n            destination_id TEXT NOT NULL, created_at TEXT NOT NULL,\n            repository TEXT NOT NULL, cycle_id TEXT, run_id TEXT, task_id TEXT,\n            category TEXT NOT NULL, action TEXT NOT NULL,\n            status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,\n            next_attempt_at INTEGER NOT NULL, last_attempt_at TEXT,\n            delivered_at TEXT, last_error TEXT, http_status INTEGER\n        )"
+    ],
+    [
+      "table",
+      "notification_policy",
+      "notification_policy",
+      "CREATE TABLE notification_policy (\n            id INTEGER PRIMARY KEY CHECK(id=1), destination_id TEXT, enabled INTEGER NOT NULL DEFAULT 0,\n            state TEXT NOT NULL DEFAULT 'disabled', error TEXT\n        )"
+    ],
+    [
+      "table",
+      "pr_reservations",
+      "pr_reservations",
+      "CREATE TABLE pr_reservations(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,branch TEXT NOT NULL,admitted_at TEXT NOT NULL)"
+    ],
+    [
+      "table",
+      "proposal_records",
+      "proposal_records",
+      "CREATE TABLE proposal_records(seq INTEGER PRIMARY KEY AUTOINCREMENT,cycle_id TEXT NOT NULL,proposal_id TEXT NOT NULL,mode TEXT NOT NULL,number INTEGER NOT NULL,decision TEXT NOT NULL,target TEXT NOT NULL,title TEXT NOT NULL,data TEXT NOT NULL, content_revision INTEGER NOT NULL DEFAULT 1,UNIQUE(cycle_id,proposal_id))"
+    ],
+    [
+      "table",
+      "record_counts",
+      "record_counts",
+      "CREATE TABLE record_counts(kind TEXT NOT NULL,status TEXT NOT NULL,archived INTEGER NOT NULL,count INTEGER NOT NULL,PRIMARY KEY(kind,status,archived))"
+    ],
+    [
+      "table",
+      "record_meta",
+      "record_meta",
+      "CREATE TABLE record_meta(kind TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,status TEXT NOT NULL,repository TEXT NOT NULL,target TEXT NOT NULL,title TEXT NOT NULL,cycle_id TEXT NOT NULL,run_id TEXT,archived TEXT,discarded TEXT,summary TEXT NOT NULL,PRIMARY KEY(kind,id))"
+    ],
+    [
+      "table",
+      "records",
+      "records",
+      "CREATE TABLE records(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id))"
+    ],
+    [
+      "table",
+      "sqlite_sequence",
+      "sqlite_sequence",
+      "CREATE TABLE sqlite_sequence(name,seq)"
+    ],
+    [
+      "table",
+      "usage",
+      "usage",
+      "CREATE TABLE usage(day TEXT PRIMARY KEY,sessions INTEGER NOT NULL)"
+    ],
+    [
+      "trigger",
+      "batch_member_insert",
+      "records",
+      "CREATE TRIGGER batch_member_insert AFTER INSERT ON records WHEN NEW.kind='task' AND json_extract(NEW.data,'$.run_id') IS NOT NULL BEGIN INSERT INTO batch_members VALUES(json_extract(NEW.data,'$.run_id'),NEW.id,json_extract(NEW.data,'$.status')) ON CONFLICT(run_id,task_id) DO UPDATE SET status=excluded.status; END"
+    ],
+    [
+      "trigger",
+      "batch_member_update",
+      "records",
+      "CREATE TRIGGER batch_member_update AFTER UPDATE ON records WHEN NEW.kind='task' AND json_extract(NEW.data,'$.run_id') IS NOT NULL BEGIN INSERT INTO batch_members VALUES(json_extract(NEW.data,'$.run_id'),NEW.id,json_extract(NEW.data,'$.status')) ON CONFLICT(run_id,task_id) DO UPDATE SET status=excluded.status; END"
+    ],
+    [
+      "trigger",
+      "cap_activity",
+      "events",
+      "CREATE TRIGGER cap_activity AFTER INSERT ON events BEGIN\n                DELETE FROM events WHERE id <= NEW.id - COALESCE(json_extract(\n                    (SELECT data FROM records WHERE kind='settings' AND id='config'),\n                    '$.retain_events'\n                ),10000);\n            END"
+    ],
+    [
+      "trigger",
+      "count_record_insert",
+      "record_meta",
+      "CREATE TRIGGER count_record_insert AFTER INSERT ON record_meta BEGIN INSERT INTO record_counts VALUES(NEW.kind,NEW.status,NEW.archived IS NOT NULL,1) ON CONFLICT(kind,status,archived) DO UPDATE SET count=count+1; END"
+    ],
+    [
+      "trigger",
+      "count_record_update",
+      "record_meta",
+      "CREATE TRIGGER count_record_update AFTER UPDATE OF status,archived ON record_meta WHEN OLD.status IS NOT NEW.status OR OLD.archived IS NOT NEW.archived BEGIN UPDATE record_counts SET count=count-1 WHERE kind=OLD.kind AND status=OLD.status AND archived=(OLD.archived IS NOT NULL); INSERT INTO record_counts VALUES(NEW.kind,NEW.status,NEW.archived IS NOT NULL,1) ON CONFLICT(kind,status,archived) DO UPDATE SET count=count+1; END"
+    ],
+    [
+      "trigger",
+      "notify_control_insert",
+      "records",
+      "CREATE TRIGGER notify_control_insert AFTER INSERT ON records\n        WHEN NEW.kind='settings' AND NEW.id='control'\n            AND (SELECT enabled FROM notification_policy WHERE id=1)=1\n            AND COALESCE(json_extract(NEW.data,'$.paused'),0)=1\n            AND json_extract(NEW.data,'$.error') IS NOT NULL\n        BEGIN\n            INSERT INTO notification_outbox\n                (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)\n                SELECT lower(hex(randomblob(16))), destination_id, strftime('%Y-%m-%dT%H:%M:%fZ','now'),\n                    COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),''),\n                    json_extract(NEW.data,'$.batch.cycle_id'), json_extract(NEW.data,'$.batch.id'), NULL,\n                    'service_error_paused', 'inspect_service', 'pending', 0, unixepoch('now')\n                FROM notification_policy WHERE id=1;\n            UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);\n        END"
+    ],
+    [
+      "trigger",
+      "notify_control_update",
+      "records",
+      "CREATE TRIGGER notify_control_update AFTER UPDATE ON records\n        WHEN NEW.kind='settings' AND NEW.id='control'\n            AND (SELECT enabled FROM notification_policy WHERE id=1)=1\n            AND COALESCE(json_extract(NEW.data,'$.paused'),0)=1\n            AND json_extract(NEW.data,'$.error') IS NOT NULL\n            AND NOT (COALESCE(json_extract(OLD.data,'$.paused'),0)=1 AND json_extract(OLD.data,'$.error') IS NOT NULL)\n        BEGIN\n            INSERT INTO notification_outbox\n                (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)\n                SELECT lower(hex(randomblob(16))), destination_id, strftime('%Y-%m-%dT%H:%M:%fZ','now'),\n                    COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),''),\n                    json_extract(NEW.data,'$.batch.cycle_id'), json_extract(NEW.data,'$.batch.id'), NULL,\n                    'service_error_paused', 'inspect_service', 'pending', 0, unixepoch('now')\n                FROM notification_policy WHERE id=1;\n            UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);\n        END"
+    ],
+    [
+      "trigger",
+      "notify_task_insert",
+      "records",
+      "CREATE TRIGGER notify_task_insert AFTER INSERT ON records\n        WHEN NEW.kind='task'\n            AND (SELECT enabled FROM notification_policy WHERE id=1)=1\n            AND json_extract(NEW.data,'$.status') IN ('blocked','failed')\n        BEGIN\n            INSERT INTO notification_outbox\n                (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)\n                SELECT lower(hex(randomblob(16))), destination_id, strftime('%Y-%m-%dT%H:%M:%fZ','now'),\n                    COALESCE(json_extract(NEW.data,'$.config.github_repo'),''),\n                    json_extract(NEW.data,'$.cycle_id'), json_extract(NEW.data,'$.run_id'), NEW.id,\n                    CASE WHEN COALESCE(json_extract(NEW.data,'$.blocked_reason'),'') IN ('budget_exhausted','storage_limit','stale_base','remote_conflict','publication_uncertain','runner_unavailable','invalid_review','verification_failed','dependency_blocked','invalid_plan','workspace_invalid','retry_limit','timeout') THEN json_extract(NEW.data,'$.blocked_reason') ELSE 'unknown' END, 'inspect_task', 'pending', 0, unixepoch('now')\n                FROM notification_policy WHERE id=1;\n            UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);\n        END"
+    ],
+    [
+      "trigger",
+      "notify_task_update",
+      "records",
+      "CREATE TRIGGER notify_task_update AFTER UPDATE ON records\n        WHEN NEW.kind='task'\n            AND (SELECT enabled FROM notification_policy WHERE id=1)=1\n            AND json_extract(NEW.data,'$.status') IN ('blocked','failed')\n            AND COALESCE(json_extract(OLD.data,'$.status'),'') NOT IN ('blocked','failed')\n        BEGIN\n            INSERT INTO notification_outbox\n                (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)\n                SELECT lower(hex(randomblob(16))), destination_id, strftime('%Y-%m-%dT%H:%M:%fZ','now'),\n                    COALESCE(json_extract(NEW.data,'$.config.github_repo'),''),\n                    json_extract(NEW.data,'$.cycle_id'), json_extract(NEW.data,'$.run_id'), NEW.id,\n                    CASE WHEN COALESCE(json_extract(NEW.data,'$.blocked_reason'),'') IN ('budget_exhausted','storage_limit','stale_base','remote_conflict','publication_uncertain','runner_unavailable','invalid_review','verification_failed','dependency_blocked','invalid_plan','workspace_invalid','retry_limit','timeout') THEN json_extract(NEW.data,'$.blocked_reason') ELSE 'unknown' END, 'inspect_task', 'pending', 0, unixepoch('now')\n                FROM notification_policy WHERE id=1;\n            UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);\n        END"
+    ],
+    [
+      "trigger",
+      "project_proposals_insert",
+      "records",
+      "CREATE TRIGGER project_proposals_insert AFTER INSERT ON records WHEN NEW.kind='cycle' BEGIN INSERT INTO proposal_records(cycle_id,proposal_id,mode,number,decision,target,title,data) SELECT NEW.id,json_extract(value,'$.id'),COALESCE(json_extract(NEW.data,'$.mode'),'execution'),json_extract(NEW.data,'$.number'),json_extract(value,'$.decision'),json_extract(value,'$.target'),json_extract(value,'$.title'),value FROM json_each(NEW.data,'$.proposals') WHERE true ON CONFLICT(cycle_id,proposal_id) DO UPDATE SET decision=excluded.decision,target=excluded.target,title=excluded.title,content_revision=proposal_records.content_revision+(proposal_records.data IS NOT excluded.data),data=excluded.data; END"
+    ],
+    [
+      "trigger",
+      "project_proposals_update",
+      "records",
+      "CREATE TRIGGER project_proposals_update AFTER UPDATE ON records WHEN NEW.kind='cycle' BEGIN INSERT INTO proposal_records(cycle_id,proposal_id,mode,number,decision,target,title,data) SELECT NEW.id,json_extract(value,'$.id'),COALESCE(json_extract(NEW.data,'$.mode'),'execution'),json_extract(NEW.data,'$.number'),json_extract(value,'$.decision'),json_extract(value,'$.target'),json_extract(value,'$.title'),value FROM json_each(NEW.data,'$.proposals') WHERE true ON CONFLICT(cycle_id,proposal_id) DO UPDATE SET decision=excluded.decision,target=excluded.target,title=excluded.title,content_revision=proposal_records.content_revision+(proposal_records.data IS NOT excluded.data),data=excluded.data; END"
+    ],
+    [
+      "trigger",
+      "project_record_insert",
+      "records",
+      "CREATE TRIGGER project_record_insert AFTER INSERT ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN INSERT INTO record_meta(kind,id,seq,status,repository,target,title,cycle_id,run_id,archived,discarded,summary) VALUES (NEW.kind,NEW.id,NEW.rowid,COALESCE(json_extract(NEW.data,'$.status'),json_extract(NEW.data,'$.pr.state'),''),COALESCE(json_extract(NEW.data,'$.config.github_repo'),json_extract(NEW.data,'$.repository'),''),COALESCE(json_extract(NEW.data,'$.proposal.target'),''),COALESCE(json_extract(NEW.data,'$.proposal.title'),json_extract(NEW.data,'$.pr.title'),''),COALESCE(json_extract(NEW.data,'$.cycle_id'),''),json_extract(NEW.data,'$.run_id'),json_extract(NEW.data,'$.lifecycle.archived_at'),json_extract(NEW.data,'$.lifecycle.discarded_at'),CASE NEW.kind WHEN 'task' THEN json_object('id',NEW.id,'cycle_id',json_extract(NEW.data,'$.cycle_id'),'title',substr(json_extract(NEW.data,'$.proposal.title'),1,200),'category',json_extract(NEW.data,'$.proposal.category'),'tier',json_extract(NEW.data,'$.proposal.tier'),'target',json_extract(NEW.data,'$.proposal.target'),'branch',json_extract(NEW.data,'$.branch'),'status',json_extract(NEW.data,'$.status'),'pr_url',json_extract(NEW.data,'$.pr_url'),'pr_number',json_extract(NEW.data,'$.pr_number'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'blocked_reason',json_extract(NEW.data,'$.blocked_reason'),'created_at',json_extract(NEW.data,'$.created_at'),'updated_at',json_extract(NEW.data,'$.updated_at'),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}')),'superseded_by',json(COALESCE(json_extract(NEW.data,'$.superseded_by'),'[]'))) WHEN 'cycle' THEN json_object('id',NEW.id,'number',json_extract(NEW.data,'$.number'),'mode',COALESCE(json_extract(NEW.data,'$.mode'),'execution'),'status',json_extract(NEW.data,'$.status'),'started_at',json_extract(NEW.data,'$.started_at'),'completed_at',json_extract(NEW.data,'$.completed_at'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'session_count',json_array_length(NEW.data,'$.sessions'),'decisions',json_object('accepted',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='accepted'),'rejected',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='rejected'),'deferred',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='deferred'),'candidate',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='candidate')),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}'))) WHEN 'pr' THEN json_set(json_remove(NEW.data,'$.pr.body'),'$.pr.title',substr(json_extract(NEW.data,'$.pr.title'),1,200)) ELSE '{}' END) ON CONFLICT(kind,id) DO UPDATE SET status=excluded.status,repository=excluded.repository,target=excluded.target,title=excluded.title,cycle_id=excluded.cycle_id,run_id=excluded.run_id,archived=excluded.archived,discarded=excluded.discarded,summary=excluded.summary; END"
+    ],
+    [
+      "trigger",
+      "project_record_update",
+      "records",
+      "CREATE TRIGGER project_record_update AFTER UPDATE ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN INSERT INTO record_meta(kind,id,seq,status,repository,target,title,cycle_id,run_id,archived,discarded,summary) VALUES (NEW.kind,NEW.id,NEW.rowid,COALESCE(json_extract(NEW.data,'$.status'),json_extract(NEW.data,'$.pr.state'),''),COALESCE(json_extract(NEW.data,'$.config.github_repo'),json_extract(NEW.data,'$.repository'),''),COALESCE(json_extract(NEW.data,'$.proposal.target'),''),COALESCE(json_extract(NEW.data,'$.proposal.title'),json_extract(NEW.data,'$.pr.title'),''),COALESCE(json_extract(NEW.data,'$.cycle_id'),''),json_extract(NEW.data,'$.run_id'),json_extract(NEW.data,'$.lifecycle.archived_at'),json_extract(NEW.data,'$.lifecycle.discarded_at'),CASE NEW.kind WHEN 'task' THEN json_object('id',NEW.id,'cycle_id',json_extract(NEW.data,'$.cycle_id'),'title',substr(json_extract(NEW.data,'$.proposal.title'),1,200),'category',json_extract(NEW.data,'$.proposal.category'),'tier',json_extract(NEW.data,'$.proposal.tier'),'target',json_extract(NEW.data,'$.proposal.target'),'branch',json_extract(NEW.data,'$.branch'),'status',json_extract(NEW.data,'$.status'),'pr_url',json_extract(NEW.data,'$.pr_url'),'pr_number',json_extract(NEW.data,'$.pr_number'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'blocked_reason',json_extract(NEW.data,'$.blocked_reason'),'created_at',json_extract(NEW.data,'$.created_at'),'updated_at',json_extract(NEW.data,'$.updated_at'),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}')),'superseded_by',json(COALESCE(json_extract(NEW.data,'$.superseded_by'),'[]'))) WHEN 'cycle' THEN json_object('id',NEW.id,'number',json_extract(NEW.data,'$.number'),'mode',COALESCE(json_extract(NEW.data,'$.mode'),'execution'),'status',json_extract(NEW.data,'$.status'),'started_at',json_extract(NEW.data,'$.started_at'),'completed_at',json_extract(NEW.data,'$.completed_at'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'session_count',json_array_length(NEW.data,'$.sessions'),'decisions',json_object('accepted',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='accepted'),'rejected',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='rejected'),'deferred',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='deferred'),'candidate',(SELECT count(*) FROM json_each(NEW.data,'$.proposals') WHERE json_extract(value,'$.decision')='candidate')),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}'))) WHEN 'pr' THEN json_set(json_remove(NEW.data,'$.pr.body'),'$.pr.title',substr(json_extract(NEW.data,'$.pr.title'),1,200)) ELSE '{}' END) ON CONFLICT(kind,id) DO UPDATE SET status=excluded.status,repository=excluded.repository,target=excluded.target,title=excluded.title,cycle_id=excluded.cycle_id,run_id=excluded.run_id,archived=excluded.archived,discarded=excluded.discarded,summary=excluded.summary; END"
+    ],
+    [
+      "trigger",
+      "release_pr_reservation_insert",
+      "records",
+      "CREATE TRIGGER release_pr_reservation_insert AFTER INSERT ON records WHEN NEW.kind='task' AND json_extract(NEW.data,'$.status') IN ('blocked','failed','cancelled') AND json_extract(NEW.data,'$.output_commit') IS NULL BEGIN DELETE FROM pr_reservations WHERE task_id=NEW.id; END"
+    ],
+    [
+      "trigger",
+      "release_pr_reservation_update",
+      "records",
+      "CREATE TRIGGER release_pr_reservation_update AFTER UPDATE ON records WHEN NEW.kind='task' AND json_extract(NEW.data,'$.status') IN ('blocked','failed','cancelled') AND json_extract(NEW.data,'$.output_commit') IS NULL BEGIN DELETE FROM pr_reservations WHERE task_id=NEW.id; END"
+    ]
+  ],
+  "current_usage": {
+    "admissions": [],
+    "cycles": [
+      {
+        "completed_at": "2026-01-01T00:01:00Z",
+        "decisions": {
+          "accepted": 1,
+          "candidate": 0,
+          "deferred": 0,
+          "rejected": 0
+        },
+        "error": null,
+        "id": "11111111-1111-4111-8111-111111111111",
+        "mode": "execution",
+        "number": 1,
+        "planning_admissions": 0,
+        "recorded_completed_sessions": 0,
+        "started_at": "2026-01-01T00:00:00Z",
+        "status": "completed",
+        "task_admissions": 0,
+        "wall_seconds": 60.0
+      }
+    ],
+    "daily": [
+      {
+        "admissions": 3,
+        "attributed_admissions": 0,
+        "day": "2026-01-01",
+        "unattributed_admissions": 3
+      }
+    ],
+    "generated_at": "<export-time>",
+    "has_admission_ledger": true,
+    "measurement": "Admissions reserve budget before work starts. They include failed starts and retries; they are not completed turns or billed usage. Completed session counts describe persisted thread records; a repair thread can contain multiple turns. Historical admissions without a ledger remain unattributed. Cycle wall time excludes subsequent task execution. No provider charges or merge status are inferred.",
+    "schema_version": 1,
+    "tasks": [
+      {
+        "admissions": 0,
+        "created_at": "2026-01-01T00:00:00Z",
+        "cycle_id": "11111111-1111-4111-8111-111111111111",
+        "error": null,
+        "id": "22222222-2222-4222-8222-222222222222",
+        "pr_url": null,
+        "recorded_completed_sessions": 0,
+        "repair_route": {
+          "backend": "codex",
+          "effort": "medium",
+          "model": ""
+        },
+        "route": {
+          "backend": "codex",
+          "effort": "low",
+          "model": "legacy"
+        },
+        "status": "blocked",
+        "tier": "M",
+        "updated_at": "2026-01-01T00:01:00Z"
+      }
+    ],
+    "tiers": [
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "XS"
+      },
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "S"
+      },
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "M"
+      },
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "L"
+      },
+      {
+        "admissions": 0,
+        "observed_tasks": 0,
+        "tier": "XL"
+      }
+    ]
+  },
+  "current_evidence": {
+    "cycle": {
+      "completed_at": "2026-01-01T00:01:00Z",
+      "grounding_revision": null,
+      "id": "11111111-1111-4111-8111-111111111111",
+      "mode": "execution",
+      "number": 1,
+      "planning": {
+        "creates_execution_queue": true,
+        "decisions": {
+          "accepted": 1
+        },
+        "error_recorded": false,
+        "planning_finished": true,
+        "proposal_count": 1,
+        "reviewer_batches_saved": 0,
+        "status": "completed"
+      },
+      "repository": "Fixture/Project",
+      "started_at": "2026-01-01T00:00:00Z",
+      "status": "completed"
+    },
+    "gaps": [
+      "Reviewer adversary-a has neither a completed session nor a saved assessment batch.",
+      "Reviewer adversary-b has neither a completed session nor a saved assessment batch.",
+      "The cycle has no saved grounding revision."
+    ],
+    "generated_at": "<export-time>",
+    "kind": "recorded_review_check_evidence",
+    "limitations": [
+      "Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
+      "Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
+      "Deferred is not rejected.",
+      "A recorded pull request describes delivery, not merge. Published is not merged.",
+      "Audit acceptance is a recommendation. Audit cycles never create an execution queue, so an accepted audit proposal has no linked task by design.",
+      "Saved session routes are requested routes. Runtime model identity is not independently reported here.",
+      "Costs, delivery time and any replay timeline are not inferred from these records.",
+      "Zero or multiple task matches are preserved as recorded. No single task is selected on the caller's behalf.",
+      "Free text carried here (proposal problem, benefit, scope and evidence, and code-review findings) is model-authored and still requires manual review before sharing."
+    ],
+    "proposals": [
+      {
+        "benefit": "fixture",
+        "category": "fixture",
+        "evidence": [],
+        "final_decision": "accepted",
+        "final_reason": "fixture",
+        "gaps": [],
+        "id": "synthetic-proposal",
+        "linked_tasks": [
+          {
+            "attempts": 1,
+            "blocked_reason": null,
+            "branch": "tyk/synthetic-frozen",
+            "created_at": "2026-01-01T00:00:00Z",
+            "cycle_id": "11111111-1111-4111-8111-111111111111",
+            "error_recorded": false,
+            "gaps": [
+              "The task's saved execution configuration requires no verification commands, so no check evidence exists."
+            ],
+            "id": "22222222-2222-4222-8222-222222222222",
+            "latest_review": {
+              "clean": false,
+              "clean_at_output_revision": false,
+              "latest": null,
+              "rounds_recorded": 0
+            },
+            "proposal_id": "synthetic-proposal",
+            "pull_request": null,
+            "required_commands": {
+              "all_passed_at_output_revision": false,
+              "commands": [],
+              "state": "not_configured"
+            },
+            "revisions": {
+              "comparison_base": "fixture",
+              "default_branch": "fixture",
+              "output": null,
+              "source": "fixture"
+            },
+            "sessions": [],
+            "status": "blocked",
+            "updated_at": "2026-01-01T00:01:00Z"
+          }
+        ],
+        "problem": "fixture",
+        "reviewer_verdicts": [
+          {
+            "decision": null,
+            "note": "No saved assessment batch is attributed to adversary-a.",
+            "reason": null,
+            "reviewer": "adversary-a",
+            "state": "missing"
+          },
+          {
+            "decision": null,
+            "note": "No saved assessment batch is attributed to adversary-b.",
+            "reason": null,
+            "reviewer": "adversary-b",
+            "state": "missing"
+          }
+        ],
+        "scope": "fixture",
+        "target": "main",
+        "tier": "M",
+        "title": "  İΣ CACHE  "
+      }
+    ],
+    "review_required_before_sharing": true,
+    "review_requirement": "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.",
+    "schema_version": 1
+  }
+}

@@ -1,0 +1,1077 @@
+{
+  "reference": "3c2b5cd50924033873d7f740f9df44daee5685db",
+  "cases": [
+    {
+      "name": "defaults",
+      "args": [
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "version",
+      "args": [
+        "--version"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "octomus-agent 0.1.0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "short-version",
+      "args": [
+        "-V"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "octomus-agent 0.1.0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "help",
+      "args": [
+        "--help"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "Continuous repository improvement through reviewed pull requests\n\nUsage: octomus-agent [OPTIONS]\n\nOptions:\n      --data-dir <DATA_DIR>    [env: OCTOMUS_DATA_DIR=] [default: .octomus]\n      --listen <LISTEN>        [env: OCTOMUS_LISTEN=] [default: 127.0.0.1:4200]\n      --assets <ASSETS>        Override the embedded dashboard with a build directory [env: OCTOMUS_ASSETS=]\n      --print-config           Print configuration defaults and exit\n      --doctor                 Validate saved repository, authentication and model routes, then exit\n      --audit                  Check only audit prerequisites with --doctor\n      --usage-report           Export a read-only JSON usage report from saved state and exit\n      --export-run <CYCLE_ID>  Export read-only JSON run evidence for one saved cycle and exit\n  -h, --help                   Print help\n  -V, --version                Print version\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "short-help",
+      "args": [
+        "-h"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "Continuous repository improvement through reviewed pull requests\n\nUsage: octomus-agent [OPTIONS]\n\nOptions:\n      --data-dir <DATA_DIR>    [env: OCTOMUS_DATA_DIR=] [default: .octomus]\n      --listen <LISTEN>        [env: OCTOMUS_LISTEN=] [default: 127.0.0.1:4200]\n      --assets <ASSETS>        Override the embedded dashboard with a build directory [env: OCTOMUS_ASSETS=]\n      --print-config           Print configuration defaults and exit\n      --doctor                 Validate saved repository, authentication and model routes, then exit\n      --audit                  Check only audit prerequisites with --doctor\n      --usage-report           Export a read-only JSON usage report from saved state and exit\n      --export-run <CYCLE_ID>  Export read-only JSON run evidence for one saved cycle and exit\n  -h, --help                   Print help\n  -V, --version                Print version\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "flags ['--print-config', '--doctor']",
+      "args": [
+        "--print-config",
+        "--doctor"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "flags ['--audit', '--doctor', '--print-config']",
+      "args": [
+        "--audit",
+        "--doctor",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "flags ['--', '--print-config']",
+      "args": [
+        "--",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected argument '--print-config' found\n\nUsage: octomus-agent [OPTIONS]\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--print-config', '--']",
+      "args": [
+        "--print-config",
+        "--"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "flags ['--print-config=true']",
+      "args": [
+        "--print-config=true"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected value 'true' for '--print-config' found; no more were expected\n\nUsage: octomus-agent --print-config\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--print-config', '--print-config']",
+      "args": [
+        "--print-config",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: the argument '--print-config' cannot be used multiple times\n\nUsage: octomus-agent [OPTIONS]\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--audit']",
+      "args": [
+        "--audit"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: the following required arguments were not provided:\n  --doctor\n\nUsage: octomus-agent --doctor --audit\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--audit', '--print-config']",
+      "args": [
+        "--audit",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: the following required arguments were not provided:\n  --doctor\n\nUsage: octomus-agent --doctor --audit --print-config\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--usage-report', '--doctor']",
+      "args": [
+        "--usage-report",
+        "--doctor"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: the argument '--usage-report' cannot be used with '--doctor'\n\nUsage: octomus-agent --usage-report\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--usage-report', '--print-config']",
+      "args": [
+        "--usage-report",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: the argument '--usage-report' cannot be used with '--print-config'\n\nUsage: octomus-agent --usage-report\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--export-run', 'cycle', '--doctor']",
+      "args": [
+        "--export-run",
+        "cycle",
+        "--doctor"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: the argument '--export-run <CYCLE_ID>' cannot be used with '--doctor'\n\nUsage: octomus-agent --export-run <CYCLE_ID>\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--export-run', 'cycle', '--print-config']",
+      "args": [
+        "--export-run",
+        "cycle",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: the argument '--export-run <CYCLE_ID>' cannot be used with '--print-config'\n\nUsage: octomus-agent --export-run <CYCLE_ID>\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--export-run', 'cycle', '--usage-report']",
+      "args": [
+        "--export-run",
+        "cycle",
+        "--usage-report"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: the argument '--export-run <CYCLE_ID>' cannot be used with '--usage-report'\n\nUsage: octomus-agent --export-run <CYCLE_ID>\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--export-run']",
+      "args": [
+        "--export-run"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: a value is required for '--export-run <CYCLE_ID>' but none was supplied\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--data-dir']",
+      "args": [
+        "--data-dir"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: a value is required for '--data-dir <DATA_DIR>' but none was supplied\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--data-dir', '-odd', '--print-config']",
+      "args": [
+        "--data-dir",
+        "-odd",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected argument '-o' found\n\nUsage: octomus-agent [OPTIONS]\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--data-dir=-odd', '--print-config']",
+      "args": [
+        "--data-dir=-odd",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "flags ['--data-dir', '', '--print-config']",
+      "args": [
+        "--data-dir",
+        "",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: a value is required for '--data-dir <DATA_DIR>' but none was supplied\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--assets=', '--print-config']",
+      "args": [
+        "--assets=",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: a value is required for '--assets <ASSETS>' but none was supplied\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--listen', '127.0.0.1:1', '--listen', '127.0.0.1:2', '--print-config']",
+      "args": [
+        "--listen",
+        "127.0.0.1:1",
+        "--listen",
+        "127.0.0.1:2",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: the argument '--listen <LISTEN>' cannot be used multiple times\n\nUsage: octomus-agent [OPTIONS]\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--unknown']",
+      "args": [
+        "--unknown"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected argument '--unknown' found\n\nUsage: octomus-agent [OPTIONS]\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['-print-config']",
+      "args": [
+        "-print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected argument '-p' found\n\nUsage: octomus-agent [OPTIONS]\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['positional']",
+      "args": [
+        "positional"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected argument 'positional' found\n\nUsage: octomus-agent [OPTIONS]\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--listen=bad', '--help']",
+      "args": [
+        "--listen=bad",
+        "--help"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value 'bad' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--bogus', '--help']",
+      "args": [
+        "--bogus",
+        "--help"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected argument '--bogus' found\n\nUsage: octomus-agent [OPTIONS]\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--doctor=false']",
+      "args": [
+        "--doctor=false"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected value 'false' for '--doctor' found; no more were expected\n\nUsage: octomus-agent --doctor\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--help=anything']",
+      "args": [
+        "--help=anything"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected value 'anything' for '--help' found; no more were expected\n\nUsage: octomus-agent --help\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "flags ['--version=anything']",
+      "args": [
+        "--version=anything"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: unexpected value 'anything' for '--version' found; no more were expected\n\nUsage: octomus-agent --version\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "listen 127.0.0.1:0",
+      "args": [
+        "--listen",
+        "127.0.0.1:0",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "listen [::1]:4200",
+      "args": [
+        "--listen",
+        "[::1]:4200",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "listen [::ffff:127.0.0.1]:4200",
+      "args": [
+        "--listen",
+        "[::ffff:127.0.0.1]:4200",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "listen localhost:4200",
+      "args": [
+        "--listen",
+        "localhost:4200",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value 'localhost:4200' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "listen 127.0.0.1:65536",
+      "args": [
+        "--listen",
+        "127.0.0.1:65536",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '127.0.0.1:65536' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "listen 127.00.0.1:1",
+      "args": [
+        "--listen",
+        "127.00.0.1:1",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '127.00.0.1:1' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "listen 127.0.0.1:+1",
+      "args": [
+        "--listen",
+        "127.0.0.1:+1",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '127.0.0.1:+1' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "listen [::1%lo]:4200",
+      "args": [
+        "--listen",
+        "[::1%lo]:4200",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[::1%lo]:4200' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "listen 127.0.0.1:00000",
+      "args": [
+        "--listen",
+        "127.0.0.1:00000",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "listen 127.0.0.1:0000000000001",
+      "args": [
+        "--listen",
+        "127.0.0.1:0000000000001",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "listen ",
+      "args": [
+        "--listen",
+        "",
+        "--print-config"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "environment paths",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_DATA_DIR": "never-create",
+        "OCTOMUS_ASSETS": "missing-assets",
+        "OCTOMUS_LISTEN": "[::1]:4321"
+      },
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "invalid environment listen",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "invalid"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value 'invalid' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "invalid environment overridden",
+      "args": [
+        "--listen",
+        "127.0.0.1:2",
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "invalid"
+      },
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "empty environment paths",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_DATA_DIR": "",
+        "OCTOMUS_ASSETS": ""
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: a value is required for '--data-dir <DATA_DIR>' but none was supplied\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "help ignores bad environment",
+      "args": [
+        "--help"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "invalid"
+      },
+      "expected": {
+        "code": 0,
+        "stdout": "Continuous repository improvement through reviewed pull requests\n\nUsage: octomus-agent [OPTIONS]\n\nOptions:\n      --data-dir <DATA_DIR>    [env: OCTOMUS_DATA_DIR=] [default: .octomus]\n      --listen <LISTEN>        [env: OCTOMUS_LISTEN=invalid] [default: 127.0.0.1:4200]\n      --assets <ASSETS>        Override the embedded dashboard with a build directory [env: OCTOMUS_ASSETS=]\n      --print-config           Print configuration defaults and exit\n      --doctor                 Validate saved repository, authentication and model routes, then exit\n      --audit                  Check only audit prerequisites with --doctor\n      --usage-report           Export a read-only JSON usage report from saved state and exit\n      --export-run <CYCLE_ID>  Export read-only JSON run evidence for one saved cycle and exit\n  -h, --help                   Print help\n  -V, --version                Print version\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%0]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%0]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%0]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%0]:1234"
+      },
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%42]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%42]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%42]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%42]:1234"
+      },
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%0000000000000042]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%0000000000000042]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%0000000000000042]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%0000000000000042]:1234"
+      },
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%4294967295]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%4294967295]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%4294967295]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%4294967295]:1234"
+      },
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%4294967296]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%4294967296]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%4294967296]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%4294967296]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%4294967296]:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%4294967296]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%+42]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%+42]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%+42]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%+42]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%+42]:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%+42]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%-1]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%-1]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%-1]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%-1]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%-1]:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%-1]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%lo]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%lo]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%lo]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%lo]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%lo]:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%lo]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%]:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%４２]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%４２]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%４２]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%４２]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%４２]:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%４２]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%0x2a]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%0x2a]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%0x2a]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%0x2a]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%0x2a]:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%0x2a]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%4_2]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%4_2]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%4_2]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%4_2]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%4_2]:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%4_2]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope flag [fe80::1%42%1]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[fe80::1%42%1]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%42%1]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment [fe80::1%42%1]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[fe80::1%42%1]:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '[fe80::1%42%1]:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope flag [::ffff:127.0.0.1%42]:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "[::ffff:127.0.0.1%42]:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope environment [::ffff:127.0.0.1%42]:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "[::ffff:127.0.0.1%42]:1234"
+      },
+      "expected": {
+        "code": 0,
+        "stdout": "{\n  \"repository\": \"\",\n  \"github_repo\": \"\",\n  \"default_branch\": \"main\",\n  \"branch_prefix\": \"octomus/\",\n  \"codex_binary\": \"codex\",\n  \"opencode_binary\": \"opencode\",\n  \"roles\": {\n    \"code_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"discovery\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"orchestrator\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    },\n    \"proposal_reviewer\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"\"\n    }\n  },\n  \"tiers\": {\n    \"L\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"medium\"\n    },\n    \"M\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"low\"\n    },\n    \"S\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"max\"\n    },\n    \"XL\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"high\"\n    },\n    \"XS\": {\n      \"backend\": \"codex\",\n      \"model\": \"\",\n      \"effort\": \"xhigh\"\n    }\n  },\n  \"repair_route\": {\n    \"backend\": \"codex\",\n    \"model\": \"\",\n    \"effort\": \"medium\"\n  },\n  \"categories\": [\n    \"features\",\n    \"correctness\",\n    \"performance\",\n    \"ux-dx\",\n    \"refactoring\",\n    \"simplification\",\n    \"tests\",\n    \"dependencies\",\n    \"documentation\"\n  ],\n  \"verification_commands\": [],\n  \"discovery_agents\": 9,\n  \"execution_concurrency\": 2,\n  \"cycle_interval_seconds\": 1800,\n  \"maintenance_every_cycles\": 3,\n  \"large_pr_lines\": 1000,\n  \"long_lived_pr_days\": 7,\n  \"max_tasks_per_cycle\": 5,\n  \"max_repair_rounds\": 4,\n  \"max_no_progress_rounds\": 2,\n  \"max_retries\": 2,\n  \"session_timeout_seconds\": 1800,\n  \"task_timeout_seconds\": 14400,\n  \"command_timeout_seconds\": 600,\n  \"max_sessions_per_day\": 150,\n  \"max_open_prs\": 5,\n  \"max_workspace_bytes\": 20000000000,\n  \"runner_storage_paths\": {},\n  \"retain_completed_days\": 14,\n  \"retain_events\": 10000\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "name": "IPv6 scope flag 127.0.0.1%42:1234",
+      "args": [
+        "--print-config",
+        "--listen",
+        "127.0.0.1%42:1234"
+      ],
+      "env": {},
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '127.0.0.1%42:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    },
+    {
+      "name": "IPv6 scope environment 127.0.0.1%42:1234",
+      "args": [
+        "--print-config"
+      ],
+      "env": {
+        "OCTOMUS_LISTEN": "127.0.0.1%42:1234"
+      },
+      "expected": {
+        "code": 2,
+        "stdout": "",
+        "stderr": "error: invalid value '127.0.0.1%42:1234' for '--listen <LISTEN>': invalid socket address syntax\n\nFor more information, try '--help'.\n"
+      }
+    }
+  ]
+}

@@ -17,6 +17,7 @@ check: dashboard
 test: dashboard
 	cargo test --locked
 	cargo build --locked
+	python3 tests/compatibility_capture.py
 	python3 tests/evidence_snapshot.py
 	python3 tests/e2e.py
 	python3 tests/e2e_baseline.py
@@ -36,3 +37,17 @@ audit:
 package: build
 	./scripts/package.sh v$$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1) $$(rustc -vV | sed -n 's/^host: //p') target/release/octomus-agent
 	cd dist && sha256sum octomus-agent-*.tar.gz > SHA256SUMS
+
+# Migration targets only; Rust remains the default through M8.
+.PHONY: build-go check-go test-go
+build-go: dashboard
+	CGO_ENABLED=0 go build -trimpath -o bin/octomus-agent-go ./cmd/octomus-agent
+
+check-go: dashboard
+	test -z "$$(gofmt -l cmd internal web/embed*.go)"
+	go vet ./...
+
+test-go: build-go
+	go test ./...
+	CGO_ENABLED=1 go test -race ./...
+	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent-go" python3 tests/go_foundations.py --go-m1

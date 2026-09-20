@@ -11,7 +11,7 @@ documentation = "https://octomus-agent.tyk.sh/docs/"
 readme = "README.md"
 keywords = ["codex", "automation", "github", "agent", "code-review"]
 categories = ["development-tools", "command-line-utilities"]
-include = ["/src/**", "/tests/*.rs", "/tests/common/**", "/tests/fixtures/*.py", "/build.rs", "/Cargo.toml", "/Cargo.lock", "/web/build/**", "/web/showcase/synthetic.public.json", "/README.md", "/LICENSE", "/SECURITY.md", "/CHANGELOG.md", "/CONTRIBUTING.md", "/AGENTS.md", "/docs/**", "/deploy/**"]
+include = ["/src/**", "/tests/*.rs", "/tests/common/**", "/tests/fixtures/*.py", "/tests/fixtures/compatibility/*.json", "/build.rs", "/Cargo.toml", "/Cargo.lock", "/web/build/**", "/web/showcase/synthetic.public.json", "/README.md", "/LICENSE", "/SECURITY.md", "/CHANGELOG.md", "/CONTRIBUTING.md", "/AGENTS.md", "/docs/**", "/deploy/**"]
 
 [dependencies]
 anyhow = "1"

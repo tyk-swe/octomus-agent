@@ -9,7 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 
 project = Path(__file__).resolve().parents[1]
-binary = project / 'target/debug/octomus-agent'
+binary = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(project / 'target/debug/octomus-agent'))).resolve()
 with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     data = Path(directory)
     config = json.loads(subprocess.check_output([str(binary), '--print-config']))
