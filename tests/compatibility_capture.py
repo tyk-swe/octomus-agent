@@ -89,6 +89,9 @@ def capture():
         service = Service(root)
         try:
             service.start()
+            # Startup housekeeping records the storage observation in the
+            # background; wait for it so the paused snapshot is complete.
+            service.wait(lambda: service.request('/state')['storage'], 'storage measurement')
             responses = {route: service.request(route) for route in [
                 '/config', '/state', f'/tasks/{TASK_ID}', f'/cycles/{CYCLE_ID}/evidence',
             ]}

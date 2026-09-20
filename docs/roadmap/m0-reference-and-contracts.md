@@ -171,7 +171,9 @@ are unchanged.
 SQL, read-only usage/evidence exports and paused-service API responses. The
 self-contained `tests/compatibility_capture.py` recreates the old database,
 verifies read-only exports do not write it or acquire a service lock, exercises
-reference migrations/API, and confirms migrations preserve source records.
+reference migrations/API, and confirms migrations preserve source records. API
+collection waits for the service's asynchronous startup storage observation so
+the paused snapshot is deterministic.
 It compares against the golden by default; `--update` is restricted to the Rust
 binary. Only export/storage-observation timestamps and the current UTC
 capacity window are normalized. Stable UUIDs, record links, ordering, saved
