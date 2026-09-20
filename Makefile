@@ -39,15 +39,22 @@ package: build
 	cd dist && sha256sum octomus-agent-*.tar.gz > SHA256SUMS
 
 # Migration targets only; Rust remains the default through M8.
-.PHONY: build-go check-go test-go
+.PHONY: build-go check-go test-go test-go-storage
 build-go: dashboard
 	CGO_ENABLED=0 go build -trimpath -o bin/octomus-agent-go ./cmd/octomus-agent
 
 check-go: dashboard
-	test -z "$$(gofmt -l cmd internal web/embed*.go)"
+	test -z "$$(gofmt -l cmd internal tests/go web/embed*.go)"
 	go vet ./...
 
 test-go: build-go
 	go test ./...
 	CGO_ENABLED=1 go test -race ./...
 	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent-go" python3 tests/go_foundations.py --go-m1
+	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent-go" python3 tests/evidence_snapshot.py
+
+# Cross-language storage checks need the frozen Rust reference debug binary
+# (cargo build --locked) next to the Go executable; they run strictly serially.
+test-go-storage: build-go
+	cargo build --locked
+	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent-go" python3 tests/go_storage.py

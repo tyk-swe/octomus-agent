@@ -8,15 +8,36 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/evidence"
 	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
+	"github.com/tyk-swe/octomus-agent/internal/report"
 	dashboard "github.com/tyk-swe/octomus-agent/web"
 )
 
 const version = "0.1.0"
+
+// stateDBName is the SQLite file inside the data directory.
+const stateDBName = "state.db"
+
+// printJSON writes the value the way serde_json::to_string_pretty does: two-space
+// indentation, sorted object keys and a trailing newline.
+func printJSON(stdout io.Writer, value any) error {
+	data, err := jsoncompat.Marshal(value)
+	if err != nil {
+		return err
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, data, "", "  "); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(stdout, pretty.String())
+	return err
+}
 
 type arguments struct {
 	dataDir, listen                         string
@@ -40,13 +61,25 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		return 0
 	}
 	if parsed.printConfig {
-		data, err := jsoncompat.Marshal(config.Default())
+		if err := printJSON(stdout, config.Default()); err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	// Read-only exports run before any directory creation, service lock, migration
+	// or worker startup, and need no operator token.
+	if parsed.usageReport || parsed.exportRun != nil {
+		stateDB := filepath.Join(parsed.dataDir, stateDBName)
+		var value map[string]any
+		var err error
+		if parsed.usageReport {
+			value, err = report.UsageReport(stateDB)
+		} else {
+			value, err = evidence.ExportRun(stateDB, *parsed.exportRun)
+		}
 		if err == nil {
-			var pretty bytes.Buffer
-			err = json.Indent(&pretty, data, "", "  ")
-			if err == nil {
-				_, err = fmt.Fprintln(stdout, pretty.String())
-			}
+			err = printJSON(stdout, value)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -61,12 +94,7 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		return 1
 	}
 	command, milestone := "service startup", "M7"
-	switch {
-	case parsed.usageReport:
-		command, milestone = "--usage-report", "M2"
-	case parsed.exportRun != nil:
-		command, milestone = "--export-run", "M2"
-	case parsed.doctor:
+	if parsed.doctor {
 		command = "--doctor"
 	}
 	fmt.Fprintf(stderr, "Error: %s is not implemented in the Go executable yet (requires %s)\n", command, milestone)

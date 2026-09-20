@@ -52,12 +52,20 @@ def cli_contracts():
 def unavailable_commands():
     with tempfile.TemporaryDirectory(prefix='octomus-foundations-unavailable-') as directory:
         root = Path(directory)
-        for args in [[], ['--doctor'], ['--doctor', '--audit'], ['--usage-report'], ['--export-run', 'synthetic-cycle']]:
+        for args in [[], ['--doctor'], ['--doctor', '--audit']]:
             result = run(BINARY, ['--data-dir', str(root / 'state'), *args], root,
                          {'OCTOMUS_TOKEN': 'fixture-token-not-an-operator-token', 'OCTOMUS_ASSETS': '/nonexistent'})
             assert result.returncode == 1 and not result.stdout, (args, result)
             assert 'not implemented in the Go executable' in result.stderr, (args, result.stderr)
             assert not list(root.iterdir()), f'Unavailable command wrote state: {args}'
+        # M2 read-only exports exist, but missing state is an explicit failure that
+        # never creates the data directory or takes the service lock.
+        for args in [['--usage-report'], ['--export-run', 'synthetic-cycle']]:
+            result = run(BINARY, ['--data-dir', str(root / 'state'), *args], root,
+                         {'OCTOMUS_TOKEN': 'fixture-token-not-an-operator-token', 'OCTOMUS_ASSETS': '/nonexistent'})
+            assert result.returncode == 1 and not result.stdout, (args, result)
+            assert 'state database' in result.stderr, (args, result.stderr)
+            assert not list(root.iterdir()), f'Read-only export wrote state: {args}'
 
 
 def embedding_contracts(go_binary=False):

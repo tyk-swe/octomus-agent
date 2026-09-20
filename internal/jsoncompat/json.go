@@ -418,24 +418,7 @@ func normalizeNumbers(value any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		// ryu/serde prints fixed notation for exponents -5 through 15, and an
-		// explicit decimal for integral floats. Other exponents have no padding.
-		repr := strconv.FormatFloat(n, 'e', -1, 64)
-		parts := strings.Split(repr, "e")
-		exponent, _ := strconv.Atoi(parts[1])
-		if exponent >= -5 && exponent < 16 {
-			repr = strconv.FormatFloat(n, 'f', -1, 64)
-			if !strings.Contains(repr, ".") {
-				repr += ".0"
-			}
-		} else {
-			repr = parts[0] + "e"
-			if exponent >= 0 {
-				repr += "+"
-			}
-			repr += strconv.Itoa(exponent)
-		}
-		return json.Number(repr), nil
+		return json.Number(FormatFloat(n)), nil
 	case []any:
 		for i, item := range v {
 			normalized, err := normalizeNumbers(item)
@@ -458,6 +441,36 @@ func normalizeNumbers(value any) (any, error) {
 		return value, nil
 	}
 }
+
+// FormatFloat spells a finite f64 the way serde_json (ryu) does: fixed notation
+// for exponents -5 through 15 with an explicit decimal for integral values, and
+// unpadded exponent notation otherwise.
+func FormatFloat(n float64) string {
+	repr := strconv.FormatFloat(n, 'e', -1, 64)
+	parts := strings.Split(repr, "e")
+	exponent, _ := strconv.Atoi(parts[1])
+	if exponent >= -5 && exponent < 16 {
+		repr = strconv.FormatFloat(n, 'f', -1, 64)
+		if !strings.Contains(repr, ".") {
+			repr += ".0"
+		}
+		return repr
+	}
+	repr = parts[0] + "e"
+	if exponent >= 0 {
+		repr += "+"
+	}
+	return repr + strconv.Itoa(exponent)
+}
+
+// Float64 marshals with serde's float spelling, so an integral value such as
+// 60.0 keeps its decimal point instead of encoding/json's 60.
+type Float64 float64
+
+func (f Float64) MarshalJSON() ([]byte, error) {
+	return []byte(FormatFloat(float64(f))), nil
+}
+
 func EnumName(value uint8, names []string) string {
 	if int(value) >= len(names) {
 		return ""

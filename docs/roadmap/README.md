@@ -270,6 +270,7 @@ existing Rust targets:
 make build-go
 make check-go
 make test-go
+make test-go-storage   # cross-language storage checks against the frozen Rust reference
 ```
 
 Keep executable output predictable, for example `bin/octomus-agent-go`. Shared
