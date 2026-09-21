@@ -4,7 +4,6 @@ package model
 
 import (
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -78,14 +77,30 @@ func (b BlockedReason) Error() string {
 	}
 	return messages[b]
 }
+
+// BlockedReasonFromError walks the error chain outermost to innermost —
+// including multi-cause nodes — so the deepest typed reason wins, matching
+// anyhow's Context stack in the reference implementation.
 func BlockedReasonFromError(err error) BlockedReason {
 	result := BlockedReasonUnknown
-	for err != nil {
-		if reason, ok := err.(BlockedReason); ok {
+	var visit func(error)
+	visit = func(e error) {
+		if e == nil {
+			return
+		}
+		if reason, ok := e.(BlockedReason); ok {
 			result = reason
 		}
-		err = errors.Unwrap(err)
+		switch u := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range u.Unwrap() {
+				visit(child)
+			}
+		case interface{ Unwrap() error }:
+			visit(u.Unwrap())
+		}
 	}
+	visit(err)
 	return result
 }
 func (p PlanningCapacity) Available() bool { return p.Status == PlanningCapacityStatusReady }
