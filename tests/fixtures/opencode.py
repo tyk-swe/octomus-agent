@@ -30,7 +30,22 @@ assert sys.argv[1] == 'serve'
 assert 'OCTOMUS_TOKEN' not in os.environ
 assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 assert os.environ['OPENCODE_DISABLE_PROJECT_CONFIG'] == 'true'
+assert os.environ['OPENCODE_DISABLE_AUTOUPDATE'] == 'true'
+assert os.environ['OPENCODE_DISABLE_AUTOCOMPACT'] == 'true'
+assert os.environ['OPENCODE_DISABLE_TERMINAL_TITLE'] == 'true'
+assert os.environ['OPENCODE_SERVER_USERNAME'] and os.environ['OPENCODE_SERVER_PASSWORD']
 policy = json.loads(os.environ['OPENCODE_CONFIG_CONTENT'])
+assert policy['share'] == 'disabled' and policy['autoshare'] is False and policy['autoupdate'] is False
+assert policy['snapshot'] is False and policy['lsp'] is False and policy['formatter'] is False
+assert policy['compaction'] == {'auto': False, 'prune': False}
+assert policy['default_agent'].startswith('octomus-') and len(policy['default_agent']) == len('octomus-') + 32
+worker = policy['agent'][policy['default_agent']]
+assert worker['mode'] == 'primary'
+assert worker['prompt'].startswith('You are a worker controlled by Octomus')
+assert worker['permission'] == {'*': 'allow', 'question': 'deny', 'task': 'deny'}
+assert policy['agent']['title'] == {'disable': True}
+assert policy['agent']['summary'] == {'disable': True}
+assert policy['agent']['compaction'] == {'disable': True}
 sessions = root / 'oc-sessions'
 sessions.mkdir(exist_ok=True)
 subscribers = []
@@ -90,6 +105,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.parts == ['config']:
             self.send_json({**policy, 'share': 'auto'} if mode() == 'wrong-policy' else policy)
         elif self.parts == ['provider']:
+            if mode() == 'redirect':
+                # Redirects must fail closed; the adapter never follows them.
+                self.send_response(302)
+                self.send_header('Location', 'http://127.0.0.1:1/')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
             providers = []
             for identity in ['fixture', 'alternate', 'offline']:
                 providers.append({'id': identity, 'name': identity.title(), 'key': 'fixture-credential-do-not-expose', 'options': {'apiKey': 'another-fixture-secret'}, 'env': ['PRIVATE_API_KEY'], 'models': {'fixture-model': model('fixture-model'), 'plain-model': model('plain-model', variants=False), 'no-tools': model('no-tools', toolcall=False)}})

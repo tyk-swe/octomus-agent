@@ -3,6 +3,7 @@ module github.com/tyk-swe/octomus-agent
 go 1.27.1
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/nlnwa/whatwg-url v0.6.2
 	golang.org/x/text v0.42.0
 	modernc.org/sqlite v1.59.0
@@ -11,7 +12,6 @@ require (
 require (
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

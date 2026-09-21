@@ -45,7 +45,7 @@ for line in sys.stdin:
         interrupted(request)
         continue
     if method == 'account/read':
-        result = {'account': {'type': 'apiKey'}, 'requiresOpenaiAuth': True}
+        result = {'account': None, 'requiresOpenaiAuth': True} if mode() == 'no-auth' else {'account': {'type': 'apiKey'}, 'requiresOpenaiAuth': True}
     elif method == 'model/list':
         result = {'data': [{'model': m, 'displayName': m, 'supportedReasoningEfforts': [{'reasoningEffort': e} for e in ['low', 'medium', 'high', 'xhigh', 'max']]} for m in ['gpt-6-astra', 'gpt-5.6-luna']], 'nextCursor': None}
     elif method in ['thread/start', 'thread/resume']:
@@ -110,11 +110,42 @@ for line in sys.stdin:
         if mode() == 'bad-structured' and 'outputSchema' in params:
             text = 'not json at all'
         else:
-            answer = respond(prompt, cwd, thread, file)
+            answer = respond(prompt, cwd, thread, file) if prompt != 'Fixture prompt' else 'Fixture completed. ✓'
             text = answer if isinstance(answer, str) else json.dumps(answer)
+        completed_item = {'method': 'item/completed', 'params': {'threadId': identity, 'turnId': turn, 'item': {'type': 'agentMessage', 'phase': 'final_answer', 'text': text}}}
+        completed_turn = {'method': 'turn/completed', 'params': {'threadId': identity, 'turn': {'id': turn, 'status': 'completed', 'error': None}}}
+        if mode() == 'disconnect':
+            # Acknowledge the turn, then drop the protocol stream mid-turn.
+            emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
+            sys.exit(0)
+        if mode() == 'missing-completion':
+            # The answer item arrives but the completion event never does.
+            emit(completed_item)
+            emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
+            continue
+        if mode() == 'duplicate':
+            emit(completed_item)
+            emit(completed_item)
+            emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
+            emit(completed_turn)
+            emit(completed_turn)
+            continue
+        if mode() == 'stale':
+            # Notifications for an earlier turn and a stale completion arrive
+            # before the real turn's events; the adapter must ignore them.
+            emit({'method': 'item/completed', 'params': {'threadId': identity, 'turnId': 'stale-turn', 'item': {'type': 'agentMessage', 'phase': 'final_answer', 'text': 'stale answer'}}})
+            emit({'method': 'turn/completed', 'params': {'threadId': identity, 'turn': {'id': str(uuid.uuid4()), 'status': 'completed', 'error': None}}})
+        if mode() == 'interleaved':
+            # Events for an unrelated thread are interleaved with this turn's.
+            emit({'method': 'item/completed', 'params': {'threadId': str(uuid.uuid4()), 'turnId': 'unrelated', 'item': {'type': 'agentMessage', 'phase': 'final_answer', 'text': 'unrelated'}}})
+            emit(completed_item)
+            emit({'method': 'turn/completed', 'params': {'threadId': str(uuid.uuid4()), 'turn': {'id': turn, 'status': 'completed', 'error': None}}})
+            emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
+            emit(completed_turn)
+            continue
         # Exercise out-of-order notifications before the turn/start RPC response.
-        emit({'method': 'item/completed', 'params': {'threadId': identity, 'turnId': turn, 'item': {'type': 'agentMessage', 'phase': 'final_answer', 'text': text}}})
+        emit(completed_item)
         emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
-        emit({'method': 'turn/completed', 'params': {'threadId': identity, 'turn': {'id': turn, 'status': 'completed', 'error': None}}})
+        emit(completed_turn)
         continue
     emit({'id': request['id'], 'result': result})

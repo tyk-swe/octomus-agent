@@ -56,12 +56,12 @@ leave the corresponding required gate unrun and block milestone completion.
 
 ```text
 Milestone: M4
-Status: TODO
-Implementation revision: Not started.
-Delivered output: None.
-Acceptance tests and commands: Not run.
-Results: No fixture or pinned-client acceptance evidence recorded.
-Intentional behavior differences: None approved.
-Unrun required checks and blockers: All acceptance checks unrun; depends on M2 and M3; pinned clients required.
-Next eligible milestone: M5 after M4 is DONE.
+Status: DONE
+Implementation revision: Working tree based on 12919ae; frozen behavior reference remains 3c2b5cd50924033873d7f740f9df44daee5685db.
+Delivered output: internal/runner with the runner-neutral Adapter and per-invocation Runners owner, exact route/catalog validation, structured-result validation, diagnostics, a bounded Codex app-server adapter, and an owned OpenCode HTTP/SSE adapter; fixture regressions in internal/runner and tests/fixtures; pinned real-client/synthetic-provider Go contracts; and matching Go gates in the existing CI client-contract matrix.
+Acceptance tests and commands: gofmt -w internal/runner/*.go; go test ./internal/runner -count=1; go test -race ./internal/runner -count=1; cargo test --locked --test runners; focused Rust core route/version regressions; make check-go; make test-go; make check; make test; OCTOMUS_CONTRACT_CODEX_BINARY=<pinned-codex> go test ./internal/runner -run '^TestPinnedCodexContract$' -count=1 -v; OCTOMUS_CONTRACT_OPENCODE_BINARY=<pinned-opencode> go test ./internal/runner -run '^TestPinnedOpenCodeContract$' -count=1 -v; the equivalent ignored Rust pinned_codex_contract and pinned_opencode_contract invocations with their binary variables set; git diff --check.
+Results: PASS on Linux amd64 with Go 1.27.1, Rust 1.98.0, Node 26.8.2, npm 11.19.1 and Python 3.14.4. Fixture tests cover initialization and account/catalog discovery, start/resume, exact model/effort/provider/variant/workspace/permission identities, structured output, fragmented and unrelated events, missing/duplicate/stale completion, disconnects, interactive requests, cancellation/interrupt/abort, redirect refusal, lazy mixed-backend startup, descendant cleanup, and exact 16,000,000-byte JSON/line/SSE limits. Full Go unit and race suites passed; all default Rust, Python integration, dashboard, showcase and site stages passed, including e2e_runners.py 13/13. Real codex-cli 0.153.4 and OpenCode 1.18.30 contracts both passed in Go and Rust against tests/fixtures/provider.py without credentials or paid calls. Codex schemas were generated at test time by pinned 0.153.4 and v2 ThreadStartParams, ThreadResumeParams, TurnStartParams and TurnInterruptParams properties were checked; the pinned OpenCode /doc OpenAPI 3.x session/message/abort POST contract was checked.
+Intentional behavior differences: No supported route, identity, completion, or wire-format differences. Go uses explicit idempotent Close methods and context cancellation instead of Rust Drop/CancellationToken ownership. It additionally checks every safety-critical effective OpenCode policy field and applies the shared 16,000,000-byte ceiling to outbound Codex JSON, both fail-closed enforcement of this milestone's declared invariants.
+Unrun required checks and blockers: None. The older Rust pinned OpenCode smoke case remains ignored by default, but the stronger pinned real-client/synthetic-provider OpenCode contract was explicitly executed for both implementations and passed. No live account, credential, paid provider, GitHub write or production validation was performed or required.
+Next eligible milestone: M5.
 ```

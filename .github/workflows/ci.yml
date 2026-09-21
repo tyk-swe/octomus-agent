@@ -120,6 +120,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - run: npm ci --prefix web && npm run build --prefix web
       - name: Install pinned client
         run: |
@@ -132,3 +135,10 @@ jobs:
           fi
       - name: Real client, synthetic provider contracts
         run: cargo test --locked --test contracts pinned_${{ matrix.backend }}_contract -- --ignored --nocapture
+      - name: Go pinned client contract
+        run: |
+          if [ '${{ matrix.backend }}' = codex ]; then
+            go test ./internal/runner -run '^TestPinnedCodexContract$' -count=1 -v
+          else
+            go test ./internal/runner -run '^TestPinnedOpenCodeContract$' -count=1 -v
+          fi
