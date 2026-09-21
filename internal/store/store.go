@@ -551,23 +551,25 @@ func (s *Store) PlanningCapacity() (model.PlanningCapacity, error) {
 // PlanningCapacityAt is PlanningCapacity for the UTC day containing `at`.
 func (s *Store) PlanningCapacityAt(at time.Time) (model.PlanningCapacity, error) {
 	at = at.UTC()
-	day := model.UTCDay(at)
-	var cfg config.Config
-	var used int64
 	s.mu.Lock()
-	err := s.transaction(false, func(c *sql.Conn) error {
-		var err error
-		if cfg, err = storedConfig(c); err != nil {
-			return err
-		}
-		err = c.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", day).Scan(&used)
-		if err == sql.ErrNoRows {
-			used = 0
-			return nil
-		}
-		return err
-	})
+	capacity, err := planningCapacityAt(s.conn, at)
 	s.mu.Unlock()
+	return capacity, err
+}
+
+func planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCapacity, error) {
+	at = at.UTC()
+	day := model.UTCDay(at)
+	cfg, err := storedConfig(c)
+	if err != nil {
+		return model.PlanningCapacity{}, err
+	}
+	var used int64
+	err = c.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", day).Scan(&used)
+	if err == sql.ErrNoRows {
+		used = 0
+		err = nil
+	}
 	if err != nil {
 		return model.PlanningCapacity{}, err
 	}

@@ -85,6 +85,14 @@ func savedInventory(c *sql.Conn) (*model.OpenPrInventory, error) {
 	return &inventory, nil
 }
 
+// OpenPrInventory returns the latest complete persisted observation. The
+// scheduler still requires its own fresh-process authority before admission.
+func (s *Store) OpenPrInventory() (*model.OpenPrInventory, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return savedInventory(s.conn)
+}
+
 // PrUnion combines the observed owned-open inventory with reservations no open
 // PR represents yet: (observed, unrepresented reservations, remaining).
 func PrUnion(inventory model.OpenPrInventory, reservations []PrReservation, limit uint64) (uint64, uint64, uint64) {
@@ -156,6 +164,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	admitted := false
+	var next model.Task
 	err := s.transaction(true, func(c *sql.Conn) error {
 		cfg, err := storedConfig(c)
 		if err != nil {
@@ -189,15 +198,16 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 		if _, _, remaining := PrUnion(inventory, reservations, cfg.MaxOpenPRs); remaining == 0 {
 			return errRollback
 		}
-		task.Status = model.StatusExecuting
-		task.UpdatedAt = model.Now()
-		if err := txPut(c, "task", task.ID, *task); err != nil {
+		next = task.Clone()
+		next.Status = model.StatusExecuting
+		next.UpdatedAt = model.Now()
+		if err := txPut(c, "task", next.ID, next); err != nil {
 			return err
 		}
-		if err := insertReservation(c, task.ID, strings.ToLower(cfg.GitHubRepo), task.Branch, model.Now()); err != nil {
+		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now()); err != nil {
 			return err
 		}
-		if _, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,'status',?3)", model.Now(), task.ID, "Executing"); err != nil {
+		if _, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,'status',?3)", model.Now(), next.ID, "Executing"); err != nil {
 			return err
 		}
 		admitted = true
@@ -205,6 +215,9 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 	})
 	if err == errRollback {
 		return false, nil
+	}
+	if err == nil && admitted {
+		*task = next
 	}
 	return admitted, err
 }
@@ -254,10 +267,18 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 		}
 		for _, reservation := range reservations {
 			if contains(released, reservation.TaskID) {
-				if err := releaseReservation(c, reservation.TaskID); err != nil {
+				var task model.Task
+				found, err := txGet(c, "task", reservation.TaskID, &task)
+				if err != nil {
 					return err
 				}
-				continue
+				confirmed := found && task.OutputCommit != nil && (task.Status == model.StatusPublished || task.Status == model.StatusCancelled)
+				if confirmed {
+					if err := releaseReservation(c, reservation.TaskID); err != nil {
+						return err
+					}
+					continue
+				}
 			}
 			if _, ok := represented[reservation.Branch]; ok {
 				var one int64

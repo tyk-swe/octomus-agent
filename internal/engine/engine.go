@@ -1,0 +1,314 @@
+// Package engine owns durable scheduling and planning. Long-running Git,
+// GitHub, and runner calls never hold gate; every result is revalidated against
+// the live control/configuration before a durable transition.
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
+)
+
+const schedulerInterval = time.Second
+
+// TaskRunner is the M6 execution boundary. M5 selects and durably admits work;
+// a runner owns the task after it becomes executing.
+type TaskRunner interface {
+	RunTask(context.Context, model.Task) error
+}
+
+type TaskRunnerFunc func(context.Context, model.Task) error
+
+func (f TaskRunnerFunc) RunTask(ctx context.Context, task model.Task) error { return f(ctx, task) }
+
+type Option func(*App)
+
+func WithTaskRunner(runner TaskRunner) Option { return func(a *App) { a.taskRunner = runner } }
+
+type cycleJob struct {
+	id     string
+	mode   model.CycleMode
+	cancel context.CancelFunc
+}
+
+type taskJob struct {
+	branch string
+	cancel context.CancelFunc
+}
+
+type runtimeState struct {
+	cycle          *cycleJob
+	preflight      bool
+	preflightMode  model.CycleMode
+	tasks          map[string]taskJob
+	checkedCycles  map[string]struct{}
+	prRefresh      *prRefreshJob
+	prObservation  *freshPrObservation
+	prRefreshError string
+	lastPrAttempt  time.Time
+	housekeeping   bool
+	lastRetention  time.Time
+	lastObserve    time.Time
+}
+
+func (r *runtimeState) idle() bool {
+	return r.cycle == nil && !r.preflight && len(r.tasks) == 0
+}
+
+type App struct {
+	Store      *store.Store
+	DataDir    string
+	gate       sync.Mutex
+	runtimeMu  sync.Mutex
+	runtime    runtimeState
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wake       chan struct{}
+	taskRunner TaskRunner
+	wg         sync.WaitGroup
+}
+
+func New(state *store.Store, dataDir string, options ...Option) *App {
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &App{
+		Store:   state,
+		DataDir: filepath.Clean(dataDir),
+		ctx:     ctx,
+		cancel:  cancel,
+		wake:    make(chan struct{}, 1),
+		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}},
+	}
+	for _, option := range options {
+		if option != nil {
+			option(a)
+		}
+	}
+	return a
+}
+
+func (a *App) notify() {
+	select {
+	case a.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (a *App) Config() (config.Config, error) {
+	cfg, err := store.Get[config.Config](a.Store, "settings", "config")
+	if err != nil {
+		return config.Config{}, err
+	}
+	if cfg == nil {
+		return config.Config{}, errors.New("Configuration has not been saved")
+	}
+	return *cfg, nil
+}
+
+func (a *App) Control() (model.Control, error) {
+	control, err := store.Get[model.Control](a.Store, "settings", "control")
+	if err != nil {
+		return model.Control{}, err
+	}
+	if control == nil {
+		return model.DefaultControl(), nil
+	}
+	return *control, nil
+}
+
+// Run recovers durable state once, then schedules until ctx or Shutdown stops it.
+func (a *App) Run(ctx context.Context) error {
+	if err := a.Recover(); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(schedulerInterval)
+	defer ticker.Stop()
+	for {
+		if err := a.Tick(); err != nil {
+			a.fail(err)
+		}
+		select {
+		case <-ctx.Done():
+			a.Shutdown()
+			return nil
+		case <-a.ctx.Done():
+			a.wg.Wait()
+			return nil
+		case <-ticker.C:
+		case <-a.wake:
+		}
+	}
+}
+
+func (a *App) Shutdown() {
+	a.gate.Lock()
+	a.cancel()
+	a.runtimeMu.Lock()
+	if a.runtime.cycle != nil {
+		a.runtime.cycle.cancel()
+	}
+	for _, task := range a.runtime.tasks {
+		task.cancel()
+	}
+	if a.runtime.prRefresh != nil {
+		a.runtime.prRefresh.cancel()
+	}
+	a.runtimeMu.Unlock()
+	a.gate.Unlock()
+	a.wg.Wait()
+}
+
+func (a *App) fail(err error) {
+	a.gate.Lock()
+	defer a.gate.Unlock()
+	control, loadErr := a.Control()
+	if loadErr != nil {
+		return
+	}
+	message := store.ErrorMessage(err)
+	control.SetMode(model.OperatingModePaused)
+	control.Error = &message
+	_ = a.Store.SaveControl(control)
+	_ = a.Store.Event("system", "engine_error", message)
+	a.invalidatePrObservation()
+}
+
+// Recover turns interrupted in-memory work into explicit durable state and
+// preserves an atomically committed RunOnce execution phase.
+func (a *App) Recover() error {
+	a.gate.Lock()
+	defer a.gate.Unlock()
+
+	candidates, err := a.Store.PrReservationCandidates()
+	if err != nil {
+		return err
+	}
+	for _, task := range candidates {
+		initializedQueued := task.Status == model.StatusQueued && workspace.Initialized(task)
+		needsReservation := task.Status.Active() || initializedQueued || (task.Status != model.StatusPublished && task.OutputCommit != nil)
+		if task.Proposal.Target == task.Config.DefaultBranch && task.Status != model.StatusCancelled && needsReservation {
+			if err := a.Store.SeedPrReservation(task); err != nil {
+				return err
+			}
+		}
+	}
+
+	active := make([]string, 0, len(model.ActiveStatuses()))
+	for _, status := range model.ActiveStatuses() {
+		active = append(active, status.String())
+	}
+	tasks, err := a.Store.TasksWithStatus(active)
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		markedCancelled, err := a.Store.MarkerSet("cancel", task.ID)
+		if err != nil {
+			return err
+		}
+		model.InterruptRunning(task.Sessions)
+		switch {
+		case markedCancelled && task.OutputCommit == nil:
+			task.Status = model.StatusCancelled
+			task.Error = stringPointer("Operator cancellation preserved across restart")
+		case workspace.Initialized(task) && task.Attempts < task.ExecutionConfig().MaxRetries:
+			task.Status = model.StatusQueued
+			task.Attempts++
+			task.Error = stringPointer("Recovering an interrupted task: inspecting the recorded workspace and reconciling remote state before continuing.")
+		default:
+			task.Status = model.StatusBlocked
+			reason := model.BlockedReasonWorkspaceInvalid
+			if workspace.Initialized(task) {
+				reason = model.BlockedReasonRetryLimit
+			}
+			task.BlockedReason = &reason
+			task.Error = stringPointer("Service interrupted before workspace initialization completed, or retry budget exhausted. Inspect the preserved task before retrying.")
+		}
+		task.UpdatedAt = model.Now()
+		if err := a.Store.Put("task", task.ID, task); err != nil {
+			return err
+		}
+		if err := a.Store.Event(task.ID, "recovery", *task.Error); err != nil {
+			return err
+		}
+	}
+
+	cycles, err := a.Store.RunningCycles()
+	if err != nil {
+		return err
+	}
+	for _, cycle := range cycles {
+		model.InterruptRunning(cycle.Sessions)
+		cycle.Status = model.CycleInterrupted
+		cycle.CompletedAt = stringPointer(model.Now())
+		cycle.Error = stringPointer("Discovery interrupted; incomplete proposals were not dispatched")
+		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
+			return err
+		}
+	}
+
+	control, err := a.Control()
+	if err != nil {
+		return err
+	}
+	if control.Mode == model.OperatingModeRunOnce && control.Batch != nil && control.Batch.Phase == model.BatchPhasePlanning {
+		message := "Run once was interrupted before its planning transaction committed"
+		control.SetMode(model.OperatingModePaused)
+		control.Error = &message
+		if err := a.Store.SaveControl(control); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func stringPointer(value string) *string { return &value }
+
+func (a *App) setTaskError(task *model.Task, err error) error {
+	reason := model.BlockedReasonFromError(err)
+	task.Status = model.StatusBlocked
+	task.BlockedReason = &reason
+	task.Error = stringPointer(store.ErrorMessage(err))
+	task.UpdatedAt = model.Now()
+	if saveErr := a.Store.Put("task", task.ID, *task); saveErr != nil {
+		return saveErr
+	}
+	return a.Store.Event(task.ID, "status", "Blocked")
+}
+
+func (a *App) runTask(task model.Task) {
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.runtimeMu.Lock()
+	a.runtime.tasks[task.ID] = taskJob{branch: task.Branch, cancel: cancel}
+	a.runtimeMu.Unlock()
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		defer cancel()
+		runErr := a.taskRunner.RunTask(ctx, task.Clone())
+		a.gate.Lock()
+		current, loadErr := store.Get[model.Task](a.Store, "task", task.ID)
+		if loadErr == nil && current != nil && current.Status.Active() {
+			if runErr == nil || errors.Is(runErr, context.Canceled) {
+				runErr = errors.New("Task worker exited unexpectedly; inspect the preserved workspace")
+			}
+			_ = a.setTaskError(current, runErr)
+		}
+		a.runtimeMu.Lock()
+		delete(a.runtime.tasks, task.ID)
+		a.runtimeMu.Unlock()
+		a.gate.Unlock()
+		a.notify()
+	}()
+}
+
+func invalidPlan(message string) error {
+	return fmt.Errorf("%s: %w", message, model.BlockedReasonInvalidPlan)
+}

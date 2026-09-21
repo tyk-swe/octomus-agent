@@ -206,7 +206,18 @@ func (r *Runners) CheckRoute(route config.Route, cwd string) error {
 }
 
 func (r *Runners) ValidateRoutes(cfg config.Config, cwd string, audit bool) error {
+	checked := map[config.Backend]struct{}{}
 	for _, named := range cfg.RoutesFor(audit) {
+		if _, ok := checked[named.Route.Backend]; !ok {
+			client, err := r.Client(named.Route.Backend, cwd)
+			if err != nil {
+				return fmt.Errorf("%s route: %w", named.Name, err)
+			}
+			if _, err := client.Diagnostics(cwd); err != nil {
+				return fmt.Errorf("%s diagnostics: %w", named.Route.Backend.Display(), err)
+			}
+			checked[named.Route.Backend] = struct{}{}
+		}
 		if err := r.CheckRoute(named.Route, cwd); err != nil {
 			return fmt.Errorf("%s route: %w", named.Name, err)
 		}

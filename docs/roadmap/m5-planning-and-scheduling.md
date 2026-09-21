@@ -54,12 +54,12 @@ evidence alongside normal planning outcomes.
 
 ```text
 Milestone: M5
-Status: TODO
-Implementation revision: Not started.
-Delivered output: None.
-Acceptance tests and commands: Not run.
-Results: No acceptance evidence recorded.
-Intentional behavior differences: None approved.
-Unrun required checks and blockers: All acceptance checks unrun; depends on M2, M3, and M4.
-Next eligible milestone: M6 after M5 is DONE.
+Status: DONE
+Implementation revision: Working tree based on d819651; frozen behavior reference remains 3c2b5cd50924033873d7f740f9df44daee5685db.
+Delivered output: internal/engine with durable Paused, RunOnce and Continuous scheduling; restart recovery and housekeeping; complete grounding, discovery, independent adversarial review, consolidation and audit pipelines; proposal, dependency and shared-branch validation; decision memory and rediscovery; complete PR inventory, process-local capacity authority and durable reservation reconciliation; unlocked remote preflights with authoritative revalidation; and the narrow TaskRunner boundary required by M6. Supporting store transactions atomically admit planning sessions, start affordable RunOnce batches, begin affordable cycles, commit complete plans and admit new-PR tasks. The Git package exposes the existing read-only publication lookup and task-marker checks needed for reservation reconciliation. Unit, race, deterministic fixture-integration and cross-language storage tests cover the milestone contract.
+Acceptance tests and commands: go test ./internal/engine ./internal/store ./internal/git -count=1; CGO_ENABLED=1 go test -race ./internal/engine ./internal/store -count=1; make check-go; make test-go; make test-go-storage; make check; make test; git diff --check.
+Results: PASS on Linux amd64 with Go 1.27.1, Rust 1.98.0, Node 26.8.2, npm 11.19.1 and Python 3.14.4. Deterministic Codex/Git/GitHub fixtures prove a complete pass uses the configured discovery-agent count plus grounding, adversary-a, adversary-b and consolidation, with one unique session and unchanged independent workspace per role; a deliberately mutated planning clone fails closed, preserves terminal evidence and queues no work. Proposal accounting, invalid targets, duplicates, dependency cycles and total same-PR ordering fail closed. Complete-plan commit, decision memory, lineage and RunOnce phase changes are atomic; interrupted Planning pauses while committed Executing survives restart. Audit isolation, immutable batch membership, late retry failure accounting, UTC-day admission concurrency, live-policy affordability, complete inventory plus reservation capacity, stale/error/cancellation fail-closed behavior, queue-window independence, dependency/branch serialization and unlocked stale-preflight rejection all passed. Full Go unit and race suites, frozen Rust M5 core/hardening/PR-capacity/PR-context coverage, deterministic Python E2E, cross-language storage, packaging, dashboard, showcase and public-site stages passed. One initial full make test attempt hit a timing-sensitive process-lifecycle fixture after its descendant had already exited; its focused four-case rerun and the subsequent complete make test rerun both passed.
+Intentional behavior differences: No planning, scheduling, admission or capacity contract difference. Go uses contexts, ordinary mutexes and explicit Shutdown ownership in place of Rust cancellation tokens and drop semantics. M5 exposes engine-level operator controls; authenticated HTTP routing and service startup remain assigned to M7, and task execution/publication remains behind the M6 TaskRunner boundary. Rust remains the default service through M8.
+Unrun required checks and blockers: None. No live model, credential, GitHub write, production operation, release or cutover was performed or required; all integration evidence used deterministic local fixtures and real local Git.
+Next eligible milestone: M6.
 ```

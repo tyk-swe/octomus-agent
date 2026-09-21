@@ -91,6 +91,8 @@ def respond(prompt, cwd, thread, file):
         answer = 'Repaired feature output and checked the contract.'
     else:
         raise AssertionError(f'Unexpected prompt: {prompt[:100]}')
+    if (root / 'mutate-planning').exists() and cwd.parent.name == 'discovery-0':
+        (cwd / 'planning-mutation.txt').write_text('fixture mutation\n')
     if prompt.startswith('Adversarial proposal') or prompt.startswith('Act as final orchestrator'):
         ids = sorted(set(re.findall(r'rediscover-([0-9a-f-]{36})', prompt)))
         for identity in ids:

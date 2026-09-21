@@ -437,6 +437,12 @@ func taskMarker(ctx context.Context, c config.Config, taskID string, p model.Pul
 	return false, nil
 }
 
+// TaskMarker reports whether a task's durable publication marker is present in
+// a pull request description or comment.
+func TaskMarker(ctx context.Context, c config.Config, taskID string, p model.PullRequest) (bool, error) {
+	return taskMarker(ctx, c, taskID, p)
+}
+
 func parsePR(p map[string]any, c config.Config) (model.PullRequest, error) {
 	number, ok := jnum(field(p, "number"))
 	if !ok {
@@ -508,6 +514,12 @@ func publicationPR(ctx context.Context, c config.Config, branch string) (*model.
 		return nil, nil
 	}
 	return &matches[0], nil
+}
+
+// PublicationPR finds the unique pull request associated with an admitted
+// branch, including closed and merged requests.
+func PublicationPR(ctx context.Context, c config.Config, branch string) (*model.PullRequest, error) {
+	return publicationPR(ctx, c, branch)
 }
 
 // ValidatePublication checks a delivered or reconciled pull request against the

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -414,6 +415,55 @@ func (s *Store) StartBatch(control *model.Control) error {
 	})
 }
 
+// StartBatchIfAffordable starts a run-once batch only when the live
+// configuration can still fund a complete planning pass. The affordability
+// decision and every RunOnce side effect share one transaction.
+func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (model.PlanningCapacity, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var capacity model.PlanningCapacity
+	var next model.Control
+	started := false
+	err := s.transaction(true, func(c *sql.Conn) error {
+		var live model.Control
+		found, err := txGet(c, "settings", "control", &live)
+		if err != nil {
+			return err
+		}
+		if !found {
+			live = model.DefaultControl()
+		}
+		capacity, err = planningCapacityAt(c, at)
+		if err != nil {
+			return err
+		}
+		if !sameJSON(live, *control) || !capacity.Available() {
+			return errRollback
+		}
+		id := model.ID()
+		next = control.Clone()
+		next.SetMode(model.OperatingModeRunOnce)
+		next.Batch = &model.RunBatch{ID: id, Phase: model.BatchPhaseDraining, CycleID: nil}
+		next.Error = nil
+		next.NextCycleAt = 0
+		if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
+			return err
+		}
+		if err := txPut(c, "settings", "control", next); err != nil {
+			return err
+		}
+		started = true
+		return nil
+	})
+	if err == errRollback {
+		return capacity, false, nil
+	}
+	if err == nil && started {
+		*control = next
+	}
+	return capacity, started, err
+}
+
 // BeginCycle saves a new cycle and the control that references it together.
 func (s *Store) BeginCycle(cycle model.Cycle, control model.Control) error {
 	s.mu.Lock()
@@ -424,6 +474,53 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control) error {
 		}
 		return txPut(c, "settings", "control", control)
 	})
+}
+
+// BeginCycleIfAffordable atomically revalidates the exact live configuration,
+// the expected control record, and planning affordability before exposing a
+// running cycle or changing the RunOnce phase.
+func (s *Store) BeginCycleIfAffordable(cycle model.Cycle, control model.Control, expected model.Control, fingerprint string, at time.Time) (model.PlanningCapacity, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var capacity model.PlanningCapacity
+	started := false
+	err := s.transaction(true, func(c *sql.Conn) error {
+		cfg, err := storedConfig(c)
+		if err != nil {
+			return err
+		}
+		liveFingerprint, err := cfg.Fingerprint()
+		if err != nil {
+			return err
+		}
+		var live model.Control
+		found, err := txGet(c, "settings", "control", &live)
+		if err != nil {
+			return err
+		}
+		if !found {
+			live = model.DefaultControl()
+		}
+		capacity, err = planningCapacityAt(c, at)
+		if err != nil {
+			return err
+		}
+		if liveFingerprint != fingerprint || !sameJSON(live, expected) || !capacity.Available() {
+			return errRollback
+		}
+		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {
+			return err
+		}
+		if err := txPut(c, "settings", "control", control); err != nil {
+			return err
+		}
+		started = true
+		return nil
+	})
+	if err == errRollback {
+		return capacity, false, nil
+	}
+	return capacity, started, err
 }
 
 // BatchCounts returns (pending, unresolved) member counts for a run.

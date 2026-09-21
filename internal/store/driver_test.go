@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -258,6 +259,144 @@ func TestPrAdmissionAndReservationsShareOneTransaction(t *testing.T) {
 	invalid.ObservedAt = "yesterday"
 	if _, err := s.PersistPrInventory(invalid, nil); err == nil || !strings.Contains(err.Error(), "PR inventory timestamp is invalid") {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestPrAdmissionRechecksCanonicalTaskAndLivePolicy(t *testing.T) {
+	s := open(t, statePath(t))
+	cfg := saveConfig(t, s, func(c *config.Config) {
+		c.GitHubRepo = "fixture/project"
+		c.MaxOpenPRs = 1
+	})
+	inv := inventory(model.PullRequest{Number: 1, Branch: "octomus/open", State: "open", Owned: true})
+	changed, err := s.PersistPrInventory(inv, nil)
+	must(t, err)
+	if !changed {
+		t.Fatal("initial inventory was not persisted")
+	}
+	queued := task()
+	queued.Config = cfg
+	must(t, s.Put("task", queued.ID, queued))
+	if admitted, err := s.AdmitNewPrTask(&queued, inv); err != nil || admitted {
+		t.Fatalf("full live limit admitted work: %v, %v", admitted, err)
+	}
+	cfg.MaxOpenPRs = 2
+	must(t, s.Put("settings", "config", cfg))
+	saved, err := store.Get[model.Task](s, "task", queued.ID)
+	must(t, err)
+	if saved == nil {
+		t.Fatal("queued task disappeared")
+	}
+	queued = *saved
+	if admitted, err := s.AdmitNewPrTask(&queued, inv); err != nil || !admitted {
+		t.Fatalf("raised live limit did not admit work: %v, %v", admitted, err)
+	}
+
+	cfg.MaxOpenPRs = 5
+	must(t, s.Put("settings", "config", cfg))
+	canonical := task()
+	canonical.Config = cfg
+	must(t, s.Put("task", canonical.ID, canonical))
+	stale := canonical.Clone()
+	stale.Error = str("stale caller copy")
+	if admitted, err := s.AdmitNewPrTask(&stale, inv); err != nil || admitted {
+		t.Fatalf("stale caller copy admitted: %v, %v", admitted, err)
+	}
+	cancelled := canonical.Clone()
+	cancelled.Status = model.StatusCancelled
+	must(t, s.Put("task", cancelled.ID, cancelled))
+	if admitted, err := s.AdmitNewPrTask(&canonical, inv); err != nil || admitted {
+		t.Fatalf("cancelled canonical task admitted: %v, %v", admitted, err)
+	}
+
+	policyTask := task()
+	policyTask.Config = cfg
+	must(t, s.Put("task", policyTask.ID, policyTask))
+	changedPolicy := cfg
+	changedPolicy.BranchPrefix = "other/"
+	must(t, s.Put("settings", "config", changedPolicy))
+	if admitted, err := s.AdmitNewPrTask(&policyTask, inv); err != nil || admitted {
+		t.Fatalf("changed live identity admitted work: %v, %v", admitted, err)
+	}
+	must(t, s.Put("settings", "config", cfg))
+	if admitted, err := s.AdmitNewPrTask(&policyTask, inv); err != nil || !admitted {
+		t.Fatalf("matching live identity did not admit work: %v, %v", admitted, err)
+	}
+}
+
+func TestPrObservationNeverLosesDeliveredHead(t *testing.T) {
+	s := open(t, statePath(t))
+	published := task()
+	published.Status = model.StatusPublished
+	number := uint64(7)
+	published.PRNumber = &number
+	published.OutputCommit = str("older-delivery")
+	must(t, s.Put("task", published.ID, published))
+	delivered := model.PullRequest{Number: number, Branch: published.Branch, Head: "new-delivery", Base: "main", State: "open", Owned: true}
+	stale := delivered
+	stale.Head = "external-head"
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, call := range []struct {
+		pr        model.PullRequest
+		delivered bool
+	}{{stale, false}, {delivered, true}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- s.RecordPrObservation("fixture/project", call.pr, call.delivered)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		must(t, err)
+	}
+	_, observation, err := s.PrObservation("fixture/project", number)
+	must(t, err)
+	if observation == nil || observation.DeliveredHead == nil || *observation.DeliveredHead != delivered.Head {
+		t.Fatalf("delivery baseline was lost: %+v", observation)
+	}
+	if err := s.RecordPrObservation("fixture/project", stale, false); err != nil {
+		t.Fatal(err)
+	}
+	_, observation, err = s.PrObservation("fixture/project", number)
+	must(t, err)
+	if observation.DeliveredHead == nil || *observation.DeliveredHead != delivered.Head || !observation.ExternalHeadMovement {
+		t.Fatalf("stale poll erased delivery evidence: %+v", observation)
+	}
+}
+
+func TestConfirmedReservationReleaseRechecksCanonicalTerminalState(t *testing.T) {
+	s := open(t, statePath(t))
+	saveConfig(t, s, func(c *config.Config) { c.GitHubRepo = "fixture/project" })
+	checkpoint := task()
+	checkpoint.Status = model.StatusCancelled
+	checkpoint.OutputCommit = str("checkpoint")
+	must(t, s.Put("task", checkpoint.ID, checkpoint))
+	must(t, s.SeedPrReservation(checkpoint))
+	checkpoint.Status = model.StatusQueued
+	must(t, s.Put("task", checkpoint.ID, checkpoint))
+	first := inventory()
+	changed, err := s.PersistPrInventory(first, []string{checkpoint.ID})
+	must(t, err)
+	if !changed {
+		t.Fatal("inventory was not persisted")
+	}
+	if has, err := s.HasPrReservation(checkpoint.ID); err != nil || !has {
+		t.Fatalf("stale terminal result released retried work: has=%t, %v", has, err)
+	}
+	checkpoint.Status = model.StatusCancelled
+	must(t, s.Put("task", checkpoint.ID, checkpoint))
+	second := inventory()
+	second.ObservedAt = "2026-01-02T00:00:00Z"
+	changed, err = s.PersistPrInventory(second, []string{checkpoint.ID})
+	must(t, err)
+	if !changed {
+		t.Fatal("newer inventory was not persisted")
+	}
+	if has, err := s.HasPrReservation(checkpoint.ID); err != nil || has {
+		t.Fatalf("confirmed terminal checkpoint kept reservation: has=%t, %v", has, err)
 	}
 }
 
