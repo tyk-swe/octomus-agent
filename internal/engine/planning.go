@@ -195,12 +195,16 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if err := gitops.Fetch(ctx, cfg); err != nil {
 		return err
 	}
+	observedAt := model.Now()
 	revision, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
 	if err != nil {
 		return err
 	}
 	if revision == nil || *revision == "" {
 		return errors.New("Default branch missing on remote")
+	}
+	if err := a.observeDefaultBranch(cfg, *revision, observedAt); err != nil {
+		return err
 	}
 	inventory, err := gitops.OpenPrInventory(ctx, cfg)
 	if err != nil {
@@ -281,10 +285,6 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
 			return err
 		}
-	}
-	observation := model.DefaultBranchObservation{Repository: cfg.GitHubRepo, DefaultBranch: cfg.DefaultBranch, Revision: *revision, ObservedAt: model.Now()}
-	if err := a.Store.Put("settings", "default_branch", observation); err != nil {
-		return err
 	}
 	control, err := a.Control()
 	if err != nil {

@@ -69,7 +69,7 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 				return
 			}
 		}
-		if observe && cfg.GitHubRepo != "" && cfg.Repository != "" {
+		if stat, err := os.Stat(cfg.Repository); observe && cfg.GitHubRepo != "" && err == nil && stat.IsDir() {
 			if err := a.observeRemote(a.ctx, cfg); err != nil {
 				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
 			}
@@ -86,6 +86,30 @@ func (a *App) retention(cfg config.Config) error {
 		days = 36500
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
+	checks, err := a.Store.BaselineCleanupCandidates()
+	if err != nil {
+		return err
+	}
+	for _, check := range checks {
+		if a.ctx.Err() != nil {
+			return nil
+		}
+		a.gate.Lock()
+		current, loadErr := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
+		terminal := current != nil && current.Status != model.BaselineStatusRunning
+		a.runtimeMu.Lock()
+		active := a.runtime.baseline != nil && a.runtime.baseline.id == check.ID
+		a.runtimeMu.Unlock()
+		if loadErr == nil && terminal && !active && current != nil {
+			loadErr = a.CleanupBaseline(current)
+		}
+		a.gate.Unlock()
+		if loadErr != nil {
+			if eventErr := a.Store.Event(check.ID, "cleanup_error", store.ErrorMessage(loadErr)); eventErr != nil {
+				return eventErr
+			}
+		}
+	}
 	for _, kind := range []string{"task", "cycle"} {
 		ids, err := a.Store.CleanupCandidates(kind, cutoff)
 		if err != nil {
@@ -240,6 +264,9 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 			return err
 		}
 		for _, raw := range page.Items {
+			if ctx.Err() != nil {
+				return nil
+			}
 			var summary struct {
 				Repository string `json:"repository"`
 				PR         struct {
@@ -262,6 +289,7 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 			break
 		}
 	}
+	observedAt := model.Now()
 	revision, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
 	if err != nil {
 		return err
@@ -271,6 +299,11 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 		revisionValue = *revision
 	}
 	fingerprint := ContextFingerprint(revisionValue, inventory.PRs)
+	if revisionValue != "" {
+		if err := a.observeDefaultBranch(cfg, revisionValue, observedAt); err != nil {
+			return err
+		}
+	}
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	live, err := a.Config()
@@ -282,12 +315,6 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	}
 	for _, pr := range closed {
 		if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
-			return err
-		}
-	}
-	if revisionValue != "" {
-		observation := model.DefaultBranchObservation{Repository: cfg.GitHubRepo, DefaultBranch: cfg.DefaultBranch, Revision: revisionValue, ObservedAt: model.Now()}
-		if err := a.Store.Put("settings", "default_branch", observation); err != nil {
 			return err
 		}
 	}

@@ -2,20 +2,32 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
+	"net/http"
 	"net/netip"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/evidence"
+	"github.com/tyk-swe/octomus-agent/internal/httpapi"
 	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
+	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/notifications"
 	"github.com/tyk-swe/octomus-agent/internal/report"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 	dashboard "github.com/tyk-swe/octomus-agent/web"
 )
 
@@ -88,17 +100,129 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		return 0
 	}
 	// Linking the real filesystem keeps all dashboard bytes in the executable.
-	// Serving it, operator authentication and durable startup belong to M7.
 	if _, err := fs.Stat(dashboard.Files(), "200.html"); err != nil {
 		fmt.Fprintf(stderr, "Error: embedded dashboard: %v\n", err)
 		return 1
 	}
-	command, milestone := "service startup", "M7"
-	if parsed.doctor {
-		command = "--doctor"
+	if err := service(parsed, env, stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
 	}
-	fmt.Fprintf(stderr, "Error: %s is not implemented in the Go executable yet (requires %s)\n", command, milestone)
-	return 1
+	return 0
+}
+
+// service is the reference main() tail: data directory, process lock, store,
+// optional doctor, token, assets, workers, listener and graceful shutdown.
+func service(parsed arguments, env func(string) (string, bool), stdout, stderr io.Writer) error {
+	if err := os.MkdirAll(parsed.dataDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(parsed.dataDir, 0o700); err != nil {
+		return err
+	}
+	data, err := filepath.EvalSymlinks(parsed.dataDir)
+	if err != nil {
+		return err
+	}
+	if data, err = filepath.Abs(data); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(data, "service.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return errors.New("Another Octomus service is using this data directory")
+	}
+	state, err := store.Open(filepath.Join(data, stateDBName))
+	if err != nil {
+		return err
+	}
+	defer state.Close()
+	app := engine.New(state, data)
+	if parsed.doctor {
+		mode := model.CycleModeExecution
+		if parsed.audit {
+			mode = model.CycleModeAudit
+		}
+		cfg, err := app.Config()
+		if err != nil {
+			return err
+		}
+		result, err := app.DoctorFor(cfg, mode)
+		if err != nil {
+			return err
+		}
+		return printJSON(stdout, result)
+	}
+	token, ok := env(httpapi.TokenEnv)
+	if !ok {
+		return fmt.Errorf("Set %s to a random operator token of at least 32 characters (openssl rand -hex 32)", httpapi.TokenEnv)
+	}
+	if len(token) < 32 {
+		return fmt.Errorf("%s must contain at least 32 characters", httpapi.TokenEnv)
+	}
+	var assetsOverride string
+	if parsed.assets != nil {
+		if stat, err := os.Stat(filepath.Join(*parsed.assets, "200.html")); err != nil || stat.IsDir() {
+			return errors.New("Dashboard override missing 200.html; build the dashboard or correct --assets")
+		}
+		assetsOverride = *parsed.assets
+	}
+	listen, err := netip.ParseAddrPort(parsed.listen)
+	if err != nil {
+		return fmt.Errorf("invalid value %q for '--listen': invalid socket address syntax", parsed.listen)
+	}
+	if !listen.Addr().IsLoopback() {
+		fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
+	}
+	webhook, _ := env(store.WebhookEnv)
+	worker, err := notifications.Start(app.Context(), state, webhook)
+	if err != nil {
+		return err
+	}
+	if err := app.Recover(); err != nil {
+		return err
+	}
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	runDone := make(chan error, 1)
+	go func() { runDone <- app.Run(sigCtx) }()
+	listener, err := net.Listen("tcp", parsed.listen)
+	if err != nil {
+		app.Shutdown()
+		<-runDone
+		return err
+	}
+	fmt.Fprintf(stderr, "Octomus listening on http://%s\n", parsed.listen)
+	server := &http.Server{Handler: httpapi.Router(app, token, assetsOverride, version)}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	var serveErr error
+	select {
+	case <-sigCtx.Done():
+	case serveErr = <-serveDone:
+	}
+	app.Shutdown()
+	_ = server.Shutdown(context.Background())
+	<-serveDone
+	<-runDone
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
+	}
+	if worker != nil {
+		worker.Stop()
+	}
+	// Bounded drain: every worker already stopped; this only waits for any
+	// straggling handles the runtime still tracks.
+	for range 100 {
+		if app.Drained() {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
 }
 func parse(args []string, env func(string) (string, bool)) (arguments, string, error) {
 	a := arguments{dataDir: ".octomus", listen: "127.0.0.1:4200"}

@@ -1,0 +1,252 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/store"
+)
+
+// controlFixture mirrors the Rust control test fixture: every route named so
+// the configuration counts as ready, with the runtime scenarios the reference
+// manipulates directly.
+func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
+	t.Helper()
+	state := testStore(t)
+	app := New(state, t.TempDir())
+	cfg := testConfig(t.TempDir())
+	if err := state.Put("settings", "config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	control, err := app.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scenario == "continuous" {
+		control.SetMode(model.OperatingModeContinuous)
+	}
+	if err := state.SaveControl(control); err != nil {
+		t.Fatal(err)
+	}
+	app.runtimeMu.Lock()
+	switch scenario {
+	case "task":
+		app.runtime.tasks["synthetic-task"] = taskJob{branch: "octomus/x", cancel: func() {}}
+	case "execution":
+		app.runtime.cycle = &cycleJob{id: "cycle", mode: model.CycleModeExecution, cancel: func() {}}
+	case "audit":
+		app.runtime.cycle = &cycleJob{id: "cycle", mode: model.CycleModeAudit, cancel: func() {}}
+	}
+	app.runtimeMu.Unlock()
+	return app, control
+}
+
+func TestAuditControlsConflictWhileAuditRuns(t *testing.T) {
+	app, _ := controlFixture(t, "audit")
+	for _, check := range []struct {
+		action      string
+		explanation string
+	}{
+		{"audit", "Audits require paused operation with no active work"},
+		{"cycle", "Run once requires paused operation with no active work"},
+		{"resume", "Wait for the audit to finish before starting continuous operation"},
+	} {
+		_, err := app.ControlAction(check.action)
+		if err == nil || !IsActionConflict(err) {
+			t.Fatalf("%s: %v", check.action, err)
+		}
+		if !strings.HasPrefix(err.Error(), check.explanation) {
+			t.Fatalf("%s message: %q", check.action, err.Error())
+		}
+	}
+}
+
+func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(t *testing.T) {
+	for _, scenario := range []string{"continuous", "task", "execution", "idle"} {
+		for _, action := range []string{"audit", "cycle", "resume", "pause"} {
+			if scenario == "idle" && action == "audit" {
+				// An accepted audit launches planning; integration coverage lives elsewhere.
+				continue
+			}
+			t.Run(scenario+"/"+action, func(t *testing.T) {
+				app, control := controlFixture(t, scenario)
+				body, err := app.ControlAction(action)
+				rejected := scenario != "idle" && (action == "audit" || action == "cycle")
+				if rejected {
+					if err == nil || !IsActionConflict(err) {
+						t.Fatalf("%s/%s: %v", scenario, action, err)
+					}
+					operation := "Audits"
+					if action == "cycle" {
+						operation = "Run once"
+					}
+					if !strings.HasPrefix(err.Error(), operation) || !strings.Contains(err.Error(), "paused operation with no active work") {
+						t.Fatalf("%s/%s: %q", scenario, action, err.Error())
+					}
+					if after, _ := app.Control(); after.Mode != control.Mode {
+						t.Fatal("rejected control changed the durable mode")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("%s/%s: %v", scenario, action, err)
+				}
+				expected := map[string]string{"cycle": "run_once", "resume": "continuous"}[action]
+				if expected == "" {
+					expected = "paused"
+				}
+				if body["mode"] != expected {
+					t.Fatalf("%s/%s mode: %v", scenario, action, body["mode"])
+				}
+			})
+		}
+	}
+}
+
+func TestBaselineGateBlocksControlsConfigAndReconcile(t *testing.T) {
+	app, cfg := baselineApp(t)
+	// A synthetic live slot exercises every gate deterministically; the real
+	// worker's lifecycle is covered by the check-lifecycle tests.
+	app.runtimeMu.Lock()
+	app.runtime.baseline = &baselineJob{id: "synthetic", cancel: func() {}}
+	app.runtimeMu.Unlock()
+	for _, action := range []string{"cycle", "resume", "audit"} {
+		if _, err := app.ControlAction(action); err == nil || !IsActionConflict(err) {
+			t.Fatalf("%s during baseline: %v", action, err)
+		}
+	}
+	if err := app.SaveConfig(cfg); err == nil || !IsActionConflict(err) {
+		t.Fatalf("config save during baseline: %v", err)
+	}
+	if _, err := app.ControlAction("pause"); err != nil {
+		t.Fatalf("pause during baseline: %v", err)
+	}
+	// The seeded publication-uncertain task makes reconcile a live action.
+	reason := model.BlockedReasonPublicationUncertain
+	task := model.Task{
+		ID: "task-seed", CycleID: "cycle-seed",
+		Status: model.StatusBlocked, BlockedReason: &reason,
+		Config: cfg.Clone(), Branch: "octomus/seed",
+		Sessions: []model.Session{}, Reviews: []model.ReviewRound{}, Verification: []model.Verification{},
+		OutputCommit: stringPointer("o"),
+		CreatedAt:    model.Now(), UpdatedAt: model.Now(),
+	}
+	if err := app.Store.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.TaskAction(context.Background(), task.ID, "reconcile"); err == nil || !IsActionConflict(err) {
+		t.Fatalf("reconcile during baseline: %v", err)
+	}
+}
+
+// stringPointer is shared with baseline_test.go's fixtures.
+func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
+	app, cfg := baselineApp(t)
+	fingerprint, err := BaselineFingerprint(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := "abc"
+	completed := model.Now()
+	check := makeCheck(cfg, model.BaselineStatusPassed)
+	check.ConfigFingerprint = fingerprint
+	check.Revision = &revision
+	check.CompletedAt = &completed
+	check.WorkspaceRemoved = true
+	check.Commands = append(check.Commands, model.BaselineCommand{
+		Command: "true", Success: true, Output: "", CreatedAt: model.Now(),
+	})
+	if err := app.Store.Put("baseline", check.ID, check); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Store.Put("settings", "baseline_latest", check.ID); err != nil {
+		t.Fatal(err)
+	}
+	view, err := app.StateView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, ok := view["baseline"].(map[string]any)
+	if !ok {
+		t.Fatalf("baseline summary: %v", view["baseline"])
+	}
+	if baseline["id"] != check.ID || baseline["config_matches"] != true {
+		t.Fatalf("summary: %v", baseline)
+	}
+	if _, ok := baseline["commands"]; ok {
+		t.Fatal("the overview baseline summary must not include commands")
+	}
+	if view["baseline_active"] != false {
+		t.Fatal("finished check must not read as active")
+	}
+}
+
+// Recovery and the worker guard both end interrupted episodes as blocked,
+// which the enabled outbox captures once per episode.
+func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
+	dir := t.TempDir()
+	state, err := store.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = state.Close() })
+	app := New(state, dir)
+	cfg := testConfig(t.TempDir())
+	if err := state.Put("settings", "config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	destination := "destination-a"
+	if err := state.ConfigureNotifications(&destination, "enabled", nil); err != nil {
+		t.Fatal(err)
+	}
+	executing := func() model.Task {
+		return model.Task{
+			ID: model.ID(), CycleID: "cycle",
+			Status:         model.StatusExecuting,
+			Config:         cfg.Clone(),
+			SourceRevision: "s", ComparisonBase: "s", DefaultRevision: "s",
+			Branch: "octomus/task", Workspace: "",
+			Sessions: []model.Session{}, Reviews: []model.ReviewRound{},
+			Verification: []model.Verification{},
+			CreatedAt:    model.Now(), UpdatedAt: model.Now(),
+		}
+	}
+	task := executing()
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	pending := func() int64 {
+		health, err := state.NotificationHealth()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return health.Pending
+	}
+	if pending() != 1 {
+		t.Fatal("recovery did not capture the interrupted task")
+	}
+	guarded := executing()
+	if err := state.Put("task", guarded.ID, guarded); err != nil {
+		t.Fatal(err)
+	}
+	// The worker guard's durable effect: a still-active task ends blocked.
+	if err := app.setTaskError(&guarded, errors.New("Task worker exited unexpectedly; inspect the preserved workspace")); err != nil {
+		t.Fatal(err)
+	}
+	if pending() != 2 {
+		t.Fatal("the guard fallback did not capture the abandoned task")
+	}
+	if err := app.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if pending() != 2 {
+		t.Fatal("recovery re-captured already-terminal episodes")
+	}
+}

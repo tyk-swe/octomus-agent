@@ -1,0 +1,254 @@
+// Package notifications owns durable webhook delivery: the outbox rows the
+// store's triggers enqueue become attention events POSTed to the operator's
+// configured destination, retried on remote failure, never exposing the URL.
+package notifications
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
+	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/store"
+)
+
+// WebhookEnv names the notification destination variable; its value is a secret.
+const WebhookEnv = store.WebhookEnv
+
+const (
+	maxPayloadBytes    = 8192
+	maxRepositoryBytes = 256
+	maxIDBytes         = 128
+)
+
+// Delivery categories recorded in the outbox beside a failed attempt.
+// invalidPayload is ours and never retried; every other failure is a remote
+// condition.
+const (
+	httpStatusCategory = "http_status"
+	invalidPayload     = "invalid_payload"
+)
+
+// attentionEvent is the frozen webhook payload schema (version 1).
+type attentionEvent struct {
+	SchemaVersion uint32  `json:"schema_version"`
+	EventID       string  `json:"event_id"`
+	OccurredAt    string  `json:"occurred_at"`
+	Repository    string  `json:"repository"`
+	CycleID       *string `json:"cycle_id"`
+	RunID         *string `json:"run_id"`
+	TaskID        *string `json:"task_id"`
+	Category      string  `json:"category"`
+	Action        string  `json:"action"`
+}
+
+// payload renders one outbox row as the bounded JSON body. Sizes are enforced
+// before encoding so an unbounded stored field fails as invalid_payload rather
+// than producing an over-limit request.
+func payload(delivery *store.NotificationDelivery) ([]byte, error) {
+	event := attentionEvent{
+		SchemaVersion: 1,
+		EventID:       delivery.EventID,
+		OccurredAt:    delivery.CreatedAt,
+		Repository:    delivery.Repository,
+		CycleID:       delivery.CycleID,
+		RunID:         delivery.RunID,
+		TaskID:        delivery.TaskID,
+		Category:      delivery.Category,
+		Action:        delivery.Action,
+	}
+	if len(event.Repository) > maxRepositoryBytes ||
+		len(event.EventID) > maxIDBytes ||
+		len(deref(event.CycleID)) > maxIDBytes ||
+		len(deref(event.RunID)) > maxIDBytes ||
+		len(deref(event.TaskID)) > maxIDBytes ||
+		len(event.Category) > maxIDBytes ||
+		len(event.Action) > maxIDBytes {
+		return nil, errors.New(invalidPayload)
+	}
+	bytes, err := jsoncompat.Marshal(event)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", invalidPayload, err)
+	}
+	if len(bytes) > maxPayloadBytes {
+		return nil, errors.New(invalidPayload)
+	}
+	return bytes, nil
+}
+
+func deref(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// retryable reports whether a remote HTTP status deserves another attempt.
+func retryable(status uint16) bool {
+	return status == 408 || status == 429 || status >= 500
+}
+
+// Worker is the long-lived delivery loop. It owns no durable state: every
+// outcome is written through the outbox operations.
+type Worker struct {
+	store    *store.Store
+	url      string
+	destID   string
+	client   *http.Client
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	shutdown sync.Once
+}
+
+// webhookClient mirrors reqwest's operator-safe client: no redirects, no proxy,
+// a 10 second request bound and a 5 second connect bound.
+func webhookClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
+	return &http.Client{
+		Transport: transport,
+		Timeout:   10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// Start validates the configured webhook URL, records the durable policy and,
+// when a destination is enabled, launches the delivery loop under the parent's
+// shutdown scope. A nil worker is returned for disabled or invalid
+// configuration — the policy write still happens so the dashboard reflects it.
+func Start(parent context.Context, db *store.Store, configuredURL string) (*Worker, error) {
+	raw := strings.TrimSpace(configuredURL)
+	var normalized, destinationID string
+	state := "disabled"
+	var errorText *string
+	if raw != "" {
+		url, id, err := model.NotificationDestination(raw)
+		if err != nil {
+			state = "invalid"
+			message := err.Error()
+			errorText = &message
+		} else {
+			normalized, destinationID = url, id
+			state = "enabled"
+		}
+	}
+	var destination *string
+	if normalized != "" {
+		destination = &destinationID
+	}
+	if err := db.ConfigureNotifications(destination, state, errorText); err != nil {
+		return nil, err
+	}
+	if state != "enabled" {
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(parent)
+	worker := &Worker{
+		store:  db,
+		url:    normalized,
+		destID: destinationID,
+		client: webhookClient(),
+		ctx:    ctx,
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	go worker.run()
+	return worker, nil
+}
+
+// Stop cancels in-flight delivery and waits for the loop to exit. A claimed
+// row abandoned mid-delivery stays claimed and retries on the next start.
+func (w *Worker) Stop() {
+	w.shutdown.Do(func() {
+		w.cancel()
+		<-w.done
+	})
+}
+
+func (w *Worker) run() {
+	defer close(w.done)
+	// The reference interval ticks immediately: a queued outbox row does not
+	// wait a full second for its first attempt.
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case <-timer.C:
+		}
+		timer.Reset(time.Second)
+		if w.ctx.Err() != nil {
+			return
+		}
+		delivery, err := w.store.ClaimNotification(w.destID, time.Now().UTC())
+		if err != nil {
+			continue
+		}
+		if delivery == nil {
+			continue
+		}
+		status, category := w.deliver(delivery)
+		if w.ctx.Err() != nil {
+			return
+		}
+		switch {
+		case category != "":
+			_ = w.store.FinishNotificationFailure(delivery.Seq, category, nil, category != invalidPayload)
+		case status >= 200 && status < 300:
+			_ = w.store.FinishNotificationDelivered(delivery.Seq, time.Now().UTC())
+		default:
+			_ = w.store.FinishNotificationFailure(delivery.Seq, httpStatusCategory, &status, retryable(status))
+		}
+	}
+}
+
+// deliver posts one event; the category return names a local failure kind
+// ("invalid_payload", "timeout", "transport_error") and otherwise the HTTP
+// status decides.
+func (w *Worker) deliver(delivery *store.NotificationDelivery) (uint16, string) {
+	body, err := payload(delivery)
+	if err != nil {
+		return 0, invalidPayload
+	}
+	req, err := http.NewRequestWithContext(w.ctx, http.MethodPost, w.url, bytes.NewReader(body))
+	if err != nil {
+		return 0, "transport_error"
+	}
+	req.Header.Set("content-type", "application/json")
+	response, err := w.client.Do(req)
+	if err != nil {
+		if isTimeout(err) {
+			return 0, "timeout"
+		}
+		return 0, "transport_error"
+	}
+	defer response.Body.Close()
+	return uint16(response.StatusCode), ""
+}
+
+// isTimeout mirrors reqwest's is_timeout: request-level deadline expiry and
+// transport timeouts both count, but a caller cancellation does not.
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Timeout()
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}

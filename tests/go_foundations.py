@@ -49,17 +49,30 @@ def cli_contracts():
     return len(corpus['cases'])
 
 
-def unavailable_commands():
-    with tempfile.TemporaryDirectory(prefix='octomus-foundations-unavailable-') as directory:
+def service_startup():
+    with tempfile.TemporaryDirectory(prefix='octomus-foundations-service-') as directory:
         root = Path(directory)
-        for args in [[], ['--doctor'], ['--doctor', '--audit']]:
+        # The M7 service startup follows the reference order: data directory,
+        # lock and store precede the doctor/config/assets checks, so an early
+        # failure still leaves the initialized data directory behind.
+        for args, expected in [
+            ([], 'Dashboard override missing 200.html'),
+            (['--doctor'], 'model and effort'),
+            (['--doctor', '--audit'], 'model and effort'),
+        ]:
             result = run(BINARY, ['--data-dir', str(root / 'state'), *args], root,
                          {'OCTOMUS_TOKEN': 'fixture-token-not-an-operator-token', 'OCTOMUS_ASSETS': '/nonexistent'})
             assert result.returncode == 1 and not result.stdout, (args, result)
-            assert 'not implemented in the Go executable' in result.stderr, (args, result.stderr)
-            assert not list(root.iterdir()), f'Unavailable command wrote state: {args}'
-        # M2 read-only exports exist, but missing state is an explicit failure that
-        # never creates the data directory or takes the service lock.
+            assert expected in result.stderr, (args, result.stderr)
+            assert (root / 'state' / 'state.db').exists(), f'Service startup skipped the store: {args}'
+            shutil.rmtree(root / 'state')
+        # Without an operator token the service refuses before the assets check.
+        result = run(BINARY, ['--data-dir', str(root / 'state')], root,
+                     {'OCTOMUS_ASSETS': '/nonexistent'})
+        assert result.returncode == 1 and 'OCTOMUS_TOKEN' in result.stderr, result.stderr
+        shutil.rmtree(root / 'state')
+        # Read-only exports: missing state is an explicit failure that never
+        # creates the data directory or takes the service lock.
         for args in [['--usage-report'], ['--export-run', 'synthetic-cycle']]:
             result = run(BINARY, ['--data-dir', str(root / 'state'), *args], root,
                          {'OCTOMUS_TOKEN': 'fixture-token-not-an-operator-token', 'OCTOMUS_ASSETS': '/nonexistent'})
@@ -103,11 +116,11 @@ def embedding_contracts(go_binary=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--go-m1', action='store_true', help='also assert that later Go commands fail without writing state')
+    parser.add_argument('--go-m1', action='store_true', help='also assert the shipped executable embedding and service startup contract')
     args = parser.parse_args()
     count = cli_contracts()
     if args.go_m1:
-        unavailable_commands()
+        service_startup()
     embedding_contracts(args.go_m1)
-    unavailable = ', explicit unavailable commands' if args.go_m1 else ''
+    unavailable = ', service startup order' if args.go_m1 else ''
     print(f'M1 foundations passed: {count} frozen CLI cases, relocated executable{unavailable}, real dashboard and missing-asset build failures.')

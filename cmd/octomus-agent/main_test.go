@@ -61,26 +61,50 @@ func TestFrozenCLIContracts(t *testing.T) {
 		})
 	}
 }
-func TestUnavailableCommandsFailWithoutSideEffects(t *testing.T) {
-	directory := t.TempDir() + "/must-not-exist"
-	for _, args := range [][]string{{}, {"--doctor"}, {"--doctor", "--audit"}} {
-		var out, err bytes.Buffer
-		code := run(append([]string{"--data-dir", directory}, args...), func(string) (string, bool) { return "", false }, &out, &err)
-		if code != 1 || out.Len() != 0 || !bytes.Contains(err.Bytes(), []byte("not implemented")) {
-			t.Fatal(args, code, out.String(), err.String())
+func TestServiceStartupRequiresOperatorToken(t *testing.T) {
+	directory := t.TempDir() + "/service"
+	// The reference creates the data directory, takes the lock and opens the
+	// state database before checking the operator token: a missing token exits
+	// with guidance but leaves the prepared directory behind.
+	var out, err bytes.Buffer
+	code := run([]string{"--data-dir", directory}, func(string) (string, bool) { return "", false }, &out, &err)
+	if code != 1 || out.Len() != 0 || !bytes.Contains(err.Bytes(), []byte("OCTOMUS_TOKEN")) {
+		t.Fatal(code, out.String(), err.String())
+	}
+	if _, statErr := os.Stat(filepath.Join(directory, stateDBName)); statErr != nil {
+		t.Fatal("state database was not created before the token check", statErr)
+	}
+	// A short token is rejected with its own message.
+	code = run([]string{"--data-dir", directory}, func(k string) (string, bool) {
+		if k == "OCTOMUS_TOKEN" {
+			return "short", true
+		}
+		return "", false
+	}, &out, &err)
+	if code != 1 || !bytes.Contains(err.Bytes(), []byte("at least 32 characters")) {
+		t.Fatal(code, err.String())
+	}
+	// --doctor runs before the token check: an unconfigured repository is an
+	// explicit diagnostic failure, not a usage error.
+	for _, args := range [][]string{{"--doctor"}, {"--doctor", "--audit"}} {
+		var derr bytes.Buffer
+		code := run(append([]string{"--data-dir", directory}, args...), func(string) (string, bool) { return "", false }, &out, &derr)
+		if code != 1 || derr.Len() == 0 {
+			t.Fatal(args, code, derr.String())
 		}
 	}
-	// Read-only exports are implemented, but missing state is an explicit failure
-	// that never creates the data directory.
+	// Read-only exports still fail explicitly on missing state without
+	// creating anything.
+	empty := t.TempDir() + "/must-not-exist"
 	for _, args := range [][]string{{"--usage-report"}, {"--export-run", "cycle"}} {
 		var out, err bytes.Buffer
-		code := run(append([]string{"--data-dir", directory}, args...), func(string) (string, bool) { return "", false }, &out, &err)
+		code := run(append([]string{"--data-dir", empty}, args...), func(string) (string, bool) { return "", false }, &out, &err)
 		if code != 1 || out.Len() != 0 || !bytes.Contains(err.Bytes(), []byte("state database")) {
 			t.Fatal(args, code, out.String(), err.String())
 		}
 	}
-	if _, err := os.Stat(directory); !os.IsNotExist(err) {
-		t.Fatal("unavailable command created state", err)
+	if _, err := os.Stat(empty); !os.IsNotExist(err) {
+		t.Fatal("read-only export created state", err)
 	}
 }
 

@@ -57,8 +57,14 @@ func (a *App) Tick() error {
 	// leaving the gate available to pause and other operator controls.
 	a.runtimeMu.Lock()
 	reconciling := a.runtime.reconcilingPublication
+	baseline := a.runtime.baseline != nil
 	a.runtimeMu.Unlock()
 	if reconciling {
+		return nil
+	}
+	// A running baseline check owns the whole service: no cycle, task dispatch
+	// or batch completion may proceed until it finishes.
+	if baseline {
 		return nil
 	}
 	if control.Mode == model.OperatingModePaused {
@@ -142,19 +148,15 @@ func (a *App) Tick() error {
 }
 
 func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
-	message := "Run once completed"
-	if unresolved > 0 {
-		message = fmt.Sprintf("Run once completed with %d unresolved task(s)", unresolved)
-		control.Error = &message
-	} else {
-		control.Error = nil
-	}
 	control.SetMode(model.OperatingModePaused)
-	if err := a.Store.SaveControl(control); err != nil {
+	message := "Run once completed; new work paused"
+	if unresolved > 0 {
+		message = "Run once finished with unresolved work"
+	}
+	if err := a.Store.Event("system", "run_complete", message); err != nil {
 		return err
 	}
-	a.invalidatePrObservation()
-	return a.Store.Event("system", "run_once", message)
+	return a.Store.SaveControl(control)
 }
 
 func (a *App) maybePlan(cfg config.Config, control model.Control) error {

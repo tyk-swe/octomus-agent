@@ -6,6 +6,7 @@ package jsoncompat
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -14,11 +15,33 @@ import (
 	"unicode/utf8"
 )
 
+// Error marks serde-shaped codec failures. The reference maps serde_json
+// errors to internal responses, so callers classify with errors.As.
+type Error struct{ inner error }
+
+func (e *Error) Error() string { return e.inner.Error() }
+func (e *Error) Unwrap() error { return e.inner }
+
+func marked(err error) error {
+	if err == nil {
+		return nil
+	}
+	var target *Error
+	if errors.As(err, &target) {
+		return err
+	}
+	return &Error{inner: err}
+}
+
 // Decode reads an owned record. dst is an alias without UnmarshalJSON methods;
 // defaultAll applies struct-level defaults already installed by the caller.
 // A field tagged wire:"default" may be absent. Pointers are optional, never
 // conflated with a required scalar's explicit null. Failed reads leave dst alone.
 func Decode(data []byte, dst any, strict, defaultAll bool) error {
+	return marked(decode(data, dst, strict, defaultAll))
+}
+
+func decode(data []byte, dst any, strict, defaultAll bool) error {
 	original := reflect.ValueOf(dst).Elem()
 	v := reflect.New(original.Type()).Elem()
 	v.Set(original)
@@ -208,6 +231,14 @@ func decodeValue(raw []byte, v reflect.Value) error {
 // Marshal produces compact serde-compatible bytes: declaration-order fields,
 // sorted map keys, literal Unicode/HTML, and no trailing newline.
 func Marshal(value any) ([]byte, error) {
+	return markedPair(marshal(value))
+}
+
+func markedPair(data []byte, err error) ([]byte, error) {
+	return data, marked(err)
+}
+
+func marshal(value any) ([]byte, error) {
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
 	enc.SetEscapeHTML(false)
@@ -241,6 +272,10 @@ func Marshal(value any) ([]byte, error) {
 // Record serializes a value alias, keeping empty Go containers compatible with
 // Rust's non-null vectors/maps. A shallow copy suffices; no elements are changed.
 func Record(value any) ([]byte, error) {
+	return markedPair(record(value))
+}
+
+func record(value any) ([]byte, error) {
 	v := reflect.ValueOf(value)
 	copy := reflect.New(v.Type()).Elem()
 	copy.Set(v)
@@ -257,7 +292,7 @@ func Record(value any) ([]byte, error) {
 			}
 		}
 	}
-	return Marshal(copy.Interface())
+	return marshal(copy.Interface())
 }
 
 // Clone gives snapshot owners separate maps, slices, and optional values, also
@@ -357,6 +392,11 @@ func validStrings(data []byte) error {
 }
 
 func Enum(data []byte, names []string) (uint8, error) {
+	value, err := enumOf(data, names)
+	return value, marked(err)
+}
+
+func enumOf(data []byte, names []string) (uint8, error) {
 	if err := validStrings(data); err != nil {
 		return 0, err
 	}
@@ -480,7 +520,8 @@ func EnumName(value uint8, names []string) string {
 func MarshalEnum(value uint8, names []string) ([]byte, error) {
 	name := EnumName(value, names)
 	if name == "" {
-		return nil, fmt.Errorf("invalid enum value %d", value)
+		return nil, &Error{inner: fmt.Errorf("invalid enum value %d", value)}
 	}
-	return json.Marshal(name)
+	data, err := json.Marshal(name)
+	return data, marked(err)
 }

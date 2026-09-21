@@ -83,7 +83,7 @@ func (a *App) TaskAction(_ context.Context, id, action string) error {
 		actionErr = a.DiscardTask(task)
 	default:
 		a.gate.Unlock()
-		return ErrTaskNotFound
+		return ErrUnknownTaskAction
 	}
 	if actionErr == nil {
 		actionErr = a.Store.Event(id, "operator", action)
@@ -245,8 +245,13 @@ func recordTaskError(task *model.Task, err error) {
 // disconnected caller cannot skip it. Callers must hold a.gate.
 func (a *App) reconcileLocked(id string, task *model.Task) error {
 	a.runtimeMu.Lock()
+	baseline := a.runtime.baseline != nil
 	busy := len(a.runtime.tasks) > 0
 	a.runtimeMu.Unlock()
+	if baseline {
+		a.gate.Unlock()
+		return conflictError("Wait for the baseline check to finish")
+	}
 	if busy {
 		a.gate.Unlock()
 		return conflictError("Wait for active tasks before publication reconciliation")

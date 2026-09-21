@@ -589,8 +589,22 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 		t.Fatal(err)
 	}
 	control, err := a.Control()
-	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil || control.Error == nil {
+	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil || control.Error != nil {
 		t.Fatalf("failed drain proceeded to planning: %+v, %v", control, err)
+	}
+	system := "system"
+	events, err := state.Events(&system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "run_complete" && event.Message == "Run once finished with unresolved work" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("failed drain did not record run_complete: %+v", events)
 	}
 	cycles, err := store.List[model.Cycle](state, "cycle")
 	if err != nil || len(cycles) != 0 {

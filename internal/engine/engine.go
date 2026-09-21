@@ -58,10 +58,12 @@ type runtimeState struct {
 	lastRetention          time.Time
 	lastObserve            time.Time
 	reconcilingPublication bool
+	baseline               *baselineJob
+	defaultObservation     *model.DefaultBranchObservation
 }
 
 func (r *runtimeState) idle() bool {
-	return r.cycle == nil && !r.preflight && len(r.tasks) == 0
+	return r.cycle == nil && !r.preflight && len(r.tasks) == 0 && r.baseline == nil
 }
 
 type App struct {
@@ -105,13 +107,16 @@ func (a *App) notify() {
 	}
 }
 
+// Config returns the saved configuration or the default when none exists,
+// matching the reference's unwrap_or_default: every downstream validation
+// reports its own unsuitable field rather than a missing record.
 func (a *App) Config() (config.Config, error) {
 	cfg, err := store.Get[config.Config](a.Store, "settings", "config")
 	if err != nil {
 		return config.Config{}, err
 	}
 	if cfg == nil {
-		return config.Config{}, errors.New("Configuration has not been saved")
+		return config.Default(), nil
 	}
 	return *cfg, nil
 }
@@ -164,24 +169,41 @@ func (a *App) Shutdown() {
 	if a.runtime.prRefresh != nil {
 		a.runtime.prRefresh.cancel()
 	}
+	if a.runtime.baseline != nil {
+		a.runtime.baseline.cancel()
+	}
 	a.runtimeMu.Unlock()
 	a.gate.Unlock()
 	a.wg.Wait()
 }
 
+// Context is the app shutdown scope: cancelled by Shutdown so workers owned by
+// the service (notifications) stop with everything else.
+func (a *App) Context() context.Context { return a.ctx }
+
+// Drained reports that every shutdown-time handle has finished: tasks, the
+// cycle, housekeeping, the PR refresh and any baseline job — the reference's
+// drain check.
+func (a *App) Drained() bool {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	r := &a.runtime
+	return len(r.tasks) == 0 && r.cycle == nil && !r.preflight && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
+}
+
 func (a *App) fail(err error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
+	message := store.ErrorMessage(err)
+	_ = a.Store.Event("system", "error", message)
 	control, loadErr := a.Control()
 	if loadErr != nil {
 		return
 	}
-	message := store.ErrorMessage(err)
+	redacted := store.Redact(message)
+	control.Error = &redacted
 	control.SetMode(model.OperatingModePaused)
-	control.Error = &message
 	_ = a.Store.SaveControl(control)
-	_ = a.Store.Event("system", "engine_error", message)
-	a.invalidatePrObservation()
 }
 
 // Recover turns interrupted in-memory work into explicit durable state and
@@ -190,6 +212,9 @@ func (a *App) Recover() error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 
+	if err := a.recoverBaselines(); err != nil {
+		return err
+	}
 	candidates, err := a.Store.PrReservationCandidates()
 	if err != nil {
 		return err

@@ -242,6 +242,10 @@ func (e *OutputTooLarge) Error() string {
 // errDeadlineElapsed mirrors tokio::time::error::Elapsed's display text.
 var errDeadlineElapsed = errors.New("deadline has elapsed")
 
+// IsDeadlineElapsed reports whether err carries a bounded-execution timeout
+// marker produced by this package.
+func IsDeadlineElapsed(err error) bool { return errors.Is(err, errDeadlineElapsed) }
+
 // ErrCancelled is the capture cancellation result ("Operation cancelled").
 var ErrCancelled = errors.New("Operation cancelled")
 

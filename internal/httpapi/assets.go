@@ -1,0 +1,165 @@
+// Dashboard asset serving. The embedded build uses the reference's rules:
+// only extensionless non-_app paths fall back to the SPA entry point. An
+// override directory uses ServeDir semantics: every miss falls back to its
+// 200.html. Both enforce the same method and path-safety boundaries.
+package httpapi
+
+import (
+	"io"
+	"io/fs"
+	"mime"
+	"net/http"
+	"path"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+
+	dashboard "github.com/tyk-swe/octomus-agent/web"
+)
+
+const indexName = "200.html"
+
+func assetHandler(override string) http.Handler {
+	if override != "" {
+		return &overrideAssets{root: http.Dir(override)}
+	}
+	return &embeddedAssets{files: dashboard.Files()}
+}
+
+// decodedPath mirrors the reference's percent-decode + traversal rejection.
+// net/http already decodes r.URL.Path once; the UTF-8 check matches the
+// reference's decode_utf8 rejection, and the segment and character checks
+// reject what the decoded form leaves.
+func decodedPath(urlPath string) (string, bool) {
+	if !utf8.ValidString(urlPath) {
+		return "", false
+	}
+	trimmed := strings.TrimLeft(urlPath, "/")
+	for _, part := range strings.Split(trimmed, "/") {
+		if part == ".." || part == "." {
+			return "", false
+		}
+	}
+	if strings.ContainsAny(trimmed, "\\\x00") {
+		return "", false
+	}
+	return trimmed, true
+}
+
+// hasExtension mirrors Rust's Path::extension: a trailing dot still counts,
+// a leading-dot name has none.
+func hasExtension(name string) bool {
+	base := name[strings.LastIndex(name, "/")+1:]
+	i := strings.LastIndex(base, ".")
+	return i > 0
+}
+
+// serve writes one file with the reference's response shape: GET gets the
+// bytes, HEAD only the headers, and both get content type and length.
+func serveFile(w http.ResponseWriter, r *http.Request, name string, contents []byte) {
+	w.Header().Set("Content-Type", contentType(name))
+	w.Header().Set("Content-Length", strconv.Itoa(len(contents)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(contents)
+	}
+}
+
+func contentType(name string) string {
+	if typ := mime.TypeByExtension(path.Ext(name)); typ != "" {
+		return typ
+	}
+	return "application/octet-stream"
+}
+
+// embeddedAssets serves the compiled dashboard with the exact reference rules.
+type embeddedAssets struct{ files fs.FS }
+
+func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	name, ok := decodedPath(r.URL.Path)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if name == "" {
+		name = indexName
+	}
+	data, err := fs.ReadFile(e.files, name)
+	if err != nil {
+		if strings.HasPrefix(name, "_app/") || hasExtension(name) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		data, err = fs.ReadFile(e.files, indexName)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		name = indexName
+	}
+	serveFile(w, r, name, data)
+}
+
+// overrideAssets serves a filesystem directory like tower_http's ServeDir
+// with not_found_service pointed at 200.html: every miss serves the entry
+// point, whatever its name looks like.
+type overrideAssets struct{ root http.FileSystem }
+
+func (o *overrideAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	name, ok := decodedPath(r.URL.Path)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	data, found := o.read(name)
+	if !found {
+		data, found = o.read(indexName)
+		name = indexName
+	}
+	if !found {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	serveFile(w, r, name, data)
+}
+
+func (o *overrideAssets) read(name string) ([]byte, bool) {
+	if name == "" {
+		name = "index.html"
+	}
+	// http.Dir rejects paths escaping the root; decodedPath already refused
+	// traversal, this is only the directory-open failure mode.
+	file, err := o.root.Open("/" + name)
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, false
+	}
+	if stat.IsDir() {
+		// ServeDir appends index.html for directory requests.
+		index, err := o.root.Open("/" + strings.TrimSuffix(name, "/") + "/index.html")
+		if err != nil {
+			return nil, false
+		}
+		defer index.Close()
+		data, err := readAll(index)
+		return data, err == nil
+	}
+	data, err := readAll(file)
+	return data, err == nil
+}
+
+func readAll(file http.File) ([]byte, error) {
+	return io.ReadAll(file)
+}
