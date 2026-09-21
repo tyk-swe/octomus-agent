@@ -45,18 +45,19 @@ type taskJob struct {
 }
 
 type runtimeState struct {
-	cycle          *cycleJob
-	preflight      bool
-	preflightMode  model.CycleMode
-	tasks          map[string]taskJob
-	checkedCycles  map[string]struct{}
-	prRefresh      *prRefreshJob
-	prObservation  *freshPrObservation
-	prRefreshError string
-	lastPrAttempt  time.Time
-	housekeeping   bool
-	lastRetention  time.Time
-	lastObserve    time.Time
+	cycle                  *cycleJob
+	preflight              bool
+	preflightMode          model.CycleMode
+	tasks                  map[string]taskJob
+	checkedCycles          map[string]struct{}
+	prRefresh              *prRefreshJob
+	prObservation          *freshPrObservation
+	prRefreshError         string
+	lastPrAttempt          time.Time
+	housekeeping           bool
+	lastRetention          time.Time
+	lastObserve            time.Time
+	reconcilingPublication bool
 }
 
 func (r *runtimeState) idle() bool {
@@ -86,6 +87,9 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 		wake:    make(chan struct{}, 1),
 		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}},
 	}
+	// The production runner is the supervised execution lifecycle; tests
+	// substitute it with WithTaskRunner.
+	a.taskRunner = TaskRunnerFunc(a.superviseTask)
 	for _, option := range options {
 		if option != nil {
 			option(a)
@@ -292,7 +296,15 @@ func (a *App) runTask(task model.Task) {
 	go func() {
 		defer a.wg.Done()
 		defer cancel()
-		runErr := a.taskRunner.RunTask(ctx, task.Clone())
+		var runErr error
+		func() {
+			defer func() {
+				if panicked := recover(); panicked != nil {
+					runErr = fmt.Errorf("Task worker panicked: %v", panicked)
+				}
+			}()
+			runErr = a.taskRunner.RunTask(ctx, task.Clone())
+		}()
 		a.gate.Lock()
 		current, loadErr := store.Get[model.Task](a.Store, "task", task.ID)
 		if loadErr == nil && current != nil && current.Status.Active() {

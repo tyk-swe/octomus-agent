@@ -1087,3 +1087,53 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 		t.Fatalf("rejected cleanup was recorded as successful: %+v, %v", saved, err)
 	}
 }
+
+// F3 (review_findings.rs): same-cycle proposals sharing a problem key are
+// duplicates regardless of wording.
+func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+	grounding := model.Grounding{Revision: "rev"}
+	first := proposal("a", cfg.DefaultBranch)
+	first.ProblemKey = "parser:truncated-frame"
+	second := proposal("b", cfg.DefaultBranch)
+	second.Title = "Validate the complete frame length"
+	second.ProblemKey = "parser:truncated-frame"
+	if err := ValidateProposals(cfg, []model.Proposal{first, second}, grounding, nil); err == nil || !strings.Contains(err.Error(), "Duplicate accepted") {
+		t.Fatalf("shared problem key was not rejected: %v", err)
+	}
+	other := second.Clone()
+	other.ProblemKey = "parser:length-header"
+	if err := ValidateProposals(cfg, []model.Proposal{first, other}, grounding, nil); err != nil {
+		t.Fatalf("distinct problem keys rejected: %v", err)
+	}
+}
+
+// F4 (review_findings.rs): target resolution binds the owned PR regardless of
+// order, rejects unowned and ambiguous matches, and never binds the default
+// branch as a PR.
+func TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+	fork := ownedPR("octomus/fix")
+	fork.Number, fork.Head, fork.Owned, fork.HeadRepository = 202, "fork-head", false, "fork/project"
+	owned := ownedPR("octomus/fix")
+	owned.Number, owned.Head = 101, "repo-head"
+	prs := []model.PullRequest{fork, owned}
+	bound, err := ResolveTarget(cfg, prs, "octomus/fix")
+	if err != nil || bound == nil || bound.Number != 101 || bound.Head != "repo-head" {
+		t.Fatalf("bound = %+v, %v; want owned PR 101", bound, err)
+	}
+	if target, err := ResolveTarget(cfg, prs, cfg.DefaultBranch); err != nil || target != nil {
+		t.Fatalf("default branch resolved to a PR: %+v, %v", target, err)
+	}
+	if _, err := ResolveTarget(cfg, prs[:1], "octomus/fix"); err == nil {
+		t.Fatal("fork-only target resolved")
+	}
+	if _, err := ResolveTarget(cfg, []model.PullRequest{owned, owned}, "octomus/fix"); err == nil {
+		t.Fatal("ambiguous owned match resolved")
+	}
+	p := proposal("a", "octomus/fix")
+	grounding := model.Grounding{Revision: "rev", PRs: prs}
+	if err := ValidateProposals(cfg, []model.Proposal{p}, grounding, nil); err != nil {
+		t.Fatalf("owned-PR target rejected: %v", err)
+	}
+}

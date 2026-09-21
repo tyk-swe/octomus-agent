@@ -1,0 +1,800 @@
+// execution.go owns the task lifecycle once the scheduler admits a task: a
+// deadline-supervised executor run, a fresh full-diff review per round,
+// persistent repair sessions, bounded verification evidence, an output
+// checkpoint, and publication through the guarded git layer. Every transition
+// is durable before remote or runner work resumes so a restart never loses why
+// a task ended where it did.
+package engine
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/google/uuid"
+	"github.com/tyk-swe/octomus-agent/internal/config"
+	gitops "github.com/tyk-swe/octomus-agent/internal/git"
+	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
+	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/schemas"
+	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
+)
+
+// superviseTask runs one task to a terminal durable state and records why it
+// ended there: a deadline, a cancellation and a failure are all distinguishable
+// afterwards, because a task that simply stopped being mentioned would be
+// indistinguishable from one still running. This is the production TaskRunner.
+func (a *App) superviseTask(ctx context.Context, task model.Task) error {
+	return a.superviseExecution(ctx, task, a.execute)
+}
+
+func (a *App) superviseExecution(ctx context.Context, task model.Task, execute func(context.Context, *model.Task) error) error {
+	workCtx, workCancel := context.WithCancel(ctx)
+	defer workCancel()
+	var timedOut bool
+	var taskErr error
+	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
+	executionDone := make(chan struct{})
+	result := process.WithDeadline(ctx, workCancel, limit, func() (err error) {
+		defer close(executionDone)
+		// WithDeadline invokes this callback in its own goroutine, beyond
+		// runTask's recovery boundary. Return panics through normal supervision.
+		defer func() {
+			if panicked := recover(); panicked != nil {
+				err = fmt.Errorf("Task worker panicked: %v", panicked)
+			}
+		}()
+		return execute(workCtx, &task)
+	})
+	// WithDeadline's cleanup grace is bounded, but this callback owns mutable
+	// task state and durable writes. Join it before recording terminal evidence
+	// or allowing runTask to release runtime and shutdown ownership.
+	<-executionDone
+	if result.Expired {
+		timedOut = !result.AlreadyCancelled
+		task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
+		taskErr = errors.New("Task time limit exceeded")
+	} else if result.Output != nil {
+		reason := model.BlockedReasonFromError(result.Output)
+		task.BlockedReason = &reason
+		taskErr = result.Output
+	}
+	if taskErr == nil {
+		return nil
+	}
+	message := taskErr.Error()
+	task.Error = stringPointer(store.Redact(message))
+	model.FailRunning(task.Sessions, store.Redact(message))
+	operatorCancelled, _ := a.Store.MarkerSet("cancel", task.ID)
+	status := model.StatusBlocked
+	if workCtx.Err() != nil && !timedOut && task.OutputCommit == nil && (operatorCancelled || a.ctx.Err() == nil) {
+		status = model.StatusCancelled
+	}
+	if err := a.transition(&task, status); err != nil {
+		_ = a.Store.Event(task.ID, "worker_error", store.ErrorMessage(err))
+	}
+	return a.Store.Event(task.ID, "error", message)
+}
+
+// execute drives the admitted task through executor → snapshot → review →
+// verification/repair rounds → output checkpoint → publication.
+func (a *App) execute(ctx context.Context, task *model.Task) error {
+	cfg := task.ExecutionConfig()
+	task.Error = nil
+	task.BlockedReason = nil
+	if err := a.saveTask(task); err != nil {
+		return err
+	}
+	if task.OutputCommit != nil {
+		return a.publishReviewed(ctx, task)
+	}
+	if err := a.retryPreflight(ctx, task); err != nil {
+		return err
+	}
+	client := runner.New(ctx, cfg, a.Store, task.ID)
+	defer func() { _ = client.Close() }()
+	if err := client.ValidateRoutes(cfg, a.DataDir, false); err != nil {
+		return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
+	}
+	// Initialization reserves the first executor admission, including on retries.
+	admissionReserved := task.ExecutionSession == nil
+	if admissionReserved {
+		if err := a.initializeTask(ctx, task, client); err != nil {
+			return err
+		}
+	}
+	ws := task.Workspace
+	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+		return model.BlockedReasonWorkspaceInvalid
+	}
+	if task.ComparisonBase == "" {
+		return fmt.Errorf("Comparison base was not persisted; cancel this task and rediscover: %w", model.BlockedReasonWorkspaceInvalid)
+	}
+	if err := a.runExecutor(ctx, task, client, admissionReserved); err != nil {
+		return err
+	}
+	previous := ""
+	noProgress := uint64(0)
+	for {
+		revision, err := gitops.Snapshot(ctx, cfg, ws, task.Proposal.Title)
+		if err != nil {
+			return err
+		}
+		if revision == task.SourceRevision {
+			return model.BlockedReasonVerificationFailed
+		}
+		names, err := gitops.Git(ctx, cfg, ws, []string{"diff", "--name-only", task.SourceRevision, revision})
+		if err != nil {
+			return err
+		}
+		if names == "" {
+			return model.BlockedReasonVerificationFailed
+		}
+		if task.AttemptReviews() >= cfg.MaxRepairRounds+1 {
+			return model.BlockedReasonRetryLimit
+		}
+		review, err := a.reviewRevision(ctx, task, client, revision)
+		if err != nil {
+			return err
+		}
+		verificationErrors := []string{}
+		if review.Clean() {
+			verificationErrors, err = a.verifyRevision(ctx, task, revision)
+			if err != nil {
+				return err
+			}
+			if len(verificationErrors) == 0 {
+				// Main movement changes the integration context; never silently publish an obsolete review.
+				if task.PRNumber == nil {
+					def, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
+					if err != nil {
+						return err
+					}
+					if def == nil || *def != task.SourceRevision {
+						return model.BlockedReasonStaleBase
+					}
+				}
+				task.OutputCommit = &revision
+				return a.publishReviewed(ctx, task)
+			}
+		}
+		if task.AttemptReviews() > cfg.MaxRepairRounds {
+			return model.BlockedReasonVerificationFailed
+		}
+		if previous == revision {
+			noProgress++
+		} else {
+			noProgress = 0
+			previous = revision
+		}
+		if noProgress >= cfg.MaxNoProgressRounds {
+			return model.BlockedReasonVerificationFailed
+		}
+		if err := a.repair(ctx, task, client, review, verificationErrors); err != nil {
+			return err
+		}
+	}
+}
+
+// publishReviewed is the shared publication tail once a task's output is
+// recorded: transition, publish, record.
+func (a *App) publishReviewed(ctx context.Context, task *model.Task) error {
+	if err := a.transition(task, model.StatusPublishing); err != nil {
+		return err
+	}
+	p, err := gitops.Publish(ctx, *task)
+	if err != nil {
+		return err
+	}
+	return a.published(task, p)
+}
+
+// publishedDependency returns a dependency that is recorded published;
+// anything else blocks the dependent.
+func (a *App) publishedDependency(id string) (model.Task, error) {
+	dependency, err := store.Get[model.Task](a.Store, "task", id)
+	if err != nil {
+		return model.Task{}, err
+	}
+	if dependency == nil {
+		return model.Task{}, model.BlockedReasonDependencyBlocked
+	}
+	if dependency.Status != model.StatusPublished {
+		return model.Task{}, model.BlockedReasonDependencyBlocked
+	}
+	return *dependency, nil
+}
+
+// ensureWorkspaceAt requires the recorded workspace to still sit cleanly at
+// `revision`; anything else means recorded evidence does not describe the
+// current tree.
+func ensureWorkspaceAt(ctx context.Context, cfg config.Config, ws, revision string) error {
+	at, err := gitops.At(ctx, cfg, ws, revision)
+	if err != nil {
+		return err
+	}
+	if !at {
+		return model.BlockedReasonWorkspaceInvalid
+	}
+	return nil
+}
+
+// retryPreflight revalidates a task's remote and workspace prerequisites under
+// its live attempt policy before a retry or reconciliation resumes work.
+func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
+	c := task.ExecutionConfig()
+	if task.Lifecycle.DiscardedAt != nil || task.Lifecycle.ArchivedAt != nil {
+		return model.BlockedReasonWorkspaceInvalid
+	}
+	def, err := gitops.RemoteRevision(ctx, c, c.DefaultBranch)
+	if err != nil {
+		return err
+	}
+	if def == nil || *def != task.DefaultRevision {
+		return model.BlockedReasonStaleBase
+	}
+	source, err := gitops.RemoteRevision(ctx, c, task.Proposal.Target)
+	if err != nil {
+		return err
+	}
+	authorized := source != nil && *source == task.SourceRevision
+	for _, id := range task.Proposal.Dependencies {
+		dependency, err := a.publishedDependency(id)
+		if err != nil {
+			return err
+		}
+		if task.ExecutionSession == nil && sourcePtrEqual(source, dependency.OutputCommit) {
+			authorized = true
+		}
+	}
+	if !authorized {
+		return model.BlockedReasonStaleBase
+	}
+	// A task that already started work must still hold the workspace it recorded;
+	// one that never started is retried into a fresh workspace.
+	if task.ExecutionSession != nil && !workspace.Initialized(*task) {
+		return model.BlockedReasonWorkspaceInvalid
+	}
+	return nil
+}
+
+func (a *App) initializeTask(ctx context.Context, task *model.Task, client *runner.Runners) error {
+	cfg := task.ExecutionConfig()
+	if err := gitops.Fetch(ctx, cfg); err != nil {
+		return err
+	}
+	remote, err := gitops.RemoteRevision(ctx, cfg, task.Proposal.Target)
+	if err != nil {
+		return err
+	}
+	if remote == nil {
+		return model.BlockedReasonStaleBase
+	}
+	current := *remote
+	// Declared dependencies are validated against the selected head on every
+	// initialization, not only when the head moved: a branch reset back to the
+	// recorded source would otherwise skip the check entirely while the
+	// scheduler still regards the dependency as delivered.
+	dependencyOutputs := []string{}
+	for _, identity := range task.Proposal.Dependencies {
+		dependency, err := a.publishedDependency(identity)
+		if err != nil {
+			return err
+		}
+		if dependency.Branch != task.Proposal.Target {
+			return model.BlockedReasonDependencyBlocked
+		}
+		if dependency.OutputCommit == nil {
+			return errors.New("Dependency output revision is missing")
+		}
+		ancestor, err := gitops.IsAncestor(ctx, cfg, cfg.Repository, *dependency.OutputCommit, current)
+		if err != nil {
+			return err
+		}
+		if !ancestor {
+			return model.BlockedReasonDependencyBlocked
+		}
+		dependencyOutputs = append(dependencyOutputs, *dependency.OutputCommit)
+	}
+	if current != task.SourceRevision {
+		// Only the recorded source may advance, and only onto a dependency's
+		// recorded output; any other remote movement remains a stale base.
+		found := false
+		for _, output := range dependencyOutputs {
+			if output == current {
+				found = true
+			}
+		}
+		if !found {
+			return model.BlockedReasonStaleBase
+		}
+		task.SourceRevision = current
+		if err := a.saveTask(task); err != nil {
+			return err
+		}
+	}
+	def, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
+	if err != nil {
+		return err
+	}
+	if def == nil || *def != task.DefaultRevision {
+		return model.BlockedReasonStaleBase
+	}
+	if task.PRNumber != nil {
+		p, err := gitops.PR(ctx, cfg, *task.PRNumber)
+		if err != nil {
+			return err
+		}
+		if !p.OwnedOpen() || p.Base != cfg.DefaultBranch {
+			return model.BlockedReasonStaleBase
+		}
+	}
+	if err := a.budget(task.CycleID, &task.ID, "executor", task.Route); err != nil {
+		return err
+	}
+	if _, err := uuid.Parse(task.ID); err != nil {
+		return fmt.Errorf("Invalid task workspace identity: %w", err)
+	}
+	ws := a.taskWorkspace(task.ID)
+	if task.Workspace == "" {
+		task.Workspace = ws
+		if err := a.saveTask(task); err != nil {
+			return err
+		}
+		if err := gitops.CloneAt(ctx, cfg, ws, task.SourceRevision); err != nil {
+			return err
+		}
+		if task.PRNumber != nil {
+			base, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
+			if err != nil {
+				return err
+			}
+			if base == nil {
+				return errors.New("Default branch missing")
+			}
+			task.ComparisonBase, err = gitops.Git(ctx, cfg, ws, []string{"merge-base", *base, task.SourceRevision})
+			if err != nil {
+				return err
+			}
+		} else {
+			task.ComparisonBase = task.SourceRevision
+		}
+		if err := a.saveTask(task); err != nil {
+			return err
+		}
+	} else {
+		// A failed runner start can be retried in a fully initialized clone. Partial clones
+		// and edits made before a session was recorded are preserved for operator inspection.
+		if !samePath(task.Workspace, ws) || task.ComparisonBase == "" {
+			return model.BlockedReasonWorkspaceInvalid
+		}
+		if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+			return model.BlockedReasonWorkspaceInvalid
+		}
+		if err := ensureWorkspaceAt(ctx, cfg, ws, task.SourceRevision); err != nil {
+			return err
+		}
+	}
+	session, err := client.Start(task.Route, ws, nil)
+	if err != nil {
+		return err
+	}
+	task.ExecutionSession = &session
+	task.Sessions = append(task.Sessions, model.NewSession(session, "executor", task.Route))
+	return a.saveTask(task)
+}
+
+func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.Runners, admissionReserved bool) error {
+	cfg := task.ExecutionConfig()
+	ws := task.Workspace
+	for _, s := range task.Sessions {
+		if s.Role == "executor" && s.Status == model.SessionCompleted {
+			return nil
+		}
+	}
+	if task.ExecutionSession == nil {
+		return errors.New("Executor session identity is missing")
+	}
+	thread := *task.ExecutionSession
+	if _, err := sessionMut(task, thread, "executor"); err != nil {
+		return err
+	}
+	if !admissionReserved {
+		if err := a.budget(task.CycleID, &task.ID, "executor", task.Route); err != nil {
+			return err
+		}
+		if _, err := client.Start(task.Route, ws, &thread); err != nil {
+			return err
+		}
+	}
+	// A freshly created thread is already active; Codex has no resumable
+	// rollout until its first turn starts.
+	session, err := sessionMut(task, thread, "executor")
+	if err != nil {
+		return err
+	}
+	session.MarkRunning()
+	if err := a.saveTask(task); err != nil {
+		return err
+	}
+	prompt := fmt.Sprintf(
+		"Implement this accepted task end to end in this workspace. Source revision: %s. Full comparison base: %s. Existing PR: %s. Preserve existing accumulated branch behavior; inspect its full diff. Do not push, publish, merge or deploy. Required repository verification commands: %s. Objective and constraints:\n%s\nProblem: %s\nBenefit: %s\nScope: %s\nEvidence: %s\nReturn a concise summary of actual changes, verification and material risks or migration notes.",
+		task.SourceRevision,
+		task.ComparisonBase,
+		debugOption(task.PRURL),
+		debugList(cfg.VerificationCommands),
+		task.Proposal.Prompt,
+		task.Proposal.Problem,
+		task.Proposal.Benefit,
+		task.Proposal.Scope,
+		debugList(task.Proposal.Evidence))
+	answer, err := client.Turn(thread, task.Route, ws, prompt, nil)
+	if err != nil {
+		return err
+	}
+	session, err = sessionMut(task, thread, "executor")
+	if err != nil {
+		return err
+	}
+	session.MarkCompleted(store.Redact(answer))
+	return a.saveTask(task)
+}
+
+func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runner.Runners, revision string) (model.Review, error) {
+	cfg := task.ExecutionConfig()
+	ws := task.Workspace
+	if err := a.transition(task, model.StatusReviewing); err != nil {
+		return model.Review{}, err
+	}
+	route, ok := cfg.Roles["code_reviewer"]
+	if !ok {
+		return model.Review{}, errors.New("code_reviewer route is missing")
+	}
+	if err := a.budget(task.CycleID, &task.ID, "reviewer", route); err != nil {
+		return model.Review{}, err
+	}
+	thread, err := client.Start(route, ws, nil)
+	if err != nil {
+		return model.Review{}, err
+	}
+	task.Sessions = append(task.Sessions, model.NewSession(thread, "reviewer", route))
+	if err := a.saveTask(task); err != nil {
+		return model.Review{}, err
+	}
+	prompt := fmt.Sprintf(
+		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
+		task.ComparisonBase, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
+	answer, err := client.Turn(thread, route, ws, prompt, schemas.ReviewSchema())
+	if err != nil {
+		return model.Review{}, err
+	}
+	session, err := sessionMut(task, thread, "reviewer")
+	if err != nil {
+		return model.Review{}, err
+	}
+	session.Summary = store.Redact(answer)
+	if err := a.saveTask(task); err != nil {
+		return model.Review{}, err
+	}
+	var review model.Review
+	if err := json.Unmarshal([]byte(answer), &review); err != nil {
+		return model.Review{}, fmt.Errorf("%w: Unparseable review is not clean: %s", model.BlockedReasonInvalidReview, store.Redact(err.Error()))
+	}
+	if !review.Valid() {
+		return model.Review{}, model.BlockedReasonInvalidReview
+	}
+	if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
+		return model.Review{}, err
+	}
+	session, err = sessionMut(task, thread, "reviewer")
+	if err != nil {
+		return model.Review{}, err
+	}
+	session.MarkCompleted(store.Redact(review.Summary))
+	task.Reviews = append(task.Reviews, model.ReviewRound{SessionID: thread, Revision: revision, ComparisonBase: task.ComparisonBase, Result: review, CreatedAt: model.Now()})
+	if err := a.saveTask(task); err != nil {
+		return model.Review{}, err
+	}
+	return review, nil
+}
+
+// verifyRevision runs every configured verification command against exactly
+// `revision`. Worktree and HEAD are checked before the first command and after
+// each one, so a command that changes tracked state is recorded as failed
+// evidence and stops the run instead of lending its success to the reviewed
+// revision.
+func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision string) ([]string, error) {
+	cfg := task.ExecutionConfig()
+	ws := task.Workspace
+	verificationErrors := []string{}
+	if err := a.transition(task, model.StatusVerifying); err != nil {
+		return nil, err
+	}
+	if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
+		return nil, err
+	}
+	for _, command := range cfg.VerificationCommands {
+		outcome := runCheckCommand(ctx, cfg, ws, command, revision)
+		if ctx.Err() != nil {
+			return nil, errors.New("Operation cancelled")
+		}
+		failed := outcome.failed()
+		output := outcome.outputText()
+		intact, err := outcome.intactResult()
+		if err != nil {
+			return nil, err
+		}
+		if !intact {
+			output += "\nWorkspace or HEAD changed during this verification command"
+		}
+		task.Verification = append(task.Verification, model.Verification{
+			Command: command, Success: intact && !failed, Output: store.Redact(output), Revision: revision, CreatedAt: model.Now(),
+		})
+		if err := a.saveTask(task); err != nil {
+			return nil, err
+		}
+		if !intact {
+			return nil, model.BlockedReasonWorkspaceInvalid
+		}
+		if failed {
+			verificationErrors = append(verificationErrors, command+": "+output)
+		}
+	}
+	return verificationErrors, nil
+}
+
+func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runners, review model.Review, verificationErrors []string) error {
+	cfg := task.ExecutionConfig()
+	ws := task.Workspace
+	if err := a.transition(task, model.StatusRepairing); err != nil {
+		return err
+	}
+	if task.RepairSession != nil {
+		if _, err := sessionMut(task, *task.RepairSession, "repair"); err != nil {
+			return err
+		}
+	}
+	route := cfg.RepairRoute
+	if err := a.budget(task.CycleID, &task.ID, "repair", route); err != nil {
+		return err
+	}
+	thread, err := client.Start(route, ws, task.RepairSession)
+	if err != nil {
+		return err
+	}
+	if task.RepairSession == nil {
+		task.RepairSession = &thread
+		task.Sessions = append(task.Sessions, model.NewSession(thread, "repair", route))
+		if err := a.saveTask(task); err != nil {
+			return err
+		}
+	}
+	// A resumed repair thread stays persistent across rounds; a fresh thread
+	// only exists before the first repair session record is saved.
+	session, err := sessionMut(task, thread, "repair")
+	if err != nil {
+		return err
+	}
+	session.MarkRunning()
+	if err := a.saveTask(task); err != nil {
+		return err
+	}
+	findings := review.Findings
+	if findings == nil {
+		findings = []model.Finding{}
+	}
+	findingsJSON, err := jsoncompat.Marshal(findings)
+	if err != nil {
+		return err
+	}
+	prompt := fmt.Sprintf(
+		"Repair actionable findings and verification failures for this task. Preserve useful capabilities and meaningful tests. Do not push, publish, merge or deploy. If a finding is unsupported, explain the technical evidence in your final summary; the next fresh reviewer must independently assess it. Rerun relevant verification %s. Full comparison base: %s. Task: %s. Findings: %s. Verification failures: %s",
+		debugList(cfg.VerificationCommands),
+		task.ComparisonBase,
+		task.Proposal.Prompt,
+		string(findingsJSON),
+		debugList(verificationErrors))
+	answer, err := client.Turn(thread, route, ws, prompt, nil)
+	if err != nil {
+		return err
+	}
+	session, err = sessionMut(task, thread, "repair")
+	if err != nil {
+		return err
+	}
+	session.MarkCompleted(store.Redact(answer))
+	return a.saveTask(task)
+}
+
+func (a *App) published(task *model.Task, p model.PullRequest) error {
+	task.PRNumber = &p.Number
+	task.PRURL = &p.URL
+	task.Error = nil
+	task.BlockedReason = nil
+	if err := a.transition(task, model.StatusPublished); err != nil {
+		return err
+	}
+	return a.Store.RecordPrObservation(task.Config.GitHubRepo, p, true)
+}
+
+func (a *App) saveTask(task *model.Task) error {
+	task.UpdatedAt = model.Now()
+	return a.Store.Put("task", task.ID, *task)
+}
+
+func (a *App) transition(task *model.Task, status model.Status) error {
+	task.Status = status
+	if err := a.saveTask(task); err != nil {
+		return err
+	}
+	return a.Store.Event(task.ID, "status", statusEventName(status))
+}
+
+// statusEventName renders the Rust `{:?}` status variant used as durable
+// event payloads ("Reviewing", "Published", ...).
+func statusEventName(status model.Status) string {
+	name := status.String()
+	if name == "" {
+		return name
+	}
+	return strings.ToUpper(name[:1]) + name[1:]
+}
+
+func (a *App) taskWorkspace(taskID string) string {
+	return filepath.Join(a.DataDir, "tasks", taskID, "workspace")
+}
+
+func (a *App) budget(cycleID string, taskID *string, role string, route config.Route) error {
+	size, err := workspace.DirectorySize(a.DataDir)
+	if err != nil {
+		return err
+	}
+	return a.Store.ReserveSession(size, store.NewAdmission(cycleID, taskID, role, route))
+}
+
+func sessionMut(task *model.Task, thread, role string) (*model.Session, error) {
+	for i := range task.Sessions {
+		if task.Sessions[i].ID == thread && task.Sessions[i].Role == role {
+			return &task.Sessions[i], nil
+		}
+	}
+	return nil, fmt.Errorf("Task %s is missing its %s session record (%s): %w", task.ID, role, thread, model.BlockedReasonWorkspaceInvalid)
+}
+
+// checkOutcome is one verification command's captured result plus the
+// workspace-integrity check that follows it. intactErr carries the check's own
+// failure so each caller decides whether it is evidence or fatal.
+type checkOutcome struct {
+	captured  *process.ProcessOutput
+	capture   error
+	intact    bool
+	intactErr error
+}
+
+// failed reports the command-failure condition process.Run reports as an
+// error: a capture failure or a nonzero exit.
+func (o checkOutcome) failed() bool {
+	return o.capture != nil || !o.captured.Status.Success()
+}
+
+// outputText returns the text process.Run would have returned for this
+// capture: bounded diagnostic output on success, the error chain on failure.
+func (o checkOutcome) outputText() string {
+	if o.capture != nil {
+		return o.capture.Error()
+	}
+	text, err := process.DiagnosticText("bash", o.captured)
+	if err != nil {
+		return err.Error()
+	}
+	return text
+}
+
+func (o checkOutcome) intactResult() (bool, error) { return o.intact, o.intactErr }
+
+// runCheckCommand runs one `bash -o pipefail -c` verification command in ws,
+// then checks the workspace still sits at revision. The integrity read is
+// skipped once ctx fires: it needs a live process and could only report the
+// cancellation rather than the workspace state.
+func runCheckCommand(ctx context.Context, cfg config.Config, ws, command, revision string) checkOutcome {
+	captured, captureErr := process.ShellCheck(ctx, command, ws, cfg.CommandTimeoutSeconds)
+	outcome := checkOutcome{captured: captured, capture: captureErr}
+	if ctx.Err() != nil {
+		outcome.intact = false
+	} else {
+		outcome.intact, outcome.intactErr = gitops.At(ctx, cfg, ws, revision)
+	}
+	return outcome
+}
+
+func blockedReasonPtr(reason model.BlockedReason) *model.BlockedReason { return &reason }
+
+func sourcePtrEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// samePath compares recorded workspace paths by component like Rust's
+// Path::eq: separators and interior "." are normalized, ".." stays literal.
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return strings.Join(pathIdentityComponents(a), "/") == strings.Join(pathIdentityComponents(b), "/")
+}
+
+func pathIdentityComponents(path string) []string {
+	parts := []string{}
+	for i, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if i == 0 && part == "" {
+			parts = append(parts, "/")
+			continue
+		}
+		if part == "" || part == "." {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	return parts
+}
+
+// debugOption renders an optional string the way Rust's `{:?}` formats
+// `Option<String>`: `Some("…")` or `None`.
+func debugOption(value *string) string {
+	if value == nil {
+		return "None"
+	}
+	return "Some(" + debugString(*value) + ")"
+}
+
+// debugList renders a string list the way Rust's `{:?}` formats `Vec<String>`:
+// `["a", "b"]`.
+func debugList(values []string) string {
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = debugString(v)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// debugString renders a string with Rust's Debug escaping: quoted, with the
+// usual escapes and `\u{…}` for non-printable runes.
+func debugString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		case 0:
+			b.WriteString(`\0`)
+		default:
+			if unicode.IsPrint(r) {
+				b.WriteRune(r)
+			} else {
+				fmt.Fprintf(&b, `\u{%x}`, r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}

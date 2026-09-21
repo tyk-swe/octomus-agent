@@ -237,6 +237,49 @@ func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
 	}
 }
 
+// Port of tests/hardening.rs live_policy_survives_restart_and_never_uses_task_snapshot:
+// reservations measure the live operator config and the durable counter, never a
+// task's recorded config snapshot.
+func TestLivePolicySurvivesRestartAndNeverUsesTaskSnapshot(t *testing.T) {
+	path := statePath(t)
+	s := open(t, path)
+	queued := task()
+	queued.Config.MaxSessionsPerDay = 150
+	must(t, s.Put("task", queued.ID, queued))
+	saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = 2 })
+	reserve := func(role string) error {
+		return s.ReserveSession(0, store.NewAdmission("cycle", &queued.ID, role, queued.Route))
+	}
+	must(t, reserve("executor"))
+	must(t, reserve("reviewer"))
+	if err := reserve("repair"); err == nil || !errors.Is(err, model.BlockedReasonBudgetExhausted) {
+		t.Fatalf("third admission: %v", err)
+	}
+	saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = 1 })
+	must(t, s.Close())
+	s = open(t, path)
+	if err := reserve("repair"); err == nil {
+		t.Fatal("restart forgot the recorded admissions")
+	}
+	if today, err := s.SessionsToday(); err != nil || today != 2 {
+		t.Fatalf("sessions today = %d, %v", today, err)
+	}
+	saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = 3 })
+	must(t, reserve("repair"))
+	saveConfig(t, s, func(c *config.Config) { c.MaxWorkspaceBytes = 42 })
+	if err := s.ReserveSession(42, store.NewAdmission("cycle", nil, "reviewer", queued.Route)); err == nil || !errors.Is(err, model.BlockedReasonStorageLimit) {
+		t.Fatalf("storage-limited admission: %v", err)
+	}
+	if today, err := s.SessionsToday(); err != nil || today != 3 {
+		t.Fatalf("sessions today = %d, %v", today, err)
+	}
+	saved, err := store.Get[model.Task](s, "task", queued.ID)
+	must(t, err)
+	if saved.Config.MaxSessionsPerDay != 150 {
+		t.Fatalf("task snapshot mutated: %+v", saved.Config)
+	}
+}
+
 // legacyDatabase creates the pre-migration schema Rust shipped before the
 // admission ledger existed: canonical records and a daily usage counter.
 func legacyDatabase(t *testing.T, path string, usage map[string]int64) {

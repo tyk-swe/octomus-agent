@@ -547,6 +547,51 @@ func TestPublishRejectsStaleBase(t *testing.T) {
 	}
 }
 
+// TestPublicationChecksEveryIdentityFieldAndClosedReconciliation ports the
+// hardening.rs case: every recorded identity field must match for delivery to
+// count, and closed/merged states only pass explicit reconciliation.
+func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T) {
+	c := testConfig()
+	commit := strings.Repeat("a", 40)
+	task := publicationTask(c, "ws", commit, commit, "task-identity")
+	pr := model.PullRequest{
+		Number: 1, Title: "x", Branch: task.Branch, Head: commit, Base: "main",
+		URL:  "https://github.com/fixture/project/pull/1",
+		Body: "<!-- octomus:task:" + task.ID + " -->", State: "open",
+		Owned: true, HeadRepository: "fixture/project", BaseRepository: "fixture/project",
+	}
+	if err := git.ValidatePublication(task, pr, true, false); err != nil {
+		t.Fatalf("matching publication rejected: %v", err)
+	}
+	// A missing task marker fails publication even when every field matches.
+	if err := git.ValidatePublication(task, pr, false, false); err == nil {
+		t.Fatal("publication without the task marker must fail")
+	}
+	mismatch := func(mutate func(*model.PullRequest)) {
+		p := pr
+		mutate(&p)
+		if err := git.ValidatePublication(task, p, true, false); err == nil {
+			t.Fatalf("mismatched publication accepted: %+v", p)
+		}
+	}
+	mismatch(func(p *model.PullRequest) { p.Head = "mismatch" })
+	mismatch(func(p *model.PullRequest) { p.Branch = "mismatch" })
+	mismatch(func(p *model.PullRequest) { p.Base = "mismatch" })
+	mismatch(func(p *model.PullRequest) { p.HeadRepository = "mismatch" })
+	mismatch(func(p *model.PullRequest) { p.BaseRepository = "mismatch" })
+	mismatch(func(p *model.PullRequest) { p.Owned = false })
+	for _, state := range []string{"closed", "merged"} {
+		p := pr
+		p.State = state
+		if err := git.ValidatePublication(task, p, true, false); err == nil {
+			t.Fatalf("%s publication accepted outside reconciliation", state)
+		}
+		if err := git.ValidatePublication(task, p, true, true); err != nil {
+			t.Fatalf("%s publication rejected under reconciliation: %v", state, err)
+		}
+	}
+}
+
 // TestFixtureGhChildCleanup exercises fixture-peer cleanup: the gh fixture can
 // spawn a delayed child, and cancelling mid-call must terminate the peer's own
 // descendant within bounded time rather than leaking it.

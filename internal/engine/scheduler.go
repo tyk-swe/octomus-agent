@@ -53,6 +53,14 @@ func (a *App) Tick() error {
 		return err
 	}
 	a.maybeStartHousekeeping(cfg)
+	// Reconciliation can write a preserved PR branch. Reserve publication while
+	// leaving the gate available to pause and other operator controls.
+	a.runtimeMu.Lock()
+	reconciling := a.runtime.reconcilingPublication
+	a.runtimeMu.Unlock()
+	if reconciling {
+		return nil
+	}
 	if control.Mode == model.OperatingModePaused {
 		return nil
 	}
