@@ -77,3 +77,21 @@ loading of saved configuration and task snapshots when adding fields.
 - Do not claim live validation without real evidence. Live operation needs
   the owner's dedicated VM and bot; the development workspace is not that VM.
 - Defer LICENSE/NOTICE ownership edits until the owner supplies cleared facts.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as GitHub issues in `tyk-swe/octomus-agent`, managed with
+the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles map to same-named label strings
+(`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`).
+See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` plus `docs/adr/` at the repo root, created
+lazily by `/domain-modeling`. See `docs/agents/domain.md`.
