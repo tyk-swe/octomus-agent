@@ -265,7 +265,7 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending, unresolved, err := state.BatchCounts(started.Batch.ID)
-	if err != nil || unresolved != 1 {
+	if err != nil || pending != 0 || unresolved != 1 {
 		t.Fatalf("late retry erased batch failure: pending=%d unresolved=%d, %v", pending, unresolved, err)
 	}
 }

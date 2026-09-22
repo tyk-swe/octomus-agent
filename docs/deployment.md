@@ -4,16 +4,18 @@ Octomus is a single-operator, single-repository service for a dedicated Linux VM
 
 ## Install
 
-Build on the target architecture or another compatible Linux host:
+Build on the target architecture or another compatible Linux host. The build
+needs Go (per `go.mod`), Node and npm for the embedded dashboard; the produced
+executable is statically linked and needs none of them at runtime:
 
 ```bash
 npm ci --prefix web
 make package
 ```
 
-Install `target/release/octomus-agent` (or the executable from a checksum-verified release archive) as `/usr/local/bin/octomus-agent`. The dashboard is embedded. Public release installation remains pending; see [releasing](releasing.md). Create an `octomus` OS account with a home directory at `/var/lib/octomus`, and make its home and target repository writable by that account. The binary must remain administrator-owned. The supplied unit expects `/srv/projects/octomus-agent` to exist. If using another target path (including the `/srv/projects/project` example in [getting started](getting-started.md)), change `ReadWritePaths` in a systemd override before starting.
+Install `bin/octomus-agent` (or the executable from a checksum-verified release archive) as `/usr/local/bin/octomus-agent`. The dashboard is embedded. Public release installation remains pending; see [releasing](releasing.md). Create an `octomus` OS account with a home directory at `/var/lib/octomus`, and make its home and target repository writable by that account. The binary must remain administrator-owned. The supplied unit expects `/srv/projects/octomus-agent` to exist. If using another target path (including the `/srv/projects/project` example in [getting started](getting-started.md)), change `ReadWritePaths` in a systemd override before starting.
 
-Install `git`, `gh` and the runners your routes select for that account: Codex CLI pinned to **0.153.4** and/or OpenCode **1.18.30**, the tested protocol versions. Authenticate the runners and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well. Ensure the unit's PATH includes their actual locations (including `/var/lib/octomus/.cargo/bin` when using rustup); a systemd service does not load the interactive shell's profile.
+Install `git`, `gh` and the runners your routes select for that account: Codex CLI pinned to **0.153.4** and/or OpenCode **1.18.30**, the tested protocol versions. Authenticate the runners and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test toolchains as well — Octomus itself is a static binary, but verification commands run whatever the target project needs. Ensure the unit's PATH includes their actual locations (including `/var/lib/octomus/.cargo/bin` when the project under test uses rustup-installed tools); a systemd service does not load the interactive shell's profile.
 
 Create `/etc/octomus/agent.env`, readable only by the administrator and service account, with a fresh random token:
 

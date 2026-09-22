@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Runs the actual service, scheduler, SQLite, and Git against deterministic external peers.
-No network writes, real Codex turns, credentials, or spending. Run after cargo build + web build.
+No network writes, real Codex turns, credentials, or spending. Run after make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
 """
 import contextlib
 import json
@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 PROJECT = Path(__file__).resolve().parents[1]
-BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'target/debug/octomus-agent')))
+BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent')))
 TOKEN = 'fixture-operator-token-with-at-least-32-characters'
 
 

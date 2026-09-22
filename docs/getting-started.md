@@ -1,7 +1,7 @@
 # Getting started
 
 Octomus is a self-hosted preview for one operator and one repository. Installation
-currently means building from source. Public release binaries and the crates.io package
+currently means building from source. Public release binaries
 are not published yet; [releasing](releasing.md) describes what is prepared for them.
 
 Your first run has four explicit steps:
@@ -27,8 +27,8 @@ commands ahead of any model work and is separate from verifying a task's changes
   creates accounts or performs logins; you run each login yourself as the service user.
 - The target repository, cloned to a persistent path writable by the service user, with
   its own build and test tools installed on the VM.
-- Build tools, needed only to build Octomus itself: Git, gh, curl, OpenSSL, a C
-  compiler, Rust 1.88+, Node 22.12+ and npm. Python 3 is only needed for repository tests.
+- Build tools, needed only to build Octomus itself: Git, gh, curl, OpenSSL, Go
+  (per `go.mod`), Node 22.12+ and npm. Python 3 is only needed for repository tests.
 
 You supply VM and provider access. Their charges depend on usage and your subscriptions;
 Octomus's session-admission limit is not a dollar budget. See [cost](cost.md) for what is
@@ -42,7 +42,7 @@ and the pinned [Codex release](https://github.com/openai/codex/releases/tag/rust
 Install the runners you intend to use. The Codex setup below is optional for an
 OpenCode-only installation. For OpenCode, install the pinned
 [1.18.30 release](https://github.com/anomalyco/opencode/releases/tag/v1.18.30)
-for your platform. Octomus's binary itself does not require Node or Rust at runtime.
+for your platform. Octomus's binary itself does not require Node, Go or Rust at runtime.
 
 ```bash
 sudo apt-get update
@@ -53,19 +53,16 @@ sudo apt-get install -y nodejs
 sudo npm install -g @openai/codex@0.153.4
 ```
 
-Add Rust 1.88+ and a C compiler, then build the dashboard before Rust.
+Add the Go toolchain (per `go.mod`; from [go.dev](https://go.dev/dl/) or your
+distribution), then build the dashboard before the binary.
 Python is only needed for repository tests.
 
 ```bash
-sudo apt-get install -y build-essential
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/octomus-rustup.sh
-sh /tmp/octomus-rustup.sh -y --profile minimal
-. "$HOME/.cargo/env"
 git clone https://github.com/tyk-swe/octomus-agent.git
 cd octomus-agent
 npm ci --prefix web
 make build
-sudo install -m 755 target/release/octomus-agent /usr/local/bin/octomus-agent
+sudo install -m 755 bin/octomus-agent /usr/local/bin/octomus-agent
 ```
 
 **Pending release options:** after binary releases are published, the installer
@@ -81,8 +78,8 @@ and installs to `/usr/local/bin`. To select a version, download the script and r
 through `INSTALL_DIR`. Checksums detect corruption; they are not independent
 signatures against a compromised release account.
 
-`cargo install octomus-agent --locked` is also pending crates.io publication. The
-crate includes the built dashboard, so installing that package will not require npm.
+The executable is statically linked (`CGO_ENABLED=0`) and embeds the dashboard,
+so installation is a single administrator-owned file with no runtime toolchain.
 
 ## 2. Connect as the service user
 

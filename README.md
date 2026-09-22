@@ -58,7 +58,7 @@ instructions, Product Hunt copy, and gallery assets.
 
 ## Getting started
 
-Octomus is built from source; release binaries and the crates.io package are not
+Octomus is built from source; release binaries are not
 published yet. You need a dedicated Ubuntu 24.04 VM, your own Codex or OpenCode
 provider access, a GitHub identity reserved for the agent, and a clone of the target
 repository on a persistent path.
@@ -68,7 +68,7 @@ git clone https://github.com/tyk-swe/octomus-agent.git
 cd octomus-agent
 npm ci --prefix web
 make build
-sudo install -m 755 target/release/octomus-agent /usr/local/bin/octomus-agent
+sudo install -m 755 bin/octomus-agent /usr/local/bin/octomus-agent
 ```
 
 The dashboard listens on loopback and starts paused. The first run is four explicit
@@ -97,7 +97,7 @@ not dollar caps; validated per-task and daily cost figures are not available yet
 | [Product Hunt launch](docs/product-hunt.md) | Public site, launch copy, gallery, and publishing checklist |
 | [Cost](docs/cost.md) | What a session admission is, and what is not measured |
 | [Threat model](docs/threat-model.md) | Trust boundaries, prompt injection, redaction limits |
-| [Releasing](docs/releasing.md) | Packaging, release workflow, crate handoff |
+| [Releasing](docs/releasing.md) | Packaging and release workflow |
 | [Rust → Go roadmap](docs/roadmap/README.md) | Proposed backend rewrite, milestones, and acceptance gates |
 
 ## Security

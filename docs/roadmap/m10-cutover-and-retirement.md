@@ -83,12 +83,34 @@ may be reported as `IMPLEMENTATION_READY`; the full roadmap remains incomplete.
 
 ```text
 Milestone: M10
-Status: TODO
-Implementation revision: Not started.
-Delivered output: None.
-Acceptance tests and commands: Not run.
-Results: No cutover, live-canary, or Rust-retirement evidence recorded.
-Intentional behavior differences: None approved.
-Unrun required checks and blockers: All acceptance checks unrun; depends on M9 and explicit owner authorization/access.
-Next eligible milestone: None; complete the roadmap only after every M10 criterion passes.
+Status: BLOCKED
+Implementation revision: Cutover not started; Go implementation on
+  tyk/go-m8-m10 is M0–M9 qualified (IMPLEMENTATION_READY).
+Delivered output: Qualified Go release artifacts
+  (octomus-agent-v0.1.0-{x86_64,aarch64}-unknown-linux-gnu.tar.gz, checksums in
+  dist/SHA256SUMS), validated upgrade/rollback rehearsal and cross-language lock
+  evidence (M9 record), full qualification evidence (M8 record). No cutover
+  performed.
+Acceptance tests and commands: M10 checks require the owner's dedicated
+  deployment environment and explicit authorization — neither is available in
+  this workspace. All prerequisite gates (make check/test/audit/build/package,
+  distribution, systemd, upgrade rehearsal) pass on the Go branch; see M8/M9
+  records.
+Results: No cutover, live-canary, or Rust-retirement evidence recorded. Per this
+  milestone's own rule, work stopped at the authorization boundary rather than
+  fabricating live evidence.
+Intentional behavior differences: None approved for M10.
+Unrun required checks and blockers: Every M10 acceptance criterion is unrun and
+  blocked on (a) explicit owner authorization for live model calls, GitHub
+  writes, and a bounded canary on the owner's repository/bot/configured routes;
+  (b) access to the owner's dedicated deployment environment (the production VM
+  running the Rust service, its state directory and workspaces); (c) owner
+  acceptance of recorded canary outcome before resuming ordinary operation;
+  (d) only after an authorized cutover: Rust source/Cargo retirement and the
+  final clean-checkout gate run. Rollback rules above govern any partial
+  cutover: pre-external-write restores use the verified backup; after Go
+  external writes, reconcile remote effects and use validated forward recovery
+  — M9's rehearsal proved current Go-written state is Rust-resumable.
+Next eligible milestone: None; the roadmap is IMPLEMENTATION_READY (M0–M9 DONE)
+  and completes only when an authorized cutover supplies real evidence.
 ```

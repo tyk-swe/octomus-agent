@@ -1,8 +1,10 @@
 # Working on Octomus Agent
 
-Octomus is a single-operator Rust service that discovers repository improvements,
+Octomus is a single-operator service that discovers repository improvements,
 reviews proposals, executes accepted tasks through Codex or OpenCode, and delivers
-GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
+GitHub PRs. The shipped implementation is Go (`cmd/octomus-agent`, `internal/`);
+the Rust tree below remains as the frozen comparison reference until M10. The
+SvelteKit dashboard builds to static assets embedded in the binary.
 
 ## Repository map
 
@@ -37,7 +39,7 @@ GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
 - `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py`, `e2e_baseline.py`, and
   `e2e_notifications.py` with `tests/fixtures`:
   deterministic Codex/OpenCode/GitHub peers with real local Git. `distribution.py`,
-  `crate.py`, `crate_guards.py` and `systemd.py` cover packaging and deployment;
+  `package_guards.py` and `systemd.py` cover packaging and deployment;
   `evidence_snapshot.py` runs the documented backup and export examples on synthetic data.
 - `web/tests`: dashboard browser tests served by `tests/serve_ui.py`;
   `web/showcase-tests`: showcase contract and browser tests; `web/site-tests`: public
@@ -46,20 +48,23 @@ GitHub PRs. The SvelteKit dashboard builds to static assets served by Rust.
 
 ## Build and verify
 
-Use Rust 1.88+ with rustfmt/clippy, Node 22.12+, npm, Python 3, Git and a C compiler.
-Install dashboard dependencies with `npm ci --prefix web`. Install browser test
-prerequisites with `npx --prefix web playwright install --with-deps chromium`.
+Use Go (per `go.mod`), Node 22.12+, npm, Python 3, Git and a C compiler for the
+race detector. Rust 1.88+ is needed only for the frozen reference comparison
+(`make test-go-storage`). Install dashboard dependencies with
+`npm ci --prefix web`. Install browser test prerequisites with
+`npx --prefix web playwright install --with-deps chromium`.
 
-- `make check`: Rust formatting/clippy, Svelte/TypeScript, showcase, site and
+- `make check`: gofmt/`go vet`, Svelte/TypeScript, showcase, site and
   Prettier checks.
-- `make test`: Rust tests, debug binary, dashboard build, integration, browser,
-  showcase and public-site tests.
-- `make build`: production binary and dashboard.
-- Focused integration: `npm run build --prefix web`, `cargo build --locked`, then
-  `python3 tests/e2e.py`. These tests use fixtures, not live accounts or model calls.
+- `make test`: Go tests (including `-race`), production binary, dashboard build,
+  integration, browser, showcase and public-site tests.
+- `make build`: production binary (`bin/octomus-agent`) and dashboard.
+- Focused integration: `npm run build --prefix web`, `make build`, then
+  `OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e.py`. These
+  tests use fixtures, not live accounts or model calls.
 
 Run relevant behavior tests while editing and the full checks before delivery.
-Keep Rust and dashboard configuration types aligned. Preserve backward-compatible
+Keep Go and dashboard configuration types aligned. Preserve backward-compatible
 loading of saved configuration and task snapshots when adding fields.
 
 ## Conventions and boundaries
@@ -69,7 +74,7 @@ loading of saved configuration and task snapshots when adding fields.
   full-diff review, fresh reviewer threads and persistent per-task repair threads.
 - Never silently substitute model/effort routes or weaken verification to publish.
 - The service delivers PRs; it does not merge, deploy or migrate production systems.
-  Workers must not push or publish; the Rust orchestrator owns publication.
+  Workers must not push or publish; the orchestrator owns publication.
 - Do not edit `.octomus/`, credentials, account configuration, or other workspaces.
   Fixtures and generated build artifacts are not live evidence.
 - Keep secrets, raw runner transcripts and private billing screenshots out of Git.

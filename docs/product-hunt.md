@@ -30,7 +30,7 @@ labeled synthetic demo at https://octomus-agent.tyk.sh/showcase/ before installi
 
 **Pricing explanation:** Self-hosted software; you supply the VM and Codex or OpenCode
 provider access. Their charges depend on your setup and usage. No validated per-task or
-daily cost claim is available. Public binary and crates.io distribution remain pending.
+daily cost claim is available. Public binary distribution remains pending.
 
 ### Maker's first comment
 
@@ -131,8 +131,7 @@ the adversarial showcase tests. For a focused site pass, use `npm run site:test 
 To recreate the image exports after dashboard or demo changes:
 
 ```sh
-npm run build --prefix web
-cargo build --locked
+make build
 npm run launch:assets --prefix web
 npm run site:build --prefix web
 ```

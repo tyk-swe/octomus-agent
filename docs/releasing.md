@@ -1,8 +1,15 @@
 # Releasing
 
-Public GitHub releases and crates.io publication remain pending. Local packages,
-fixture tests and workflow definitions do not prove public download availability.
+Public GitHub releases remain pending. Local packages, fixture tests and
+workflow definitions do not prove public download availability.
 Employer/name clearance and LICENSE/NOTICE ownership facts remain owner gates.
+
+## Version
+
+The application version lives in the `VERSION` file at the repository root. The
+Go binary embeds it at compile time, so `--version`, `/healthz` and runner
+client metadata all report the same string, and release tooling reads the same
+file for tag validation and archive names. Bump it in one place only.
 
 ## Build and package
 
@@ -14,12 +21,14 @@ make audit
 make package
 ```
 
-Install cargo-audit first with `cargo install cargo-audit --locked`. Dashboard
-assets are generated before Cargo and embedded using include_dir. The build fails
-with instructions if `web/build/200.html` is absent. Rebuild Rust after UI edits.
-The output is `dist/octomus-agent-vVERSION-TARGET.tar.gz` plus `SHA256SUMS`.
-GNU/Linux x86_64 and aarch64 are the supported release targets; Ubuntu 24.04 is the
-release build and smoke-test baseline. Older glibc distributions are not promised.
+`make audit` runs govulncheck (`go run golang.org/x/vuln/cmd/govulncheck@v1.8.0`,
+pinned) plus `npm audit`; it needs module download access. Dashboard assets are
+generated before the Go build and embedded with `go:embed`. Compilation fails if
+`web/build` output is absent. Rebuild after UI edits. The output is
+`dist/octomus-agent-vVERSION-TARGET.tar.gz` plus `SHA256SUMS`. GNU/Linux x86_64
+and aarch64 are the supported release targets; Ubuntu 24.04 is the release build
+and smoke-test baseline. The build is statically linked (`CGO_ENABLED=0`), so
+the executable needs neither Rust, Go, Node, nor a minimum glibc at runtime.
 
 The archive contains `octomus-agent/octomus-agent`, license, policies and operator
 documentation. It never packages live state or separate runtime dashboard files.
@@ -31,11 +40,12 @@ release archives do not include Sigstore signatures.
 ## GitHub release workflow
 
 After owner clearance, a pushed `v*` tag runs the reusable full checks and native
-Ubuntu 24.04 builds on x86_64 and aarch64. The tag must equal `v` plus Cargo.toml's
-version. Both tarballs must pass embedded HTTP and installer smoke tests before
-the publishing job receives contents-write permission. Checksums cover both
-archives; generated release notes are the default. Prerelease tags are marked as
-prereleases and excluded from the installer's latest-stable lookup.
+Ubuntu 24.04 builds on x86_64 and aarch64. The tag must equal `v` plus the
+`VERSION` file contents. Both tarballs must pass embedded HTTP and installer
+smoke tests before the publishing job receives contents-write permission.
+Checksums cover both archives; generated release notes are the default.
+Prerelease tags are marked as prereleases and excluded from the installer's
+latest-stable lookup.
 
 The manual workflow accepts an existing tag and optional multiline notes. Use
 that path with the final owner-written v0.1.0 notes. If the release already exists,
@@ -46,38 +56,12 @@ Before enabling live workers, configure release-tag protections so their GitHub
 identity cannot trigger a release by pushing a tag. These repository controls
 are an owner setup action; worker prompts are not an authorization boundary.
 
-## crates.io handoff
+## Rust reference
 
-Cargo metadata uses the existing provisional repository/package name. The root-anchored package
-inclusion list explicitly contains generated `web/build` assets, despite their
-Git ignore rule. Do not remove them or make Cargo run npm on an end user's host. Root anchoring also prevents generic README/LICENSE patterns from pulling in Node dependency files.
-
-After all changes are committed, validate:
-
-```bash
-npm run build --prefix web
-./scripts/package-crate.sh
-cargo package --list --allow-dirty
-python3 tests/crate.py
-```
-
-The package verification builds the extracted crate. Confirm its binary serves the
-dashboard outside the checkout without Node, as covered by the distribution test.
-Cargo treats explicitly included generated assets as dirty even when Git ignores
-them. The wrapper requires clean tracked source and no ordinary untracked files,
-checks package inputs against Git (allowing only generated dashboard assets and
-Cargo metadata), then passes `--allow-dirty` for the asset files. Its provenance
-metadata honestly records those generated files as dirty. Do not bypass the source
-check for publication. Direct `cargo package --locked --allow-dirty` is acceptable
-for local, uncommitted development verification only.
-
-Only after the owner clears naming/ownership and controls the registry account:
-
-```bash
-./scripts/package-crate.sh --publish-dry-run
-./scripts/package-crate.sh --publish
-```
-
-These commands are a handoff, not a record of execution. Record the registry URL
-and install evidence before advertising `cargo install octomus-agent --locked` as
-available. No credentials belong in this repository.
+The Rust implementation stays in the tree as the frozen comparison reference
+until M10 retires it; `cargo build`/`cargo test` still work and the
+`go-storage-compatibility` and `client-contracts` CI jobs exercise it. Nothing
+shipped derives from `Cargo.toml`: the crates.io packaging path
+(`scripts/package-crate.sh`, `tests/crate.py`, `tests/crate_guards.py`) was
+retired with the switch, and `tests/package_guards.py` now guards the tar
+archive allowlist and rejection cases instead.

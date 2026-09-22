@@ -124,16 +124,46 @@ if [ "$1" = -s ]; then echo Linux; else echo "$INSTALLER_ARCH"; fi
     print('PASS installer: architectures, latest/versioned release, checksum/missing/unsupported failures')
 
 
+# The package archive must never carry operator state, credentials, runner
+# transcripts, caches or migration-only test fixtures (AC6 denylist).
+DENIED_DIRECTORIES = {'.octomus', 'node_modules', 'tests', 'fixtures', '.git',
+                      '.codex', '.opencode', '.cargo', '.rustup', '.npm', '__pycache__'}
+DENIED_SUFFIXES = ('.db', '.sqlite', '.sqlite3', '.wal', '-wal', '.shm', '-shm',
+                   '.journal', '-journal', '.lock', '.log', '.jsonl', '.pem',
+                   '.key', '.env')
+DENIED_NAME = re.compile(r'(?i)(state\.db|service\.lock|credential|secret|token|'
+                         r'private[-_]?key|id_rsa|transcript|rollout|fixture)')
+
+
+def package_denylist(archive):
+    """Asserts the shipped archive contains none of the denied entries."""
+    with tarfile.open(archive) as tar:
+        names = [member.name for member in tar.getmembers()]
+    assert names, f'{archive} is empty'
+    denied = []
+    for name in names:
+        parts = [part for part in name.split('/') if part not in ('', '.')]
+        base = parts[-1] if parts else ''
+        if any(part in DENIED_DIRECTORIES for part in parts):
+            denied.append((name, 'private directory'))
+        elif base.endswith(DENIED_SUFFIXES) or DENIED_NAME.search(base):
+            denied.append((name, 'state, credential or transcript file'))
+    assert not denied, f'{archive} carries denied entries: {denied}'
+    assert 'octomus-agent/octomus-agent' in names, f'{archive} lacks the executable'
+    print(f'PASS package denylist: {len(names)} members, none match the state/credential/transcript denylist')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--package', type=Path)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='octomus-package-') as directory:
         if args.package:
+            package_denylist(args.package)
             with tarfile.open(args.package) as tar:
                 tar.extractall(directory, filter='data')
             binary = Path(directory) / 'octomus-agent/octomus-agent'
         else:
-            binary = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'target/debug/octomus-agent'))).resolve()
+            binary = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent'))).resolve()
         smoke(binary)
         installer(binary)

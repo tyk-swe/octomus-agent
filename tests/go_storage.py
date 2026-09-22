@@ -34,7 +34,7 @@ sys.path.insert(0, str(PROJECT / 'tests'))
 import compatibility_capture  # noqa: E402
 import e2e  # noqa: E402
 
-GO = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent-go')))
+GO = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent')))
 RUST = Path(os.environ.get('OCTOMUS_RUST_REFERENCE', str(PROJECT / 'target/debug/octomus-agent')))
 FIXTURE = PROJECT / 'tests/fixtures/compatibility/state.json'
 STATE_FILES = ['state.db', 'state.db-wal', 'state.db-shm', 'state.db-journal']

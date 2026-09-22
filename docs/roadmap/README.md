@@ -1,7 +1,9 @@
 # Octomus Agent roadmap: Rust → Go
 
-**Status: implementation underway.** Individual milestone progress records are
-authoritative. Rust remains the default build and release implementation.
+**Status: `IMPLEMENTATION_READY`.** M0–M9 are `DONE`; Go is the default build and
+release implementation. M10 is `BLOCKED` on explicit owner authorization and the
+dedicated deployment environment — no production cutover or Rust retirement has
+occurred. Individual milestone progress records are authoritative.
 
 Replace Octomus Agent’s Rust backend with an idiomatic, maintainable Go service
 while preserving supported behavior, durable state, the dashboard, both runner
@@ -262,24 +264,20 @@ runner workspace, or publication target.
 
 ## Verification entry points
 
-The commands in this section are migration deliverables, not claims that Go
-targets already exist. Add only the temporary counterparts needed alongside the
-existing Rust targets:
+With M9 complete the user-facing targets are Go. The only migration-specific
+target that remains is the cross-language storage and upgrade rehearsal against
+the frozen Rust reference:
 
 ```sh
-make build-go
-make check-go
-make test-go
-make test-go-storage   # cross-language storage checks against the frozen Rust reference
+make test-go-storage   # go_storage.py + go_upgrade.py against the frozen Rust reference
 ```
 
-Keep executable output predictable, for example `bin/octomus-agent-go`. Shared
-executable-based tests select the implementation through one variable:
+Shared executable-based tests select the implementation through one variable:
 
 ```sh
-OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent-go" python3 tests/e2e.py
-OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent-go" python3 tests/e2e_runners.py
-OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent-go" python3 tests/e2e_hardening.py
+OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e.py
+OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e_runners.py
+OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e_hardening.py
 ```
 
 Use the same selection mechanism for baseline, notification, evidence,

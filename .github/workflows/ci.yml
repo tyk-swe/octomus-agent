@@ -13,49 +13,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup default stable
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-      - run: npm ci --prefix web
-      - run: shellcheck install.sh scripts/*.sh
-      - run: make check
-      - run: cargo install cargo-audit --locked
-      - run: make audit
-      - run: npx --prefix web playwright install --with-deps chromium
-      - run: make test
-      - run: make package
-      - run: python3 tests/distribution.py --package "dist/octomus-agent-v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-x86_64-unknown-linux-gnu.tar.gz"
-      - run: ./scripts/package-crate.sh
-      - run: python3 tests/crate.py
-      - run: sudo python3 tests/systemd.py
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: browser-test-evidence
-          path: web/test-results
-          retention-days: 7
-
-  go-foundations:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,7 +28,20 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
-      - run: make check-go test-go
+      - run: shellcheck install.sh scripts/*.sh
+      - run: make check
+      - run: make audit
+      - run: npx --prefix web playwright install --with-deps chromium
+      - run: make test
+      - run: make package
+      - run: python3 tests/distribution.py --package "dist/octomus-agent-v$(cat VERSION)-x86_64-unknown-linux-gnu.tar.gz"
+      - run: sudo python3 tests/systemd.py
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-evidence
+          path: web/test-results
+          retention-days: 7
 
   go-storage-compatibility:
     runs-on: ubuntu-24.04

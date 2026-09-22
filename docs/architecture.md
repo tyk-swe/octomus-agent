@@ -156,7 +156,8 @@ truncation marker. All captures retain timeout, draining and process-group owner
 State-snapshot cost was measured on 2026-09-10 at `5314f2d` with
 `cargo test --locked --test history_scale -- --ignored --nocapture`. The fixture stores
 4 KiB prompts in 1,000, 10,000 and 100,000 historical task records; each measurement
-includes 20 dashboard snapshots using the debug build.
+includes 20 dashboard snapshots using the debug build. The Go port runs the same
+cases with `OCTOMUS_SCALE_TEST=1 go test ./internal/store -run Scale`.
 
 | Historical tasks | State JSON bytes | Median query time | p95 query time | Peak additional Rust allocations |
 | --- | ---: | ---: | ---: | ---: |

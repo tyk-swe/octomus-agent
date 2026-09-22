@@ -13,7 +13,7 @@ const dashboardUrl = 'http://127.0.0.1:4299';
 const showcaseUrl = 'http://127.0.0.1:4308/showcase/';
 const token = 'browser-test-operator-token-32-characters';
 
-await access(resolve(root, 'target/debug/octomus-agent'));
+await access(resolve(root, 'bin/octomus-agent'));
 await access(resolve(web, 'build/200.html'));
 for (const url of [dashboardUrl, showcaseUrl]) {
   if (
