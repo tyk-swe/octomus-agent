@@ -89,8 +89,8 @@ Required skipped checks prevent `DONE`.
 
 ```text
 Milestone: M8
-Status: TODO
-Implementation revision: Not started.
+Status: IN_PROGRESS
+Implementation revision: Underway on the Go qualification branch.
 Delivered output: None.
 Acceptance tests and commands: Not run.
 Results: No qualification or measurement evidence recorded; budgets await M0 freeze.
