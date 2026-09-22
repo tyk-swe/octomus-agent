@@ -566,6 +566,21 @@ func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
 	if err != nil || saved.Status != model.StatusQueued {
 		t.Fatalf("refresh failure changed queued work: %+v, %v", saved, err)
 	}
+	// A later complete observation clears the failure and restores ready
+	// capacity — capacity_reports_refresh_state_and_clears_error_after_observation.
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RefreshPRs(context.Background()); err != nil {
+		t.Fatalf("restored inventory did not refresh: %v", err)
+	}
+	recovered, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != "ready" || recovered.Reason != nil || recovered.Remaining == nil || *recovered.Remaining != fixture.cfg.MaxOpenPRs {
+		t.Fatalf("successful refresh did not clear the failure: %+v", recovered)
+	}
 }
 
 func TestRefreshReleasesOnlyRemotelySettledCheckpointReservation(t *testing.T) {
