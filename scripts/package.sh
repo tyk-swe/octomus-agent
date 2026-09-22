@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+case $# in 3|4) ;; *) echo 'Usage: scripts/package.sh <vVERSION> <target> <binary> [outdir]' >&2; exit 1;; esac
 version=$1
 target=$2
 binary=$3
@@ -7,6 +8,7 @@ out=${4:-dist}
 case "$version" in v[0-9]*) ;; *) echo 'Version must start with v and a digit' >&2; exit 1;; esac
 case "$version" in *[!a-zA-Z0-9.+-]*) echo 'Invalid version' >&2; exit 1;; esac
 case "$target" in x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;; *) echo 'Unsupported release target' >&2; exit 1;; esac
+[ -f "$binary" ] || { echo "Missing binary: $binary" >&2; exit 1; }
 mkdir -p "$out"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT HUP INT TERM

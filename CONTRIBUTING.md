@@ -7,8 +7,11 @@ no-change outcome is welcome. Report security issues privately using
 
 ## Development
 
-Use Linux, Rust 1.88+ with rustfmt/clippy, a C compiler, Node 22.12+, npm, Python 3
-and Git. Codex, OpenCode and GitHub credentials are not needed for fixture tests.
+Use Linux, Go (per `go.mod`), Node 22.12+, npm, Python 3 and Git; the race
+detector additionally needs a C compiler. Codex, OpenCode and GitHub credentials
+are not needed for fixture tests. The frozen Rust reference remains buildable
+for the cross-language comparison jobs (`make test-go-storage`); Rust 1.88+ is
+only required when working on that reference.
 
 ```bash
 npm ci --prefix web
@@ -17,14 +20,16 @@ make check
 make test
 ```
 
-The dashboard must be built before compiling Rust because it is embedded in the
-executable. Make targets handle this order. For focused Rust work, first run
-`npm run build --prefix web`, then `cargo test --locked`. After UI edits rebuild
-the dashboard and Rust binary so browser tests exercise current assets.
+The dashboard must be built before compiling Go because it is embedded in the
+executable. Make targets handle this order. For focused Go work, first run
+`npm run build --prefix web`, then `go test ./...`. After UI edits rebuild
+the dashboard and binary so browser tests exercise current assets.
 
-`make build` creates the production executable. `--assets web/build` explicitly
-serves a development dashboard instead of the embedded copy. See
-[architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md) for the code map.
+`make build` creates the production executable at `bin/octomus-agent`, and
+`make build-race` produces a race-instrumented variant. `--assets web/build`
+explicitly serves a development dashboard instead of the embedded copy. The
+application version lives in the root `VERSION` file; change it in one place.
+See [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md) for the code map.
 
 ## Meaningful evidence
 
@@ -33,8 +38,8 @@ service, SQLite and local Git with deterministic Codex, OpenCode and GitHub peer
 in temporary directories. They cover both runner protocols, discovery, reviews,
 repairs, publication recovery and audits without live model calls or network writes.
 `tests/distribution.py` checks the executable and installer using local release
-fixtures. `tests/crate_guards.py` checks release input guards with real Cargo,
-and `tests/crate.py` verifies the extracted application crate after packaging.
+fixtures. `tests/package_guards.py` checks `scripts/package.sh` rejection cases
+and the release archive allowlist.
 Browser tests use clearly synthetic data; their screenshots are not
 live operating evidence. `tests/evidence_snapshot.py` runs the documented SQLite backup
 and `--export-run` examples on a synthetic database, and the showcase tests
@@ -44,12 +49,11 @@ navigation, local search, code copying, accessibility, links, and nested 404 pag
 domain root and legacy Pages subdirectory. `tests/systemd.py` requires root on a disposable systemd
 VM and exercises the unit's write restrictions and child cleanup.
 
-Four checks run in CI rather than in `make test`, because each needs something a
+Three checks run in CI rather than in `make test`, because each needs something a
 working copy does not have: `make package` followed by `tests/distribution.py
---package`, which needs a real release build; `scripts/package-crate.sh` with
-`tests/crate.py`, which packages the crate and rebuilds it from the package;
-`tests/systemd.py`, which needs root; and `shellcheck`. Run any of them locally
-before changing packaging, the installer or the unit file.
+--package`, which needs a real release build; `tests/systemd.py`, which needs
+root; and `shellcheck`. Run any of them locally before changing packaging, the
+installer or the unit file.
 
 Dashboard regressions cover configuration drafts in tab memory, saved-configuration
 checks, keyboard navigation and list recovery. Keep drafts across view changes,
@@ -67,8 +71,8 @@ The live homepage, documentation, and sample use `https://octomus-agent.tyk.sh/`
 publishing them requires a separate `npm run site:deploy --prefix web` after checks pass.
 
 Run relevant behavior tests while editing and full `make check`/`make test` before
-delivery. Install `cargo-audit` with `cargo install cargo-audit --locked`, then run
-`make audit` for dependency advisories. CI retains browser failure traces.
+delivery. `make audit` runs govulncheck and `npm audit` for dependency
+advisories; it needs module download access. CI retains browser failure traces.
 
 ## A good pull request
 
@@ -76,10 +80,10 @@ Explain the concrete problem, resulting behavior, validation and limitations.
 Keep changes cohesive and preserve full-diff review, fresh reviewer threads,
 persistent repair threads, exact model routes and verification before publication.
 Add behavior tests for meaningful changes; avoid tests that merely duplicate code.
-Keep Rust/dashboard types and documentation aligned. Saved configuration and task
+Keep Go/dashboard types and documentation aligned. Saved configuration and task
 snapshots must still load after upgrades.
 
-Workers must not push or publish; Rust owns publication. Do not merge, deploy,
+Workers must not push or publish; the orchestrator owns publication. Do not merge, deploy,
 migrate production systems, edit live `.octomus/` state, or commit credentials,
 raw transcripts or private billing images. Octomus-created branches use `tyk/`.
 License/NOTICE ownership changes await owner-cleared facts.

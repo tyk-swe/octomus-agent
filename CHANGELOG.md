@@ -5,7 +5,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Binary releases and crates.io publication remain pending; this section describes what
+Binary releases remain pending; this section describes what
 the first release contains. The public homepage and documentation are live at
 [octomus-agent.tyk.sh](https://octomus-agent.tyk.sh/).
 
@@ -28,8 +28,7 @@ the first release contains. The public homepage and documentation are live at
   and an optional manually triggered GitHub Pages mirror.
 - Durable admission accounting, owned pull-request capacity limits, decision memory,
   attention notifications and read-only usage reports.
-- Linux x86_64 and aarch64 release packaging, a checksum-verifying installer and Cargo
-  package metadata.
+- Linux x86_64 and aarch64 release packaging and a checksum-verifying installer.
 - A security policy, threat model, hardened systemd unit, failed-authentication backoff
   and warnings for non-loopback listeners.
 
@@ -50,7 +49,7 @@ the first release contains. The public homepage and documentation are live at
 - Follow-up deliveries comment on the owned pull request instead of rewriting its
   description, so maintainer edits are never replaced; a cancelled task's reserved
   pull-request capacity is released once the remote settles its admitted branch.
-- The dashboard build precedes the Rust build; `--assets` is an explicit override.
+- The dashboard build precedes the Go build; `--assets` is an explicit override.
 
 ### Removed
 
