@@ -1,0 +1,160 @@
+package runner
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/schemas"
+)
+
+// catalogAdapter serves a fixed Codex catalog so whole-configuration route
+// validation runs without a runner process.
+type catalogAdapter struct{ models []Model }
+
+func (a catalogAdapter) Models(string) ([]Model, error) { return a.models, nil }
+func (catalogAdapter) Start(config.Route, string, *string) (string, error) {
+	panic("route validation must not start a session")
+}
+func (catalogAdapter) Turn(string, config.Route, string, string, schemas.Schema) (string, error) {
+	panic("route validation must not run a turn")
+}
+func (catalogAdapter) Diagnostics(string) (map[string]any, error) { return map[string]any{}, nil }
+func (catalogAdapter) Close() error                               { return nil }
+
+// codexCatalog maps each model to its supported efforts.
+func codexCatalog(entries map[string][]string) *Runners {
+	models := []Model{}
+	for name, efforts := range entries {
+		models = append(models, Model{Backend: config.BackendCodex, Model: name, DisplayName: name,
+			Efforts: efforts, Variants: []string{}, Available: true})
+	}
+	r := New(context.Background(), config.Default(), nil, "fixture")
+	r.clients[config.BackendCodex] = catalogAdapter{models: models}
+	return r
+}
+
+func TestUnsupportedEffortNeverFallsBack(t *testing.T) {
+	c := config.Default()
+	for _, role := range []string{"orchestrator", "discovery", "proposal_reviewer", "code_reviewer"} {
+		c.Roles[role] = config.NewRoute("gpt-6-astra", "medium")
+	}
+	c.Tiers = map[string]config.Route{
+		"XS": config.NewRoute("gpt-5.6-luna", "xhigh"),
+		"S":  config.NewRoute("gpt-5.6-luna", "max"),
+		"M":  config.NewRoute("gpt-6-astra", "low"),
+		"L":  config.NewRoute("gpt-6-astra", "medium"),
+		"XL": config.NewRoute("gpt-6-astra", "high"),
+	}
+	c.RepairRoute = config.NewRoute("gpt-6-astra", "medium")
+	r := codexCatalog(map[string][]string{"gpt-6-astra": {"medium", "low", "high"}, "gpt-5.6-luna": {"xhigh"}})
+	err := r.ValidateRoutes(c, t.TempDir(), false)
+	if err == nil || !strings.Contains(err.Error(), "max") {
+		t.Fatalf("unsupported tier S effort must fail naming it, got %v", err)
+	}
+	if c.Tiers["S"].Effort != "max" {
+		t.Fatalf("validation substituted the tier S effort: %q", c.Tiers["S"].Effort)
+	}
+}
+
+func TestRepairRoutesAreBackwardCompatibleAndValidated(t *testing.T) {
+	saved, err := json.Marshal(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old map[string]json.RawMessage
+	if err := json.Unmarshal(saved, &old); err != nil {
+		t.Fatal(err)
+	}
+	delete(old, "repair_route")
+	legacy, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c config.Config
+	if err := json.Unmarshal(legacy, &c); err != nil {
+		t.Fatal(err)
+	}
+	// A config saved before repair routes existed still gains one, carrying the
+	// tier ladder's effort and no model for the operator to accept blindly.
+	if c.RepairRoute != config.NewRoute("", "medium") {
+		t.Fatalf("legacy repair route = %+v", c.RepairRoute)
+	}
+	for role := range c.Roles {
+		c.Roles[role] = config.NewRoute("available", "low")
+	}
+	for tier := range c.Tiers {
+		c.Tiers[tier] = config.NewRoute("available", "low")
+	}
+	r := codexCatalog(map[string][]string{"available": {"low"}})
+	// The repair route is validated against the catalog like any other route,
+	// even when every role and tier around it is satisfiable.
+	c.RepairRoute = config.NewRoute("gpt-6-astra", "medium")
+	if err := r.ValidateRoutes(c, t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "gpt-6-astra / medium") {
+		t.Fatalf("unavailable repair model must fail, got %v", err)
+	}
+	c.RepairRoute = config.NewRoute("available", "high")
+	if err := r.ValidateRoutes(c, t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "available / high") {
+		t.Fatalf("unsupported repair effort must fail, got %v", err)
+	}
+	c.RepairRoute.Effort = "low"
+	if err := r.ValidateRoutes(c, t.TempDir(), false); err != nil {
+		t.Fatalf("satisfiable repair route: %v", err)
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloaded config.Config
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.RepairRoute != c.RepairRoute {
+		t.Fatalf("repair route did not round-trip: %+v", reloaded.RepairRoute)
+	}
+	c.RepairRoute.Model = strings.Repeat("x", 101)
+	if c.Validate(false) == nil {
+		t.Fatal("an overlong repair model must fail configuration validation")
+	}
+}
+
+func TestAuditReadinessRequiresOnlyPlanningRoutesAndNoVerification(t *testing.T) {
+	repository := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repository, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Default()
+	c.Repository = repository
+	c.GitHubRepo = "fixture/project"
+	for _, role := range []string{"orchestrator", "discovery", "proposal_reviewer"} {
+		c.Roles[role] = config.NewRoute("available", "low")
+	}
+	r := codexCatalog(map[string][]string{"available": {"low"}})
+	if err := c.ValidateAudit(); err != nil {
+		t.Fatalf("audit readiness: %v", err)
+	}
+	if c.Validate(true) == nil {
+		t.Fatal("execution readiness must require verification and execution routes")
+	}
+	if err := r.ValidateRoutes(c, repository, true); err != nil {
+		t.Fatalf("audit routes: %v", err)
+	}
+	if r.ValidateRoutes(c, repository, false) == nil {
+		t.Fatal("execution routes must fail while unset")
+	}
+	discovery := c.Roles["discovery"]
+	discovery.Effort = "max"
+	c.Roles["discovery"] = discovery
+	if r.ValidateRoutes(c, repository, true) == nil {
+		t.Fatal("an unsupported discovery effort must fail the audit route check")
+	}
+	discovery.Model = ""
+	c.Roles["discovery"] = discovery
+	if c.ValidateAudit() == nil {
+		t.Fatal("a cleared discovery model must fail audit readiness")
+	}
+}

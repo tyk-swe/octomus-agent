@@ -31,7 +31,7 @@ export type Tone = (typeof TONES)[number] | '';
 export type Verdict = { label: string; tone: Tone; detail: string };
 
 /**
- * Reviewer slots are positional and fixed in `src/evidence.rs`; these labels explain the
+ * Reviewer slots are positional and fixed in `internal/evidence`; these labels explain the
  * role each slot argues, rather than repeating its internal identity.
  */
 const REVIEWER_ROLES: Record<string, string> = {
@@ -61,8 +61,9 @@ export function decisionTone(decision: string | null): Tone {
 }
 
 /**
- * Persisted `decision::ALL` words in src/model.rs, in the order the dashboard shows
- * them. Mirrors the server vocabulary the way `ACTIVE_STATUSES` mirrors `Status::ACTIVE`.
+ * Persisted `model.Decisions()` words in internal/model, in the order the dashboard
+ * shows them. Mirrors the server vocabulary the way `ACTIVE_STATUSES` mirrors
+ * `model.ActiveStatuses`.
  */
 export const DECISIONS = ['accepted', 'rejected', 'deferred', 'candidate'] as const;
 

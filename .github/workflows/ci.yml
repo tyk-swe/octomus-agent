@@ -43,36 +43,6 @@ jobs:
           path: web/test-results
           retention-days: 7
 
-  go-storage-compatibility:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-      - run: npm ci --prefix web
-      - run: make test-go-storage
-
   client-contracts:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -89,8 +59,6 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Rust toolchain
-        run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -105,8 +73,6 @@ jobs:
             echo "OCTOMUS_CONTRACT_OPENCODE_BINARY=$RUNNER_TEMP/octomus-contract-client/node_modules/.bin/opencode" >> "$GITHUB_ENV"
           fi
       - name: Real client, synthetic provider contracts
-        run: cargo test --locked --test contracts pinned_${{ matrix.backend }}_contract -- --ignored --nocapture
-      - name: Go pinned client contract
         run: |
           if [ '${{ matrix.backend }}' = codex ]; then
             go test ./internal/runner -run '^TestPinnedCodexContract$' -count=1 -v

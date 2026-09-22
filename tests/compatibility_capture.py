@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Frozen, synthetic M0 state/API/export contracts for later migration gates.
+"""Frozen, synthetic state/API/export contracts for the executable under test.
 
-Default: verify Rust output. OCTOMUS_TEST_BINARY selects another implementation.
---update is an explicit Rust-reference-only recapture, never a Go approval path.
+OCTOMUS_TEST_BINARY selects the executable (default bin/octomus-agent). The
+expectations in tests/fixtures/compatibility/state.json were captured from the
+frozen Rust reference (REFERENCE below) and are static goldens: a difference is
+a failure, never a reason to recapture.
 """
-import argparse
 from contextlib import closing
 import json
 import os
@@ -118,15 +119,6 @@ def capture():
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--update', action='store_true')
-    args = parser.parse_args()
-    if args.update:
-        assert BINARY.resolve() == (PROJECT / 'target/debug/octomus-agent').resolve(), 'capture expectations only from Rust'
     actual = capture()
-    path = FIXTURES / 'state.json'
-    if args.update:
-        path.write_text(json.dumps(actual, indent=2, ensure_ascii=False) + '\n')
-    else:
-        assert actual == json.loads(path.read_text()), 'frozen state/API/export contracts differ'
+    assert actual == json.loads((FIXTURES / 'state.json').read_text()), 'frozen state/API/export contracts differ'
     print('Frozen synthetic state contracts passed: legacy/current schemas, read-only reports and exports, paused API responses.')

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """M1 CLI/embedding contracts, entirely synthetic and selectable by executable.
 
-Run with OCTOMUS_TEST_BINARY=...; the default remains the Rust reference.
+Run with OCTOMUS_TEST_BINARY=...; the default is bin/octomus-agent.
 This never opens the operator's data directory or contacts an external peer.
 """
 import argparse

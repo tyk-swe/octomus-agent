@@ -1,6 +1,6 @@
 // Package process owns subprocess execution: every command runs as a process
 // group leader so timeouts, cancellation and owner cleanup terminate the whole
-// group, never just the direct child. It is the port of src/process.rs.
+// group, never just the direct child.
 //
 // Diagnostics and machine output are separate contracts: diagnostic captures
 // keep a bounded preview for humans while machine captures fail closed on

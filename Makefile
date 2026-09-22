@@ -1,4 +1,4 @@
-.PHONY: dashboard build build-race check test package audit test-go-storage
+.PHONY: dashboard build build-race check test package audit
 
 dashboard:
 	npm run build --prefix web
@@ -6,13 +6,13 @@ dashboard:
 build: dashboard
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/octomus-agent ./cmd/octomus-agent
 
-# Race-instrumented build for the M8 qualification scenarios; the release
-# binary stays CGO_ENABLED=0.
+# Race-instrumented service build for subprocess-driven concurrency scenarios;
+# the release binary stays CGO_ENABLED=0.
 build-race: dashboard
 	CGO_ENABLED=1 go build -race -o bin/octomus-agent-race ./cmd/octomus-agent
 
 check: dashboard
-	test -z "$$(gofmt -l version.go cmd internal tests/go web/embed*.go)"
+	test -z "$$(gofmt -l version.go cmd internal web/embed*.go)"
 	go vet ./...
 	npm run check --prefix web
 	npm run showcase:check --prefix web
@@ -51,11 +51,3 @@ package: build
 	esac; \
 	./scripts/package.sh "v$$(cat VERSION)" "$$target" bin/octomus-agent
 	cd dist && sha256sum octomus-agent-*.tar.gz > SHA256SUMS
-
-# Frozen Rust reference comparison: cross-language storage checks need the
-# reference debug binary (cargo build --locked) next to the Go executable and
-# run strictly serially. The Rust tree stays buildable until M10 retires it.
-test-go-storage: build
-	cargo build --locked
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/go_storage.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/go_upgrade.py

@@ -1,9 +1,11 @@
 # Octomus Agent roadmap: Rust → Go
 
-**Status: `IMPLEMENTATION_READY`.** M0–M9 are `DONE`; Go is the default build and
-release implementation. M10 is `BLOCKED` on explicit owner authorization and the
-dedicated deployment environment — no production cutover or Rust retirement has
-occurred. Individual milestone progress records are authoritative.
+**Status: `IMPLEMENTATION_READY`.** M0–M9 are `DONE`; Go is the only build and
+release implementation. The owner authorized retiring the Rust tree ahead of the
+live canary, so the repository no longer contains or needs Rust (frozen reference:
+commit `3c2b5cd`). M10 stays `BLOCKED` on the authorized cutover and live canary in
+the dedicated deployment environment. Individual milestone progress records are
+authoritative.
 
 Replace Octomus Agent’s Rust backend with an idiomatic, maintainable Go service
 while preserving supported behavior, durable state, the dashboard, both runner
@@ -264,13 +266,10 @@ runner workspace, or publication target.
 
 ## Verification entry points
 
-With M9 complete the user-facing targets are Go. The only migration-specific
-target that remains is the cross-language storage and upgrade rehearsal against
-the frozen Rust reference:
-
-```sh
-make test-go-storage   # go_storage.py + go_upgrade.py against the frozen Rust reference
-```
+With M9 complete the user-facing targets are Go. The cross-language storage and
+upgrade rehearsal (`make test-go-storage`: `go_storage.py` and `go_upgrade.py`
+against the frozen Rust reference) was retired with the Rust tree; run it from
+commit `529b63f` if a Rust rollback ever needs re-rehearsal.
 
 Shared executable-based tests select the implementation through one variable:
 

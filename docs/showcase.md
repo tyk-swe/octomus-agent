@@ -1,7 +1,7 @@
 # Explore a run: public static showcase
 
 The showcase is a standalone Svelte/Vite build of recorded `RunEvidenceV1`
-evidence. It requires no Rust service, account, token, model, database or live GitHub
+evidence. It requires no Octomus service, account, token, model, database or live GitHub
 request. It does not mount `RunEvidence.svelte`. It shares only the pure evidence/route
 labels and `EvidenceFact` / `EvidenceText` presentation components with the dashboard.
 It adds no framework or runtime dependency.
@@ -36,8 +36,8 @@ Indices preserve duplicate identities. Multiple task matches have no default sel
 an absent fragment selects the first proposal, and a sole task match is displayed.
 Invalid selections remain explicitly unavailable, without substituting another record.
 
-The command creates only `dist/showcase/`, separately from `web/build/` and the Rust
-binary. It never copies `web/static`, an operator export, a repository directory, a state
+The command creates only `dist/showcase/`, separately from `web/build/` and the Octomus
+executable. It never copies `web/static`, an operator export, a repository directory, a state
 database or a launch report. There is no default input or mode. Invalid invocations fail
 with a nonzero exit and remove `dist/showcase/`, including any older build. This prevents
 a stale output from being mistaken for the requested build. The normal dashboard build
@@ -135,7 +135,7 @@ npm run showcase:test --prefix web
 
 The contract tests exercise explicit build modes, malformed and private input,
 unknown statuses, hash-bound approvals and preservation of adverse records. Browser
-tests serve the built files with no Rust process and cover navigation, missing and
+tests serve the built files with no Octomus process and cover navigation, missing and
 multiple matches, hostile text and URLs, accessibility and network isolation. Both run
 inside `make check` and `make test`, which overwrite `dist/showcase/` with synthetic
 payloads — rerun your intended build afterwards.

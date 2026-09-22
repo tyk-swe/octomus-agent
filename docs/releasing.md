@@ -58,10 +58,10 @@ are an owner setup action; worker prompts are not an authorization boundary.
 
 ## Rust reference
 
-The Rust implementation stays in the tree as the frozen comparison reference
-until M10 retires it; `cargo build`/`cargo test` still work and the
-`go-storage-compatibility` and `client-contracts` CI jobs exercise it. Nothing
-shipped derives from `Cargo.toml`: the crates.io packaging path
-(`scripts/package-crate.sh`, `tests/crate.py`, `tests/crate_guards.py`) was
-retired with the switch, and `tests/package_guards.py` now guards the tar
-archive allowlist and rejection cases instead.
+Octomus was originally implemented in Rust. The Go service replaced it, and the
+Rust sources were removed from this tree. The frozen Rust reference is commit
+`3c2b5cd`; commit `529b63f` is the last with the Rust tree and the cross-language
+storage, upgrade and lock checks (`make test-go-storage`). Build the reference from
+either commit only for a rollback under the
+[cutover rules](roadmap/m10-cutover-and-retirement.md#rollback-rules); Go-written
+state was rehearsed as Rust-resumable at that revision.

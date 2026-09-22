@@ -2,43 +2,49 @@
 
 Octomus is a single-operator service that discovers repository improvements,
 reviews proposals, executes accepted tasks through Codex or OpenCode, and delivers
-GitHub PRs. The shipped implementation is Go (`cmd/octomus-agent`, `internal/`);
-the Rust tree below remains as the frozen comparison reference until M10. The
-SvelteKit dashboard builds to static assets embedded in the binary.
+GitHub PRs. It is a Go service (`cmd/octomus-agent`, `internal/`); the SvelteKit
+dashboard builds to static assets embedded in the binary (`web/embed.go`).
+
+It was ported from Rust, and existing durable state was written by that
+implementation. Rust paths cited in comments and `docs/roadmap/` refer to the
+frozen reference at commit `3c2b5cd`. `internal/jsoncompat` and the
+"matches Rust" comments preserve byte-level compatibility with that state.
+`tests/fixtures/compatibility/` holds static goldens captured from the reference;
+treat a difference from them as a Go regression.
 
 ## Repository map
 
-- `src/engine/baseline.rs`: explicit clean-baseline checks, separate from task verification;
-  `src/engine/capacity.rs` and `src/store/capacity.rs`: owned-PR admission and observations.
-  `src/notifications.rs` and `src/store/notifications.rs`: opt-in webhook delivery and durable attention outbox.
-- `src/engine.rs`: scheduler and cycle orchestration, with `src/engine/planning.rs`
-  (discovery and proposal review), `execution.rs` (execution, review, repair and
-  verification), `memory.rs` (grounding and history) and `housekeeping.rs`
-  (retention, workspace and disk limits).
-- `src/runner.rs`: runner-neutral model discovery, exact routing and dispatch;
-  `src/codex.rs` (app-server protocol) and `src/opencode.rs` (HTTP/SSE) implement it.
-- `src/config.rs`, `src/model.rs`, `src/store.rs` with `src/store/queries.rs` and
-  `src/store/migrate.rs`: policy, durable records, SQLite, schema migrations and
-  indexed operational views.
-- `src/report.rs`: read-only usage reporting; `src/evidence.rs`: read-only
-  `RunEvidenceV1` export; `src/api.rs`: authenticated controls; `src/assets.rs`:
-  embedded dashboard serving; `src/schemas.rs`: structured output.
-- `src/git.rs`, `src/process.rs`: Git/GitHub publication and owned process groups.
+- `cmd/octomus-agent`: CLI flags, read-only exports and service startup.
+- `internal/engine`: scheduler and cycle orchestration: `planning.go` (discovery
+  and proposal review), `execution.go` (execution, review, repair and
+  verification), `memory.go` (grounding and history), `housekeeping.go`
+  (retention, workspace and disk limits), `baseline.go` (clean-baseline checks,
+  separate from task verification), `capacity.go` (owned-PR admission),
+  `actions.go`/`control.go`/`api.go` (operator controls and views).
+- `internal/runner`: runner-neutral model discovery, exact routing and dispatch;
+  `codex.go` (app-server protocol) and `opencode.go` (HTTP/SSE) implement it.
+- `internal/config`, `internal/model`, `internal/store` (with `queries.go`,
+  `migrate.go`, `capacity.go`, `notifications.go`): policy, durable records,
+  SQLite, schema migrations, indexed operational views and the attention outbox.
+- `internal/notifications`: opt-in webhook delivery. `internal/report`: read-only
+  usage reporting. `internal/evidence`: read-only `RunEvidenceV1` export.
+  `internal/httpapi`: authenticated controls and embedded dashboard serving.
+  `internal/schemas`: structured output.
+- `internal/git`, `internal/process`, `internal/workspace`: Git/GitHub
+  publication, owned process groups and managed-directory safety.
 - `web/src`: dashboard, shared TypeScript types, settings, setup checklist and
   run/task evidence. `web/showcase`: standalone public showcase build of an approved
   evidence wrapper (`docs/showcase.md`). `web/launch`: public homepage and docs styles,
   with a guided synthetic sample (`docs/product-hunt.md`). `web/scripts/site-docs.mjs`
   renders the public Markdown guides; `web/wrangler.jsonc` deploys `dist/site` to
   `octomus-agent.tyk.sh` through Cloudflare Workers.
-- Rust behavior tests: `tests/core.rs`, `usage.rs`, `runners.rs`, `hardening.rs`,
-  `review_findings.rs`, `review_regressions.rs`, `evidence.rs`, `process_lifecycle.rs`,
-  `history_scale.rs`, and `contracts.rs` (ignored unless a pinned real client binary
-  is provided).
-- `tests/baseline.rs`, `notifications.rs`, `pr_capacity.rs`, and `pr_context.rs`:
-  baseline, webhook, PR admission and external-context regressions.
+- Go behavior tests sit beside each package (`*_test.go`). Pinned real-client
+  contracts (`internal/runner`) and the scale checks (`internal/store`,
+  `OCTOMUS_SCALE_TEST=1`) skip unless their environment is provided.
 - `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py`, `e2e_baseline.py`, and
-  `e2e_notifications.py` with `tests/fixtures`:
-  deterministic Codex/OpenCode/GitHub peers with real local Git. `distribution.py`,
+  `e2e_notifications.py` with `tests/fixtures`: deterministic Codex/OpenCode/GitHub
+  peers with real local Git. `compatibility_capture.py` and `go_foundations.py`
+  check the executable against the frozen goldens. `distribution.py`,
   `package_guards.py` and `systemd.py` cover packaging and deployment;
   `evidence_snapshot.py` runs the documented backup and export examples on synthetic data.
 - `web/tests`: dashboard browser tests served by `tests/serve_ui.py`;
@@ -49,8 +55,7 @@ SvelteKit dashboard builds to static assets embedded in the binary.
 ## Build and verify
 
 Use Go (per `go.mod`), Node 22.12+, npm, Python 3, Git and a C compiler for the
-race detector. Rust 1.88+ is needed only for the frozen reference comparison
-(`make test-go-storage`). Install dashboard dependencies with
+race detector. Install dashboard dependencies with
 `npm ci --prefix web`. Install browser test prerequisites with
 `npx --prefix web playwright install --with-deps chromium`.
 

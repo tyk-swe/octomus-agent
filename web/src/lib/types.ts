@@ -38,7 +38,7 @@ export type Config = {
   retain_completed_days: number;
   retain_events: number;
 };
-/** Mirrors `Status::ACTIVE` in src/model.rs: task statuses with work in flight. */
+/** Mirrors `model.ActiveStatuses` in internal/model: task statuses with work in flight. */
 export const ACTIVE_STATUSES = ['executing', 'reviewing', 'repairing', 'verifying', 'publishing'];
 export type TaskRow = {
   id: string;
@@ -223,7 +223,7 @@ export type Cycle = {
   } | null;
 };
 /**
- * GET /api/cycles/{id}/evidence and `--export-run <cycle-id>`. Mirrors src/evidence.rs.
+ * GET /api/cycles/{id}/evidence and `--export-run <cycle-id>`. Mirrors internal/evidence.
  * Recorded review and check evidence only: no live HEAD, workspace, remote,
  * authorization or current PR state is inspected, and free text still requires
  * manual review before sharing.
