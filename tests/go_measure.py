@@ -23,7 +23,7 @@ of three; the Go file is restored afterwards.
 
 Environment: OCTOMUS_RUST_BIN / OCTOMUS_GO_BIN name the executables (falling
 back to the repo-conventional OCTOMUS_RUST_REFERENCE / OCTOMUS_TEST_BINARY, then
-target/release/octomus-agent and bin/octomus-agent-go). OCTOMUS_RUST_SRC names
+target/release/octomus-agent and bin/octomus-agent). OCTOMUS_RUST_SRC names
 the Rust source tree to copy for build measurements (default: this worktree).
 
 Usage:
@@ -498,7 +498,7 @@ def evaluate(runs, args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--rust-bin', default=os.environ.get('OCTOMUS_RUST_BIN') or os.environ.get('OCTOMUS_RUST_REFERENCE') or str(PROJECT / 'target/release/octomus-agent'))
-    parser.add_argument('--go-bin', default=os.environ.get('OCTOMUS_GO_BIN') or os.environ.get('OCTOMUS_TEST_BINARY') or str(PROJECT / 'bin/octomus-agent-go'))
+    parser.add_argument('--go-bin', default=os.environ.get('OCTOMUS_GO_BIN') or os.environ.get('OCTOMUS_TEST_BINARY') or str(PROJECT / 'bin/octomus-agent'))
     parser.add_argument('--rust-src', default=os.environ.get('OCTOMUS_RUST_SRC', str(PROJECT)), help='Rust source tree copied for build measurements')
     parser.add_argument('--go-src', default=str(PROJECT), help='Go module root for build measurements')
     parser.add_argument('--assets', default=str(PROJECT / 'web/build'), help='Prebuilt dashboard directory passed to both services')
