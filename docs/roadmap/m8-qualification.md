@@ -162,15 +162,20 @@ Results: (1) Inventory reconciliation: every original Rust behavior-test group i
   (5) Leaks: TestRepeatedLifecycleLeavesNoLeaks (18 start/cancel/shutdown
   iterations: fd delta 0, goroutines <= +2) and TestStartupFailureLeaksNothing;
   e2e scenarios assert owned child-process reaping through /proc.
-  (6) Measurements per frozen protocol (same host, fixed fixtures, optimized
-  builds, prebuilt frontend; notes at ~/octomus-work/notes/m8-measurements.md):
-  clean build Rust 189.0s / Go 34.6s; incremental median Rust 89.31s / Go 0.88s
-  (~102x improvement target honestly reported); /api/state p95 Rust
-  9.30/9.81/10.27ms, Go 31.16/30.45/33.81ms at 1k/10k/100k — the 100k budget
-  max(2x Rust, 50ms) = 50ms is met (33.81ms); p95 growth 1.08x <= 2x; response
-  bytes identical to Rust at every scale (+0.63% growth across fixtures <= 5%);
-  idle RSS Go ~23MiB vs Rust ~17MiB (reported; no budget). Synthetic fixture
-  latency is not provider-performance evidence.
+  (6) Measurements per the frozen M0 protocol (same host, fixed fixtures,
+  equivalent optimized builds — Rust --release --locked vs Go -trimpath
+  -ldflags=-s -w — same prebuilt frontend; raw record at
+  ~/octomus-work/notes/m8-measurements.md): clean-build medians over 5 fresh
+  target/cache dirs — Rust 192.0s, Go 27.2s; incremental medians over 10 timed
+  builds after a function-body literal change (1 discarded warmup) — Rust
+  90.65s, Go 1.42s (63.9x improvement, reported target only); /api/state over 5
+  fresh service runs x 1000 timed sequential requests after 100 warmups —
+  Rust p95 10.17/9.99/10.21ms and Go p95 28.74/28.65/28.56ms at 1k/10k/100k;
+  the 100k budget max(2x Rust p95, 50ms) = 50ms is met (28.56ms); p95 growth
+  0.99x <= 2x; response bytes identical to Rust at every scale (96450/96752/
+  97054 B, +0.63% <= 5%); idle VmRSS after 30s — Rust ~14-15MiB, Go ~21-23MiB
+  (reported; no budget). Synthetic fixture latency is not provider-performance
+  evidence.
 Intentional behavior differences: Consolidated across milestones — (a) M2: Go
   refuses user_version > 6 before any write; WAL/synchronous applied after the
   check; go_foundations read-only expectations. (b) M3: Capture bounds post-kill

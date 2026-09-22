@@ -257,6 +257,7 @@ def measure_state(label, binary, assets, scale, template_db, work_dir, requests,
             per_run_p95.append(nearest_rank(sorted(run_ms), 0.95))
         finally:
             service.stop()
+        shutil.rmtree(run_dir, ignore_errors=True)  # keep only the fixture copy
 
     ordered = sorted(elapsed_ms)
     assert len(set(sizes)) == 1, f'{binary.name} response size varied across {runs} runs: {sorted(set(sizes))}'
@@ -329,8 +330,9 @@ def measure_builds(rust_src, go_src, work_dir, clean_count, incremental_count):
 
     rust_clean = []
     for i in range(clean_count):
-        env = {'CARGO_TARGET_DIR': str(work_dir / f'rust-target-clean-{i}')}
-        rust_clean.append(timed(rust_cmd, cwd=rust_copy, env=env))
+        target = work_dir / f'rust-target-clean-{i}'
+        rust_clean.append(timed(rust_cmd, cwd=rust_copy, env={'CARGO_TARGET_DIR': str(target)}))
+        shutil.rmtree(target, ignore_errors=True)  # timing is captured; drop the artifacts
     builds['rust_clean_samples_s'] = rust_clean
     builds['rust_clean_median_s'] = statistics.median(rust_clean)
     builds['rust_offline'] = rust_offline
@@ -355,11 +357,12 @@ def measure_builds(rust_src, go_src, work_dir, clean_count, incremental_count):
     builds['rust_incremental_median_s'] = statistics.median(samples)
 
     go_out = work_dir / 'octomus-agent-go-measured'
-    go_cmd = ['go', 'build', '-trimpath', '-ldflags=-s', '-w', '-o', str(go_out), './cmd/octomus-agent']
+    go_cmd = ['go', 'build', '-trimpath', '-ldflags=-s -w', '-o', str(go_out), './cmd/octomus-agent']
     go_clean = []
     for i in range(clean_count):
-        go_env = {'CGO_ENABLED': '0', 'GOCACHE': str(work_dir / f'gocache-clean-{i}')}
-        go_clean.append(timed(go_cmd, cwd=go_src, env=go_env))
+        cache = work_dir / f'gocache-clean-{i}'
+        go_clean.append(timed(go_cmd, cwd=go_src, env={'CGO_ENABLED': '0', 'GOCACHE': str(cache)}))
+        shutil.rmtree(cache, ignore_errors=True)
     builds['go_clean_samples_s'] = go_clean
     builds['go_clean_median_s'] = statistics.median(go_clean)
 
