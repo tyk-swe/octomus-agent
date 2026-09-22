@@ -344,17 +344,17 @@ runner transcripts must not be committed.
 
 ### Final completion checklist
 
-- [ ] Every in-scope Rust behavior has an implemented and tested Go equivalent.
-- [ ] Supported saved configuration and durable state load correctly.
-- [ ] Both runners pass fixture and pinned-client contract tests.
-- [ ] Publication invariants survive cancellation, failure, and restart.
-- [ ] The existing frontend works against the complete Go API.
-- [ ] History, evidence, baseline checks, notifications, and housekeeping retain their contracts.
-- [ ] Native amd64 and arm64 release packages pass installation and runtime tests.
-- [ ] Upgrade and rollback constraints are documented and rehearsed.
-- [ ] Authorized live validation is recorded separately from synthetic evidence.
-- [ ] Rust is removed from Octomus’s backend build and release path.
-- [ ] Every remaining compatibility helper has an identified ongoing purpose.
+- [x] Every in-scope Rust behavior has an implemented and tested Go equivalent (M8, gaps closed in M10).
+- [x] Supported saved configuration and durable state load correctly (M2, M9).
+- [x] Both runners pass fixture and pinned-client contract tests (M4, M8; CI `client-contracts`).
+- [x] Publication invariants survive cancellation, failure, and restart (M6, M8).
+- [x] The existing frontend works against the complete Go API (M7).
+- [x] History, evidence, baseline checks, notifications, and housekeeping retain their contracts (M7, M8).
+- [ ] Native amd64 and arm64 release packages pass installation and runtime tests (arm64 emulated only; M9).
+- [x] Upgrade and rollback constraints are documented and rehearsed (M9).
+- [ ] Authorized live validation is recorded separately from synthetic evidence (M10).
+- [x] Rust is removed from Octomus’s backend build and release path (M10).
+- [x] Every remaining compatibility helper has an identified ongoing purpose (M10).
 
 ## Reference sources
 
