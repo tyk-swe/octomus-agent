@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
@@ -108,7 +109,7 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 		return nil, err
 	}
 	if _, err := c.rpc("initialize", map[string]any{
-		"clientInfo":   map[string]any{"name": "octomus_agent", "title": "Octomus Agent", "version": "0.1.0"},
+		"clientInfo":   map[string]any{"name": "octomus_agent", "title": "Octomus Agent", "version": octomus.Version},
 		"capabilities": map[string]any{"experimentalApi": false},
 	}); err != nil {
 		return fail(err)

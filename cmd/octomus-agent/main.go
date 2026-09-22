@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/evidence"
@@ -30,8 +31,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	dashboard "github.com/tyk-swe/octomus-agent/web"
 )
-
-const version = "0.1.0"
 
 // stateDBName is the SQLite file inside the data directory.
 const stateDBName = "state.db"
@@ -69,7 +68,7 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		return 0
 	}
 	if display == "version" {
-		fmt.Fprintln(stdout, "octomus-agent "+version)
+		fmt.Fprintln(stdout, "octomus-agent "+octomus.Version)
 		return 0
 	}
 	if parsed.printConfig {
@@ -196,7 +195,7 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		return err
 	}
 	fmt.Fprintf(stderr, "Octomus listening on http://%s\n", parsed.listen)
-	server := &http.Server{Handler: httpapi.Router(app, token, assetsOverride, version)}
+	server := &http.Server{Handler: httpapi.Router(app, token, assetsOverride, octomus.Version)}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
 	var serveErr error

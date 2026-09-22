@@ -47,8 +47,8 @@ Octomus publishes pull requests. Merging, deployment, and production migrations 
 with you. **Pause** stops new scheduling; active tasks can still finish and publish.
 Use **Cancel task** to stop an individual task.
 
-Installation currently means building from source. Public binaries and crates.io
-distribution are pending. VM and provider costs depend on your setup; session-admission
+Installation currently means building from source. Public binary
+distribution is pending. VM and provider costs depend on your setup; session-admission
 limits are not dollar caps.
 
 For questions and reproducible bugs, use [GitHub issues](https://github.com/tyk-swe/octomus-agent/issues).
