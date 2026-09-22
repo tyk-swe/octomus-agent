@@ -89,12 +89,107 @@ Required skipped checks prevent `DONE`.
 
 ```text
 Milestone: M8
-Status: IN_PROGRESS
-Implementation revision: Underway on the Go qualification branch.
-Delivered output: None.
-Acceptance tests and commands: Not run.
-Results: No qualification or measurement evidence recorded; budgets await M0 freeze.
-Intentional behavior differences: None approved.
-Unrun required checks and blockers: All acceptance checks unrun; depends on M7.
-Next eligible milestone: M9 after M8 is DONE.
+Status: DONE
+Implementation revision: tyk/go-m8-m10 @ 4de80ee (qualification commits 1c395cd,
+  3f4e92c, e7adf30a merged there); M8 added tests and the measurement harness only —
+  the single production-code change is the StateView correction below.
+Delivered output: internal/store/scale_test.go (both history_scale ports),
+  internal/store/full_test.go (disk-exhaustion and transaction rollback),
+  internal/httpapi/cycles_test.go (cycle evidence auth + detail-after-archive),
+  internal/runner/smoke_test.go (OpenCode protocol smoke), internal/engine/
+  lifecycle_test.go (repeated lifecycle leak test), tests/go_measure.py (frozen
+  measurement protocol), `make build-race` + bin/octomus-agent-race, and the
+  committed-cycle-activity fix in internal/engine/api.go.
+Acceptance tests and commands: All run against the Go executable
+  (OCTOMUS_TEST_BINARY=bin/octomus-agent) unless named otherwise.
+  - `make check`: PASS (gofmt clean, go vet, Svelte/TS, showcase, site, Prettier).
+  - `go test ./...`: PASS all packages.
+  - `CGO_ENABLED=1 go test -race ./...`: PASS all packages (engine 243s,
+    notifications 132s, store 154s under race detector).
+  - Shared Python fixture suites (executable-selectable): compatibility_capture
+    PASS; go_foundations --go-m1 PASS (84 frozen CLI cases); evidence_snapshot
+    PASS; e2e 27 scenarios PASS; e2e_baseline 13 PASS; e2e_notifications 5 PASS
+    (deliver, restart, service-error, env-strip, env-strip-opencode);
+    e2e_runners 14 PASS; e2e_hardening 22 modes + reconciliation deadline PASS
+    (full rerun after the StateView fix; audit-absorbed previously exposed the
+    visibility window and now passes 9/9 focused reruns plus the full suite).
+  - distribution.py PASS; package_guards.py PASS; go_upgrade.py PASS.
+  - Race-instrumented service (bin/octomus-agent-race, GORACE=halt_on_error=1):
+    14 concurrency-heavy Python scenarios PASS — parallel, interrupt-publication,
+    cancel-route, cap1-interrupt, dependencies, unordered, chain, stale-retry,
+    supersede, obsolete, fork, interrupt-planning, audit-queued,
+    cancel-restart — zero race reports.
+  - `OCTOMUS_SCALE_TEST=1 go test ./internal/store -run Scale`: both ports PASS.
+Results: (1) Inventory reconciliation: every original Rust behavior-test group is
+  covered — ported verbatim where Rust-specific (history_scale -> scale_test.go;
+  contracts OpenCode smoke -> runner/smoke_test.go), reused unchanged (all Python
+  fixture suites are executable-selectable and run against the Go binary), or
+  replaced by named equivalent Go assertions (engine/store/httpapi mirror tests,
+  enumerated per-milestone in M2–M7 records). Three partial gaps closed here:
+  disk-exhaustion injection, cycle evidence route auth/unknown-cycle isolation,
+  cycle detail readability after archival. (2) Differential fixtures: /api/state
+  responses byte-identical to the frozen Rust reference at 1k/10k/100k tasks;
+  exports byte-equal apart from generated_at (M2 record). (3) Failure matrix —
+  every row has named tests:
+  admission commit: TestFailedAdmissionsRollBackCounterAndLedgerTogether,
+    TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts,
+    TestPlanningAdmissionBudgetIsAtomicUnderConcurrency;
+  planning persistence: TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory,
+    e2e failed-discovery;
+  concurrent retry/cancel: engine TaskAction conflict tests, e2e cancel-route,
+    stale-retry, supersede, cancel-restart;
+  runner startup/streaming: e2e failed-start, missing-executor-session,
+    missing-repair-session, TestOpenCodeFailuresNeverReturnSuccessfulEvidence;
+  review/verification: e2e malformed-review, incomplete-review,
+    failed-verification, TestExecutionMalformedAndIncompleteReviewsNeverPublish,
+    TestExecutionFailedVerificationExhaustsRepairBudget;
+  checkpoint before push: e2e interrupt-publication,
+    TestExecutionRestartReconcilesPublicationCheckpoint;
+  push/PR before ack: e2e published-duplicate, published-case-change,
+    published-trimmed-title, closed-after-publication, reconcile-controls,
+    TestPublicationChecksEveryIdentityFieldAndClosedReconciliation;
+  notification delivery: e2e_notifications restart (stable identity + bounded
+    retries across restart), TestDeliveryTimeoutIsBoundedAndVisible,
+    TestSlowDeliveryDoesNotCauseACatchUpBurst;
+  DB write/lock/disk exhaustion: TestDiskFullRecordWriteAcknowledgesNothing
+    (PRAGMA max_page_count injection), TestFailedLedgerWritesRollBackTheWholeTransaction;
+  cleanup/unsafe paths: TestCleanupLeavesUnrelatedProcessesUntouched,
+    TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks,
+    TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink,
+    RemoveOwnedDir refusal tests.
+  (4) Scale: TestBoundedHistoryScale and TestDuplicateHistoryScale pass with flat
+  ~790KB total-alloc growth 1k->100k rows; indexed duplicate lookup stays bounded.
+  (5) Leaks: TestRepeatedLifecycleLeavesNoLeaks (18 start/cancel/shutdown
+  iterations: fd delta 0, goroutines <= +2) and TestStartupFailureLeaksNothing;
+  e2e scenarios assert owned child-process reaping through /proc.
+  (6) Measurements per frozen protocol (same host, fixed fixtures, optimized
+  builds, prebuilt frontend; notes at ~/octomus-work/notes/m8-measurements.md):
+  clean build Rust 189.0s / Go 34.6s; incremental median Rust 89.31s / Go 0.88s
+  (~102x improvement target honestly reported); /api/state p95 Rust
+  9.30/9.81/10.27ms, Go 31.16/30.45/33.81ms at 1k/10k/100k — the 100k budget
+  max(2x Rust, 50ms) = 50ms is met (33.81ms); p95 growth 1.08x <= 2x; response
+  bytes identical to Rust at every scale (+0.63% growth across fixtures <= 5%);
+  idle RSS Go ~23MiB vs Rust ~17MiB (reported; no budget). Synthetic fixture
+  latency is not provider-performance evidence.
+Intentional behavior differences: Consolidated across milestones — (a) M2: Go
+  refuses user_version > 6 before any write; WAL/synchronous applied after the
+  check; go_foundations read-only expectations. (b) M3: Capture bounds post-kill
+  joining at 30s; Deadline struct; Duration wrap semantics; RemoveOwnedDir message
+  site. (c) M4: explicit Close + context ownership; extra OpenCode policy checks;
+  16MB outbound Codex JSON ceiling. (d) M5/M6: contexts/mutexes/Shutdown instead
+  of tokens/drop; engine-level operator controls. (e) M7: audit launch drops the
+  remote-preflight gate ordering; grounding fingerprint recheck; notifications
+  worker binding; doctor stderr. (f) M8 additions: scale tests substitute
+  runtime.ReadMemStats for the Rust global allocator (OCTOMUS_SCALE_TEST gated);
+  StateView counts a committed running cycle record as active and derives its
+  mode, closing the window where /api/state showed cycle_active=false beside a
+  durable running cycle (regression: e2e_hardening audit-absorbed; rationale:
+  the durable record is the authoritative committed fact); OpenCode smoke runs
+  under OCTOMUS_OPENCODE_SMOKE_BINARY; disk exhaustion injected via PRAGMA
+  max_page_count.
+Unrun required checks and blockers: None. Every required check ran and passed on
+  the recorded revision. Synthetic fixtures only; no live provider, account, or
+  production claims.
+Next eligible milestone: M9 (already merged on this branch; its record stands in
+  m9-release-and-migration.md).
 ```

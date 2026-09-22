@@ -1,7 +1,9 @@
 # Octomus Agent roadmap: Rust → Go
 
-**Status: implementation underway.** Individual milestone progress records are
-authoritative. Rust remains the default build and release implementation.
+**Status: `IMPLEMENTATION_READY`.** M0–M9 are `DONE`; Go is the default build and
+release implementation. M10 is `BLOCKED` on explicit owner authorization and the
+dedicated deployment environment — no production cutover or Rust retirement has
+occurred. Individual milestone progress records are authoritative.
 
 Replace Octomus Agent’s Rust backend with an idiomatic, maintainable Go service
 while preserving supported behavior, durable state, the dashboard, both runner
