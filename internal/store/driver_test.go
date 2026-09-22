@@ -280,6 +280,14 @@ func TestPrAdmissionRechecksCanonicalTaskAndLivePolicy(t *testing.T) {
 	if admitted, err := s.AdmitNewPrTask(&queued, inv); err != nil || admitted {
 		t.Fatalf("full live limit admitted work: %v, %v", admitted, err)
 	}
+	// The persisted inventory still counts the observed PR against the limit:
+	// the refused admission leaves the canonical task queued, matching
+	// a_stale_inventory_snapshot_still_counts_against_the_limit.
+	refused, err := store.Get[model.Task](s, "task", queued.ID)
+	must(t, err)
+	if refused == nil || refused.Status != model.StatusQueued {
+		t.Fatalf("refused admission mutated the canonical task: %+v", refused)
+	}
 	cfg.MaxOpenPRs = 2
 	must(t, s.Put("settings", "config", cfg))
 	saved, err := store.Get[model.Task](s, "task", queued.ID)
