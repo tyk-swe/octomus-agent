@@ -164,6 +164,6 @@ if __name__ == '__main__':
                 tar.extractall(directory, filter='data')
             binary = Path(directory) / 'octomus-agent/octomus-agent'
         else:
-            binary = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'target/debug/octomus-agent'))).resolve()
+            binary = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent'))).resolve()
         smoke(binary)
         installer(binary)

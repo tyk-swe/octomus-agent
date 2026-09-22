@@ -83,7 +83,7 @@ import e2e  # noqa: E402
 from go_storage import (canonical, copy_state, exports, go_fixture,  # noqa: E402
                         records, run, schema)
 
-GO = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent-go')))
+GO = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent')))
 RUST = Path(os.environ.get('OCTOMUS_RUST_REFERENCE', str(PROJECT / 'target/debug/octomus-agent')))
 FIXTURE = PROJECT / 'tests/fixtures/compatibility/state.json'
 

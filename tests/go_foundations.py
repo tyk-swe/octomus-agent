@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 
 PROJECT = Path(__file__).resolve().parents[1]
-BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'target/debug/octomus-agent'))).resolve()
+BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent'))).resolve()
 FIXTURES = PROJECT / 'tests/fixtures/compatibility'
 
 
