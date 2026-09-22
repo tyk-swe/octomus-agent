@@ -6,8 +6,8 @@ import (
 	"strconv"
 )
 
-// parseSerdeFloat follows serde_json 1.0.151 without float_roundtrip, as pinned
-// by Cargo.lock. Its bounded integer significand and subsequent f64 scaling
+// parseSerdeFloat follows serde_json 1.0.151 without float_roundtrip, the parser
+// the frozen Rust reference used. Its bounded integer significand and subsequent f64 scaling
 // can round differently from strconv.ParseFloat on the whole decimal string.
 // s has already passed encoding/json's syntax validation.
 func parseSerdeFloat(s string) (float64, error) {

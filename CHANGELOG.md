@@ -55,3 +55,6 @@ the first release contains. The public homepage and documentation are live at
 
 - The Codex-only `GET /api/models` endpoint, superseded by `POST /api/model-catalog`,
   which reports both runners.
+- The Rust implementation. The service is a single CGO-free Go executable that opens
+  existing state in place; building and testing Octomus no longer needs a Rust
+  toolchain. The frozen Rust reference remains available at commit `3c2b5cd`.

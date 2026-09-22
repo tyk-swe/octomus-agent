@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Exercise scripts/package.sh argument validation and the archive allowlist.
 
-Replaces the retired Cargo crate guards (crate.py/crate_guards.py): the shipped
-artifact is now the tar archive, so its fixed input allowlist and rejection
-cases are what need guarding.
+The shipped artifact is the tar archive, so its fixed input allowlist and
+rejection cases are what need guarding.
 """
 from pathlib import Path
 import re

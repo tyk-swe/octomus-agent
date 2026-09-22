@@ -9,9 +9,7 @@ no-change outcome is welcome. Report security issues privately using
 
 Use Linux, Go (per `go.mod`), Node 22.12+, npm, Python 3 and Git; the race
 detector additionally needs a C compiler. Codex, OpenCode and GitHub credentials
-are not needed for fixture tests. The frozen Rust reference remains buildable
-for the cross-language comparison jobs (`make test-go-storage`); Rust 1.88+ is
-only required when working on that reference.
+are not needed for fixture tests.
 
 ```bash
 npm ci --prefix web

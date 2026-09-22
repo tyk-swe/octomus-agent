@@ -1,7 +1,6 @@
 // Package workspace holds the filesystem-safety helpers the scheduler and
 // housekeeping share when creating, measuring, or deleting managed workspace
-// directories (src/engine.rs workspace_initialized and housekeeping's
-// directory_size / remove_owned_dir).
+// directories.
 package workspace
 
 import (

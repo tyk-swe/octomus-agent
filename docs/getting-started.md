@@ -150,8 +150,9 @@ repository push permission or model inference; only a run's recorded evidence do
    fallback. See [model routing](model-routing.md) for JSON examples.
 3. **Verification policy.** Enter meaningful verification commands, one shell command
    per line; all must pass on the reviewed revision before a PR is published. Install
-   your project's build and test tools first. For Octomus itself, install Rust with
-   rustfmt and clippy, Node 22.12+, Python 3 and the Playwright prerequisites, then use:
+   your project's build and test tools first. For Octomus itself, install Go (per
+   `go.mod`), a C compiler for the race detector, Node 22.12+, Python 3 and the
+   Playwright prerequisites, then use:
 
    ```bash
    npm ci --prefix web && make check && make test

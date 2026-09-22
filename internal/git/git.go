@@ -1,4 +1,4 @@
-// Package git ports src/git.rs: Git and GitHub operations as argument vectors,
+// Package git runs Git and GitHub operations as argument vectors,
 // plus the publication safeguards that consume them. Every command goes through
 // process.RunMachine, so output bounds, UTF-8 validation, timeouts and
 // cancellation are the shared contract; no operation ever builds a shell

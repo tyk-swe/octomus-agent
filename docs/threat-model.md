@@ -22,7 +22,7 @@ GPU access on this VM.
 
 Prompt injection through source files, AGENTS.md, dependency scripts, issue/PR
 content or model output is in scope and **not prevented by this design**. Prompts
-instruct workers not to push, publish, merge or deploy. Rust owns normal publication
+instruct workers not to push, publish, merge or deploy. The orchestrator owns normal publication
 and checks branch ownership, reviewed revisions, verification and remote leases.
 Those workflow checks do not prevent a malicious process from directly using the
 service user's credentials or changing files it can access.

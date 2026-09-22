@@ -6,7 +6,7 @@
 SvelteKit static dashboard
           │ same-origin JSON API + bearer token
           ▼
-Rust / Axum service
+Go service (net/http)
  ├─ SQLite state, event log, daily admission counter and ledger
  ├─ one scheduler, configured task concurrency, branch writer locks
  ├─ Codex app-server subprocesses over newline-delimited JSON RPC
@@ -14,7 +14,7 @@ Rust / Axum service
  └─ Git + GitHub CLI publication coordination
 ```
 
-The dashboard polls authoritative Rust state and never schedules work itself. The production server serves the dashboard embedded in the executable; `--assets` explicitly overrides it with a filesystem build. No database service, message broker, Docker runtime, or sandbox backend is required.
+The dashboard polls authoritative service state and never schedules work itself. The production server serves the dashboard embedded in the executable; `--assets` explicitly overrides it with a filesystem build. No database service, message broker, Docker runtime, or sandbox backend is required.
 
 ## Planning
 
@@ -137,7 +137,7 @@ operator actions; stale context requires supersession and fresh discovery.
 
 SQLite JSON records remain canonical. Transactional projection triggers maintain
 indexed task/cycle/PR summaries and proposal listings. Dashboard queries limit rows
-before Rust deserialization, read counts and summaries in one transaction, and
+before JSON decoding, read counts and summaries in one transaction, and
 fetch full evidence only on demand. Attention queries use a dedicated partial
 index, including when no unresolved rows match. Scheduler/recovery queries select
 operational states and resolve dependencies by identity.
@@ -153,20 +153,19 @@ flags. Machine stdout is complete up to 16 MiB or returns `OutputTooLarge`; inva
 UTF-8 also fails explicitly. Git/GitHub machine consumers never parse a diagnostic
 truncation marker. All captures retain timeout, draining and process-group ownership.
 
-State-snapshot cost was measured on 2026-09-10 at `5314f2d` with
-`cargo test --locked --test history_scale -- --ignored --nocapture`. The fixture stores
-4 KiB prompts in 1,000, 10,000 and 100,000 historical task records; each measurement
-includes 20 dashboard snapshots using the debug build. The Go port runs the same
-cases with `OCTOMUS_SCALE_TEST=1 go test ./internal/store -run Scale`.
+State-snapshot cost was measured on 2026-09-22 at `529b63f` with
+`OCTOMUS_SCALE_TEST=1 go test ./internal/store -run TestBoundedHistoryScale -v`. The
+fixture stores 4 KiB prompts in 1,000, 10,000 and 100,000 historical task records;
+each measurement includes 20 dashboard snapshots.
 
-| Historical tasks | State JSON bytes | Median query time | p95 query time | Peak additional Rust allocations |
+| Historical tasks | State JSON bytes | Median query time | p95 query time | Peak Go heap allocated per snapshot |
 | --- | ---: | ---: | ---: | ---: |
-| 1,000 | 95,227 | 14.27 ms | 18.04 ms | 1,344,963 bytes |
-| 10,000 | 95,528 | 13.99 ms | 23.44 ms | 1,345,563 bytes |
-| 100,000 | 95,829 | 16.50 ms | 23.57 ms | 1,346,163 bytes |
+| 1,000 | 95,227 | 4.23 ms | 7.81 ms | 790,520 bytes |
+| 10,000 | 95,528 | 4.50 ms | 5.75 ms | 785,752 bytes |
+| 100,000 | 95,829 | 4.11 ms | 7.57 ms | 784,880 bytes |
 
-These timings are environment-dependent. Allocation measurements cover the Rust
-allocator, not SQLite's C allocations or total process RSS.
+These timings are environment-dependent. Allocation measurements count Go heap
+bytes allocated during each snapshot, not SQLite's page cache or total process RSS.
 
 ## Decision memory and outcomes
 
