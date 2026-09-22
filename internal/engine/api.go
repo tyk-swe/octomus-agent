@@ -416,20 +416,16 @@ func (a *App) StateView() (map[string]any, error) {
 	// so the stored record must count toward activity as well: reporting
 	// inactive while a running cycle is visible contradicts the document.
 	if !cycleActive || cycleMode == nil {
-		for _, raw := range snapshot.Cycles {
-			var stored struct {
-				Status string          `json:"status"`
-				Mode   model.CycleMode `json:"mode"`
-			}
-			if json.Unmarshal(raw, &stored) != nil || stored.Status != "running" {
-				continue
-			}
+		running, err := a.Store.RunningCycles()
+		if err != nil {
+			return nil, err
+		}
+		if len(running) > 0 {
 			cycleActive = true
 			if cycleMode == nil {
-				mode := stored.Mode
+				mode := running[0].Mode
 				cycleMode = &mode
 			}
-			break
 		}
 	}
 	status := "idle"

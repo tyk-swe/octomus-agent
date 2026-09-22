@@ -64,8 +64,7 @@ func main() {
 	fmt.Println(string(encoded))
 }
 
-func str(s string) *string { return &s }
-func ptr[T any](v T) *T    { return &v }
+func ptr[T any](v T) *T { return &v }
 
 func proposal(id, decision string) model.Proposal {
 	return model.Proposal{
@@ -112,7 +111,7 @@ func write(path string) (map[string]any, error) {
 	deferred := proposal("p2", model.DecisionDeferred)
 	cycle := model.Cycle{
 		Mode: model.CycleModeExecution, ID: cycleID, Number: 1, Status: model.CycleCompleted,
-		StartedAt: "2026-09-19T10:00:00Z", CompletedAt: str("2026-09-19T10:30:00Z"),
+		StartedAt: "2026-09-19T10:00:00Z", CompletedAt: ptr("2026-09-19T10:30:00Z"),
 		Grounding: &model.Grounding{Revision: "base0000", PRs: []model.PullRequest{},
 			ExternalPRs: []model.ExternalPrContext{}, History: []any{}, MaintenanceTargets: []string{}},
 		Proposals: []model.Proposal{accepted, deferred},
@@ -130,7 +129,7 @@ func write(path string) (map[string]any, error) {
 		DecisionMemory: []any{map[string]any{"id": decisionID, "repository": "fixture/project", "title": "Synthetic p2", "decision": "deferred"}},
 		// A previously discarded planning workspace keeps startup housekeeping
 		// in either implementation from changing this record.
-		Lifecycle: model.WorkspaceLifecycle{DiscardedAt: str("2026-09-19T10:31:00Z")},
+		Lifecycle: model.WorkspaceLifecycle{DiscardedAt: ptr("2026-09-19T10:31:00Z")},
 	}
 	reason := model.BlockedReasonVerificationFailed
 	task := model.Task{
@@ -143,7 +142,7 @@ func write(path string) (map[string]any, error) {
 			Result: model.Review{Completed: true, Summary: "SYNTHETIC-PRIVATE-REVIEW", Findings: []model.Finding{}}, CreatedAt: "2026-09-19T10:40:00Z"}},
 		Verification: []model.Verification{{Command: "synthetic required check", Success: false,
 			Output: "SYNTHETIC-PRIVATE-OUTPUT", Revision: "out00001", CreatedAt: "2026-09-19T10:41:00Z"}},
-		OutputCommit: str("out00001"), Attempts: 1, Error: str("SYNTHETIC-PRIVATE-ERROR"),
+		OutputCommit: ptr("out00001"), Attempts: 1, Error: ptr("SYNTHETIC-PRIVATE-ERROR"),
 		CreatedAt: "2026-09-19T10:31:00Z", UpdatedAt: "2026-09-19T10:42:00Z",
 		BlockedReason: &reason, SupersededBy: []string{}, Supersedes: []string{},
 	}
@@ -155,7 +154,7 @@ func write(path string) (map[string]any, error) {
 	if err := s.ReserveSession(0, planning); err != nil {
 		return nil, err
 	}
-	execution := store.NewAdmission(cycleID, str(taskID), "executor", config.NewRoute("fixture", "low"))
+	execution := store.NewAdmission(cycleID, ptr(taskID), "executor", config.NewRoute("fixture", "low"))
 	execution.At = "2026-09-19T10:31:00Z"
 	if err := s.ReserveSession(0, execution); err != nil {
 		return nil, err
@@ -205,7 +204,7 @@ func rehearsal(path string) (map[string]any, error) {
 	fourth := proposal("p4", model.DecisionAccepted)
 	cycle := model.Cycle{
 		Mode: model.CycleModeExecution, ID: rehearsalCycleID, Number: 2, Status: model.CycleCompleted,
-		StartedAt: "2026-09-21T09:00:00Z", CompletedAt: str("2026-09-21T09:30:00Z"),
+		StartedAt: "2026-09-21T09:00:00Z", CompletedAt: ptr("2026-09-21T09:30:00Z"),
 		Grounding: &model.Grounding{Revision: "base1111", PRs: []model.PullRequest{{
 			Number: 7, Title: "Synthetic p4", Branch: "tyk/synthetic-uncertain", Head: "cccc0003",
 			Base: "main", URL: "https://github.com/fixture/project/pull/7", State: "open",
@@ -231,7 +230,7 @@ func rehearsal(path string) (map[string]any, error) {
 		DecisionMemory: []any{map[string]any{"id": rehearsalDecisionID, "repository": cfg.GitHubRepo, "title": "Synthetic p4", "decision": "accepted"}},
 		// A previously discarded planning workspace keeps startup housekeeping
 		// in either implementation from changing this record.
-		Lifecycle: model.WorkspaceLifecycle{DiscardedAt: str("2026-09-21T09:31:00Z")},
+		Lifecycle: model.WorkspaceLifecycle{DiscardedAt: ptr("2026-09-21T09:31:00Z")},
 	}
 	// The in-flight publication checkpoint: an output commit exists, the repair
 	// thread was still open, and publication never confirmed a PR number. The
@@ -242,7 +241,7 @@ func rehearsal(path string) (map[string]any, error) {
 		Status: model.StatusPublishing, Route: config.NewRoute("fixture", "medium"), Config: cfg,
 		SourceRevision: "base1111", ComparisonBase: "base1111", DefaultRevision: "base1111",
 		Branch: "tyk/synthetic-publishing", Workspace: "/synthetic-private-workspace-pub",
-		ExecutionSession: str("codex-thread-exec-7"), RepairSession: str("codex-thread-repair-7"),
+		ExecutionSession: ptr("codex-thread-exec-7"), RepairSession: ptr("codex-thread-repair-7"),
 		Sessions: []model.Session{
 			session("codex-thread-exec-7", "executor", model.SessionCompleted),
 			session("codex-thread-repair-7", "repair", model.SessionRunning),
@@ -251,7 +250,7 @@ func rehearsal(path string) (map[string]any, error) {
 			Result: model.Review{Completed: true, Summary: "SYNTHETIC-PRIVATE-REVIEW", Findings: []model.Finding{}}, CreatedAt: "2026-09-21T09:40:00Z"}},
 		Verification: []model.Verification{{Command: "synthetic required check", Success: true,
 			Output: "ok", Revision: "bbbb0002", CreatedAt: "2026-09-21T09:45:00Z"}},
-		OutputCommit: str("bbbb0002"), Attempts: 1,
+		OutputCommit: ptr("bbbb0002"), Attempts: 1,
 		CreatedAt: "2026-09-21T09:31:00Z", UpdatedAt: "2026-09-21T09:50:00Z",
 		SupersededBy: []string{}, Supersedes: []string{},
 	}
@@ -263,7 +262,7 @@ func rehearsal(path string) (map[string]any, error) {
 		Status: model.StatusBlocked, Route: config.NewRoute("fixture", "medium"), Config: cfg,
 		SourceRevision: "base1111", ComparisonBase: "base1111", DefaultRevision: "base1111",
 		Branch: "tyk/synthetic-uncertain", Workspace: "/synthetic-private-workspace-unc",
-		ExecutionSession: str("codex-thread-exec-9"),
+		ExecutionSession: ptr("codex-thread-exec-9"),
 		Sessions:         []model.Session{session("codex-thread-exec-9", "executor", model.SessionCompleted)},
 		Reviews: []model.ReviewRound{
 			{SessionID: "codex-thread-review-9a", Revision: "cccc0002", ComparisonBase: "base1111",
@@ -272,9 +271,9 @@ func rehearsal(path string) (map[string]any, error) {
 				Result: model.Review{Completed: true, Summary: "round two", Findings: []model.Finding{}}, CreatedAt: "2026-09-21T09:55:00Z"}},
 		Verification: []model.Verification{{Command: "synthetic required check", Success: true,
 			Output: "ok", Revision: "cccc0003", CreatedAt: "2026-09-21T09:58:00Z"}},
-		OutputCommit: str("cccc0003"), PRNumber: ptr(uint64(7)),
-		PRURL: str("https://github.com/fixture/project/pull/7"), Attempts: 1,
-		Error: str("Publication result is uncertain; reconcile the preserved output commit"),
+		OutputCommit: ptr("cccc0003"), PRNumber: ptr(uint64(7)),
+		PRURL: ptr("https://github.com/fixture/project/pull/7"), Attempts: 1,
+		Error: ptr("Publication result is uncertain; reconcile the preserved output commit"),
 		AttemptPolicy: &model.AttemptPolicy{MaxRepairRounds: 4, MaxNoProgressRounds: 2,
 			MaxRetries: 2, TaskTimeoutSeconds: 14400, SessionTimeoutSeconds: 1800, CommandTimeoutSeconds: 600},
 		ReviewBaseline: 1, BlockedReason: ptr(model.BlockedReasonPublicationUncertain),
@@ -289,7 +288,7 @@ func rehearsal(path string) (map[string]any, error) {
 	if err := s.ReserveSession(0, planning); err != nil {
 		return nil, err
 	}
-	execution := store.NewAdmission(rehearsalCycleID, str(rehearsalPublishing), "executor", config.NewRoute("fixture", "medium"))
+	execution := store.NewAdmission(rehearsalCycleID, ptr(rehearsalPublishing), "executor", config.NewRoute("fixture", "medium"))
 	execution.At = "2026-09-21T09:31:00Z"
 	if err := s.ReserveSession(0, execution); err != nil {
 		return nil, err

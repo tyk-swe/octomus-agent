@@ -94,8 +94,11 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 		t.Fatalf("connect: %v", err)
 	}
 	server, ok := client.(*OpenCode)
-	if !ok || server.Version() != OpenCodeProtocolVersion {
-		t.Fatalf("pinned protocol baseline %s, got %v", OpenCodeProtocolVersion, client)
+	if !ok {
+		t.Fatalf("expected *OpenCode, got %T", client)
+	}
+	if server.Version() != OpenCodeProtocolVersion {
+		t.Fatalf("pinned protocol baseline %s, got %s", OpenCodeProtocolVersion, server.Version())
 	}
 	models, err := client.Models(workspace)
 	if err != nil {

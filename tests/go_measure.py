@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 """M8 measurement driver: build times, idle RSS and /api/state latency at scale.
 
-Implements the measurement protocol frozen in docs/roadmap/m8-qualification.md:
-same host, fixed fixture data, equivalent optimized builds and the same prebuilt
-frontend for the frozen Rust reference and the Go candidate.
+Implements the measurement protocol frozen in docs/roadmap/
+m0-reference-and-contracts.md (recorded before Go results were known): same
+otherwise-idle Linux amd64 host, fixed fixture data, equivalent optimized
+builds and the same prebuilt frontend for the frozen Rust reference and the Go
+candidate.
 
 For each scale (default 1,000 / 10,000 / 100,000 historical task records) the
 driver creates an isolated data directory, initializes the schema by booting the
 binary under test once, seeds task rows in one transaction (the record shape
 from tests/history_scale.rs: a published task whose proposal carries a ~4 KiB
-prompt), restarts the service paused/idle on a free loopback port, warms up,
-then times `requests` sequential GET /api/state calls over one keep-alive
-connection. Idle RSS is sampled from /proc/<pid>/status VmRSS.
+prompt), then for each of `runs` fresh service runs boots paused/idle on a free
+loopback port, samples idle VmRSS after `settle` seconds, warms up `warmup`
+requests, and times `requests` sequential GET /api/state calls over one
+keep-alive connection. p50/p95 are nearest-rank over the pooled samples of all
+five runs; per-run p95s are also reported.
 
-Builds: the Rust clean build runs `cargo build --release --locked` in a pristine
-source copy (never the checked-out worktrees) after an untimed `cargo fetch`, so
-dependency downloads are separated from compilation. The Go clean build runs
-`CGO_ENABLED=0 go build -trimpath` with a fresh GOCACHE and the shared module
-cache. Incremental builds append a marker comment to one backend source file
-(src/engine.rs in the copy, internal/engine/engine.go here) and rebuild, median
-of three; the Go file is restored afterwards.
+Builds: Rust clean builds run `cargo build --release --locked` in a pristine
+source copy (never the checked-out worktrees) after an untimed `cargo fetch`,
+each with a fresh CARGO_TARGET_DIR so dependency downloads are separated from
+compilation. Go clean builds run `CGO_ENABLED=0 go build -trimpath
+-ldflags=-s -w`, each with a fresh GOCACHE and the shared module cache.
+Incremental builds apply one function-body literal change (a log/status string)
+to one backend source file (src/engine.rs in the copy, internal/engine/
+engine.go here), rebuild with warm caches, and restore — one discarded warmup
+then `incrementals` timed samples; medians are reported.
 
 Environment: OCTOMUS_RUST_BIN / OCTOMUS_GO_BIN name the executables (falling
 back to the repo-conventional OCTOMUS_RUST_REFERENCE / OCTOMUS_TEST_BINARY, then
@@ -30,6 +36,7 @@ Usage:
     python3 tests/go_measure.py --rust-bin <path> --go-bin <path> --out report.md
 """
 import argparse
+import hashlib
 import http.client
 import json
 import math
@@ -47,39 +54,29 @@ import urllib.request
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
-TOKEN = 'fixture-operator-token-with-at-least-32-characters'
+sys.path.insert(0, str(PROJECT / 'tests'))
+from e2e import poll, TOKEN  # noqa: E402
+from go_storage import clean_env, copy_state  # noqa: E402
+
 STATE_JSON = 'state.db'
 TASK_PROMPT = 'x' * 4096
 # Budgets frozen by the M8 qualification milestone; never relax them silently.
 P95_GROWTH_BUDGET = 2.0
 SIZE_GROWTH_BUDGET = 1.05
 P95_FLOOR_MS = 50.0
-
-
-def clean_env():
-    """Drops every OCTOMUS_* override so fixture env never leaks into a run."""
-    return {key: value for key, value in os.environ.items() if not key.startswith('OCTOMUS_')}
+# Sample counts frozen by the M0 measurement protocol.
+CLEAN_BUILDS = 5
+INCREMENTAL_BUILDS = 10
+SERVICE_RUNS = 5
+WARMUP_REQUESTS = 100
+TIMED_REQUESTS = 1000
+IDLE_SETTLE_S = 30.0
 
 
 def free_port():
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         return sock.getsockname()[1]
-
-
-def poll(predicate, seconds, interval=0.1, tick=None):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        try:
-            result = predicate()
-            if result:
-                return result
-        except (OSError, urllib.error.URLError):
-            pass
-        if tick:
-            tick()
-        time.sleep(interval)
-    return None
 
 
 def nearest_rank(sorted_values, fraction):
@@ -204,60 +201,70 @@ def seed_tasks(db_path, count):
     return time.monotonic() - started
 
 
-def measure_state(label, binary, assets, scale, template_db, work_dir, requests, warmup, settle):
-    """Seeds one isolated copy of the schema template, serves it paused and
-    times sequential GET /api/state calls on a single keep-alive connection."""
-    run_dir = work_dir / f'state-{label}-{scale}'
-    data_dir = run_dir / 'data'
-    data_dir.mkdir(parents=True)
-    shutil.copyfile(template_db, data_dir / STATE_JSON)
-    seed_seconds = seed_tasks(data_dir / STATE_JSON, scale)
-    db_bytes = dir_bytes(data_dir)
+def measure_state(label, binary, assets, scale, template_db, work_dir, requests, warmup, runs, settle):
+    """Seeds one fixture, then repeats the frozen protocol in `runs` fresh
+    service runs against identical copies: idle settle + VmRSS sample, `warmup`
+    warmup requests, `requests` timed sequential GET /api/state calls on one
+    keep-alive connection each. Returns pooled percentiles plus per-run p95s."""
+    fixture_dir = work_dir / f'state-{label}-{scale}'
+    fixture_data = fixture_dir / 'data'
+    fixture_data.mkdir(parents=True)
+    shutil.copyfile(template_db, fixture_data / STATE_JSON)
+    seed_seconds = seed_tasks(fixture_data / STATE_JSON, scale)
+    db_bytes = dir_bytes(fixture_data)
 
-    service = Service(binary, data_dir, assets, run_dir / 'service.log')
-    try:
-        service.wait_ready()
-        time.sleep(settle)
-        state = service.request('/state')
-        control = state['control']
-        if not control['paused']:
-            service.request('/control/pause', 'POST')
+    elapsed_ms, sizes, per_run_p95, idle_rss = [], [], [], []
+    for run in range(runs):
+        run_dir = work_dir / f'state-{label}-{scale}-run{run}'
+        data_dir = copy_state(fixture_data, run_dir / 'data')
+
+        service = Service(binary, data_dir, assets, run_dir / 'service.log')
+        try:
+            service.wait_ready()
             state = service.request('/state')
             control = state['control']
-        assert control['paused'], f'{binary.name} is not paused: {control}'
-        published = state['counts'].get('published', 0)
-        assert published == scale, f'{binary.name} sees {published} published tasks, expected {scale}'
+            if not control['paused']:
+                service.request('/control/pause', 'POST')
+                state = service.request('/state')
+                control = state['control']
+            assert control['paused'], f'{binary.name} is not paused: {control}'
+            if run == 0:
+                published = state['counts'].get('published', 0)
+                assert published == scale, f'{binary.name} sees {published} published tasks, expected {scale}'
+            time.sleep(settle)
+            idle_rss.append(service.rss_kib())
 
-        connection = http.client.HTTPConnection('127.0.0.1', service.port, timeout=30)
-        headers = {'Authorization': f'Bearer {TOKEN}'}
-        try:
-            for _ in range(warmup):
-                connection.request('GET', '/api/state', headers=headers)
-                response = connection.getresponse()
-                response.read()
-                assert response.status == 200, response.status
-            rss_after_warmup = service.rss_kib()
-            elapsed_ms, sizes = [], []
-            for _ in range(requests):
-                start = time.monotonic()
-                connection.request('GET', '/api/state', headers=headers)
-                response = connection.getresponse()
-                body = response.read()
-                elapsed_ms.append((time.monotonic() - start) * 1000)
-                assert response.status == 200, response.status
-                sizes.append(len(body))
+            connection = http.client.HTTPConnection('127.0.0.1', service.port, timeout=30)
+            headers = {'Authorization': f'Bearer {TOKEN}'}
+            try:
+                for _ in range(warmup):
+                    connection.request('GET', '/api/state', headers=headers)
+                    response = connection.getresponse()
+                    response.read()
+                    assert response.status == 200, response.status
+                run_ms = []
+                for _ in range(requests):
+                    start = time.monotonic()
+                    connection.request('GET', '/api/state', headers=headers)
+                    response = connection.getresponse()
+                    body = response.read()
+                    elapsed_ms.append((time.monotonic() - start) * 1000)
+                    run_ms.append(elapsed_ms[-1])
+                    assert response.status == 200, response.status
+                    sizes.append(len(body))
+            finally:
+                connection.close()
+            per_run_p95.append(nearest_rank(sorted(run_ms), 0.95))
         finally:
-            connection.close()
-        time.sleep(0.5)
-        rss_after_requests = service.rss_kib()
-    finally:
-        service.stop()
+            service.stop()
 
     ordered = sorted(elapsed_ms)
+    assert len(set(sizes)) == 1, f'{binary.name} response size varied across {runs} runs: {sorted(set(sizes))}'
     return {
         'scale': scale,
         'seed_seconds': seed_seconds,
         'db_bytes': db_bytes,
+        'runs': runs,
         'requests': len(elapsed_ms),
         'warmup': warmup,
         'p50_ms': nearest_rank(ordered, 0.50),
@@ -265,10 +272,10 @@ def measure_state(label, binary, assets, scale, template_db, work_dir, requests,
         'min_ms': ordered[0],
         'max_ms': ordered[-1],
         'mean_ms': statistics.fmean(elapsed_ms),
+        'per_run_p95_ms': per_run_p95,
         'response_bytes': sizes[0],
-        'response_bytes_max': max(sizes),
-        'idle_rss_kib_after_warmup': rss_after_warmup,
-        'idle_rss_kib_after_requests': rss_after_requests,
+        'idle_rss_kib_median': statistics.median(v for v in idle_rss if v is not None),
+        'idle_rss_kib_samples': idle_rss,
         'samples_ms': elapsed_ms,
     }
 
@@ -289,55 +296,86 @@ def copy_source_tree(src, dst):
     shutil.copytree(src, dst, ignore=ignore)
 
 
-def measure_builds(rust_src, go_src, work_dir):
-    """Clean and incremental build timings for both toolchains.
+def with_literal_probe(path, anchor, index):
+    """Applies one function-body literal change: rewrites the first occurrence
+    of `anchor` (a string literal) to carry the probe index inside the string."""
+    assert isinstance(anchor, bytes) and anchor.startswith(b'"') and anchor.endswith(b'"')
+    original = path.read_bytes()
+    probe = anchor[:-1] + str(index).encode() + anchor[-1:]
+    applied = original.replace(anchor, probe, 1)
+    assert applied != original, f'literal anchor {anchor} not found in {path}'
+    path.write_bytes(applied)
 
-    Rust builds happen entirely inside a throwaway copy of the source tree.
-    Go clean build uses a fresh GOCACHE (module downloads stay cached). Each
-    incremental sample appends a marker comment to one backend file, rebuilds
-    and restores it; content changes are required because the Go build cache
-    keys on content, and they keep the Rust fingerprint honest too."""
+
+def measure_builds(rust_src, go_src, work_dir, clean_count, incremental_count):
+    """Frozen-protocol build timings: `clean_count` clean builds per toolchain
+    against fresh target/cache directories, then one discarded warmup plus
+    `incremental_count` timed incremental builds after a function-body literal
+    change, medians reported. Rust builds run inside a throwaway source copy
+    (fresh CARGO_TARGET_DIR each time); Go builds use a fresh GOCACHE each time
+    (module downloads stay in the shared module cache)."""
     builds = {}
 
     rust_copy = work_dir / 'rust-src-copy'
     copy_source_tree(rust_src, rust_copy)
     subprocess.run(['cargo', 'fetch', '--locked'], cwd=rust_copy, check=True)
-    try:
-        builds['rust_clean_s'] = timed(['cargo', 'build', '--release', '--locked', '--offline'], cwd=rust_copy)
-    except subprocess.CalledProcessError:
+    rust_offline = subprocess.run(
+        ['cargo', 'build', '--release', '--locked', '--offline'], cwd=rust_copy,
+        env={**os.environ, 'CARGO_TARGET_DIR': str(work_dir / 'rust-target-probe')},
+        capture_output=True).returncode == 0
+    rust_cmd = ['cargo', 'build', '--release', '--locked'] + (['--offline'] if rust_offline else [])
+    if not rust_offline:
         print('offline cargo build failed; falling back to online (downloads not separated)', flush=True)
-        builds['rust_clean_s'] = timed(['cargo', 'build', '--release', '--locked'], cwd=rust_copy)
-        builds['rust_offline'] = False
-    else:
-        builds['rust_offline'] = True
+
+    rust_clean = []
+    for i in range(clean_count):
+        env = {'CARGO_TARGET_DIR': str(work_dir / f'rust-target-clean-{i}')}
+        rust_clean.append(timed(rust_cmd, cwd=rust_copy, env=env))
+    builds['rust_clean_samples_s'] = rust_clean
+    builds['rust_clean_median_s'] = statistics.median(rust_clean)
+    builds['rust_offline'] = rust_offline
 
     rust_file = rust_copy / 'src/engine.rs'
+    rust_anchor = b'"Recovering"'
+    rust_inc_env = {'CARGO_TARGET_DIR': str(work_dir / 'rust-target-inc')}
+    # Populate the incremental target dir once so only the edited crate rebuilds.
+    timed(rust_cmd, cwd=rust_copy, env=rust_inc_env)
     rust_original = rust_file.read_bytes()
     samples = []
     try:
-        for i in range(3):
-            rust_file.write_bytes(rust_original + f'\n// m8 measurement probe {i}\n'.encode())
-            samples.append(timed(['cargo', 'build', '--release', '--locked', '--offline'], cwd=rust_copy))
+        for i in range(incremental_count + 1):
+            with_literal_probe(rust_file, rust_anchor, i)
+            seconds = timed(rust_cmd, cwd=rust_copy, env=rust_inc_env)
+            rust_file.write_bytes(rust_original)
+            if i > 0:  # first build is the discarded warmup
+                samples.append(seconds)
     finally:
         rust_file.write_bytes(rust_original)
     builds['rust_incremental_samples_s'] = samples
     builds['rust_incremental_median_s'] = statistics.median(samples)
 
-    go_cache = work_dir / 'gocache'
-    go_cache.mkdir(parents=True, exist_ok=True)
-    go_env = {'CGO_ENABLED': '0', 'GOCACHE': str(go_cache)}
     go_out = work_dir / 'octomus-agent-go-measured'
-    builds['go_clean_s'] = timed(
-        ['go', 'build', '-trimpath', '-o', str(go_out), './cmd/octomus-agent'], cwd=go_src, env=go_env)
+    go_cmd = ['go', 'build', '-trimpath', '-ldflags=-s', '-w', '-o', str(go_out), './cmd/octomus-agent']
+    go_clean = []
+    for i in range(clean_count):
+        go_env = {'CGO_ENABLED': '0', 'GOCACHE': str(work_dir / f'gocache-clean-{i}')}
+        go_clean.append(timed(go_cmd, cwd=go_src, env=go_env))
+    builds['go_clean_samples_s'] = go_clean
+    builds['go_clean_median_s'] = statistics.median(go_clean)
 
     go_file = go_src / 'internal/engine/engine.go'
+    go_anchor = b'"Run once was interrupted before its planning transaction committed"'
+    go_env = {'CGO_ENABLED': '0', 'GOCACHE': str(work_dir / 'gocache-inc')}
+    timed(go_cmd, cwd=go_src, env=go_env)  # populate the incremental cache
     go_original = go_file.read_bytes()
     samples = []
     try:
-        for i in range(3):
-            go_file.write_bytes(go_original + f'\n// m8 measurement probe {i}\n'.encode())
-            samples.append(timed(
-                ['go', 'build', '-trimpath', '-o', str(go_out), './cmd/octomus-agent'], cwd=go_src, env=go_env))
+        for i in range(incremental_count + 1):
+            with_literal_probe(go_file, go_anchor, i)
+            seconds = timed(go_cmd, cwd=go_src, env=go_env)
+            go_file.write_bytes(go_original)
+            if i > 0:  # first build is the discarded warmup
+                samples.append(seconds)
     finally:
         go_file.write_bytes(go_original)
     builds['go_incremental_samples_s'] = samples
@@ -410,14 +448,13 @@ def render_report(args, meta, builds, runs, budgets):
         f"- Toolchains: {meta['rustc']}; {meta['cargo']}; {meta['go']}; {meta['python']}",
         f"- Rust binary: `{args.rust_bin}` (sha256 {meta['rust']['sha256'][:16]}…, source {meta['rust']['source_revision']})",
         f"- Go binary: `{args.go_bin}` (sha256 {meta['go']['sha256'][:16]}…, source {meta['go']['source_revision']})",
-        '- Rust build: `cargo build --release --locked --offline` in a pristine source copy after `cargo fetch --locked` (dependency download separated from compilation); incremental = append a marker comment to `src/engine.rs`, rebuild, restore, median of 3',
-        '- Go build: `CGO_ENABLED=0 go build -trimpath -o <out> ./cmd/octomus-agent` with a fresh GOCACHE and the shared module cache; incremental = append a marker comment to `internal/engine/engine.go`, rebuild, restore, median of 3',
+        f"- Rust build: `cargo build --release --locked` in a pristine source copy after `cargo fetch --locked` (dependency download separated from compilation; offline={builds and builds.get('rust_offline')}); {args.clean_builds} clean builds, each with a fresh CARGO_TARGET_DIR; incremental = one function-body literal change in `src/engine.rs`, warm target dir, 1 discarded warmup + {args.incremental_builds} timed",
+        f"- Go build: `CGO_ENABLED=0 go build -trimpath -ldflags=-s -w -o <out> ./cmd/octomus-agent`; {args.clean_builds} clean builds, each with a fresh GOCACHE (shared module cache); incremental = one function-body literal change in `internal/engine/engine.go`, warm cache, 1 discarded warmup + {args.incremental_builds} timed",
         f"- Frontend: identical prebuilt dashboard served via `--assets {args.assets}`",
-        f"- Fixture: schema initialized by each binary on a fresh data dir, then `INSERT INTO records VALUES ('task', id, json)` in one transaction; published task, ~4 KiB `proposal.prompt`, timestamps inside the 14-day retention window",
-        f"- Service: `--data-dir <isolated> --listen 127.0.0.1:<free port>`, `OCTOMUS_TOKEN` fixture token, boots paused (verified via control.paused before measuring)",
-        f"- Latency: {args.warmup} warmup + {args.requests} timed sequential `GET /api/state` requests on one keep-alive HTTP/1.1 connection, client-side wall clock (`time.monotonic`); percentiles are nearest-rank",
-        f"- Idle RSS: `VmRSS` from `/proc/<pid>/status` after warmup and again after the timed run",
-        f"- Settle after startup: {args.settle}s",
+        f"- Fixture: schema initialized by each binary on a fresh data dir, then `INSERT INTO records VALUES ('task', id, json)` in one transaction; published task, ~4 KiB `proposal.prompt`, timestamps inside the 14-day retention window; each run copies the seeded fixture",
+        f"- Service: `--data-dir <isolated> --listen 127.0.0.1:<free port>`, `OCTOMUS_TOKEN` fixture token, paused before measuring (verified via control.paused)",
+        f"- Latency: {args.runs} fresh service runs per impl per fixture; each run: {args.settle}s idle then VmRSS sample, {args.warmup} warmup + {args.requests} timed sequential `GET /api/state` requests on one keep-alive HTTP/1.1 connection, client-side wall clock (`time.monotonic`); p50/p95 are nearest-rank over pooled samples",
+        f"- Idle RSS: `VmRSS` from `/proc/<pid>/status` after {args.settle}s idle, per run; median reported",
         '',
         '## Build times',
         '',
@@ -425,10 +462,13 @@ def render_report(args, meta, builds, runs, budgets):
         '| --- | ---: | ---: |',
     ]
     if builds:
+        rust_cl = ', '.join(f'{s:.1f}' for s in builds['rust_clean_samples_s'])
+        go_cl = ', '.join(f'{s:.1f}' for s in builds['go_clean_samples_s'])
         rust_inc = ', '.join(f'{s:.2f}' for s in builds['rust_incremental_samples_s'])
         go_inc = ', '.join(f'{s:.2f}' for s in builds['go_incremental_samples_s'])
         lines += [
-            f"| Clean build (s) | {builds['rust_clean_s']:.1f} | {builds['go_clean_s']:.1f} |",
+            f"| Clean median (s) | {builds['rust_clean_median_s']:.1f} | {builds['go_clean_median_s']:.1f} |",
+            f"| Clean samples (s) | {rust_cl} | {go_cl} |",
             f"| Incremental median (s) | {builds['rust_incremental_median_s']:.2f} | {builds['go_incremental_median_s']:.2f} |",
             f"| Incremental samples (s) | {rust_inc} | {go_inc} |",
         ]
@@ -444,17 +484,18 @@ def render_report(args, meta, builds, runs, budgets):
         '',
         '## /api/state at scale',
         '',
-        '| Tasks | Impl | p50 ms | p95 ms | max ms | Response B | Idle RSS MiB (post-warmup / post-run) | Seed s | DB MiB |',
-        '| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+        '| Tasks | Impl | Runs | p50 ms | p95 ms | Per-run p95 ms | max ms | Response B | Idle RSS MiB (median) | Seed s | DB MiB |',
+        '| ---: | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |',
     ]
     for scale in args.scales:
         for name in ['rust', 'go']:
             if scale not in runs.get(name, {}):
                 continue
             r = runs[name][scale]
+            per_run = ', '.join(fmt_ms(v) for v in r['per_run_p95_ms'])
             lines.append(
-                f"| {scale} | {name} | {fmt_ms(r['p50_ms'])} | {fmt_ms(r['p95_ms'])} | {fmt_ms(r['max_ms'])} "
-                f"| {r['response_bytes']} | {fmt_mib(r['idle_rss_kib_after_warmup'])} / {fmt_mib(r['idle_rss_kib_after_requests'])} "
+                f"| {scale} | {name} | {r['runs']} | {fmt_ms(r['p50_ms'])} | {fmt_ms(r['p95_ms'])} | {per_run} | {fmt_ms(r['max_ms'])} "
+                f"| {r['response_bytes']} | {fmt_mib(r['idle_rss_kib_median'])} "
                 f"| {r['seed_seconds']:.1f} | {r['db_bytes'] / 1024 / 1024:.0f} |")
     lines += ['', '## Budget evaluation', '']
     for entry in budgets:
@@ -503,9 +544,12 @@ def main():
     parser.add_argument('--go-src', default=str(PROJECT), help='Go module root for build measurements')
     parser.add_argument('--assets', default=str(PROJECT / 'web/build'), help='Prebuilt dashboard directory passed to both services')
     parser.add_argument('--scales', default='1000,10000,100000', help='Comma-separated task counts, ascending')
-    parser.add_argument('--requests', type=int, default=50)
-    parser.add_argument('--warmup', type=int, default=15)
-    parser.add_argument('--settle', type=float, default=2.0, help='Seconds between /healthz and warmup')
+    parser.add_argument('--requests', type=int, default=TIMED_REQUESTS)
+    parser.add_argument('--warmup', type=int, default=WARMUP_REQUESTS)
+    parser.add_argument('--runs', type=int, default=SERVICE_RUNS, help='Fresh service runs per impl per fixture')
+    parser.add_argument('--settle', type=float, default=IDLE_SETTLE_S, help='Idle seconds before the RSS sample and warmup in each run')
+    parser.add_argument('--clean-builds', type=int, default=CLEAN_BUILDS)
+    parser.add_argument('--incremental-builds', type=int, default=INCREMENTAL_BUILDS, help='Timed incremental samples after one discarded warmup')
     parser.add_argument('--work-dir', default=None, help='Scratch area (default: a temp dir removed on success)')
     parser.add_argument('--keep-work', action='store_true')
     parser.add_argument('--skip-builds', action='store_true')
@@ -534,7 +578,7 @@ def main():
     builds = None
     if not args.skip_builds:
         print('== builds ==', flush=True)
-        builds = measure_builds(Path(args.rust_src), Path(args.go_src), work_dir)
+        builds = measure_builds(Path(args.rust_src), Path(args.go_src), work_dir, args.clean_builds, args.incremental_builds)
         print(json.dumps(builds, indent=2), flush=True)
 
     runs = {'rust': {}, 'go': {}}
@@ -547,10 +591,12 @@ def main():
         for scale in args.scales:
             for name, binary in [('rust', args.rust_bin), ('go', args.go_bin)]:
                 print(f'== {name} {scale} ==', flush=True)
-                result = measure_state(name, binary, args.assets, scale, templates[name], work_dir, args.requests, args.warmup, args.settle)
+                result = measure_state(name, binary, args.assets, scale, templates[name], work_dir,
+                                       args.requests, args.warmup, args.runs, args.settle)
                 runs[name][scale] = result
                 print(f"  p50={result['p50_ms']:.2f}ms p95={result['p95_ms']:.2f}ms max={result['max_ms']:.2f}ms "
-                      f"bytes={result['response_bytes']} rss={fmt_mib(result['idle_rss_kib_after_requests'])}MiB "
+                      f"per-run-p95={['%.2f' % v for v in result['per_run_p95_ms']]} "
+                      f"bytes={result['response_bytes']} rss={fmt_mib(result['idle_rss_kib_median'])}MiB "
                       f"seed={result['seed_seconds']:.1f}s", flush=True)
 
     budgets = evaluate(runs, args) if not args.skip_services else []

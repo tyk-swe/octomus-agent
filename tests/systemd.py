@@ -43,7 +43,7 @@ echo $! > '{root}/home/child.pid'
     properties = []
     for line in (PROJECT / 'deploy/octomus-agent.service').read_text().splitlines():
         key = line.partition('=')[0]
-        if key in ['NoNewPrivileges', 'ProtectSystem', 'PrivateTmp', 'ProtectKernelTunables', 'RestrictSUIDSGID', 'KillMode']:
+        if key in ['NoNewPrivileges', 'ProtectSystem', 'PrivateTmp', 'ProtectKernelTunables', 'RestrictSUIDSGID', 'KillMode', 'TimeoutStopSec']:
             properties += ['-p', line]
     properties += ['-p', f'ReadWritePaths={root}/home {root}/checkout', '-p', 'User=nobody']
     subprocess.run(['systemd-run', '--unit', unit, '--wait', '--pipe', *properties, str(script)], check=True)

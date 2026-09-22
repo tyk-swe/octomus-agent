@@ -131,8 +131,7 @@ the adversarial showcase tests. For a focused site pass, use `npm run site:test 
 To recreate the image exports after dashboard or demo changes:
 
 ```sh
-npm run build --prefix web
-cargo build --locked
+make build
 npm run launch:assets --prefix web
 npm run site:build --prefix web
 ```

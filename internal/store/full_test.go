@@ -25,9 +25,9 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// sqliteFull reports whether err is SQLite's SQLITE_FULL result, the same
+// mustSQLiteFull requires err to be SQLite's SQLITE_FULL result, the same
 // error a genuinely full filesystem produces on write.
-func sqliteFull(t *testing.T, err error) {
+func mustSQLiteFull(t *testing.T, err error) {
 	t.Helper()
 	var sq *sqlite.Error
 	if err == nil || !errors.As(err, &sq) || sq.Code()&0xff != 13 { // SQLITE_FULL
@@ -139,7 +139,7 @@ func TestDiskFullRecordWriteAcknowledgesNothing(t *testing.T) {
 	// Big enough that the insert must allocate overflow pages.
 	doomed.Proposal.Prompt = strings.Repeat("x", 1<<16)
 	freeze(t, s)
-	sqliteFull(t, s.Put("task", doomed.ID, doomed))
+	mustSQLiteFull(t, s.Put("task", doomed.ID, doomed))
 	var saved model.Task
 	if found, err := s.Get("task", doomed.ID, &saved); err != nil || found {
 		t.Fatalf("uncommitted write became readable: found=%t err=%v", found, err)
@@ -184,7 +184,7 @@ func TestFailedLedgerWritesRollBackTheWholeTransaction(t *testing.T) {
 	// page: the counter row is written first and must roll back with it.
 	freeze(t, s)
 	big := strings.Repeat("r", 1<<16)
-	sqliteFull(t, s.ReserveSession(0, NewAdmission("cycle", nil, big, cfg.Roles["discovery"])))
+	mustSQLiteFull(t, s.ReserveSession(0, NewAdmission("cycle", nil, big, cfg.Roles["discovery"])))
 	if sessions := countStore(t, s, "SELECT COALESCE(sum(sessions),0) FROM usage"); sessions != 0 {
 		t.Fatalf("rolled-back admission moved the counter: %d", sessions)
 	}

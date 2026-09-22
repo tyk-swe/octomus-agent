@@ -58,3 +58,4 @@ package: build
 test-go-storage: build
 	cargo build --locked
 	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/go_storage.py
+	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/go_upgrade.py
