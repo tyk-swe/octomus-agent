@@ -397,11 +397,6 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 			return nil
 		}
 	}
-	// Initialization reserves the first turn and leaves its fresh session to
-	// this invocation; any later turn resumes the recorded thread.
-	if !admissionReserved && task.ExecutionSession == nil {
-		return errors.New("Executor session identity is missing")
-	}
 	prompt := fmt.Sprintf(
 		"Implement this accepted task end to end in this workspace. Source revision: %s. Full comparison base: %s. Existing PR: %s. Preserve existing accumulated branch behavior; inspect its full diff. Do not push, publish, merge or deploy. Required repository verification commands: %s. Objective and constraints:\n%s\nProblem: %s\nBenefit: %s\nScope: %s\nEvidence: %s\nReturn a concise summary of actual changes, verification and material risks or migration notes.",
 		task.SourceRevision,
@@ -415,7 +410,8 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 		debugList(task.Proposal.Evidence))
 	_, _, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
-		thread: &task.ExecutionSession, prompt: prompt, reserved: admissionReserved,
+		resume: task.ExecutionSession, keep: func(session string) { task.ExecutionSession = &session },
+		prompt: prompt, reserved: admissionReserved,
 	})
 	return err
 }
@@ -525,7 +521,8 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	// every later round resumes it.
 	_, _, err = a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "repair", route: cfg.RepairRoute, workspace: task.Workspace,
-		thread: &task.RepairSession, prompt: prompt,
+		resume: task.RepairSession, keep: func(session string) { task.RepairSession = &session },
+		prompt: prompt,
 	})
 	return err
 }

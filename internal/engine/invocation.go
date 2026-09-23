@@ -37,14 +37,19 @@ type invocation struct {
 	role      string
 	route     config.Route
 	workspace string
-	// thread is the task field holding this role's persistent session
-	// (ExecutionSession, RepairSession). A recorded thread is resumed before
-	// the turn; an empty one is filled with the fresh session. Nil starts a
-	// fresh session for every turn.
-	thread   **string
-	prompt   string
-	schema   schemas.Schema
-	reserved bool // this turn's admission was already reserved (executor initialization)
+	// resume is the role's recorded persistent thread (task.ExecutionSession,
+	// task.RepairSession), resumed before the turn; nil starts a fresh
+	// session. keep, when set, records a fresh session as the role's
+	// persistent thread so later turns resume it. Roles without a persistent
+	// thread leave both unset.
+	resume *string
+	keep   func(session string)
+	prompt string
+	schema schemas.Schema
+	// reserved means a fresh session's first turn was already admitted
+	// (executor initialization). A resumed turn always reserves its own
+	// admission, so invoke rejects reserved together with resume.
+	reserved bool
 	// prepare, when set, runs after the admission and before the session
 	// starts; a planning role clones its workspace here.
 	prepare func() error
@@ -72,8 +77,11 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	defer func() { _ = closeClients() }()
 
 	var resume *string
-	if inv.thread != nil && *inv.thread != nil {
-		identity := **inv.thread
+	if inv.resume != nil {
+		if inv.reserved {
+			return "", "", fmt.Errorf("A resumed %s turn cannot use a reserved admission", inv.role)
+		}
+		identity := *inv.resume
 		resume = &identity
 		// A resumed thread must still have its record before any admission.
 		if _, err := sessionMut(inv.task, identity, inv.role); err != nil {
@@ -117,8 +125,8 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	task := inv.task
 	if resume == nil {
 		task.Sessions = append(task.Sessions, model.NewSession(session, inv.role, inv.route))
-		if inv.thread != nil {
-			*inv.thread = &session
+		if inv.keep != nil {
+			inv.keep(session)
 		}
 	} else {
 		record, err := sessionMut(task, session, inv.role)

@@ -54,20 +54,6 @@ func blockedAs(task model.Task, reason model.BlockedReason) bool {
 	return task.Status == model.StatusBlocked && task.BlockedReason != nil && *task.BlockedReason == reason
 }
 
-func assertAdmissions(t *testing.T, state *store.Store, want uint64, label string) {
-	t.Helper()
-	if used, err := state.SessionsToday(); err != nil || used != want {
-		t.Fatalf("admissions = %d, %v; want %d (%s)", used, err, want, label)
-	}
-}
-
-func assertNoOpenClients(t *testing.T, script *runnertest.Script) {
-	t.Helper()
-	if open := script.OpenClients(); open != 0 {
-		t.Fatalf("%d runner clients left open", open)
-	}
-}
-
 // assertUnpublished checks that neither the task record nor the GitHub peer
 // saw a publication.
 func assertUnpublished(t *testing.T, fixture *scriptedFixture, task model.Task) {

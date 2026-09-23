@@ -14,6 +14,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -47,10 +48,12 @@ func admissionsByRole(t *testing.T, state *store.Store) map[string]int {
 	return counts
 }
 
-// TestInvocationAdmitsExactlyOncePerTurn: a failed executor start keeps the one
-// admission initialization reserved for it, the retry reserves exactly one more
-// for the executor turn, and a two-round repair records one admission per
-// executor, reviewer and repair turn, with the repair thread resumed.
+// TestInvocationAdmitsExactlyOncePerTurn: each attempt at a turn consumes
+// exactly one admission, and no turn reserves twice. Initialization reserves
+// the first executor turn's admission, which a failed start keeps; the retry's
+// initialization reserves the next one for the turn that runs, so the failed
+// start plus its retry record 2 executor admissions. Every reviewer and repair
+// turn of a two-round repair records one, with the repair thread resumed.
 func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	fixture.configure(t, func(cfg *config.Config) {
@@ -90,9 +93,7 @@ func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 	if got := admissionsByRole(t, fixture.state); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("admissions by role = %+v; want %+v (the failed start plus one per turn)", got, want)
 	}
-	if used, err := fixture.state.SessionsToday(); err != nil || used != 7 {
-		t.Fatalf("admission counter = %d, %v; want 7", used, err)
-	}
+	assertAdmissions(t, fixture.state, 7, "one per attempt and turn")
 	// Every admission beyond the failed start paid for exactly one turn.
 	for route, turns := range map[config.Route]int{routes.Executor: 1, routes.Reviewer: 3, routes.Repair: 2} {
 		if n := len(script.Turns(route)); n != turns {
@@ -112,6 +113,33 @@ func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 			t.Fatalf("a fresh executor session was resumed: %+v", start)
 		}
 	}
+}
+
+// TestInvocationRejectsReservedResume: a reserved admission covers only a
+// fresh session's first turn, so a resumed turn marked reserved is refused
+// before it reaches the runner rather than running unadmitted.
+func TestInvocationRejectsReservedResume(t *testing.T) {
+	state := testStore(t)
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	script := runnertest.New()
+	clients := runner.New(context.Background(), config.Default(), script.Connector())
+	t.Cleanup(func() { _ = clients.Close() })
+	thread := "executor-thread"
+	task := &model.Task{ID: "reserved-resume", CycleID: "cycle", ExecutionSession: &thread,
+		Sessions: []model.Session{{ID: thread, Role: "executor", Status: model.SessionRunning}}}
+
+	_, _, err := app.invoke(context.Background(), clients, invocation{
+		cycleID: task.CycleID, task: task, role: "executor", route: config.NewRoute("scripted-executor", "medium"),
+		workspace: t.TempDir(), resume: task.ExecutionSession, prompt: "unused", reserved: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "reserved admission") {
+		t.Fatalf("reserved resume error = %v", err)
+	}
+	if calls := script.Calls(); len(calls) != 0 {
+		t.Fatalf("a refused turn reached the runner: %+v", calls)
+	}
+	assertAdmissions(t, state, 0, "a refused turn admits nothing")
 }
 
 // secretToken is secret-shaped: the store's redaction replaces it.
@@ -135,24 +163,13 @@ func assertRedactedSummaries(t *testing.T, sessions []model.Session, roles []str
 	}
 }
 
-// scriptedProposal is a schema-complete discovery proposal whose reason
-// carries the secret.
+// scriptedProposal is fixtureProposal under its own id, title and problem
+// key, so several share a cycle without being the same work, with a reason
+// that carries the secret.
 func scriptedProposal(id, decision string) map[string]any {
-	return map[string]any{
-		"id": id, "title": "Scripted proposal " + id, "problem": "A scripted problem.", "benefit": "A scripted benefit.",
-		"category": "features", "target": "main", "tier": "M", "scope": "Scripted scope.", "prompt": "Scripted prompt.",
-		"decision": decision, "reason": "Found with " + secretToken, "problem_key": "scripted-" + id,
-		"evidence": []string{"README.md"}, "dependencies": []string{}, "relevant_paths": []string{}, "reconsiders": []string{},
-	}
-}
-
-func mustJSON(t *testing.T, value any) string {
-	t.Helper()
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
+	proposal := fixtureProposal(decision, "Found with "+secretToken)
+	proposal["id"], proposal["title"], proposal["problem_key"] = id, "Scripted proposal "+id, "scripted-"+id
+	return proposal
 }
 
 // TestInvocationRedactsEveryRoleSummary: a secret-shaped answer is saved
@@ -198,8 +215,7 @@ func TestInvocationRedactsEveryRoleSummary(t *testing.T) {
 		script.Answer(routes.ProposalReviewer, review, review)
 
 		// Audits require the paused service, so the app is not resumed.
-		app := New(fixture.state, fixture.dataDir, WithRunnerConnector(script.Connector()))
-		t.Cleanup(app.Shutdown)
+		app := fixture.pausedApp(t)
 		cycleID, err := app.StartAudit(context.Background())
 		if err != nil {
 			t.Fatal(err)

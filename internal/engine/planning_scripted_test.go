@@ -9,7 +9,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,18 +31,6 @@ func newScriptedPlanningFixture(t *testing.T) *scriptedFixture {
 	return newScriptedFixture(t, withGitHubIdentity())
 }
 
-// planningApp builds an app connected to the fixture's script without
-// changing the operating mode, with retention and observation housekeeping
-// deferred, and shuts it down when the test ends.
-func (f *scriptedFixture) planningApp(t *testing.T, options ...Option) *App {
-	t.Helper()
-	app := New(f.state, f.dataDir, append([]Option{WithRunnerConnector(f.script.Connector())}, options...)...)
-	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
-	return app
-}
-
 // fixtureProposal is the planning fixture's one concrete proposal: complete
 // feature.txt on the default branch.
 func fixtureProposal(decision, reason string) map[string]any {
@@ -57,15 +44,6 @@ func fixtureProposal(decision, reason string) map[string]any {
 		"dependencies": []string{}, "prompt": "Create feature.txt with fixed output and verify its contents.",
 		"decision": decision, "reason": reason,
 	}
-}
-
-func planningJSON(t *testing.T, value any) string {
-	t.Helper()
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
 }
 
 // scriptedPlan holds the replies of one planning pass, by stage.
@@ -82,14 +60,14 @@ type scriptedPlan struct {
 func completePlan(t *testing.T, f *scriptedFixture) scriptedPlan {
 	t.Helper()
 	plan := scriptedPlan{
-		grounding:     runnertest.Reply{Answer: planningJSON(t, map[string]any{"context": "Small fixture with a feature contract in README.md."})},
-		consolidation: runnertest.Reply{Answer: planningJSON(t, map[string]any{"proposals": []any{fixtureProposal("accepted", "Both independent reviews accept the concrete feature; no duplicates.")}})},
+		grounding:     runnertest.Reply{Answer: mustJSON(t, map[string]any{"context": "Small fixture with a feature contract in README.md."})},
+		consolidation: runnertest.Reply{Answer: mustJSON(t, map[string]any{"proposals": []any{fixtureProposal("accepted", "Both independent reviews accept the concrete feature; no duplicates.")}})},
 	}
-	plan.discovery = append(plan.discovery, runnertest.Reply{Answer: planningJSON(t, map[string]any{"proposals": []any{fixtureProposal("candidate", "Delivers the documented feature.")}})})
+	plan.discovery = append(plan.discovery, runnertest.Reply{Answer: mustJSON(t, map[string]any{"proposals": []any{fixtureProposal("candidate", "Delivers the documented feature.")}})})
 	for i := uint64(1); i < f.cfg.DiscoveryAgents; i++ {
 		plan.discovery = append(plan.discovery, runnertest.Reply{Answer: `{"proposals": []}`})
 	}
-	assessments := planningJSON(t, map[string]any{"assessments": []any{map[string]any{"id": "d0-feature", "decision": "accepted", "reason": "Concrete and useful."}}})
+	assessments := mustJSON(t, map[string]any{"assessments": []any{map[string]any{"id": "d0-feature", "decision": "accepted", "reason": "Concrete and useful."}}})
 	for range model.ReviewerSlots() {
 		plan.reviews = append(plan.reviews, runnertest.Reply{Answer: assessments})
 	}
@@ -220,9 +198,7 @@ func assertScriptedPlanningPass(t *testing.T, f *scriptedFixture, cycle model.Cy
 			t.Fatalf("%d replies left on %s", pending, route)
 		}
 	}
-	if open := f.script.OpenClients(); open != 0 {
-		t.Fatalf("%d runner clients left open", open)
-	}
+	assertNoOpenClients(t, f.script)
 }
 
 func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
@@ -232,7 +208,7 @@ func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
 	if err := fixture.state.Put("task", existing.ID, existing); err != nil {
 		t.Fatal(err)
 	}
-	app := fixture.planningApp(t)
+	app := fixture.pausedApp(t)
 	cycleID, err := app.StartAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -250,16 +226,13 @@ func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
 	if err != nil || len(tasks) != 1 || tasks[0].ID != existing.ID || tasks[0].Status != model.StatusQueued || tasks[0].RunID != nil {
 		t.Fatalf("audit disturbed or queued executable work: %+v, %v", tasks, err)
 	}
-	used, err := fixture.state.SessionsToday()
-	if err != nil || used != fixture.cfg.PlanningAdmissionsRequired() {
-		t.Fatalf("audit admissions = %d, %v; want %d", used, err, fixture.cfg.PlanningAdmissionsRequired())
-	}
+	assertAdmissions(t, fixture.state, fixture.cfg.PlanningAdmissionsRequired(), "audit")
 }
 
 func TestRunOnceCommitsCompletePlanningQueueAndPhase(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	completePlan(t, fixture).queue(fixture)
-	app := fixture.planningApp(t)
+	app := fixture.pausedApp(t)
 	if err := app.RunOnce(); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +262,7 @@ func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 	plan := completePlan(t, fixture)
 	plan.discovery[0] = runnertest.Reply{Answer: "this discovery answer is not JSON"}
 	plan.queue(fixture)
-	app := fixture.planningApp(t)
+	app := fixture.pausedApp(t)
 	if err := app.RunOnce(); err != nil {
 		t.Fatal(err)
 	}
@@ -323,9 +296,7 @@ func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 	if control.Mode != model.OperatingModePaused || control.Batch != nil || control.Error == nil {
 		t.Fatalf("failed RunOnce planning was not paused: %+v", control)
 	}
-	if open := fixture.script.OpenClients(); open != 0 {
-		t.Fatalf("%d runner clients left open", open)
-	}
+	assertNoOpenClients(t, fixture.script)
 }
 
 func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
@@ -333,7 +304,7 @@ func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
 	plan := completePlan(t, fixture)
 	plan.consolidation = runnertest.Reply{Answer: `{"proposals": []}`}
 	plan.queue(fixture)
-	app := fixture.planningApp(t)
+	app := fixture.pausedApp(t)
 	cycleID, err := app.StartAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -451,7 +422,7 @@ func TestPlanningRejectsAndPreservesAMutatedRoleWorkspace(t *testing.T) {
 			plan := completePlan(t, fixture)
 			test.mutate(&plan, test.mutation.effect)
 			plan.queue(fixture)
-			app := fixture.planningApp(t)
+			app := fixture.pausedApp(t)
 			cycleID, err := app.StartAudit(context.Background())
 			if err != nil {
 				t.Fatal(err)
@@ -499,9 +470,7 @@ func TestPlanningRejectsAndPreservesAMutatedRoleWorkspace(t *testing.T) {
 			if want := uint64(len(cycle.Sessions)); want != test.admissions(fixture.cfg.DiscoveryAgents) || uint64(len(fixture.planningTurns())) != want {
 				t.Fatalf("planning ran %d sessions and %d turns; want %d before the failure", want, len(fixture.planningTurns()), test.admissions(fixture.cfg.DiscoveryAgents))
 			}
-			if used, err := fixture.state.SessionsToday(); err != nil || used != test.admissions(fixture.cfg.DiscoveryAgents) {
-				t.Fatalf("admissions = %d, %v; want %d", used, err, test.admissions(fixture.cfg.DiscoveryAgents))
-			}
+			assertAdmissions(t, fixture.state, test.admissions(fixture.cfg.DiscoveryAgents), "planning turns before the failure")
 			tasks, err := store.List[model.Task](fixture.state, "task")
 			if err != nil || len(tasks) != 0 {
 				t.Fatalf("mutated planning workspace leaked executable work: %+v, %v", tasks, err)
@@ -510,9 +479,7 @@ func TestPlanningRejectsAndPreservesAMutatedRoleWorkspace(t *testing.T) {
 			if err != nil || len(memory) != 0 {
 				t.Fatalf("mutated planning workspace leaked decision memory: %+v, %v", memory, err)
 			}
-			if open := fixture.script.OpenClients(); open != 0 {
-				t.Fatalf("%d runner clients left open", open)
-			}
+			assertNoOpenClients(t, fixture.script)
 		})
 	}
 }
@@ -524,7 +491,7 @@ func TestRemotePreflightDoesNotHoldControlLockAndRejectsChangedPolicy(t *testing
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Remove(hold) })
-	app := fixture.planningApp(t)
+	app := fixture.pausedApp(t)
 	type preflightResult struct {
 		id  string
 		err error
@@ -583,7 +550,7 @@ func TestPlanningAllowanceConsumedDuringPreflightUsesModeSemantics(t *testing.T)
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = os.Remove(hold) })
-			app := fixture.planningApp(t)
+			app := fixture.pausedApp(t)
 			if test.runOnce {
 				if err := app.RunOnce(); err != nil {
 					t.Fatal(err)

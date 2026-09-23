@@ -6,6 +6,7 @@ package engine
 // route identifies the role that consumes a reply.
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // scriptedRoutes are the fixture's per-role routes. Every tier uses Executor.
@@ -105,18 +107,51 @@ func (f *scriptedFixture) configure(t *testing.T, adjust func(*config.Config)) {
 	f.cfg = cfg
 }
 
-// newApp resumes an app connected to the fixture's script, with retention and
-// observation housekeeping deferred, and shuts it down when the test ends.
-func (f *scriptedFixture) newApp(t *testing.T, options ...Option) *App {
+// pausedApp builds an app connected to the fixture's script without changing
+// the operating mode, with retention and observation housekeeping deferred,
+// and shuts it down when the test ends. Audits and single planning runs need
+// the service left paused.
+func (f *scriptedFixture) pausedApp(t *testing.T, options ...Option) *App {
 	t.Helper()
 	app := New(f.state, f.dataDir, append([]Option{WithRunnerConnector(f.script.Connector())}, options...)...)
 	t.Cleanup(app.Shutdown)
 	app.runtime.lastRetention = time.Now()
 	app.runtime.lastObserve = time.Now()
+	return app
+}
+
+// newApp is pausedApp resumed, so the scheduler picks up queued work.
+func (f *scriptedFixture) newApp(t *testing.T, options ...Option) *App {
+	t.Helper()
+	app := f.pausedApp(t, options...)
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}
 	return app
+}
+
+func assertAdmissions(t *testing.T, state *store.Store, want uint64, label string) {
+	t.Helper()
+	if used, err := state.SessionsToday(); err != nil || used != want {
+		t.Fatalf("admissions = %d, %v; want %d (%s)", used, err, want, label)
+	}
+}
+
+func assertNoOpenClients(t *testing.T, script *runnertest.Script) {
+	t.Helper()
+	if open := script.OpenClients(); open != 0 {
+		t.Fatalf("%d runner clients left open", open)
+	}
+}
+
+// mustJSON marshals a scripted structured answer.
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 // cleanReview is a structured reviewer answer with no findings.
@@ -191,12 +226,8 @@ func TestScriptedFixtureDrivesTaskThroughRepairToPublication(t *testing.T) {
 			t.Fatalf("%d replies left on %s", pending, route)
 		}
 	}
-	if open := script.OpenClients(); open != 0 {
-		t.Fatalf("%d runner clients left open", open)
-	}
-	if used, err := fixture.state.SessionsToday(); err != nil || used != 4 {
-		t.Fatalf("admissions = %d, %v; want 4 (executor + 2 reviewers + repair)", used, err)
-	}
+	assertNoOpenClients(t, script)
+	assertAdmissions(t, fixture.state, 4, "executor + 2 reviewers + repair")
 	if head := remoteHead(t, fixture.planningFixture, saved.Branch); head != *saved.OutputCommit {
 		t.Fatalf("published head %s, output %s", head, *saved.OutputCommit)
 	}
@@ -227,10 +258,6 @@ func TestScriptedCatalogRejectsMissingRoute(t *testing.T) {
 			t.Fatalf("a rejected route reached the runner: %+v", call)
 		}
 	}
-	if used, err := fixture.state.SessionsToday(); err != nil || used != 0 {
-		t.Fatalf("admissions = %d, %v; want 0", used, err)
-	}
-	if open := fixture.script.OpenClients(); open != 0 {
-		t.Fatalf("%d runner clients left open", open)
-	}
+	assertAdmissions(t, fixture.state, 0, "a rejected route admits nothing")
+	assertNoOpenClients(t, fixture.script)
 }
