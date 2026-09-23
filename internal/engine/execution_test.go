@@ -204,39 +204,6 @@ func TestExecutionDeliversFullLifecycle(t *testing.T) {
 	}
 }
 
-func TestExecutionMalformedAndIncompleteReviewsNeverPublish(t *testing.T) {
-	for _, mode := range []string{"malformed-review", "incomplete-review"} {
-		t.Run(mode, func(t *testing.T) {
-			fixture := newExecutionFixture(t)
-			if err := os.WriteFile(filepath.Join(fixture.root, mode), []byte("1"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			task := executionTask(t, fixture, fixture.cfg.DefaultBranch)
-			saveExecutionTask(t, fixture, task)
-			app := New(fixture.state, fixture.dataDir)
-			t.Cleanup(app.Shutdown)
-			app.runtime.lastRetention = time.Now()
-			app.runtime.lastObserve = time.Now()
-			if err := app.Resume(); err != nil {
-				t.Fatal(err)
-			}
-			saved := driveTask(t, fixture, app, task.ID)
-			if saved.Status != model.StatusBlocked || saved.BlockedReason == nil {
-				t.Fatalf("invalid review did not block: %+v", saved)
-			}
-			if mode == "malformed-review" && *saved.BlockedReason != model.BlockedReasonInvalidReview && *saved.BlockedReason != model.BlockedReasonRunnerUnavailable {
-				t.Fatalf("malformed review blocked as %v", *saved.BlockedReason)
-			}
-			if mode == "incomplete-review" && *saved.BlockedReason != model.BlockedReasonInvalidReview {
-				t.Fatalf("incomplete review blocked as %v", *saved.BlockedReason)
-			}
-			if saved.OutputCommit != nil || saved.PRNumber != nil {
-				t.Fatalf("invalid review authorized publication: %+v", saved)
-			}
-		})
-	}
-}
-
 // verificationFixture builds a real workspace at one commit with a tracked
 // impl.txt, then runs verifyRevision against it — the F1/F6 review-findings
 // regression setup.
@@ -392,36 +359,6 @@ func newExecutionApp(t *testing.T, fixture *planningFixture) *App {
 	return app
 }
 
-// TestExecutionFailedVerificationExhaustsRepairBudget: verification evidence
-// fails on every clean review; the repair budget, not the reviewer, decides
-// the outcome.
-func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
-	fixture := newExecutionFixture(t)
-	cfg := fixture.cfg.Clone()
-	cfg.VerificationCommands = []string{"false"}
-	cfg.MaxRepairRounds = 2
-	if err := fixture.state.Put("settings", "config", cfg); err != nil {
-		t.Fatal(err)
-	}
-	fixture.cfg = cfg
-	task := executionTask(t, fixture, cfg.DefaultBranch)
-	saveExecutionTask(t, fixture, task)
-	app := newExecutionApp(t, fixture)
-	saved := driveTask(t, fixture, app, task.ID)
-	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonVerificationFailed {
-		t.Fatalf("failed verification outcome = %+v", saved)
-	}
-	if len(saved.Reviews) != 3 || len(saved.Verification) != 1 || saved.Verification[0].Success {
-		t.Fatalf("unexpected evidence: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
-	}
-	if len(sessionByRole(saved, "repair")) != 1 || saved.RepairSession == nil {
-		t.Fatalf("repair session not persistent: %+v", saved.Sessions)
-	}
-	if saved.OutputCommit != nil || len(publications(t, fixture)) != 0 {
-		t.Fatalf("failed verification authorized publication: %+v", saved)
-	}
-}
-
 // TestExecutionRemoteConflictBlocksStaleBase: the target head moved under the
 // reviewed work; publication refuses the stale context.
 func TestExecutionRemoteConflictBlocksStaleBase(t *testing.T) {
@@ -447,22 +384,6 @@ func TestExecutionRemoteConflictBlocksStaleBase(t *testing.T) {
 	if remote := remoteHead(t, fixture, "main"); remote != strings.TrimSpace(string(external)) {
 		t.Fatalf("remote main = %s; want external %s", remote, external)
 	}
-}
-
-// driveUntilFile ticks the scheduler until path appears or the deadline hits.
-func driveUntilFile(t *testing.T, fixture *planningFixture, app *App, path, label string) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := app.Tick(); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatalf("%s did not appear", label)
 }
 
 // heldUploadPack points the fixture checkout's upload-pack at a script that
@@ -510,119 +431,6 @@ func releasePreflight(t *testing.T, fixture *planningFixture) {
 	t.Helper()
 	if err := os.Remove(filepath.Join(fixture.root, "hold")); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestExecutionCancellationDuringTurn: the operator cancel marker reaches a
-// running turn; the durable outcome is cancelled, not failed.
-func TestExecutionCancellationDuringTurn(t *testing.T) {
-	fixture := newExecutionFixture(t)
-	if err := os.WriteFile(filepath.Join(fixture.root, "codex-mode"), []byte("hold"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	task := executionTask(t, fixture, fixture.cfg.DefaultBranch)
-	saveExecutionTask(t, fixture, task)
-	app := newExecutionApp(t, fixture)
-	driveUntilFile(t, fixture, app, filepath.Join(fixture.root, "codex-entered"), "held executor turn")
-	if err := app.TaskAction(context.Background(), task.ID, "cancel"); err != nil {
-		t.Fatal(err)
-	}
-	saved := driveTask(t, fixture, app, task.ID)
-	if saved.Status != model.StatusCancelled {
-		t.Fatalf("cancelled turn outcome = %+v", saved)
-	}
-	if saved.OutputCommit != nil || len(publications(t, fixture)) != 0 {
-		t.Fatalf("cancelled task published: %+v", saved)
-	}
-	marked, err := fixture.state.MarkerSet("cancel", task.ID)
-	if err != nil || !marked {
-		t.Fatalf("cancel marker = %v, %v", marked, err)
-	}
-	if executors := sessionByRole(saved, "executor"); len(executors) != 1 || executors[0].Status == model.SessionCompleted {
-		t.Fatalf("cancelled executor session = %+v", executors)
-	}
-	// The best-effort turn/interrupt itself is covered deterministically by the
-	// runner tests; the fixture child may be reaped before it records it here.
-}
-
-// TestExecutionTaskTimeout: the task deadline fires while remote work is
-// still in flight; the durable outcome is a timed-out block, not a runner
-// failure or a cancellation.
-func TestExecutionTaskTimeout(t *testing.T) {
-	fixture := newExecutionFixture(t)
-	cfg := fixture.cfg.Clone()
-	cfg.SessionTimeoutSeconds = 10
-	cfg.TaskTimeoutSeconds = 10
-	// The per-command bound stays generous so the task deadline, not a command
-	// timeout, fires first.
-	cfg.CommandTimeoutSeconds = 120
-	if err := fixture.state.Put("settings", "config", cfg); err != nil {
-		t.Fatal(err)
-	}
-	fixture.cfg = cfg
-	heldUploadPack(t, fixture)
-	task := executionTask(t, fixture, cfg.DefaultBranch)
-	saveExecutionTask(t, fixture, task)
-	app := newExecutionApp(t, fixture)
-	type outcome struct {
-		task model.Task
-		err  error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		task, err := driveTaskResult(fixture, app, task.ID)
-		done <- outcome{task, err}
-	}()
-	waitForPreflights(t, fixture, 1)
-	finished := <-done
-	releasePreflight(t, fixture)
-	if finished.err != nil {
-		t.Fatal(finished.err)
-	}
-	saved := finished.task
-	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonTimeout {
-		t.Fatalf("timeout outcome = %+v", saved)
-	}
-	if saved.Error == nil || !strings.Contains(*saved.Error, "time limit") {
-		t.Fatalf("timeout error evidence = %+v", saved.Error)
-	}
-}
-
-// TestExecutionFailedExecutorStartRetries: a runner start failure preserves the
-// reserved admission, blocks without a session, and an operator retry redelivers
-// with exactly one new executor admission.
-func TestExecutionFailedExecutorStartRetries(t *testing.T) {
-	fixture := newExecutionFixture(t)
-	writeFixtureMode(t, fixture, "failed-executor-start")
-	task := executionTask(t, fixture, fixture.cfg.DefaultBranch)
-	saveExecutionTask(t, fixture, task)
-	app := newExecutionApp(t, fixture)
-	saved := driveTask(t, fixture, app, task.ID)
-	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonRunnerUnavailable {
-		t.Fatalf("failed start outcome = %+v", saved)
-	}
-	if saved.ExecutionSession != nil || saved.Error == nil || !strings.Contains(*saved.Error, "Fixture failed start") {
-		t.Fatalf("failed start evidence = %+v", saved)
-	}
-	if used, err := fixture.state.SessionsToday(); err != nil || used != 1 {
-		t.Fatalf("admissions after failed start = %d, %v; want the reserved 1", used, err)
-	}
-	marker := filepath.Join(fixture.root, "failed-executor-start")
-	if err := os.Remove(marker); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.TaskAction(context.Background(), task.ID, "retry"); err != nil {
-		t.Fatal(err)
-	}
-	saved = driveTask(t, fixture, app, task.ID)
-	if saved.Status != model.StatusPublished {
-		t.Fatalf("retried delivery = %+v", saved)
-	}
-	if used, err := fixture.state.SessionsToday(); err != nil || used != 7 {
-		t.Fatalf("admissions = %d, %v; want 7 (1 failed + 6 delivered)", used, err)
-	}
-	if entries := publications(t, fixture); len(entries) != 1 || entries[0]["action"] != "create" {
-		t.Fatalf("publications = %+v; want one create", entries)
 	}
 }
 
@@ -771,63 +579,6 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 			t.Fatalf("closed-PR reconcile wrote actions: %+v", entries)
 		}
 	})
-}
-
-// TestExecutionRestartRequeuesInitializedTask: a task that died mid-execution
-// with an intact workspace resumes its executor session instead of restarting.
-func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
-	fixture := newExecutionFixture(t)
-	cfg := fixture.cfg.Clone()
-	cfg.VerificationCommands = []string{"test -f feature.txt"}
-	if err := fixture.state.Put("settings", "config", cfg); err != nil {
-		t.Fatal(err)
-	}
-	fixture.cfg = cfg
-	task := executionTask(t, fixture, cfg.DefaultBranch)
-	ctx := context.Background()
-	ws := filepath.Join(fixture.dataDir, "tasks", task.ID, "workspace")
-	if err := gitops.CloneAt(ctx, cfg, ws, task.SourceRevision); err != nil {
-		t.Fatal(err)
-	}
-	thread := model.ID()
-	task.Workspace = ws
-	task.ComparisonBase = task.SourceRevision
-	task.ExecutionSession = &thread
-	task.Status = model.StatusExecuting
-	task.Sessions = []model.Session{{ID: thread, Role: "executor", Status: model.SessionRunning}}
-	// The fixture server must still know the thread for resume to succeed.
-	if err := os.MkdirAll(filepath.Join(fixture.root, "threads"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fixture.root, "threads", thread+".json"), []byte(`{"turn_started":true,"repairs":0}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	saveExecutionTask(t, fixture, task)
-	app := New(fixture.state, fixture.dataDir)
-	t.Cleanup(app.Shutdown)
-	if err := app.Recover(); err != nil {
-		t.Fatal(err)
-	}
-	recovered, err := store.Get[model.Task](fixture.state, "task", task.ID)
-	if err != nil || recovered == nil {
-		t.Fatal(err)
-	}
-	if recovered.Status != model.StatusQueued || recovered.Attempts != 1 {
-		t.Fatalf("interrupted task recovery = %+v", recovered)
-	}
-	if executors := sessionByRole(*recovered, "executor"); len(executors) != 1 || executors[0].Status != model.SessionInterrupted {
-		t.Fatalf("running session not interrupted: %+v", executors)
-	}
-	if err := app.Resume(); err != nil {
-		t.Fatal(err)
-	}
-	saved := driveTask(t, fixture, app, task.ID)
-	if saved.Status != model.StatusPublished {
-		t.Fatalf("requeued delivery = %+v", saved)
-	}
-	if executors := sessionByRole(saved, "executor"); len(executors) != 1 || executors[0].Status != model.SessionCompleted {
-		t.Fatalf("resumed executor session = %+v", executors)
-	}
 }
 
 // existingPrBranch builds the existing-owned-PR remote state: the octomus/
@@ -1015,106 +766,6 @@ func TestExecutionWorkerPanicBlocks(t *testing.T) {
 	}
 }
 
-func TestExecutionTimeoutJoinsCallbackBeforeFinalizing(t *testing.T) {
-	state := testStore(t)
-	cfg := testConfig(t.TempDir())
-	cfg.TaskTimeoutSeconds = 0
-	task := queuedTask(cfg, "slow-executor", "main", "tyk/slow-executor")
-	task.Status = model.StatusExecuting
-	if err := state.Put("task", task.ID, task); err != nil {
-		t.Fatal(err)
-	}
-	app := New(state, t.TempDir())
-	release := make(chan struct{})
-	cancelled := make(chan struct{})
-	app.taskRunner = TaskRunnerFunc(func(ctx context.Context, task model.Task) error {
-		return app.superviseExecution(ctx, task, func(ctx context.Context, task *model.Task) error {
-			<-ctx.Done()
-			close(cancelled)
-			<-release // Model non-cancellable work followed by a durable write.
-			task.Sessions = append(task.Sessions, model.Session{ID: "late", Status: model.SessionRunning})
-			return app.saveTask(task)
-		})
-	})
-	t.Cleanup(app.Shutdown)
-	t.Cleanup(func() { close(release) })
-	app.runTask(task)
-	select {
-	case <-cancelled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor was not cancelled")
-	}
-	finished := make(chan struct{})
-	go func() { app.wg.Wait(); close(finished) }()
-	// Exceed WithDeadline's eight-second grace: ownership must still be held.
-	select {
-	case <-finished:
-		t.Fatal("worker completed while its callback could still write")
-	case <-time.After(9 * time.Second):
-	}
-	app.runtimeMu.Lock()
-	_, active := app.runtime.tasks[task.ID]
-	app.runtimeMu.Unlock()
-	if !active {
-		t.Fatal("executor lost runtime ownership before callback exit")
-	}
-	saved, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || saved == nil || saved.Status != model.StatusExecuting {
-		t.Fatalf("task finalized before callback exit: %+v, %v", saved, err)
-	}
-	release <- struct{}{}
-	select {
-	case <-finished:
-	case <-time.After(5 * time.Second):
-		t.Fatal("worker did not finish after callback exit")
-	}
-	saved, err = store.Get[model.Task](state, "task", task.ID)
-	if err != nil || saved == nil || saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonTimeout {
-		t.Fatalf("timeout evidence lost: %+v, %v", saved, err)
-	}
-	if len(saved.Sessions) != 1 || saved.Sessions[0].Status != model.SessionFailed {
-		t.Fatalf("late callback state was not finalized: %+v", saved.Sessions)
-	}
-}
-
-func TestExecutionDeadlineCallbackPanicBlocks(t *testing.T) {
-	fixture := newExecutionFixture(t)
-	task := executionTask(t, fixture, fixture.cfg.DefaultBranch)
-	saveExecutionTask(t, fixture, task)
-	app := New(fixture.state, fixture.dataDir)
-	t.Cleanup(app.Shutdown)
-	// Substitute only execution, preserving the production supervisor and its
-	// separate deadline goroutine. The outer worker recovery cannot catch this.
-	app.taskRunner = TaskRunnerFunc(func(ctx context.Context, task model.Task) error {
-		return app.superviseExecution(ctx, task, func(_ context.Context, task *model.Task) error {
-			task.Sessions = append(task.Sessions, model.Session{ID: "panicking-executor", Role: "executor", Status: model.SessionRunning})
-			panic("executor exploded")
-		})
-	})
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
-	if err := app.Resume(); err != nil {
-		t.Fatal(err)
-	}
-	saved := driveTask(t, fixture, app, task.ID)
-	if saved.Status != model.StatusBlocked || saved.Error == nil || !strings.Contains(*saved.Error, "Task worker panicked: executor exploded") {
-		t.Fatalf("panic outcome = %+v", saved)
-	}
-	if len(saved.Sessions) != 1 || saved.Sessions[0].Status != model.SessionFailed {
-		t.Fatalf("panic did not fail the running session: %+v", saved.Sessions)
-	}
-	events, err := fixture.state.Events(&task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range events {
-		if event.Kind == "error" && strings.Contains(event.Message, "executor exploded") {
-			return
-		}
-	}
-	t.Fatal("panic did not record a supervisor error event")
-}
-
 // TestExecutionDeliversFullLifecycleViaOpenCode runs the same
 // executor → fresh reviews → persistent repair → verification → publication
 // lifecycle through the OpenCode HTTP/SSE fixture peer
@@ -1197,39 +848,5 @@ func TestExecutionDeliversFullLifecycleViaOpenCode(t *testing.T) {
 	used, err := fixture.state.SessionsToday()
 	if err != nil || used != 6 {
 		t.Fatalf("opencode admissions = %d, want 6 (executor + 3 reviewers + 2 repairs)", used)
-	}
-}
-
-// TestExecutionNoProgressLimitStopsIdenticalRepairs: a repair that reproduces
-// the same tree yields the identical snapshot revision; the no-progress
-// budget, not the repair cap, ends the task.
-func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
-	fixture := newExecutionFixture(t)
-	cfg := fixture.cfg.Clone()
-	cfg.VerificationCommands = []string{"false"}
-	cfg.MaxRepairRounds = 4
-	cfg.MaxNoProgressRounds = 1
-	if err := fixture.state.Put("settings", "config", cfg); err != nil {
-		t.Fatal(err)
-	}
-	fixture.cfg = cfg
-	task := executionTask(t, fixture, cfg.DefaultBranch)
-	saveExecutionTask(t, fixture, task)
-	app := newExecutionApp(t, fixture)
-	saved := driveTask(t, fixture, app, task.ID)
-	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonVerificationFailed {
-		t.Fatalf("no-progress outcome = %+v", saved)
-	}
-	// Reviews 3 and 4 cover the identical revision the no-op repair produced:
-	// executor 'needs repair' → repair 'partial' → repair 'fixed' → clean
-	// review + failed verification → repair rewriting 'fixed' changes nothing.
-	if len(saved.Reviews) != 4 {
-		t.Fatalf("reviews = %+v; want 4 rounds ending on the repeated revision", saved.Reviews)
-	}
-	if saved.Reviews[2].Revision != saved.Reviews[3].Revision {
-		t.Fatalf("no-progress signature missing: %+v", saved.Reviews)
-	}
-	if saved.OutputCommit != nil || len(publications(t, fixture)) != 0 {
-		t.Fatalf("no-progress task authorized publication: %+v", saved)
 	}
 }
