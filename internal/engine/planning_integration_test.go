@@ -58,6 +58,24 @@ func command(t *testing.T, directory, executable string, args ...string) {
 func newPlanningFixture(t *testing.T) *planningFixture {
 	t.Helper()
 	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pythonFixtureShim(t, filepath.Join(root, "bin", "git"), root, "git.py")
+	codex := filepath.Join(root, "codex")
+	pythonFixtureShim(t, codex, root, "codex.py")
+	return newFixture(t, root, func(cfg *config.Config) {
+		cfg.CodexBinary = codex
+		cfg.OpencodeBinary = "/no-opencode-installed"
+	})
+}
+
+// newFixture builds the shared local fixture under root: a bare remote at
+// remote.git, a pushed clone at repository, the gh peer in root/bin (which may
+// already hold other shims) at the front of PATH, an isolated environment, and
+// a store holding the test settings once configure has adjusted them.
+func newFixture(t *testing.T, root string, configure func(*config.Config)) *planningFixture {
+	t.Helper()
 	bin := filepath.Join(root, "bin")
 	repo := filepath.Join(root, "repository")
 	remote := filepath.Join(root, "remote.git")
@@ -67,10 +85,7 @@ func newPlanningFixture(t *testing.T) *planningFixture {
 			t.Fatal(err)
 		}
 	}
-	pythonFixtureShim(t, filepath.Join(bin, "git"), root, "git.py")
 	pythonFixtureShim(t, filepath.Join(bin, "gh"), root, "gh.py")
-	codex := filepath.Join(root, "codex")
-	pythonFixtureShim(t, codex, root, "codex.py")
 	if err := os.WriteFile(filepath.Join(root, "prs.json"), []byte("[]"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -102,11 +117,10 @@ func newPlanningFixture(t *testing.T) *planningFixture {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	cfg := testConfig(repo)
-	cfg.CodexBinary = codex
-	cfg.OpencodeBinary = "/no-opencode-installed"
 	cfg.SessionTimeoutSeconds = 15
 	cfg.CommandTimeoutSeconds = 5
 	cfg.MaxSessionsPerDay = 30
+	configure(&cfg)
 	state, err := store.Open(filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
