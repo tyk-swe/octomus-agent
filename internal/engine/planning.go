@@ -459,57 +459,29 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycle model.Cycle, la
 		outcome.err = fmt.Errorf("Missing %s route", role)
 		return outcome
 	}
-	measured, err := workspace.DirectorySize(a.DataDir)
-	if err != nil {
-		outcome.err = err
-		return outcome
-	}
-	if err := a.Store.ReserveSession(measured, store.NewAdmission(cycle.ID, nil, label, route)); err != nil {
-		outcome.err = err
-		return outcome
-	}
-	if cycle.Grounding == nil {
-		outcome.err = errors.New("Planning cycle is missing its grounding")
-		return outcome
-	}
 	roleRoot := filepath.Join(a.DataDir, "cycles", cycle.ID, label)
 	roleWorkspace := filepath.Join(roleRoot, "workspace")
-	if err := gitops.CloneAt(ctx, cfg, roleWorkspace, cycle.Grounding.Revision); err != nil {
-		outcome.err = err
-		return outcome
-	}
-	clients := a.runners(ctx, cfg, cycle.ID)
-	sessionID, err := clients.Start(route, roleWorkspace, nil)
-	if err != nil {
-		_ = clients.Close()
-		outcome.err = err
-		return outcome
-	}
-	session := model.NewSession(sessionID, label, route)
-	_ = a.Store.Event(cycle.ID, "session_started", fmt.Sprintf("%s: %s · %s", label, sessionID, route))
-	answer, turnErr := clients.Turn(sessionID, route, roleWorkspace, prompt, schema)
-	if turnErr == nil {
-		unchanged, atErr := gitops.At(ctx, cfg, roleWorkspace, cycle.Grounding.Revision)
-		if atErr != nil {
-			turnErr = atErr
-		} else if !unchanged {
-			turnErr = errors.New("Planning session modified its source snapshot")
-		}
-	}
-	if closeErr := clients.Close(); turnErr == nil && closeErr != nil {
-		turnErr = closeErr
-	}
-	if turnErr == nil {
-		session.MarkCompleted(store.Redact(answer))
-		outcome.answer = answer
-	} else {
-		session.MarkFailed(store.ErrorMessage(turnErr))
-		outcome.err = turnErr
-	}
-	if err := a.Store.AppendCycleSession(cycle.ID, session); err != nil {
-		outcome.err = errors.Join(outcome.err, err)
-		return outcome
-	}
+	// Each planning role owns its client scope; the invocation closes it.
+	_, outcome.answer, outcome.err = a.invoke(ctx, a.runners(ctx, cfg, cycle.ID), invocation{
+		cycleID: cycle.ID, role: label, route: route, workspace: roleWorkspace,
+		prompt: prompt, schema: schema, ownsClients: true,
+		prepare: func() error {
+			if cycle.Grounding == nil {
+				return errors.New("Planning cycle is missing its grounding")
+			}
+			return gitops.CloneAt(ctx, cfg, roleWorkspace, cycle.Grounding.Revision)
+		},
+		judge: func(_, answer string) (string, error) {
+			unchanged, err := gitops.At(ctx, cfg, roleWorkspace, cycle.Grounding.Revision)
+			if err != nil {
+				return "", err
+			}
+			if !unchanged {
+				return "", errors.New("Planning session modified its source snapshot")
+			}
+			return answer, nil
+		},
+	})
 	if outcome.err == nil {
 		if err := workspace.RemoveOwnedDir(roleRoot, roleWorkspace); err != nil {
 			_ = a.Store.Event(cycle.ID, "cleanup_error", fmt.Sprintf("%s: %s", label, store.ErrorMessage(err)))
