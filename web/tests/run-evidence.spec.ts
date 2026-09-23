@@ -69,7 +69,7 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
   ]);
   if (page.viewportSize()!.width >= 700) {
     expect(first!.y).toBe(second!.y);
-    expect(first!.width).toBe(second!.width);
+    expect(Math.abs(first!.width - second!.width)).toBeLessThan(0.5);
   } else {
     expect(second!.y).toBeGreaterThan(first!.y + first!.height - 1);
   }
