@@ -15,12 +15,16 @@ owns strict typed JSON boundaries for saved records and API requests.
 - `cmd/octomus-agent`: CLI flags, read-only exports and service startup.
 - `internal/engine`: scheduler and cycle orchestration: `planning.go` (discovery
   and proposal review), `execution.go` (execution, review, repair and
-  verification), `memory.go` (grounding and history), `housekeeping.go`
+  verification), `invocation.go` (role invocation: every agent turn's
+  admission, session start or resume, session record and redaction),
+  `memory.go` (grounding and history), `housekeeping.go`
   (retention, workspace and disk limits), `baseline.go` (clean-baseline checks,
   separate from task verification), `capacity.go` (owned-PR admission),
   `actions.go`/`control.go`/`api.go` (operator controls and views).
 - `internal/runner`: runner-neutral model discovery, exact routing and dispatch;
   `codex.go` (app-server protocol) and `opencode.go` (HTTP/SSE) implement it.
+  `runnertest` is the scripted adapter tests inject as the runner connector
+  (engine `WithRunnerConnector`) in place of a runner process.
 - `internal/config`, `internal/model`, `internal/store` (with `queries.go`,
   `schema.go`, `capacity.go`, `notifications.go`): policy, durable records,
   SQLite, fresh schema creation, indexed operational views and the attention outbox.
