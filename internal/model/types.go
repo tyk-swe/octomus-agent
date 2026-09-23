@@ -1,9 +1,9 @@
-// Wire records preserve the Rust field order and per-field load defaults.
+// Wire records use the current Go JSON field names and request defaults.
 package model
 
 import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 type Proposal struct {
@@ -20,15 +20,15 @@ type Proposal struct {
 	Prompt        string   `json:"prompt"`
 	Decision      string   `json:"decision"`
 	Reason        string   `json:"reason"`
-	ProblemKey    string   `json:"problem_key" wire:"default"`
-	RelevantPaths []string `json:"relevant_paths" wire:"default"`
-	Reconsiders   []string `json:"reconsiders" wire:"default"`
+	ProblemKey    string   `json:"problem_key"`
+	RelevantPaths []string `json:"relevant_paths"`
+	Reconsiders   []string `json:"reconsiders"`
 }
 
 func (v *Proposal) UnmarshalJSON(data []byte) error {
 	type plain Proposal
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, true, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
 		return err
 	}
 	*v = Proposal(decoded)
@@ -36,9 +36,9 @@ func (v *Proposal) UnmarshalJSON(data []byte) error {
 }
 func (v Proposal) MarshalJSON() ([]byte, error) {
 	type plain Proposal
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v Proposal) Clone() Proposal { return jsoncompat.Clone(v) }
+func (v Proposal) Clone() Proposal { return wirejson.Clone(v) }
 
 type PlanningCapacity struct {
 	Day         string                 `json:"day"`
@@ -53,7 +53,7 @@ type PlanningCapacity struct {
 func (v *PlanningCapacity) UnmarshalJSON(data []byte) error {
 	type plain PlanningCapacity
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = PlanningCapacity(decoded)
@@ -61,9 +61,9 @@ func (v *PlanningCapacity) UnmarshalJSON(data []byte) error {
 }
 func (v PlanningCapacity) MarshalJSON() ([]byte, error) {
 	type plain PlanningCapacity
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v PlanningCapacity) Clone() PlanningCapacity { return jsoncompat.Clone(v) }
+func (v PlanningCapacity) Clone() PlanningCapacity { return wirejson.Clone(v) }
 
 type AttemptPolicy struct {
 	MaxRepairRounds       uint64 `json:"max_repair_rounds"`
@@ -77,7 +77,7 @@ type AttemptPolicy struct {
 func (v *AttemptPolicy) UnmarshalJSON(data []byte) error {
 	type plain AttemptPolicy
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = AttemptPolicy(decoded)
@@ -85,9 +85,9 @@ func (v *AttemptPolicy) UnmarshalJSON(data []byte) error {
 }
 func (v AttemptPolicy) MarshalJSON() ([]byte, error) {
 	type plain AttemptPolicy
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v AttemptPolicy) Clone() AttemptPolicy { return jsoncompat.Clone(v) }
+func (v AttemptPolicy) Clone() AttemptPolicy { return wirejson.Clone(v) }
 
 type WorkspaceLifecycle struct {
 	ArchivedAt  *string `json:"archived_at"`
@@ -97,7 +97,7 @@ type WorkspaceLifecycle struct {
 func (v *WorkspaceLifecycle) UnmarshalJSON(data []byte) error {
 	type plain WorkspaceLifecycle
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = WorkspaceLifecycle(decoded)
@@ -105,9 +105,9 @@ func (v *WorkspaceLifecycle) UnmarshalJSON(data []byte) error {
 }
 func (v WorkspaceLifecycle) MarshalJSON() ([]byte, error) {
 	type plain WorkspaceLifecycle
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v WorkspaceLifecycle) Clone() WorkspaceLifecycle { return jsoncompat.Clone(v) }
+func (v WorkspaceLifecycle) Clone() WorkspaceLifecycle { return wirejson.Clone(v) }
 
 type Finding struct {
 	Title    string `json:"title"`
@@ -119,7 +119,7 @@ type Finding struct {
 func (v *Finding) UnmarshalJSON(data []byte) error {
 	type plain Finding
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, true, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
 		return err
 	}
 	*v = Finding(decoded)
@@ -127,9 +127,9 @@ func (v *Finding) UnmarshalJSON(data []byte) error {
 }
 func (v Finding) MarshalJSON() ([]byte, error) {
 	type plain Finding
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v Finding) Clone() Finding { return jsoncompat.Clone(v) }
+func (v Finding) Clone() Finding { return wirejson.Clone(v) }
 
 type Review struct {
 	Completed bool      `json:"completed"`
@@ -140,14 +140,14 @@ type Review struct {
 func (v *Review) UnmarshalJSON(data []byte) error {
 	type plain Review
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, true, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
 		return err
 	}
 	*v = Review(decoded)
 	return nil
 }
-func (v Review) MarshalJSON() ([]byte, error) { type plain Review; return jsoncompat.Record(plain(v)) }
-func (v Review) Clone() Review                { return jsoncompat.Clone(v) }
+func (v Review) MarshalJSON() ([]byte, error) { type plain Review; return wirejson.Record(plain(v)) }
+func (v Review) Clone() Review                { return wirejson.Clone(v) }
 
 type ReviewRound struct {
 	SessionID      string `json:"session_id"`
@@ -160,7 +160,7 @@ type ReviewRound struct {
 func (v *ReviewRound) UnmarshalJSON(data []byte) error {
 	type plain ReviewRound
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = ReviewRound(decoded)
@@ -168,9 +168,9 @@ func (v *ReviewRound) UnmarshalJSON(data []byte) error {
 }
 func (v ReviewRound) MarshalJSON() ([]byte, error) {
 	type plain ReviewRound
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v ReviewRound) Clone() ReviewRound { return jsoncompat.Clone(v) }
+func (v ReviewRound) Clone() ReviewRound { return wirejson.Clone(v) }
 
 type Verification struct {
 	Command   string `json:"command"`
@@ -183,7 +183,7 @@ type Verification struct {
 func (v *Verification) UnmarshalJSON(data []byte) error {
 	type plain Verification
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = Verification(decoded)
@@ -191,9 +191,9 @@ func (v *Verification) UnmarshalJSON(data []byte) error {
 }
 func (v Verification) MarshalJSON() ([]byte, error) {
 	type plain Verification
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v Verification) Clone() Verification { return jsoncompat.Clone(v) }
+func (v Verification) Clone() Verification { return wirejson.Clone(v) }
 
 type BaselineCommand struct {
 	Command         string `json:"command"`
@@ -206,7 +206,7 @@ type BaselineCommand struct {
 func (v *BaselineCommand) UnmarshalJSON(data []byte) error {
 	type plain BaselineCommand
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = BaselineCommand(decoded)
@@ -214,9 +214,9 @@ func (v *BaselineCommand) UnmarshalJSON(data []byte) error {
 }
 func (v BaselineCommand) MarshalJSON() ([]byte, error) {
 	type plain BaselineCommand
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v BaselineCommand) Clone() BaselineCommand { return jsoncompat.Clone(v) }
+func (v BaselineCommand) Clone() BaselineCommand { return wirejson.Clone(v) }
 
 type BaselineCheck struct {
 	ID                string            `json:"id"`
@@ -235,7 +235,7 @@ type BaselineCheck struct {
 func (v *BaselineCheck) UnmarshalJSON(data []byte) error {
 	type plain BaselineCheck
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = BaselineCheck(decoded)
@@ -243,9 +243,9 @@ func (v *BaselineCheck) UnmarshalJSON(data []byte) error {
 }
 func (v BaselineCheck) MarshalJSON() ([]byte, error) {
 	type plain BaselineCheck
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v BaselineCheck) Clone() BaselineCheck { return jsoncompat.Clone(v) }
+func (v BaselineCheck) Clone() BaselineCheck { return wirejson.Clone(v) }
 
 type DefaultBranchObservation struct {
 	Repository    string `json:"repository"`
@@ -257,7 +257,7 @@ type DefaultBranchObservation struct {
 func (v *DefaultBranchObservation) UnmarshalJSON(data []byte) error {
 	type plain DefaultBranchObservation
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = DefaultBranchObservation(decoded)
@@ -265,9 +265,9 @@ func (v *DefaultBranchObservation) UnmarshalJSON(data []byte) error {
 }
 func (v DefaultBranchObservation) MarshalJSON() ([]byte, error) {
 	type plain DefaultBranchObservation
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v DefaultBranchObservation) Clone() DefaultBranchObservation { return jsoncompat.Clone(v) }
+func (v DefaultBranchObservation) Clone() DefaultBranchObservation { return wirejson.Clone(v) }
 
 type Session struct {
 	ID        string       `json:"id"`
@@ -281,7 +281,7 @@ type Session struct {
 func (v *Session) UnmarshalJSON(data []byte) error {
 	type plain Session
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = Session(decoded)
@@ -289,9 +289,9 @@ func (v *Session) UnmarshalJSON(data []byte) error {
 }
 func (v Session) MarshalJSON() ([]byte, error) {
 	type plain Session
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v Session) Clone() Session { return jsoncompat.Clone(v) }
+func (v Session) Clone() Session { return wirejson.Clone(v) }
 
 type Task struct {
 	ID                   string             `json:"id"`
@@ -317,28 +317,28 @@ type Task struct {
 	Error                *string            `json:"error"`
 	CreatedAt            string             `json:"created_at"`
 	UpdatedAt            string             `json:"updated_at"`
-	AttemptPolicy        *AttemptPolicy     `json:"attempt_policy" wire:"default"`
-	ReviewBaseline       uint64             `json:"review_baseline" wire:"default"`
-	BlockedReason        *BlockedReason     `json:"blocked_reason" wire:"default"`
-	RunID                *string            `json:"run_id" wire:"default"`
-	SupersededBy         []string           `json:"superseded_by" wire:"default"`
-	Supersedes           []string           `json:"supersedes" wire:"default"`
-	RediscoveryRequested bool               `json:"rediscovery_requested" wire:"default"`
-	RediscoveryResult    *string            `json:"rediscovery_result" wire:"default"`
-	Lifecycle            WorkspaceLifecycle `json:"lifecycle" wire:"default"`
+	AttemptPolicy        *AttemptPolicy     `json:"attempt_policy"`
+	ReviewBaseline       uint64             `json:"review_baseline"`
+	BlockedReason        *BlockedReason     `json:"blocked_reason"`
+	RunID                *string            `json:"run_id"`
+	SupersededBy         []string           `json:"superseded_by"`
+	Supersedes           []string           `json:"supersedes"`
+	RediscoveryRequested bool               `json:"rediscovery_requested"`
+	RediscoveryResult    *string            `json:"rediscovery_result"`
+	Lifecycle            WorkspaceLifecycle `json:"lifecycle"`
 }
 
 func (v *Task) UnmarshalJSON(data []byte) error {
 	type plain Task
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = Task(decoded)
 	return nil
 }
-func (v Task) MarshalJSON() ([]byte, error) { type plain Task; return jsoncompat.Record(plain(v)) }
-func (v Task) Clone() Task                  { return jsoncompat.Clone(v) }
+func (v Task) MarshalJSON() ([]byte, error) { type plain Task; return wirejson.Record(plain(v)) }
+func (v Task) Clone() Task                  { return wirejson.Clone(v) }
 
 type PullRequest struct {
 	Number         uint64 `json:"number"`
@@ -352,14 +352,14 @@ type PullRequest struct {
 	ChangedLines   uint64 `json:"changed_lines"`
 	CreatedAt      string `json:"created_at"`
 	Owned          bool   `json:"owned"`
-	HeadRepository string `json:"head_repository" wire:"default"`
-	BaseRepository string `json:"base_repository" wire:"default"`
+	HeadRepository string `json:"head_repository"`
+	BaseRepository string `json:"base_repository"`
 }
 
 func (v *PullRequest) UnmarshalJSON(data []byte) error {
 	type plain PullRequest
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = PullRequest(decoded)
@@ -367,9 +367,9 @@ func (v *PullRequest) UnmarshalJSON(data []byte) error {
 }
 func (v PullRequest) MarshalJSON() ([]byte, error) {
 	type plain PullRequest
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v PullRequest) Clone() PullRequest { return jsoncompat.Clone(v) }
+func (v PullRequest) Clone() PullRequest { return wirejson.Clone(v) }
 
 type PrObservation struct {
 	Repository           string      `json:"repository"`
@@ -382,7 +382,7 @@ type PrObservation struct {
 func (v *PrObservation) UnmarshalJSON(data []byte) error {
 	type plain PrObservation
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = PrObservation(decoded)
@@ -390,15 +390,15 @@ func (v *PrObservation) UnmarshalJSON(data []byte) error {
 }
 func (v PrObservation) MarshalJSON() ([]byte, error) {
 	type plain PrObservation
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v PrObservation) Clone() PrObservation { return jsoncompat.Clone(v) }
+func (v PrObservation) Clone() PrObservation { return wirejson.Clone(v) }
 
 type Grounding struct {
 	Revision           string              `json:"revision"`
 	PRs                []PullRequest       `json:"prs"`
-	ExternalPRs        []ExternalPrContext `json:"external_prs" wire:"default"`
-	PRCoverage         PrCoverage          `json:"pr_coverage" wire:"default"`
+	ExternalPRs        []ExternalPrContext `json:"external_prs"`
+	PRCoverage         PrCoverage          `json:"pr_coverage"`
 	History            any                 `json:"history"`
 	MaintenanceDue     bool                `json:"maintenance_due"`
 	MaintenanceTargets []string            `json:"maintenance_targets"`
@@ -407,7 +407,7 @@ type Grounding struct {
 func (v *Grounding) UnmarshalJSON(data []byte) error {
 	type plain Grounding
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = Grounding(decoded)
@@ -415,9 +415,9 @@ func (v *Grounding) UnmarshalJSON(data []byte) error {
 }
 func (v Grounding) MarshalJSON() ([]byte, error) {
 	type plain Grounding
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v Grounding) Clone() Grounding { return jsoncompat.Clone(v) }
+func (v Grounding) Clone() Grounding { return wirejson.Clone(v) }
 
 type ExternalPrContext struct {
 	Number         uint64 `json:"number"`
@@ -436,7 +436,7 @@ type ExternalPrContext struct {
 func (v *ExternalPrContext) UnmarshalJSON(data []byte) error {
 	type plain ExternalPrContext
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = ExternalPrContext(decoded)
@@ -444,9 +444,9 @@ func (v *ExternalPrContext) UnmarshalJSON(data []byte) error {
 }
 func (v ExternalPrContext) MarshalJSON() ([]byte, error) {
 	type plain ExternalPrContext
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v ExternalPrContext) Clone() ExternalPrContext { return jsoncompat.Clone(v) }
+func (v ExternalPrContext) Clone() ExternalPrContext { return wirejson.Clone(v) }
 
 type PrCoverage struct {
 	ObservedAt       *string `json:"observed_at"`
@@ -464,7 +464,7 @@ type PrCoverage struct {
 func (v *PrCoverage) UnmarshalJSON(data []byte) error {
 	type plain PrCoverage
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = PrCoverage(decoded)
@@ -472,9 +472,9 @@ func (v *PrCoverage) UnmarshalJSON(data []byte) error {
 }
 func (v PrCoverage) MarshalJSON() ([]byte, error) {
 	type plain PrCoverage
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v PrCoverage) Clone() PrCoverage { return jsoncompat.Clone(v) }
+func (v PrCoverage) Clone() PrCoverage { return wirejson.Clone(v) }
 
 type OpenPrInventory struct {
 	Repository string        `json:"repository"`
@@ -485,7 +485,7 @@ type OpenPrInventory struct {
 func (v *OpenPrInventory) UnmarshalJSON(data []byte) error {
 	type plain OpenPrInventory
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = OpenPrInventory(decoded)
@@ -493,9 +493,9 @@ func (v *OpenPrInventory) UnmarshalJSON(data []byte) error {
 }
 func (v OpenPrInventory) MarshalJSON() ([]byte, error) {
 	type plain OpenPrInventory
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v OpenPrInventory) Clone() OpenPrInventory { return jsoncompat.Clone(v) }
+func (v OpenPrInventory) Clone() OpenPrInventory { return wirejson.Clone(v) }
 
 type PrCapacity struct {
 	Limit      uint64  `json:"limit"`
@@ -510,7 +510,7 @@ type PrCapacity struct {
 func (v *PrCapacity) UnmarshalJSON(data []byte) error {
 	type plain PrCapacity
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = PrCapacity(decoded)
@@ -518,12 +518,12 @@ func (v *PrCapacity) UnmarshalJSON(data []byte) error {
 }
 func (v PrCapacity) MarshalJSON() ([]byte, error) {
 	type plain PrCapacity
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v PrCapacity) Clone() PrCapacity { return jsoncompat.Clone(v) }
+func (v PrCapacity) Clone() PrCapacity { return wirejson.Clone(v) }
 
 type Cycle struct {
-	Mode           CycleMode          `json:"mode" wire:"default"`
+	Mode           CycleMode          `json:"mode"`
 	ID             string             `json:"id"`
 	Number         uint64             `json:"number"`
 	Status         string             `json:"status"`
@@ -543,14 +543,14 @@ type Cycle struct {
 func (v *Cycle) UnmarshalJSON(data []byte) error {
 	type plain Cycle
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = Cycle(decoded)
 	return nil
 }
-func (v Cycle) MarshalJSON() ([]byte, error) { type plain Cycle; return jsoncompat.Record(plain(v)) }
-func (v Cycle) Clone() Cycle                 { return jsoncompat.Clone(v) }
+func (v Cycle) MarshalJSON() ([]byte, error) { type plain Cycle; return wirejson.Record(plain(v)) }
+func (v Cycle) Clone() Cycle                 { return wirejson.Clone(v) }
 
 type RunBatch struct {
 	ID      string     `json:"id"`
@@ -561,7 +561,7 @@ type RunBatch struct {
 func (v *RunBatch) UnmarshalJSON(data []byte) error {
 	type plain RunBatch
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = RunBatch(decoded)
@@ -569,9 +569,9 @@ func (v *RunBatch) UnmarshalJSON(data []byte) error {
 }
 func (v RunBatch) MarshalJSON() ([]byte, error) {
 	type plain RunBatch
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
-func (v RunBatch) Clone() RunBatch { return jsoncompat.Clone(v) }
+func (v RunBatch) Clone() RunBatch { return wirejson.Clone(v) }
 
 type Control struct {
 	Paused             bool          `json:"paused"`
@@ -595,11 +595,11 @@ type Event struct {
 func (v *Event) UnmarshalJSON(data []byte) error {
 	type plain Event
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = Event(decoded)
 	return nil
 }
-func (v Event) MarshalJSON() ([]byte, error) { type plain Event; return jsoncompat.Record(plain(v)) }
-func (v Event) Clone() Event                 { return jsoncompat.Clone(v) }
+func (v Event) MarshalJSON() ([]byte, error) { type plain Event; return wirejson.Record(plain(v)) }
+func (v Event) Clone() Event                 { return wirejson.Clone(v) }

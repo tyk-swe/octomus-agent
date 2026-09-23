@@ -10,8 +10,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// capacityPR mirrors the tests/pr_capacity.rs owned_pr fixture: an open,
-// Octomus-owned pull request on fixture/project.
+// capacityPR is an owned pull request in the fixture repository.
 func capacityPR(number uint64, branch string) model.PullRequest {
 	return model.PullRequest{
 		Number: number, Title: "Owned", Branch: branch, Head: strings.Repeat("b", 40), Base: "main",
@@ -20,8 +19,7 @@ func capacityPR(number uint64, branch string) model.PullRequest {
 	}
 }
 
-// Port of tests/pr_capacity.rs shared_branch_pull_requests_each_consume_capacity:
-// two open PRs from one head branch into different bases are two slots.
+// Two open PRs from one head branch into different bases consume two slots.
 func TestSharedBranchPullRequestsEachConsumeCapacity(t *testing.T) {
 	s := open(t, statePath(t))
 	saveConfig(t, s, func(c *config.Config) { c.GitHubRepo = "fixture/project"; c.MaxOpenPRs = 2 })
@@ -49,7 +47,6 @@ func TestSharedBranchPullRequestsEachConsumeCapacity(t *testing.T) {
 	}
 }
 
-// Port of tests/pr_capacity.rs pr_observation_falls_back_to_the_latest_published_output:
 // with no prior delivery record, a poll adopts the newest published output
 // for that PR rather than treating the observed remote head as delivered.
 func TestPrObservationFallsBackToTheLatestPublishedOutput(t *testing.T) {

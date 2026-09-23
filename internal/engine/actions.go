@@ -2,7 +2,7 @@
 // archive, discard and publication reconcile. Every control reads the durable
 // record under gate, runs remote checks with the gate released, then
 // revalidates that nothing authoritative changed before writing — the same
-// contract the reference API layer enforces.
+// contract enforced by the API layer.
 package engine
 
 import (
@@ -12,16 +12,16 @@ import (
 	"time"
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // ErrTaskNotFound reports a control addressed at an unknown durable task.
 var ErrTaskNotFound = errors.New("Task not found")
 
-// actionConflict is the operator-visible 409 the reference returns when an
+// actionConflict is the operator-visible 409 returned when an
 // action is ineligible or durable state changed during remote checks.
 type actionConflict struct{ msg string }
 
@@ -30,7 +30,7 @@ func (e *actionConflict) Error() string { return e.msg }
 func conflictError(message string) error { return &actionConflict{message} }
 
 // IsActionConflict reports whether err is an eligibility/concurrency conflict —
-// the same errors the reference maps to HTTP 409.
+// errors mapped to HTTP 409.
 func IsActionConflict(err error) bool {
 	var c *actionConflict
 	return errors.As(err, &c) || model.BlockedReasonFromError(err) != model.BlockedReasonUnknown
@@ -38,8 +38,7 @@ func IsActionConflict(err error) bool {
 
 // TaskAction applies one operator control to a durable task. Gate is held for
 // eligibility and durable writes, released around remote checks, and
-// re-acquired for revalidation — matching the reference handler. Remote
-// preflights run under the app shutdown scope, never the caller's request
+// re-acquired for revalidation. Remote preflights run under the app shutdown scope, never the caller's request
 // scope, so a disconnect cannot interrupt remote checks or publication.
 func (a *App) TaskAction(_ context.Context, id, action string) error {
 	a.gate.Lock()
@@ -162,7 +161,7 @@ func (a *App) retryTask(task *model.Task) error {
 	task.BlockedReason = nil
 	task.Status = model.StatusQueued
 	task.RunID = nil
-	policyJSON, err := jsoncompat.Marshal(task.AttemptPolicy)
+	policyJSON, err := wirejson.Marshal(task.AttemptPolicy)
 	if err != nil {
 		return err
 	}
@@ -176,7 +175,7 @@ func (a *App) retryTask(task *model.Task) error {
 }
 
 // eligibleTask loads the durable record and checks the action is currently
-// allowed — the same gate the reference handler applies before any work.
+// allowed — the eligibility gate runs before any work.
 func (a *App) eligibleTask(id, action string) (*model.Task, error) {
 	task, err := store.Get[model.Task](a.Store, "task", id)
 	if err != nil {
@@ -220,11 +219,11 @@ func (a *App) revalidateTaskAction(original *model.Task, action string) error {
 }
 
 func sameRecordJSON(a, b *model.Task) bool {
-	left, err := jsoncompat.Marshal(a)
+	left, err := wirejson.Marshal(a)
 	if err != nil {
 		return false
 	}
-	right, err := jsoncompat.Marshal(b)
+	right, err := wirejson.Marshal(b)
 	if err != nil {
 		return false
 	}

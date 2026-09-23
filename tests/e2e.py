@@ -417,6 +417,11 @@ def audit_scenario(mode):
                     task = json.loads(raw)
                     task['status'] = 'queued'
                     task['proposal']['title'] = 'Earlier queued work'
+                    task.update(branch=task['config']['branch_prefix'] + 'audit-queued',
+                                workspace='', execution_session=None, repair_session=None,
+                                sessions=[], reviews=[], verification=[], output_commit=None,
+                                pr_number=None, pr_url=None, attempts=0, error=None,
+                                blocked_reason=None, review_baseline=0, run_id=None)
                     db.execute("UPDATE records SET data=? WHERE kind='task' AND id=?", (json.dumps(task), identity))
                 service.start()
                 queued_before = service.request('/state')['tasks']
@@ -465,7 +470,15 @@ def audit_scenario(mode):
                 assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
                 print('PASS audit-budget: refused before any admission with an explicit capacity reason')
                 return
-            service.request('/control/audit', 'POST')
+            for attempt in range(3):
+                code, response = service.expect('/control/audit', 'POST')
+                if code == 200:
+                    break
+                assert mode == 'queued' and code == 400 and response.get('error') == 'Control state changed during planning preflight', (mode, code, response)
+                state = service.request('/state')
+                assert state['tasks'] == queued_before and not state['cycle_active'], state
+                time.sleep(0.2)
+            assert code == 200, (mode, code, response)
             if mode != 'failed':
                 service.wait(lambda: (root / 'audit-entered').exists(), 'audit started')
                 state = service.request('/state')

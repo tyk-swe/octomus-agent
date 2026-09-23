@@ -17,10 +17,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // WorkerInstructions is the verbatim worker policy every session runs under.
@@ -51,7 +51,7 @@ func diagnosticsValue(backend config.Backend, version, protocolVersion string, w
 	}
 }
 
-// Model is one discovered runtime model. Field order matches the Rust record.
+// Model is one discovered runtime model.
 type Model struct {
 	Backend           config.Backend `json:"backend"`
 	Provider          *string        `json:"provider"`
@@ -66,7 +66,7 @@ type Model struct {
 
 func (v Model) MarshalJSON() ([]byte, error) {
 	type plain Model
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
 
 // ValidateRoute requires an exact backend/provider/model that is available
@@ -106,9 +106,7 @@ func ValidateRoute(route config.Route, models []Model) error {
 	return nil
 }
 
-// Adapter is one owned runner client, the port of the Rust Runner enum's
-// method set. Each invocation owns its clients; nothing is shared between
-// tasks.
+// Adapter is one owned runner client. Each invocation owns its clients.
 type Adapter interface {
 	Models(cwd string) ([]Model, error)
 	Start(route config.Route, cwd string, resume *string) (string, error)
@@ -146,7 +144,7 @@ func finishTurn(answer string, schema schemas.Schema) (string, error) {
 	if err := schemas.Validate(parsed, schema); err != nil {
 		return "", fmt.Errorf("Runner returned an invalid structured result: %w", err)
 	}
-	data, err := jsoncompat.Marshal(parsed)
+	data, err := wirejson.Marshal(parsed)
 	if err != nil {
 		return "", err
 	}
@@ -287,14 +285,13 @@ func asArray(v any) ([]any, bool) {
 	return a, ok
 }
 
-// strAt reads a string field; absent, null, and non-string all report false,
-// matching serde's Value::as_str.
+// strAt reads a JSON string field; absent, null and non-string values report false.
 func strAt(m map[string]any, key string) (string, bool) {
 	s, ok := m[key].(string)
 	return s, ok
 }
 
-// decodeJSON decodes one JSON value the way serde_json does: strict UTF-8 and
+// decodeJSON decodes one JSON value with strict UTF-8 and
 // string escapes, exact number literals preserved, and trailing data rejected.
 func decodeJSON(data []byte) (any, error) {
 	if err := validJSONStrings(data); err != nil {
@@ -312,7 +309,7 @@ func decodeJSON(data []byte) (any, error) {
 	return v, nil
 }
 
-// validJSONStrings is the same escape pass jsoncompat applies at wire
+// validJSONStrings checks malformed escapes at wire
 // boundaries: invalid UTF-8 and unpaired surrogate escapes are rejected where
 // Go's decoder would silently substitute U+FFFD.
 func validJSONStrings(data []byte) error {
@@ -360,16 +357,16 @@ func validJSONStrings(data []byte) error {
 	return nil
 }
 
-// marshal compactly serializes a protocol value like serde_json::to_string.
+// marshal compactly serializes a protocol value.
 func marshal(v any) (string, error) {
-	data, err := jsoncompat.Marshal(v)
+	data, err := wirejson.Marshal(v)
 	if err != nil {
 		return "", err
 	}
 	return string(data), nil
 }
 
-// pathComponents mirrors Rust Path equality: repeated separators and interior
+// pathComponents compares paths by components: repeated separators and interior
 // dots are ignored, '..' is not resolved, and a leading relative '.' is kept.
 func pathComponents(path string) []string {
 	parts := []string{}

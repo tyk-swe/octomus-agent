@@ -58,7 +58,7 @@ func lineReader(r io.Reader, limit int, done <-chan struct{}) chan lineResult {
 			if err != nil {
 				if err == io.EOF && len(backlog) > 0 {
 					// A trailing unterminated line is still delivered, matching
-					// the reference codec's decode_eof.
+					// end-of-input decoding.
 					if len(backlog) > limit {
 						send(over)
 						return

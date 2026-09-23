@@ -3,7 +3,6 @@ package model
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -11,55 +10,21 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 )
 
-func TestIdentityFixtures(t *testing.T) {
-	data, err := os.ReadFile("../../tests/fixtures/compatibility/m1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var corpus struct {
-		Identities   []struct{ Title, Key, Expected string }
-		Destinations []struct {
-			Raw      string
-			Expected []string
+func TestIdentityAndDestinationRules(t *testing.T) {
+	for _, tc := range []struct{ title, key, want string }{
+		{" ÉCOLE ", "", "école"}, {"Original", "ΟΣ", "ος"}, {"Original", "İ", "i̇"},
+	} {
+		if got := ProblemIdentity(tc.title, tc.key); got != tc.want {
+			t.Fatalf("ProblemIdentity(%q, %q) = %q", tc.title, tc.key, got)
 		}
-		Memory []struct {
-			Revision         string
-			Paths            []string
-			Output, Expected string
-		} `json:"decision_memory"`
 	}
-	if err := json.Unmarshal(data, &corpus); err != nil {
-		t.Fatal(err)
+	normalized, id, err := NotificationDestination("https://example.com/hook")
+	if err != nil || normalized == "" || len(id) != 64 {
+		t.Fatalf("destination = %q, %q, %v", normalized, id, err)
 	}
-	for _, c := range corpus.Identities {
-		t.Run("problem/"+c.Title, func(t *testing.T) {
-			if got := ProblemIdentity(c.Title, c.Key); got != c.Expected {
-				t.Errorf("%q != %q", got, c.Expected)
-			}
-		})
-	}
-	for _, c := range corpus.Destinations {
-		t.Run("notification/"+c.Raw, func(t *testing.T) {
-			normalized, id, err := NotificationDestination(c.Raw)
-			if c.Expected == nil {
-				if err == nil {
-					t.Fatal("invalid destination accepted")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if normalized != c.Expected[0] || id != c.Expected[1] {
-				t.Errorf("got %q %s; want %v", normalized, id, c.Expected)
-			}
-		})
-	}
-	for _, c := range corpus.Memory {
-		got, err := DecisionMemoryFingerprint(c.Revision, c.Paths, c.Output)
-		if err != nil || got != c.Expected {
-			t.Errorf("memory: %q %v", got, err)
-		}
+	again, againID, err := NotificationDestination("https://example.com/hook")
+	if err != nil || again != normalized || againID != id {
+		t.Fatal("destination identity changed")
 	}
 	for _, paths := range [][]string{{"../a"}, {"/a"}, {"./a"}, {""}, make([]string, 41)} {
 		if _, err := DecisionMemoryFingerprint("revision", paths, ""); err == nil {
@@ -88,10 +53,14 @@ func TestEmptyOrIncompleteReviewNeverClean(t *testing.T) {
 		t.Fatal("clean review refused")
 	}
 }
-func TestLegacyModesAndOwnedAttemptSnapshots(t *testing.T) {
+func TestOperatingModesAndOwnedAttemptSnapshots(t *testing.T) {
 	for _, paused := range []bool{true, false} {
 		var c Control
-		if err := json.Unmarshal([]byte(fmt.Sprintf(`{"paused":%t,"cycle_number":4,"next_cycle_at":5}`, paused)), &c); err != nil {
+		mode := "continuous"
+		if paused {
+			mode = "paused"
+		}
+		if err := json.Unmarshal([]byte(fmt.Sprintf(`{"paused":%t,"mode":%q,"cycle_number":4,"next_cycle_at":5,"idle_streak":0,"context_fingerprint":""}`, paused, mode)), &c); err != nil {
 			t.Fatal(err)
 		}
 		if c.Paused != paused || c.Mode == OperatingModeRunOnce {
@@ -166,31 +135,25 @@ func TestUTCIdentitiesAndTypedErrors(t *testing.T) {
 	}
 }
 
-func TestFrozenSameWorkComparisons(t *testing.T) {
-	data, err := os.ReadFile("../../tests/fixtures/compatibility/m1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var corpus struct {
-		Comparisons []struct {
-			Left, Right Proposal
-			Expected    bool
-		} `json:"same_work"`
-	}
-	if err := json.Unmarshal(data, &corpus); err != nil {
-		t.Fatal(err)
-	}
-	if len(corpus.Comparisons) == 0 {
-		t.Fatal("missing same-work fixtures")
-	}
-	for _, c := range corpus.Comparisons {
-		if c.Left.SameWork(c.Right) != c.Expected {
-			t.Errorf("%q / %q", c.Left.Title, c.Right.Title)
+func TestSameWorkComparisons(t *testing.T) {
+	left := Proposal{Title: " Concrete improvement ", Target: "main", ProblemKey: "stable-key"}
+	for _, tc := range []struct {
+		title, key, target string
+		want               bool
+	}{
+		{"concrete IMPROVEMENT", "different", "main", true},
+		{"Reworded", "STABLE-KEY", "main", true},
+		{"Reworded", "different", "main", false},
+		{"Concrete improvement", "stable-key", "other", false},
+	} {
+		right := Proposal{Title: tc.title, ProblemKey: tc.key, Target: tc.target}
+		if got := left.SameWork(right); got != tc.want {
+			t.Fatalf("SameWork(%+v) = %t", right, got)
 		}
 	}
 }
 
-func TestTimestampUsesReferenceFractionPrecision(t *testing.T) {
+func TestTimestampFractionPrecision(t *testing.T) {
 	for _, c := range []struct {
 		n        int
 		fraction string

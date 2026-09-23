@@ -1,7 +1,7 @@
 package store
 
-// Failure-matrix row 9 (docs/roadmap/m8-qualification.md): a durable write that
-// fails mid-operation is never acknowledged — the API reports the error and no
+// A durable write that fails mid-operation is never acknowledged: the API
+// reports the error and no
 // record, counter, or ledger entry is committed.
 //
 // These tests are internal (package store, not store_test) because the
@@ -10,7 +10,6 @@ package store
 // never constrain the writer. For the multi-statement transactions whose
 // writes are small enough to fit pre-existing page slack, an abort trigger
 // injects the same mid-transaction failure the disk-full case depends on —
-// the Rust reference uses the same technique (fail_cleanup in src/store.rs).
 
 import (
 	"errors"

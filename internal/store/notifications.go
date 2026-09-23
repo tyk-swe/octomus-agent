@@ -1,9 +1,7 @@
 package store
 
 import (
-	"context"
 	"database/sql"
-	"fmt"
 	"time"
 )
 
@@ -40,90 +38,6 @@ type NotificationHealth struct {
 	LastDeliveredAt *string `json:"last_delivered_at"`
 	LastError       *string `json:"last_error"`
 	LastHTTPStatus  *int64  `json:"last_http_status"`
-}
-
-const taskCategory = "CASE WHEN COALESCE(json_extract(NEW.data,'$.blocked_reason'),'') IN ('budget_exhausted','storage_limit','stale_base','remote_conflict','publication_uncertain','runner_unavailable','invalid_review','verification_failed','dependency_blocked','invalid_plan','workspace_invalid','retry_limit','timeout') THEN json_extract(NEW.data,'$.blocked_reason') ELSE 'unknown' END"
-
-const overflow = "UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000)"
-
-func migrateNotifications(ctx context.Context, c *sql.Conn) error {
-	_, err := c.ExecContext(ctx, fmt.Sprintf(`
-        CREATE TABLE IF NOT EXISTS notification_policy (
-            id INTEGER PRIMARY KEY CHECK(id=1), destination_id TEXT, enabled INTEGER NOT NULL DEFAULT 0,
-            state TEXT NOT NULL DEFAULT 'disabled', error TEXT
-        );
-        CREATE TABLE IF NOT EXISTS notification_outbox (
-            seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
-            destination_id TEXT NOT NULL, created_at TEXT NOT NULL,
-            repository TEXT NOT NULL, cycle_id TEXT, run_id TEXT, task_id TEXT,
-            category TEXT NOT NULL, action TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
-            next_attempt_at INTEGER NOT NULL, last_attempt_at TEXT,
-            delivered_at TEXT, last_error TEXT, http_status INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS notification_due ON notification_outbox(destination_id,status,next_attempt_at,seq);
-        CREATE TRIGGER IF NOT EXISTS notify_task_insert AFTER INSERT ON records
-        WHEN NEW.kind='task'
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
-            AND json_extract(NEW.data,'$.status') IN ('blocked','failed')
-        BEGIN
-            INSERT INTO notification_outbox
-                (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)
-                SELECT lower(hex(randomblob(16))), destination_id, strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'),
-                    COALESCE(json_extract(NEW.data,'$.config.github_repo'),''),
-                    json_extract(NEW.data,'$.cycle_id'), json_extract(NEW.data,'$.run_id'), NEW.id,
-                    %[1]s, 'inspect_task', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
-            %[2]s;
-        END;
-        CREATE TRIGGER IF NOT EXISTS notify_task_update AFTER UPDATE ON records
-        WHEN NEW.kind='task'
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
-            AND json_extract(NEW.data,'$.status') IN ('blocked','failed')
-            AND COALESCE(json_extract(OLD.data,'$.status'),'') NOT IN ('blocked','failed')
-        BEGIN
-            INSERT INTO notification_outbox
-                (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)
-                SELECT lower(hex(randomblob(16))), destination_id, strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'),
-                    COALESCE(json_extract(NEW.data,'$.config.github_repo'),''),
-                    json_extract(NEW.data,'$.cycle_id'), json_extract(NEW.data,'$.run_id'), NEW.id,
-                    %[1]s, 'inspect_task', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
-            %[2]s;
-        END;
-        CREATE TRIGGER IF NOT EXISTS notify_control_insert AFTER INSERT ON records
-        WHEN NEW.kind='settings' AND NEW.id='control'
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
-            AND COALESCE(json_extract(NEW.data,'$.paused'),0)=1
-            AND json_extract(NEW.data,'$.error') IS NOT NULL
-        BEGIN
-            INSERT INTO notification_outbox
-                (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)
-                SELECT lower(hex(randomblob(16))), destination_id, strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'),
-                    COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),''),
-                    json_extract(NEW.data,'$.batch.cycle_id'), json_extract(NEW.data,'$.batch.id'), NULL,
-                    'service_error_paused', 'inspect_service', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
-            %[2]s;
-        END;
-        CREATE TRIGGER IF NOT EXISTS notify_control_update AFTER UPDATE ON records
-        WHEN NEW.kind='settings' AND NEW.id='control'
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
-            AND COALESCE(json_extract(NEW.data,'$.paused'),0)=1
-            AND json_extract(NEW.data,'$.error') IS NOT NULL
-            AND NOT (COALESCE(json_extract(OLD.data,'$.paused'),0)=1 AND json_extract(OLD.data,'$.error') IS NOT NULL)
-        BEGIN
-            INSERT INTO notification_outbox
-                (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)
-                SELECT lower(hex(randomblob(16))), destination_id, strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'),
-                    COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),''),
-                    json_extract(NEW.data,'$.batch.cycle_id'), json_extract(NEW.data,'$.batch.id'), NULL,
-                    'service_error_paused', 'inspect_service', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
-            %[2]s;
-        END;
-        `, taskCategory, overflow))
-	return err
 }
 
 // ConfigureNotifications saves the destination policy and cancels pending

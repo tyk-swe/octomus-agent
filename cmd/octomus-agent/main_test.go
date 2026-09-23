@@ -14,58 +14,29 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-func TestFrozenCLIContracts(t *testing.T) {
-	data, err := os.ReadFile("../../tests/fixtures/compatibility/cli.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var corpus struct {
-		Cases []struct {
-			Name     string
-			Args     []string
-			Env      map[string]string
-			Expected struct {
-				Code           int
-				Stdout, Stderr string
-			}
+func TestCurrentCLIContract(t *testing.T) {
+	env := func(string) (string, bool) { return "", false }
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--help"}, "--data-dir"},
+		{[]string{"--version"}, "octomus-agent"},
+		{[]string{"--print-config"}, "\"verification_commands\""},
+	} {
+		var out, err bytes.Buffer
+		if code := run(tc.args, env, &out, &err); code != 0 || err.Len() != 0 || !strings.Contains(out.String(), tc.want) {
+			t.Fatalf("%v: code=%d stdout=%q stderr=%q", tc.args, code, out.String(), err.String())
 		}
 	}
-	if err := json.Unmarshal(data, &corpus); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range corpus.Cases {
-		t.Run(c.Name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			code := run(c.Args, func(k string) (string, bool) { v, ok := c.Env[k]; return v, ok }, &stdout, &stderr)
-			if code != c.Expected.Code {
-				t.Fatalf("exit %d != %d: %s", code, c.Expected.Code, stderr.String())
-			}
-			if code != 0 {
-				if stdout.Len() != 0 || stderr.Len() == 0 {
-					t.Fatal("error stream boundaries")
-				}
-				return
-			}
-			if stderr.Len() != 0 {
-				t.Fatal(stderr.String())
-			}
-			if strings.Contains(c.Expected.Stdout, "Usage: octomus-agent [OPTIONS]") {
-				for _, flag := range []string{"data-dir", "listen", "assets", "print-config", "doctor", "audit", "usage-report", "export-run", "help", "version"} {
-					if !strings.Contains(stdout.String(), "--"+flag) {
-						t.Errorf("help omitted --%s", flag)
-					}
-				}
-			} else if stdout.String() != c.Expected.Stdout {
-				t.Errorf("stdout differs: %s", stdout.String())
-			}
-		})
+	var out, err bytes.Buffer
+	if code := run([]string{"--unknown"}, env, &out, &err); code == 0 || out.Len() != 0 || err.Len() == 0 {
+		t.Fatalf("unknown flag: code=%d stdout=%q stderr=%q", code, out.String(), err.String())
 	}
 }
 func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 	directory := t.TempDir() + "/service"
-	// The reference creates the data directory, takes the lock and opens the
-	// state database before checking the operator token: a missing token exits
-	// with guidance but leaves the prepared directory behind.
+	// Startup prepares the data directory and database before token validation.
 	var out, err bytes.Buffer
 	code := run([]string{"--data-dir", directory}, func(string) (string, bool) { return "", false }, &out, &err)
 	if code != 1 || out.Len() != 0 || !bytes.Contains(err.Bytes(), []byte("OCTOMUS_TOKEN")) {
@@ -108,9 +79,7 @@ func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 	}
 }
 
-// Port of tests/evidence.rs export_run_flag_returns_before_touching_application_state
-// and the usage-report half of tests/usage.rs: the read-only flags run before any
-// data directory, service lock or worker exists, and print only JSON on stdout.
+// Read-only exports run before state creation, locking or workers start.
 func TestReadOnlyExportsReturnBeforeTouchingApplicationState(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "state-dir")
 	noEnv := func(string) (string, bool) { return "", false }

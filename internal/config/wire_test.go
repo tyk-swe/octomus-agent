@@ -2,88 +2,39 @@ package config
 
 import (
 	"encoding/json"
-	"os"
+	"strings"
 	"testing"
-
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 )
 
-type wireFixture struct {
-	Name     string         `json:"name"`
-	Type     string         `json:"type"`
-	Input    string         `json:"input"`
-	Expected map[string]any `json:"expected"`
-}
-
-func TestFrozenWireContracts(t *testing.T) {
-	data, err := os.ReadFile("../../tests/fixtures/compatibility/m1.json")
+func TestCurrentConfigJSONContract(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"github_repo":"fixture/project"}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GitHubRepo != "fixture/project" || cfg.DiscoveryAgents != Default().DiscoveryAgents {
+		t.Fatalf("defaults lost: %+v", cfg)
+	}
+	data, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var corpus struct {
-		Cases []wireFixture `json:"cases"`
-	}
-	if err := json.Unmarshal(data, &corpus); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range corpus.Cases {
-		var target any
-		switch c.Type {
-		case "Config":
-			target = new(Config)
-		case "Route":
-			target = new(Route)
-		case "Backend":
-			target = new(Backend)
-		default:
-			continue
+	for _, field := range []string{`"github_repo"`, `"roles"`, `"tiers"`, `"verification_commands"`} {
+		if !strings.Contains(string(data), field) {
+			t.Fatalf("missing %s in %s", field, data)
 		}
-		t.Run(c.Name, func(t *testing.T) {
-			err := json.Unmarshal([]byte(c.Input), target)
-			if c.Expected["rejected"] == true {
-				if err == nil {
-					t.Fatalf("accepted invalid input: %s", c.Input)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("rejected reference input: %v; %s", err, c.Input)
-			}
-			output, err := jsoncompat.Marshal(target)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(output) != c.Expected["json"] {
-				t.Errorf("wire bytes differ\n Go: %s\nRust: %s", output, c.Expected["json"])
-			}
-
-			switch v := target.(type) {
-			case *Config:
-				checkError(t, v.Validate(false), c.Expected["validation_error"])
-				fingerprint, err := v.Fingerprint()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if fingerprint != c.Expected["fingerprint"] {
-					t.Errorf("fingerprint: %s != %v", fingerprint, c.Expected["fingerprint"])
-				}
-			case *Route:
-				checkError(t, v.Validate(false), c.Expected["validation_error"])
-				checkError(t, v.Validate(true), c.Expected["ready_error"])
-				if v.String() != c.Expected["display"] {
-					t.Errorf("route display: %s", v)
-				}
-			}
-		})
+	}
+	for _, raw := range []string{`{"unknown":1}`, `{"github_repo":"a","github_repo":"b"}`, `{"roles":null}`} {
+		if err := json.Unmarshal([]byte(raw), &cfg); err == nil {
+			t.Fatalf("accepted %s", raw)
+		}
 	}
 }
-func checkError(t *testing.T, err error, want any) {
-	t.Helper()
-	var got any
-	if err != nil {
-		got = err.Error()
-	}
-	if got != want {
-		t.Errorf("error: %v; want %v", got, want)
+
+func TestRouteJSONRequiresExactFields(t *testing.T) {
+	for _, raw := range []string{`{"backend":"codex","model":"x","effort":"low","other":1}`, `{"model":null}`, `{"model":"a","model":"b"}`} {
+		var route Route
+		if err := json.Unmarshal([]byte(raw), &route); err == nil {
+			t.Fatalf("accepted %s", raw)
+		}
 	}
 }

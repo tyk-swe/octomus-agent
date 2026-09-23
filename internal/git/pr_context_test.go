@@ -1,8 +1,7 @@
 package git_test
 
-// Ports of tests/pr_context.rs inventory parsing cases: every paginated page
-// is read, ownership needs every identity signal, and malformed or conflicting
-// inventories fail closed.
+// Inventory parsing reads every page, requires complete ownership signals and
+// rejects malformed or conflicting results.
 
 import (
 	"encoding/json"

@@ -1,5 +1,5 @@
 // Package httpapi serves the authenticated operator API exactly as the
-// reference does: route-layer authentication with bounded failure backoff,
+// current contract: route-layer authentication with bounded failure backoff,
 // content-type enforcement on mutations, JSON redaction on every matched
 // response, a 256 KiB request-body bound, security headers, /healthz, and the
 // dashboard asset fallback outside the API prefix.
@@ -22,9 +22,9 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/evidence"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	"modernc.org/sqlite"
 )
 
@@ -40,7 +40,7 @@ type api struct {
 	assets    http.Handler
 }
 
-// authFailures implements the reference's bounded exponential delay: it starts
+// authFailures implements bounded exponential delay: it starts
 // at 100 ms, doubles to a 1 s ceiling and resets after a quiet minute.
 type authFailures struct {
 	mu    sync.Mutex
@@ -68,8 +68,8 @@ func (f *authFailures) delay(now time.Time) time.Duration {
 }
 
 // handlerFunc answers one matched route: (status, body). A nil error writes
-// body as JSON; an error becomes the reference's {"error": message} at its
-// classified status, or keeps its own form for extraction rejections.
+// body as JSON; errors use {"error": message} at their classified status.
+// Extraction rejections keep their own response form.
 type handlerFunc func(w http.ResponseWriter, r *http.Request, params map[string]string) (int, any, error)
 
 type apiRoute struct {
@@ -138,7 +138,7 @@ func (a *api) routes() []apiRoute {
 
 func segs(pattern string) []string { return strings.Split(strings.TrimPrefix(pattern, "/"), "/") }
 
-// serveAPI applies the reference route-layer semantics: path matching picks the
+// serveAPI applies route-layer semantics: path matching picks the
 // route (and its middleware) independent of method, so authentication and the
 // content-type rule run before the 405 dispatch. Unmatched paths get the same
 // 404 body without either check.
@@ -206,7 +206,7 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 }
 
 // authenticate verifies the bearer token by hash and answers failures after a
-// bounded exponential delay, exactly the reference middleware.
+// bounded exponential delay.
 func (a *api) authenticate(w http.ResponseWriter, r *http.Request) bool {
 	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	digest := sha256.Sum256([]byte(token))
@@ -220,9 +220,9 @@ func (a *api) authenticate(w http.ResponseWriter, r *http.Request) bool {
 
 // apiStatus mirrors ApiError::from: storage/codec failures are internal,
 // typed conflicts map to 409, everything else is a bad request. Explicit
-// sentinel errors carry their own status like the reference's not_found.
+// sentinel errors carry their own status, including not-found cases.
 func apiStatus(err error) int {
-	var jc *jsoncompat.Error
+	var jc *wirejson.Error
 	var sq *sqlite.Error
 	var bc *engine.BaselineConflict
 	switch {
@@ -249,10 +249,9 @@ func writeAPIError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]any{"error": message})
 }
 
-// writeJSON serializes through the serde pipeline: exact numbers, then the
-// store's secret scrub on the generic tree, then the compact wire form.
+// writeJSON encodes, redacts the generic tree, then writes compact JSON.
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	data, err := jsoncompat.Marshal(value)
+	data, err := wirejson.Marshal(value)
 	if err != nil {
 		data, err = json.Marshal(value)
 	}
@@ -271,7 +270,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 		})
 		return
 	}
-	out, err := jsoncompat.Marshal(store.RedactJSON(generic))
+	out, err := wirejson.Marshal(store.RedactJSON(generic))
 	if err != nil {
 		writeRawJSON(w, http.StatusInternalServerError, map[string]any{
 			"error": "Response exceeded the dashboard size limit or could not be encoded",
@@ -284,7 +283,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 // writeRawJSON answers without redaction: healthz and assets never carry
-// operator data, and the reference never post-processes them either.
+// operator data and bypass response redaction.
 func writeRawJSON(w http.ResponseWriter, status int, value any) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -309,7 +308,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
 		return &bodyError{http.StatusBadRequest, fmt.Sprintf("Failed to read the request body: %v", err)}
 	}
 	if err := json.Unmarshal(data, dst); err != nil {
-		var jc *jsoncompat.Error
+		var jc *wirejson.Error
 		var ute *json.UnmarshalTypeError
 		if errors.As(err, &jc) || errors.As(err, &ute) {
 			return &bodyError{http.StatusUnprocessableEntity, fmt.Sprintf("Failed to deserialize the JSON body into the target type: %v", err)}
@@ -354,7 +353,7 @@ func (a *api) stateView(_ http.ResponseWriter, r *http.Request, _ map[string]str
 }
 
 // historyQuery parses the dashboard's paged history filter; malformed numbers
-// are the same 400 a rejected serde query produces.
+// produce a 400 response.
 func historyQuery(r *http.Request) (store.HistoryQuery, error) {
 	var query store.HistoryQuery
 	values := r.URL.Query()
@@ -471,7 +470,7 @@ func (a *api) taskDetail(_ http.ResponseWriter, _ *http.Request, params map[stri
 	if task == nil {
 		return 0, nil, engine.ErrTaskNotFound
 	}
-	data, err := jsoncompat.Marshal(*task)
+	data, err := wirejson.Marshal(*task)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -520,7 +519,7 @@ func (a *api) saveConfig(w http.ResponseWriter, r *http.Request, _ map[string]st
 // errHandled marks a rejection already written to the response.
 var errHandled = errors.New("response already written")
 
-// baselineStartBody mirrors #[serde(deny_unknown_fields)] BaselineStart.
+// baselineStartBody rejects unknown fields.
 type baselineStartBody struct {
 	ExpectedConfig *config.Config `json:"expected_config"`
 }
@@ -528,7 +527,7 @@ type baselineStartBody struct {
 func (v *baselineStartBody) UnmarshalJSON(data []byte) error {
 	type plain baselineStartBody
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, true, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
 		return err
 	}
 	*v = baselineStartBody(decoded)
@@ -604,7 +603,7 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	} else {
 		body = result
 	}
-	data, err := jsoncompat.Marshal(cfg)
+	data, err := wirejson.Marshal(cfg)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -618,7 +617,7 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	return status, body, nil
 }
 
-// catalogRequest mirrors #[serde(deny_unknown_fields)] CatalogRequest.
+// catalogRequest rejects unknown fields.
 type catalogRequest struct {
 	Backend config.Backend `json:"backend"`
 	Binary  string         `json:"binary"`
@@ -627,7 +626,7 @@ type catalogRequest struct {
 func (v *catalogRequest) UnmarshalJSON(data []byte) error {
 	type plain catalogRequest
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, true, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
 		return err
 	}
 	*v = catalogRequest(decoded)

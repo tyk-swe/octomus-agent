@@ -15,11 +15,11 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
@@ -124,7 +124,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 		return err
 	}
 	contextValue := map[string]any{"grounding": cycle.Grounding, "decision_memory": memory, "pr_capacity": capacity}
-	contextBytes, err := jsoncompat.Marshal(contextValue)
+	contextBytes, err := wirejson.Marshal(contextValue)
 	if err != nil {
 		return err
 	}
@@ -350,7 +350,7 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 }
 
 func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) error {
-	candidates, err := jsoncompat.Marshal(cycle.Proposals)
+	candidates, err := wirejson.Marshal(cycle.Proposals)
 	if err != nil {
 		return err
 	}
@@ -409,15 +409,15 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 }
 
 func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) ([]model.Proposal, error) {
-	candidates, err := jsoncompat.Marshal(cycle.Proposals)
+	candidates, err := wirejson.Marshal(cycle.Proposals)
 	if err != nil {
 		return nil, err
 	}
-	reviews, err := jsoncompat.Marshal(cycle.Assessments)
+	reviews, err := wirejson.Marshal(cycle.Assessments)
 	if err != nil {
 		return nil, err
 	}
-	tiers, err := jsoncompat.Marshal(cfg.Tiers)
+	tiers, err := wirejson.Marshal(cfg.Tiers)
 	if err != nil {
 		return nil, err
 	}
@@ -732,7 +732,7 @@ func ExternalContext(inventory model.OpenPrInventory) ([]model.ExternalPrContext
 		title, titleCut := truncateRunes(pr.Title, MaxPRTitleChars)
 		body, bodyCut := truncateRunes(pr.Body, MaxPRBodyChars)
 		entry := model.ExternalPrContext{Number: pr.Number, URL: pr.URL, Title: title, Body: body, Branch: pr.Branch, Head: pr.Head, Base: pr.Base, HeadRepository: pr.HeadRepository, BaseRepository: pr.BaseRepository, TitleTruncated: titleCut, BodyTruncated: bodyCut}
-		encoded, err := jsoncompat.Marshal(entry)
+		encoded, err := wirejson.Marshal(entry)
 		if err != nil {
 			return nil, model.PrCoverage{}, err
 		}

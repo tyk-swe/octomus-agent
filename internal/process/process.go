@@ -25,7 +25,7 @@ import (
 )
 
 // TokenEnv is the operator-token variable removed from every child environment;
-// the reference names it api::TOKEN_ENV.
+// it must not reach child processes.
 const TokenEnv = "OCTOMUS_TOKEN"
 
 // Command builds an owned command: a new process group (pgid = child pid), the
@@ -96,8 +96,8 @@ type Captured struct {
 	Truncated bool
 }
 
-// Preview renders kept bytes as lossy UTF-8 (invalid sequences become U+FFFD,
-// like String::from_utf8_lossy) and flags truncation explicitly.
+// Preview renders kept bytes as lossy UTF-8 (invalid sequences become U+FFFD)
+// and flags truncation explicitly.
 func (c Captured) Preview() string {
 	text := strings.ToValidUTF8(string(c.Bytes), "\uFFFD")
 	if c.Truncated {
@@ -125,7 +125,7 @@ func (s Status) Code() (int, bool) {
 	return code, code >= 0
 }
 
-// signalString mirrors the reference table on Linux: a searchable name in
+// signalString returns a searchable Linux signal name in
 // parentheses for known signals, nothing for unrecognized ones.
 func signalString(signal int) string {
 	switch syscall.Signal(signal) {
@@ -195,7 +195,7 @@ func signalString(signal int) string {
 	return ""
 }
 
-// String renders the status exactly like Rust's ExitStatus Display on Linux.
+// String renders the Linux exit status used in process diagnostics.
 func (s Status) String() string {
 	if s.state == nil {
 		return "unrecognised wait status: 0 0x0"
@@ -239,7 +239,7 @@ func (e *OutputTooLarge) Error() string {
 	return fmt.Sprintf("Machine output exceeds %d bytes; complete output was not captured", e.Limit)
 }
 
-// errDeadlineElapsed mirrors tokio::time::error::Elapsed's display text.
+// errDeadlineElapsed is the stable bounded-execution timeout text.
 var errDeadlineElapsed = errors.New("deadline has elapsed")
 
 // IsDeadlineElapsed reports whether err carries a bounded-execution timeout
@@ -350,7 +350,7 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 	// (setsid) or a leader stuck in uninterruptible sleep must not hang the
 	// caller, so expiry forces the read ends closed and returns: channel sends
 	// are buffered, the deferred closes are idempotent, and the goroutines
-	// unwind on their own — the same orphan-reaping the reference relies on.
+	// unwind on their own and orphaned processes are reaped.
 	terminate := func() {
 		child.Close()
 		deadline := time.NewTimer(cleanupGrace)

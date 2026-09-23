@@ -16,7 +16,7 @@ import (
 const heldToken = "operator-fixture-token-with-at-least-32-characters"
 
 // heldReceiver accepts one webhook request and holds its response until the
-// test ends, like the Rust peer's 60 second first delay, without making the
+// test ends after a long first delay without making the
 // test wait out the hold on cleanup.
 func heldReceiver(t *testing.T) *receiver {
 	t.Helper()
@@ -39,7 +39,6 @@ func heldReceiver(t *testing.T) *receiver {
 	return r
 }
 
-// Port of tests/notifications.rs held_http_does_not_block_scheduling_and_shutdown_recovers_the_row:
 // the control API answers while a delivery is held, and application shutdown
 // stops the worker and leaves the claimed row to retry with its event id.
 func TestHeldHTTPDoesNotBlockSchedulingAndShutdownRecoversTheRow(t *testing.T) {

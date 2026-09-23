@@ -1,8 +1,7 @@
 package engine
 
-// Ports of tests/pr_context.rs external-context and target-resolution cases:
-// the bounded external context over a parsed inventory, and the executable
-// target contract that only binds owned open PRs on the default branch.
+// External context is bounded over the parsed inventory. Task targets bind
+// only eligible owned open pull requests.
 
 import (
 	"encoding/json"
@@ -12,8 +11,8 @@ import (
 	"unicode/utf8"
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func prContextInventoryEntry(number int, branch, headRepo, body string) map[string]any {
@@ -124,7 +123,7 @@ func TestExternalContextBoundsCountsAndTruncatesUTF8(t *testing.T) {
 	if coverage.IncludedExternal+coverage.OmittedExternal != coverage.TotalExternal {
 		t.Fatalf("coverage does not account for every external PR: %+v", coverage)
 	}
-	encoded, err := jsoncompat.Marshal(external)
+	encoded, err := wirejson.Marshal(external)
 	if err != nil {
 		t.Fatal(err)
 	}

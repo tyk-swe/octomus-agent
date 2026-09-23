@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // Return fresh slices so callers cannot mutate the service's vocabulary.
@@ -151,8 +151,8 @@ func EqualASCII(a, b string) bool {
 	return true
 }
 
-// Rust Path equality compares components: repeated separators and interior dots
-// are ignored, but '..' is not resolved and a leading relative '.' is retained.
+// Path identity ignores repeated separators and interior dots. It keeps '..'
+// literal and retains a leading relative '.'.
 func pathIdentity(path string) string {
 	parts := []string{}
 	if strings.HasPrefix(path, "/") {
@@ -315,7 +315,7 @@ func ValidBranch(s string) bool {
 	return true
 }
 func (c Config) Fingerprint() (string, error) {
-	data, err := jsoncompat.Marshal(c)
+	data, err := wirejson.Marshal(c)
 	if err != nil {
 		return "", err
 	}

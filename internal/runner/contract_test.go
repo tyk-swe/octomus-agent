@@ -1,7 +1,6 @@
 package runner
 
-// Actual pinned clients against the synthetic loopback provider; no account or
-// model access. Mirrors tests/contracts.rs: the tests are skipped unless the
+// Pinned clients use a synthetic loopback provider. The tests skip unless a
 // pinned binary is provided through OCTOMUS_CONTRACT_*_BINARY.
 import (
 	"context"

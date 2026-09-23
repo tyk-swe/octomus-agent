@@ -28,7 +28,7 @@ generated before the Go build and embedded with `go:embed`. Compilation fails if
 `dist/octomus-agent-vVERSION-TARGET.tar.gz` plus `SHA256SUMS`. GNU/Linux x86_64
 and aarch64 are the supported release targets; Ubuntu 24.04 is the release build
 and smoke-test baseline. The build is statically linked (`CGO_ENABLED=0`), so
-the executable needs neither Rust, Go, Node, nor a minimum glibc at runtime.
+the executable needs no build toolchain or minimum glibc at runtime.
 
 The archive contains `octomus-agent/octomus-agent`, license, policies and operator
 documentation. It never packages live state or separate runtime dashboard files.
@@ -51,17 +51,13 @@ The manual workflow accepts an existing tag and optional multiline notes. Use
 that path with the final owner-written v0.1.0 notes. If the release already exists,
 nonempty supplied notes update only its description; published assets are never
 replaced. A rerun without notes fails for an existing release.
-The workflow does not push tags, merge PRs, change visibility or publish crates.
+The workflow does not push tags, merge PRs or change visibility.
 Before enabling live workers, configure release-tag protections so their GitHub
 identity cannot trigger a release by pushing a tag. These repository controls
 are an owner setup action; worker prompts are not an authorization boundary.
 
-## Rust reference
+## State format
 
-Octomus was originally implemented in Rust. The Go service replaced it, and the
-Rust sources were removed from this tree. The frozen Rust reference is commit
-`3c2b5cd`; commit `529b63f` is the last with the Rust tree and the cross-language
-storage, upgrade and lock checks (`make test-go-storage`). Build the reference from
-either commit only for a rollback under the
-[cutover rules](roadmap/m10-cutover-and-retirement.md#rollback-rules); Go-written
-state was rehearsed as Rust-resumable at that revision.
+This release creates version-7 SQLite state. It refuses earlier database versions
+before changing their schema or journal settings. Back up existing state and use
+a fresh data directory when installing this release.

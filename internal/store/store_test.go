@@ -17,7 +17,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// admission mirrors tests/usage.rs: a repair admission for a fixed cycle/task.
 func admission(at string) store.Admission {
 	a := store.NewAdmission("cycle", str("task"), "repair", config.NewRoute("fixture", "medium"))
 	a.At = at
@@ -32,7 +31,6 @@ func saveConfig(t *testing.T, s *store.Store, edit func(*config.Config)) config.
 	return c
 }
 
-// Port of src/store.rs durable_and_budget_atomic.
 func TestDurableAndBudgetAtomic(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -58,7 +56,6 @@ func TestDurableAndBudgetAtomic(t *testing.T) {
 	}
 }
 
-// Port of src/store.rs planning_capacity_reflects_policy_usage_and_utc_day.
 func TestPlanningCapacityReflectsPolicyUsageAndUTCDay(t *testing.T) {
 	s := open(t, statePath(t))
 	for agents, required := range map[uint64]uint64{8: 12, 9: 13, 10: 14} {
@@ -120,7 +117,6 @@ func TestPlanningCapacityReflectsPolicyUsageAndUTCDay(t *testing.T) {
 	}
 }
 
-// Port of src/store.rs redacts_tokens.
 func TestRedactsTokens(t *testing.T) {
 	redacted := store.Redact("Bearer secretkey123 ghp_abcdefghijklmnop")
 	if strings.Contains(redacted, "secretkey") || strings.Contains(redacted, "ghp_abcdef") {
@@ -150,7 +146,7 @@ func TestRedactsTokensUnicodeWhitespace(t *testing.T) {
 			if got := canonical(t, value); got != `{"nested":["before [redacted] after"]}` {
 				t.Fatalf("redacted export = %s", got)
 			}
-			// URL userinfo cannot cross whitespace, matching Rust's negated \s.
+			// URL userinfo cannot cross whitespace.
 			for _, url := range []string{
 				"https://user" + string(separator) + "name:pass@example.com",
 				"https://user:pass" + string(separator) + "word@example.com",
@@ -196,7 +192,6 @@ func number(value any) float64 {
 	return -1
 }
 
-// Port of tests/usage.rs admission_and_counter_commit_together_across_days_and_restarts.
 func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -237,7 +232,6 @@ func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
 	}
 }
 
-// Port of tests/hardening.rs live_policy_survives_restart_and_never_uses_task_snapshot:
 // reservations measure the live operator config and the durable counter, never a
 // task's recorded config snapshot.
 func TestLivePolicySurvivesRestartAndNeverUsesTaskSnapshot(t *testing.T) {
@@ -280,47 +274,6 @@ func TestLivePolicySurvivesRestartAndNeverUsesTaskSnapshot(t *testing.T) {
 	}
 }
 
-// legacyDatabase creates the pre-migration schema Rust shipped before the
-// admission ledger existed: canonical records and a daily usage counter.
-func legacyDatabase(t *testing.T, path string, usage map[string]int64) {
-	t.Helper()
-	db := raw(t, path)
-	exec(t, db, "CREATE TABLE records(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id))")
-	exec(t, db, "CREATE TABLE usage(day TEXT PRIMARY KEY,sessions INTEGER NOT NULL)")
-	for day, sessions := range usage {
-		exec(t, db, "INSERT INTO usage VALUES(?,?)", day, sessions)
-	}
-}
-
-// Port of tests/usage.rs legacy_reporting_is_read_only_and_upgrade_preserves_unattributed_usage.
-func TestLegacyReportingIsReadOnlyAndUpgradePreservesUnattributedUsage(t *testing.T) {
-	path := statePath(t)
-	legacyDatabase(t, path, map[string]int64{"2026-09-09": 7})
-	before, err := os.ReadFile(path)
-	must(t, err)
-	value := usageReport(t, path)
-	if value["has_admission_ledger"] != false || number(daily(t, value)[0]["unattributed_admissions"]) != 7 {
-		t.Fatal(canonical(t, value))
-	}
-	after, err := os.ReadFile(path)
-	must(t, err)
-	if string(before) != string(after) {
-		t.Fatal("read-only report rewrote the legacy database")
-	}
-	if _, err := os.Stat(path + "-wal"); !os.IsNotExist(err) {
-		t.Fatal("read-only report created a WAL for a legacy rollback-journal database")
-	}
-	s := open(t, path)
-	saveConfig(t, s, func(*config.Config) {})
-	must(t, s.ReserveSession(0, admission("2026-09-09T12:00:00Z")))
-	must(t, s.Close())
-	row := daily(t, usageReport(t, path))[0]
-	if number(row["admissions"]) != 8 || number(row["attributed_admissions"]) != 1 || number(row["unattributed_admissions"]) != 7 {
-		t.Fatal(canonical(t, row))
-	}
-}
-
-// Port of tests/usage.rs report_never_creates_missing_state.
 func TestReportNeverCreatesMissingState(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	if _, err := report.UsageReport(filepath.Join(missing, "state.db")); err == nil || !strings.Contains(err.Error(), "state database") {
@@ -331,7 +284,6 @@ func TestReportNeverCreatesMissingState(t *testing.T) {
 	}
 }
 
-// Port of tests/review_regressions.rs concurrent_planning_sessions_append_without_losing_evidence.
 func TestConcurrentPlanningSessionsAppendWithoutLosingEvidence(t *testing.T) {
 	s := open(t, statePath(t))
 	c := cycleFor(task())
@@ -442,7 +394,6 @@ func observation(number uint64) model.PullRequest {
 	}
 }
 
-// Port of tests/review_regressions.rs repository_history_and_rediscovery_lineage_ignore_repository_casing.
 func TestRepositoryHistoryAndRediscoveryLineageIgnoreRepositoryCasing(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -542,9 +493,8 @@ func TestRepositoryHistoryAndRediscoveryLineageIgnoreRepositoryCasing(t *testing
 	}
 }
 
-// Port of tests/review_regressions.rs duplicate_titles_trim_saved_and_proposed_whitespace_after_upgrade.
-func TestDuplicateTitlesTrimSavedAndProposedWhitespaceAfterUpgrade(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
+func TestDuplicateTitlesTrimSavedAndProposedWhitespace(t *testing.T) {
+	{
 		path := statePath(t)
 		s := open(t, path)
 		saved := reviewTask()
@@ -554,18 +504,12 @@ func TestDuplicateTitlesTrimSavedAndProposedWhitespaceAfterUpgrade(t *testing.T)
 		before, _, err := s.GetRaw("task", saved.ID)
 		must(t, err)
 		must(t, s.Close())
-		if legacy {
-			db := raw(t, path)
-			exec(t, db, "DROP INDEX meta_duplicate")
-			exec(t, db, "CREATE INDEX meta_duplicate ON record_meta(kind,repository COLLATE NOCASE,target,title COLLATE NOCASE,status)")
-			exec(t, db, "PRAGMA user_version=3")
-			db.Close()
-		}
+
 		s = open(t, path)
 		after, _, err := s.GetRaw("task", saved.ID)
 		must(t, err)
 		if string(before) != string(after) {
-			t.Fatal("upgrade rewrote the saved task")
+			t.Fatal("reopen rewrote the saved task")
 		}
 		proposed := saved.Proposal
 		proposed.Title = "concrete IMPROVEMENT"
@@ -573,7 +517,7 @@ func TestDuplicateTitlesTrimSavedAndProposedWhitespaceAfterUpgrade(t *testing.T)
 		matches, err := s.DuplicateTasks("fixture/project", []model.Proposal{proposed})
 		must(t, err)
 		if len(matches) != 1 || matches[0].ID != saved.ID {
-			t.Fatalf("legacy=%v: %d matches", legacy, len(matches))
+			t.Fatalf("%d matches", len(matches))
 		}
 		for _, ws := range []string{"", " ", "\t\r\n", "\u0085   　"} {
 			saved.Proposal.Title = ws + "Concrete improvement" + ws
@@ -583,14 +527,14 @@ func TestDuplicateTitlesTrimSavedAndProposedWhitespaceAfterUpgrade(t *testing.T)
 				matches, err := s.DuplicateTasks("fixture/project", []model.Proposal{proposed})
 				must(t, err)
 				if len(matches) != 1 || matches[0].ID != saved.ID || !equalJSON(t, matches[0], saved) {
-					t.Fatalf("legacy=%v ws=%q title=%q: %d matches", legacy, ws, title, len(matches))
+					t.Fatalf("ws=%q title=%q: %d matches", ws, title, len(matches))
 				}
 			}
 		}
 		for _, title := range []string{"Concrete  improvement", "​Concrete improvement"} {
 			proposed.Title = title
 			if matches, _ := s.DuplicateTasks("fixture/project", []model.Proposal{proposed}); len(matches) != 0 {
-				t.Fatalf("legacy=%v: %q matched", legacy, title)
+				t.Fatalf("%q matched", title)
 			}
 		}
 		proposed.Title = "concrete IMPROVEMENT"
@@ -610,7 +554,6 @@ func TestDuplicateTitlesTrimSavedAndProposedWhitespaceAfterUpgrade(t *testing.T)
 	}
 }
 
-// Port of tests/review_regressions.rs duplicate_problem_identities_preserve_unicode_and_legacy_fallbacks.
 func TestDuplicateProblemIdentitiesPreserveUnicodeAndLegacyFallbacks(t *testing.T) {
 	type identityCase struct {
 		title, key, proposedTitle, proposedKey string
@@ -628,7 +571,7 @@ func TestDuplicateProblemIdentitiesPreserveUnicodeAndLegacyFallbacks(t *testing.
 		{"Original", "​key", "Reworded", "key", false},
 		{"Original", "key  words", "Reworded", "key words", false},
 	}
-	for _, legacy := range []bool{false, true} {
+	{
 		path := statePath(t)
 		s := open(t, path)
 		type expectation struct {
@@ -649,29 +592,18 @@ func TestDuplicateProblemIdentitiesPreserveUnicodeAndLegacyFallbacks(t *testing.
 			if saved.Proposal.SameWork(proposed) != c.duplicate {
 				t.Fatalf("case %d: same_work", i)
 			}
-			record := generic(t, saved)
-			if c.key == "" {
-				// Snapshots from before stable problem keys omitted the field.
-				delete(record["proposal"].(map[string]any), "problem_key")
-			}
-			must(t, s.Put("task", saved.ID, record))
+			must(t, s.Put("task", saved.ID, saved))
 			proposals = append(proposals, expectation{proposed, c.duplicate, saved.ID})
 		}
 		evidence, err := s.ListRaw("task")
 		must(t, err)
 		must(t, s.Close())
-		if legacy {
-			db := raw(t, path)
-			exec(t, db, "DROP INDEX task_problem_identity")
-			exec(t, db, "CREATE INDEX task_problem_identity ON records(kind,json_extract(data,'$.config.github_repo') COLLATE NOCASE,json_extract(data,'$.proposal.target'),lower(trim(COALESCE(NULLIF(json_extract(data,'$.proposal.problem_key'),''),json_extract(data,'$.proposal.title')))))")
-			exec(t, db, "PRAGMA user_version=4")
-			db.Close()
-		}
+
 		s = open(t, path)
 		again, err := s.ListRaw("task")
 		must(t, err)
 		if fmt.Sprint(evidence) != fmt.Sprint(again) {
-			t.Fatal("upgrade changed the saved tasks")
+			t.Fatal("reopen changed the saved tasks")
 		}
 		for _, e := range proposals {
 			matches, err := s.DuplicateTasks("fixture/project", []model.Proposal{e.proposed})
@@ -681,7 +613,7 @@ func TestDuplicateProblemIdentitiesPreserveUnicodeAndLegacyFallbacks(t *testing.
 				expected = 1
 			}
 			if len(matches) != expected {
-				t.Fatalf("legacy=%v %s: %d matches", legacy, e.id, len(matches))
+				t.Fatalf("%s: %d matches", e.id, len(matches))
 			}
 			if e.duplicate && matches[0].ID != e.id {
 				t.Fatalf("%s matched %s", e.id, matches[0].ID)
@@ -698,7 +630,6 @@ func TestDuplicateProblemIdentitiesPreserveUnicodeAndLegacyFallbacks(t *testing.
 	}
 }
 
-// Port of tests/review_regressions.rs duplicate_lookup_loads_only_matches_without_truncating_or_repeating_them.
 func TestDuplicateLookupLoadsOnlyMatchesWithoutTruncatingOrRepeatingThem(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -746,24 +677,15 @@ func firstItem(t *testing.T, page store.Page) map[string]any {
 	return decodeMap(t, page.Items[0])
 }
 
-// Port of tests/review_regressions.rs proposal_content_revisions_cover_omitted_and_truncated_evidence_after_upgrade.
-func TestProposalContentRevisionsCoverOmittedAndTruncatedEvidenceAfterUpgrade(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
+func TestProposalContentRevisionsCoverOmittedAndTruncatedEvidence(t *testing.T) {
+	{
 		path := statePath(t)
 		s := open(t, path)
 		c := cycleFor(reviewTask())
 		c.Proposals[0].Reason = strings.Repeat("r", 2100)
 		must(t, s.Put("cycle", c.ID, c))
 		must(t, s.Close())
-		if legacy {
-			// Recreate the prior projection schema with its saved evidence intact.
-			db := raw(t, path)
-			exec(t, db, "DROP TRIGGER project_proposals_insert")
-			exec(t, db, "DROP TRIGGER project_proposals_update")
-			exec(t, db, "ALTER TABLE proposal_records DROP COLUMN content_revision")
-			exec(t, db, "PRAGMA user_version=2")
-			db.Close()
-		}
+
 		s = open(t, path)
 		original, err := store.Get[model.Cycle](s, "cycle", c.ID)
 		must(t, err)
@@ -798,11 +720,11 @@ func TestProposalContentRevisionsCoverOmittedAndTruncatedEvidenceAfterUpgrade(t 
 			must(t, err)
 			refreshed := firstItem(t, page)
 			if number(refreshed["content_revision"]) != float64(revision) {
-				t.Fatalf("legacy=%v revision %d: %v", legacy, revision, refreshed["content_revision"])
+				t.Fatalf("revision %d: %v", revision, refreshed["content_revision"])
 			}
 			refreshed["content_revision"] = json.Number("1")
 			if !equalJSON(t, refreshed, summary) {
-				t.Fatalf("legacy=%v revision %d: summary changed beyond the revision", legacy, revision)
+				t.Fatalf("revision %d: summary changed beyond the revision", revision)
 			}
 			raw, err := s.ProposalDetail(c.ID, c.Proposals[0].ID)
 			must(t, err)
@@ -812,7 +734,7 @@ func TestProposalContentRevisionsCoverOmittedAndTruncatedEvidenceAfterUpgrade(t 
 			}
 			delete(detail, "content_revision")
 			if !equalJSON(t, detail, c.Proposals[0]) {
-				t.Fatalf("legacy=%v revision %d: detail differs", legacy, revision)
+				t.Fatalf("revision %d: detail differs", revision)
 			}
 		}
 		must(t, s.Close())
@@ -832,29 +754,8 @@ func TestProposalContentRevisionsCoverOmittedAndTruncatedEvidenceAfterUpgrade(t 
 	}
 }
 
-// installLegacyProjection reproduces a database written before saved cycle
-// summaries counted candidate decisions: the old three-word decision map, the
-// triggers that produced it, and user_version 5.
-func installLegacyProjection(t *testing.T, path string) {
-	t.Helper()
-	decisions := func(source string) string {
-		return fmt.Sprintf("json_object('accepted',(SELECT count(*) FROM json_each(%[1]s,'$.proposals') WHERE json_extract(value,'$.decision')='accepted'),'rejected',(SELECT count(*) FROM json_each(%[1]s,'$.proposals') WHERE json_extract(value,'$.decision')='rejected'),'deferred',(SELECT count(*) FROM json_each(%[1]s,'$.proposals') WHERE json_extract(value,'$.decision')='deferred'))", source)
-	}
-	summary := fmt.Sprintf("json_object('id',NEW.id,'number',json_extract(NEW.data,'$.number'),'mode',COALESCE(json_extract(NEW.data,'$.mode'),'execution'),'status',json_extract(NEW.data,'$.status'),'started_at',json_extract(NEW.data,'$.started_at'),'completed_at',json_extract(NEW.data,'$.completed_at'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'session_count',json_array_length(NEW.data,'$.sessions'),'decisions',%s,'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}')))", decisions("NEW.data"))
-	projection := fmt.Sprintf("INSERT INTO record_meta(kind,id,seq,status,repository,target,title,cycle_id,run_id,archived,discarded,summary) VALUES (NEW.kind,NEW.id,NEW.rowid,COALESCE(json_extract(NEW.data,'$.status'),''),COALESCE(json_extract(NEW.data,'$.config.github_repo'),''),COALESCE(json_extract(NEW.data,'$.proposal.target'),''),COALESCE(json_extract(NEW.data,'$.proposal.title'),''),COALESCE(json_extract(NEW.data,'$.cycle_id'),''),json_extract(NEW.data,'$.run_id'),json_extract(NEW.data,'$.lifecycle.archived_at'),json_extract(NEW.data,'$.lifecycle.discarded_at'),CASE NEW.kind WHEN 'cycle' THEN %s ELSE '{}' END) ON CONFLICT(kind,id) DO UPDATE SET status=excluded.status,summary=excluded.summary;", summary)
-	db := raw(t, path)
-	exec(t, db, "DROP TRIGGER project_record_insert")
-	exec(t, db, "DROP TRIGGER project_record_update")
-	exec(t, db, "CREATE TRIGGER project_record_insert AFTER INSERT ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN "+projection+" END")
-	exec(t, db, "CREATE TRIGGER project_record_update AFTER UPDATE ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN "+projection+" END")
-	exec(t, db, "UPDATE record_meta SET summary=json_set(summary,'$.decisions',(SELECT "+decisions("r.data")+" FROM records r WHERE r.kind='cycle' AND r.id=record_meta.id)) WHERE kind='cycle'")
-	exec(t, db, "PRAGMA user_version=5")
-	db.Close()
-}
-
-// Port of tests/review_regressions.rs cycle_summaries_count_candidate_decisions_after_upgrade.
-func TestCycleSummariesCountCandidateDecisionsAfterUpgrade(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
+func TestCycleSummariesCountCandidateDecisions(t *testing.T) {
+	{
 		path := statePath(t)
 		s := open(t, path)
 		c := cycleFor(reviewTask())
@@ -878,40 +779,32 @@ func TestCycleSummariesCountCandidateDecisionsAfterUpgrade(t *testing.T) {
 		must(t, s.Close())
 		db := raw(t, path)
 		savedText := queryString(t, db, "SELECT data FROM records WHERE kind='cycle' AND id=?1", c.ID)
-		if legacy {
-			installLegacyProjection(t, path)
-			stale := queryString(t, db, "SELECT json_extract(summary,'$.decisions') FROM record_meta WHERE kind='cycle' AND id=?1", c.ID)
-			if strings.Contains(stale, "candidate") {
-				t.Fatal("The legacy projection must not count candidates")
-			}
-		}
+
 		s = open(t, path)
 		if queryString(t, db, "SELECT data FROM records WHERE kind='cycle' AND id=?1", c.ID) != savedText {
-			t.Fatal("Migration rewrote saved evidence")
+			t.Fatal("reopen rewrote saved evidence")
 		}
 		if fmt.Sprint(revisions(s)) != fmt.Sprint(before) {
-			t.Fatal("Re-projecting summaries changed cached proposal revisions")
+			t.Fatal("reopen changed cached proposal revisions")
 		}
 		page, err := s.HistoryPage("cycle", store.HistoryQuery{})
 		must(t, err)
 		summary := firstItem(t, page)
 		if canonical(t, summary["decisions"]) != `{"accepted":1,"candidate":1,"deferred":0,"rejected":0}` {
-			t.Fatalf("legacy=%v: %s", legacy, canonical(t, summary["decisions"]))
+			t.Fatalf("%s", canonical(t, summary["decisions"]))
 		}
-		// Later writes keep counting candidates, so the gate also has to replace
-		// the triggers that produced the old summary.
+		// Later writes keep counting candidates.
 		c.Status = model.CycleCompleted
 		must(t, s.Put("cycle", c.ID, c))
 		page, err = s.HistoryPage("cycle", store.HistoryQuery{})
 		must(t, err)
 		if number(firstItem(t, page)["decisions"].(map[string]any)["candidate"]) != 1 {
-			t.Fatalf("legacy=%v: candidates not counted after write", legacy)
+			t.Fatal("candidates not counted after write")
 		}
 		must(t, s.Close())
 	}
 }
 
-// Port of tests/review_regressions.rs commit_plan_is_atomic_on_lineage_failure.
 func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	s := open(t, statePath(t))
 	// A control batch in the planning phase makes commit_plan write settings
@@ -992,7 +885,6 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	}
 }
 
-// Port of tests/hardening.rs old_attention_survives_bounded_dashboard_and_pages.
 func TestOldAttentionSurvivesBoundedDashboardAndPages(t *testing.T) {
 	s := open(t, statePath(t))
 	old := task()
@@ -1046,8 +938,7 @@ func TestOldAttentionSurvivesBoundedDashboardAndPages(t *testing.T) {
 	}
 }
 
-// Store half of tests/hardening.rs unresolved_problem_identity_survives_rewording;
-// the planning validation that consumes the duplicates belongs to M5.
+// planning validation consumes these duplicates.
 func TestUnresolvedProblemIdentitySurvivesRewording(t *testing.T) {
 	s := open(t, statePath(t))
 	old := task()
@@ -1064,7 +955,6 @@ func TestUnresolvedProblemIdentitySurvivesRewording(t *testing.T) {
 	}
 }
 
-// Port of tests/hardening.rs published_work_remains_in_duplicate_lookups.
 func TestPublishedWorkRemainsInDuplicateLookups(t *testing.T) {
 	s := open(t, statePath(t))
 	delivered := task()

@@ -38,11 +38,11 @@ measured and what remains unvalidated.
 
 As the VM administrator, install Git, gh, curl and OpenSSL. This npm-based Codex
 installation uses Node 22 from [NodeSource](https://github.com/nodesource/distributions)
-and the pinned [Codex release](https://github.com/openai/codex/releases/tag/rust-v0.153.4).
+and the pinned Codex npm package, version 0.153.4.
 Install the runners you intend to use. The Codex setup below is optional for an
 OpenCode-only installation. For OpenCode, install the pinned
 [1.18.30 release](https://github.com/anomalyco/opencode/releases/tag/v1.18.30)
-for your platform. Octomus's binary itself does not require Node, Go or Rust at runtime.
+for your platform. Octomus's binary itself needs no build toolchain at runtime.
 
 ```bash
 sudo apt-get update
@@ -80,6 +80,8 @@ signatures against a compromised release account.
 
 The executable is statically linked (`CGO_ENABLED=0`) and embeds the dashboard,
 so installation is a single administrator-owned file with no runtime toolchain.
+Use a fresh data directory: this release creates version-7 state and refuses
+earlier databases. Preserve a backup of any older state separately.
 
 ## 2. Connect as the service user
 

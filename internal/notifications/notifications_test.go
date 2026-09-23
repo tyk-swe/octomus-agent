@@ -55,7 +55,7 @@ func putTask(t *testing.T, state *store.Store, id, status string, reason *model.
 	}
 }
 
-// receiver is the Rust test's raw webhook peer: it hands every request body to
+// receiver hands every request body to
 // the channel and delays the response like the scripted peer does.
 type receiver struct {
 	url      string
@@ -350,8 +350,7 @@ func TestOversizedIdentitiesFailAsInvalidPayloadInsteadOfTruncating(t *testing.T
 	}
 }
 
-// The raw outbox reads the Rust tests make: they check row-level fields the
-// health view aggregates away.
+// rawDB exposes outbox fields that the health view aggregates away.
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")

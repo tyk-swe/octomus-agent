@@ -111,7 +111,7 @@ export function taskEvidence(id: string, over: Partial<TaskEvidence> = {}): Task
     },
     required_commands: {
       state: 'recorded',
-      commands: [command('cargo test', 'passed')],
+      commands: [command('go test ./...', 'passed')],
       all_passed_at_output_revision: true
     },
     pull_request: {
@@ -137,7 +137,7 @@ export function proposalEvidence(
     problem: 'Synthetic recorded problem statement for browser tests.',
     benefit: 'Synthetic recorded benefit statement for browser tests.',
     scope: 'Synthetic recorded scope statement for browser tests.',
-    evidence: ['src/main.rs: synthetic fixture reference'],
+    evidence: ['internal/example/example.go: synthetic fixture reference'],
     final_decision: 'accepted',
     final_reason: 'Synthetic recorded final rationale for browser tests.',
     reviewer_verdicts: [reviewer('adversary-a'), reviewer('adversary-b')],
@@ -205,7 +205,7 @@ export function proposalRow(
     target: 'main',
     tier: 'S',
     category: 'correctness',
-    evidence: ['src/main.rs: synthetic fixture reference'],
+    evidence: ['internal/example/example.go: synthetic fixture reference'],
     dependencies: [],
     prompt: 'Synthetic execution prompt for browser tests.',
     decision: 'accepted',

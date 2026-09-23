@@ -53,10 +53,10 @@
         "category": "correctness",
         "problem": "In this synthetic notes app, exporting a file without a trailing newline drops the final note.",
         "benefit": "Keep every saved note in the exported file, including a one-line file.",
-        "scope": "Flush the remaining buffer in src/export.rs and add regression cases for empty, one-line and multi-line files.",
+        "scope": "Flush the remaining buffer in internal/export/export.go and add regression cases for empty, one-line and multi-line files.",
         "evidence": [
-          "Synthetic source: src/export.rs \u2014 buffered export loop",
-          "Synthetic regression: tests/export.rs \u2014 final line without newline"
+          "Synthetic source: internal/export/export.go \u2014 buffered export loop",
+          "Synthetic regression: internal/export/export_test.go \u2014 final line without newline"
         ],
         "final_decision": "accepted",
         "final_reason": "A reproducible data-loss case with a small fix and specific regression coverage is worth implementing.",
@@ -128,7 +128,7 @@
               "all_passed_at_output_revision": true,
               "commands": [
                 {
-                  "command": "cargo test --locked --test export",
+                  "command": "go test ./internal/evidence",
                   "state": "passed",
                   "results_recorded": 1,
                   "latest_success": true,
@@ -157,7 +157,7 @@
         "benefit": "The proposal hopes to make future validation easier to extend.",
         "scope": "Replace the existing functions with a plugin registry and configurable validation pipeline.",
         "evidence": [
-          "Synthetic source: src/validation.rs \u2014 two short, independent validators"
+          "Synthetic source: internal/validation/validation.go \u2014 two short, independent validators"
         ],
         "final_decision": "rejected",
         "final_reason": "No demonstrated user problem or repeated complexity justifies a new framework. Keep the small functions.",
@@ -190,7 +190,7 @@
         "benefit": "Caching might reduce repeated search latency if index construction is the bottleneck.",
         "scope": "Cache the search index and invalidate it when notes change.",
         "evidence": [
-          "Synthetic source: src/search.rs \u2014 index construction",
+          "Synthetic source: internal/search/search.go \u2014 index construction",
           "Missing evidence: a representative benchmark and invalidation requirements"
         ],
         "final_decision": "deferred",
@@ -222,10 +222,10 @@
         "category": "correctness",
         "problem": "In this synthetic sync queue, transient write errors drop pending work instead of allowing a bounded retry.",
         "benefit": "Preserve queued work through a transient failure and retry without duplicating successful writes.",
-        "scope": "Add bounded retry handling and test pending-result preservation in src/sync.rs.",
+        "scope": "Add bounded retry handling and test pending-result preservation in internal/sync/sync.go.",
         "evidence": [
-          "Synthetic source: src/sync.rs \u2014 pending write queue",
-          "Synthetic regression: tests/sync_retry.rs \u2014 interrupted write followed by retry"
+          "Synthetic source: internal/sync/sync.go \u2014 pending write queue",
+          "Synthetic regression: internal/sync/sync_retry_test.go \u2014 interrupted write followed by retry"
         ],
         "final_decision": "accepted",
         "final_reason": "The proposal addresses a concrete failure mode. Implementation still needs clean review and passing checks.",
@@ -294,7 +294,7 @@
                 "findings": [
                   {
                     "title": "Synthetic retry loses a pending result",
-                    "file": "src/sync.rs",
+                    "file": "internal/sync/sync.go",
                     "priority": "P1",
                     "detail": "Synthetic finding: starting the next attempt overwrites an unresolved result. The regression for pending-result preservation still fails; delivery remains blocked."
                   }
@@ -306,7 +306,7 @@
               "all_passed_at_output_revision": false,
               "commands": [
                 {
-                  "command": "cargo test --locked --test sync_retry",
+                  "command": "go test ./internal/runner",
                   "state": "failed",
                   "results_recorded": 2,
                   "latest_success": false,

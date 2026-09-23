@@ -915,7 +915,7 @@ func TestDecisionMemoryAbsorbsOnlySameCycleAlternativesAndRequiresRediscovery(t 
 	stored := records[0].(map[string]any)
 	paths, pathsOK := stored["relevant_paths"].([]string)
 	if stored["mode"] != model.CycleModeExecution || stored["cycle_mode"] != nil || stored["kind"] != nil || stored["reconsideration_due"] != nil || !pathsOK || paths == nil {
-		t.Fatalf("decision record is not Rust-compatible: %+v", stored)
+		t.Fatalf("decision record changed: %+v", stored)
 	}
 	recorded := recordToMap(decisionRecord{
 		Kind: "decision", ID: model.ID(), CycleMode: model.CycleModeExecution,
@@ -954,7 +954,7 @@ func TestDecisionMemoryAbsorbsOnlySameCycleAlternativesAndRequiresRediscovery(t 
 	}
 }
 
-func TestDecisionMemoryUsesPrRevisionAndNormalizesLegacyAlternatives(t *testing.T) {
+func TestDecisionMemoryUsesPrRevision(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	a := New(state, t.TempDir())
@@ -970,22 +970,7 @@ func TestDecisionMemoryUsesPrRevisionAndNormalizesLegacyAlternatives(t *testing.
 	if err != nil || len(records) != 1 || records[0].(map[string]any)["source_revision"] != pr.Head || records[0].(map[string]any)["context_fingerprint"] != pr.Head {
 		t.Fatalf("existing-PR decision used the wrong revision: %+v, %v", records, err)
 	}
-	acceptedRecord := decisionRecord{Kind: "decision", ID: "legacy-accepted", CycleMode: model.CycleModeAudit, Repository: cfg.GitHubRepo, Target: pr.Branch, ProblemKey: accepted.ProblemIdentity(), Decision: model.DecisionAccepted, Reason: "scope", SourceRevision: pr.Head, ContextFingerprint: pr.Head, ReconsiderAfter: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), CycleID: cycleID}
-	rejectedRecord := acceptedRecord
-	rejectedRecord.ID = "legacy-rejected"
-	rejectedRecord.Decision = model.DecisionRejected
-	for _, record := range []decisionRecord{acceptedRecord, rejectedRecord} {
-		if err := state.Put("decision", record.ID, recordToMap(record)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	memory, err := a.planningMemory(context.Background(), cfg, *cycle.Grounding)
-	if err != nil || len(memory) != 1 {
-		t.Fatalf("legacy absorbed decision was retained: %+v, %v", memory, err)
-	}
-	if got := memory[0].(map[string]any)["mode"]; got != model.CycleModeAudit {
-		t.Fatalf("Rust decision mode was not preserved: %v", got)
-	}
+
 }
 
 func TestPrCapacityUsesCompleteInventoryAndUnrepresentedReservations(t *testing.T) {
@@ -1102,7 +1087,6 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 	}
 }
 
-// F3 (review_findings.rs): same-cycle proposals sharing a problem key are
 // duplicates regardless of wording.
 func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	cfg := testConfig(t.TempDir())
@@ -1122,7 +1106,6 @@ func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	}
 }
 
-// F4 (review_findings.rs): target resolution binds the owned PR regardless of
 // order, rejects unowned and ambiguous matches, and never binds the default
 // branch as a PR.
 func TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder(t *testing.T) {

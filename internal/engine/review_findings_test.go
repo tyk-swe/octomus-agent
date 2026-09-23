@@ -10,7 +10,6 @@ import (
 )
 
 // TestVerificationCommandThatMutatesTheWorktreeIsFailedEvidenceAndStopsTheRun
-// ports the F1 case of tests/review_findings.rs with its exact assertions: the
 // single recorded failure names the mutating command and the mutation.
 func TestVerificationCommandThatMutatesTheWorktreeIsFailedEvidenceAndStopsTheRun(t *testing.T) {
 	app, task, revision := verificationFixture(t, []string{

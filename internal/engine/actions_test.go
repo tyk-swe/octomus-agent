@@ -1,9 +1,7 @@
 package engine
 
-// Ports of the M6-allocated tests/hardening.rs task-control cases: remote
-// preflights release the gate, concurrent actions never clobber each other,
-// retries adopt live policy and start a fresh repair-round budget. These run
-// at engine level (App.TaskAction) instead of the HTTP router, which is M7.
+// Task controls release the gate for remote preflights, serialize concurrent
+// actions and adopt live policy on explicit retry.
 
 import (
 	"context"
@@ -109,10 +107,10 @@ func TestShutdownWaitsForPublicationReconciliation(t *testing.T) {
 	}
 }
 
-// heldPreflightFixture mirrors the Rust held_preflight_fixture: a blocked
+// heldPreflightFixture uses a blocked
 // durable task whose remote preflights hold behind a controlled upload-pack.
 // The app is created but not resumed — controls run against durable state
-// exactly like the reference API exercised through the router.
+// through the same action path as the HTTP router.
 func heldPreflightFixture(t *testing.T) (*planningFixture, *App, model.Task) {
 	t.Helper()
 	fixture := newExecutionFixture(t)

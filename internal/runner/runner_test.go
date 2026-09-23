@@ -1,9 +1,7 @@
 package runner
 
-// Real owned processes talking to deterministic HTTP/SSE peers, without model
-// calls. The harness mirrors tests/runners.rs: the fixture CLIs are launched
-// through an executable runpy shim with OCTOMUS_FIXTURE pointing at the test's
-// temporary root.
+// Runner tests use owned processes and deterministic HTTP/SSE peers. A local
+// executable shim points each client at its temporary fixture root.
 import (
 	"context"
 	"encoding/json"
@@ -176,8 +174,7 @@ type outcome struct {
 	err    error
 }
 
-// turnIn runs a turn on its own goroutine, the port of the reference tests'
-// tokio::join! patterns.
+// turnIn runs a turn on its own goroutine to exercise concurrent client calls.
 func turnIn(client Adapter, session string, route config.Route, cwd, prompt string, schema schemas.Schema) chan outcome {
 	ch := make(chan outcome, 1)
 	go func() {

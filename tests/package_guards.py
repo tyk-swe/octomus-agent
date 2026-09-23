@@ -22,11 +22,11 @@ ALLOWED = re.compile(
     r'octomus-agent|LICENSE|README\.md|SECURITY\.md|CHANGELOG\.md|CONTRIBUTING\.md|AGENTS\.md'
     r'|docs(|/.+)|deploy(|/.+)))/?$'
 )
-# Private state, credentials, transcripts, caches and migration-only fixtures
+# Private state, credentials, transcripts, caches and test fixtures
 # must never appear even if the allowlist above is loosened by mistake.
 DENIED = re.compile(
     r'(\.git|\.octomus|service\.lock|state\.db|\.db-(wal|shm|journal)|node_modules'
-    r'|package(-lock)?\.json|/(src|internal|cmd|web|tests|target|bin|dist)/|Cargo\.|\.crate$|fixtures)'
+    r'|package(-lock)?\.json|/(src|internal|cmd|web|tests|target|bin|dist)/|fixtures)'
 )
 
 

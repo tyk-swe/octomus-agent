@@ -59,6 +59,9 @@ def scenario(mode):
             if mode == 'gates':
                 config = save_config(service, verification_commands=[f'touch {marker}; sleep 31338 & sleep 60'], command_timeout_seconds=60)
                 task = {'id': 'task-seed', 'cycle_id': 'cycle-seed', 'proposal': {'id': 'p', 'title': 'T', 'problem': 'P', 'benefit': 'B', 'scope': 'S', 'evidence': [], 'category': 'features', 'target': 'main', 'tier': 'M', 'dependencies': [], 'prompt': 'Do it', 'decision': 'accepted', 'reason': 'R', 'problem_key': '', 'relevant_paths': [], 'reconsiders': []}, 'status': 'blocked', 'blocked_reason': 'publication_uncertain', 'route': {'backend': 'codex', 'model': 'm', 'effort': 'low'}, 'config': config, 'source_revision': 's', 'comparison_base': 's', 'default_revision': 's', 'branch': 'octomus/seed', 'workspace': '', 'sessions': [], 'reviews': [], 'verification': [], 'output_commit': '0' * 40, 'attempts': 0, 'created_at': '2026-01-01T00:00:00Z', 'updated_at': '2026-01-01T00:00:00Z'}
+                task.update(review_baseline=0, superseded_by=[], supersedes=[],
+                            rediscovery_requested=False,
+                            lifecycle={'archived_at': None, 'discarded_at': None})
                 db = sqlite3.connect(root / '.octomus/state.db')
                 db.execute("INSERT INTO records VALUES ('task',?,?)", (task['id'], json.dumps(task)))
                 db.commit()

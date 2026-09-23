@@ -266,7 +266,7 @@ func parseReadyURL(endpoint string) (string, error) {
 }
 
 // appliedPolicy validates every safety-critical field of the effective config,
-// not just the reference subset.
+// beyond the expected fields.
 func appliedPolicy(effective any, agent string) bool {
 	doc, ok := asObject(effective)
 	if !ok {
@@ -361,7 +361,7 @@ func (o *OpenCode) json(method, path, cwd string, body any, seconds uint64) (any
 }
 
 // readJSONBody reads a JSON body capped at exactly MaxMessage and rejects
-// trailing data, like serde_json::from_slice.
+// trailing data.
 func readJSONBody(r io.Reader) (any, error) {
 	var data []byte
 	chunk := make([]byte, 32768)
@@ -911,7 +911,7 @@ func segment(id string) (string, error) {
 }
 
 // jsonEqual compares two decoded JSON values by canonical compact form, like
-// serde Value equality.
+// JSON value equality.
 func jsonEqual(a, b any) bool {
 	ea, err1 := marshal(a)
 	eb, err2 := marshal(b)

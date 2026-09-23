@@ -62,6 +62,8 @@ Octomus is built from source; release binaries are not
 published yet. You need a dedicated Ubuntu 24.04 VM, your own Codex or OpenCode
 provider access, a GitHub identity reserved for the agent, and a clone of the target
 repository on a persistent path.
+The service initializes a version-7 state database in a fresh data directory.
+Earlier databases cannot be opened by this release; back them up before installing.
 
 ```sh
 git clone https://github.com/tyk-swe/octomus-agent.git
@@ -98,7 +100,6 @@ not dollar caps; validated per-task and daily cost figures are not available yet
 | [Cost](docs/cost.md) | What a session admission is, and what is not measured |
 | [Threat model](docs/threat-model.md) | Trust boundaries, prompt injection, redaction limits |
 | [Releasing](docs/releasing.md) | Packaging and release workflow |
-| [Rust → Go roadmap](docs/roadmap/README.md) | Backend rewrite record: milestones, acceptance gates and cutover status |
 
 ## Security
 

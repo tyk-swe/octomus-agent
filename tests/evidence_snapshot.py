@@ -51,6 +51,7 @@ def main():
         'category': 'correctness', 'target': 'main', 'tier': 'S', 'dependencies': [],
         'prompt': 'SYNTHETIC-PRIVATE-PROMPT', 'decision': 'accepted',
         'reason': 'Synthetic final decision, with missing reviewer evidence',
+        'problem_key': '', 'relevant_paths': [], 'reconsiders': [],
     }
     deferred = {**proposal, 'id': 'synthetic-deferred', 'decision': 'deferred'}
     cycle = {
@@ -72,7 +73,9 @@ def main():
             'output': 'SYNTHETIC-PRIVATE-OUTPUT', 'revision': 'b' * 40,
             'created_at': timestamp,
         }],
-        'pr_number': None, 'pr_url': None, 'attempts': 1,
+        'pr_number': None, 'pr_url': None, 'attempts': 1, 'review_baseline': 0,
+        'superseded_by': [], 'supersedes': [], 'rediscovery_requested': False,
+        'lifecycle': {'archived_at': None, 'discarded_at': None},
         'error': 'SYNTHETIC-PRIVATE-ERROR', 'created_at': timestamp, 'updated_at': timestamp,
     }
 
@@ -85,10 +88,11 @@ def main():
         for directory in (source, snapshot, lossy):
             directory.mkdir(mode=0o700)
         state = source / 'state.db'
+        result = run(['go', 'run', './tests/fixturedb', str(state)])
+        assert result.returncode == 0, result.stderr
         with closing(sqlite3.connect(state)) as writer:
             assert writer.execute('PRAGMA journal_mode=WAL').fetchone() == ('wal',)
             writer.execute('PRAGMA wal_autocheckpoint=0')
-            writer.execute('CREATE TABLE records (kind TEXT, id TEXT, data TEXT, PRIMARY KEY(kind,id))')
             writer.execute('INSERT INTO records VALUES (?,?,?)',
                            ('cycle', cycle['id'], json.dumps(cycle)))
             writer.commit()

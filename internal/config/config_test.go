@@ -51,7 +51,7 @@ func TestReadinessAndBaseline(t *testing.T) {
 	if c.ValidateBaseline() == nil {
 		t.Fatal("baseline without commands")
 	}
-	c.VerificationCommands = []string{"cargo test"}
+	c.VerificationCommands = []string{"go test ./..."}
 	if err := c.ValidateBaseline(); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestRepositoryValidationPreservesSymlinkParent(t *testing.T) {
 			// filepath.Join would erase the symlink/.. component under test.
 			c.Repository = link + string(os.PathSeparator) + ".."
 			c.GitHubRepo = "fixture/project"
-			c.VerificationCommands = []string{"cargo test"}
+			c.VerificationCommands = []string{"go test ./..."}
 			if err := c.ValidateBaseline(); (err == nil) == test.gitAtLinkParent {
 				t.Fatalf("ValidateBaseline() = %v; want valid = %t", err, !test.gitAtLinkParent)
 			}
@@ -219,27 +219,25 @@ func TestValidationNumericBoundaries(t *testing.T) {
 	}
 }
 
-func TestFrozenRepositoryIdentities(t *testing.T) {
-	data, err := os.ReadFile("../../tests/fixtures/compatibility/m1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var corpus struct {
-		Repositories []struct {
-			Name        string
-			Left, Right Config
-			Expected    bool
-		}
-	}
-	if err := json.Unmarshal(data, &corpus); err != nil {
-		t.Fatal(err)
-	}
-	if len(corpus.Repositories) == 0 {
-		t.Fatal("missing identity fixtures")
-	}
-	for _, c := range corpus.Repositories {
-		if c.Left.SameRemoteIdentity(c.Right) != c.Expected {
-			t.Error(c.Name)
-		}
+func TestRepositoryIdentity(t *testing.T) {
+	base := Default()
+	base.Repository = "/srv/projects/source"
+	base.GitHubRepo = "Fixture/Project"
+	for _, tc := range []struct {
+		name, path, remote, branch string
+		want                       bool
+	}{
+		{"same", "/srv/projects//source/.", "fixture/project", "main", true},
+		{"different path", "/srv/projects/other", "fixture/project", "main", false},
+		{"different remote", "/srv/projects/source", "fixture/other", "main", false},
+		{"different branch", "/srv/projects/source", "fixture/project", "develop", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			other := base.Clone()
+			other.Repository, other.GitHubRepo, other.DefaultBranch = tc.path, tc.remote, tc.branch
+			if got := base.SameRemoteIdentity(other); got != tc.want {
+				t.Fatalf("SameRemoteIdentity() = %t; want %t", got, tc.want)
+			}
+		})
 	}
 }

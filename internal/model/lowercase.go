@@ -8,7 +8,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-// Rust applies Unicode's Final_Sigma rule to the entire string. x/text limits
+// Unicode Final_Sigma applies to the entire string; x/text limits
 // its lookahead to 30 case-ignorable runes, so resolve sigmas before asking it
 // for the remaining (including multi-rune) lowercase mappings.
 func lowercaseIdentity(s string) string {

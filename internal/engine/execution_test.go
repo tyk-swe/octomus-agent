@@ -1,6 +1,6 @@
 package engine
 
-// M6 execution/publication lifecycle tests against the deterministic local
+// Execution and publication lifecycle tests against deterministic local
 // fixture peers: real local Git, a Python app-server peer, and a Python GitHub
 // peer. No network requests or model calls.
 
@@ -467,7 +467,7 @@ func driveUntilFile(t *testing.T, fixture *planningFixture, app *App, path, labe
 
 // heldUploadPack points the fixture checkout's upload-pack at a script that
 // records entry and holds while fixture.root/hold exists — the deterministic
-// remote-preflight gate the Rust hardening tests use.
+// remote-preflight gate under test.
 func heldUploadPack(t *testing.T, fixture *planningFixture) {
 	t.Helper()
 	script := "#!/bin/sh\nfixture_dir=$(dirname \"$0\")\ntouch \"$fixture_dir/entered-$$\"\nwhile [ -e \"$fixture_dir/hold\" ]; do sleep 0.02; done\nif [ -e \"$fixture_dir/fail\" ]; then exit 1; fi\nexec git-upload-pack \"$@\"\n"
@@ -1117,7 +1117,7 @@ func TestExecutionDeadlineCallbackPanicBlocks(t *testing.T) {
 
 // TestExecutionDeliversFullLifecycleViaOpenCode runs the same
 // executor → fresh reviews → persistent repair → verification → publication
-// lifecycle through the OpenCode HTTP/SSE fixture peer — the M6 deliverable
+// lifecycle through the OpenCode HTTP/SSE fixture peer
 // requires the lifecycle on both runners.
 func TestExecutionDeliversFullLifecycleViaOpenCode(t *testing.T) {
 	fixture := newExecutionFixture(t)

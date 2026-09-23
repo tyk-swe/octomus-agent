@@ -33,9 +33,8 @@ required routes select need to be installed. An audit requires the orchestrator,
 discovery and proposal reviewer routes; normal execution requires every configured
 route.
 
-Old configuration, task snapshots, sessions, and admission records without a
-`backend` load as Codex. No migration is required. Existing saved workspace paths
-remain valid, while newly accepted tasks use their Octomus task IDs for directories.
+Newly accepted tasks use their Octomus task IDs for workspace directories.
+Saved route records include an explicit backend.
 
 ## OpenCode setup and behavior
 
@@ -90,4 +89,3 @@ return per-backend versions, protocol baselines, normalized model catalogs and
 warnings. Codex version fields remain present when Codex is required. Errors
 identify the failing runner or route. Catalogs and diagnostics consume no session
 admissions and make no model calls; they do not prove paid inference access.
-

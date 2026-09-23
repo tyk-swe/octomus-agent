@@ -1,5 +1,5 @@
 // api.go holds the engine-side operations the HTTP layer invokes. Each method
-// mirrors the corresponding reference handler: gate ordering, conflict
+// follows the operator control contract: gate ordering, conflict
 // classification, durable writes and operator events all match.
 package engine
 
@@ -14,14 +14,14 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // Not-found and unknown-action errors the HTTP layer maps to 404, matching
-// the reference's not_found responses.
+// not-found responses.
 var (
 	ErrCycleNotFound      = errors.New("Cycle not found")
 	ErrUnknownControl     = errors.New("Unknown control")
@@ -34,7 +34,7 @@ var (
 // genericMap re-encodes a typed record as generic JSON with exact numbers so
 // response assembly preserves the store's saved spelling.
 func genericMap(value any) (map[string]any, error) {
-	data, err := jsoncompat.Marshal(value)
+	data, err := wirejson.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
@@ -47,8 +47,7 @@ func genericMap(value any) (map[string]any, error) {
 	return result, nil
 }
 
-// ControlAction mirrors the reference control handler: the conflict gate runs
-// first under the scheduler gate, then the durable mode transition and its
+// ControlAction runs the conflict check under the scheduler gate, then the durable mode transition and its
 // operator event. The response is the serialized control record (plus
 // planning_capacity for resume), exactly as the dashboard reads it.
 func (a *App) ControlAction(action string) (map[string]any, error) {
@@ -84,8 +83,7 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 		return nil, conflictError(message)
 	}
 	if action == "audit" {
-		// The reference runs the whole audit launch under the gate; the Go
-		// audit includes a remote preflight, so the gate drops for remote work
+		// Audit includes a remote preflight, so the gate drops for remote work
 		// and the launch itself revalidates paused and idle state.
 		a.gate.Unlock()
 		_, err := a.StartAudit(a.ctx)
@@ -176,7 +174,7 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	return body, nil
 }
 
-// CycleAction mirrors the reference cycle_action handler: running cycles
+// CycleAction handles running cycles
 // conflict, archive stamps the lifecycle and discard requires the archive.
 func (a *App) CycleAction(id, action string) error {
 	a.gate.Lock()
@@ -369,7 +367,7 @@ func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Mode
 
 // StateView assembles the live dashboard document: the stored snapshot
 // flattened with runtime state, capacity, notification health and the latest
-// baseline summary — the reference state_view shape.
+// baseline summary in the state view.
 func (a *App) StateView() (map[string]any, error) {
 	control, err := a.Control()
 	if err != nil {

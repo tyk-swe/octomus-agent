@@ -76,7 +76,7 @@ func RemoveOwnedDir(root, path string) error {
 	if filepath.Dir(path) != filepath.Clean(root) {
 		return errors.New("Cleanup path must be a direct child of the owned workspace root")
 	}
-	// filepath.Base yields "/" for the root, which Rust's file_name() reports
+	// filepath.Base yields "/" for the root, while a root has no filename.
 	// as no name; a direct child of "/" could otherwise reach os.RemoveAll.
 	if name := filepath.Base(path); name == "." || name == ".." || name == "/" {
 		return errors.New("Invalid cleanup path")

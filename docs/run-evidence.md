@@ -44,7 +44,7 @@ operator token check, the authentication backoff and the response-wide redaction
 Unknown cycles return `404 {"error":"Cycle not found"}`.
 
 `--export-run` follows `--usage-report`: it opens the existing database read-only and
-returns **before** directory creation, permission changes, service locking, migrations,
+returns **before** directory creation, permission changes or service locking,
 `App` construction and worker startup. Diagnostics go to stderr; stdout carries only the
 JSON. It conflicts with `--doctor`, `--print-config` and `--usage-report`. A missing
 state database or a missing cycle is an explicit error, never an empty successful export.

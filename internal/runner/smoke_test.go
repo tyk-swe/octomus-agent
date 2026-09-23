@@ -1,6 +1,5 @@
 package runner
 
-// Port of tests/runners.rs:601 pinned_opencode_protocol_smoke_without_model_calls.
 // The pinned CLI drives only the local protocol surface — health, policy,
 // catalog, session create and resume — against a provider whose endpoint can
 // never answer, so no model call is possible. Skipped unless

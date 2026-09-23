@@ -30,7 +30,7 @@ func testApp(t *testing.T) (*engine.App, *store.Store) {
 	return engine.New(state, dir), state
 }
 
-// baselineFixture mirrors the Rust baseline_app fixture: a real local git
+// baselineFixture uses a real local git
 // repository as the configured checkout plus a baseline-valid configuration.
 func baselineFixture(t *testing.T) (*engine.App, *store.Store, config.Config) {
 	t.Helper()
@@ -213,7 +213,7 @@ func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
 		{"/proposals", http.StatusOK, "text/html"},
 		{"/favicon.svg", http.StatusOK, "image/svg+xml"},
 		{"/_app/missing.js", http.StatusNotFound, ""},
-		{"/%2e%2e/Cargo.toml", http.StatusBadRequest, ""},
+		{"/%2e%2e/go.mod", http.StatusBadRequest, ""},
 		{"/api/missing", http.StatusNotFound, "application/json"},
 	} {
 		response := request(t, router, "GET", check.uri, "", false)
@@ -503,7 +503,7 @@ func waitBaseline(t *testing.T, state *store.Store, id string) *model.BaselineCh
 	return nil
 }
 
-// queuedTask mirrors the Rust baseline test's seeded blocked task: publication
+// queuedTask seeds a blocked task: publication
 // uncertain, so reconcile is a live action.
 func queuedTask(cfg config.Config) model.Task {
 	reason := model.BlockedReasonPublicationUncertain

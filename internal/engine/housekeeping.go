@@ -158,9 +158,8 @@ func (a *App) DiscardTask(task *model.Task) error {
 	if task.Workspace != "" {
 		owner := filepath.Dir(filepath.Clean(task.Workspace))
 		expected := filepath.Join(a.DataDir, "tasks", task.ID)
-		legacy := task.ExecutionSession != nil && filepath.Base(owner) == *task.ExecutionSession
-		if owner != expected && !legacy {
-			return errors.New("Cleanup path does not belong to this task or its legacy execution session")
+		if owner != expected {
+			return errors.New("Cleanup path does not belong to this task")
 		}
 		if err := workspace.RemoveOwnedDir(filepath.Join(a.DataDir, "tasks"), owner); err != nil {
 			return err

@@ -125,9 +125,9 @@ if [ "$1" = -s ]; then echo Linux; else echo "$INSTALLER_ARCH"; fi
 
 
 # The package archive must never carry operator state, credentials, runner
-# transcripts, caches or migration-only test fixtures (AC6 denylist).
+# transcripts, caches or test fixtures.
 DENIED_DIRECTORIES = {'.octomus', 'node_modules', 'tests', 'fixtures', '.git',
-                      '.codex', '.opencode', '.cargo', '.rustup', '.npm', '__pycache__'}
+                      '.codex', '.opencode', '.cache', '.npm', '__pycache__'}
 DENIED_SUFFIXES = ('.db', '.sqlite', '.sqlite3', '.wal', '-wal', '.shm', '-shm',
                    '.journal', '-journal', '.lock', '.log', '.jsonl', '.pem',
                    '.key', '.env')

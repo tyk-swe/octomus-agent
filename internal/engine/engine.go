@@ -19,8 +19,7 @@ import (
 
 const schedulerInterval = time.Second
 
-// TaskRunner is the M6 execution boundary. M5 selects and durably admits work;
-// a runner owns the task after it becomes executing.
+// TaskRunner owns a durably admitted task after it becomes executing.
 type TaskRunner interface {
 	RunTask(context.Context, model.Task) error
 }
@@ -107,9 +106,8 @@ func (a *App) notify() {
 	}
 }
 
-// Config returns the saved configuration or the default when none exists,
-// matching the reference's unwrap_or_default: every downstream validation
-// reports its own unsuitable field rather than a missing record.
+// Config returns the saved configuration or shipped defaults. Downstream
+// validation reports unsuitable fields rather than a missing record.
 func (a *App) Config() (config.Config, error) {
 	cfg, err := store.Get[config.Config](a.Store, "settings", "config")
 	if err != nil {
@@ -182,8 +180,7 @@ func (a *App) Shutdown() {
 func (a *App) Context() context.Context { return a.ctx }
 
 // Drained reports that every shutdown-time handle has finished: tasks, the
-// cycle, housekeeping, the PR refresh and any baseline job — the reference's
-// drain check.
+// cycle, housekeeping, the PR refresh and any baseline job.
 func (a *App) Drained() bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()

@@ -1,4 +1,4 @@
-// Dashboard asset serving. The embedded build uses the reference's rules:
+// Dashboard asset serving. The embedded build applies the HTTP fallback rules:
 // only extensionless non-_app paths fall back to the SPA entry point. An
 // override directory uses ServeDir semantics: every miss falls back to its
 // 200.html. Both enforce the same method and path-safety boundaries.
@@ -26,10 +26,9 @@ func assetHandler(override string) http.Handler {
 	return &embeddedAssets{files: dashboard.Files()}
 }
 
-// decodedPath mirrors the reference's percent-decode + traversal rejection.
-// net/http already decodes r.URL.Path once; the UTF-8 check matches the
-// reference's decode_utf8 rejection, and the segment and character checks
-// reject what the decoded form leaves.
+// decodedPath percent-decodes paths and rejects traversal.
+// net/http already decodes r.URL.Path once. UTF-8, segment and character
+// checks reject unsafe decoded paths.
 func decodedPath(urlPath string) (string, bool) {
 	if !utf8.ValidString(urlPath) {
 		return "", false
@@ -46,7 +45,7 @@ func decodedPath(urlPath string) (string, bool) {
 	return trimmed, true
 }
 
-// hasExtension mirrors Rust's Path::extension: a trailing dot still counts,
+// hasExtension treats a trailing dot as an extension,
 // a leading-dot name has none.
 func hasExtension(name string) bool {
 	base := name[strings.LastIndex(name, "/")+1:]
@@ -54,7 +53,7 @@ func hasExtension(name string) bool {
 	return i > 0
 }
 
-// serve writes one file with the reference's response shape: GET gets the
+// serve writes one file with the expected response shape: GET gets the
 // bytes, HEAD only the headers, and both get content type and length.
 func serveFile(w http.ResponseWriter, r *http.Request, name string, contents []byte) {
 	w.Header().Set("Content-Type", contentType(name))
@@ -72,7 +71,7 @@ func contentType(name string) string {
 	return "application/octet-stream"
 }
 
-// embeddedAssets serves the compiled dashboard with the exact reference rules.
+// embeddedAssets serves the compiled dashboard with the established fallback rules.
 type embeddedAssets struct{ files fs.FS }
 
 func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {

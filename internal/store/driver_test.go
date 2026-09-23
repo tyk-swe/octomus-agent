@@ -490,7 +490,7 @@ func TestOutboxEnqueueSharesTheWriterTransaction(t *testing.T) {
 	}
 }
 
-// Events feed the same retention trigger the Rust service installs.
+// Events feed the retention trigger installed by the service.
 func TestEventsAreRedactedAndBounded(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)

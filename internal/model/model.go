@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func Now() string { return timestamp(time.Now()) }
@@ -78,9 +78,8 @@ func (b BlockedReason) Error() string {
 	return messages[b]
 }
 
-// BlockedReasonFromError walks the error chain outermost to innermost —
-// including multi-cause nodes — so the deepest typed reason wins, matching
-// anyhow's Context stack in the reference implementation.
+// BlockedReasonFromError walks wrapped and multi-cause errors so the deepest
+// typed reason wins.
 func BlockedReasonFromError(err error) BlockedReason {
 	result := BlockedReasonUnknown
 	var visit func(error)
@@ -263,32 +262,16 @@ func (c *Control) SetMode(mode OperatingMode) {
 	}
 }
 func (c *Control) UnmarshalJSON(data []byte) error {
-	// SavedControl has a different field order and an optional legacy mode.
-	var saved = struct {
-		Paused             bool           `json:"paused"`
-		Mode               *OperatingMode `json:"mode"`
-		CycleNumber        uint64         `json:"cycle_number"`
-		NextCycleAt        int64          `json:"next_cycle_at"`
-		Error              *string        `json:"error"`
-		Batch              *RunBatch      `json:"batch"`
-		IdleStreak         uint32         `json:"idle_streak"`
-		ContextFingerprint string         `json:"context_fingerprint"`
-	}{Paused: true}
-	if err := jsoncompat.Decode(data, &saved, false, true); err != nil {
+	type plain Control
+	var saved plain
+	if err := wirejson.Decode(data, &saved, false, false); err != nil {
 		return err
 	}
-	mode := OperatingModePaused
-	if !saved.Paused {
-		mode = OperatingModeContinuous
-	}
-	if saved.Mode != nil {
-		mode = *saved.Mode
-	}
-	*c = Control{mode == OperatingModePaused, saved.CycleNumber, saved.NextCycleAt, saved.Error, mode, saved.Batch, saved.IdleStreak, saved.ContextFingerprint}
+	*c = Control(saved)
 	return nil
 }
 func (c Control) MarshalJSON() ([]byte, error) {
 	type plain Control
-	return jsoncompat.Record(plain(c))
+	return wirejson.Record(plain(c))
 }
-func (c Control) Clone() Control { return jsoncompat.Clone(c) }
+func (c Control) Clone() Control { return wirejson.Clone(c) }

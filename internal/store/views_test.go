@@ -8,9 +8,8 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// The remaining indexed views are exercised together on one small state so a
-// SQL or scan mismatch surfaces here rather than in the scheduler that will
-// use them. Every expectation follows the Rust queries these views port.
+// Exercise indexed views together on one small state so SQL and scan
+// mismatches surface before the scheduler uses them.
 func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	s := open(t, statePath(t))
 

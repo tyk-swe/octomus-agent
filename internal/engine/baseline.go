@@ -24,7 +24,7 @@ const (
 	observationFreshSeconds      = 300
 )
 
-// BaselineConflict is the operator-visible conflict the reference maps to 409:
+// BaselineConflict is an operator-visible HTTP 409 conflict:
 // ineligible starts, stale expected configurations and invalid cancellations.
 type BaselineConflict struct{ message string }
 
@@ -66,7 +66,7 @@ func boundedOutput(text string, limit int, diagnosticTruncated bool) (string, bo
 	return text[:keep] + marker, true
 }
 
-// commandOutput renders one captured command the way the reference does:
+// commandOutput renders one captured command:
 // bounded stdout, then a [stderr] section, then the exit status on failure.
 // The middle return reports capture-level truncation only; boundedOutput
 // measures over-limit text itself, in the same byte unit.
@@ -175,7 +175,7 @@ func (a *App) baselineEligibility() (bool, *string, error) {
 
 // StartBaseline validates the expected configuration against the live one,
 // persists a running check and starts its worker. The whole eligibility check
-// and launch serialize on the gate, matching the reference handler.
+// and launch serialize on the gate.
 func (a *App) StartBaseline(expected config.Config) (*model.BaselineCheck, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()

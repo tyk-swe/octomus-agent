@@ -11,7 +11,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// Port of tests/pr_capacity.rs capacity_reports_only_fresh_current_process_observations:
 // persisted inventory is evidence only; capacity is reported as remaining only
 // while this process holds a fresh, error-free observation under the live policy.
 func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
@@ -94,7 +93,6 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 	}
 }
 
-// Port of tests/pr_capacity.rs capacity_reports_refresh_state_and_clears_error_after_observation:
 // an in-flight refresh reports refreshing, a failed one reports its error, and
 // the next complete observation clears that error and restores ready capacity.
 func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T) {
@@ -134,7 +132,6 @@ func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T)
 	}
 }
 
-// Port of tests/pr_capacity.rs cancelled_checkpoints_are_never_reseeded:
 // archiving an uncertain checkpoint ends at cancelled; the durable reservation
 // it left behind can only be resolved by remote inspection, so recovery must
 // not resurrect a released one. Published work is never reseeded either.

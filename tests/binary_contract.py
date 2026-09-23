@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""M1 CLI/embedding contracts, entirely synthetic and selectable by executable.
-
-Run with OCTOMUS_TEST_BINARY=...; the default is bin/octomus-agent.
-This never opens the operator's data directory or contacts an external peer.
-"""
-import argparse
-import json
+"""CLI startup and embedded-dashboard contracts for the Go executable."""
 import os
 from pathlib import Path
 import shutil
@@ -14,7 +8,6 @@ import tempfile
 
 PROJECT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent'))).resolve()
-FIXTURES = PROJECT / 'tests/fixtures/compatibility'
 
 
 def run(binary, args, cwd, environment=None):
@@ -24,37 +17,10 @@ def run(binary, args, cwd, environment=None):
                           text=True, capture_output=True, timeout=15)
 
 
-def cli_contracts():
-    corpus = json.loads((FIXTURES / 'cli.json').read_text())
-    with tempfile.TemporaryDirectory(prefix='octomus-foundations-cli-') as directory:
-        root = Path(directory)
-        executable = root / 'relocated-agent'
-        shutil.copy2(BINARY, executable)
-        working = root / 'unrelated-cwd'
-        working.mkdir()
-        for case in corpus['cases']:
-            result = run(executable, case['args'], working, case['env'])
-            expected = case['expected']
-            assert result.returncode == expected['code'], (case['name'], result.returncode, expected['code'], result.stderr)
-            if expected['code']:
-                assert not result.stdout and result.stderr, case['name']
-            else:
-                assert not result.stderr, (case['name'], result.stderr)
-                if 'Usage: octomus-agent [OPTIONS]' in expected['stdout']:
-                    for flag in ['data-dir', 'listen', 'assets', 'print-config', 'doctor', 'audit', 'usage-report', 'export-run', 'help', 'version']:
-                        assert f'--{flag}' in result.stdout, flag
-                else:
-                    assert result.stdout == expected['stdout'], case['name']
-            assert not list(working.iterdir()), f"CLI case wrote state: {case['name']}"
-    return len(corpus['cases'])
-
-
 def service_startup():
-    with tempfile.TemporaryDirectory(prefix='octomus-foundations-service-') as directory:
+    with tempfile.TemporaryDirectory(prefix='octomus-binary-service-') as directory:
         root = Path(directory)
-        # The M7 service startup follows the reference order: data directory,
-        # lock and store precede the doctor/config/assets checks, so an early
-        # failure still leaves the initialized data directory behind.
+        # Startup initializes state before doctor/config/assets checks.
         for args, expected in [
             ([], 'Dashboard override missing 200.html'),
             (['--doctor'], 'model and effort'),
@@ -81,19 +47,17 @@ def service_startup():
             assert not list(root.iterdir()), f'Read-only export wrote state: {args}'
 
 
-def embedding_contracts(go_binary=False):
-    if go_binary:
-        # Test the shipped executable, not only a separately linked Go test
-        # package: both the SPA entrypoint and underscore-prefixed JS are there.
-        binary = BINARY.read_bytes()
-        assets = [PROJECT / 'web/build/200.html', *sorted((PROJECT / 'web/build/_app/immutable/entry').glob('*.js'))]
-        assert len(assets) > 1
-        for asset in assets:
-            assert asset.read_bytes() in binary, f'executable omitted {asset.name}'
+def embedding_contracts():
+    # The shipped executable includes both the SPA entrypoint and JS assets.
+    binary = BINARY.read_bytes()
+    assets = [PROJECT / 'web/build/200.html', *sorted((PROJECT / 'web/build/_app/immutable/entry').glob('*.js'))]
+    assert len(assets) > 1
+    for asset in assets:
+        assert asset.read_bytes() in binary, f'executable omitted {asset.name}'
 
     # Work in an isolated Go package instead of moving the shared web/build while
     # other tests may read it. Use the actual checked-in embed declaration.
-    with tempfile.TemporaryDirectory(prefix='octomus-foundations-embed-') as directory:
+    with tempfile.TemporaryDirectory(prefix='octomus-binary-embed-') as directory:
         root = Path(directory)
         shutil.copy2(PROJECT / 'web/embed.go', root / 'embed.go')
         (root / 'go.mod').write_text('module embedded-contract\n\ngo 1.27.1\n')
@@ -115,12 +79,6 @@ def embedding_contracts(go_binary=False):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--go-m1', action='store_true', help='also assert the shipped executable embedding and service startup contract')
-    args = parser.parse_args()
-    count = cli_contracts()
-    if args.go_m1:
-        service_startup()
-    embedding_contracts(args.go_m1)
-    unavailable = ', service startup order' if args.go_m1 else ''
-    print(f'M1 foundations passed: {count} frozen CLI cases, relocated executable{unavailable}, real dashboard and missing-asset build failures.')
+    service_startup()
+    embedding_contracts()
+    print('Go binary contracts passed: startup order, embedded dashboard and missing-asset build failures.')

@@ -1,5 +1,5 @@
 // Package report is local, read-only usage reporting. It never opens the
-// database through store.Open, which migrates state.
+// database through store.Open, which owns writable state.
 package report
 
 import (
@@ -8,13 +8,12 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // Measurement is the one paragraph every report carries about what admissions mean.
-const Measurement = "Admissions reserve budget before work starts. They include failed starts and retries; they are not completed turns or billed usage. Completed session counts describe persisted thread records; a repair thread can contain multiple turns. Historical admissions without a ledger remain unattributed. Cycle wall time excludes subsequent task execution. No provider charges or merge status are inferred."
+const Measurement = "Admissions reserve budget before work starts. They include failed starts and retries; they are not completed turns or billed usage. Completed session counts describe persisted thread records; a repair thread can contain multiple turns. Cycle wall time excludes subsequent task execution. No provider charges or merge status are inferred."
 
 type Daily struct {
 	Day                    string `json:"day"`
@@ -24,18 +23,18 @@ type Daily struct {
 }
 
 type CycleRow struct {
-	ID                        string              `json:"id"`
-	Mode                      model.CycleMode     `json:"mode"`
-	Number                    uint64              `json:"number"`
-	Status                    string              `json:"status"`
-	StartedAt                 string              `json:"started_at"`
-	CompletedAt               *string             `json:"completed_at"`
-	WallSeconds               *jsoncompat.Float64 `json:"wall_seconds"`
-	PlanningAdmissions        uint64              `json:"planning_admissions"`
-	TaskAdmissions            uint64              `json:"task_admissions"`
-	RecordedCompletedSessions int                 `json:"recorded_completed_sessions"`
-	Decisions                 map[string]int      `json:"decisions"`
-	Error                     *string             `json:"error"`
+	ID                        string          `json:"id"`
+	Mode                      model.CycleMode `json:"mode"`
+	Number                    uint64          `json:"number"`
+	Status                    string          `json:"status"`
+	StartedAt                 string          `json:"started_at"`
+	CompletedAt               *string         `json:"completed_at"`
+	WallSeconds               *float64        `json:"wall_seconds"`
+	PlanningAdmissions        uint64          `json:"planning_admissions"`
+	TaskAdmissions            uint64          `json:"task_admissions"`
+	RecordedCompletedSessions int             `json:"recorded_completed_sessions"`
+	Decisions                 map[string]int  `json:"decisions"`
+	Error                     *string         `json:"error"`
 }
 
 type TaskRow struct {
@@ -194,12 +193,12 @@ func assemble(c *sql.Conn) (Report, error) {
 	cycleRows := make([]CycleRow, 0, len(cycles))
 	for _, cycle := range cycles {
 		counts := cycleCounts[cycle.ID]
-		var wall *jsoncompat.Float64
+		var wall *float64
 		if cycle.CompletedAt != nil {
 			start, startErr := time.Parse(time.RFC3339, cycle.StartedAt)
 			end, endErr := time.Parse(time.RFC3339, *cycle.CompletedAt)
 			if startErr == nil && endErr == nil {
-				seconds := jsoncompat.Float64(float64(end.Sub(start).Milliseconds()) / 1000.0)
+				seconds := float64(end.Sub(start).Milliseconds()) / 1000.0
 				wall = &seconds
 			}
 		}

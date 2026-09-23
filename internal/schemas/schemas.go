@@ -61,7 +61,7 @@ func Validate(value any, schema Schema) error {
 				return fmt.Errorf("Structured result is missing required field %s", encoded)
 			}
 		}
-		// serde_json::Map visits keys in order, keeping the first failure stable.
+		// Visit keys in order so the first validation failure is stable.
 		keys := make([]string, 0, len(object))
 		for key := range object {
 			keys = append(keys, key)

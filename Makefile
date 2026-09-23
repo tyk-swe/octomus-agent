@@ -22,8 +22,7 @@ check: dashboard
 test: build
 	go test ./...
 	CGO_ENABLED=1 go test -race ./...
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/compatibility_capture.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/go_foundations.py --go-m1
+	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/binary_contract.py
 	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/evidence_snapshot.py
 	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e.py
 	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e_baseline.py
@@ -41,7 +40,7 @@ audit:
 	npm audit --prefix web --audit-level=high
 
 # The version comes from the VERSION file (v<VERSION>-<target> archive names);
-# Go architectures map onto the legacy target labels the installer understands.
+# Go architectures map onto the archive target labels the installer understands.
 package: build
 	@arch=$$(go env GOARCH); \
 	case $$arch in \

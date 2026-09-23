@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // statusList quotes statuses as a SQL IN-list literal derived from the model vocabulary.
@@ -370,7 +370,7 @@ func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([
 	return tasks, nil
 }
 
-// equalASCIIFold matches Rust's eq_ignore_ascii_case: only ASCII letters fold.
+// equalASCIIFold folds only ASCII letters.
 func equalASCIIFold(a, b string) bool {
 	if len(a) != len(b) {
 		return false
@@ -810,5 +810,5 @@ func decodeValues(raw [][]byte) ([]any, error) {
 // MarshalJSON renders a page with compact canonical formatting.
 func (p Page) MarshalJSON() ([]byte, error) {
 	type plain Page
-	return jsoncompat.Marshal(plain(p))
+	return wirejson.Marshal(plain(p))
 }

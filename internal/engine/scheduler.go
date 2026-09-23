@@ -395,7 +395,7 @@ func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, e
 }
 
 // ValidateTaskPlan enforces dependency and same-branch writer ordering again at
-// dispatch, so edited or legacy records cannot bypass planning validation.
+// dispatch, so edited records cannot bypass planning validation.
 func ValidateTaskPlan(tasks []model.Task) error {
 	byID := map[string]model.Task{}
 	for _, task := range tasks {

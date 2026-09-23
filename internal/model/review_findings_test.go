@@ -2,9 +2,7 @@ package model
 
 import "testing"
 
-// TestRepairRoundsCountFromTheAttemptBaseline ports
-// repair_rounds_count_from_the_attempt_baseline (tests/review_findings.rs, F2):
-// the repair budget counts only reviews recorded after the attempt baseline.
+// Repair budgets count only reviews recorded after the attempt baseline.
 func TestRepairRoundsCountFromTheAttemptBaseline(t *testing.T) {
 	round := ReviewRound{
 		SessionID:      "s",

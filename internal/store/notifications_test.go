@@ -10,7 +10,7 @@ import (
 
 const notifyDest = "destination-a"
 
-// putNotificationTask mirrors the Rust put_task helper: the minimal record the
+// putNotificationTask creates the minimal record the
 // attention triggers inspect.
 func putNotificationTask(t *testing.T, s *store.Store, id, status string, reason string) {
 	t.Helper()
@@ -200,7 +200,7 @@ func TestClaimPreschedulesFiveAttemptsAndKeepsPayloadFrozen(t *testing.T) {
 		t.Fatal("claimed rows reschedule before delivery")
 	}
 	putNotificationTask(t, s, "task-1", "blocked", "storage_limit")
-	frozen := *delivery
+	original := *delivery
 	expected := int64(30)
 	for attempt := int64(2); attempt <= 5; attempt++ {
 		now = now.Add(time.Duration(expected) * time.Second)
@@ -209,12 +209,12 @@ func TestClaimPreschedulesFiveAttemptsAndKeepsPayloadFrozen(t *testing.T) {
 		if next == nil || next.Attempts != attempt || next.EventID != delivery.EventID {
 			t.Fatalf("%+v", next)
 		}
-		same := next.Seq == frozen.Seq && next.CreatedAt == frozen.CreatedAt &&
-			next.Repository == frozen.Repository && next.Category == frozen.Category &&
-			next.Action == frozen.Action && strEqual(next.CycleID, frozen.CycleID) &&
-			strEqual(next.RunID, frozen.RunID) && strEqual(next.TaskID, frozen.TaskID)
+		same := next.Seq == original.Seq && next.CreatedAt == original.CreatedAt &&
+			next.Repository == original.Repository && next.Category == original.Category &&
+			next.Action == original.Action && strEqual(next.CycleID, original.CycleID) &&
+			strEqual(next.RunID, original.RunID) && strEqual(next.TaskID, original.TaskID)
 		if !same {
-			t.Fatalf("payload changed across retries: %+v vs %+v", next, frozen)
+			t.Fatalf("payload changed across retries: %+v vs %+v", next, original)
 		}
 		expected = []int64{120, 600, 1800, 1800}[attempt-2]
 	}

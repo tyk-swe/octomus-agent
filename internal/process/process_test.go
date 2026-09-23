@@ -48,9 +48,7 @@ func processReaped(pid string) bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
-// cleanupGroup mirrors FixtureGroup in tests/process_lifecycle.rs: kill the
-// recorded group independently of capture's cleanup, even when an assertion
-// failed first.
+// cleanupGroup terminates fixture process groups even after a failed assertion.
 func cleanupGroup(t *testing.T, pidFile string) {
 	t.Cleanup(func() {
 		if data, err := os.ReadFile(pidFile); err == nil {
@@ -61,9 +59,7 @@ func cleanupGroup(t *testing.T, pidFile string) {
 	})
 }
 
-// inheritedPipe ports the four descendant-holds-a-pipe scenarios from
-// tests/process_lifecycle.rs: a forked child outlives its leader while holding
-// one captured pipe, and capture still finishes with complete output.
+// inheritedPipe checks that a descendant holding a captured pipe cannot stall capture.
 func inheritedPipe(t *testing.T, pipe string, exitCode int) {
 	t.Helper()
 	if _, err := os.Stat("/proc/self"); err != nil {
@@ -150,9 +146,7 @@ func TestInheritedStdoutNonzeroExit(t *testing.T) { inheritedPipe(t, "stdout", 2
 func TestInheritedStderrZeroExit(t *testing.T)    { inheritedPipe(t, "stderr", 0) }
 func TestInheritedStderrNonzeroExit(t *testing.T) { inheritedPipe(t, "stderr", 23) }
 
-// TestCancellationKillsTheCommandProcessGroup ports the core.rs case: a shell
-// running a background sleeper dies together with that sleeper once the owner
-// cancels.
+// Cancellation terminates the shell and its background sleeper.
 func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 	temp := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -310,8 +304,7 @@ func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	}
 }
 
-// TestMachineCaptureNeverCorruptsSuccessfulJSON ports the hardening.rs case:
-// large valid output parses, oversized or non-UTF-8 output fails explicitly,
+// Large valid output parses, oversized or non-UTF-8 output fails explicitly,
 // and diagnostic capture truncates at the documented limit.
 func TestMachineCaptureNeverCorruptsSuccessfulJSON(t *testing.T) {
 	tmp := t.TempDir()
@@ -352,8 +345,7 @@ func TestMachineCaptureNeverCorruptsSuccessfulJSON(t *testing.T) {
 	}
 }
 
-// TestMachineCaptureFailsClosedOnAnyCommandFailure ports the hardening.rs
-// case: nonzero status and signal termination are failures regardless of what
+// Nonzero status and signal termination are failures regardless of what
 // was written to stdout.
 func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 	tmp := t.TempDir()
@@ -382,7 +374,6 @@ func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 }
 
 // TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses ports the
-// hardening.rs case: exit 0 is true, a documented false status is false, and
 // every other outcome — unexpected status, signal, spawn failure — is an error.
 func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 	tmp := t.TempDir()
@@ -417,7 +408,7 @@ func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 }
 
 // TestDiagnosticTextAndStatusFormat pins the human-readable evidence contract:
-// bounded stdout, an appended [stderr] section, and Rust ExitStatus wording.
+// bounded stdout, an appended [stderr] section, and process exit-status wording.
 func TestDiagnosticTextAndStatusFormat(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
@@ -436,7 +427,7 @@ func TestDiagnosticTextAndStatusFormat(t *testing.T) {
 	}
 	if _, err := process.DiagnosticText("bash", out); err == nil ||
 		!strings.HasPrefix(err.Error(), "bash exited with exit status: 3: o") {
-		t.Fatalf("failure text = %v; want the Rust status wording", err)
+		t.Fatalf("failure text = %v; want the process status wording", err)
 	}
 	out, err = process.Capture(ctx, "python3",
 		[]string{"-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"},

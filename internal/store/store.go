@@ -1,11 +1,9 @@
-// Package store owns the SQLite state database: canonical JSON records, the
-// user_version migration sequence, indexed projections and the transactions that
+// Package store owns the SQLite state database: JSON records, indexed projections and the transactions that
 // keep admissions, plans, lineage and reservations all-or-nothing.
 //
 // One process holds one connection. The service store pins a single physical
-// connection for its lifetime and serializes every method on a mutex, mirroring
-// the frozen Rust reference; read-only reporting opens its own connection with
-// SQLITE_OPEN_READONLY and never migrates, locks or creates state.
+// connection for its lifetime and serializes every method on a mutex.
+// Read-only reporting opens its own connection with SQLITE_OPEN_READONLY.
 package store
 
 import (
@@ -22,8 +20,8 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	_ "modernc.org/sqlite"
 )
 
@@ -51,7 +49,7 @@ func NewAdmission(cycleID string, taskID *string, role string, route config.Rout
 func (v *Admission) UnmarshalJSON(data []byte) error {
 	type plain Admission
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, false, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
 		return err
 	}
 	*v = Admission(decoded)
@@ -59,7 +57,7 @@ func (v *Admission) UnmarshalJSON(data []byte) error {
 }
 func (v Admission) MarshalJSON() ([]byte, error) {
 	type plain Admission
-	return jsoncompat.Record(plain(v))
+	return wirejson.Record(plain(v))
 }
 
 var background = context.Background()
@@ -84,8 +82,7 @@ func dsn(path string, params string) string {
 	return "file:" + escaped + "?" + params
 }
 
-// Open creates or upgrades the state database at path. Opening an existing
-// database re-runs only idempotent statements; canonical records are never rewritten.
+// Open creates fresh state or opens an existing version-7 database at path.
 func Open(path string) (*Store, error) {
 	// Only the busy timeout is applied at connect time: the journal mode and
 	// synchronous setting follow the schema-version check so a database this
@@ -114,42 +111,17 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) initialize() error {
-	if err := refuseFutureSchema(background, s.conn); err != nil {
+	fresh, err := schemaStatus(background, s.conn)
+	if err != nil {
 		return err
 	}
 	if _, err := s.conn.ExecContext(background, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;"); err != nil {
 		return err
 	}
-	if _, err := s.conn.ExecContext(background, `
-            CREATE TABLE IF NOT EXISTS records (
-                kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL,
-                PRIMARY KEY(kind,id)
-            );
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
-                entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS usage (
-                day TEXT PRIMARY KEY, sessions INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS admissions (
-                id TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, data TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS admissions_day ON admissions(day);
-            -- Retain only the most recent configured number of events.
-            CREATE TRIGGER IF NOT EXISTS cap_activity AFTER INSERT ON events BEGIN
-                DELETE FROM events WHERE id <= NEW.id - COALESCE(json_extract(
-                    (SELECT data FROM records WHERE kind='settings' AND id='config'),
-                    '$.retain_events'
-                ),10000);
-            END;
-            `); err != nil {
-		return err
+	if fresh {
+		return createSchema(background, s.conn)
 	}
-	if err := migrate(background, s.conn); err != nil {
-		return err
-	}
-	return migrateNotifications(background, s.conn)
+	return nil
 }
 
 // Path is the database file this store opened.
@@ -204,7 +176,7 @@ func OpenReadOnly(path, what string) (*ReadOnly, error) {
 		db.Close()
 		return nil, fail(err)
 	}
-	if err := refuseFutureSchema(background, conn); err != nil {
+	if err := requireSchema(background, conn); err != nil {
 		conn.Close()
 		db.Close()
 		return nil, err
@@ -519,7 +491,7 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 		} else if changed != 1 {
 			return fmt.Errorf("Daily session budget exhausted; increase the configured limit or wait until UTC midnight: %w", model.BlockedReasonBudgetExhausted)
 		}
-		data, err := jsoncompat.Marshal(admission)
+		data, err := wirejson.Marshal(admission)
 		if err != nil {
 			return err
 		}
@@ -645,7 +617,7 @@ func txGet(c *sql.Conn, kind, id string, dst any) (bool, error) {
 
 // txPut upserts one record inside a caller-owned transaction.
 func txPut(c *sql.Conn, kind, id string, value any) error {
-	data, err := jsoncompat.Marshal(value)
+	data, err := wirejson.Marshal(value)
 	if err != nil {
 		return err
 	}
@@ -695,7 +667,7 @@ func queryStrings(c *sql.Conn, query string, args ...any) ([][]byte, error) {
 // kept verbatim) and scrubs every string in place. Exports use it so redaction
 // happens after the facts are computed from the saved records.
 func RedactedValue(value any) (map[string]any, error) {
-	data, err := jsoncompat.Marshal(value)
+	data, err := wirejson.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
@@ -731,7 +703,7 @@ func StorageLimitError(measuredBytes uint64) error {
 	return fmt.Errorf("Workspace storage limit reached (%d bytes). Resolve retained tasks or increase the limit: %w", measuredBytes, model.BlockedReasonStorageLimit)
 }
 
-// Rust's Unicode-aware \s matches White_Space: separators plus TAB–CR and NEL.
+// Whitespace includes Unicode White_Space, TAB–CR and NEL.
 // Go's \s is ASCII-only, so use the equivalent class in every whitespace match.
 const tokenWhitespace = `\p{Z}\x{0009}-\x{000D}\x{0085}`
 

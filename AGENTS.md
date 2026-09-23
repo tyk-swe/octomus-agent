@@ -5,12 +5,10 @@ reviews proposals, executes accepted tasks through Codex or OpenCode, and delive
 GitHub PRs. It is a Go service (`cmd/octomus-agent`, `internal/`); the SvelteKit
 dashboard builds to static assets embedded in the binary (`web/embed.go`).
 
-It was ported from Rust, and existing durable state was written by that
-implementation. Rust paths cited in comments and `docs/roadmap/` refer to the
-frozen reference at commit `3c2b5cd`. `internal/jsoncompat` and the
-"matches Rust" comments preserve byte-level compatibility with that state.
-`tests/fixtures/compatibility/` holds static goldens captured from the reference;
-treat a difference from them as a Go regression.
+The service uses a Go-owned SQLite schema at version 7. Existing databases from
+earlier versions are refused before schema or journal changes; start this release
+with a fresh data directory and keep any old state backed up. `internal/wirejson`
+owns strict typed JSON boundaries for saved records and API requests.
 
 ## Repository map
 
@@ -24,8 +22,8 @@ treat a difference from them as a Go regression.
 - `internal/runner`: runner-neutral model discovery, exact routing and dispatch;
   `codex.go` (app-server protocol) and `opencode.go` (HTTP/SSE) implement it.
 - `internal/config`, `internal/model`, `internal/store` (with `queries.go`,
-  `migrate.go`, `capacity.go`, `notifications.go`): policy, durable records,
-  SQLite, schema migrations, indexed operational views and the attention outbox.
+  `schema.go`, `capacity.go`, `notifications.go`): policy, durable records,
+  SQLite, fresh schema creation, indexed operational views and the attention outbox.
 - `internal/notifications`: opt-in webhook delivery. `internal/report`: read-only
   usage reporting. `internal/evidence`: read-only `RunEvidenceV1` export.
   `internal/httpapi`: authenticated controls and embedded dashboard serving.
@@ -43,8 +41,8 @@ treat a difference from them as a Go regression.
   `OCTOMUS_SCALE_TEST=1`) skip unless their environment is provided.
 - `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py`, `e2e_baseline.py`, and
   `e2e_notifications.py` with `tests/fixtures`: deterministic Codex/OpenCode/GitHub
-  peers with real local Git. `compatibility_capture.py` and `go_foundations.py`
-  check the executable against the frozen goldens. `distribution.py`,
+  peers with real local Git. `binary_contract.py` checks executable startup and
+  embedded assets. `distribution.py`,
   `package_guards.py` and `systemd.py` cover packaging and deployment;
   `evidence_snapshot.py` runs the documented backup and export examples on synthetic data.
 - `web/tests`: dashboard browser tests served by `tests/serve_ui.py`;
@@ -69,8 +67,8 @@ race detector. Install dashboard dependencies with
   tests use fixtures, not live accounts or model calls.
 
 Run relevant behavior tests while editing and the full checks before delivery.
-Keep Go and dashboard configuration types aligned. Preserve backward-compatible
-loading of saved configuration and task snapshots when adding fields.
+Keep Go and dashboard configuration types aligned. Keep saved version-7 records
+loadable when adding fields.
 
 ## Conventions and boundaries
 

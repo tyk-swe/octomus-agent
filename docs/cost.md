@@ -12,15 +12,15 @@ measurement is **unavailable**, not zero.
 ## What is counted
 
 `octomus-agent --data-dir PATH --usage-report` exports a read-only JSON snapshot.
-Its schema version is 1. `daily` includes the original daily budget counter,
-attributed admissions and historical unattributed admissions. `cycles` includes
+Its schema version is 1. `daily` includes the daily budget counter and attributed
+admissions. The `unattributed_admissions` field remains in the report shape and
+is zero for version-7 state. `cycles` includes
 planning wall time (not subsequent task execution), mode (audit/execution), status,
 per-decision proposal counts, planning admissions and task admissions associated
 with that cycle. `tasks` includes execution tier, saved routes, admissions, status
 and PR URL. `tiers` counts observed tasks and their admissions. `admissions`
 retains each reservation's UTC timestamp, cycle, optional task, role and exact
-route, including the runner and any OpenCode provider/variant. Legacy routes are
-reported as Codex.
+route, including the runner and any OpenCode provider/variant.
 
 An **admission** reserves budget before starting work. Failed thread starts,
 failed clone setup and interrupted attempts can consume admissions without a
@@ -33,4 +33,3 @@ repairs share one record, and interrupted persistence can leave incomplete sessi
 metadata. Do not use thread counts to estimate billing. The report makes no
 provider charge or merged-PR inference. It does not collect tokens, account
 allowance, raw transcripts or prices; capture account observations separately.
-

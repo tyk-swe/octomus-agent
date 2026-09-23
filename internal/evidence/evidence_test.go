@@ -1,7 +1,5 @@
 // Run-evidence read model. Every database here is an explicitly synthetic
-// temporary fixture; no live `.octomus/` state, credentials or runner accounts
-// are touched. These cases are the M2 port of tests/evidence.rs; the API route
-// case waits for M7.
+// temporary fixture; no live state, credentials or runner accounts are used.
 package evidence_test
 
 import (
@@ -322,7 +320,7 @@ func TestPrivateFieldsAreOmittedFromTheExport(t *testing.T) {
 	output := "out00001"
 	tk.OutputCommit = &output
 	tk.Reviews = []model.ReviewRound{review("out00001", true, "SECRET-REVIEW-SUMMARY",
-		model.Finding{Title: "Finding title", File: "src/x.rs", Detail: "Finding rationale", Priority: "high"})}
+		model.Finding{Title: "Finding title", File: "internal/x/x.go", Detail: "Finding rationale", Priority: "high"})}
 	tk.Verification = []model.Verification{check("make check", true, "out00001")}
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{tk})
@@ -347,7 +345,7 @@ func TestPrivateFieldsAreOmittedFromTheExport(t *testing.T) {
 		t.Fatalf("%v", linked)
 	}
 	finding := get(linked, "latest_review", "latest", "findings", 0).(map[string]any)
-	if finding["title"] != "Finding title" || finding["file"] != "src/x.rs" || finding["priority"] != "high" {
+	if finding["title"] != "Finding title" || finding["file"] != "internal/x/x.go" || finding["priority"] != "high" {
 		t.Fatalf("%v", finding)
 	}
 	if !strings.Contains(rendered, "requires manual review before sharing") || strings.Contains(rendered, "safe to publish") {

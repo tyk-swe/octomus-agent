@@ -20,12 +20,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
@@ -592,7 +592,7 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	if findings == nil {
 		findings = []model.Finding{}
 	}
-	findingsJSON, err := jsoncompat.Marshal(findings)
+	findingsJSON, err := wirejson.Marshal(findings)
 	if err != nil {
 		return err
 	}
@@ -639,8 +639,7 @@ func (a *App) transition(task *model.Task, status model.Status) error {
 	return a.Store.Event(task.ID, "status", statusEventName(status))
 }
 
-// statusEventName renders the Rust `{:?}` status variant used as durable
-// event payloads ("Reviewing", "Published", ...).
+// statusEventName renders the saved status event name ("Reviewing", "Published", ...).
 func statusEventName(status model.Status) string {
 	name := status.String()
 	if name == "" {
@@ -725,8 +724,8 @@ func sourcePtrEqual(a, b *string) bool {
 	return *a == *b
 }
 
-// samePath compares recorded workspace paths by component like Rust's
-// Path::eq: separators and interior "." are normalized, ".." stays literal.
+// samePath compares workspace paths by component: separators and interior "."
+// are normalized; ".." stays literal.
 func samePath(a, b string) bool {
 	if a == b {
 		return true
@@ -749,8 +748,7 @@ func pathIdentityComponents(path string) []string {
 	return parts
 }
 
-// debugOption renders an optional string the way Rust's `{:?}` formats
-// `Option<String>`: `Some("…")` or `None`.
+// debugOption renders a saved optional value as `Some("…")` or `None`.
 func debugOption(value *string) string {
 	if value == nil {
 		return "None"
@@ -758,8 +756,7 @@ func debugOption(value *string) string {
 	return "Some(" + debugString(*value) + ")"
 }
 
-// debugList renders a string list the way Rust's `{:?}` formats `Vec<String>`:
-// `["a", "b"]`.
+// debugList renders a saved string list as `["a", "b"]`.
 func debugList(values []string) string {
 	parts := make([]string, len(values))
 	for i, v := range values {
@@ -768,8 +765,7 @@ func debugList(values []string) string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
-// debugString renders a string with Rust's Debug escaping: quoted, with the
-// usual escapes and `\u{…}` for non-printable runes.
+// debugString quotes a saved string with escapes and `\u{…}` for non-printable runes.
 func debugString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')

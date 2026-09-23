@@ -127,8 +127,7 @@ func fixtureRoot(t *testing.T) (config.Config, string) {
 
 func strptr(s string) *string { return &s }
 
-// TestGitAncestryIsAPredicateAndCommandErrorsFailClosed ports the hardening.rs
-// case: real commits, true/false ancestry, and command failures that must not
+// Real commits establish true/false ancestry; command failures must not
 // read as a false predicate.
 func TestGitAncestryIsAPredicateAndCommandErrorsFailClosed(t *testing.T) {
 	repository := initRepo(t)
@@ -548,7 +547,6 @@ func TestPublishRejectsStaleBase(t *testing.T) {
 }
 
 // TestPublicationChecksEveryIdentityFieldAndClosedReconciliation ports the
-// hardening.rs case: every recorded identity field must match for delivery to
 // count, and closed/merged states only pass explicit reconciliation.
 func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T) {
 	c := testConfig()

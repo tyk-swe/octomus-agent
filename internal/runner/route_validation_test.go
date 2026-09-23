@@ -61,29 +61,8 @@ func TestUnsupportedEffortNeverFallsBack(t *testing.T) {
 	}
 }
 
-func TestRepairRoutesAreBackwardCompatibleAndValidated(t *testing.T) {
-	saved, err := json.Marshal(config.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var old map[string]json.RawMessage
-	if err := json.Unmarshal(saved, &old); err != nil {
-		t.Fatal(err)
-	}
-	delete(old, "repair_route")
-	legacy, err := json.Marshal(old)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var c config.Config
-	if err := json.Unmarshal(legacy, &c); err != nil {
-		t.Fatal(err)
-	}
-	// A config saved before repair routes existed still gains one, carrying the
-	// tier ladder's effort and no model for the operator to accept blindly.
-	if c.RepairRoute != config.NewRoute("", "medium") {
-		t.Fatalf("legacy repair route = %+v", c.RepairRoute)
-	}
+func TestRepairRoutesAreValidated(t *testing.T) {
+	c := config.Default()
 	for role := range c.Roles {
 		c.Roles[role] = config.NewRoute("available", "low")
 	}

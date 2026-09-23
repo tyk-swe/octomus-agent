@@ -761,7 +761,7 @@ func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
 }
 
 // ExportRun exports one run from saved state without opening the database for
-// writing, creating directories, taking the service lock or running migrations.
+// writing, creating directories or taking the service lock.
 // A missing state database or cycle is an explicit error, never an empty
 // successful export.
 func ExportRun(stateDB, cycleID string) (map[string]any, error) {

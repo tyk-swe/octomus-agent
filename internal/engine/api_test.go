@@ -11,8 +11,8 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// controlFixture mirrors the Rust control test fixture: every route named so
-// the configuration counts as ready, with the runtime scenarios the reference
+// controlFixture names every route so
+// the configuration counts as ready, with runtime scenarios that
 // manipulates directly.
 func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
 	t.Helper()

@@ -1,8 +1,6 @@
 package httpapi
 
-// Ports of tests/evidence.rs cycle routes: evidence_route_requires_auth_and_
-// reports_unknown_cycles (:639) and existing_cycle_action_routes_are_preserved
-// (:677).
+// Cycle routes preserve authentication, detail and action status behavior.
 import (
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +19,7 @@ func cycleRecord(id string) model.Cycle {
 }
 
 // The evidence export is authenticated like every other API read: no token and
-// a wrong token both get 401, an unknown cycle gets 404 with the reference
+// a wrong token both get 401, an unknown cycle gets 404 with the expected
 // wording, and a known cycle gets the export document.
 func TestCycleEvidenceRouteRequiresAuthAndSeparatesUnknownCycles(t *testing.T) {
 	app, state := testApp(t)

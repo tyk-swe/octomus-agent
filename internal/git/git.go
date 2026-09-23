@@ -24,9 +24,8 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 )
 
-// reasonContext mirrors an anyhow context node: the message displays first, the
-// typed reason is visited next for BlockedReason::from_error, then the inner
-// cause. Rendering joins the chain with ": " like anyhow's {:#} format.
+// reasonContext displays its message before the typed reason and inner cause.
+// Rendering joins the chain with ": ".
 type reasonContext struct {
 	msg    string
 	reason model.BlockedReason
@@ -85,8 +84,7 @@ func head(ctx context.Context, c config.Config, path string) (string, error) {
 }
 
 // ghPages decodes a `gh api --paginate` response: one JSON document per page.
-// Pages are decoded with UseNumber so integral fields keep serde_json's exact
-// typing rules (a non-integer number is not a u64).
+// UseNumber preserves integer literals; non-integer values cannot be u64.
 func ghPages(out string, each func(page []map[string]any) error) error {
 	dec := json.NewDecoder(strings.NewReader(out))
 	dec.UseNumber()
@@ -121,7 +119,7 @@ func field(p map[string]any, keys ...string) any {
 	return v
 }
 
-// jstr is serde's as_str(): a string only when the value is a JSON string.
+// jstr accepts only JSON strings.
 func jstr(v any) (string, bool) {
 	s, ok := v.(string)
 	return s, ok
@@ -132,7 +130,7 @@ func text(p map[string]any, keys ...string) string {
 	return s
 }
 
-// jnum is serde's as_u64(): only a non-negative integer literal qualifies.
+// jnum accepts only non-negative integer literals.
 func jnum(v any) (uint64, bool) {
 	n, ok := v.(json.Number)
 	if !ok {
@@ -660,8 +658,7 @@ func createPR(ctx context.Context, c config.Config, task model.Task, bodyPath st
 		return model.PullRequest{}, reasoned(model.BlockedReasonRemoteConflict,
 			"PR creation returned no unambiguous URL; reconcile before retrying", err)
 	}
-	// A '?' or '#' in the source is exactly Rust's query().is_none() &&
-	// fragment().is_none(): either character begins that URL component.
+	// Query and fragment components make a creation URL ambiguous.
 	if url.Scheme() != "https" || url.Hostname() != "github.com" ||
 		strings.ContainsAny(trimmed, "?#") {
 		return model.PullRequest{}, blocked(model.BlockedReasonRemoteConflict,

@@ -54,7 +54,7 @@
         "problem": "Synthetic problem: a saved result can be difficult to inspect.",
         "benefit": "Synthetic benefit: make missing evidence explicit.",
         "scope": "Synthetic scope: a small display change with local fixtures.",
-        "evidence": ["Synthetic reference: src/example.rs"],
+        "evidence": ["Synthetic reference: internal/example/example.go"],
         "final_decision": "accepted",
         "final_reason": "Synthetic final decision: accepted.",
         "reviewer_verdicts": [
@@ -125,7 +125,7 @@
               "all_passed_at_output_revision": true,
               "commands": [
                 {
-                  "command": "cargo test --locked --test synthetic_example",
+                  "command": "go test ./...",
                   "state": "passed",
                   "results_recorded": 1,
                   "latest_success": true,
@@ -153,7 +153,7 @@
         "problem": "Synthetic problem: a saved result can be difficult to inspect.",
         "benefit": "Synthetic benefit: make missing evidence explicit.",
         "scope": "Synthetic scope: a small display change with local fixtures.",
-        "evidence": ["Synthetic reference: src/example.rs"],
+        "evidence": ["Synthetic reference: internal/example/example.go"],
         "final_decision": "deferred",
         "final_reason": "Synthetic rationale: defer until the scope is grounded. Deferred is not rejected.",
         "reviewer_verdicts": [
@@ -184,7 +184,7 @@
         "problem": "Synthetic problem: a saved result can be difficult to inspect.",
         "benefit": "Synthetic benefit: make missing evidence explicit.",
         "scope": "Synthetic scope: a small display change with local fixtures.",
-        "evidence": ["Synthetic reference: src/example.rs"],
+        "evidence": ["Synthetic reference: internal/example/example.go"],
         "final_decision": "rejected",
         "final_reason": "Synthetic final decision: rejected.",
         "reviewer_verdicts": [
@@ -252,7 +252,7 @@
                 "findings": [
                   {
                     "title": "Synthetic retry loses a pending result",
-                    "file": "src/example.rs",
+                    "file": "internal/example/example.go",
                     "priority": "P1",
                     "detail": "Synthetic finding: a newer attempt can overwrite an unresolved result. Keep this adverse evidence visible."
                   }
@@ -264,7 +264,7 @@
               "all_passed_at_output_revision": false,
               "commands": [
                 {
-                  "command": "cargo test --locked --test synthetic_example",
+                  "command": "go test ./...",
                   "state": "failed",
                   "results_recorded": 2,
                   "latest_success": false,
@@ -324,7 +324,7 @@
                 "findings": [
                   {
                     "title": "Synthetic retry loses a pending result",
-                    "file": "src/example.rs",
+                    "file": "internal/example/example.go",
                     "priority": "P1",
                     "detail": "Synthetic finding: a newer attempt can overwrite an unresolved result. Keep this adverse evidence visible."
                   }
@@ -336,7 +336,7 @@
               "all_passed_at_output_revision": false,
               "commands": [
                 {
-                  "command": "cargo test --locked --test synthetic_example",
+                  "command": "go test ./...",
                   "state": "failed",
                   "results_recorded": 2,
                   "latest_success": false,
@@ -362,7 +362,7 @@
         "problem": "Synthetic problem: a saved result can be difficult to inspect.",
         "benefit": "Synthetic benefit: make missing evidence explicit.",
         "scope": "Synthetic scope: a small display change with local fixtures.",
-        "evidence": ["Synthetic reference: src/example.rs"],
+        "evidence": ["Synthetic reference: internal/example/example.go"],
         "final_decision": "accepted",
         "final_reason": "Synthetic final decision: accepted.",
         "reviewer_verdicts": [

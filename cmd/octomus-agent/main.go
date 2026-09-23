@@ -24,21 +24,20 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/evidence"
 	"github.com/tyk-swe/octomus-agent/internal/httpapi"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/notifications"
 	"github.com/tyk-swe/octomus-agent/internal/report"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	dashboard "github.com/tyk-swe/octomus-agent/web"
 )
 
 // stateDBName is the SQLite file inside the data directory.
 const stateDBName = "state.db"
 
-// printJSON writes the value the way serde_json::to_string_pretty does: two-space
-// indentation, sorted object keys and a trailing newline.
+// printJSON writes two-space indented JSON with sorted object keys and a trailing newline.
 func printJSON(stdout io.Writer, value any) error {
-	data, err := jsoncompat.Marshal(value)
+	data, err := wirejson.Marshal(value)
 	if err != nil {
 		return err
 	}
@@ -78,8 +77,8 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		}
 		return 0
 	}
-	// Read-only exports run before any directory creation, service lock, migration
-	// or worker startup, and need no operator token.
+	// Read-only exports run before directory creation, service locking or worker
+	// startup, and need no operator token.
 	if parsed.usageReport || parsed.exportRun != nil {
 		stateDB := filepath.Join(parsed.dataDir, stateDBName)
 		var value map[string]any
@@ -110,7 +109,7 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 	return 0
 }
 
-// service is the reference main() tail: data directory, process lock, store,
+// service owns startup: data directory, process lock, store,
 // optional doctor, token, assets, workers, listener and graceful shutdown.
 func service(parsed arguments, env func(string) (string, bool), stdout, stderr io.Writer) error {
 	if err := os.MkdirAll(parsed.dataDir, 0o700); err != nil {
@@ -315,7 +314,7 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 func validateListen(listen string) error {
 	address, err := netip.ParseAddrPort(listen)
 	if err == nil && address.Addr().Zone() != "" {
-		// Rust SocketAddr accepts decimal u32 scope IDs, but not interface names.
+		// Scope IDs must be decimal 32-bit numbers, rather than interface names.
 		_, err = strconv.ParseUint(address.Addr().Zone(), 10, 32)
 	}
 	if err != nil {

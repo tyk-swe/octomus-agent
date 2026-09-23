@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import sqlite3
 import tempfile
 
 from e2e import Service, base_config, setup, usage_report, git
@@ -167,50 +166,6 @@ def audit():
             service.log.close()
 
 
-def legacy_recovery():
-    with tempfile.TemporaryDirectory(prefix='octomus-legacy-runner-') as directory:
-        root = Path(directory)
-        setup(root)
-        (root / 'interactive').touch()
-        service = Service(root)
-        try:
-            service.start()
-            service.configure()
-            task = service.wait(service.terminal_task, 'legacy interrupted executor')
-            service.request('/control/pause', 'POST')
-            service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'paused legacy task')
-            service.stop()
-            old_path = root / '.octomus/tasks' / task['execution_session'] / 'workspace'
-            Path(task['workspace']).parent.rename(old_path.parent)
-            task['workspace'] = str(old_path)
-
-            def legacy(value):
-                if isinstance(value, dict):
-                    return {k: legacy(v) for k, v in value.items() if k not in ['backend', 'provider', 'variant', 'opencode_binary']}
-                if isinstance(value, list):
-                    return [legacy(v) for v in value]
-                return value
-
-            with sqlite3.connect(root / '.octomus/state.db') as db:
-                db.execute("UPDATE records SET data=? WHERE kind='task' AND id=?", (json.dumps(task), task['id']))
-                for kind, identity, raw in db.execute('SELECT kind,id,data FROM records').fetchall():
-                    db.execute('UPDATE records SET data=? WHERE kind=? AND id=?', (json.dumps(legacy(json.loads(raw))), kind, identity))
-                for identity, raw in db.execute('SELECT id,data FROM admissions').fetchall():
-                    db.execute('UPDATE admissions SET data=? WHERE id=?', (json.dumps(legacy(json.loads(raw))), identity))
-            (root / 'interactive').unlink()
-            service.start()
-            service.request(f'/tasks/{task["id"]}/retry', 'POST')
-            service.request('/control/resume', 'POST')
-            recovered = service.wait(service.terminal_task, 'legacy task delivery')
-            assert recovered['status'] == 'published', recovered['error']
-            assert recovered['workspace'] == str(old_path) and recovered['execution_session'] == task['execution_session']
-            assert all(a['route']['backend'] == 'codex' for a in usage_report(root)['admissions'])
-            print('PASS legacy recovery: existing folders, sessions, snapshots and usage remain readable')
-        finally:
-            service.stop()
-            service.log.close()
-
-
 def task_deadline():
     with tempfile.TemporaryDirectory(prefix='octomus-task-deadline-') as directory:
         root = Path(directory)
@@ -244,5 +199,4 @@ if __name__ == '__main__':
     for mode in ['wrong-model', 'wrong-variant', 'missing-structured', 'malformed-structured', 'incomplete', 'interactive']:
         failed_review(mode)
     audit()
-    legacy_recovery()
     task_deadline()

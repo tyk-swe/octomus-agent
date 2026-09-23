@@ -363,8 +363,8 @@ test('stale check evidence and an incomplete review are never reported as clean'
                 required_commands: {
                   state: 'recorded',
                   commands: [
-                    command('cargo test', 'passed_at_other_revision', Z),
-                    command('cargo clippy', 'failed', B)
+                    command('go test ./...', 'passed_at_other_revision', Z),
+                    command('go vet ./...', 'failed', B)
                   ],
                   all_passed_at_output_revision: false
                 },

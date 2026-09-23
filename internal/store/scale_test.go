@@ -1,20 +1,11 @@
 package store_test
 
-// Port of tests/history_scale.rs: explicit scale checks gated behind
-// OCTOMUS_SCALE_TEST=1, matching the reference's #[ignore] opt-in.
+// OCTOMUS_SCALE_TEST=1 enables the explicit scale checks:
 //   OCTOMUS_SCALE_TEST=1 go test ./internal/store -run 'Scale|Bounded|Duplicate' -v -count=1
 //
-// The reference measures peak live bytes with a counting global allocator.
-// Go cannot intercept allocations, so these tests bound the runtime.MemStats
-// TotalAlloc delta around each measured call instead. Every Go-heap byte a
-// query materializes is counted, and a bound on allocated bytes is strictly
-// stronger than the reference's bound on live bytes: live growth inside the
-// window can never exceed what was allocated. modernc.org/sqlite keeps its
-// page cache in off-heap arena memory, so — exactly like the Rust allocator
-// ignoring SQLite's C heap — these numbers cover the port's own allocations,
-// which is where a full-evidence deserialization regression would show.
-// Background GC work inside a measured window can add noise beyond the
-// operation's own allocations, so the bounds carry the documented slack below.
+// TotalAlloc measures Go heap allocation around each query. The SQLite page
+// cache lives outside the Go heap. Bounds include slack for GC work while still
+// catching full-evidence materialization.
 
 import (
 	"encoding/json"
@@ -36,7 +27,6 @@ func heapAllocated() uint64 {
 	return m.TotalAlloc
 }
 
-// Port of tests/history_scale.rs bounded_history_scale.
 func TestBoundedHistoryScale(t *testing.T) {
 	if os.Getenv("OCTOMUS_SCALE_TEST") == "" {
 		t.Skip("OCTOMUS_SCALE_TEST is not set: explicit 100,000-record allocation and latency measurement")
@@ -92,12 +82,8 @@ func TestBoundedHistoryScale(t *testing.T) {
 		if baseline == 0 {
 			baseline = peak
 		}
-		// Same bound shape as the reference: within 2x the 1,000-task baseline
-		// plus slack. The slack is wider than the reference's 64 KiB because it
-		// covers Go runtime allocations the counting Rust allocator never saw:
-		// GC workbufs and mark state allocated when a collection lands inside a
-		// measured call. The bound still fails by orders of magnitude if a query
-		// scales with history — materializing 100,000 full records is ~500 MB.
+		// Allow 2x the 1,000-task baseline plus GC slack. A full-history
+		// materialization would exceed this bound by orders of magnitude.
 		if peak > baseline*2+1024*1024 {
 			t.Fatalf("Go allocations grew with full history: baseline %d peak %d", baseline, peak)
 		}
@@ -109,7 +95,6 @@ func TestBoundedHistoryScale(t *testing.T) {
 	}
 }
 
-// Port of tests/history_scale.rs duplicate_history_scale.
 func TestDuplicateHistoryScale(t *testing.T) {
 	if os.Getenv("OCTOMUS_SCALE_TEST") == "" {
 		t.Skip("OCTOMUS_SCALE_TEST is not set: explicit 2,000-task duplicate lookup with 64 KiB evidence per task")
@@ -184,7 +169,7 @@ func TestDuplicateHistoryScale(t *testing.T) {
 	// least ~128 MiB; the covering-index lookup allocates under 1 MiB here
 	// (one small string triple per scanned index row). 4 MiB keeps the gate
 	// over 30x below the regression it exists to catch while absorbing driver
-	// and GC noise the Rust counting allocator never saw.
+	// and GC noise.
 	if peak >= 4*1024*1024 {
 		t.Fatalf("Duplicate lookup allocated historical evidence: %d bytes", peak)
 	}

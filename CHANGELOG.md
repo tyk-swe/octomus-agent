@@ -50,11 +50,10 @@ the first release contains. The public homepage and documentation are live at
   description, so maintainer edits are never replaced; a cancelled task's reserved
   pull-request capacity is released once the remote settles its admitted branch.
 - The dashboard build precedes the Go build; `--assets` is an explicit override.
+- Fresh state uses SQLite schema version 7; earlier databases are refused before
+  schema or journal changes.
 
 ### Removed
 
 - The Codex-only `GET /api/models` endpoint, superseded by `POST /api/model-catalog`,
   which reports both runners.
-- The Rust implementation. The service is a single CGO-free Go executable that opens
-  existing state in place; building and testing Octomus no longer needs a Rust
-  toolchain. The frozen Rust reference remains available at commit `3c2b5cd`.

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // PrReservation holds one admitted default-branch task's share of the owned-PR
@@ -302,13 +302,13 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 }
 
 // sameJSON compares two records by their canonical serialization, the way the
-// reference compares serde values.
+// Compare JSON values by content.
 func sameJSON(a, b any) bool {
-	left, err := jsoncompat.Marshal(a)
+	left, err := wirejson.Marshal(a)
 	if err != nil {
 		return false
 	}
-	right, err := jsoncompat.Marshal(b)
+	right, err := wirejson.Marshal(b)
 	if err != nil {
 		return false
 	}

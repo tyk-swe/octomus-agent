@@ -91,8 +91,7 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await expect(
     page.getByRole('link', { name: /Explain the local development workflow/ })
   ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/12');
-  // An unowned request is reported as such, and a pull request left in the
-  // pre-upgrade settings list still appears after the store converts it.
+  // An unowned request is reported as such, and older deliveries remain visible.
   await expect(page.getByText('open · external head change')).toBeVisible();
   await expect(
     page.getByRole('link', { name: /Record the first delivered change/ })

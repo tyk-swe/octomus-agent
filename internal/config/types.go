@@ -1,8 +1,8 @@
-// Wire records preserve the Rust field order and per-field load defaults.
+// Wire records use the current Go JSON field names and request defaults.
 package config
 
 import (
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 type Route struct {
@@ -16,14 +16,14 @@ type Route struct {
 func (v *Route) UnmarshalJSON(data []byte) error {
 	type plain Route
 	decoded := plain{}
-	if err := jsoncompat.Decode(data, &decoded, true, false); err != nil {
+	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
 		return err
 	}
 	*v = Route(decoded)
 	return nil
 }
-func (v Route) MarshalJSON() ([]byte, error) { type plain Route; return jsoncompat.Record(plain(v)) }
-func (v Route) Clone() Route                 { return jsoncompat.Clone(v) }
+func (v Route) MarshalJSON() ([]byte, error) { type plain Route; return wirejson.Record(plain(v)) }
+func (v Route) Clone() Route                 { return wirejson.Clone(v) }
 
 type Config struct {
 	Repository             string            `json:"repository"`
@@ -61,11 +61,11 @@ type Config struct {
 func (v *Config) UnmarshalJSON(data []byte) error {
 	type plain Config
 	decoded := plain(Default())
-	if err := jsoncompat.Decode(data, &decoded, true, true); err != nil {
+	if err := wirejson.Decode(data, &decoded, true, true); err != nil {
 		return err
 	}
 	*v = Config(decoded)
 	return nil
 }
-func (v Config) MarshalJSON() ([]byte, error) { type plain Config; return jsoncompat.Record(plain(v)) }
-func (v Config) Clone() Config                { return jsoncompat.Clone(v) }
+func (v Config) MarshalJSON() ([]byte, error) { type plain Config; return wirejson.Record(plain(v)) }
+func (v Config) Clone() Config                { return wirejson.Clone(v) }

@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/jsoncompat"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // WebhookEnv names the notification destination variable; its value is a secret.
@@ -37,7 +37,7 @@ const (
 	invalidPayload     = "invalid_payload"
 )
 
-// attentionEvent is the frozen webhook payload schema (version 1).
+// attentionEvent is the version-1 webhook payload.
 type attentionEvent struct {
 	SchemaVersion uint32  `json:"schema_version"`
 	EventID       string  `json:"event_id"`
@@ -74,7 +74,7 @@ func payload(delivery *store.NotificationDelivery) ([]byte, error) {
 		len(event.Action) > maxIDBytes {
 		return nil, errors.New(invalidPayload)
 	}
-	bytes, err := jsoncompat.Marshal(event)
+	bytes, err := wirejson.Marshal(event)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", invalidPayload, err)
 	}
@@ -179,7 +179,7 @@ func (w *Worker) Stop() {
 
 func (w *Worker) run() {
 	defer close(w.done)
-	// The reference interval ticks immediately: a queued outbox row does not
+	// The delivery interval ticks immediately: a queued outbox row does not
 	// wait a full second for its first attempt.
 	timer := time.NewTimer(0)
 	defer timer.Stop()
