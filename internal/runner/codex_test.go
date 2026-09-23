@@ -124,7 +124,7 @@ func TestCodexCancellationStopsTurn(t *testing.T) {
 // Structured answers are decoded and schema-validated through Runners.
 func TestCodexStructuredOutputIsValidated(t *testing.T) {
 	f := codexFixture(t)
-	clients := New(context.Background(), f.cfg, f.state, "fixture", nil)
+	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
 	defer clients.Close()
 	session, err := clients.Start(codexRoute(), f.workspace, nil)
 	if err != nil {

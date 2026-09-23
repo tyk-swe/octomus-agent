@@ -22,7 +22,7 @@ var (
 )
 
 func runners(ctx context.Context, script *runnertest.Script) *runner.Runners {
-	return runner.New(ctx, config.Default(), nil, "fixture", script.Connector())
+	return runner.New(ctx, config.Default(), script.Connector())
 }
 
 func TestRoutesMissingFromTheCatalogAreRejectedAsRunnerUnavailable(t *testing.T) {

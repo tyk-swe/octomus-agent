@@ -23,7 +23,7 @@ func codexCatalog(entries map[string][]string) *runner.Runners {
 		models = append(models, runnertest.CodexModel(name, efforts...))
 	}
 	script := runnertest.New(models...)
-	return runner.New(context.Background(), config.Default(), nil, "fixture", script.Connector())
+	return runner.New(context.Background(), config.Default(), script.Connector())
 }
 
 func TestUnsupportedEffortNeverFallsBack(t *testing.T) {
