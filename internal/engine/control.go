@@ -9,7 +9,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/runner"
 )
 
 var (
@@ -189,7 +188,7 @@ func (a *App) doctor(ctx context.Context, cfg config.Config, audit bool) error {
 	if err := gitops.ValidateRemote(ctx, cfg); err != nil {
 		return fmt.Errorf("Repository remote preflight failed: %w", err)
 	}
-	clients := runner.New(ctx, cfg, a.Store, "doctor")
+	clients := a.runners(ctx, cfg, "doctor")
 	if err := clients.ValidateRoutes(cfg, cfg.Repository, audit); err != nil {
 		_ = clients.Close()
 		return fmt.Errorf("Runner route preflight failed: %w", err)

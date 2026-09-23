@@ -1,4 +1,4 @@
-package runner
+package runner_test
 
 import (
 	"context"
@@ -9,33 +9,21 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/schemas"
+	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 )
 
-// catalogAdapter serves a fixed Codex catalog so whole-configuration route
-// validation runs without a runner process.
-type catalogAdapter struct{ models []Model }
-
-func (a catalogAdapter) Models(string) ([]Model, error) { return a.models, nil }
-func (catalogAdapter) Start(config.Route, string, *string) (string, error) {
-	panic("route validation must not start a session")
-}
-func (catalogAdapter) Turn(string, config.Route, string, string, schemas.Schema) (string, error) {
-	panic("route validation must not run a turn")
-}
-func (catalogAdapter) Diagnostics(string) (map[string]any, error) { return map[string]any{}, nil }
-func (catalogAdapter) Close() error                               { return nil }
-
-// codexCatalog maps each model to its supported efforts.
-func codexCatalog(entries map[string][]string) *Runners {
-	models := []Model{}
+// codexCatalog maps each model to its supported efforts and serves it through
+// a scripted adapter, so whole-configuration route validation runs without a
+// runner process. The scripted adapter carries no replies: validation must
+// never start a session or run a turn.
+func codexCatalog(entries map[string][]string) *runner.Runners {
+	models := []runner.Model{}
 	for name, efforts := range entries {
-		models = append(models, Model{Backend: config.BackendCodex, Model: name, DisplayName: name,
-			Efforts: efforts, Variants: []string{}, Available: true})
+		models = append(models, runnertest.CodexModel(name, efforts...))
 	}
-	r := New(context.Background(), config.Default(), nil, "fixture")
-	r.clients[config.BackendCodex] = catalogAdapter{models: models}
-	return r
+	script := runnertest.New(models...)
+	return runner.New(context.Background(), config.Default(), script.Connector())
 }
 
 func TestUnsupportedEffortNeverFallsBack(t *testing.T) {

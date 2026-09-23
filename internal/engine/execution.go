@@ -100,7 +100,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	if err := a.retryPreflight(ctx, task); err != nil {
 		return err
 	}
-	client := runner.New(ctx, cfg, a.Store, task.ID)
+	client := a.runners(ctx, cfg, task.ID)
 	defer func() { _ = client.Close() }()
 	if err := client.ValidateRoutes(cfg, a.DataDir, false); err != nil {
 		return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
@@ -108,7 +108,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	// Initialization reserves the first executor admission, including on retries.
 	admissionReserved := task.ExecutionSession == nil
 	if admissionReserved {
-		if err := a.initializeTask(ctx, task, client); err != nil {
+		if err := a.initializeTask(ctx, task); err != nil {
 			return err
 		}
 	}
@@ -267,7 +267,10 @@ func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 	return nil
 }
 
-func (a *App) initializeTask(ctx context.Context, task *model.Task, client *runner.Runners) error {
+// initializeTask prepares a task's workspace and reserves its first executor
+// admission before the clone; the executor invocation then starts the fresh
+// session under that reservation.
+func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 	cfg := task.ExecutionConfig()
 	if err := gitops.Fetch(ctx, cfg); err != nil {
 		return err
@@ -338,7 +341,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task, client *runn
 			return model.BlockedReasonStaleBase
 		}
 	}
-	if err := a.budget(task.CycleID, &task.ID, "executor", task.Route); err != nil {
+	if err := a.admit(task.CycleID, task, "executor", task.Route); err != nil {
 		return err
 	}
 	if _, err := uuid.Parse(task.ID); err != nil {
@@ -384,47 +387,15 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task, client *runn
 			return err
 		}
 	}
-	session, err := client.Start(task.Route, ws, nil)
-	if err != nil {
-		return err
-	}
-	task.ExecutionSession = &session
-	task.Sessions = append(task.Sessions, model.NewSession(session, "executor", task.Route))
-	return a.saveTask(task)
+	return nil
 }
 
 func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.Runners, admissionReserved bool) error {
 	cfg := task.ExecutionConfig()
-	ws := task.Workspace
 	for _, s := range task.Sessions {
 		if s.Role == "executor" && s.Status == model.SessionCompleted {
 			return nil
 		}
-	}
-	if task.ExecutionSession == nil {
-		return errors.New("Executor session identity is missing")
-	}
-	thread := *task.ExecutionSession
-	if _, err := sessionMut(task, thread, "executor"); err != nil {
-		return err
-	}
-	if !admissionReserved {
-		if err := a.budget(task.CycleID, &task.ID, "executor", task.Route); err != nil {
-			return err
-		}
-		if _, err := client.Start(task.Route, ws, &thread); err != nil {
-			return err
-		}
-	}
-	// A freshly created thread is already active; Codex has no resumable
-	// rollout until its first turn starts.
-	session, err := sessionMut(task, thread, "executor")
-	if err != nil {
-		return err
-	}
-	session.MarkRunning()
-	if err := a.saveTask(task); err != nil {
-		return err
 	}
 	prompt := fmt.Sprintf(
 		"Implement this accepted task end to end in this workspace. Source revision: %s. Full comparison base: %s. Existing PR: %s. Preserve existing accumulated branch behavior; inspect its full diff. Do not push, publish, merge or deploy. Required repository verification commands: %s. Objective and constraints:\n%s\nProblem: %s\nBenefit: %s\nScope: %s\nEvidence: %s\nReturn a concise summary of actual changes, verification and material risks or migration notes.",
@@ -437,16 +408,12 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 		task.Proposal.Benefit,
 		task.Proposal.Scope,
 		debugList(task.Proposal.Evidence))
-	answer, err := client.Turn(thread, task.Route, ws, prompt, nil)
-	if err != nil {
-		return err
-	}
-	session, err = sessionMut(task, thread, "executor")
-	if err != nil {
-		return err
-	}
-	session.MarkCompleted(store.Redact(answer))
-	return a.saveTask(task)
+	_, _, err := a.invoke(ctx, client, invocation{
+		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
+		resume: task.ExecutionSession, keep: func(session string) { task.ExecutionSession = &session },
+		prompt: prompt, reserved: admissionReserved,
+	})
+	return err
 }
 
 func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runner.Runners, revision string) (model.Review, error) {
@@ -459,49 +426,27 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	if !ok {
 		return model.Review{}, errors.New("code_reviewer route is missing")
 	}
-	if err := a.budget(task.CycleID, &task.ID, "reviewer", route); err != nil {
-		return model.Review{}, err
-	}
-	thread, err := client.Start(route, ws, nil)
-	if err != nil {
-		return model.Review{}, err
-	}
-	task.Sessions = append(task.Sessions, model.NewSession(thread, "reviewer", route))
-	if err := a.saveTask(task); err != nil {
-		return model.Review{}, err
-	}
 	prompt := fmt.Sprintf(
 		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
 		task.ComparisonBase, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
-	answer, err := client.Turn(thread, route, ws, prompt, schemas.ReviewSchema())
-	if err != nil {
-		return model.Review{}, err
-	}
-	session, err := sessionMut(task, thread, "reviewer")
-	if err != nil {
-		return model.Review{}, err
-	}
-	session.Summary = store.Redact(answer)
-	if err := a.saveTask(task); err != nil {
-		return model.Review{}, err
-	}
 	var review model.Review
-	if err := json.Unmarshal([]byte(answer), &review); err != nil {
-		return model.Review{}, fmt.Errorf("%w: Unparseable review is not clean: %s", model.BlockedReasonInvalidReview, store.Redact(err.Error()))
+	judge := func(thread, answer string) (string, error) {
+		if err := json.Unmarshal([]byte(answer), &review); err != nil {
+			return "", fmt.Errorf("%w: Unparseable review is not clean: %s", model.BlockedReasonInvalidReview, store.Redact(err.Error()))
+		}
+		if !review.Valid() {
+			return "", model.BlockedReasonInvalidReview
+		}
+		if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
+			return "", err
+		}
+		task.Reviews = append(task.Reviews, model.ReviewRound{SessionID: thread, Revision: revision, ComparisonBase: task.ComparisonBase, Result: review, CreatedAt: model.Now()})
+		return review.Summary, nil
 	}
-	if !review.Valid() {
-		return model.Review{}, model.BlockedReasonInvalidReview
-	}
-	if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
-		return model.Review{}, err
-	}
-	session, err = sessionMut(task, thread, "reviewer")
-	if err != nil {
-		return model.Review{}, err
-	}
-	session.MarkCompleted(store.Redact(review.Summary))
-	task.Reviews = append(task.Reviews, model.ReviewRound{SessionID: thread, Revision: revision, ComparisonBase: task.ComparisonBase, Result: review, CreatedAt: model.Now()})
-	if err := a.saveTask(task); err != nil {
+	if _, _, err := a.invoke(ctx, client, invocation{
+		cycleID: task.CycleID, task: task, role: "reviewer", route: route, workspace: ws,
+		prompt: prompt, schema: schemas.ReviewSchema(), judge: judge,
+	}); err != nil {
 		return model.Review{}, err
 	}
 	return review, nil
@@ -554,38 +499,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 
 func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runners, review model.Review, verificationErrors []string) error {
 	cfg := task.ExecutionConfig()
-	ws := task.Workspace
 	if err := a.transition(task, model.StatusRepairing); err != nil {
-		return err
-	}
-	if task.RepairSession != nil {
-		if _, err := sessionMut(task, *task.RepairSession, "repair"); err != nil {
-			return err
-		}
-	}
-	route := cfg.RepairRoute
-	if err := a.budget(task.CycleID, &task.ID, "repair", route); err != nil {
-		return err
-	}
-	thread, err := client.Start(route, ws, task.RepairSession)
-	if err != nil {
-		return err
-	}
-	if task.RepairSession == nil {
-		task.RepairSession = &thread
-		task.Sessions = append(task.Sessions, model.NewSession(thread, "repair", route))
-		if err := a.saveTask(task); err != nil {
-			return err
-		}
-	}
-	// A resumed repair thread stays persistent across rounds; a fresh thread
-	// only exists before the first repair session record is saved.
-	session, err := sessionMut(task, thread, "repair")
-	if err != nil {
-		return err
-	}
-	session.MarkRunning()
-	if err := a.saveTask(task); err != nil {
 		return err
 	}
 	findings := review.Findings
@@ -603,16 +517,14 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 		task.Proposal.Prompt,
 		string(findingsJSON),
 		debugList(verificationErrors))
-	answer, err := client.Turn(thread, route, ws, prompt, nil)
-	if err != nil {
-		return err
-	}
-	session, err = sessionMut(task, thread, "repair")
-	if err != nil {
-		return err
-	}
-	session.MarkCompleted(store.Redact(answer))
-	return a.saveTask(task)
+	// The repair thread persists across rounds: the first repair starts it and
+	// every later round resumes it.
+	_, _, err = a.invoke(ctx, client, invocation{
+		cycleID: task.CycleID, task: task, role: "repair", route: cfg.RepairRoute, workspace: task.Workspace,
+		resume: task.RepairSession, keep: func(session string) { task.RepairSession = &session },
+		prompt: prompt,
+	})
+	return err
 }
 
 func (a *App) published(task *model.Task, p model.PullRequest) error {
@@ -650,23 +562,6 @@ func statusEventName(status model.Status) string {
 
 func (a *App) taskWorkspace(taskID string) string {
 	return filepath.Join(a.DataDir, "tasks", taskID, "workspace")
-}
-
-func (a *App) budget(cycleID string, taskID *string, role string, route config.Route) error {
-	size, err := workspace.DirectorySize(a.DataDir)
-	if err != nil {
-		return err
-	}
-	return a.Store.ReserveSession(size, store.NewAdmission(cycleID, taskID, role, route))
-}
-
-func sessionMut(task *model.Task, thread, role string) (*model.Session, error) {
-	for i := range task.Sessions {
-		if task.Sessions[i].ID == thread && task.Sessions[i].Role == role {
-			return &task.Sessions[i], nil
-		}
-	}
-	return nil, fmt.Errorf("Task %s is missing its %s session record (%s): %w", task.ID, role, thread, model.BlockedReasonWorkspaceInvalid)
 }
 
 // checkOutcome is one verification command's captured result plus the

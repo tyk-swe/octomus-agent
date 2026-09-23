@@ -494,7 +494,7 @@ func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, 
 		}
 		return "", err
 	}
-	return finishTurn(answer, schema)
+	return FinishTurn(answer, schema)
 }
 
 type postResult struct {

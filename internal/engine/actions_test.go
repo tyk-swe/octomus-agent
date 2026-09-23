@@ -21,7 +21,15 @@ func TestShutdownOwnsRetryPreflight(t *testing.T) {
 	go func() { finished <- app.TaskAction(context.Background(), task.ID, "retry") }()
 	waitForPreflights(t, fixture, 1)
 	joined := make(chan struct{})
-	go func() { app.wg.Wait(); close(joined) }()
+	go func() {
+		// The entered-preflight file proves TaskAction registered, but file
+		// polling does not order this Wait after its wg.Add. Passing through
+		// the gate it registered under does, as in Shutdown.
+		app.gate.Lock()
+		app.gate.Unlock()
+		app.wg.Wait()
+		close(joined)
+	}()
 	select {
 	case <-joined:
 		t.Fatal("retry preflight was not registered with shutdown")

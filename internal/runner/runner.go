@@ -115,6 +115,23 @@ type Adapter interface {
 	Close() error
 }
 
+// Connector builds one backend's owned client for a working directory. ctx
+// bounds the client's lifetime: cancelling it stops the client's work. The
+// production connector is DefaultConnector; tests supply a scripted one (package
+// runnertest) so the engine runs without a runner process. A connector
+// replaces only the process on the far side of the Adapter seam: route
+// validation, catalog checks and runner-unavailable classification still run
+// in Runners.
+type Connector func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (Adapter, error)
+
+// DefaultConnector is the production connector: it connects through Connect
+// and records runner events on state under entity.
+func DefaultConnector(state *store.Store, entity string) Connector {
+	return func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (Adapter, error) {
+		return Connect(ctx, backend, cfg, cwd, state, entity)
+	}
+}
+
 // Connect validates the configured binary and starts the backend's owned
 // client.
 func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd string, state *store.Store, entity string) (Adapter, error) {
@@ -130,10 +147,11 @@ func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd
 	return nil, fmt.Errorf("Invalid backend")
 }
 
-// finishTurn is the Runner::turn structured-result check: the answer is
-// JSON-decoded with trailing-data rejection, validated, and compactly
-// marshaled.
-func finishTurn(answer string, schema schemas.Schema) (string, error) {
+// FinishTurn is the Runner::turn structured-result check every adapter applies
+// to its final answer: the answer is JSON-decoded with trailing-data
+// rejection, validated, and compactly marshaled. A nil schema returns the
+// answer unchanged.
+func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 	if schema == nil {
 		return answer, nil
 	}
@@ -155,21 +173,21 @@ func finishTurn(answer string, schema schemas.Schema) (string, error) {
 // mutable runner configuration.
 type Runners struct {
 	cfg      config.Config
-	state    *store.Store
-	entity   string
 	ctx      context.Context
+	connect  Connector
 	clients  map[config.Backend]Adapter
 	catalogs map[config.Backend][]Model
 	once     sync.Once
 	closeErr error
 }
 
-func New(ctx context.Context, cfg config.Config, state *store.Store, entity string) *Runners {
+// New owns the runner clients of one invocation scope. connect builds each
+// backend's client on first use.
+func New(ctx context.Context, cfg config.Config, connect Connector) *Runners {
 	return &Runners{
 		cfg:      cfg.Clone(),
-		state:    state,
-		entity:   entity,
 		ctx:      ctx,
+		connect:  connect,
 		clients:  map[config.Backend]Adapter{},
 		catalogs: map[config.Backend][]Model{},
 	}
@@ -180,7 +198,7 @@ func (r *Runners) Client(backend config.Backend, cwd string) (Adapter, error) {
 	if client, ok := r.clients[backend]; ok {
 		return client, nil
 	}
-	client, err := Connect(r.ctx, backend, r.cfg, cwd, r.state, r.entity)
+	client, err := r.connect(r.ctx, backend, r.cfg, cwd)
 	if err != nil {
 		return nil, err
 	}

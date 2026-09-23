@@ -13,6 +13,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
@@ -31,6 +32,16 @@ func (f TaskRunnerFunc) RunTask(ctx context.Context, task model.Task) error { re
 type Option func(*App)
 
 func WithTaskRunner(runner TaskRunner) Option { return func(a *App) { a.taskRunner = runner } }
+
+// WithRunnerConnector makes every runner client the engine builds (task
+// execution, planning roles, doctor/preflight, the settings preflight and
+// model catalog) connect through connect instead of runner.DefaultConnector.
+// Route validation and runner-unavailable classification still run for real;
+// tests use it to supply a scripted adapter (package runnertest). Nil keeps
+// the production connector.
+func WithRunnerConnector(connect runner.Connector) Option {
+	return func(a *App) { a.connector = connect }
+}
 
 type cycleJob struct {
 	id     string
@@ -75,7 +86,30 @@ type App struct {
 	cancel     context.CancelFunc
 	wake       chan struct{}
 	taskRunner TaskRunner
+	connector  runner.Connector
 	wg         sync.WaitGroup
+}
+
+// runners owns the runner clients of one invocation scope (a task, a planning
+// role, a preflight) through the app's connector.
+func (a *App) runners(ctx context.Context, cfg config.Config, entity string) *runner.Runners {
+	return runner.New(ctx, cfg, a.connect(entity))
+}
+
+// connectRunner builds one backend's client outside a Runners scope through
+// the app's connector.
+func (a *App) connectRunner(ctx context.Context, backend config.Backend, cfg config.Config, cwd, entity string) (runner.Adapter, error) {
+	return a.connect(entity)(ctx, backend, cfg, cwd)
+}
+
+// connect is the connector every runner client the engine builds goes
+// through: the injected one, or the production connector recording runner
+// events under entity.
+func (a *App) connect(entity string) runner.Connector {
+	if a.connector != nil {
+		return a.connector
+	}
+	return runner.DefaultConnector(a.Store, entity)
 }
 
 func New(state *store.Store, dataDir string, options ...Option) *App {
