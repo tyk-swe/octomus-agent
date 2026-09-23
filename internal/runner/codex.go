@@ -414,7 +414,7 @@ func (c *Codex) Turn(session string, route config.Route, cwd, prompt string, sch
 	if err != nil {
 		return "", err
 	}
-	return finishTurn(answer, schema)
+	return FinishTurn(answer, schema)
 }
 
 func (c *Codex) turn(thread string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {

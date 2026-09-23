@@ -301,7 +301,7 @@ func TestRunnersLazyBackendsAndAuditFiltering(t *testing.T) {
 		cfg.Roles[role] = route()
 	}
 	ctx := context.Background()
-	clients := New(ctx, cfg, f.state, "fixture")
+	clients := New(ctx, cfg, f.state, "fixture", nil)
 	defer clients.Close()
 	if err := clients.ValidateRoutes(cfg, f.workspace, true); err != nil {
 		t.Fatalf("audit validation: %v", err)
@@ -334,7 +334,7 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 		return cfg
 	})
 	// The Codex shim shares the fixture root so its mode files apply here.
-	clients := New(context.Background(), f.cfg, f.state, "fixture")
+	clients := New(context.Background(), f.cfg, f.state, "fixture", nil)
 	defer clients.Close()
 	if err := clients.CheckRoute(codexRoute(), f.workspace); err != nil {
 		t.Fatalf("codex route: %v", err)
@@ -363,7 +363,7 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 // idempotent.
 func TestRunnersCloseOwnsClients(t *testing.T) {
 	f := opencodeFixture(t)
-	clients := New(context.Background(), f.cfg, f.state, "fixture")
+	clients := New(context.Background(), f.cfg, f.state, "fixture", nil)
 	defer clients.Close()
 	if _, err := clients.Client(config.BackendOpencode, f.workspace); err != nil {
 		t.Fatalf("connect: %v", err)
@@ -396,7 +396,7 @@ func TestRunnersCloseOwnsClients(t *testing.T) {
 // with the concrete cause.
 func TestRunnersErrorsKeepBlockedReason(t *testing.T) {
 	f := opencodeFixture(t)
-	clients := New(context.Background(), f.cfg, f.state, "fixture")
+	clients := New(context.Background(), f.cfg, f.state, "fixture", nil)
 	defer clients.Close()
 	_, err := clients.Start(route(), f.workspace, stringPtr("ses_missing"))
 	if err == nil {

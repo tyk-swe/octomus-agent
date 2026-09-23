@@ -100,7 +100,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	if err := a.retryPreflight(ctx, task); err != nil {
 		return err
 	}
-	client := runner.New(ctx, cfg, a.Store, task.ID)
+	client := a.runners(ctx, cfg, task.ID)
 	defer func() { _ = client.Close() }()
 	if err := client.ValidateRoutes(cfg, a.DataDir, false); err != nil {
 		return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)

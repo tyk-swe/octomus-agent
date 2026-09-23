@@ -281,7 +281,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	errs := []string{}
 	for _, backend := range backends {
 		checkErr := func() error {
-			client, err := runner.Connect(a.ctx, backend, cfg, a.DataDir, a.Store, "system")
+			client, err := a.connectRunner(a.ctx, backend, cfg, a.DataDir, "system")
 			if err != nil {
 				return err
 			}
@@ -357,7 +357,7 @@ func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Mode
 	default:
 		return nil, errors.New("Invalid backend")
 	}
-	client, err := runner.Connect(a.ctx, backend, cfg, a.DataDir, a.Store, "system")
+	client, err := a.connectRunner(a.ctx, backend, cfg, a.DataDir, "system")
 	if err != nil {
 		return nil, err
 	}

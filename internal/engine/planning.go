@@ -16,7 +16,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -479,7 +478,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycle model.Cycle, la
 		outcome.err = err
 		return outcome
 	}
-	clients := runner.New(ctx, cfg, a.Store, cycle.ID)
+	clients := a.runners(ctx, cfg, cycle.ID)
 	sessionID, err := clients.Start(route, roleWorkspace, nil)
 	if err != nil {
 		_ = clients.Close()
