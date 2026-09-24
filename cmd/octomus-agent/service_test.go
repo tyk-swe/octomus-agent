@@ -173,6 +173,56 @@ func TestSchedulerExitStopsHealthAndPropagatesError(t *testing.T) {
 	}
 }
 
+func TestImmediateSchedulerExitClosesHealthListenerAndPropagatesError(t *testing.T) {
+	fatal := errors.New("scheduler failed at startup")
+	address := make(chan string, 1)
+	var schedulerStopped, workerStopped atomic.Int32
+	components := serviceComponents{
+		scheduler: testServiceScheduler{
+			run:      func(context.Context) error { return fatal },
+			shutdown: func() { schedulerStopped.Add(1) },
+		},
+		http: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/healthz" {
+				w.WriteHeader(http.StatusOK)
+			}
+		})},
+		startWorker: func() (func(), error) {
+			return func() { workerStopped.Add(1) }, nil
+		},
+		listen: func(network, host string) (net.Listener, error) {
+			listener, err := net.Listen(network, host)
+			if err == nil {
+				address <- listener.Addr().String()
+			}
+			return listener, err
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- components.run(context.Background(), "127.0.0.1:0", &bytes.Buffer{}) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, fatal) {
+			t.Fatalf("service error = %v, want original scheduler error", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("service did not stop after immediate scheduler exit")
+	}
+	if schedulerStopped.Load() != 1 || workerStopped.Load() != 1 {
+		t.Fatalf("shutdown counts: scheduler=%d worker=%d", schedulerStopped.Load(), workerStopped.Load())
+	}
+	select {
+	case host := <-address:
+		connection, err := net.DialTimeout("tcp", host, 200*time.Millisecond)
+		if err == nil {
+			connection.Close()
+			t.Fatal("health listener remains open after immediate scheduler exit")
+		}
+	default:
+		t.Fatal("service never bound its listener")
+	}
+}
+
 func TestEarlyHTTPExitCancelsSchedulerAndPropagatesError(t *testing.T) {
 	fatal := errors.New("HTTP listener failed")
 	var runCount, serveCount, schedulerStopped, serverStopped, workerStopped atomic.Int32

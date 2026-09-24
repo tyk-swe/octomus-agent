@@ -177,13 +177,18 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	server := &http.Server{Handler: httpapi.Router(app, token, assetsOverride, octomus.Version)}
-	return superviseService(sigCtx, parsed.listen, app, server, func() (func(), error) {
-		worker, err := notifications.Start(app.Context(), state, webhook)
-		if err != nil || worker == nil {
-			return nil, err
-		}
-		return worker.Stop, nil
-	}, stderr)
+	components := serviceComponents{
+		scheduler: app,
+		http:      server,
+		startWorker: func() (func(), error) {
+			worker, err := notifications.Start(app.Context(), state, webhook)
+			if err != nil || worker == nil {
+				return nil, err
+			}
+			return worker.Stop, nil
+		},
+	}
+	return components.run(sigCtx, parsed.listen, stderr)
 }
 func parse(args []string, env func(string) (string, bool)) (arguments, string, error) {
 	a := arguments{dataDir: ".octomus", listen: "127.0.0.1:4200"}

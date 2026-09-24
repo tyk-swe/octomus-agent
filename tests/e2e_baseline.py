@@ -61,7 +61,9 @@ def scenario(mode):
                 # Hold the audit before it has a cycle, then during planning.
                 # Both intervals must refuse a baseline with the same reason
                 # advertised by the dashboard eligibility view.
-                config = base_config(service, [f'touch {marker}; sleep 60'],
+                # An audit can run without verification commands; baseline
+                # validation must not mask the active-audit conflict.
+                config = base_config(service, [],
                                      cycle_interval_seconds=3600, task_timeout_seconds=60)
                 config['command_timeout_seconds'] = 60
                 for role in ['orchestrator', 'discovery', 'proposal_reviewer']:
@@ -120,6 +122,10 @@ def scenario(mode):
                 service.wait(lambda: (s := service.request('/state'))['cycles'] and
                              s['cycles'][0]['status'] == 'idle' and not s['cycle_active'],
                              'audit completion')
+                code, invalid = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                assert code == 400 and 'verification command' in invalid['error'], (code, invalid)
+                config['verification_commands'] = [f'touch {marker}; sleep 60']
+                config = service.save_config(config)
                 service.wait(lambda: latest(service)['eligible'], 'baseline eligibility after audit')
                 code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
                 assert code == 202, (code, check)
