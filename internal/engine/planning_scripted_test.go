@@ -257,6 +257,39 @@ func TestRunOnceCommitsCompletePlanningQueueAndPhase(t *testing.T) {
 	}
 }
 
+func TestResumeClearsOldDelayAndNextTickStartsPlanning(t *testing.T) {
+	for _, action := range []string{"direct", "control action"} {
+		t.Run(action, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			completePlan(t, fixture).queue(fixture)
+			app := fixture.pausedApp(t)
+			control := model.DefaultControl()
+			control.NextCycleAt = time.Now().Add(time.Hour).Unix()
+			message := "earlier planning failure"
+			control.Error = &message
+			if err := fixture.state.SaveControl(control); err != nil {
+				t.Fatal(err)
+			}
+			if action == "direct" {
+				if err := app.Resume(); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := app.ControlAction("resume"); err != nil {
+				t.Fatal(err)
+			}
+			resumed, err := app.Control()
+			if err != nil || resumed.Mode != model.OperatingModeContinuous || resumed.NextCycleAt != 0 || resumed.Error != nil {
+				t.Fatalf("resumed control: %+v, %v", resumed, err)
+			}
+			if err := app.Tick(); err != nil {
+				t.Fatal(err)
+			}
+			cycle := waitOnlyCycle(t, fixture.state)
+			assertScriptedPlanningPass(t, fixture, cycle)
+		})
+	}
+}
+
 func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	plan := completePlan(t, fixture)

@@ -65,6 +65,49 @@ func TestAuditControlsConflictWhileAuditRuns(t *testing.T) {
 	}
 }
 
+func TestResumePreservesAuditAndBaselineConflicts(t *testing.T) {
+	for _, active := range []string{"audit", "audit preflight", "baseline"} {
+		for _, action := range []string{"direct", "control action"} {
+			t.Run(active+"/"+action, func(t *testing.T) {
+				app, control := controlFixture(t, "idle")
+				control.NextCycleAt = 1234567890
+				message := "earlier planning failure"
+				control.Error = &message
+				if err := app.Store.SaveControl(control); err != nil {
+					t.Fatal(err)
+				}
+				app.runtimeMu.Lock()
+				switch active {
+				case "audit":
+					app.runtime.cycle = &cycleJob{id: "audit", mode: model.CycleModeAudit, cancel: func() {}}
+				case "audit preflight":
+					app.runtime.preflight = true
+					app.runtime.preflightMode = model.CycleModeAudit
+				case "baseline":
+					app.runtime.baseline = &baselineJob{id: "baseline", cancel: func() {}}
+				}
+				app.runtimeMu.Unlock()
+				var err error
+				if action == "direct" {
+					err = app.Resume()
+				} else {
+					_, err = app.ControlAction("resume")
+					if err != nil && !IsActionConflict(err) {
+						t.Fatalf("control action should report a conflict: %v", err)
+					}
+				}
+				if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.Split(active, " ")[0]) {
+					t.Fatalf("resume during %s: %v", active, err)
+				}
+				saved, loadErr := app.Control()
+				if loadErr != nil || saved.Mode != model.OperatingModePaused || saved.NextCycleAt != control.NextCycleAt || saved.Error == nil || *saved.Error != message {
+					t.Fatalf("rejected resume changed control: %+v, %v", saved, loadErr)
+				}
+			})
+		}
+	}
+}
+
 func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(t *testing.T) {
 	for _, scenario := range []string{"continuous", "task", "execution", "idle"} {
 		for _, action := range []string{"audit", "cycle", "resume", "pause"} {
