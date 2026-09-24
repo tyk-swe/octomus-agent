@@ -127,6 +127,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 			return fmt.Errorf("expected a map")
 		}
 		result := reflect.MakeMap(v.Type())
+		seen := make(map[string]struct{})
 		for dec.More() {
 			start := dec.InputOffset()
 			key, err := dec.Token()
@@ -136,6 +137,11 @@ func decodeValue(raw []byte, v reflect.Value) error {
 			if err := validStrings(raw[start:dec.InputOffset()]); err != nil {
 				return err
 			}
+			name := key.(string)
+			if _, ok := seen[name]; ok {
+				return fmt.Errorf("duplicate field %q", name)
+			}
+			seen[name] = struct{}{}
 			var data json.RawMessage
 			if err := dec.Decode(&data); err != nil {
 				return err
@@ -144,7 +150,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 			if err := decodeValue(data, item); err != nil {
 				return err
 			}
-			result.SetMapIndex(reflect.ValueOf(key.(string)), item)
+			result.SetMapIndex(reflect.ValueOf(name), item)
 		}
 		if _, err := dec.Token(); err != nil {
 			return err
