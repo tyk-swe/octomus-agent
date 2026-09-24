@@ -32,11 +32,6 @@ type serviceComponents struct {
 	listen      func(network, address string) (net.Listener, error)
 }
 
-func superviseService(ctx context.Context, address string, scheduler serviceScheduler, server serviceHTTPServer,
-	startWorker func() (func(), error), stderr io.Writer) error {
-	return (serviceComponents{scheduler: scheduler, http: server, startWorker: startWorker}).run(ctx, address, stderr)
-}
-
 func (c serviceComponents) run(ctx context.Context, address string, stderr io.Writer) error {
 	// A recovery failure is a startup failure. In particular, /healthz is never
 	// exposed for a scheduler that cannot read its durable state.
