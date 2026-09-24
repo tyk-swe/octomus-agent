@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -225,6 +226,90 @@ func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
 	}
 	if view["baseline_active"] != false {
 		t.Fatal("finished check must not read as active")
+	}
+}
+
+func TestStateViewRunningCycleAndActivityUseOneSnapshot(t *testing.T) {
+	app, _ := controlFixture(t, "idle")
+	cycle := model.Cycle{
+		Mode: model.CycleModeAudit, ID: "changing-cycle", Number: 1,
+		Status: model.CycleRunning, StartedAt: model.Now(),
+		Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
+	}
+	if err := app.Store.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			for _, status := range []string{model.CycleCompleted, model.CycleRunning} {
+				cycle.Status = status
+				if err := app.Store.Put("cycle", cycle.ID, cycle); err != nil {
+					done <- err
+					return
+				}
+				runtime.Gosched()
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		if err := <-done; err != nil {
+			t.Errorf("update cycle: %v", err)
+		}
+	}()
+	for i := 0; i < 150; i++ {
+		view, err := app.StateView()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cycles := view["cycles"].([]any)
+		if len(cycles) != 1 {
+			t.Fatalf("cycles: %v", cycles)
+		}
+		visible := cycles[0].(map[string]any)
+		mode, hasMode := view["active_cycle_mode"].(*model.CycleMode)
+		if visible["status"] == model.CycleRunning && (view["cycle_active"] != true || !hasMode || *mode != model.CycleModeAudit) {
+			t.Fatalf("running cycle must be active in the same response: cycle=%v active=%v mode=%v", visible, view["cycle_active"], view["active_cycle_mode"])
+		}
+	}
+}
+
+func TestStateViewRetainsRuntimeAuditActivity(t *testing.T) {
+	for _, check := range []struct {
+		name        string
+		preflight   bool
+		cycleActive bool
+	}{
+		{name: "preflight", preflight: true},
+		{name: "active cycle", cycleActive: true},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			app, _ := controlFixture(t, "idle")
+			app.runtimeMu.Lock()
+			if check.preflight {
+				app.runtime.preflight = true
+				app.runtime.preflightMode = model.CycleModeAudit
+			} else {
+				app.runtime.cycle = &cycleJob{id: "audit", mode: model.CycleModeAudit}
+			}
+			app.runtimeMu.Unlock()
+			view, err := app.StateView()
+			if err != nil {
+				t.Fatal(err)
+			}
+			mode, ok := view["active_cycle_mode"].(*model.CycleMode)
+			if view["cycle_active"] != check.cycleActive || !ok || *mode != model.CycleModeAudit || view["status"] != "auditing" {
+				t.Fatalf("runtime audit: active=%v mode=%v status=%v", view["cycle_active"], view["active_cycle_mode"], view["status"])
+			}
+		})
 	}
 }
 
