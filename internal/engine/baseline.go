@@ -145,7 +145,7 @@ func (a *App) baselineEligibility() (bool, *string, error) {
 	a.runtimeMu.Lock()
 	baseline := a.runtime.baseline != nil
 	tasks := len(a.runtime.tasks)
-	cycle := a.runtime.cycle != nil
+	planning := a.runtime.cycle != nil || a.runtime.preflight
 	reconciling := a.runtime.reconcilingPublication
 	a.runtimeMu.Unlock()
 	text := func(s string) *string { return &s }
@@ -159,7 +159,7 @@ func (a *App) baselineEligibility() (bool, *string, error) {
 		reason = text("Pause the service before running a baseline check")
 	case tasks > 0:
 		reason = text("Wait for active tasks before running a baseline check")
-	case cycle:
+	case planning:
 		reason = text("Wait for planning to finish before running a baseline check")
 	case reconciling:
 		reason = text("Wait for publication reconciliation before running a baseline check")
