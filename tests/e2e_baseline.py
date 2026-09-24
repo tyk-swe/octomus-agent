@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from e2e import TOKEN, Service, base_config, poll, setup, usage_report
 
@@ -56,6 +57,102 @@ def scenario(mode):
         try:
             service.start()
             marker = root / 'baseline-entered'
+            if mode == 'audit-exclusion':
+                # Hold the audit before it has a cycle, then during planning.
+                # Both intervals must refuse a baseline with the same reason
+                # advertised by the dashboard eligibility view.
+                # An audit can run without verification commands; baseline
+                # validation must not mask the active-audit conflict.
+                config = base_config(service, [],
+                                     cycle_interval_seconds=3600, task_timeout_seconds=60)
+                config['command_timeout_seconds'] = 60
+                for role in ['orchestrator', 'discovery', 'proposal_reviewer']:
+                    config['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+                config = service.save_config(config)
+                (root / 'idle').touch()
+                preflight_hold = root / 'reconcile-hold'
+                planning_hold = root / 'audit-hold'
+                preflight_hold.touch()
+                planning_hold.touch()
+
+                def begin_audit():
+                    connection = http.client.HTTPConnection('127.0.0.1', service.port, timeout=30)
+                    try:
+                        connection.request('POST', '/api/control/audit', body='{}',
+                                           headers={'Authorization': f'Bearer {TOKEN}',
+                                                    'Content-Type': 'application/json'})
+                        response = connection.getresponse()
+                        return response.status, json.load(response)
+                    finally:
+                        connection.close()
+
+                def assert_baseline_refused():
+                    view = latest(service)
+                    reason = 'Wait for planning to finish before running a baseline check'
+                    assert view['check'] is None and view['eligible'] is False and view['reason'] == reason, view
+                    code, refusal = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                    assert code == 409 and refusal['error'] == reason, (code, refusal)
+                    assert latest(service)['check'] is None
+                    assert not (root / '.octomus/baselines').exists()
+                    state = service.request('/state')
+                    assert not (state['baseline_active'] and state['cycle_active']), state
+
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    audit = pool.submit(begin_audit)
+                    try:
+                        service.wait(lambda: (root / 'reconcile-entered').exists(), 'audit preflight entry')
+                        state = service.request('/state')
+                        assert state['active_cycle_mode'] == 'audit' and not state['cycle_active'], state
+                        assert_baseline_refused()
+                        report = usage_report(root)
+                        assert report['cycles'] == [] and report['admissions'] == [], report
+                    finally:
+                        preflight_hold.unlink(missing_ok=True)
+                    code, response = audit.result(timeout=30)
+                    assert code == 200, (code, response)
+
+                try:
+                    service.wait(lambda: (root / 'audit-entered').exists(), 'audit planning entry')
+                    state = service.request('/state')
+                    assert state['cycle_active'] and state['active_cycle_mode'] == 'audit', state
+                    assert_baseline_refused()
+                finally:
+                    planning_hold.unlink(missing_ok=True)
+
+                service.wait(lambda: (s := service.request('/state'))['cycles'] and
+                             s['cycles'][0]['status'] == 'idle' and not s['cycle_active'],
+                             'audit completion')
+                code, invalid = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                assert code == 400 and 'verification command' in invalid['error'], (code, invalid)
+                config['verification_commands'] = [f'touch {marker}; sleep 60']
+                config = service.save_config(config)
+                service.wait(lambda: latest(service)['eligible'], 'baseline eligibility after audit')
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                assert code == 202, (code, check)
+                service.wait(lambda: marker.exists(), 'baseline command entry')
+                before = usage_report(root)
+                cycle_dir = root / '.octomus/cycles'
+                workspaces_before = set(cycle_dir.iterdir()) if cycle_dir.exists() else set()
+                code, refusal = status(service, '/control/audit', 'POST')
+                assert code == 409 and 'baseline check' in refusal['error'], (code, refusal)
+                after = usage_report(root)
+                assert len(after['cycles']) == len(before['cycles']) == 1
+                assert len(after['admissions']) == len(before['admissions'])
+                assert (set(cycle_dir.iterdir()) if cycle_dir.exists() else set()) <= workspaces_before
+                state = service.request('/state')
+                assert state['baseline_active'] and not state['cycle_active'], state
+
+                check_id = check['id']
+                assert status(service, f'/baseline-checks/{check_id}/cancel', 'POST')[0] == 200
+                cancelled = wait_check(service, ['cancelled'], cleaned=True)
+                assert cancelled['id'] == check_id and not (root / '.octomus/baselines' / check_id).exists()
+                service.wait(lambda: latest(service)['eligible'], 'baseline slot release')
+                assert status(service, '/control/audit', 'POST')[0] == 200
+                service.wait(lambda: (s := service.request('/state'))['cycles'] and
+                             len(s['cycles']) == 2 and not s['cycle_active'], 'audit after baseline cancellation')
+                assert not service.request('/state')['baseline_active']
+                print('PASS audit-exclusion: preflight, planning, inverse admission, and slot release')
+                return
             if mode == 'gates':
                 config = save_config(service, verification_commands=[f'touch {marker}; sleep 31338 & sleep 60'], command_timeout_seconds=60)
                 task = {'id': 'task-seed', 'cycle_id': 'cycle-seed', 'proposal': {'id': 'p', 'title': 'T', 'problem': 'P', 'benefit': 'B', 'scope': 'S', 'evidence': [], 'category': 'features', 'target': 'main', 'tier': 'M', 'dependencies': [], 'prompt': 'Do it', 'decision': 'accepted', 'reason': 'R', 'problem_key': '', 'relevant_paths': [], 'reconsiders': []}, 'status': 'blocked', 'blocked_reason': 'publication_uncertain', 'route': {'backend': 'codex', 'model': 'm', 'effort': 'low'}, 'config': config, 'source_revision': 's', 'comparison_base': 's', 'default_revision': 's', 'branch': 'octomus/seed', 'workspace': '', 'sessions': [], 'reviews': [], 'verification': [], 'output_commit': '0' * 40, 'attempts': 0, 'created_at': '2026-01-01T00:00:00Z', 'updated_at': '2026-01-01T00:00:00Z'}
@@ -269,11 +366,13 @@ def scenario(mode):
                 return
             raise AssertionError(f'unknown baseline scenario {mode}')
         finally:
+            (root / 'reconcile-hold').unlink(missing_ok=True)
+            (root / 'audit-hold').unlink(missing_ok=True)
             service.stop()
             service.log.close()
 
 
 if __name__ == '__main__':
-    for mode in ['gates', 'pass', 'failure', 'mutation', 'timeout', 'timeout-overall', 'restart', 'cancel-restart', 'shutdown', 'symlink', 'disconnect', 'storage', 'truncation']:
+    for mode in ['audit-exclusion', 'gates', 'pass', 'failure', 'mutation', 'timeout', 'timeout-overall', 'restart', 'cancel-restart', 'shutdown', 'symlink', 'disconnect', 'storage', 'truncation']:
         scenario(mode)
     print('All baseline scenarios passed')

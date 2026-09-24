@@ -232,10 +232,9 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		return err
 	}
 	targets := []string{}
+	now := time.Now()
 	for _, pr := range owned {
-		created, parseErr := time.Parse(time.RFC3339, pr.CreatedAt)
-		longLived := parseErr == nil && time.Since(created) >= time.Duration(cfg.LongLivedPRDays)*24*time.Hour
-		if pr.OwnedOpen() && (pr.ChangedLines >= cfg.LargePRLines || longLived) {
+		if pr.OwnedOpen() && (pr.ChangedLines >= cfg.LargePRLines || prAgeReached(pr.CreatedAt, cfg.LongLivedPRDays, now)) {
 			targets = append(targets, pr.Branch)
 		}
 	}
@@ -297,6 +296,21 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	}
 	cycle.Grounding = &grounding
 	return a.saveCycleMergedSessions(cycle)
+}
+
+// prAgeReached compares whole elapsed days without converting an unbounded
+// configuration value to time.Duration. An invalid or future timestamp cannot
+// make a PR a maintenance target by age.
+func prAgeReached(createdAt string, threshold uint64, now time.Time) bool {
+	created, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil || created.After(now) {
+		return false
+	}
+	elapsedSeconds := now.Unix() - created.Unix()
+	if now.Nanosecond() < created.Nanosecond() {
+		elapsedSeconds--
+	}
+	return uint64(elapsedSeconds/int64((24*time.Hour)/time.Second)) >= threshold
 }
 
 func (a *App) summarizeGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle, recorded string) (string, error) {

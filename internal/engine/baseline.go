@@ -135,17 +135,17 @@ func (a *App) mergeDefaultObservationLocked(cfg config.Config, revision, observe
 	return nil
 }
 
-// baselineEligibility reports whether a check may start and the operator-facing
-// reason when not.
-func (a *App) baselineEligibility() (bool, *string, error) {
+// baselineRuntimeIneligibility reports the active-work reason before checking
+// baseline configuration. StartBaseline holds the gate across this check and launch.
+func (a *App) baselineRuntimeIneligibility() (*string, error) {
 	control, err := a.Control()
 	if err != nil {
-		return false, nil, err
+		return nil, err
 	}
 	a.runtimeMu.Lock()
 	baseline := a.runtime.baseline != nil
 	tasks := len(a.runtime.tasks)
-	cycle := a.runtime.cycle != nil
+	planning := a.runtime.cycle != nil || a.runtime.preflight
 	reconciling := a.runtime.reconcilingPublication
 	a.runtimeMu.Unlock()
 	text := func(s string) *string { return &s }
@@ -159,18 +159,30 @@ func (a *App) baselineEligibility() (bool, *string, error) {
 		reason = text("Pause the service before running a baseline check")
 	case tasks > 0:
 		reason = text("Wait for active tasks before running a baseline check")
-	case cycle:
+	case planning:
 		reason = text("Wait for planning to finish before running a baseline check")
 	case reconciling:
 		reason = text("Wait for publication reconciliation before running a baseline check")
-	default:
-		if cfg, cfgErr := a.Config(); cfgErr != nil {
-			return false, nil, cfgErr
-		} else if err := cfg.ValidateBaseline(); err != nil {
-			reason = text(store.ErrorMessage(err))
-		}
 	}
-	return reason == nil, reason, nil
+	return reason, nil
+}
+
+// baselineEligibility reports whether a check may start and the operator-facing
+// reason when not.
+func (a *App) baselineEligibility() (bool, *string, error) {
+	reason, err := a.baselineRuntimeIneligibility()
+	if err != nil || reason != nil {
+		return false, reason, err
+	}
+	cfg, err := a.Config()
+	if err != nil {
+		return false, nil, err
+	}
+	if err := cfg.ValidateBaseline(); err != nil {
+		message := store.ErrorMessage(err)
+		return false, &message, nil
+	}
+	return true, nil, nil
 }
 
 // StartBaseline validates the expected configuration against the live one,
@@ -194,19 +206,15 @@ func (a *App) StartBaseline(expected config.Config) (*model.BaselineCheck, error
 	if string(liveJSON) != string(expectedJSON) {
 		return nil, baselineConflict("The saved configuration changed; reload settings and check the current values")
 	}
-	if err := live.ValidateBaseline(); err != nil {
-		return nil, err
-	}
-	eligible, reason, err := a.baselineEligibility()
+	reason, err := a.baselineRuntimeIneligibility()
 	if err != nil {
 		return nil, err
 	}
-	if !eligible {
-		message := "Baseline check is not eligible"
-		if reason != nil {
-			message = *reason
-		}
-		return nil, baselineConflict(message)
+	if reason != nil {
+		return nil, baselineConflict(*reason)
+	}
+	if err := live.ValidateBaseline(); err != nil {
+		return nil, err
 	}
 	check := model.BaselineCheck{
 		ID:        model.ID(),

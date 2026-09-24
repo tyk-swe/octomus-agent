@@ -234,9 +234,9 @@ func assemble(c *sql.Conn) (Report, error) {
 	for _, tier := range config.Tiers() {
 		row := TierRow{Tier: tier}
 		for _, t := range tasks {
-			if count, ok := taskCounts[t.ID]; ok && t.Proposal.Tier == tier {
+			if t.Proposal.Tier == tier {
 				row.ObservedTasks++
-				row.Admissions += count
+				row.Admissions += taskCounts[t.ID]
 			}
 		}
 		tiers = append(tiers, row)
