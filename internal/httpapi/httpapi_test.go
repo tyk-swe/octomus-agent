@@ -293,13 +293,28 @@ func TestControlActionsThroughHTTP(t *testing.T) {
 	if body := decode(t, response); body["mode"] != "run_once" {
 		t.Fatalf("cycle body: %v", body)
 	}
+	control, err := app.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.SetMode(model.OperatingModePaused)
+	control.NextCycleAt = time.Now().Add(time.Hour).Unix()
+	message := "earlier planning failure"
+	control.Error = &message
+	if err := state.SaveControl(control); err != nil {
+		t.Fatal(err)
+	}
 	response = call(t, router, "POST", "/api/control/resume", "{}")
 	if response.Code != http.StatusOK {
 		t.Fatalf("resume: %d %s", response.Code, response.Body.String())
 	}
 	body := decode(t, response)
-	if body["mode"] != "continuous" || body["planning_capacity"] == nil {
+	if body["mode"] != "continuous" || body["next_cycle_at"] != float64(0) || body["error"] != nil || body["planning_capacity"] == nil {
 		t.Fatalf("resume body: %v", body)
+	}
+	resumed, err := app.Control()
+	if err != nil || resumed.Mode != model.OperatingModeContinuous || resumed.NextCycleAt != 0 || resumed.Error != nil {
+		t.Fatalf("saved resume control: %+v, %v", resumed, err)
 	}
 	response = call(t, router, "POST", "/api/control/pause", "{}")
 	if response.Code != http.StatusOK || decode(t, response)["mode"] != "paused" {

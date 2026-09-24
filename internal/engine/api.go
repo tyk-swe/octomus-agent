@@ -111,17 +111,10 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 		control.SetMode(model.OperatingModePaused)
 		a.invalidatePrObservation()
 	case "resume":
-		cfg, err := a.Config()
-		if err != nil {
+		if err := a.enterContinuous(&control); err != nil {
 			a.gate.Unlock()
 			return nil, err
 		}
-		if err := cfg.Validate(true); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
-		control.SetMode(model.OperatingModeContinuous)
-		control.Error = nil
 	case "cycle":
 		cfg, err := a.Config()
 		if err != nil {
@@ -149,9 +142,11 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 		a.gate.Unlock()
 		return nil, ErrUnknownControl
 	}
-	if err := a.Store.SaveControl(control); err != nil {
-		a.gate.Unlock()
-		return nil, err
+	if action != "resume" {
+		if err := a.Store.SaveControl(control); err != nil {
+			a.gate.Unlock()
+			return nil, err
+		}
 	}
 	if err := a.Store.Event("system", "operator", action); err != nil {
 		a.gate.Unlock()

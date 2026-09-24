@@ -53,10 +53,27 @@ func (a *App) Resume() error {
 	defer a.gate.Unlock()
 	a.runtimeMu.Lock()
 	busyAudit := a.runtime.cycle != nil && a.runtime.cycle.mode == model.CycleModeAudit || a.runtime.preflight && a.runtime.preflightMode == model.CycleModeAudit
+	busyBaseline := a.runtime.baseline != nil
 	a.runtimeMu.Unlock()
 	if busyAudit {
 		return errors.New("Cannot resume while an audit is running")
 	}
+	if busyBaseline {
+		return errors.New("Cannot resume while a baseline check is running")
+	}
+	control, err := a.Control()
+	if err != nil {
+		return err
+	}
+	if err := a.enterContinuous(&control); err != nil {
+		return err
+	}
+	return a.Store.Event("system", "operator", "Continuous mode started")
+}
+
+// enterContinuous is the durable Resume transition shared by direct controls
+// and the authenticated API. Callers hold gate and check runtime conflicts.
+func (a *App) enterContinuous(control *model.Control) error {
 	cfg, err := a.Config()
 	if err != nil {
 		return err
@@ -64,18 +81,14 @@ func (a *App) Resume() error {
 	if err := cfg.Validate(true); err != nil {
 		return err
 	}
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
 	control.SetMode(model.OperatingModeContinuous)
 	control.Error = nil
 	control.NextCycleAt = 0
-	if err := a.Store.SaveControl(control); err != nil {
+	if err := a.Store.SaveControl(*control); err != nil {
 		return err
 	}
 	a.notify()
-	return a.Store.Event("system", "operator", "Continuous mode started")
+	return nil
 }
 
 // RunOnce creates a durable membership snapshot only if a complete planning
