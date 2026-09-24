@@ -47,6 +47,24 @@ func (s observedServiceHTTP) Serve(listener net.Listener) error {
 	return s.Server.Serve(listener)
 }
 
+type failingServiceHTTP struct {
+	serveCount    *atomic.Int32
+	shutdownCount *atomic.Int32
+	failure       error
+	address       chan net.Addr
+}
+
+func (s failingServiceHTTP) Serve(listener net.Listener) error {
+	s.address <- listener.Addr()
+	s.serveCount.Add(1)
+	return s.failure
+}
+func (s failingServiceHTTP) Shutdown(context.Context) error {
+	s.shutdownCount.Add(1)
+	return nil
+}
+func (failingServiceHTTP) Close() error { return nil }
+
 func TestSchedulerRecoveryFailureNeverOpensHealthListener(t *testing.T) {
 	startupErr := errors.New("cannot recover scheduler state")
 	var recovered, workerStarted, listenerOpened atomic.Int32
@@ -152,5 +170,111 @@ func TestSchedulerExitStopsHealthAndPropagatesError(t *testing.T) {
 	if err == nil {
 		connection.Close()
 		t.Fatal("health listener remains open after scheduler exit")
+	}
+}
+
+func TestEarlyHTTPExitCancelsSchedulerAndPropagatesError(t *testing.T) {
+	fatal := errors.New("HTTP listener failed")
+	var runCount, serveCount, schedulerStopped, serverStopped, workerStopped atomic.Int32
+	server := failingServiceHTTP{
+		serveCount: &serveCount, shutdownCount: &serverStopped,
+		failure: fatal, address: make(chan net.Addr, 1),
+	}
+	components := serviceComponents{
+		scheduler: testServiceScheduler{
+			run: func(ctx context.Context) error {
+				runCount.Add(1)
+				<-ctx.Done()
+				return nil
+			},
+			shutdown: func() { schedulerStopped.Add(1) },
+		},
+		http: server,
+		startWorker: func() (func(), error) {
+			return func() { workerStopped.Add(1) }, nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- components.run(context.Background(), "127.0.0.1:0", &bytes.Buffer{}) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, fatal) {
+			t.Fatalf("service error = %v, want original HTTP error", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("service hung after HTTP exit")
+	}
+	if runCount.Load() != 1 || serveCount.Load() != 1 || schedulerStopped.Load() != 1 || serverStopped.Load() != 1 || workerStopped.Load() != 1 {
+		t.Fatalf("unexpected lifecycle counts: run=%d serve=%d scheduler stop=%d HTTP stop=%d worker stop=%d",
+			runCount.Load(), serveCount.Load(), schedulerStopped.Load(), serverStopped.Load(), workerStopped.Load())
+	}
+	address := <-server.address
+	connection, err := net.DialTimeout("tcp", address.String(), 200*time.Millisecond)
+	if err == nil {
+		connection.Close()
+		t.Fatal("HTTP listener remains open after server exit")
+	}
+}
+
+func TestSignalShutdownWaitsForSchedulerDrain(t *testing.T) {
+	ctx, signal := context.WithCancel(context.Background())
+	defer signal()
+	runStarted := make(chan struct{})
+	shutdownStarted := make(chan struct{})
+	drained := make(chan struct{})
+	var workerStopped atomic.Int32
+	server := observedServiceHTTP{
+		Server:  &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })},
+		started: make(chan net.Addr, 1),
+	}
+	components := serviceComponents{
+		scheduler: testServiceScheduler{
+			run: func(ctx context.Context) error {
+				close(runStarted)
+				<-ctx.Done()
+				<-drained
+				return nil
+			},
+			shutdown: func() { close(shutdownStarted) },
+		},
+		http: server,
+		startWorker: func() (func(), error) {
+			return func() { workerStopped.Add(1) }, nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- components.run(ctx, "127.0.0.1:0", &bytes.Buffer{}) }()
+	select {
+	case <-runStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("scheduler did not start")
+	}
+	select {
+	case <-server.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("HTTP server did not start")
+	}
+	signal()
+	select {
+	case <-shutdownStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("scheduler shutdown did not start")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("service returned before the scheduler drained: %v", err)
+	default:
+	}
+	close(drained)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("normal shutdown returned an error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("service did not finish after the scheduler drained")
+	}
+	if workerStopped.Load() != 1 {
+		t.Fatalf("worker stop calls = %d, want one", workerStopped.Load())
 	}
 }

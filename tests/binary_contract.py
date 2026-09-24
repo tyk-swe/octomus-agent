@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """CLI startup and embedded-dashboard contracts for the Go executable."""
+import http.client
 import os
 from pathlib import Path
+import re
+import select
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 
 PROJECT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent'))).resolve()
@@ -47,6 +52,79 @@ def service_startup():
             assert not list(root.iterdir()), f'Read-only export wrote state: {args}'
 
 
+def signal_shutdown_releases_lock():
+    with tempfile.TemporaryDirectory(prefix='octomus-binary-signal-') as directory:
+        root = Path(directory)
+        args = ['--data-dir', str(root / 'state'), '--listen', '127.0.0.1:0']
+        env = {k: v for k, v in os.environ.items() if not k.startswith('OCTOMUS_')}
+        env['OCTOMUS_TOKEN'] = 'fixture-token-not-an-operator-token'
+
+        def start_service():
+            process = subprocess.Popen([str(BINARY), *args], cwd=root, env=env,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            startup_output = b''
+            deadline = time.monotonic() + 10
+            match = None
+            try:
+                while time.monotonic() < deadline:
+                    ready, _, _ = select.select([process.stderr], [], [], max(0, deadline - time.monotonic()))
+                    if not ready:
+                        break
+                    chunk = os.read(process.stderr.fileno(), 4096)
+                    if not chunk:
+                        break
+                    startup_output += chunk
+                    match = re.search(rb'Octomus listening on http://(127\.0\.0\.1:\d+)', startup_output)
+                    if match:
+                        host, port = match.group(1).decode().rsplit(':', 1)
+                        break
+                if not match:
+                    raise AssertionError(f'Service did not listen: {startup_output!r}')
+
+                # The listener announcement precedes Serve; wait for a real
+                # health response before delivering the signal.
+                while time.monotonic() < deadline:
+                    try:
+                        connection = http.client.HTTPConnection(host, int(port), timeout=1)
+                        connection.request('GET', '/healthz')
+                        response = connection.getresponse()
+                        response.read()
+                        connection.close()
+                        assert response.status == 200, response.status
+                        return process
+                    except OSError:
+                        time.sleep(0.05)
+                raise AssertionError(f'Service never answered health: {startup_output!r}')
+            except BaseException:
+                process.kill()
+                process.communicate(timeout=5)
+                raise
+
+        first = start_service()
+        try:
+            blocked = run(BINARY, args, root, {'OCTOMUS_TOKEN': env['OCTOMUS_TOKEN']})
+            assert blocked.returncode == 1 and 'Another Octomus service' in blocked.stderr, blocked
+            first.send_signal(signal.SIGTERM)
+            stdout, stderr = first.communicate(timeout=15)
+            assert first.returncode == 0 and not stdout, (first.returncode, stdout, stderr)
+
+            # Restart on the same state directory proves the process lock was
+            # released after the normal worker and HTTP shutdown path.
+            second = start_service()
+            try:
+                second.send_signal(signal.SIGTERM)
+                stdout, stderr = second.communicate(timeout=15)
+                assert second.returncode == 0 and not stdout, (second.returncode, stdout, stderr)
+            finally:
+                if second.poll() is None:
+                    second.kill()
+                    second.communicate(timeout=5)
+        finally:
+            if first.poll() is None:
+                first.kill()
+                first.communicate(timeout=5)
+
+
 def embedding_contracts():
     # The shipped executable includes both the SPA entrypoint and JS assets.
     binary = BINARY.read_bytes()
@@ -80,5 +158,6 @@ def embedding_contracts():
 
 if __name__ == '__main__':
     service_startup()
+    signal_shutdown_releases_lock()
     embedding_contracts()
-    print('Go binary contracts passed: startup order, embedded dashboard and missing-asset build failures.')
+    print('Go binary contracts passed: startup order, signal shutdown, state lock release and embedded dashboard.')
