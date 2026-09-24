@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -17,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -176,51 +174,16 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
 	}
 	webhook, _ := env(store.WebhookEnv)
-	worker, err := notifications.Start(app.Context(), state, webhook)
-	if err != nil {
-		return err
-	}
-	if err := app.Recover(); err != nil {
-		return err
-	}
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	runDone := make(chan error, 1)
-	go func() { runDone <- app.Run(sigCtx) }()
-	listener, err := net.Listen("tcp", parsed.listen)
-	if err != nil {
-		app.Shutdown()
-		<-runDone
-		return err
-	}
-	fmt.Fprintf(stderr, "Octomus listening on http://%s\n", parsed.listen)
 	server := &http.Server{Handler: httpapi.Router(app, token, assetsOverride, octomus.Version)}
-	serveDone := make(chan error, 1)
-	go func() { serveDone <- server.Serve(listener) }()
-	var serveErr error
-	select {
-	case <-sigCtx.Done():
-	case serveErr = <-serveDone:
-	}
-	app.Shutdown()
-	_ = server.Shutdown(context.Background())
-	<-serveDone
-	<-runDone
-	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-		return serveErr
-	}
-	if worker != nil {
-		worker.Stop()
-	}
-	// Bounded drain: every worker already stopped; this only waits for any
-	// straggling handles the runtime still tracks.
-	for range 100 {
-		if app.Drained() {
-			break
+	return superviseService(sigCtx, parsed.listen, app, server, func() (func(), error) {
+		worker, err := notifications.Start(app.Context(), state, webhook)
+		if err != nil || worker == nil {
+			return nil, err
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return nil
+		return worker.Stop, nil
+	}, stderr)
 }
 func parse(args []string, env func(string) (string, bool)) (arguments, string, error) {
 	a := arguments{dataDir: ".octomus", listen: "127.0.0.1:4200"}
