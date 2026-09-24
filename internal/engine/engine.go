@@ -164,11 +164,10 @@ func (a *App) Control() (model.Control, error) {
 	return *control, nil
 }
 
-// Run recovers durable state once, then schedules until ctx or Shutdown stops it.
+// Run schedules until ctx or Shutdown stops it. The service owner calls Recover
+// once before exposing HTTP, so a failed recovery cannot leave a healthy
+// listener beside a stopped scheduler.
 func (a *App) Run(ctx context.Context) error {
-	if err := a.Recover(); err != nil {
-		return err
-	}
 	ticker := time.NewTicker(schedulerInterval)
 	defer ticker.Stop()
 	for {
