@@ -405,20 +405,27 @@ func (a *App) StateView() (map[string]any, error) {
 	cycleActive := a.runtime.cycle != nil
 	baselineActive := a.runtime.baseline != nil
 	a.runtimeMu.Unlock()
-	// A committed running cycle is durable before its runtime slot is assigned,
-	// so the stored record must count toward activity as well: reporting
-	// inactive while a running cycle is visible contradicts the document.
+	// A committed running cycle is durable before its runtime slot is assigned.
+	// Read it from the same snapshot as the visible cycles: a later store query
+	// could see its terminal status and contradict the returned cycle summary.
 	if !cycleActive || cycleMode == nil {
-		running, err := a.Store.RunningCycles()
-		if err != nil {
-			return nil, err
-		}
-		if len(running) > 0 {
+		for _, raw := range snapshot.Cycles {
+			var cycle struct {
+				Mode   model.CycleMode `json:"mode"`
+				Status string          `json:"status"`
+			}
+			if err := json.Unmarshal(raw, &cycle); err != nil {
+				return nil, err
+			}
+			if cycle.Status != model.CycleRunning {
+				continue
+			}
 			cycleActive = true
 			if cycleMode == nil {
-				mode := running[0].Mode
+				mode := cycle.Mode
 				cycleMode = &mode
 			}
+			break
 		}
 	}
 	status := "idle"
