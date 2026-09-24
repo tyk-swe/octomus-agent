@@ -66,9 +66,14 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 		return err
 	}
 	fmt.Fprintf(stderr, "Octomus listening on http://%s\n", listener.Addr())
+	// The service owns the scheduler's lifetime. A server failure must stop a
+	// scheduler waiting on its run context, even when the signal context is
+	// still active.
+	serviceCtx, cancelService := context.WithCancel(ctx)
+	defer cancelService()
 	runDone := make(chan error, 1)
 	serveDone := make(chan error, 1)
-	go func() { runDone <- c.scheduler.Run(ctx) }()
+	go func() { runDone <- c.scheduler.Run(serviceCtx) }()
 	go func() { serveDone <- c.http.Serve(listener) }()
 
 	var cause error
@@ -90,6 +95,7 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 	// Stop accepting health checks as soon as either core loop has exited.
 	// Shutdown can wait for an in-flight handler, so let scheduler cancellation
 	// progress alongside that graceful HTTP drain.
+	cancelService()
 	_ = listener.Close()
 	httpStopped := make(chan struct{})
 	go func() {
