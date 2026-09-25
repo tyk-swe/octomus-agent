@@ -249,8 +249,10 @@ func writeAPIError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]any{"error": message})
 }
 
-// writeJSON encodes, redacts the generic tree, then writes compact JSON.
+// writeJSON encodes the response, redacts operator data and preserves
+// server-generated settings transform metadata, then writes compact JSON.
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	_, settingsView := value.(*engine.SettingsView)
 	data, err := wirejson.Marshal(value)
 	if err != nil {
 		data, err = json.Marshal(value)
@@ -270,7 +272,24 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 		})
 		return
 	}
-	out, err := wirejson.Marshal(store.RedactJSON(generic))
+	if settingsView {
+		// transformed_fields is server-generated structural metadata: running
+		// secret scrubbing over its field names and paths can make the dashboard
+		// lose the association between a redacted preview and its config field.
+		if object, ok := generic.(map[string]any); ok {
+			transforms, hasTransforms := object["transformed_fields"]
+			delete(object, "transformed_fields")
+			generic = store.RedactJSON(object)
+			if hasTransforms {
+				generic.(map[string]any)["transformed_fields"] = transforms
+			}
+		} else {
+			generic = store.RedactJSON(generic)
+		}
+	} else {
+		generic = store.RedactJSON(generic)
+	}
+	out, err := wirejson.Marshal(generic)
 	if err != nil {
 		writeRawJSON(w, http.StatusInternalServerError, map[string]any{
 			"error": "Response exceeded the dashboard size limit or could not be encoded",

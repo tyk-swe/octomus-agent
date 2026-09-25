@@ -788,6 +788,20 @@ func TestPublishRefusesUnsafeMetadataBeforeAnyWrite(t *testing.T) {
 			want: "empty",
 		},
 		{
+			name: "NUL in title",
+			adjust: func(task *model.Task) {
+				task.Proposal.Title = "valid\x00title"
+			},
+			want: "unsupported character",
+		},
+		{
+			name: "NUL in body",
+			adjust: func(task *model.Task) {
+				task.Proposal.Problem = "valid\x00body"
+			},
+			want: "unsupported character",
+		},
+		{
 			// A task id colliding with the token policy destroys the marker
 			// under scrubbing: delivery is refused rather than published
 			// without its identity.

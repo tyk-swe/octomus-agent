@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,6 +12,16 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
+
+// TestMain installs a synthetic secret that intentionally matches the
+// verification_commands field name. The settings response must redact config
+// values without corrupting its structural transform metadata.
+func TestMain(m *testing.M) {
+	if err := os.Setenv("OCTOMUS_HTTPAPI_TEST_SECRET", "verification_commands"); err != nil {
+		os.Exit(2)
+	}
+	os.Exit(m.Run())
+}
 
 // settingsView decodes one settings read/update response into its parts.
 func settingsView(t *testing.T, body []byte) (map[string]any, string, []map[string]any) {
@@ -77,6 +88,17 @@ func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 	}
 	if kinds := transformKinds(t, fields, "verification_commands"); !reflect.DeepEqual(kinds, []any{"redacted"}) {
 		t.Fatalf("command transforms: %v", kinds)
+	}
+	var commandTransform map[string]any
+	for _, field := range fields {
+		if field["field"] == "verification_commands" {
+			commandTransform = field
+			break
+		}
+	}
+	wantPaths := []any{[]any{"verification_commands", float64(0)}}
+	if commandTransform == nil || !reflect.DeepEqual(commandTransform["paths"], wantPaths) {
+		t.Fatalf("command transform paths = %v; want %v", commandTransform, wantPaths)
 	}
 	if kinds := transformKinds(t, fields, "runner_storage_paths"); !reflect.DeepEqual(kinds, []any{"shortened"}) {
 		t.Fatalf("path transforms: %v", kinds)

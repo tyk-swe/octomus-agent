@@ -632,6 +632,11 @@ func preparePublication(task model.Task, existing *model.PullRequest, commit str
 	}
 	title := store.RedactSecrets(task.Proposal.Title)
 	body := store.RedactSecrets(prBody(task, existing, commit))
+	// New PR titles are passed as process arguments, which cannot contain NUL;
+	// keep all public metadata free of it so refusal happens before branch push.
+	if strings.ContainsRune(title, '\x00') || strings.ContainsRune(body, '\x00') {
+		return refuse("Publication metadata contains an unsupported character")
+	}
 	// The title becomes a real title field only for a new pull request; on a
 	// follow-up it lives inside the comment body and is covered by the body
 	// checks instead.
