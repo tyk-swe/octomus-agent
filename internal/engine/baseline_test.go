@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +104,35 @@ func TestBaselineValidationAcceptsUnroutedModelsButRequiresRepositoryAndCommands
 	}
 	if err := cfg.ValidateAudit(); err == nil {
 		t.Fatal("unrouted models must fail audit validation")
+	}
+}
+
+// TestStartBaselineRejectsStaleRevisionBeforeWork verifies admission compares
+// the caller's expected revision with the live canonical fingerprint before a
+// check record, clone directory or worker exists.
+func TestStartBaselineRejectsStaleRevisionBeforeWork(t *testing.T) {
+	app, cfg := baselineApp(t)
+	fingerprint, err := BaselineFingerprint(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := strings.Repeat("0", len(fingerprint))
+	if _, err := app.StartBaseline(stale); err == nil {
+		t.Fatal("stale revision accepted")
+	} else {
+		var conflict *BaselineConflict
+		if !errors.As(err, &conflict) {
+			t.Fatalf("conflict kind: %v", err)
+		}
+	}
+	if running, err := app.Store.RunningBaselines(); err != nil || len(running) != 0 {
+		t.Fatalf("rejected start persisted work: %d %v", len(running), err)
+	}
+	if latest, err := app.Store.LatestBaseline(); err != nil || latest != nil {
+		t.Fatal("stale start created a baseline record")
+	}
+	if entries, err := os.ReadDir(filepath.Join(app.DataDir, "baselines")); err == nil && len(entries) != 0 {
+		t.Fatalf("clone directory created: %v", entries)
 	}
 }
 

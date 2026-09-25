@@ -185,25 +185,23 @@ func (a *App) baselineEligibility() (bool, *string, error) {
 	return true, nil, nil
 }
 
-// StartBaseline validates the expected configuration against the live one,
-// persists a running check and starts its worker. The whole eligibility check
-// and launch serialize on the gate.
-func (a *App) StartBaseline(expected config.Config) (*model.BaselineCheck, error) {
+// StartBaseline validates the expected canonical configuration revision against
+// the live saved configuration, persists a running check and starts its worker.
+// A stale revision conflicts before any record, clone or other work is created;
+// the check snapshots and runs the exact canonical configuration it validated.
+// The whole eligibility check and launch serialize on the gate.
+func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	live, err := a.Config()
 	if err != nil {
 		return nil, err
 	}
-	expectedJSON, err := expected.MarshalJSON()
+	fingerprint, err := BaselineFingerprint(live)
 	if err != nil {
 		return nil, err
 	}
-	liveJSON, err := live.MarshalJSON()
-	if err != nil {
-		return nil, err
-	}
-	if string(liveJSON) != string(expectedJSON) {
+	if fingerprint != expectedRevision {
 		return nil, baselineConflict("The saved configuration changed; reload settings and check the current values")
 	}
 	reason, err := a.baselineRuntimeIneligibility()
@@ -222,10 +220,6 @@ func (a *App) StartBaseline(expected config.Config) (*model.BaselineCheck, error
 		Config:    live.Clone(),
 		StartedAt: model.Now(),
 		Commands:  []model.BaselineCommand{},
-	}
-	fingerprint, err := BaselineFingerprint(live)
-	if err != nil {
-		return nil, err
 	}
 	check.ConfigFingerprint = fingerprint
 	if err := a.Store.Put("baseline", check.ID, check); err != nil {
@@ -335,9 +329,11 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 		return nil, err
 	}
 	var configMatches any
+	var configRevision any
 	revisionStatus := "unknown"
 	if check != nil {
 		configMatches = a.BaselineConfigMatches(check, live)
+		configRevision = check.ConfigFingerprint
 		revisionStatus = a.BaselineRevisionStatus(check, live)
 	}
 	a.runtimeMu.Lock()
@@ -352,6 +348,7 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 		"eligible":            eligible,
 		"reason":              reasonValue,
 		"config_matches":      configMatches,
+		"config_revision":     configRevision,
 		"revision_status":     revisionStatus,
 		"default_observation": observation,
 		"caveat":              baselineCaveat,

@@ -1,5 +1,13 @@
+import { createHash } from 'node:crypto';
 import { test, expect, type Page } from '@playwright/test';
-import type { BaselineView, Config, Model, Snapshot } from '../src/lib/types';
+import type {
+  BaselineView,
+  Config,
+  Model,
+  SettingsView,
+  Snapshot,
+  TransformedField
+} from '../src/lib/types';
 import { login, openNavigation, token, trackWrites } from './synthetic';
 
 function deferred() {
@@ -8,15 +16,38 @@ function deferred() {
   return { promise, resolve };
 }
 
+// The fixture revision mirrors the service contract: a content hash of the
+// canonical configuration. Key order and display transforms never change it;
+// any saved value change does.
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object')
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`)
+      .join(',')}}`;
+  return JSON.stringify(value);
+}
+const revisionOf = (config: Config | null) =>
+  createHash('sha256').update(canonical(config)).digest('hex');
+
 // All writes terminate in browser fixtures; neither runner nor GitHub is contacted.
 async function configurationFixture(
   page: Page,
-  options: { unconfigured?: boolean; snapshot?: (snapshot: Snapshot) => void } = {}
+  options: {
+    unconfigured?: boolean;
+    snapshot?: (snapshot: Snapshot) => void;
+    /** Display-only field values plus their transform metadata, as the server reports them. */
+    transformed?: { overrides: Partial<Config>; fields: TransformedField[] };
+  } = {}
 ) {
   const state = {
     saved: null as Config | null,
+    /** Display-only replacements for transformed fields; canonical values stay in `saved`. */
+    overrides: {} as Record<string, unknown>,
+    transformed: [] as TransformedField[],
     reads: 0,
-    writes: [] as Config[],
+    writes: [] as { expected_revision: string; config: Record<string, unknown> }[],
     catalogs: [] as { backend: string; binary: string }[],
     checks: [] as string[],
     failLoad: false,
@@ -30,12 +61,21 @@ async function configurationFixture(
       eligible: true,
       reason: null,
       config_matches: null,
+      config_revision: null,
       revision_status: 'unknown',
       default_observation: null,
       caveat: 'Synthetic baseline caveat'
     } as BaselineView,
-    baselines: [] as unknown[]
+    baselines: [] as unknown[],
+    revision() {
+      return revisionOf(this.saved);
+    }
   };
+  const viewOf = (saved: Config): SettingsView => ({
+    config: { ...structuredClone(saved), ...structuredClone(state.overrides) } as Config,
+    revision: revisionOf(saved),
+    transformed_fields: structuredClone(state.transformed)
+  });
   await page.route('**/api/state', async (route) => {
     const response = await route.fetch();
     const snapshot: Snapshot = await response.json();
@@ -49,21 +89,30 @@ async function configurationFixture(
   });
   await page.route('**/api/config', async (route) => {
     if (route.request().method() === 'PUT') {
-      const draft: Config = route.request().postDataJSON();
-      state.writes.push(draft);
+      const body = route.request().postDataJSON() as {
+        expected_revision: string;
+        config: Record<string, unknown>;
+      };
+      state.writes.push(body);
       await state.saveGate?.promise;
-      if (state.failSave) {
+      if (state.failSave || body.expected_revision !== state.revision()) {
         await route.fulfill({ status: 409, json: { error: 'Synthetic save conflict' } });
-      } else {
-        state.saved = draft;
-        await route.fulfill({ json: { ok: true } });
+        return;
       }
+      // Each supplied top-level field replaces its canonical value; omitted
+      // fields keep theirs, including any hidden display values.
+      for (const [key, value] of Object.entries(body.config)) {
+        (state.saved as unknown as Record<string, unknown>)[key] = value;
+        delete state.overrides[key];
+      }
+      state.transformed = state.transformed.filter((entry) => !(entry.field in body.config));
+      await route.fulfill({ json: viewOf(state.saved!) });
       return;
     }
     state.reads++;
     if (!state.saved) {
       const response = await route.fetch();
-      const initial: Config = await response.json();
+      const initial = ((await response.json()) as SettingsView).config;
       const model = options.unconfigured
         ? { backend: 'codex' as const, model: '', effort: '' }
         : { backend: 'codex' as const, model: 'gpt-6-astra', effort: 'medium' };
@@ -79,14 +128,18 @@ async function configurationFixture(
         tiers: Object.fromEntries(Object.keys(initial.tiers).map((key) => [key, { ...model }])),
         repair_route: { ...model }
       };
+      if (options.transformed) {
+        state.overrides = { ...options.transformed.overrides };
+        state.transformed = [...options.transformed.fields];
+      }
     }
     // Snapshot before a delayed refresh so edits can race a real stale response.
-    const saved = structuredClone(state.saved);
+    const view = viewOf(structuredClone(state.saved!));
     await state.loadGate?.promise;
     await route.fulfill(
       state.failLoad
         ? { status: 503, json: { error: 'Synthetic configuration unavailable' } }
-        : { json: saved }
+        : { json: view }
     );
   });
   await page.route('**/api/model-catalog', async (route) => {
@@ -125,15 +178,21 @@ async function configurationFixture(
     await route.fulfill({ json: { ok: true } });
   });
   await page.route('**/api/baseline-checks', async (route) => {
-    const body = route.request().postDataJSON() as { expected_config: Config };
+    const body = route.request().postDataJSON() as { expected_revision: string };
     state.baselines.push(body);
+    if (body.expected_revision !== state.revision()) {
+      await route.fulfill({ status: 409, json: { error: 'Synthetic baseline conflict' } });
+      return;
+    }
+    // The admitted check snapshots the canonical configuration and its revision.
     state.baselineView = {
       ...state.baselineView,
+      config_revision: state.revision(),
       check: {
         id: 'synthetic-check',
         status: 'running',
-        config: body.expected_config,
-        config_fingerprint: 'synthetic',
+        config: structuredClone(state.saved!),
+        config_fingerprint: state.revision(),
         revision: null,
         started_at: new Date().toISOString(),
         completed_at: null,
@@ -147,12 +206,27 @@ async function configurationFixture(
   });
   await page.route('**/api/doctor?*', async (route) => {
     state.checks.push(new URL(route.request().url()).searchParams.get('mode')!);
+    // The diagnostic is attributed to the canonical revision it ran against.
     const checked_config = structuredClone(state.saved);
+    const checked_revision = state.revision();
     await state.checkGate?.promise;
     await route.fulfill(
       state.failCheck
-        ? { status: 400, json: { error: 'Synthetic connection check failed', checked_config } }
-        : { json: { message: 'Synthetic saved configuration checked', checked_config } }
+        ? {
+            status: 400,
+            json: {
+              error: 'Synthetic connection check failed',
+              checked_config,
+              checked_revision
+            }
+          }
+        : {
+            json: {
+              message: 'Synthetic saved configuration checked',
+              checked_config,
+              checked_revision
+            }
+          }
     );
   });
   return state;
@@ -422,6 +496,74 @@ test('failed configuration loads retry, failed saves retain exact drafts, and su
   await expect(commands).toHaveValue('fixture new test\nfixture new build');
 });
 
+test('display-transformed fields stay canonical: previews lock, unrelated saves omit them, replacement is explicit', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page, {
+    transformed: {
+      // The canonical command keeps its secret; only the preview is served.
+      overrides: { verification_commands: ['echo [redacted] > /dev/null'] },
+      fields: [
+        {
+          field: 'verification_commands',
+          kinds: ['redacted'],
+          paths: ['verification_commands[0]']
+        }
+      ]
+    }
+  });
+  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  await login(page);
+  await navigate('Configuration');
+  const commands = page.getByRole('textbox', { name: /^Verification commands/ });
+  const loaded = state.revision();
+
+  // The served preview is marked and locked; the hidden value is never editable.
+  await expect(commands).toHaveValue('echo [redacted] > /dev/null');
+  await expect(commands).toHaveJSProperty('readOnly', true);
+  await expect(page.locator('#preview-verification_commands')).toContainText('hidden value');
+
+  // Saving an unrelated field sends only that field under the loaded revision;
+  // the hidden preview is never written back.
+  await page.getByLabel('Default branch', { exact: true }).fill('preview-main');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes).toHaveLength(1);
+  expect(state.writes[0].expected_revision).toBe(loaded);
+  expect(state.writes[0].config).toEqual({ default_branch: 'preview-main' });
+  expect(state.saved!.verification_commands).toEqual(['fixture saved test']);
+  await expect(commands).toHaveValue('echo [redacted] > /dev/null');
+
+  // A write pinning a superseded revision conflicts instead of overwriting.
+  state.saved!.default_branch = 'external-main';
+  await page.getByLabel('Default branch', { exact: true }).fill('stale-main');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByRole('alert')).toContainText('Synthetic save conflict');
+  await page.getByRole('button', { name: 'Discard changes' }).click();
+  // Reloading accepts the externally saved values and their new revision.
+  await navigate('Overview');
+  await navigate('Configuration');
+  await expect(page.getByLabel('Default branch', { exact: true })).toHaveValue('external-main');
+  await expect(commands).toHaveValue('echo [redacted] > /dev/null');
+
+  // Replacing a hidden collection clears it for full re-entry; only then is it sent.
+  await page.locator('#replace-verification_commands').click();
+  await expect(commands).toHaveValue('');
+  await expect(commands).toHaveJSProperty('readOnly', false);
+  await commands.fill('echo replacement test');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)!.config).toEqual({
+    verification_commands: ['echo replacement test']
+  });
+  expect(state.saved!.verification_commands).toEqual(['echo replacement test']);
+  await navigate('Overview');
+  await navigate('Configuration');
+  await expect(commands).toHaveValue('echo replacement test');
+  await expect(page.locator('#preview-verification_commands')).toHaveCount(0);
+});
+
 test('setup checklist distinguishes entered, saved, checked, stale and failed states without starting work', async ({
   page,
   isMobile
@@ -587,7 +729,8 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await page.locator('#check-baseline').click();
   await page.getByRole('button', { name: 'Run baseline check' }).click();
   await expect.poll(() => state.baselines.length).toBe(1);
-  expect((state.baselines[0] as { expected_config: Config }).expected_config).toEqual(state.saved);
+  // Admission pins the canonical configuration revision, never an echoed object.
+  expect(state.baselines[0]).toEqual({ expected_revision: state.revision() });
   await expect(page.getByRole('button', { name: 'Cancel baseline check' })).toBeVisible();
   await page.getByRole('button', { name: 'Cancel baseline check' }).click();
   await expect.poll(() => state.baselines.length).toBe(2);
@@ -638,7 +781,7 @@ for (const mode of ['execution', 'audit'] as const) {
       await expect(check).toBeEnabled();
       await expect(badge).toHaveText('Not checked');
       await expect(page.locator('[data-step="preflight"]')).toContainText(
-        'The server checked different saved values'
+        'The server checked a different saved configuration'
       );
       await expect(branch).toHaveValue('fixture-main');
       state.saved!.default_branch = 'external-main';

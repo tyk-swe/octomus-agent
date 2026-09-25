@@ -17,7 +17,7 @@
   let {
     draft,
     saved,
-    baseline,
+    revision,
     commands,
     dirty,
     catalogs,
@@ -28,7 +28,8 @@
   }: {
     draft: Config;
     saved: Config | null;
-    baseline: string;
+    /** Canonical revision of the saved configuration the display values come from. */
+    revision: string;
     commands: string;
     dirty: boolean;
     catalogs: Partial<Record<Backend, ModelCatalog>>;
@@ -68,7 +69,7 @@
     {
       id: 'preflight',
       title: 'Connection check',
-      step: preflightStep(preflight, dirty, baseline),
+      step: preflightStep(preflight, dirty, revision),
       links: [
         { label: 'Open the execution check', target: 'check-connection' },
         { label: 'Open the audit check', target: 'check-audit-connection' }

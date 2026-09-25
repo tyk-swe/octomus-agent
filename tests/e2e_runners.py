@@ -25,7 +25,7 @@ def configuration(service, planning='opencode', executor='opencode', reviewer='o
     c['repair_route'] = route(repair, provider='alternate', variant=None)
     if {planning, executor, reviewer, repair} == {'opencode'}:
         c['codex_binary'] = '/codex-is-not-installed'
-    service.request('/config', 'PUT', c)
+    service.save_config(c)
     return c
 
 
@@ -57,7 +57,7 @@ def successful_workflow(mode):
             models = service.request('/model-catalog', 'POST', {'backend': 'opencode', 'binary': str(preview)})
             assert any(m['available'] for m in models)
             assert not any(word in json.dumps(models) for word in ['fixture-credential', 'another-fixture-secret', 'PRIVATE_API_KEY'])
-            assert service.request('/config')['opencode_binary'] == 'opencode'
+            assert service.request('/config')['config']['opencode_binary'] == 'opencode'
             assert service.request('/state')['sessions_today'] == 0 and not (root / 'protocol.jsonl').exists()
             c = configuration(service, **({'planning': 'codex', 'reviewer': 'codex'} if mode == 'mixed' else {'executor': 'codex', 'repair': 'codex'} if mode == 'reverse-mixed' else {}))
             diagnostic = service.request('/doctor', 'POST')
@@ -111,7 +111,7 @@ def failed_review(mode):
             service.start()
             c = configuration(service)
             c['tiers'] = {tier: route('opencode', planning=True) for tier in c['tiers']}
-            service.request('/config', 'PUT', c)
+            service.save_config(c)
             (root / 'opencode-mode').write_text(mode)
             service.request('/control/cycle', 'POST')
             task = service.wait(service.terminal_task, f'{mode} blocked review')
@@ -121,11 +121,11 @@ def failed_review(mode):
             if mode == 'interactive':
                 service.request('/control/pause', 'POST')
                 service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'paused task')
-                new_config = service.request('/config')
+                new_config = service.request('/config')['config']
                 new_config['repair_route'] = route('codex')
                 new_config['roles']['code_reviewer'] = route('codex')
                 new_config['codex_binary'] = 'codex'
-                service.request('/config', 'PUT', new_config)
+                service.save_config(new_config)
                 (root / 'opencode-mode').unlink()
                 service.request(f'/tasks/{task["id"]}/retry', 'POST')
                 service.request('/control/resume', 'POST')
@@ -152,7 +152,7 @@ def audit():
             c['roles']['code_reviewer'] = route('codex')
             c['tiers'] = {tier: route('codex') for tier in c['tiers']}
             c['repair_route'] = route('codex')
-            service.request('/config', 'PUT', c)
+            service.save_config(c)
             assert service.request('/doctor?mode=audit', 'POST')['backends'][0]['backend'] == 'opencode'
             service.request('/control/audit', 'POST')
             state = service.wait(lambda: (state := service.request('/state'))['cycles'] and not state['cycle_active'] and state, 'OpenCode audit')
@@ -175,7 +175,7 @@ def task_deadline():
             service.start()
             c = configuration(service)
             c.update(session_timeout_seconds=10, task_timeout_seconds=10)
-            service.request('/config', 'PUT', c)
+            service.save_config(c)
             (root / 'opencode-mode').write_text('detached-hold')
             service.request('/control/cycle', 'POST')
             service.wait(lambda: (root / 'opencode-child-pid').exists(), 'detached shell started')

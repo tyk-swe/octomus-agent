@@ -166,6 +166,8 @@ repository push permission or model inference; only a run's recorded evidence do
    remote, the GitHub CLI login and the runner catalogs for the saved routes. It does
    not prove push permission and makes no model call. Correct any CLI version warning
    before live work. Any later saved change invalidates the result, so check again.
+   If a saved field ever appears as a hidden or shortened preview, it stays locked and
+   unchanged until you use its explicit **Replace** action.
 5. Optionally use **Check clean baseline** while paused and idle. Confirm the saved
    commands will run with the service user's permissions in a disposable clone of the
    remote default branch. This makes no model calls and creates no tasks or PRs. Inspect

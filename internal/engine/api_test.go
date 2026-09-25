@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"runtime"
@@ -163,7 +164,7 @@ func TestBaselineGateBlocksControlsConfigAndReconcile(t *testing.T) {
 			t.Fatalf("%s during baseline: %v", action, err)
 		}
 	}
-	if err := app.SaveConfig(cfg); err == nil || !IsActionConflict(err) {
+	if _, err := app.SaveConfig("", nil); err == nil || !IsActionConflict(err) {
 		t.Fatalf("config save during baseline: %v", err)
 	}
 	if _, err := app.ControlAction("pause"); err != nil {
@@ -184,6 +185,88 @@ func TestBaselineGateBlocksControlsConfigAndReconcile(t *testing.T) {
 	}
 	if err := app.TaskAction(context.Background(), task.ID, "reconcile"); err == nil || !IsActionConflict(err) {
 		t.Fatalf("reconcile during baseline: %v", err)
+	}
+}
+
+// TestSaveConfigRevisionGatePreservesCanonicalValues covers the optimistic
+// concurrency contract: a stale revision conflicts without touching the saved
+// record, a partial patch replaces only the named fields, and the returned
+// view carries the new canonical revision plus display-transformation metadata.
+func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
+	app, _ := controlFixture(t, "idle")
+	live, err := app.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := live.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := strings.Repeat("0", len(revision))
+	patch := map[string]json.RawMessage{"default_branch": json.RawMessage(`"other"`)}
+	if _, err := app.SaveConfig(stale, patch); err == nil || !IsActionConflict(err) {
+		t.Fatalf("stale revision: %v", err)
+	}
+	if after, err := app.Config(); err != nil || after.DefaultBranch != live.DefaultBranch {
+		t.Fatalf("stale save changed config: %v", err)
+	}
+	// A partial patch replaces only the named fields; canonical values the
+	// operator did not touch survive byte-for-byte, including values whose
+	// served display form is transformed.
+	command := "echo ghp_syntheticsecrettoken123"
+	patch = map[string]json.RawMessage{
+		"verification_commands": json.RawMessage(`["` + command + `"]`),
+		"max_sessions_per_day":  json.RawMessage(`200`),
+	}
+	view, err := app.SaveConfig(revision, patch)
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	saved, err := app.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.VerificationCommands[0] != command || saved.MaxSessionsPerDay != 200 ||
+		saved.DefaultBranch != live.DefaultBranch || saved.GitHubRepo != live.GitHubRepo {
+		t.Fatalf("merged config: %+v", saved)
+	}
+	newRevision, err := saved.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Revision != newRevision || view.Revision == revision {
+		t.Fatalf("view revision: %q", view.Revision)
+	}
+	if view.Config["verification_commands"].([]any)[0] != "echo [redacted]" {
+		t.Fatalf("display command: %v", view.Config["verification_commands"])
+	}
+	fields := map[string][]string{}
+	for _, entry := range view.TransformedFields {
+		fields[entry.Field] = entry.Kinds
+	}
+	if got := fields["verification_commands"]; len(got) != 1 || got[0] != "redacted" {
+		t.Fatalf("transforms: %+v", view.TransformedFields)
+	}
+	// Replaying the consumed revision conflicts; the saved record stays put.
+	if _, err := app.SaveConfig(revision, patch); err == nil || !IsActionConflict(err) {
+		t.Fatalf("replayed revision: %v", err)
+	}
+	// Unknown fields and duplicate keys inside the patch are typed rejections.
+	for name, body := range map[string]map[string]json.RawMessage{
+		"unknown field":  {"nonsense": json.RawMessage(`1`)},
+		"duplicate keys": {"runner_storage_paths": json.RawMessage(`{"codex":"/a","codex":"/b"}`)},
+	} {
+		if _, err := app.SaveConfig(newRevision, body); err == nil {
+			t.Fatalf("%s accepted", name)
+		} else {
+			var patchErr *ConfigPatchError
+			if !errors.As(err, &patchErr) {
+				t.Fatalf("%s error kind: %v", name, err)
+			}
+		}
+	}
+	if after, err := app.Config(); err != nil || !after.SameRemoteIdentity(saved) || after.MaxSessionsPerDay != saved.MaxSessionsPerDay {
+		t.Fatalf("rejected patches changed config: %v", err)
 	}
 }
 
@@ -220,6 +303,9 @@ func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
 	}
 	if baseline["id"] != check.ID || baseline["config_matches"] != true {
 		t.Fatalf("summary: %v", baseline)
+	}
+	if baseline["config_revision"] != fingerprint {
+		t.Fatalf("config revision: %v", baseline["config_revision"])
 	}
 	if _, ok := baseline["commands"]; ok {
 		t.Fatal("the overview baseline summary must not include commands")

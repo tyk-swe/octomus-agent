@@ -501,27 +501,52 @@ func (a *api) taskAction(_ http.ResponseWriter, r *http.Request, params map[stri
 }
 
 func (a *api) getConfig(_ http.ResponseWriter, _ *http.Request, _ map[string]string) (int, any, error) {
-	cfg, err := a.app.Config()
-	return http.StatusOK, cfg, err
+	view, err := a.app.SettingsView()
+	return http.StatusOK, view, err
+}
+
+// configUpdateBody is the revision-gated settings write: the canonical
+// revision the operator loaded plus only the top-level fields being replaced.
+// Omitted fields keep their canonical saved values; whole-configuration bodies
+// without the revision are unknown fields here and are rejected.
+type configUpdateBody struct {
+	ExpectedRevision string                     `json:"expected_revision"`
+	Config           map[string]json.RawMessage `json:"config"`
+}
+
+func (v *configUpdateBody) UnmarshalJSON(data []byte) error {
+	type plain configUpdateBody
+	decoded := plain{}
+	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
+		return err
+	}
+	*v = configUpdateBody(decoded)
+	return nil
 }
 
 func (a *api) saveConfig(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
-	var cfg config.Config
-	if !decodeOr(w, r, &cfg) {
+	var body configUpdateBody
+	if !decodeOr(w, r, &body) {
 		return 0, nil, errHandled
 	}
-	if err := a.app.SaveConfig(cfg); err != nil {
+	view, err := a.app.SaveConfig(body.ExpectedRevision, body.Config)
+	if err != nil {
+		var patch *engine.ConfigPatchError
+		if errors.As(err, &patch) {
+			return 0, nil, &bodyError{http.StatusUnprocessableEntity, "Failed to deserialize the JSON body into the target type: " + patch.Error()}
+		}
 		return 0, nil, err
 	}
-	return http.StatusOK, map[string]any{"ok": true}, nil
+	return http.StatusOK, view, nil
 }
 
 // errHandled marks a rejection already written to the response.
 var errHandled = errors.New("response already written")
 
-// baselineStartBody rejects unknown fields.
+// baselineStartBody rejects unknown fields; the request names the saved
+// canonical configuration revision rather than echoing displayed values.
 type baselineStartBody struct {
-	ExpectedConfig *config.Config `json:"expected_config"`
+	ExpectedRevision string `json:"expected_revision"`
 }
 
 func (v *baselineStartBody) UnmarshalJSON(data []byte) error {
@@ -539,10 +564,7 @@ func (a *api) baselineStart(w http.ResponseWriter, r *http.Request, _ map[string
 	if !decodeOr(w, r, &body) {
 		return 0, nil, errHandled
 	}
-	if body.ExpectedConfig == nil {
-		return 0, nil, &bodyError{http.StatusUnprocessableEntity, "Failed to deserialize the JSON body into the target type: missing field `expected_config`"}
-	}
-	check, err := a.app.StartBaseline(*body.ExpectedConfig)
+	check, err := a.app.StartBaseline(body.ExpectedRevision)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -614,6 +636,13 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 		return 0, nil, err
 	}
 	body["checked_config"] = checked
+	revision, err := cfg.Fingerprint()
+	if err != nil {
+		return 0, nil, err
+	}
+	// The checked canonical revision is the authoritative identity the result
+	// applies to; the redacted display copy alone cannot carry it.
+	body["checked_revision"] = revision
 	return status, body, nil
 }
 

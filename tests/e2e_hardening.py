@@ -132,9 +132,9 @@ def run(mode):
                     assert task['proposal']['title'] == '\t Complete the fixture feature \u2003'
                     (root / 'proposal-override.json').write_text(json.dumps({'title': 'complete the fixture feature', 'problem_key': 'different-feature-key'}))
                 if mode == 'published-case-change':
-                    c = service.request('/config')
+                    c = service.request('/config')['config']
                     c['github_repo'] = 'Fixture/Project'
-                    service.request('/config', 'PUT', c)
+                    service.save_config(c)
                     service.request('/doctor', 'POST')
                     service.stop(); service.start()
                 else:
@@ -177,10 +177,10 @@ def run(mode):
                     service.request('/tasks/' + original['id'] + '/cancel', 'POST')
                     cancelled = service.request('/tasks/' + original['id'])
                     assert not cancelled['rediscovery_requested'] and 'supersede' in cancelled['allowed_actions']
-                    c = service.request('/config')
+                    c = service.request('/config')['config']
                     c['tiers']['M'] = {**c['tiers']['M'], 'model': 'gpt-5.6-luna', 'effort': 'low'}
                     c['github_repo'] = 'Fixture/Project'
-                    service.request('/config', 'PUT', c)
+                    service.save_config(c)
                     service.request('/tasks/' + original['id'] + '/supersede', 'POST')
                     service.stop(); service.start()
                     service.request('/control/cycle', 'POST')
@@ -197,9 +197,9 @@ def run(mode):
                     assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
                     return
                 if mode == 'live-budget':
-                    c = service.request('/config')
+                    c = service.request('/config')['config']
                     c['max_sessions_per_day'] = service.request('/state')['sessions_today']
-                    service.request('/config', 'PUT', c)
+                    service.save_config(c)
                     service.stop(); service.start()
                     try:
                         service.request('/control/cycle', 'POST')
@@ -215,7 +215,7 @@ def run(mode):
                     service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'exhausted task stopped')
                     assert len(service.request('/state')['cycles']) == 1
                     c['max_sessions_per_day'] += 20
-                    service.request('/config', 'PUT', c)
+                    service.save_config(c)
                     service.request('/tasks/' + task['id'] + '/retry', 'POST')
                     service.request('/control/resume', 'POST')
                     task = service.wait(service.terminal_task, 'raised live policy permits retry')
@@ -380,9 +380,9 @@ def reconciliation_deadline():
             assert task['status'] == 'blocked' and task['blocked_reason'] == 'runner_unavailable', task
             service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'failed executor paused')
             (root / 'failed-executor-start').unlink()
-            config = service.request('/config')
+            config = service.request('/config')['config']
             config.update(session_timeout_seconds=10, task_timeout_seconds=10)
-            service.request('/config', 'PUT', config)
+            service.save_config(config)
             service.request('/tasks/' + task['id'] + '/retry', 'POST')
             service.request('/control/cycle', 'POST')
             task = service.wait(service.terminal_task, 'publication retry with saved deadline')
@@ -391,7 +391,7 @@ def reconciliation_deadline():
             assert task['attempt_policy']['task_timeout_seconds'] == 10
             service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'publication retry paused')
             config.update(session_timeout_seconds=30, task_timeout_seconds=120)
-            service.request('/config', 'PUT', config)
+            service.save_config(config)
             prs = json.loads((root / 'prs.json').read_text())
             prs[0]['body'] = f'<!-- octomus:task:{task["id"]} -->'
             (root / 'prs.json').write_text(json.dumps(prs))

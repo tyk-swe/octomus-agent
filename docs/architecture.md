@@ -83,8 +83,10 @@ Creation resolves the exact returned PR number, then creation and updates share 
 ## Explicit baseline verification
 
 The authenticated baseline action runs only by operator request while paused and idle.
-It compares the expected saved configuration, records its fingerprint and the remote
-default SHA, then runs saved commands in a disposable clone with the ordinary process,
+Admission pins the canonical configuration revision the operator loaded; a stale or
+display-transformed value conflicts before any clone is made. The record keeps the
+canonical snapshot, its fingerprint and the remote default SHA, then runs saved
+commands in a disposable clone with the ordinary process,
 timeout, output and worktree-integrity primitives. It creates no task, cycle, PR or model
 admission. Results are separate baseline records, never task publication evidence.
 Output is capped at 16 KiB per command and 1 MiB per check with explicit truncation;
