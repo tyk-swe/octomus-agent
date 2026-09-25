@@ -116,14 +116,9 @@
   }
   // clearPath drops one display-transformed value so only deliberately supplied
   // text is ever sent back; hidden originals are never combined into a replacement.
-  function clearPath(path: string) {
+  // Segments arrive structured: strings are object keys, numbers array indices.
+  function clearPath(segments: (string | number)[]) {
     if (!config) return;
-    const segments: (string | number)[] = [];
-    for (const part of path.split('.')) {
-      const head = /^[^[]*/.exec(part)?.[0];
-      if (head) segments.push(head);
-      for (const index of part.matchAll(/\[(\d+)\]/g)) segments.push(Number(index[1]));
-    }
     let node: unknown = config;
     for (const segment of segments.slice(0, -1)) {
       node = (node as Record<string, unknown>)?.[segment as string];

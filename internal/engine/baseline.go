@@ -395,21 +395,22 @@ func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted
 // the scheduler gate: the check is claimed, the recursive deletion runs
 // gate-free so unrelated controls stay responsive, then the gate serializes a
 // finalization that applies only the cleanup fields to the current durable
-// record. A check already claimed by another cleanup is skipped, not
-// double-removed — callers see success, since ownership means the outcome is
-// being recorded by the owner.
+// record. A record that vanished mid-removal is left vanished — writing the
+// caller's stale copy back would resurrect it. A check already claimed by
+// another cleanup is skipped, not double-removed — callers see success, since
+// ownership means the outcome is being recorded by the owner.
 func (a *App) CleanupBaseline(check *model.BaselineCheck) error {
 	if _, err := uuid.Parse(check.ID); err != nil {
 		return errors.New("Invalid baseline identity")
 	}
-	if !a.claimCleanup("baseline", check.ID) {
+	if !a.claimCleanup(cleanupBaseline, check.ID) {
 		return nil
 	}
 	root := filepath.Join(a.DataDir, "baselines")
 	removeErr := a.removeDir(root, filepath.Join(root, check.ID))
 	a.gate.Lock()
 	defer func() {
-		a.releaseCleanup("baseline", check.ID)
+		a.releaseCleanup(cleanupBaseline, check.ID)
 		a.gate.Unlock()
 	}()
 	var cleanupError *string
@@ -429,7 +430,9 @@ func (a *App) CleanupBaseline(check *model.BaselineCheck) error {
 		return err
 	}
 	if current == nil {
-		return a.Store.Put("baseline", check.ID, *check)
+		// The durable record vanished mid-removal; nothing to finalize. The
+		// caller's in-memory copy already carries the cleanup outcome.
+		return nil
 	}
 	if removeErr == nil {
 		current.WorkspaceRemoved = true

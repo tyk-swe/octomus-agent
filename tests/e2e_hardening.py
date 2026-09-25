@@ -322,7 +322,7 @@ def run(mode):
                 assert actions == ['comment'], actions
                 service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot paused')
                 return
-            if mode in ['publication-secret', 'publication-secret-followup']:
+            elif mode in ['publication-secret', 'publication-secret-followup']:
                 # The same secret policy covers a new PR's title and body and
                 # an owned PR's append-only follow-up comment; the durable
                 # record keeps the canonical private text.

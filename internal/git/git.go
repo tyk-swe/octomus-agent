@@ -542,11 +542,17 @@ func ValidatePublication(task model.Task, p model.PullRequest, marker bool, reco
 	return nil
 }
 
-// Publish delivers a reviewed commit, reporting PublicationUncertain whenever
-// the sequence fails so reconciliation preserves the output.
+// Publish delivers a reviewed commit. Failures that already carry a typed
+// reason — deterministic refusals whose remedy is supersede, not reconcile —
+// surface with their own message. Untyped failures, where the remote state is
+// genuinely unknown, are reported as PublicationUncertain so reconciliation
+// preserves the output.
 func Publish(ctx context.Context, task model.Task) (model.PullRequest, error) {
 	pr, err := publishInner(ctx, task)
 	if err != nil {
+		if model.BlockedReasonFromError(err) != model.BlockedReasonUnknown {
+			return pr, err
+		}
 		return pr, reasoned(model.BlockedReasonPublicationUncertain,
 			model.BlockedReasonPublicationUncertain.Error(), err)
 	}

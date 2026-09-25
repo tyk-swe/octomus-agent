@@ -196,7 +196,7 @@ func (a *App) eligibleTask(id, action string) (*model.Task, error) {
 	// An owned workspace cleanup in flight wins over every action — retry,
 	// reconcile, cancel, archive and a second discard all wait for the
 	// removal owner to finish rather than racing a half-removed workspace.
-	if a.cleanupClaimed("task", id) {
+	if a.cleanupClaimed(cleanupTask, id) {
 		return nil, conflictError("Workspace cleanup is in progress for this task; wait for it to finish")
 	}
 	if action != "cancel" {

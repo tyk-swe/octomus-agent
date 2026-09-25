@@ -411,6 +411,11 @@ func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
 	check := makeCheck(cfg, model.BaselineStatusFailed)
 	completed := model.Now()
 	check.CompletedAt = &completed
+	// Production only ever cleans a persisted record; the cleanup finalization
+	// re-reads it, so the check must exist in the store first.
+	if err := app.Store.Put("baseline", check.ID, check); err != nil {
+		t.Fatal(err)
+	}
 	workspaceDir := filepath.Join(app.DataDir, "baselines", check.ID, "workspace")
 	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -440,6 +445,9 @@ func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
 	}
 	bad := makeCheck(cfg, model.BaselineStatusFailed)
 	bad.CompletedAt = &completed
+	if err := app.Store.Put("baseline", bad.ID, bad); err != nil {
+		t.Fatal(err)
+	}
 	link := filepath.Join(app.DataDir, "baselines", bad.ID)
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatal(err)

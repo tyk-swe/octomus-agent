@@ -207,7 +207,11 @@ func TestDisplayJSONReportsEveryTransformedString(t *testing.T) {
 	if !reflect.DeepEqual(entry.Kinds, []string{"redacted", "shortened"}) {
 		t.Fatalf("transform kinds: %v", entry.Kinds)
 	}
-	want := []string{"nested.inner.token", "nested.listed[0]", "nested.listed[2]"}
+	want := [][]any{
+		{"nested", "inner", "token"},
+		{"nested", "listed", 0},
+		{"nested", "listed", 2},
+	}
 	if !reflect.DeepEqual(entry.Paths, want) {
 		t.Fatalf("transform paths: %v", entry.Paths)
 	}

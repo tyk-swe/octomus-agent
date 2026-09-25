@@ -153,18 +153,31 @@ func (a *App) retention(cfg config.Config) error {
 	return nil
 }
 
+// cleanupKind names the durable entity kind a cleanup claim owns. Each kind
+// maps to one managed root, so the kind is part of the ownership unit.
+type cleanupKind string
+
+const (
+	cleanupTask     cleanupKind = "task"
+	cleanupCycle    cleanupKind = "cycle"
+	cleanupBaseline cleanupKind = "baseline"
+)
+
 // cleanupKey identifies one managed-directory cleanup claim by durable entity
 // kind and ID — each kind owns a distinct root, so the pair is the honest
 // ownership unit (a path alone cannot distinguish a task from a cycle).
 type cleanupKey struct {
-	kind string
+	kind cleanupKind
 	id   string
 }
 
 // claimCleanup takes exclusive cleanup ownership of (kind, id) and reports
-// whether it was free. Claim while the scheduler gate is held so eligibility
-// and ownership are one atomic admission; the map itself sits under runtimeMu.
-func (a *App) claimCleanup(kind, id string) bool {
+// whether it was free. Callers claim while the scheduler gate is held so
+// eligibility and ownership are one atomic admission — except CleanupBaseline,
+// which claims first because its callers already serialized eligibility:
+// retention re-reads the record under the gate and the finished check's worker
+// owns its record. The map itself sits under runtimeMu.
+func (a *App) claimCleanup(kind cleanupKind, id string) bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	if a.runtime.cleanups == nil {
@@ -179,8 +192,9 @@ func (a *App) claimCleanup(kind, id string) bool {
 }
 
 // cleanupClaimed reports whether (kind, id) is owned by an in-flight cleanup.
-// Callers hold the scheduler gate.
-func (a *App) cleanupClaimed(kind, id string) bool {
+// Callers hold the scheduler gate; a claimed kind may be working gate-free
+// under the baseline entry point (see claimCleanup).
+func (a *App) cleanupClaimed(kind cleanupKind, id string) bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	_, owned := a.runtime.cleanups[cleanupKey{kind: kind, id: id}]
@@ -190,7 +204,7 @@ func (a *App) cleanupClaimed(kind, id string) bool {
 // releaseCleanup drops the claim. Releasing under the gate hold that wrote
 // the final durable state leaves no gap between "removal finished" and
 // "record marked" that a conflicting action could slip through.
-func (a *App) releaseCleanup(kind, id string) {
+func (a *App) releaseCleanup(kind cleanupKind, id string) {
 	a.runtimeMu.Lock()
 	delete(a.runtime.cleanups, cleanupKey{kind: kind, id: id})
 	a.runtimeMu.Unlock()
@@ -214,12 +228,12 @@ func (a *App) DiscardTask(task *model.Task) error {
 			return errors.New("Cleanup path does not belong to this task")
 		}
 	}
-	if !a.claimCleanup("task", task.ID) {
+	if !a.claimCleanup(cleanupTask, task.ID) {
 		return conflictError("Workspace cleanup is already in progress for this task")
 	}
 	// Released on every exit, including removal failure and finalization
 	// error, so a claim can never strand the record.
-	defer a.releaseCleanup("task", task.ID)
+	defer a.releaseCleanup(cleanupTask, task.ID)
 	if owner != "" {
 		a.gate.Unlock()
 		removeErr := a.removeDir(filepath.Join(a.DataDir, "tasks"), owner)
@@ -259,10 +273,10 @@ func (a *App) DiscardCycle(cycle *model.Cycle) error {
 	if _, err := uuid.Parse(cycle.ID); err != nil {
 		return errors.New("Invalid cycle workspace identity")
 	}
-	if !a.claimCleanup("cycle", cycle.ID) {
+	if !a.claimCleanup(cleanupCycle, cycle.ID) {
 		return conflictError("Workspace cleanup is already in progress for this cycle")
 	}
-	defer a.releaseCleanup("cycle", cycle.ID)
+	defer a.releaseCleanup(cleanupCycle, cycle.ID)
 	root := filepath.Join(a.DataDir, "cycles")
 	a.gate.Unlock()
 	removeErr := a.removeDir(root, filepath.Join(root, cycle.ID))
