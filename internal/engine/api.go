@@ -171,8 +171,17 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 
 // CycleAction handles running cycles
 // conflict, archive stamps the lifecycle and discard requires the archive.
+// Discard removes the managed directory with the gate released; the call is
+// registered service work from admission so Shutdown waits out an in-flight
+// removal instead of abandoning it mid-delete.
 func (a *App) CycleAction(id, action string) error {
 	a.gate.Lock()
+	if err := a.ctx.Err(); err != nil {
+		a.gate.Unlock()
+		return err
+	}
+	a.wg.Add(1)
+	defer a.wg.Done()
 	defer a.gate.Unlock()
 	cycle, err := store.Get[model.Cycle](a.Store, "cycle", id)
 	if err != nil {
@@ -183,6 +192,9 @@ func (a *App) CycleAction(id, action string) error {
 	}
 	if cycle.Status == model.CycleRunning {
 		return conflictError("Wait for planning to finish")
+	}
+	if a.cleanupClaimed("cycle", id) {
+		return conflictError("Workspace cleanup is in progress for this cycle; wait for it to finish")
 	}
 	switch action {
 	case "archive":

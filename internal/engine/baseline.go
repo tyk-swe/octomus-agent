@@ -394,21 +394,51 @@ func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted
 }
 
 // CleanupBaseline removes the check's owned clone directory and records the
-// outcome; a refusal is evidence, not a worker failure.
+// outcome; a refusal is evidence, not a worker failure. Callers must not hold
+// the scheduler gate: the check is claimed, the recursive deletion runs
+// gate-free so unrelated controls stay responsive, then the gate serializes a
+// finalization that applies only the cleanup fields to the current durable
+// record. A check already claimed by another cleanup is skipped, not
+// double-removed — callers see success, since ownership means the outcome is
+// being recorded by the owner.
 func (a *App) CleanupBaseline(check *model.BaselineCheck) error {
-	root := filepath.Join(a.DataDir, "baselines")
 	if _, err := uuid.Parse(check.ID); err != nil {
 		return errors.New("Invalid baseline identity")
 	}
-	path := filepath.Join(root, check.ID)
-	if err := workspace.RemoveOwnedDir(root, path); err != nil {
-		message := store.ErrorMessage(err)
-		check.CleanupError = &message
-	} else {
-		check.WorkspaceRemoved = true
-		check.CleanupError = nil
+	if !a.claimCleanup("baseline", check.ID) {
+		return nil
 	}
-	return a.Store.Put("baseline", check.ID, *check)
+	root := filepath.Join(a.DataDir, "baselines")
+	removeErr := a.removeDir(root, filepath.Join(root, check.ID))
+	a.gate.Lock()
+	defer func() {
+		a.releaseCleanup("baseline", check.ID)
+		a.gate.Unlock()
+	}()
+	var cleanupError *string
+	if removeErr != nil {
+		message := store.ErrorMessage(removeErr)
+		cleanupError = &message
+	}
+	if removeErr == nil {
+		check.WorkspaceRemoved = true
+	}
+	check.CleanupError = cleanupError
+	// The record may have advanced while the gate was released; apply the
+	// cleanup outcome to its current state rather than writing back a stale
+	// copy.
+	current, err := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return a.Store.Put("baseline", check.ID, *check)
+	}
+	if removeErr == nil {
+		current.WorkspaceRemoved = true
+	}
+	current.CleanupError = cleanupError
+	return a.Store.Put("baseline", check.ID, *current)
 }
 
 var baselineStatusDebug = map[model.BaselineStatus]string{

@@ -19,7 +19,7 @@ import (
 
 const token = "operator-fixture-token-with-at-least-32-characters"
 
-func testApp(t *testing.T) (*engine.App, *store.Store) {
+func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	state, err := store.Open(filepath.Join(dir, "state.db"))
@@ -27,7 +27,7 @@ func testApp(t *testing.T) (*engine.App, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = state.Close() })
-	return engine.New(state, dir), state
+	return engine.New(state, dir, options...), state
 }
 
 // baselineFixture uses a real local git

@@ -43,6 +43,18 @@ func WithRunnerConnector(connect runner.Connector) Option {
 	return func(a *App) { a.connector = connect }
 }
 
+// WithWorkspaceRemoval replaces the managed-directory removal used by task,
+// cycle and baseline cleanup. The production default is
+// workspace.RemoveOwnedDir; tests inject a barrier or failure here rather than
+// hooking inside the cleanup helpers. Nil keeps the production removal.
+func WithWorkspaceRemoval(remove func(root, path string) error) Option {
+	return func(a *App) {
+		if remove != nil {
+			a.removeDir = remove
+		}
+	}
+}
+
 type cycleJob struct {
 	id     string
 	mode   model.CycleMode
@@ -70,6 +82,11 @@ type runtimeState struct {
 	reconcilingPublication bool
 	baseline               *baselineJob
 	defaultObservation     *model.DefaultBranchObservation
+	// cleanups holds the in-memory exclusive cleanup claims by entity kind and
+	// durable ID. Claims are taken under the gate, held across the off-gate
+	// removal, and released on every exit; nothing persists them, so a restart
+	// never inherits a lockout.
+	cleanups map[cleanupKey]struct{}
 }
 
 func (r *runtimeState) idle() bool {
@@ -87,7 +104,10 @@ type App struct {
 	wake       chan struct{}
 	taskRunner TaskRunner
 	connector  runner.Connector
-	wg         sync.WaitGroup
+	// removeDir deletes one managed workspace directory (workspace.RemoveOwnedDir
+	// in production). Cleanup callers invoke it with the gate released.
+	removeDir func(root, path string) error
+	wg        sync.WaitGroup
 }
 
 // runners owns the runner clients of one invocation scope (a task, a planning
@@ -120,11 +140,12 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 		ctx:     ctx,
 		cancel:  cancel,
 		wake:    make(chan struct{}, 1),
-		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}},
+		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}},
 	}
 	// The production runner is the supervised execution lifecycle; tests
 	// substitute it with WithTaskRunner.
 	a.taskRunner = TaskRunnerFunc(a.superviseTask)
+	a.removeDir = workspace.RemoveOwnedDir
 	for _, option := range options {
 		if option != nil {
 			option(a)
