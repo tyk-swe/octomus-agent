@@ -193,7 +193,7 @@ func (a *App) CycleAction(id, action string) error {
 	if cycle.Status == model.CycleRunning {
 		return conflictError("Wait for planning to finish")
 	}
-	if a.cleanupClaimed("cycle", id) {
+	if a.cleanupClaimed(cleanupCycle, id) {
 		return conflictError("Workspace cleanup is in progress for this cycle; wait for it to finish")
 	}
 	switch action {
@@ -242,8 +242,8 @@ func NewSettingsView(c config.Config) (*SettingsView, error) {
 	return &SettingsView{Config: display, Revision: revision, TransformedFields: fields}, nil
 }
 
-// SettingsView answers the current display-safe settings view.
-func (a *App) SettingsView() (*SettingsView, error) {
+// Settings answers the current display-safe settings view.
+func (a *App) Settings() (*SettingsView, error) {
 	c, err := a.Config()
 	if err != nil {
 		return nil, err

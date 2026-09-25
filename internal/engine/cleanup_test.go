@@ -232,7 +232,7 @@ func TestDiscardReleasesTheGateAndClaimsTheWorkspace(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dataDir, "tasks", other.ID)); !os.IsNotExist(err) {
 		t.Fatalf("unrelated task directory still present: %v", err)
 	}
-	if app.cleanupClaimed("task", task.ID) || app.cleanupClaimed("task", other.ID) {
+	if app.cleanupClaimed(cleanupTask, task.ID) || app.cleanupClaimed(cleanupTask, other.ID) {
 		t.Fatal("cleanup claims leaked after completion")
 	}
 }
@@ -441,7 +441,7 @@ func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *tes
 	if _, err := os.Stat(filepath.Join(dataDir, "baselines", check.ID)); !os.IsNotExist(err) {
 		t.Fatalf("baseline clone still present: %v", err)
 	}
-	if app.cleanupClaimed("baseline", check.ID) {
+	if app.cleanupClaimed(cleanupBaseline, check.ID) {
 		t.Fatal("baseline cleanup claim leaked after completion")
 	}
 }
@@ -507,7 +507,7 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("retried cleanup left the directory: %v", err)
 	}
-	if app.cleanupClaimed("baseline", check.ID) {
+	if app.cleanupClaimed(cleanupBaseline, check.ID) {
 		t.Fatal("failed cleanup leaked its claim")
 	}
 }
@@ -547,7 +547,7 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(task.Workspace, "evidence.txt")); err != nil {
 		t.Fatalf("failed discard removed evidence: %v", err)
 	}
-	if app.cleanupClaimed("task", task.ID) {
+	if app.cleanupClaimed(cleanupTask, task.ID) {
 		t.Fatal("failed discard leaked its claim")
 	}
 
@@ -620,7 +620,7 @@ func TestDiscardRefusesAnUnownedPathWithoutMarking(t *testing.T) {
 	if _, err := os.Stat(task.Workspace); err != nil {
 		t.Fatalf("refused discard removed the foreign path: %v", err)
 	}
-	if app.cleanupClaimed("task", task.ID) {
+	if app.cleanupClaimed(cleanupTask, task.ID) {
 		t.Fatal("refused discard leaked its claim")
 	}
 }
@@ -659,9 +659,9 @@ func TestCleanupClaimConflictsTaskActionsAndExecutionAdmission(t *testing.T) {
 	app.runtime.lastObserve = time.Now()
 
 	app.gate.Lock()
-	claimed := app.claimCleanup("task", blocked.ID) &&
-		app.claimCleanup("task", reconcilable.ID) &&
-		app.claimCleanup("task", queued.ID)
+	claimed := app.claimCleanup(cleanupTask, blocked.ID) &&
+		app.claimCleanup(cleanupTask, reconcilable.ID) &&
+		app.claimCleanup(cleanupTask, queued.ID)
 	app.gate.Unlock()
 	if !claimed {
 		t.Fatal("fresh claims were not free")
@@ -692,7 +692,7 @@ func TestCleanupClaimConflictsTaskActionsAndExecutionAdmission(t *testing.T) {
 		t.Fatalf("claimed queued task changed: %+v, %v", saved, err)
 	}
 
-	app.releaseCleanup("task", queued.ID)
+	app.releaseCleanup(cleanupTask, queued.ID)
 	if err := app.Tick(); err != nil {
 		t.Fatal(err)
 	}

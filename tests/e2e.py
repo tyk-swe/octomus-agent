@@ -406,7 +406,7 @@ def settings_scenario():
             config['verification_commands'] = [secret_command]
             saved = service.save_config(config)
             entry = next(t for t in saved['transformed_fields'] if t['field'] == 'verification_commands')
-            assert entry['kinds'] == ['redacted'] and entry['paths'] == ['verification_commands[0]'], saved['transformed_fields']
+            assert entry['kinds'] == ['redacted'] and entry['paths'] == [['verification_commands', 0]], saved['transformed_fields']
             assert saved['config']['verification_commands'] == [displayed]
             assert saved['revision'] != view['revision'] and len(saved['revision']) == 64
 

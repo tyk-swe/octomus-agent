@@ -421,7 +421,8 @@ export type BaselineSummary = {
 export type TransformedField = {
   field: string;
   kinds: ('redacted' | 'shortened')[];
-  paths: string[];
+  /** Structured JSON paths: string segments are object keys, numbers are array indices. */
+  paths: (string | number)[][];
 };
 /**
  * The settings read/write contract: a display-safe configuration, the canonical

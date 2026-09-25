@@ -508,7 +508,7 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
         {
           field: 'verification_commands',
           kinds: ['redacted'],
-          paths: ['verification_commands[0]']
+          paths: [['verification_commands', 0]]
         }
       ]
     }

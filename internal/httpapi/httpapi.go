@@ -501,7 +501,7 @@ func (a *api) taskAction(_ http.ResponseWriter, r *http.Request, params map[stri
 }
 
 func (a *api) getConfig(_ http.ResponseWriter, _ *http.Request, _ map[string]string) (int, any, error) {
-	view, err := a.app.SettingsView()
+	view, err := a.app.Settings()
 	return http.StatusOK, view, err
 }
 
