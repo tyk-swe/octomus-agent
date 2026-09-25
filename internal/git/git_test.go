@@ -125,6 +125,26 @@ func fixtureRoot(t *testing.T) (config.Config, string) {
 	return c, root
 }
 
+// envSecretName/Value are a clearly synthetic secret-bearing environment
+// pair: the name matches the scrubber's API_KEY name rule and the value is
+// long enough to be collected, while matching no token pattern on its own.
+const (
+	envSecretName  = "OCTOMUS_FIXTURE_API_KEY"
+	envSecretValue = "fixture-env-secret-0123456789"
+)
+
+// TestMain installs the env-secret pair at process start. The store's
+// scrubber freezes os.Environ on its first call, and any failing-command
+// error path can trigger that freeze long before a publishing test runs —
+// so the pair must be present from the start, exactly as operator secrets
+// are in the service's real environment.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(envSecretName, envSecretValue); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
 func strptr(s string) *string { return &s }
 
 // Real commits establish true/false ancestry; command failures must not
@@ -371,6 +391,28 @@ func publicationTask(c config.Config, workspace, commit, source, id string) mode
 	}
 }
 
+// publishableTask clones a real workspace at the fixture main head, lands a
+// reviewed change and returns the checkpointed publication task plus its
+// output commit.
+func publishableTask(t *testing.T, c config.Config, root, id string) (model.Task, string) {
+	t.Helper()
+	ctx := context.Background()
+	source, err := git.Git(ctx, c, c.Repository, []string{"rev-parse", "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "data", "tasks", id, "workspace")
+	if err := git.CloneAt(ctx, c, workspace, source); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(workspace, "feature.txt"), "fixed\n")
+	commit, err := git.Snapshot(ctx, c, workspace, "Deliver the feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return publicationTask(c, workspace, commit, source, id), commit
+}
+
 // TestFixturePublishCreatesPullRequest drives the whole publication sequence
 // through the fixture peers: remote validation, ancestry, the leased push, and
 // the `gh pr create` whose URL is validated rather than trusted.
@@ -414,8 +456,21 @@ func TestFixturePublishCreatesPullRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(prs), "<!-- octomus:task:task-1 -->") {
-		t.Fatalf("prs.json = %s; want the task marker in the body", prs)
+	var created []map[string]any
+	if err := json.Unmarshal(prs, &created); err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("prs.json = %s; want exactly one PR", prs)
+	}
+	// The peer recorded the exact --title argument and --body-file payload.
+	if title, _ := created[0]["title"].(string); title != "Concrete improvement" {
+		t.Fatalf("outbound title = %q; want the proposal title", title)
+	}
+	body, _ := created[0]["body"].(string)
+	if !strings.Contains(body, "<!-- octomus:task:task-1 -->") ||
+		!strings.Contains(body, "Reviewed commit: `"+commit+"`") {
+		t.Fatalf("outbound body lost delivery identity: %q", body)
 	}
 	publications, err := os.ReadFile(filepath.Join(root, "publications.jsonl"))
 	if err != nil {
@@ -505,6 +560,282 @@ func TestFixtureFollowUpAppendsComment(t *testing.T) {
 	// The maintainer-editable description is never rewritten by a follow-up.
 	if body, _ := saved[0]["body"].(string); !strings.HasPrefix(body, "Existing context.") {
 		t.Fatalf("body = %q; want the original description preserved", body)
+	}
+}
+
+// TestFixturePublishScrubsSecretsForPublicDelivery: token-patterned and
+// environment-secret values in the proposal, the verification command and the
+// executor summary are scrubbed from the exact title argument and body
+// payload the peer receives, while harmless text and the delivery identity
+// survive intact.
+func TestFixturePublishScrubsSecretsForPublicDelivery(t *testing.T) {
+	c, root := fixtureRoot(t)
+	ctx := context.Background()
+	token := "ghp_fixtureToken0123456789"
+	secretCommand := "curl https://fixture:fixtureSecret99@example.com/health"
+	c.VerificationCommands = []string{"make test", secretCommand}
+	task, commit := publishableTask(t, c, root, "task-secret")
+	task.Proposal.Title = "Fix the leak " + token
+	task.Proposal.Problem = "Missing behavior. Call Bearer fixtureBearerToken123 then " + envSecretValue + "."
+	task.Proposal.Benefit = "Harmless benefit text stays verbatim."
+	task.Sessions[0].Summary = "Implemented using sk-fixtureSummarySecret99"
+	task.Verification = []model.Verification{
+		{Command: "make test", Success: true, Revision: commit, CreatedAt: model.Now()},
+		{Command: secretCommand, Success: true, Revision: commit, CreatedAt: model.Now()},
+	}
+	pr, err := git.Publish(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "prs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prs []map[string]any
+	if err := json.Unmarshal(data, &prs); err != nil || len(prs) != 1 {
+		t.Fatalf("prs.json = %s, %v; want one PR", data, err)
+	}
+	title, _ := prs[0]["title"].(string)
+	body, _ := prs[0]["body"].(string)
+	sent := title + "\n" + body
+	for _, secret := range []string{token, envSecretValue, "fixtureBearerToken123", "sk-fixtureSummarySecret99", "fixtureSecret99"} {
+		if strings.Contains(sent, secret) {
+			t.Fatalf("public metadata leaked %q: %q", secret, sent)
+		}
+	}
+	if title != "Fix the leak [redacted]" {
+		t.Fatalf("outbound title = %q; want the scrubbed form", title)
+	}
+	for _, want := range []string{
+		"Harmless benefit text stays verbatim.",
+		"[redacted]example.com/health",
+		"Implemented using [redacted]",
+		"<!-- octomus:task:task-secret -->",
+		"Reviewed commit: `" + commit + "`",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("outbound body missing %q: %q", want, body)
+		}
+	}
+	if pr.Number != 1 {
+		t.Fatalf("published = %+v; want PR #1", pr)
+	}
+	// Replaying the delivery adds nothing even though the task's canonical
+	// text still carries the secret-shaped values.
+	again, err := git.Publish(ctx, task)
+	if err != nil || again.Number != 1 {
+		t.Fatalf("re-publication = %+v, %v; want the existing PR", again, err)
+	}
+	entries, _ := os.ReadFile(filepath.Join(root, "publications.jsonl"))
+	if count := strings.Count(string(entries), `"action"`); count != 1 {
+		t.Fatalf("re-publication wrote %d actions; want idempotent delivery", count)
+	}
+}
+
+// TestFixtureFollowUpScrubsCommentMetadata: an owned-PR follow-up posts the
+// scrubbed record as an append-only comment; the maintainer-visible
+// description is preserved byte-for-byte.
+func TestFixtureFollowUpScrubsCommentMetadata(t *testing.T) {
+	c, root := fixtureRoot(t)
+	c.VerificationCommands = []string{"make test"}
+	ctx := context.Background()
+	checkout := c.Repository
+	// Earlier Octomus work on the owned branch, with its own marker.
+	realGit(t, checkout, "checkout", "-b", "octomus/existing")
+	writeFile(t, filepath.Join(checkout, "earlier.txt"), "Preserve the earlier improvement.\n")
+	realGit(t, checkout, "add", ".")
+	realGit(t, checkout, "commit", "-m", "Earlier Octomus work")
+	realGit(t, checkout, "push", "origin", "octomus/existing")
+	earlier := realGit(t, checkout, "rev-parse", "HEAD")
+	realGit(t, checkout, "checkout", "main")
+	description := "Existing context.\n<!-- octomus:task:earlier -->"
+	writeFile(t, filepath.Join(root, "prs.json"), fmt.Sprintf(`[{"number":42,"title":"An existing improvement","body":%q,"head":{"ref":"octomus/existing","sha":%q,"repo":{"full_name":"fixture/project"}},"base":{"ref":"main","repo":{"full_name":"fixture/project"}},"html_url":"https://github.com/fixture/project/pull/42","state":"open","merged_at":null,"additions":2000,"deletions":0,"created_at":"2026-08-01T00:00:00Z"}]`, description, earlier))
+	workspace := filepath.Join(root, "data", "tasks", "task-followup", "workspace")
+	if err := git.CloneAt(ctx, c, workspace, earlier); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(workspace, "followup.txt"), "more\n")
+	commit, err := git.Snapshot(ctx, c, workspace, "Follow-up work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := git.Git(ctx, c, c.Repository, []string{"rev-parse", "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "ghp_followupSecret0123456789"
+	task := publicationTask(c, workspace, commit, earlier, "task-followup")
+	task.DefaultRevision = source
+	task.Branch = "octomus/existing"
+	task.PRNumber = new(uint64)
+	*task.PRNumber = 42
+	task.Proposal.Title = "Follow-up carrying " + token
+	task.Proposal.Problem = "Additional evidence " + envSecretValue
+	task.Sessions[0].Summary = "Repaired using Bearer followupBearer777"
+	pr, err := git.Publish(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr.Number != 42 {
+		t.Fatalf("follow-up = %+v; want PR #42", pr)
+	}
+	prs, err := os.ReadFile(filepath.Join(root, "prs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved []map[string]any
+	if err := json.Unmarshal(prs, &saved); err != nil || len(saved) != 1 {
+		t.Fatalf("prs.json = %s, %v; want the existing PR only", prs, err)
+	}
+	if body, _ := saved[0]["body"].(string); body != description {
+		t.Fatalf("description = %q; want it preserved byte-for-byte", body)
+	}
+	comments, _ := saved[0]["comments"].([]any)
+	if len(comments) != 1 {
+		t.Fatalf("comments = %v; want exactly one appended comment", comments)
+	}
+	comment, _ := comments[0].(map[string]any)["body"].(string)
+	for _, secret := range []string{token, envSecretValue, "followupBearer777"} {
+		if strings.Contains(comment, secret) {
+			t.Fatalf("follow-up comment leaked %q: %q", secret, comment)
+		}
+	}
+	for _, want := range []string{
+		"Octomus follow-up: Follow-up carrying [redacted]",
+		"<!-- octomus:task:task-followup -->",
+		"Reviewed commit: `" + commit + "`",
+	} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("follow-up comment missing %q: %q", want, comment)
+		}
+	}
+	// Replaying the follow-up appends no second comment.
+	again, err := git.Publish(ctx, task)
+	if err != nil || again.Number != 42 {
+		t.Fatalf("replayed follow-up = %+v, %v; want PR #42", again, err)
+	}
+	entries, _ := os.ReadFile(filepath.Join(root, "publications.jsonl"))
+	if count := strings.Count(string(entries), `"action"`); count != 1 {
+		t.Fatalf("replayed follow-up wrote %d actions; want one", count)
+	}
+}
+
+// TestFixturePublishLongBodyKeepsDeliveryIdentity: a body far beyond the
+// bounded operator-message formatter's 16,384-character cap is delivered
+// whole — publication never routes through that truncating formatter.
+func TestFixturePublishLongBodyKeepsDeliveryIdentity(t *testing.T) {
+	c, root := fixtureRoot(t)
+	c.VerificationCommands = []string{"make test"}
+	ctx := context.Background()
+	task, commit := publishableTask(t, c, root, "task-long")
+	task.Proposal.Problem = strings.Repeat("Long harmless problem context. ", 800)
+	if _, err := git.Publish(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "prs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prs []map[string]any
+	if err := json.Unmarshal(data, &prs); err != nil || len(prs) != 1 {
+		t.Fatalf("prs.json = %s, %v; want one PR", data, err)
+	}
+	body, _ := prs[0]["body"].(string)
+	if len(body) <= 16384 {
+		t.Fatalf("outbound body length = %d; want it beyond the operator-message cap", len(body))
+	}
+	if !strings.Contains(body, task.Proposal.Problem) {
+		t.Fatal("long harmless problem text was shortened")
+	}
+	if !strings.HasSuffix(body, "<!-- octomus:task:task-long -->") ||
+		!strings.Contains(body, "Reviewed commit: `"+commit+"`") {
+		t.Fatal("outbound body lost its delivery identity")
+	}
+}
+
+// TestPublishRefusesUnsafeMetadataBeforeAnyWrite: metadata that cannot be
+// represented safely is refused before the first outbound write — no push, no
+// pull request, no comment — and the operator-facing refusal never echoes the
+// rejected private text.
+func TestPublishRefusesUnsafeMetadataBeforeAnyWrite(t *testing.T) {
+	cases := []struct {
+		name   string
+		id     string
+		adjust func(*model.Task)
+		want   string
+		echo   string // planted private text that must never surface in the error
+	}{
+		{
+			name: "oversized body",
+			adjust: func(task *model.Task) {
+				task.Proposal.Problem = "Leaked ghp_oversizeSecret777\n" + strings.Repeat("x", 70000)
+			},
+			want: "size limit",
+			echo: "ghp_oversizeSecret777",
+		},
+		{
+			name: "oversized title",
+			adjust: func(task *model.Task) {
+				task.Proposal.Title = strings.Repeat("t", 300)
+			},
+			want: "title limit",
+		},
+		{
+			name: "empty title",
+			adjust: func(task *model.Task) {
+				task.Proposal.Title = " \t\n"
+			},
+			want: "empty",
+		},
+		{
+			// A task id colliding with the token policy destroys the marker
+			// under scrubbing: delivery is refused rather than published
+			// without its identity.
+			name:   "marker collision",
+			id:     "task-ghp_collisionSecret777",
+			adjust: func(task *model.Task) {},
+			want:   "marker",
+			echo:   "ghp_collisionSecret777",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, root := fixtureRoot(t)
+			c.VerificationCommands = []string{"make test"}
+			ctx := context.Background()
+			id := tc.id
+			if id == "" {
+				id = "task-refused"
+			}
+			task, _ := publishableTask(t, c, root, id)
+			tc.adjust(&task)
+			_, err := git.Publish(ctx, task)
+			if err == nil {
+				t.Fatal("unsafe publication metadata must be refused")
+			}
+			if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonWorkspaceInvalid {
+				t.Fatalf("reason = %v; want workspace_invalid", reason)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("refusal = %q; want %q", err, tc.want)
+			}
+			if tc.echo != "" && strings.Contains(err.Error(), tc.echo) {
+				t.Fatalf("refusal echoed the rejected private text: %q", err)
+			}
+			// Nothing reached the remote: no pushed branch, no PR, no comment.
+			if rev, err := git.RemoteRevision(ctx, c, task.Branch); err != nil || rev != nil {
+				t.Fatalf("remote branch = %v, %v; want nothing pushed", rev, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "publications.jsonl")); err == nil &&
+				strings.Contains(string(data), `"action"`) {
+				t.Fatalf("publications = %s; want no writes", data)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "prs.json")); err == nil {
+				if content := strings.TrimSpace(string(data)); content != "" && content != "[]" {
+					t.Fatalf("prs.json = %s; want no pull requests", data)
+				}
+			}
+		})
 	}
 }
 
