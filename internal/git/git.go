@@ -17,11 +17,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	whatwg "github.com/nlnwa/whatwg-url/url"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // reasonContext displays its message before the typed reason and inner cause.
@@ -540,11 +542,17 @@ func ValidatePublication(task model.Task, p model.PullRequest, marker bool, reco
 	return nil
 }
 
-// Publish delivers a reviewed commit, reporting PublicationUncertain whenever
-// the sequence fails so reconciliation preserves the output.
+// Publish delivers a reviewed commit. Failures that already carry a typed
+// reason — deterministic refusals whose remedy is supersede, not reconcile —
+// surface with their own message. Untyped failures, where the remote state is
+// genuinely unknown, are reported as PublicationUncertain so reconciliation
+// preserves the output.
 func Publish(ctx context.Context, task model.Task) (model.PullRequest, error) {
 	pr, err := publishInner(ctx, task)
 	if err != nil {
+		if model.BlockedReasonFromError(err) != model.BlockedReasonUnknown {
+			return pr, err
+		}
 		return pr, reasoned(model.BlockedReasonPublicationUncertain,
 			model.BlockedReasonPublicationUncertain.Error(), err)
 	}
@@ -590,6 +598,67 @@ func prBody(task model.Task, existing *model.PullRequest, commit string) string 
 		return fmt.Sprintf("Octomus follow-up: %s\n\n%s", task.Proposal.Title, update)
 	}
 	return update
+}
+
+// Publication text must fit the remote's pull request fields without any
+// shortening: the task marker sits at the tail of the body, so a truncated
+// body would silently drop the identity reconciliation depends on. These
+// ceilings mirror GitHub's accepted title and body sizes.
+const (
+	maxPublicationTitleChars = 256
+	maxPublicationBodyChars  = 65536
+)
+
+// publicationMetadata is the public representation prepared for one delivery:
+// the title a new pull request is created with and the complete description
+// or append-only follow-up comment. Canonical task fields are never altered;
+// only the outgoing copies are scrubbed.
+type publicationMetadata struct {
+	title string
+	body  string
+}
+
+// preparePublication assembles and validates the public text for a delivery
+// that is about to write. Proposal text, command descriptions and session
+// summaries pass through the non-truncating secret scrubber — never the
+// bounded operator-message formatter, whose length cap could cut the trailing
+// marker — and the result is checked as a whole. Metadata that cannot satisfy
+// both the public-text policy and the task's delivery identity is refused
+// before any outbound write; refusal messages stay generic so the
+// operator-facing record never echoes the private text that was rejected.
+func preparePublication(task model.Task, existing *model.PullRequest, commit string) (publicationMetadata, error) {
+	refuse := func(message string) (publicationMetadata, error) {
+		return publicationMetadata{}, blocked(model.BlockedReasonWorkspaceInvalid, message)
+	}
+	title := store.RedactSecrets(task.Proposal.Title)
+	body := store.RedactSecrets(prBody(task, existing, commit))
+	// New PR titles are passed as process arguments, which cannot contain NUL;
+	// keep all public metadata free of it so refusal happens before branch push.
+	if strings.ContainsRune(title, '\x00') || strings.ContainsRune(body, '\x00') {
+		return refuse("Publication metadata contains an unsupported character")
+	}
+	// The title becomes a real title field only for a new pull request; on a
+	// follow-up it lives inside the comment body and is covered by the body
+	// checks instead.
+	if existing == nil {
+		if strings.TrimSpace(title) == "" {
+			return refuse("Publication title is empty after public-safe preparation")
+		}
+		if utf8.RuneCountInString(title) > maxPublicationTitleChars {
+			return refuse("Publication title exceeds the remote title limit")
+		}
+	}
+	if utf8.RuneCountInString(body) > maxPublicationBodyChars {
+		return refuse("Publication body exceeds the remote size limit")
+	}
+	marker := fmt.Sprintf("<!-- octomus:task:%s -->", task.ID)
+	if !strings.Contains(body, marker) {
+		return refuse("Publication metadata cannot carry the task's delivery marker")
+	}
+	if !strings.Contains(body, "Reviewed commit: `"+commit+"`") {
+		return refuse("Publication metadata cannot carry the reviewed commit")
+	}
+	return publicationMetadata{title: title, body: body}, nil
 }
 
 // updatePR attaches follow-up evidence to a pull request this task already
@@ -640,13 +709,13 @@ func updatePR(ctx context.Context, c config.Config, task model.Task, p model.Pul
 // `gh` reports success as a URL, which is parsed rather than trusted: a URL on
 // another host, or naming another repository, means the request was not created
 // where this task believes it was.
-func createPR(ctx context.Context, c config.Config, task model.Task, bodyPath string) (model.PullRequest, error) {
+func createPR(ctx context.Context, c config.Config, task model.Task, title string, bodyPath string) (model.PullRequest, error) {
 	created, err := gh(ctx, c, []string{
 		"pr", "create",
 		"--repo", c.GitHubRepo,
 		"--head", task.Branch,
 		"--base", c.DefaultBranch,
-		"--title", task.Proposal.Title,
+		"--title", title,
 		"--body-file", bodyPath,
 	})
 	if err != nil {
@@ -776,6 +845,14 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 				"Branch is already associated with another task"))
 		}
 	}
+	// The public representation is assembled and validated before the first
+	// new outbound write: a refused title or body never reaches the push below
+	// or the remote. Already-delivered reconciliation returned above, so this
+	// never gates the read-only path.
+	meta, err := preparePublication(task, existing, commit)
+	if err != nil {
+		return fail(err)
+	}
 	remote, err := RemoteRevision(ctx, c, task.Branch)
 	if err != nil {
 		return fail(err)
@@ -820,13 +897,12 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 			return fail(err)
 		}
 	}
-	body := prBody(task, existing, commit)
 	bodyPath := filepath.Join(filepath.Dir(path), "pr-body.md")
-	if err := os.WriteFile(bodyPath, []byte(body), 0o666); err != nil {
+	if err := os.WriteFile(bodyPath, []byte(meta.body), 0o666); err != nil {
 		return fail(err)
 	}
 	if existing != nil {
 		return updatePR(ctx, c, task, *existing, commit, bodyPath)
 	}
-	return createPR(ctx, c, task, bodyPath)
+	return createPR(ctx, c, task, meta.title, bodyPath)
 }

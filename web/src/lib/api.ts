@@ -1,5 +1,3 @@
-import type { Config } from './types';
-
 let token = '';
 let session = new AbortController();
 let unauthorized: (() => void) | null = null;
@@ -19,7 +17,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
-    public checkedConfig?: Config
+    /** Canonical configuration revision the checked result applies to. */
+    public checkedRevision?: string
   ) {
     super(message);
   }
@@ -48,7 +47,7 @@ export async function api<T>(
   requestSignal.throwIfAborted();
   if (response.status === 401) unauthorized?.();
   if (!response.ok)
-    throw new ApiError(result.error ?? 'Request failed', response.status, result.checked_config);
+    throw new ApiError(result.error ?? 'Request failed', response.status, result.checked_revision);
   return result as T;
 }
 export function relative(value: string) {

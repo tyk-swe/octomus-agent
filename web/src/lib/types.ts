@@ -400,6 +400,8 @@ export type BaselineView = {
   eligible: boolean;
   reason: string | null;
   config_matches: boolean | null;
+  /** Canonical configuration revision the check recorded at start; null when none ran. */
+  config_revision: string | null;
   revision_status: 'matches_last_observation' | 'stale' | 'unknown';
   default_observation: DefaultBranchObservation | null;
   caveat: string;
@@ -410,8 +412,28 @@ export type BaselineSummary = {
   started_at: string;
   completed_at: string | null;
   error: string | null;
+  /** Canonical configuration revision the check recorded at start. */
+  config_revision: string;
   config_matches: boolean;
   revision_status: 'matches_last_observation' | 'stale' | 'unknown';
+};
+/** One top-level settings field whose served values differ from canonical state. */
+export type TransformedField = {
+  field: string;
+  kinds: ('redacted' | 'shortened')[];
+  /** Structured JSON paths: string segments are object keys, numbers are array indices. */
+  paths: (string | number)[][];
+};
+/**
+ * The settings read/write contract: a display-safe configuration, the canonical
+ * revision it was computed from, and every display-transformed field. Displayed
+ * values are previews; writes send `expected_revision` plus only the top-level
+ * fields being deliberately replaced.
+ */
+export type SettingsView = {
+  config: Config;
+  revision: string;
+  transformed_fields: TransformedField[];
 };
 export type NotificationHealth = {
   state: 'disabled' | 'invalid' | 'enabled';

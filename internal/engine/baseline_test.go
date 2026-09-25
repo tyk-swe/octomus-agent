@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +104,35 @@ func TestBaselineValidationAcceptsUnroutedModelsButRequiresRepositoryAndCommands
 	}
 	if err := cfg.ValidateAudit(); err == nil {
 		t.Fatal("unrouted models must fail audit validation")
+	}
+}
+
+// TestStartBaselineRejectsStaleRevisionBeforeWork verifies admission compares
+// the caller's expected revision with the live canonical fingerprint before a
+// check record, clone directory or worker exists.
+func TestStartBaselineRejectsStaleRevisionBeforeWork(t *testing.T) {
+	app, cfg := baselineApp(t)
+	fingerprint, err := BaselineFingerprint(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := strings.Repeat("0", len(fingerprint))
+	if _, err := app.StartBaseline(stale); err == nil {
+		t.Fatal("stale revision accepted")
+	} else {
+		var conflict *BaselineConflict
+		if !errors.As(err, &conflict) {
+			t.Fatalf("conflict kind: %v", err)
+		}
+	}
+	if running, err := app.Store.RunningBaselines(); err != nil || len(running) != 0 {
+		t.Fatalf("rejected start persisted work: %d %v", len(running), err)
+	}
+	if latest, err := app.Store.LatestBaseline(); err != nil || latest != nil {
+		t.Fatal("stale start created a baseline record")
+	}
+	if entries, err := os.ReadDir(filepath.Join(app.DataDir, "baselines")); err == nil && len(entries) != 0 {
+		t.Fatalf("clone directory created: %v", entries)
 	}
 }
 
@@ -381,6 +411,11 @@ func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
 	check := makeCheck(cfg, model.BaselineStatusFailed)
 	completed := model.Now()
 	check.CompletedAt = &completed
+	// Production only ever cleans a persisted record; the cleanup finalization
+	// re-reads it, so the check must exist in the store first.
+	if err := app.Store.Put("baseline", check.ID, check); err != nil {
+		t.Fatal(err)
+	}
 	workspaceDir := filepath.Join(app.DataDir, "baselines", check.ID, "workspace")
 	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -410,6 +445,9 @@ func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
 	}
 	bad := makeCheck(cfg, model.BaselineStatusFailed)
 	bad.CompletedAt = &completed
+	if err := app.Store.Put("baseline", bad.ID, bad); err != nil {
+		t.Fatal(err)
+	}
 	link := filepath.Join(app.DataDir, "baselines", bad.ID)
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatal(err)

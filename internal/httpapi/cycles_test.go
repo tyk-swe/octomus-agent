@@ -4,10 +4,16 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 func cycleRecord(id string) model.Cycle {
@@ -82,5 +88,86 @@ func TestCycleDetailStaysReadableAfterArchivePersistsLifecycle(t *testing.T) {
 	}
 	if response := call(t, router, "POST", "/api/cycles/cycle-a/bogus", "{}"); response.Code != http.StatusNotFound {
 		t.Fatalf("unknown action: %d", response.Code)
+	}
+}
+
+// A cycle discard admitted through the API holds no scheduler gate while its
+// planning directory is removed: pause answers through the boundary, the
+// claimed cycle conflicts a duplicate discard with 409, and the original
+// request completes the durable mark once removal finishes. The injected
+// removal barrier makes the ordering deterministic — the bounded waits detect
+// the pre-fix gate-holding deadlock rather than measuring timing.
+func TestCycleDiscardOverHTTPLeavesControlsResponsive(t *testing.T) {
+	dir := t.TempDir()
+	state, err := store.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = state.Close() })
+	id := model.ID()
+	cycleDir := filepath.Join(dir, "cycles", id)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	app := engine.New(state, dir, engine.WithWorkspaceRemoval(func(root, path string) error {
+		if path == cycleDir {
+			once.Do(func() { close(entered) })
+			<-release
+		}
+		return workspace.RemoveOwnedDir(root, path)
+	}))
+	t.Cleanup(app.Shutdown)
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	cycle := cycleRecord(id)
+	cycle.Lifecycle.ArchivedAt = stringPointer(model.Now())
+	if err := state.Put("cycle", id, cycle); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cycleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cycleDir, "planning.txt"), []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	router := Router(app, token, "", "test")
+
+	discarded := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		discarded <- call(t, router, "POST", "/api/cycles/"+id+"/discard", "{}")
+	}()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("discard did not reach the held removal")
+	}
+
+	if response := call(t, router, "POST", "/api/control/pause", "{}"); response.Code != http.StatusOK {
+		t.Fatalf("pause during held cycle removal: %d %s", response.Code, response.Body.String())
+	}
+	if response := call(t, router, "POST", "/api/cycles/"+id+"/discard", "{}"); response.Code != http.StatusConflict {
+		t.Fatalf("duplicate discard on the claimed cycle: %d %s", response.Code, response.Body.String())
+	}
+	if response := call(t, router, "POST", "/api/cycles/"+id+"/archive", "{}"); response.Code != http.StatusConflict {
+		t.Fatalf("archive on the claimed cycle: %d %s", response.Code, response.Body.String())
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	var response *httptest.ResponseRecorder
+	select {
+	case response = <-discarded:
+	case <-time.After(30 * time.Second):
+		t.Fatal("discard did not finish after the held removal released")
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("discard: %d %s", response.Code, response.Body.String())
+	}
+	saved, err := store.Get[model.Cycle](state, "cycle", id)
+	if err != nil || saved == nil || saved.Lifecycle.DiscardedAt == nil {
+		t.Fatalf("discarded record: %+v, %v", saved, err)
+	}
+	if _, err := os.Stat(cycleDir); !os.IsNotExist(err) {
+		t.Fatalf("cycle directory still present: %v", err)
 	}
 }

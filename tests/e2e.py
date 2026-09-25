@@ -45,11 +45,11 @@ def poll(predicate, seconds, interval=0.1, tick=None):
 
 
 def base_config(service, commands, **overrides):
-    """Loads the saved configuration every scenario starts from.
+    """Loads the saved display configuration every scenario starts from.
 
     Callers add their own routes, flags and overrides, then PUT it themselves.
     """
-    config = service.request('/config')
+    config = service.request('/config')['config']
     config.update(repository=str(service.root / 'checkout'), github_repo='fixture/project', verification_commands=commands, session_timeout_seconds=30, command_timeout_seconds=10, **overrides)
     return config
 
@@ -89,8 +89,16 @@ class Service:
             return error.code, json.loads(error.read() or b'{}')
 
     def save_config(self, config):
-        self.request('/config', 'PUT', config)
-        return self.request('/config')
+        """Replaces the given top-level fields under the current canonical
+        revision and returns the fresh settings view.
+
+        `config` is sent as the `config` patch: callers that mutate a loaded
+        display view send every field back, while precise callers may pass a
+        partial map. Scenarios are serialized, so the revision read here is the
+        one the caller loaded.
+        """
+        revision = self.request('/config')['revision']
+        return self.request('/config', 'PUT', {'expected_revision': revision, 'config': config})
 
     def wait(self, predicate, label, seconds=45):
         def exited():
@@ -116,9 +124,13 @@ class Service:
             config['tiers']['M'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}
         if (self.root / 'cap1-interrupt').exists():
             config['max_open_prs'] = 1
-        self.request('/config', 'PUT', config)
+        self.save_config(config)
         diagnostic = self.request('/doctor', 'POST')
-        assert diagnostic['checked_config'] == self.request('/config')
+        view = self.request('/config')
+        # The check is attributed to the canonical revision; fixture values are
+        # never display-transformed, so the checked canonical payload matches.
+        assert diagnostic['checked_revision'] == view['revision']
+        assert diagnostic['checked_config'] == view['config']
         assert diagnostic['codex_version'] == 'codex-cli 0.153.4'
         assert diagnostic['tested_codex_version'] == '0.153.4' and diagnostic['warnings'] == []
         (self.root / 'version').write_text('0.0.0-fixture')
@@ -277,9 +289,9 @@ def scenario(mode):
                     # A retry retains the saved route despite an operator configuration change.
                     service.request('/control/pause', 'POST')
                     service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'paused task')
-                    config = service.request('/config')
+                    config = service.request('/config')['config']
                     config['repair_route'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}
-                    service.request('/config', 'PUT', config)
+                    service.save_config(config)
                     (root / 'interactive').unlink()
                     service.request(f'/tasks/{task["id"]}/retry', 'POST')
                     service.request('/control/resume', 'POST')
@@ -359,6 +371,81 @@ def scenario(mode):
             service.log.close()
 
 
+def settings_scenario():
+    """The settings contract keeps canonical state distinct from the display view.
+
+    A secret-bearing command is served redacted with transform metadata, the
+    canonical revision identifies the saved configuration, a partial update
+    preserves every untouched field (including hidden ones), stale revisions
+    conflict without persisting, and baseline admission validates the revision
+    instead of an echoed display object.
+    """
+    with tempfile.TemporaryDirectory(prefix='octomus-settings-') as tmp:
+        root = Path(tmp)
+        setup(root)
+        service = Service(root)
+        try:
+            service.start()
+            view = service.request('/config')
+            assert set(view) == {'config', 'revision', 'transformed_fields'}, view
+            assert view['transformed_fields'] == [] and len(view['revision']) == 64, view
+
+            config = base_config(service, [])
+            for role in config['roles']:
+                config['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+            for tier in config['tiers']:
+                config['tiers'][tier] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+            config['repair_route'] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+            # The service token is a registered secret: a command embedding it is
+            # served redacted, while the stored canonical value keeps the token.
+            # Its side effect is the proof the canonical command, not the preview,
+            # is what the service holds and runs.
+            proof = root / 'canonical-proof'
+            secret_command = f'echo {TOKEN} > {proof}'
+            displayed = f'echo [redacted] > {proof}'
+            config['verification_commands'] = [secret_command]
+            saved = service.save_config(config)
+            entry = next(t for t in saved['transformed_fields'] if t['field'] == 'verification_commands')
+            assert entry['kinds'] == ['redacted'] and entry['paths'] == [['verification_commands', 0]], saved['transformed_fields']
+            assert saved['config']['verification_commands'] == [displayed]
+            assert saved['revision'] != view['revision'] and len(saved['revision']) == 64
+
+            # A partial patch omits the hidden field; the canonical token survives.
+            retries = saved['config']['max_retries'] + 1
+            code, updated = service.expect('/config', 'PUT', {'expected_revision': saved['revision'], 'config': {'max_retries': retries}})
+            assert code == 200, updated
+            assert updated['config']['verification_commands'] == [displayed]
+            assert updated['config']['max_retries'] == retries and updated['revision'] != saved['revision']
+            assert next(t for t in updated['transformed_fields'] if t['field'] == 'verification_commands')
+            # API responses redact even canonical echoes; the revision is the
+            # authoritative identity of the checked configuration.
+            diagnostic = service.request('/doctor', 'POST')
+            assert diagnostic['checked_revision'] == updated['revision']
+            assert diagnostic['checked_config']['verification_commands'] == [displayed]
+            assert not proof.exists()
+
+            # A stale revision rejects writes and baseline starts before any work exists.
+            code, refusal = service.expect('/config', 'PUT', {'expected_revision': saved['revision'], 'config': {'max_retries': retries + 1}})
+            assert code == 409 and 'changed' in refusal['error'], (code, refusal)
+            code, refusal = service.expect('/baseline-checks', 'POST', {'expected_revision': saved['revision']})
+            assert code == 409, (code, refusal)
+            assert service.request('/baseline-checks/latest')['check'] is None
+            assert not (root / '.octomus/baselines').exists()
+
+            # The admitted check snapshots the canonical configuration, not the preview.
+            code, check = service.expect('/baseline-checks', 'POST', {'expected_revision': updated['revision']})
+            assert code == 202, (code, check)
+            assert check['config']['verification_commands'] == [displayed]
+            assert check['config_fingerprint'] == updated['revision']
+            finished = service.wait(lambda: (c := service.request('/baseline-checks/latest')['check']) and c['status'] != 'running' and c, 'baseline completion')
+            assert finished['status'] == 'passed' and finished['commands'][0]['command'] == displayed, finished
+            assert proof.read_text().strip() == TOKEN, 'the canonical secret-bearing command ran, not its display preview'
+            print('PASS settings-view: canonical revision gates saves and baselines; hidden values stay canonical')
+        finally:
+            service.stop()
+            service.log.close()
+
+
 def missing_session_scenario(role):
     import sqlite3
     with tempfile.TemporaryDirectory(prefix=f'octomus-missing-{role}-') as tmp:
@@ -432,16 +519,19 @@ def audit_scenario(mode):
             c['repair_route'] = {'model': 'unavailable', 'effort': 'high'}
             if mode == 'budget':
                 c['max_sessions_per_day'] = 2
-            service.request('/config', 'PUT', c)
+            service.save_config(c)
             diagnostic = service.request('/doctor?mode=audit', 'POST')
             assert diagnostic['mode'] == 'audit'
-            assert diagnostic['checked_config'] == service.request('/config')
+            assert diagnostic['checked_revision'] == service.request('/config')['revision']
+            assert diagnostic['checked_config'] == service.request('/config')['config']
             try:
                 service.request('/doctor', 'POST')
                 raise AssertionError('Execution doctor accepted missing verification')
             except urllib.error.HTTPError as e:
                 assert e.code == 400
-                assert json.load(e)['checked_config'] == service.request('/config')
+                body = json.load(e)
+                assert body['checked_revision'] == service.request('/config')['revision']
+                assert body['checked_config'] == service.request('/config')['config']
             marker = {'idle': 'idle', 'malformed': 'audit-malformed', 'failed': 'failed-start'}.get(mode, 'audit-decisions')
             (root / marker).touch()
             if mode not in ['failed']:
@@ -536,6 +626,7 @@ def audit_scenario(mode):
 
 
 if __name__ == '__main__':
+    settings_scenario()
     for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']:
         scenario(mode)
 

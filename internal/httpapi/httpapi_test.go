@@ -19,7 +19,7 @@ import (
 
 const token = "operator-fixture-token-with-at-least-32-characters"
 
-func testApp(t *testing.T) (*engine.App, *store.Store) {
+func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	state, err := store.Open(filepath.Join(dir, "state.db"))
@@ -27,7 +27,7 @@ func testApp(t *testing.T) (*engine.App, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = state.Close() })
-	return engine.New(state, dir), state
+	return engine.New(state, dir, options...), state
 }
 
 // baselineFixture uses a real local git
@@ -384,11 +384,24 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	app, state, cfg := githubFixture(t, []string{"sleep 60"})
 	router := Router(app, token, "", "test")
 	startBody := func(c config.Config) string {
-		data, err := json.Marshal(map[string]any{"expected_config": c})
+		revision, err := c.Fingerprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(map[string]any{"expected_revision": revision})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return string(data)
+	}
+	// The legacy whole-config payload is an unknown field now.
+	if data, err := json.Marshal(map[string]any{"expected_config": cfg}); err != nil {
+		t.Fatal(err)
+	} else if response := call(t, router, "POST", "/api/baseline-checks", string(data)); response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("legacy expected_config: %d %s", response.Code, response.Body.String())
+	}
+	if response := call(t, router, "POST", "/api/baseline-checks", "{}"); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "expected_revision") {
+		t.Fatalf("missing revision: %d %s", response.Code, response.Body.String())
 	}
 	invalid := cfg.Clone()
 	invalid.Repository = "relative"
@@ -422,6 +435,13 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	if check["status"] != "running" {
 		t.Fatalf("check: %v", check)
 	}
+	revision, err := cfg.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check["config_fingerprint"] != revision {
+		t.Fatalf("check config fingerprint: %v", check["config_fingerprint"])
+	}
 	id := check["id"].(string)
 	if response := call(t, router, "POST", "/api/baseline-checks", startBody(cfg)); response.Code != http.StatusConflict {
 		t.Fatalf("duplicate start: %d", response.Code)
@@ -431,7 +451,7 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 			t.Fatalf("%s: %d", path, response.Code)
 		}
 	}
-	configBody, err := json.Marshal(cfg)
+	configBody, err := json.Marshal(map[string]any{"expected_revision": revision, "config": map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +474,7 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 		t.Fatalf("baseline_active: %v", stateBody)
 	}
 	baseline, _ := stateBody["baseline"].(map[string]any)
-	if baseline["id"] != id || baseline["config_matches"] != true {
+	if baseline["id"] != id || baseline["config_matches"] != true || baseline["config_revision"] != revision {
 		t.Fatalf("baseline summary: %v", baseline)
 	}
 	if _, ok := baseline["commands"]; ok {

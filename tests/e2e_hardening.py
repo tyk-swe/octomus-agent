@@ -6,14 +6,14 @@ import tempfile
 import time
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
-from e2e import Service, setup, existing_pr, git, usage_report
+from e2e import Service, setup, existing_pr, git, usage_report, TOKEN
 
 
 def run(mode):
     with tempfile.TemporaryDirectory(prefix='octomus-hardening-') as directory:
         root = Path(directory)
         setup(root)
-        if mode in ['chain', 'fork', 'unordered', 'dependency-rollback', 'publication-body-edit']:
+        if mode in ['chain', 'fork', 'unordered', 'dependency-rollback', 'publication-body-edit', 'publication-secret-followup']:
             existing_pr(root)
         (root / mode).touch()
         if mode == 'dependency-rollback':
@@ -24,6 +24,13 @@ def run(mode):
             (root / 'publication-body').touch()
         if mode == 'published-trimmed-title':
             (root / 'proposal-override.json').write_text(json.dumps({'title': '\t Complete the fixture feature \u2003', 'problem_key': 'original-feature-key'}))
+        if mode in ['publication-secret', 'publication-secret-followup']:
+            # Clearly synthetic secrets only: a token-patterned value and the
+            # fixture operator token's value, which the service environment
+            # legitimately carries.
+            (root / 'proposal-override.json').write_text(json.dumps({
+                'title': 'Complete the fixture feature ghp_fixturePublicationSecret0001',
+                'problem': f'Missing output; leaked environment value {TOKEN} and ghp_fixturePublicationSecret0001'}))
         service = Service(root)
         try:
             service.start()
@@ -125,9 +132,9 @@ def run(mode):
                     assert task['proposal']['title'] == '\t Complete the fixture feature \u2003'
                     (root / 'proposal-override.json').write_text(json.dumps({'title': 'complete the fixture feature', 'problem_key': 'different-feature-key'}))
                 if mode == 'published-case-change':
-                    c = service.request('/config')
+                    c = service.request('/config')['config']
                     c['github_repo'] = 'Fixture/Project'
-                    service.request('/config', 'PUT', c)
+                    service.save_config(c)
                     service.request('/doctor', 'POST')
                     service.stop(); service.start()
                 else:
@@ -170,10 +177,10 @@ def run(mode):
                     service.request('/tasks/' + original['id'] + '/cancel', 'POST')
                     cancelled = service.request('/tasks/' + original['id'])
                     assert not cancelled['rediscovery_requested'] and 'supersede' in cancelled['allowed_actions']
-                    c = service.request('/config')
+                    c = service.request('/config')['config']
                     c['tiers']['M'] = {**c['tiers']['M'], 'model': 'gpt-5.6-luna', 'effort': 'low'}
                     c['github_repo'] = 'Fixture/Project'
-                    service.request('/config', 'PUT', c)
+                    service.save_config(c)
                     service.request('/tasks/' + original['id'] + '/supersede', 'POST')
                     service.stop(); service.start()
                     service.request('/control/cycle', 'POST')
@@ -190,9 +197,9 @@ def run(mode):
                     assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
                     return
                 if mode == 'live-budget':
-                    c = service.request('/config')
+                    c = service.request('/config')['config']
                     c['max_sessions_per_day'] = service.request('/state')['sessions_today']
-                    service.request('/config', 'PUT', c)
+                    service.save_config(c)
                     service.stop(); service.start()
                     try:
                         service.request('/control/cycle', 'POST')
@@ -208,7 +215,7 @@ def run(mode):
                     service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'exhausted task stopped')
                     assert len(service.request('/state')['cycles']) == 1
                     c['max_sessions_per_day'] += 20
-                    service.request('/config', 'PUT', c)
+                    service.save_config(c)
                     service.request('/tasks/' + task['id'] + '/retry', 'POST')
                     service.request('/control/resume', 'POST')
                     task = service.wait(service.terminal_task, 'raised live policy permits retry')
@@ -315,6 +322,37 @@ def run(mode):
                 assert actions == ['comment'], actions
                 service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot paused')
                 return
+            elif mode in ['publication-secret', 'publication-secret-followup']:
+                # The same secret policy covers a new PR's title and body and
+                # an owned PR's append-only follow-up comment; the durable
+                # record keeps the canonical private text.
+                task = service.wait(service.terminal_task, mode)
+                assert task['status'] == 'published', task
+                prs = json.loads((root / 'prs.json').read_text())
+                assert len(prs) == 1, prs
+                pr = prs[0]
+                if mode == 'publication-secret':
+                    sent = pr['title'] + '\n' + pr['body']
+                    assert '[redacted]' in pr['title'], pr['title']
+                else:
+                    assert task['pr_number'] == 42, task
+                    assert pr['body'].startswith('Existing context.'), pr['body']
+                    assert len(pr.get('comments', [])) == 1, pr['comments']
+                    sent = pr['comments'][0]['body']
+                assert TOKEN not in sent and 'ghp_fixturePublicationSecret0001' not in sent, sent
+                assert '[redacted]' in sent, sent
+                assert f'<!-- octomus:task:{task["id"]} -->' in sent, sent
+                assert f'Reviewed commit: `{task["output_commit"]}`' in sent, sent
+                assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+                if mode == 'publication-secret':
+                    service.stop()
+                    import sqlite3
+                    with sqlite3.connect(root / '.octomus/state.db') as db:
+                        raw = db.execute("SELECT data FROM records WHERE kind='task' AND id=?", (task['id'],)).fetchone()[0]
+                    canonical = json.loads(raw)
+                    assert 'ghp_fixturePublicationSecret0001' in canonical['proposal']['title'], canonical['proposal']
+                    assert TOKEN in canonical['proposal']['problem'], canonical['proposal']
+                return
             else:
                 task = service.wait(service.terminal_task, mode)
                 assert task['status'] == 'blocked' and task['output_commit'] and task['blocked_reason'] == 'publication_uncertain', task
@@ -342,9 +380,9 @@ def reconciliation_deadline():
             assert task['status'] == 'blocked' and task['blocked_reason'] == 'runner_unavailable', task
             service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'failed executor paused')
             (root / 'failed-executor-start').unlink()
-            config = service.request('/config')
+            config = service.request('/config')['config']
             config.update(session_timeout_seconds=10, task_timeout_seconds=10)
-            service.request('/config', 'PUT', config)
+            service.save_config(config)
             service.request('/tasks/' + task['id'] + '/retry', 'POST')
             service.request('/control/cycle', 'POST')
             task = service.wait(service.terminal_task, 'publication retry with saved deadline')
@@ -353,7 +391,7 @@ def reconciliation_deadline():
             assert task['attempt_policy']['task_timeout_seconds'] == 10
             service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'publication retry paused')
             config.update(session_timeout_seconds=30, task_timeout_seconds=120)
-            service.request('/config', 'PUT', config)
+            service.save_config(config)
             prs = json.loads((root / 'prs.json').read_text())
             prs[0]['body'] = f'<!-- octomus:task:{task["id"]} -->'
             (root / 'prs.json').write_text(json.dumps(prs))
@@ -403,7 +441,7 @@ def reconciliation_deadline():
 
 
 if __name__ == '__main__':
-    for mode in ['reconcile-controls', 'archive-uncertain', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'dependency-rollback', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner', 'publication-body-edit']:
+    for mode in ['reconcile-controls', 'archive-uncertain', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'dependency-rollback', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner', 'publication-body-edit', 'publication-secret', 'publication-secret-followup']:
         run(mode)
         print(f'PASS hardening {mode}', flush=True)
     reconciliation_deadline()

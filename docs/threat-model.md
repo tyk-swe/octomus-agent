@@ -62,6 +62,11 @@ characters whose variable names contain TOKEN, SECRET, PASSWORD or API_KEY. It
 bounds each returned string to 16,384 characters. Events and dashboard JSON pass
 through redaction; this is not an encryption or data-loss-prevention system.
 
+Outbound pull request titles, descriptions and follow-up comments pass through
+the same secret patterns without the length bound; the remote's own size limits
+apply instead, and text that would lose the delivery marker or exceed those
+limits is refused before writing rather than shortened.
+
 It can miss encoded, split, unfamiliar or short secrets, credentials read from
 files, and private source/text that is not a recognized token. Raw task records,
 workspaces, process output and runner transcripts may retain sensitive content.

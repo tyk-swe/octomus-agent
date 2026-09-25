@@ -307,6 +307,13 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 		if task.Status != model.StatusQueued {
 			continue
 		}
+		// Claims are only ever taken on terminal records, so a queued task is
+		// never owned by cleanup; the check is defensive insurance against a
+		// dispatch racing a removal into a half-removed workspace.
+		if a.cleanupClaimed(cleanupTask, task.ID) {
+			waiting = true
+			continue
+		}
 		if available == 0 {
 			waiting = true
 			continue

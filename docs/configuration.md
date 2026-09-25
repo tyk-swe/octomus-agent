@@ -17,6 +17,20 @@ Loading a model catalog does not save your choices or start a model call. A conn
 check validates prerequisites; it does not prove push permission or model inference.
 Editing saved configuration invalidates the previous connection check.
 
+## Display-safe values and saved revisions
+
+The dashboard loads a display-safe view of the saved configuration. Values matching
+known credential patterns or token/secret/password/API-key environment variables are
+redacted, and very long values are shortened; each affected field is marked. A marked
+field is locked as a preview: saving other fields preserves its stored value, and the
+preview is never written back. To change it, use the field's **Replace** action and
+re-enter the complete value — hidden originals are never merged back.
+
+Every save pins the revision of the saved configuration it was made from and replaces
+only the fields you changed. A save based on a superseded revision conflicts instead
+of overwriting newer values. Connection checks and baseline checks report the exact
+saved revision they covered.
+
 ## Repository and routes
 
 Set an absolute, persistent repository path and a GitHub identity such as `OWNER/REPOSITORY`.

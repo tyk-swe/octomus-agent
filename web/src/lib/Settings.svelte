@@ -1,11 +1,19 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, ApiError, relative } from './api';
-  import type { Backend, Config, Model, ModelCatalog, Route } from './types';
+  import type {
+    Backend,
+    Config,
+    Model,
+    ModelCatalog,
+    Route,
+    SettingsView,
+    TransformedField
+  } from './types';
   import RouteEditor from './RouteEditor.svelte';
   import SetupChecklist from './SetupChecklist.svelte';
   import BaselineCheck from './BaselineCheck.svelte';
-  import { configIdentity, parseCommands, type Preflight, type SetupStatus } from './setup';
+  import { parseCommands, type Preflight, type SetupStatus } from './setup';
   import Icon from './Icon.svelte';
   import { LIMITS } from './limits';
   let {
@@ -23,8 +31,15 @@
     onchoose: (action: 'audit' | 'cycle') => void;
   } = $props();
   let config = $state<Config | null>(null),
+    /** Canonical revision the displayed values came from; writes pin it and checks use it. */
+    revision = $state(''),
+    /** Serialized display baseline for the draft/dirty comparison. */
     baseline = $state(''),
     baselineCommands = $state(''),
+    /** Every field the server transformed for display; those values are previews only. */
+    transformed = $state<TransformedField[]>([]),
+    /** Transformed fields the operator deliberately chose to replace in full. */
+    replaced = $state<Record<string, boolean>>({}),
     loading = $state(false),
     loadError = $state(''),
     error = $state(''),
@@ -32,13 +47,19 @@
     pending = $state(''),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
     commands = $state(''),
-    /** Result of the last explicit connection check, keyed to the exact saved configuration. */
+    /** Result of the last explicit connection check, keyed to the exact saved revision. */
     preflight = $state<Preflight | null>(null);
   const busy = $derived(pending !== '');
   const dirty = $derived(
     config !== null && (JSON.stringify(config) !== baseline || commands !== baselineCommands)
   );
   const savedConfig = $derived<Config | null>(baseline ? JSON.parse(baseline) : null);
+  const transformedByField = $derived(new Map(transformed.map((entry) => [entry.field, entry])));
+  // A transformed collection is a read-only preview until deliberately replaced:
+  // its hidden members must never be merged back by position.
+  const locked = (field: string) => transformedByField.has(field) && !replaced[field];
+  const previewKind = (field: string) =>
+    transformedByField.get(field)?.kinds.includes('redacted') ? 'hidden' : 'shortened';
   // Revisit saved values only on navigation, never in response to a draft edit.
   $effect(() => {
     if (active) untrack(() => void load());
@@ -69,32 +90,59 @@
     loading = true;
     loadError = '';
     try {
-      const saved = await api<Config>('/config');
+      const view = await api<SettingsView>('/config');
       // The operator may have started typing while this refresh was in flight.
-      if (!dirty) acceptSaved(saved);
+      if (!dirty) acceptSaved(view);
     } catch (e) {
       loadError = (e as Error).message;
     } finally {
       loading = false;
     }
   }
-  function acceptSaved(saved: Config) {
-    const serialized = JSON.stringify(saved);
-    if (!savedConfig || configIdentity(saved) !== configIdentity(savedConfig)) {
+  function acceptSaved(view: SettingsView) {
+    if (!baseline || view.revision !== revision) {
       error = '';
       message = '';
-      // A connection check only ever covers the exact saved configuration it ran against.
+      // A connection check only ever covers the exact saved revision it ran against.
       preflight = null;
     }
-    config = saved;
-    baseline = serialized;
-    commands = saved.verification_commands.join('\n');
+    config = view.config;
+    baseline = JSON.stringify(view.config);
+    revision = view.revision;
+    transformed = view.transformed_fields;
+    commands = view.config.verification_commands.join('\n');
     baselineCommands = commands;
+    replaced = {};
+  }
+  // clearPath drops one display-transformed value so only deliberately supplied
+  // text is ever sent back; hidden originals are never combined into a replacement.
+  // Segments arrive structured: strings are object keys, numbers array indices.
+  function clearPath(segments: (string | number)[]) {
+    if (!config) return;
+    let node: unknown = config;
+    for (const segment of segments.slice(0, -1)) {
+      node = (node as Record<string, unknown>)?.[segment as string];
+      if (node == null) return;
+    }
+    const leaf = segments.at(-1);
+    if (leaf === undefined || node == null) return;
+    // Clearing keeps positions stable: an emptied string marks exactly where the
+    // hidden value was, and every other member keeps its index.
+    if (Array.isArray(node)) node[leaf as number] = '';
+    else if (segments[0] === 'runner_storage_paths')
+      delete (node as Record<string, unknown>)[leaf as string];
+    else (node as Record<string, unknown>)[leaf as string] = '';
+  }
+  function unlockField(field: string) {
+    for (const path of transformedByField.get(field)?.paths ?? []) clearPath(path);
+    if (field === 'verification_commands') commands = '';
+    replaced[field] = true;
   }
   function discard() {
     if (!dirty || busy) return;
     config = JSON.parse(baseline);
     commands = baselineCommands;
+    replaced = {};
     error = '';
     message = 'Changes discarded. Saved configuration restored.';
   }
@@ -104,12 +152,19 @@
     error = '';
     message = '';
     try {
-      const saved = {
-        ...config,
-        verification_commands: parseCommands(commands)
-      };
-      await api('/config', 'PUT', saved);
-      acceptSaved(saved);
+      const draft: Config = { ...config, verification_commands: parseCommands(commands) };
+      // Send only the top-level fields the operator changed; each supplied field
+      // replaces its canonical value completely and omitted fields keep theirs.
+      const patch: Record<string, unknown> = {};
+      for (const key of Object.keys(draft) as (keyof Config)[]) {
+        if (!savedConfig || JSON.stringify(draft[key]) !== JSON.stringify(savedConfig[key]))
+          patch[key] = draft[key];
+      }
+      const view = await api<SettingsView>('/config', 'PUT', {
+        expected_revision: revision,
+        config: patch
+      });
+      acceptSaved(view);
       message = 'Configuration saved.';
       onsaved();
     } catch (e) {
@@ -147,7 +202,7 @@
     message = '';
     const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     try {
-      const result = await api<{ message: string; checked_config: Config }>(
+      const result = await api<{ message: string; checked_revision: string }>(
         `/doctor?mode=${mode}`,
         'POST'
       );
@@ -156,14 +211,14 @@
         mode,
         ok: true,
         detail: result.message,
-        baseline: configIdentity(result.checked_config),
+        baseline: result.checked_revision,
         at
       };
     } catch (e) {
       error = (e as Error).message;
       preflight =
-        e instanceof ApiError && e.checkedConfig
-          ? { mode, ok: false, detail: error, baseline: configIdentity(e.checkedConfig), at }
+        e instanceof ApiError && e.checkedRevision
+          ? { mode, ok: false, detail: error, baseline: e.checkedRevision, at }
           : null;
     } finally {
       pending = '';
@@ -224,7 +279,7 @@
   <SetupChecklist
     draft={config}
     saved={savedConfig}
-    {baseline}
+    {revision}
     {commands}
     {dirty}
     {catalogs}
@@ -239,6 +294,28 @@
       save();
     }}
   >
+    {#snippet previewNote(field: string, noun: string, collection: boolean)}
+      {@const entry = transformedByField.get(field)}
+      {#if entry}
+        <small class="preview-note" id={'preview-' + field}>
+          {#if !replaced[field]}
+            {collection
+              ? `Saved ${noun} ${previewKind(field) === 'hidden' ? 'contain a hidden value' : 'are shortened'} in this preview and stay unchanged on save. `
+              : `The saved ${noun} is ${previewKind(field)} in this preview and stays unchanged on save. `}<button
+              type="button"
+              class="replace-preview"
+              id={'replace-' + field}
+              onclick={() => unlockField(field)}
+              >Replace the {collection ? 'complete ' : 'saved '}{noun}</button
+            >
+          {:else}
+            Replacing the saved {noun}; {collection
+              ? 'hidden values must be re-entered in full'
+              : 'the hidden value must be re-entered'} — previews are never sent back.
+          {/if}
+        </small>
+      {/if}
+    {/snippet}
     <fieldset disabled={!editable || busy}>
       <section class="panel settings-section">
         <div class="section-heading">
@@ -253,24 +330,43 @@
             >Repository path<input
               id="repository-path"
               bind:value={config.repository}
+              readonly={locked('repository')}
               placeholder="/srv/projects/your-project"
-            /><small>Absolute path to the checkout on this host.</small></label
+            />{@render previewNote('repository', 'value', false)}<small
+              >Absolute path to the checkout on this host.</small
+            ></label
           >
           <label
             >GitHub repository<input
               bind:value={config.github_repo}
+              readonly={locked('github_repo')}
               placeholder="owner/repository"
-            /><small>Must match the checkout’s origin remote.</small></label
+            />{@render previewNote('github_repo', 'value', false)}<small
+              >Must match the checkout’s origin remote.</small
+            ></label
           >
-          <label>Default branch<input bind:value={config.default_branch} required /></label>
-          <label>Owned branch prefix<input bind:value={config.branch_prefix} required /></label>
+          <label
+            >Default branch<input
+              bind:value={config.default_branch}
+              readonly={locked('default_branch')}
+              required
+            />{@render previewNote('default_branch', 'value', false)}</label
+          >
+          <label
+            >Owned branch prefix<input
+              bind:value={config.branch_prefix}
+              readonly={locked('branch_prefix')}
+              required
+            />{@render previewNote('branch_prefix', 'value', false)}</label
+          >
           <label class="full"
             >Verification commands<textarea
               id="verification-commands"
               bind:value={commands}
               rows="3"
+              readonly={locked('verification_commands')}
               placeholder={'npm test\nnpm run build'}
-            ></textarea><small
+            ></textarea>{@render previewNote('verification_commands', 'command list', true)}<small
               >One shell command per line, run inside each task workspace. All must pass before
               publication.</small
             ></label
@@ -285,13 +381,20 @@
           </div>
         </div>
         <div class="form-grid">
-          <label>Codex executable<input bind:value={config.codex_binary} /></label>
+          <label
+            >Codex executable<input
+              bind:value={config.codex_binary}
+              readonly={locked('codex_binary')}
+            />{@render previewNote('codex_binary', 'value', false)}</label
+          >
           <label
             >OpenCode executable<input
               aria-label="OpenCode executable"
               aria-describedby="opencode-executable-help"
               bind:value={config.opencode_binary}
-            /><small id="opencode-executable-help"
+              readonly={locked('opencode_binary')}
+            />{@render previewNote('opencode_binary', 'value', false)}<small
+              id="opencode-executable-help"
               >Uses the service user's configured providers and login.</small
             ></label
           >
@@ -316,25 +419,31 @@
               : 'Load OpenCode models'}</button
           >
         </div>
+        {@render previewNote('roles', 'role routes', true)}
         {#each Object.keys(config.roles) as role}
           <RouteEditor
             name={names[role]}
             anchor={'route-' + role}
             bind:route={config.roles[role]}
             catalog={routeCatalog(config.roles[role])}
+            disabled={locked('roles')}
           />
         {/each}
+        {@render previewNote('tiers', 'tier routes', true)}
         {#each Object.keys(config.tiers) as tier}
           <RouteEditor
             name={tier + ' execution'}
             bind:route={config.tiers[tier]}
             catalog={routeCatalog(config.tiers[tier])}
+            disabled={locked('tiers')}
           />
         {/each}
+        {@render previewNote('repair_route', 'repair route', true)}
         <RouteEditor
           name="Repair"
           bind:route={config.repair_route}
           catalog={routeCatalog(config.repair_route)}
+          disabled={locked('repair_route')}
         />
         <div class="inline-note">
           <Icon name="shield" size={16} /> Each task keeps its saved repair route and reuses one repair
@@ -349,11 +458,15 @@
           </div>
           <Icon name="proposals" />
         </div>
+        {@render previewNote('categories', 'category set', true)}
         <div class="category-options">
           {#each categories as category}<label class="checkbox"
-              ><input type="checkbox" value={category} bind:group={config.categories} /><span
-                >{category.replace('-', ' & ')}</span
-              ></label
+              ><input
+                type="checkbox"
+                value={category}
+                disabled={locked('categories')}
+                bind:group={config.categories}
+              /><span>{category.replace('-', ' & ')}</span></label
             >{/each}
         </div>
       </section>
@@ -365,6 +478,7 @@
           </div>
           <Icon name="settings" />
         </div>
+        {@render previewNote('runner_storage_paths', 'storage paths', true)}
         <div class="form-grid">
           {#each ['codex', 'opencode'] as backend}
             <label
@@ -372,6 +486,7 @@
               <input
                 value={config.runner_storage_paths[backend] ?? ''}
                 placeholder="Absolute path to runner storage"
+                readonly={locked('runner_storage_paths')}
                 oninput={(event) => {
                   const path = event.currentTarget.value.trim();
                   if (path) config!.runner_storage_paths[backend] = path;
@@ -423,7 +538,7 @@
       {#if message}<div class="notice success settings-feedback" role="status">{message}</div>{/if}
     </div>
   </form>
-  <BaselineCheck {active} {editable} saved={savedConfig} {dirty} onchanged={onsaved} />
+  <BaselineCheck {active} {editable} savedRevision={revision} {dirty} onchanged={onsaved} />
   <section class="panel settings-section" aria-labelledby="notifications-heading">
     <div class="section-heading">
       <div>
@@ -486,6 +601,27 @@
   </div>{/if}
 
 <style>
+  .preview-note {
+    display: block;
+    font-weight: 400;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #835d29;
+  }
+  /* Notes for whole collections sit at section level, outside the form grid. */
+  .settings-section > .preview-note {
+    margin: 0 24px 14px;
+  }
+  .replace-preview {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--green);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+  }
   .baseline-facts {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

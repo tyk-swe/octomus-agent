@@ -94,16 +94,18 @@ func (a *App) retention(cfg config.Config) error {
 		if a.ctx.Err() != nil {
 			return nil
 		}
+		// The gate covers only the eligibility re-read; CleanupBaseline claims
+		// the check and removes its clone without the scheduler gate.
 		a.gate.Lock()
 		current, loadErr := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
 		terminal := current != nil && current.Status != model.BaselineStatusRunning
 		a.runtimeMu.Lock()
 		active := a.runtime.baseline != nil && a.runtime.baseline.id == check.ID
 		a.runtimeMu.Unlock()
+		a.gate.Unlock()
 		if loadErr == nil && terminal && !active && current != nil {
 			loadErr = a.CleanupBaseline(current)
 		}
-		a.gate.Unlock()
 		if loadErr != nil {
 			if eventErr := a.Store.Event(check.ID, "cleanup_error", store.ErrorMessage(loadErr)); eventErr != nil {
 				return eventErr
@@ -139,7 +141,9 @@ func (a *App) retention(cfg config.Config) error {
 				err = loadErr
 			}
 			a.gate.Unlock()
-			if err != nil {
+			// A conflict means another cleanup already owns this target —
+			// success in progress, not a cleanup failure to report.
+			if err != nil && !IsActionConflict(err) {
 				if eventErr := a.Store.Event(id, "cleanup_error", store.ErrorMessage(err)); eventErr != nil {
 					return eventErr
 				}
@@ -149,28 +153,119 @@ func (a *App) retention(cfg config.Config) error {
 	return nil
 }
 
+// cleanupKind names the durable entity kind a cleanup claim owns. Each kind
+// maps to one managed root, so the kind is part of the ownership unit.
+type cleanupKind string
+
+const (
+	cleanupTask     cleanupKind = "task"
+	cleanupCycle    cleanupKind = "cycle"
+	cleanupBaseline cleanupKind = "baseline"
+)
+
+// cleanupKey identifies one managed-directory cleanup claim by durable entity
+// kind and ID — each kind owns a distinct root, so the pair is the honest
+// ownership unit (a path alone cannot distinguish a task from a cycle).
+type cleanupKey struct {
+	kind cleanupKind
+	id   string
+}
+
+// claimCleanup takes exclusive cleanup ownership of (kind, id) and reports
+// whether it was free. Callers claim while the scheduler gate is held so
+// eligibility and ownership are one atomic admission — except CleanupBaseline,
+// which claims first because its callers already serialized eligibility:
+// retention re-reads the record under the gate and the finished check's worker
+// owns its record. The map itself sits under runtimeMu.
+func (a *App) claimCleanup(kind cleanupKind, id string) bool {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	if a.runtime.cleanups == nil {
+		a.runtime.cleanups = map[cleanupKey]struct{}{}
+	}
+	key := cleanupKey{kind: kind, id: id}
+	if _, owned := a.runtime.cleanups[key]; owned {
+		return false
+	}
+	a.runtime.cleanups[key] = struct{}{}
+	return true
+}
+
+// cleanupClaimed reports whether (kind, id) is owned by an in-flight cleanup.
+// Callers hold the scheduler gate; a claimed kind may be working gate-free
+// under the baseline entry point (see claimCleanup).
+func (a *App) cleanupClaimed(kind cleanupKind, id string) bool {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	_, owned := a.runtime.cleanups[cleanupKey{kind: kind, id: id}]
+	return owned
+}
+
+// releaseCleanup drops the claim. Releasing under the gate hold that wrote
+// the final durable state leaves no gap between "removal finished" and
+// "record marked" that a conflicting action could slip through.
+func (a *App) releaseCleanup(kind cleanupKind, id string) {
+	a.runtimeMu.Lock()
+	delete(a.runtime.cleanups, cleanupKey{kind: kind, id: id})
+	a.runtimeMu.Unlock()
+}
+
 // DiscardTask removes only the task's owned direct-child directory and marks
-// the durable record after successful removal.
+// the durable record after successful removal. Callers hold a.gate and get it
+// back held: eligibility and the cleanup claim are checked under the gate,
+// the recursive deletion runs with it released so unrelated controls stay
+// responsive, and finalization re-reads the durable record so only the
+// cleanup-owned field changes.
 func (a *App) DiscardTask(task *model.Task) error {
 	if task.Status.Active() || task.Status == model.StatusQueued {
 		return errors.New("Active or queued workspaces cannot be discarded")
 	}
+	owner := ""
 	if task.Workspace != "" {
-		owner := filepath.Dir(filepath.Clean(task.Workspace))
+		owner = filepath.Dir(filepath.Clean(task.Workspace))
 		expected := filepath.Join(a.DataDir, "tasks", task.ID)
 		if owner != expected {
 			return errors.New("Cleanup path does not belong to this task")
 		}
-		if err := workspace.RemoveOwnedDir(filepath.Join(a.DataDir, "tasks"), owner); err != nil {
-			return err
+	}
+	if !a.claimCleanup(cleanupTask, task.ID) {
+		return conflictError("Workspace cleanup is already in progress for this task")
+	}
+	// Released on every exit, including removal failure and finalization
+	// error, so a claim can never strand the record.
+	defer a.releaseCleanup(cleanupTask, task.ID)
+	if owner != "" {
+		a.gate.Unlock()
+		removeErr := a.removeDir(filepath.Join(a.DataDir, "tasks"), owner)
+		a.gate.Lock()
+		if removeErr != nil {
+			return removeErr
 		}
 	}
+	current, err := store.Get[model.Task](a.Store, "task", task.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return nil
+	}
+	// A record that resumed work while the gate was released is not marked;
+	// the claim normally prevents this, so treat it as an operator conflict.
+	if current.Status.Active() || current.Status == model.StatusQueued {
+		return conflictError("Task resumed work during workspace cleanup; inspect it before discarding")
+	}
 	now := model.Now()
-	task.Lifecycle.DiscardedAt = &now
-	return a.Store.Put("task", task.ID, *task)
+	current.Lifecycle.DiscardedAt = &now
+	if err := a.Store.Put("task", current.ID, *current); err != nil {
+		return err
+	}
+	task.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
+	return nil
 }
 
-// DiscardCycle removes a UUID-named planning directory and records disposal.
+// DiscardCycle removes a UUID-named planning directory and records disposal,
+// under the same gate contract as DiscardTask: callers hold a.gate and the
+// filesystem removal runs with it released.
 func (a *App) DiscardCycle(cycle *model.Cycle) error {
 	if cycle.Status == model.CycleRunning {
 		return errors.New("Running planning work cannot be discarded")
@@ -178,13 +273,34 @@ func (a *App) DiscardCycle(cycle *model.Cycle) error {
 	if _, err := uuid.Parse(cycle.ID); err != nil {
 		return errors.New("Invalid cycle workspace identity")
 	}
-	path := filepath.Join(a.DataDir, "cycles", cycle.ID)
-	if err := workspace.RemoveOwnedDir(filepath.Join(a.DataDir, "cycles"), path); err != nil {
+	if !a.claimCleanup(cleanupCycle, cycle.ID) {
+		return conflictError("Workspace cleanup is already in progress for this cycle")
+	}
+	defer a.releaseCleanup(cleanupCycle, cycle.ID)
+	root := filepath.Join(a.DataDir, "cycles")
+	a.gate.Unlock()
+	removeErr := a.removeDir(root, filepath.Join(root, cycle.ID))
+	a.gate.Lock()
+	if removeErr != nil {
+		return removeErr
+	}
+	current, err := store.Get[model.Cycle](a.Store, "cycle", cycle.ID)
+	if err != nil {
 		return err
 	}
+	if current == nil {
+		return nil
+	}
+	if current.Status == model.CycleRunning {
+		return conflictError("Planning work restarted during workspace cleanup; inspect it before discarding")
+	}
 	now := model.Now()
-	cycle.Lifecycle.DiscardedAt = &now
-	return a.Store.Put("cycle", cycle.ID, *cycle)
+	current.Lifecycle.DiscardedAt = &now
+	if err := a.Store.Put("cycle", current.ID, *current); err != nil {
+		return err
+	}
+	cycle.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
+	return nil
 }
 
 func (a *App) measureStorage(cfg config.Config) error {

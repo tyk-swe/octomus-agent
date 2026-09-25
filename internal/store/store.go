@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -740,17 +742,145 @@ func RedactSecrets(input string) string {
 	return s
 }
 
-// Redact scrubs secrets and bounds the text to 16384 characters.
-func Redact(input string) string {
-	s := RedactSecrets(input)
+// displayTextLimit bounds every string a dashboard display value can carry,
+// counted in characters on a rune boundary.
+const displayTextLimit = 16384
+
+// boundDisplayText shortens text to the display limit, cutting on a rune
+// boundary, and reports whether anything was dropped.
+func boundDisplayText(s string) (string, bool) {
 	count := 0
 	for i := range s {
-		if count == 16384 {
-			return s[:i]
+		if count == displayTextLimit {
+			return s[:i], true
 		}
 		count++
 	}
+	return s, false
+}
+
+// displayString applies the display transformation to one string and reports
+// the kinds applied: "redacted" for secret scrubbing, "shortened" for the
+// display length bound.
+func displayString(s string) (string, []string) {
+	kinds := []string{}
+	redacted := RedactSecrets(s)
+	if redacted != s {
+		kinds = append(kinds, "redacted")
+	}
+	display, shortened := boundDisplayText(redacted)
+	if shortened {
+		kinds = append(kinds, "shortened")
+	}
+	return display, kinds
+}
+
+// Redact scrubs secrets and bounds the text to the display character limit.
+func Redact(input string) string {
+	s, _ := displayString(input)
 	return s
+}
+
+// DisplayTransform records every string inside one top-level field whose
+// display value differs from the canonical saved value, so an operator can
+// tell a display preview from the stored original. Each path is a structured
+// segment list — strings for object keys, numbers for array indices — so
+// callers walk it directly rather than re-parsing a formatted path.
+type DisplayTransform struct {
+	Field string   `json:"field"`
+	Kinds []string `json:"kinds"`
+	Paths [][]any  `json:"paths"`
+}
+
+// comparePathSegments orders structured display paths deterministically;
+// object keys sort before array indices at the same position.
+func comparePathSegments(a, b []any) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		ak, aKey := a[i].(string)
+		bk, bKey := b[i].(string)
+		switch {
+		case aKey && bKey:
+			if order := strings.Compare(ak, bk); order != 0 {
+				return order
+			}
+		case aKey:
+			return -1
+		case bKey:
+			return 1
+		default:
+			ai, _ := a[i].(int)
+			bi, _ := b[i].(int)
+			if ai != bi {
+				return ai - bi
+			}
+		}
+	}
+	return len(a) - len(b)
+}
+
+// DisplayJSON returns the display-safe form of a generic JSON object: every
+// string passes through the same redaction and length bound as RedactJSON,
+// and each altered string is reported by field, kind and structured JSON
+// path. The result is display data only; it must never be treated as
+// canonical executable configuration.
+func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
+	transforms := map[string]*DisplayTransform{}
+	var walk func(value any, path []any, field string) any
+	walk = func(value any, path []any, field string) any {
+		switch v := value.(type) {
+		case string:
+			display, kinds := displayString(v)
+			if len(kinds) == 0 {
+				return display
+			}
+			entry := transforms[field]
+			if entry == nil {
+				entry = &DisplayTransform{Field: field, Kinds: []string{}, Paths: [][]any{}}
+				transforms[field] = entry
+			}
+			for _, kind := range kinds {
+				if !slices.Contains(entry.Kinds, kind) {
+					entry.Kinds = append(entry.Kinds, kind)
+				}
+			}
+			entry.Paths = append(entry.Paths, path)
+			return display
+		case []any:
+			for i := range v {
+				v[i] = walk(v[i], append(slices.Clone(path), i), field)
+			}
+			return v
+		case map[string]any:
+			keys := make([]string, 0, len(v))
+			for key := range v {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				v[key] = walk(v[key], append(slices.Clone(path), key), field)
+			}
+			return v
+		default:
+			return value
+		}
+	}
+	fields := make([]string, 0, len(object))
+	for field := range object {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	for _, field := range fields {
+		object[field] = walk(object[field], []any{field}, field)
+	}
+	result := []DisplayTransform{}
+	for _, field := range fields {
+		if entry := transforms[field]; entry != nil {
+			sort.Strings(entry.Kinds)
+			slices.SortFunc(entry.Paths, comparePathSegments)
+			result = append(result, *entry)
+		}
+	}
+	return object, result
 }
 
 // RedactJSON scrubs every string inside a generic JSON value in place.

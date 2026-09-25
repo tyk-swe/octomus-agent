@@ -154,7 +154,7 @@ def scenario(mode):
                     for tier in config['tiers']:
                         config['tiers'][tier] = dict(codex)
                     config['repair_route'] = dict(codex)
-                service.request('/config', 'PUT', config)
+                service.save_config(config)
                 service.request('/control/cycle', 'POST')
                 task = service.wait(service.terminal_task, 'published task')
                 assert task['status'] == 'published', task['error']

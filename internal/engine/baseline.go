@@ -185,25 +185,23 @@ func (a *App) baselineEligibility() (bool, *string, error) {
 	return true, nil, nil
 }
 
-// StartBaseline validates the expected configuration against the live one,
-// persists a running check and starts its worker. The whole eligibility check
-// and launch serialize on the gate.
-func (a *App) StartBaseline(expected config.Config) (*model.BaselineCheck, error) {
+// StartBaseline validates the expected canonical configuration revision against
+// the live saved configuration, persists a running check and starts its worker.
+// A stale revision conflicts before any record, clone or other work is created;
+// the check snapshots and runs the exact canonical configuration it validated.
+// The whole eligibility check and launch serialize on the gate.
+func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	live, err := a.Config()
 	if err != nil {
 		return nil, err
 	}
-	expectedJSON, err := expected.MarshalJSON()
+	fingerprint, err := BaselineFingerprint(live)
 	if err != nil {
 		return nil, err
 	}
-	liveJSON, err := live.MarshalJSON()
-	if err != nil {
-		return nil, err
-	}
-	if string(liveJSON) != string(expectedJSON) {
+	if fingerprint != expectedRevision {
 		return nil, baselineConflict("The saved configuration changed; reload settings and check the current values")
 	}
 	reason, err := a.baselineRuntimeIneligibility()
@@ -222,10 +220,6 @@ func (a *App) StartBaseline(expected config.Config) (*model.BaselineCheck, error
 		Config:    live.Clone(),
 		StartedAt: model.Now(),
 		Commands:  []model.BaselineCommand{},
-	}
-	fingerprint, err := BaselineFingerprint(live)
-	if err != nil {
-		return nil, err
 	}
 	check.ConfigFingerprint = fingerprint
 	if err := a.Store.Put("baseline", check.ID, check); err != nil {
@@ -335,9 +329,11 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 		return nil, err
 	}
 	var configMatches any
+	var configRevision any
 	revisionStatus := "unknown"
 	if check != nil {
 		configMatches = a.BaselineConfigMatches(check, live)
+		configRevision = check.ConfigFingerprint
 		revisionStatus = a.BaselineRevisionStatus(check, live)
 	}
 	a.runtimeMu.Lock()
@@ -352,6 +348,7 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 		"eligible":            eligible,
 		"reason":              reasonValue,
 		"config_matches":      configMatches,
+		"config_revision":     configRevision,
 		"revision_status":     revisionStatus,
 		"default_observation": observation,
 		"caveat":              baselineCaveat,
@@ -394,21 +391,54 @@ func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted
 }
 
 // CleanupBaseline removes the check's owned clone directory and records the
-// outcome; a refusal is evidence, not a worker failure.
+// outcome; a refusal is evidence, not a worker failure. Callers must not hold
+// the scheduler gate: the check is claimed, the recursive deletion runs
+// gate-free so unrelated controls stay responsive, then the gate serializes a
+// finalization that applies only the cleanup fields to the current durable
+// record. A record that vanished mid-removal is left vanished — writing the
+// caller's stale copy back would resurrect it. A check already claimed by
+// another cleanup is skipped, not double-removed — callers see success, since
+// ownership means the outcome is being recorded by the owner.
 func (a *App) CleanupBaseline(check *model.BaselineCheck) error {
-	root := filepath.Join(a.DataDir, "baselines")
 	if _, err := uuid.Parse(check.ID); err != nil {
 		return errors.New("Invalid baseline identity")
 	}
-	path := filepath.Join(root, check.ID)
-	if err := workspace.RemoveOwnedDir(root, path); err != nil {
-		message := store.ErrorMessage(err)
-		check.CleanupError = &message
-	} else {
-		check.WorkspaceRemoved = true
-		check.CleanupError = nil
+	if !a.claimCleanup(cleanupBaseline, check.ID) {
+		return nil
 	}
-	return a.Store.Put("baseline", check.ID, *check)
+	root := filepath.Join(a.DataDir, "baselines")
+	removeErr := a.removeDir(root, filepath.Join(root, check.ID))
+	a.gate.Lock()
+	defer func() {
+		a.releaseCleanup(cleanupBaseline, check.ID)
+		a.gate.Unlock()
+	}()
+	var cleanupError *string
+	if removeErr != nil {
+		message := store.ErrorMessage(removeErr)
+		cleanupError = &message
+	}
+	if removeErr == nil {
+		check.WorkspaceRemoved = true
+	}
+	check.CleanupError = cleanupError
+	// The record may have advanced while the gate was released; apply the
+	// cleanup outcome to its current state rather than writing back a stale
+	// copy.
+	current, err := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		// The durable record vanished mid-removal; nothing to finalize. The
+		// caller's in-memory copy already carries the cleanup outcome.
+		return nil
+	}
+	if removeErr == nil {
+		current.WorkspaceRemoved = true
+	}
+	current.CleanupError = cleanupError
+	return a.Store.Put("baseline", check.ID, *current)
 }
 
 var baselineStatusDebug = map[model.BaselineStatus]string{

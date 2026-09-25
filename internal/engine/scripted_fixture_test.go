@@ -233,6 +233,59 @@ func TestScriptedFixtureDrivesTaskThroughRepairToPublication(t *testing.T) {
 	}
 }
 
+// TestPublicationMetadataIsPublicOnly: the exact title and body delivered to
+// the GitHub peer are scrubbed of secret-shaped text — proposal fields, the
+// verification command description and the implementation summary alike —
+// while the durable task record keeps its canonical private values unchanged.
+func TestPublicationMetadataIsPublicOnly(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	fixture.configure(t, func(cfg *config.Config) {
+		cfg.VerificationCommands = []string{"grep -q fixed feature.txt", "echo " + secretToken}
+	})
+	routes, script := fixture.routes, fixture.script
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Implemented using " + secretToken, Effect: writeFile("feature.txt", "fixed\n")})
+	script.Answer(routes.Reviewer, cleanReview("clean"))
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	task.Proposal.Title = "Ship it " + secretToken
+	task.Proposal.Problem = "Missing output; see " + secretToken
+	saveExecutionTask(t, fixture.planningFixture, task)
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if saved.Status != model.StatusPublished || saved.OutputCommit == nil {
+		t.Fatalf("task did not publish: %+v", saved)
+	}
+	// Canonical task evidence is byte-for-byte unchanged: proposal fields,
+	// configured commands and the recorded verification command keep the
+	// private values the operator and runner actually used.
+	if saved.Proposal.Title != "Ship it "+secretToken || saved.Proposal.Problem != "Missing output; see "+secretToken {
+		t.Fatalf("canonical proposal was rewritten: %+v", saved.Proposal)
+	}
+	if saved.Config.VerificationCommands[1] != "echo "+secretToken ||
+		saved.Verification[len(saved.Verification)-1].Command != "echo "+secretToken {
+		t.Fatalf("canonical command evidence changed: %+v / %+v", saved.Config.VerificationCommands, saved.Verification)
+	}
+	prs := prsJSON(t, fixture.planningFixture)
+	if len(prs) != 1 {
+		t.Fatalf("expected exactly one PR: %+v", prs)
+	}
+	title, _ := prs[0]["title"].(string)
+	body, _ := prs[0]["body"].(string)
+	if strings.Contains(title+"\n"+body, secretToken) {
+		t.Fatalf("public metadata leaked the secret: title=%q body=%q", title, body)
+	}
+	if title != "Ship it [redacted]" {
+		t.Fatalf("outbound title = %q; want the scrubbed form", title)
+	}
+	if !strings.Contains(body, "echo [redacted]") {
+		t.Fatalf("command description was not scrubbed: %q", body)
+	}
+	if !strings.Contains(body, "<!-- octomus:task:"+saved.ID+" -->") ||
+		!strings.Contains(body, "Reviewed commit: `"+*saved.OutputCommit+"`") {
+		t.Fatalf("public body lost delivery identity: %q", body)
+	}
+	assertNoOpenClients(t, script)
+}
+
 // TestScriptedCatalogRejectsMissingRoute: route validation runs for real
 // against the scripted catalog, so a route absent from it blocks the task as
 // runner_unavailable before any admission, workspace or session.

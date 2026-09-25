@@ -76,13 +76,17 @@ Publication requires recorded clean review and successful verification evidence 
 
 GitHub is the MVP provider. Existing PRs require the configured prefix, matching head repository, and an Octomus task marker in their body. Prefixed PRs without that marker contribute planning context but are not writable targets. New branch suffixes use unique task IDs. PR bodies record the objective, scope, benefit, verification, implementation summary and publication marker. Follow-ups post their record as a comment on the existing PR rather than rewriting its description, so earlier delivery notes and maintainer edits are never replaced; the task marker attached there makes the append idempotent.
 
+Titles, descriptions and follow-up comments are prepared for public delivery before the first new outbound write: proposal text, command descriptions and session summaries pass through the non-truncating secret scrubber, and the prepared text is validated — exact task marker and reviewed commit intact, within the remote's title and body limits. Metadata that cannot satisfy both is refused without writing; nothing is silently truncated, and canonical task records keep their private values.
+
 Creation resolves the exact returned PR number, then creation and updates share a final repository/ownership/branch/base/head/task-marker validator. A mismatched result remains blocked with its publication checkpoint. Before retrying a publication, the service searches all matching PR states, including closed and merged PRs; ambiguous branch associations fail closed. A matching task marker — in the description or a follow-up comment — and output head confirm previously completed delivery without another push or duplicate PR. Changed remote state is surfaced for reconciliation.
 
 ## Explicit baseline verification
 
 The authenticated baseline action runs only by operator request while paused and idle.
-It compares the expected saved configuration, records its fingerprint and the remote
-default SHA, then runs saved commands in a disposable clone with the ordinary process,
+Admission pins the canonical configuration revision the operator loaded; a stale or
+display-transformed value conflicts before any clone is made. The record keeps the
+canonical snapshot, its fingerprint and the remote default SHA, then runs saved
+commands in a disposable clone with the ordinary process,
 timeout, output and worktree-integrity primitives. It creates no task, cycle, PR or model
 admission. Results are separate baseline records, never task publication evidence.
 Output is capped at 16 KiB per command and 1 MiB per check with explicit truncation;

@@ -1,20 +1,20 @@
 <script lang="ts">
   import { api, relative } from './api';
   import { baselineStatusLabel, type Tone } from './evidence';
-  import { configIdentity } from './setup';
-  import type { BaselineCheck, BaselineView, Config } from './types';
+  import type { BaselineCheck, BaselineView } from './types';
   import Sha from './Sha.svelte';
   import Icon from './Icon.svelte';
   let {
     active,
     editable,
-    saved,
+    savedRevision,
     dirty,
     onchanged
   }: {
     active: boolean;
     editable: boolean;
-    saved: Config | null;
+    /** Canonical revision of the saved configuration; the check always runs that exact state. */
+    savedRevision: string | null;
     dirty: boolean;
     onchanged: () => void;
   } = $props();
@@ -27,9 +27,10 @@
   let request: AbortController | null = null;
   const check = $derived(view?.check ?? null);
   const running = $derived(check?.status === 'running');
-  const savedKey = $derived(saved ? configIdentity(saved) : '');
+  const savedKey = $derived(savedRevision ?? '');
   const configMatches = $derived(
-    view?.config_matches === false || (check && saved && configIdentity(check.config) !== savedKey)
+    view?.config_matches === false ||
+      (check && savedRevision && check.config_fingerprint !== savedRevision)
       ? false
       : (view?.config_matches ?? null)
   );
@@ -85,16 +86,19 @@
     if (active) void load(true);
   });
   $effect(() => {
-    if (confirming && (!saved || !editable || dirty || pending !== '' || view?.eligible !== true))
+    if (
+      confirming &&
+      (!savedRevision || !editable || dirty || pending !== '' || view?.eligible !== true)
+    )
       confirming = false;
   });
   async function start() {
-    if (!saved || !editable || dirty || pending || view?.eligible !== true) return;
+    if (!savedRevision || !editable || dirty || pending || view?.eligible !== true) return;
     confirming = false;
     pending = 'start';
     error = '';
     try {
-      await api<BaselineCheck>('/baseline-checks', 'POST', { expected_config: saved });
+      await api<BaselineCheck>('/baseline-checks', 'POST', { expected_revision: savedRevision });
       await load(true);
       onchanged();
     } catch (e) {
@@ -154,6 +158,12 @@
       <div>
         <dt>Revision</dt>
         <dd><Sha value={check.revision} label="checked revision" /></dd>
+      </div>
+      <div>
+        <dt>Config revision</dt>
+        <dd>
+          <Sha value={check.config_fingerprint} label="checked configuration revision" />
+        </dd>
       </div>
       <div>
         <dt>Saved configuration</dt>
@@ -231,7 +241,7 @@
         id="check-baseline"
         class="button"
         onclick={() => (confirming = true)}
-        disabled={!saved || !editable || dirty || pending !== '' || view?.eligible !== true}
+        disabled={!savedRevision || !editable || dirty || pending !== '' || view?.eligible !== true}
         ><Icon name="shield" size={16} />Check clean baseline</button
       >
       {#if running}<button class="button" onclick={cancel} disabled={pending !== ''}

@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -162,6 +164,61 @@ func TestRedactsTokensUnicodeWhitespace(t *testing.T) {
 		if got := store.RedactSecrets(input); got != input {
 			t.Errorf("non-whitespace U+%04X matched: %q", separator, got)
 		}
+	}
+}
+
+// TestDisplayJSONReportsEveryTransformedString proves the display view walks
+// nested maps and arrays, applies redaction before the length bound, and
+// records each changed string by top-level field, kinds and JSON path so the
+// settings contract can label previews precisely.
+func TestDisplayJSONReportsEveryTransformedString(t *testing.T) {
+	long := strings.Repeat("synthetic-", 2000)
+	object := map[string]any{
+		"nested": map[string]any{
+			"inner":  map[string]any{"token": "value ghp_abcdefghijklmnop", "kept": "plain"},
+			"listed": []any{"sk-abcdefghijklmnopqrstuvwxyz", "fine", long},
+		},
+		"other":   "untouched",
+		"numeric": 7,
+	}
+	display, fields := store.DisplayJSON(object)
+	nested := display["nested"].(map[string]any)
+	if nested["inner"].(map[string]any)["token"] != "value [redacted]" {
+		t.Fatalf("nested map value: %v", nested["inner"])
+	}
+	listed := nested["listed"].([]any)
+	if listed[0] != "[redacted]" || listed[1] != "fine" {
+		t.Fatalf("nested list values: %v", listed)
+	}
+	shortened := listed[2].(string)
+	if utf8.RuneCountInString(shortened) != 16384 || !utf8.ValidString(shortened) {
+		t.Fatalf("shortened display text: %d runes", utf8.RuneCountInString(shortened))
+	}
+	if display["other"] != "untouched" || display["numeric"] != 7 {
+		t.Fatalf("untouched values changed: %v", display)
+	}
+	if len(fields) != 1 {
+		t.Fatalf("transform fields: %+v", fields)
+	}
+	entry := fields[0]
+	if entry.Field != "nested" {
+		t.Fatalf("transform field: %q", entry.Field)
+	}
+	if !reflect.DeepEqual(entry.Kinds, []string{"redacted", "shortened"}) {
+		t.Fatalf("transform kinds: %v", entry.Kinds)
+	}
+	want := [][]any{
+		{"nested", "inner", "token"},
+		{"nested", "listed", 0},
+		{"nested", "listed", 2},
+	}
+	if !reflect.DeepEqual(entry.Paths, want) {
+		t.Fatalf("transform paths: %v", entry.Paths)
+	}
+	// Untouched objects report no transforms at all, and ordering is stable.
+	display, again := store.DisplayJSON(map[string]any{"a": "plain", "b": []any{"also plain"}})
+	if len(again) != 0 || display["a"] != "plain" {
+		t.Fatalf("clean object: %v %+v", display, again)
 	}
 }
 

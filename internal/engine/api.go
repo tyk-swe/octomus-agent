@@ -171,8 +171,17 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 
 // CycleAction handles running cycles
 // conflict, archive stamps the lifecycle and discard requires the archive.
+// Discard removes the managed directory with the gate released; the call is
+// registered service work from admission so Shutdown waits out an in-flight
+// removal instead of abandoning it mid-delete.
 func (a *App) CycleAction(id, action string) error {
 	a.gate.Lock()
+	if err := a.ctx.Err(); err != nil {
+		a.gate.Unlock()
+		return err
+	}
+	a.wg.Add(1)
+	defer a.wg.Done()
 	defer a.gate.Unlock()
 	cycle, err := store.Get[model.Cycle](a.Store, "cycle", id)
 	if err != nil {
@@ -183,6 +192,9 @@ func (a *App) CycleAction(id, action string) error {
 	}
 	if cycle.Status == model.CycleRunning {
 		return conflictError("Wait for planning to finish")
+	}
+	if a.cleanupClaimed(cleanupCycle, id) {
+		return conflictError("Workspace cleanup is in progress for this cycle; wait for it to finish")
 	}
 	switch action {
 	case "archive":
@@ -204,43 +216,122 @@ func (a *App) CycleAction(id, action string) error {
 	return a.Store.Event(id, "operator", action)
 }
 
-// SaveConfig mirrors save_config: the service must be paused and drained, the
-// new policy validates in its incomplete form, and identity changes require a
-// clean task ledger.
-func (a *App) SaveConfig(c config.Config) error {
+// SettingsView is the settings read contract: a display-safe configuration, the
+// canonical revision it was computed from, and metadata naming every string the
+// display transformation changed. The revision identifies canonical executable
+// state; the displayed values are previews and are never written back.
+type SettingsView struct {
+	Config            map[string]any           `json:"config"`
+	Revision          string                   `json:"revision"`
+	TransformedFields []store.DisplayTransform `json:"transformed_fields"`
+}
+
+// NewSettingsView builds the display view of one canonical configuration: the
+// revision is the canonical fingerprint, computed before any display
+// transformation, so identical saved state always reports the same revision.
+func NewSettingsView(c config.Config) (*SettingsView, error) {
+	revision, err := c.Fingerprint()
+	if err != nil {
+		return nil, err
+	}
+	generic, err := genericMap(c)
+	if err != nil {
+		return nil, err
+	}
+	display, fields := store.DisplayJSON(generic)
+	return &SettingsView{Config: display, Revision: revision, TransformedFields: fields}, nil
+}
+
+// Settings answers the current display-safe settings view.
+func (a *App) Settings() (*SettingsView, error) {
+	c, err := a.Config()
+	if err != nil {
+		return nil, err
+	}
+	return NewSettingsView(c)
+}
+
+// ConfigPatchError marks a settings replacement that failed the strict typed
+// decode; the API maps it to the same body rejection as a malformed request.
+type ConfigPatchError struct{ inner error }
+
+func (e *ConfigPatchError) Error() string { return e.inner.Error() }
+
+// mergeConfigPatch applies explicit top-level replacements to the canonical
+// configuration. Raw patch values are embedded verbatim so the merged document
+// decodes through the strict typed boundary exactly like a complete request:
+// unknown fields, duplicate keys and invalid values are all rejected there.
+func mergeConfigPatch(live config.Config, patch map[string]json.RawMessage) (config.Config, error) {
+	generic, err := genericMap(live)
+	if err != nil {
+		return config.Config{}, err
+	}
+	for key, raw := range patch {
+		generic[key] = raw
+	}
+	merged, err := json.Marshal(generic)
+	if err != nil {
+		return config.Config{}, err
+	}
+	var next config.Config
+	if err := json.Unmarshal(merged, &next); err != nil {
+		return config.Config{}, &ConfigPatchError{err}
+	}
+	return next, nil
+}
+
+// SaveConfig applies an explicit partial update under optimistic concurrency:
+// the service must be paused and drained, the expected revision must match the
+// live canonical fingerprint, supplied top-level fields replace their values
+// completely and the merged result validates before persisting.
+func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessage) (*SettingsView, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	control, err := a.Control()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	a.runtimeMu.Lock()
 	idle := a.runtime.idle()
 	a.runtimeMu.Unlock()
 	if !control.Paused || !idle {
-		return conflictError("Pause and wait for active work to finish before changing configuration.")
-	}
-	if err := c.Validate(false); err != nil {
-		return err
+		return nil, conflictError("Pause and wait for active work to finish before changing configuration.")
 	}
 	old, err := a.Config()
 	if err != nil {
-		return err
+		return nil, err
+	}
+	revision, err := old.Fingerprint()
+	if err != nil {
+		return nil, err
+	}
+	if revision != expectedRevision {
+		return nil, conflictError("The saved configuration changed; reload settings and check the current values.")
+	}
+	c, err := mergeConfigPatch(old, patch)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Validate(false); err != nil {
+		return nil, err
 	}
 	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix {
 		unresolved, err := a.Store.HasUnresolvedTasks()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if unresolved {
-			return conflictError("Resolve or cancel existing tasks before changing repository identity or branch policy.")
+			return nil, conflictError("Resolve or cancel existing tasks before changing repository identity or branch policy.")
 		}
 	}
 	if err := a.Store.Put("settings", "config", c); err != nil {
-		return err
+		return nil, err
 	}
 	a.invalidatePrObservation()
-	return a.Store.Event("system", "configuration", "Operator saved configuration")
+	if err := a.Store.Event("system", "configuration", "Operator saved configuration"); err != nil {
+		return nil, err
+	}
+	return NewSettingsView(c)
 }
 
 // DoctorFor mirrors doctor_for: validate for the requested mode, check the
@@ -455,6 +546,7 @@ func (a *App) StateView() (map[string]any, error) {
 			"started_at":      latest.StartedAt,
 			"completed_at":    latest.CompletedAt,
 			"error":           latest.Error,
+			"config_revision": latest.ConfigFingerprint,
 			"config_matches":  a.BaselineConfigMatches(latest, cfg),
 			"revision_status": a.BaselineRevisionStatus(latest, cfg),
 		}

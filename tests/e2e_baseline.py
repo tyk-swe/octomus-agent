@@ -19,6 +19,11 @@ def status(service, path, method='GET', value=None):
 
 
 def save_config(service, empty_models=False, **overrides):
+    """Saves a fresh configuration and returns the settings view.
+
+    The view's `revision` is the canonical fingerprint baseline admission and
+    later saves must echo back; `config` holds the display-safe values.
+    """
     config = base_config(service, ['true'], cycle_interval_seconds=3600, task_timeout_seconds=60)
     if empty_models:
         for role in config['roles']:
@@ -90,7 +95,7 @@ def scenario(mode):
                     view = latest(service)
                     reason = 'Wait for planning to finish before running a baseline check'
                     assert view['check'] is None and view['eligible'] is False and view['reason'] == reason, view
-                    code, refusal = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                    code, refusal = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                     assert code == 409 and refusal['error'] == reason, (code, refusal)
                     assert latest(service)['check'] is None
                     assert not (root / '.octomus/baselines').exists()
@@ -122,12 +127,12 @@ def scenario(mode):
                 service.wait(lambda: (s := service.request('/state'))['cycles'] and
                              s['cycles'][0]['status'] == 'idle' and not s['cycle_active'],
                              'audit completion')
-                code, invalid = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, invalid = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 400 and 'verification command' in invalid['error'], (code, invalid)
-                config['verification_commands'] = [f'touch {marker}; sleep 60']
-                config = service.save_config(config)
+                config['config']['verification_commands'] = [f'touch {marker}; sleep 60']
+                config = service.save_config(config['config'])
                 service.wait(lambda: latest(service)['eligible'], 'baseline eligibility after audit')
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, (code, check)
                 service.wait(lambda: marker.exists(), 'baseline command entry')
                 before = usage_report(root)
@@ -155,7 +160,7 @@ def scenario(mode):
                 return
             if mode == 'gates':
                 config = save_config(service, verification_commands=[f'touch {marker}; sleep 31338 & sleep 60'], command_timeout_seconds=60)
-                task = {'id': 'task-seed', 'cycle_id': 'cycle-seed', 'proposal': {'id': 'p', 'title': 'T', 'problem': 'P', 'benefit': 'B', 'scope': 'S', 'evidence': [], 'category': 'features', 'target': 'main', 'tier': 'M', 'dependencies': [], 'prompt': 'Do it', 'decision': 'accepted', 'reason': 'R', 'problem_key': '', 'relevant_paths': [], 'reconsiders': []}, 'status': 'blocked', 'blocked_reason': 'publication_uncertain', 'route': {'backend': 'codex', 'model': 'm', 'effort': 'low'}, 'config': config, 'source_revision': 's', 'comparison_base': 's', 'default_revision': 's', 'branch': 'octomus/seed', 'workspace': '', 'sessions': [], 'reviews': [], 'verification': [], 'output_commit': '0' * 40, 'attempts': 0, 'created_at': '2026-01-01T00:00:00Z', 'updated_at': '2026-01-01T00:00:00Z'}
+                task = {'id': 'task-seed', 'cycle_id': 'cycle-seed', 'proposal': {'id': 'p', 'title': 'T', 'problem': 'P', 'benefit': 'B', 'scope': 'S', 'evidence': [], 'category': 'features', 'target': 'main', 'tier': 'M', 'dependencies': [], 'prompt': 'Do it', 'decision': 'accepted', 'reason': 'R', 'problem_key': '', 'relevant_paths': [], 'reconsiders': []}, 'status': 'blocked', 'blocked_reason': 'publication_uncertain', 'route': {'backend': 'codex', 'model': 'm', 'effort': 'low'}, 'config': config['config'], 'source_revision': 's', 'comparison_base': 's', 'default_revision': 's', 'branch': 'octomus/seed', 'workspace': '', 'sessions': [], 'reviews': [], 'verification': [], 'output_commit': '0' * 40, 'attempts': 0, 'created_at': '2026-01-01T00:00:00Z', 'updated_at': '2026-01-01T00:00:00Z'}
                 task.update(review_baseline=0, superseded_by=[], supersedes=[],
                             rediscovery_requested=False,
                             lifecycle={'archived_at': None, 'discarded_at': None})
@@ -163,21 +168,23 @@ def scenario(mode):
                 db.execute("INSERT INTO records VALUES ('task',?,?)", (task['id'], json.dumps(task)))
                 db.commit()
                 db.close()
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202 and check['status'] == 'running', check
                 check_id = check['id']
                 service.wait(lambda: marker.exists(), 'command entry')
-                assert status(service, '/baseline-checks', 'POST', {'expected_config': config})[0] == 409
-                stale = dict(config, verification_commands=['false'])
-                assert status(service, '/baseline-checks', 'POST', {'expected_config': stale})[0] == 409
+                assert status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})[0] == 409
+                # A well-formed but outdated revision conflicts before a check exists.
+                stale = '0' * 64
+                assert status(service, '/baseline-checks', 'POST', {'expected_revision': stale})[0] == 409
                 for path in ['/control/cycle', '/control/resume', '/control/audit', f'/tasks/{task["id"]}/reconcile']:
                     assert status(service, path, 'POST')[0] == 409, path
-                assert status(service, '/config', 'PUT', config)[0] == 409
+                assert status(service, '/config', 'PUT', {'expected_revision': config['revision'], 'config': {}})[0] == 409
                 assert status(service, '/control/pause', 'POST')[0] == 200
                 assert status(service, '/tasks')[0] == 200
                 state = service.request('/state')
                 assert state['baseline_active'] and state['baseline']['id'] == check_id and 'commands' not in state['baseline'], state['baseline']
                 assert 'config_matches' in state['baseline'] and 'revision_status' in state['baseline']
+                assert state['baseline']['config_revision'] == config['revision'], state['baseline']
                 code, ack = status(service, f'/baseline-checks/{check_id}/cancel', 'POST')
                 assert code == 200 and ack['ok'], ack
                 check = wait_check(service, ['cancelled'], cleaned=True)
@@ -200,7 +207,7 @@ def scenario(mode):
                 (root / 'checkout/README.md').write_text('dirty local edits\n')
                 (root / 'checkout/untracked.txt').write_text('junk\n')
                 (root / 'checkout/scratchpad.tmp').write_text('junk\n')
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202 and check['status'] == 'running', check
                 check = wait_check(service, ['passed'], cleaned=True)
                 assert len(check['commands']) == 4 and all(c['success'] for c in check['commands']), check
@@ -209,10 +216,11 @@ def scenario(mode):
                 assert not service.request('/state')['baseline_active']
                 view = service.wait(lambda: latest(service) if latest(service)['revision_status'] == 'matches_last_observation' else None, 'default branch observation')
                 assert view['config_matches'] and view['default_observation']['revision'] == check['revision'], view
+                assert view['config_revision'] == check['config_fingerprint'] == config['revision'], view
                 changed = save_config(service, empty_models=True, verification_commands=['echo extra'])
                 view = latest(service)
                 assert view['config_matches'] is False and view['check']['id'] == check['id'], view
-                code, second = status(service, '/baseline-checks', 'POST', {'expected_config': changed})
+                code, second = status(service, '/baseline-checks', 'POST', {'expected_revision': changed['revision']})
                 assert code == 202, second
                 second = wait_check(service, ['passed'])
                 assert second['id'] != check['id'] and second['commands'][0]['success']
@@ -224,7 +232,7 @@ def scenario(mode):
                 return
             if mode == 'failure':
                 config = save_config(service, verification_commands=['true', 'false', 'echo third'])
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 check = wait_check(service, ['failed'], cleaned=True)
                 assert len(check['commands']) == 3 and [c['success'] for c in check['commands']] == [True, False, True], check['commands']
@@ -234,13 +242,13 @@ def scenario(mode):
                 return
             if mode == 'mutation':
                 config = save_config(service, verification_commands=['echo external >> README.md', 'true'])
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 check = wait_check(service, ['failed'], cleaned=True)
                 assert len(check['commands']) == 1 and 'changed' in check['commands'][0]['output'], check
                 assert 'changed' in check['error'] and check['workspace_removed']
                 config = save_config(service, verification_commands=['git -c user.name=External -c user.email=external@example.com commit --allow-empty -m moved', 'true'])
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 check = wait_check(service, ['failed'], cleaned=True)
                 assert len(check['commands']) == 1 and 'changed' in check['commands'][0]['output'], check
@@ -248,7 +256,7 @@ def scenario(mode):
                 return
             if mode == 'timeout':
                 config = save_config(service, verification_commands=[f'touch {marker}; sleep 31337 & sleep 60'], command_timeout_seconds=10)
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 service.wait(lambda: marker.exists(), 'command entry')
                 check = wait_check(service, ['timed_out'], cleaned=True)
@@ -259,7 +267,7 @@ def scenario(mode):
                 return
             if mode == 'timeout-overall':
                 config = save_config(service, verification_commands=[f'touch {marker}; sleep 60'], session_timeout_seconds=10, task_timeout_seconds=10, command_timeout_seconds=60)
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 service.wait(lambda: marker.exists(), 'command entry')
                 check = wait_check(service, ['timed_out'], cleaned=True)
@@ -270,7 +278,7 @@ def scenario(mode):
             if mode == 'restart':
                 pgid_file = root / 'baseline-pgid'
                 config = save_config(service, verification_commands=[f'touch {marker}; echo $$ > {pgid_file}; sleep 31339 & sleep 60'], command_timeout_seconds=60)
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 service.wait(lambda: pgid_file.exists() and (root / '.octomus/baselines' / check['id'] / 'workspace').exists(), 'command entry and clone')
                 pgid = int(pgid_file.read_text().strip())
@@ -288,7 +296,7 @@ def scenario(mode):
                 return
             if mode == 'cancel-restart':
                 config = save_config(service, verification_commands=[f'touch {marker}; sleep 60'], command_timeout_seconds=60)
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 service.wait(lambda: marker.exists(), 'command entry')
                 assert status(service, f'/baseline-checks/{check["id"]}/cancel', 'POST')[0] == 200
@@ -299,7 +307,7 @@ def scenario(mode):
                 return
             if mode == 'shutdown':
                 config = save_config(service, verification_commands=[f'touch {marker}; sleep 60'], command_timeout_seconds=60)
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 service.wait(lambda: marker.exists(), 'command entry')
                 service.stop()
@@ -313,7 +321,7 @@ def scenario(mode):
                 return
             if mode == 'symlink':
                 config = save_config(service, verification_commands=[f'touch {marker}; sleep 60'], command_timeout_seconds=60)
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 service.wait(lambda: marker.exists(), 'command entry')
                 service.stop(crash=True)
@@ -334,7 +342,7 @@ def scenario(mode):
             if mode == 'disconnect':
                 config = save_config(service)
                 connection = http.client.HTTPConnection('127.0.0.1', service.port)
-                connection.request('POST', '/api/baseline-checks', body=json.dumps({'expected_config': config}), headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'})
+                connection.request('POST', '/api/baseline-checks', body=json.dumps({'expected_revision': config['revision']}), headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'})
                 time.sleep(0.3)
                 connection.close()
                 check = wait_check(service, ['passed'])
@@ -344,7 +352,7 @@ def scenario(mode):
             if mode == 'storage':
                 config = save_config(service, max_workspace_bytes=1_000_000)
                 (root / '.octomus/junk.bin').write_bytes(b'0' * 2_000_000)
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 check = wait_check(service, ['failed'])
                 assert 'storage' in check['error'].lower() or 'limit' in check['error'].lower(), check['error']
@@ -354,7 +362,7 @@ def scenario(mode):
             if mode == 'truncation':
                 commands = ["yes '𐐀' | head -c 20001 || true", "yes 'x' | head -c 300000 || true"] + ["head -c 20000 /dev/zero | tr '\\0' y"] * 80
                 config = save_config(service, verification_commands=commands)
-                code, check = status(service, '/baseline-checks', 'POST', {'expected_config': config})
+                code, check = status(service, '/baseline-checks', 'POST', {'expected_revision': config['revision']})
                 assert code == 202, check
                 check = wait_check(service, ['passed'], seconds=120)
                 assert len(check['commands']) == len(commands), len(check['commands'])

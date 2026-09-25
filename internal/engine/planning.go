@@ -19,7 +19,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
-	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 type roleOutcome struct {
@@ -497,7 +496,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycle model.Cycle, la
 		},
 	})
 	if outcome.err == nil {
-		if err := workspace.RemoveOwnedDir(roleRoot, roleWorkspace); err != nil {
+		if err := a.removeDir(roleRoot, roleWorkspace); err != nil {
 			_ = a.Store.Event(cycle.ID, "cleanup_error", fmt.Sprintf("%s: %s", label, store.ErrorMessage(err)))
 		}
 	}
