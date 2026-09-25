@@ -14,5 +14,4 @@
 /dist/
 __pycache__/
 /web/artifacts/
-/web/.wrangler/
 /bin/

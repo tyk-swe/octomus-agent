@@ -10,14 +10,11 @@ using your Codex or OpenCode access.
 
 ## Start with a little curiosity
 
-1. **Explore the sample.** See a proposal become a PR, and inspect rejected, deferred,
-   and blocked work in the [interactive walkthrough](https://octomus-agent.tyk.sh/showcase/).
-   Every record in the walkthrough is synthetic.
-2. **Prepare your host.** Bring a dedicated Ubuntu 24.04 VM, provider access, and a
+1. **Prepare your host.** Bring a dedicated Ubuntu 24.04 VM, provider access, and a
    GitHub identity restricted to the target repository. Follow [getting started](getting-started.md).
-3. **Make your first audit.** Enter your configuration, save it, check the connection,
+2. **Make your first audit.** Enter your configuration, save it, check the connection,
    then run an audit. It records recommendations without queuing code changes.
-4. **Choose when to execute.** Run once plans afresh and executes accepted work. You
+3. **Choose when to execute.** Run once plans afresh and executes accepted work. You
    can enable continuous operation later. Inspect the evidence before merging any PR.
 
 ## Make Octomus your own

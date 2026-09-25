@@ -1,5 +1,6 @@
-// The public boundary accepts a deliberately authored wrapper, never an operator export.
-// This is a shape/consistency gate over `RunEvidenceV1` evidence, not an exporter or redactor.
+// Candidate gate used by the documented private-payload check: a deliberately authored
+// wrapper, never a raw operator export. This is a shape/consistency gate over
+// `RunEvidenceV1` evidence, not an exporter or redactor.
 export const REVIEW_WARNING =
   'Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact.';
 export const LIMITATIONS = [
@@ -108,7 +109,7 @@ const task = {
 };
 const schema = {
   public_schema_version: choices(1),
-  mode: choices('fixture', 'recorded'),
+  mode: choices('recorded'),
   evidence: {
     schema_version: choices(1),
     kind: choices('recorded_review_check_evidence'),
@@ -161,7 +162,7 @@ const schema = {
  * @param {string} path
  */
 function requireFact(condition, path) {
-  if (!condition) throw new Error(`Unsupported or inconsistent public input: ${path}`);
+  if (!condition) throw new Error(`Unsupported or inconsistent candidate: ${path}`);
 }
 // Construct only allowlisted keys. Reject extras instead of silently dropping private or adverse data.
 /**
@@ -215,7 +216,7 @@ function project(value, shape, path) {
  */
 export function publicPayload(value, mode) {
   const payload = project(value, schema, 'payload');
-  requireFact(payload.mode === mode, 'mode must match the explicit build mode');
+  requireFact(payload.mode === mode, 'mode must match the requested validation mode');
   const run = payload.evidence,
     cycle = run.cycle,
     plan = cycle.planning;
@@ -324,25 +325,28 @@ export function publicPayload(value, mode) {
   }
   return payload;
 }
-/**
- * @param {any} value
- * @param {string} hash
- */
-export function publicApproval(value, hash) {
-  const approval = project(
-    value,
-    {
-      approval_schema_version: choices(1),
-      owner_reviewed: choices(true),
-      payload_sha256: 'string',
-      approval_reference: 'string'
-    },
-    'approval'
-  );
-  requireFact(
-    /^[a-f0-9]{64}$/.test(approval.payload_sha256) && approval.payload_sha256 === hash,
-    'approval hash mismatch'
-  );
-  requireFact(approval.approval_reference.trim().length > 0, 'approval reference is required');
-  return approval;
+/** Parse JSON without allowing earlier object members to disappear from inspection. */
+/** @param {string} source */
+export function parseUniqueJson(source) {
+  // Let the native parser own the JSON grammar. Then scan the original text, not the
+  // parsed object: a reviver cannot see members overwritten by duplicate names.
+  const value = JSON.parse(source);
+  const objects = [];
+  let stringToken;
+  // Whole strings are tokens, so braces/colons and escaped quotes inside text cannot
+  // affect object scope. Arrays introduce no member-name scope of their own.
+  for (const [token] of source.matchAll(/"(?:[^"\\]|\\.)*"|[{}:]/g)) {
+    if (token === '{') objects.push(new Set());
+    else if (token === '}') objects.pop();
+    else if (token === ':') {
+      // JSON.parse above accepted the text, so a string key always sits
+      // immediately before each colon and the object stack is never empty.
+      // Decode escapes so "evidence" and "\\u0065vidence" are identical.
+      const key = JSON.parse(/** @type {string} */ (stringToken));
+      const names = /** @type {Set<string>} */ (objects.at(-1));
+      if (names.has(key)) throw new Error('Duplicate JSON object key');
+      names.add(key);
+    } else stringToken = token;
+  }
+  return value;
 }

@@ -35,11 +35,7 @@ owns strict typed JSON boundaries for saved records and API requests.
 - `internal/git`, `internal/process`, `internal/workspace`: Git/GitHub
   publication, owned process groups and managed-directory safety.
 - `web/src`: dashboard, shared TypeScript types, settings, setup checklist and
-  run/task evidence. `web/showcase`: standalone public showcase build of an approved
-  evidence wrapper (`docs/showcase.md`). `web/launch`: public homepage and docs styles,
-  with a guided synthetic sample (`docs/product-hunt.md`). `web/scripts/site-docs.mjs`
-  renders the public Markdown guides; `web/wrangler.jsonc` deploys `dist/site` to
-  `octomus-agent.tyk.sh` through Cloudflare Workers.
+  run/task evidence.
 - Go behavior tests sit beside each package (`*_test.go`). Pinned real-client
   contracts (`internal/runner`) and the scale checks (`internal/store`,
   `OCTOMUS_SCALE_TEST=1`) skip unless their environment is provided.
@@ -49,10 +45,8 @@ owns strict typed JSON boundaries for saved records and API requests.
   embedded assets. `distribution.py`,
   `package_guards.py` and `systemd.py` cover packaging and deployment;
   `evidence_snapshot.py` runs the documented backup and export examples on synthetic data.
-- `web/tests`: dashboard browser tests served by `tests/serve_ui.py`;
-  `web/showcase-tests`: showcase contract and browser tests; `web/site-tests`: public
-  site browser tests served by `tests/serve_site.py`. `docs/architecture.md`
-  describes the operating contract.
+- `web/tests`: dashboard browser tests served by `tests/serve_ui.py`.
+  `docs/architecture.md` describes the operating contract.
 
 ## Build and verify
 
@@ -61,10 +55,9 @@ race detector. Install dashboard dependencies with
 `npm ci --prefix web`. Install browser test prerequisites with
 `npx --prefix web playwright install --with-deps chromium`.
 
-- `make check`: gofmt/`go vet`, Svelte/TypeScript, showcase, site and
-  Prettier checks.
+- `make check`: gofmt/`go vet`, Svelte/TypeScript and Prettier checks.
 - `make test`: Go tests (including `-race`), production binary, dashboard build,
-  integration, browser, showcase and public-site tests.
+  integration and browser tests.
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
 - Focused integration: `npm run build --prefix web`, `make build`, then
   `OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e.py`. These

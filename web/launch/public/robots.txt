@@ -1,3 +1,0 @@
-User-agent: *
-Allow: /
-Sitemap: https://octomus-agent.tyk.sh/sitemap.xml

@@ -33,29 +33,6 @@ thread** per task. Configured verification must pass on the reviewed revision be
 Octomus publishes or updates a pull request. Interrupted work and publication are
 reconciled from durable state.
 
-## See a run before installing anything
-
-**[Homepage](https://octomus-agent.tyk.sh/) · [Documentation](https://octomus-agent.tyk.sh/docs/) · [Explore a sample run](https://octomus-agent.tyk.sh/showcase/)**
-
-Explore a useful fix, a rejected rewrite, a deferred optimization, and a blocked task in the
-guided demo at [octomus-agent.tyk.sh/showcase](https://octomus-agent.tyk.sh/showcase/). The public homepage at
-[octomus-agent.tyk.sh](https://octomus-agent.tyk.sh/) and [showcase](docs/showcase.md) need
-no service, account, token, or database. All sample records and screenshots are explicitly
-synthetic.
-
-```sh
-npm ci --prefix web
-npm run site:build --prefix web
-python3 tests/serve_site.py
-```
-
-Then open **http://127.0.0.1:4310/**.
-
-The homepage and searchable documentation are published through Cloudflare Workers at
-`https://octomus-agent.tyk.sh/`, with the hosted demo at `https://octomus-agent.tyk.sh/showcase/`.
-Publishing is a manual step. The [launch guide](docs/product-hunt.md) contains deployment
-instructions, Product Hunt copy, and gallery assets.
-
 ## Getting started
 
 Octomus is built from source; release binaries are not
@@ -95,8 +72,6 @@ not dollar caps; validated per-task and daily cost figures are not available yet
 | [Configuration example](docs/configuration.example.json) | Every saved policy field with its shipped default |
 | [Deployment](docs/deployment.md) | systemd, controls, limits, retention, backup, HTTP API |
 | [Run evidence](docs/run-evidence.md) | What `RunEvidenceV1` reports, and what it never claims |
-| [Showcase](docs/showcase.md) | The standalone static run explorer |
-| [Product Hunt launch](docs/product-hunt.md) | Public site, launch copy, gallery, and publishing checklist |
 | [Cost](docs/cost.md) | What a session admission is, and what is not measured |
 | [Threat model](docs/threat-model.md) | Trust boundaries, prompt injection, redaction limits |
 | [Releasing](docs/releasing.md) | Packaging and release workflow |

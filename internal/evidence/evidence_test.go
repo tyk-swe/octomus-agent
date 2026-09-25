@@ -754,20 +754,3 @@ func TestCommittedPlanAttributesVerdictsToReviewerSlots(t *testing.T) {
 		t.Fatalf("%v", p2)
 	}
 }
-
-// The public showcase wrapper is the only artifact derived from this package
-// that ships to readers, so every limitation and the review requirement must
-// survive verbatim.
-func TestPublicShowcaseWrapperKeepsEveryLimitationVerbatim(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "web", "showcase", "synthetic.public.json"))
-	must(t, err)
-	wrapper := string(data)
-	if !strings.Contains(wrapper, evidence.ReviewRequirement) {
-		t.Fatal("The showcase wrapper drops the review requirement")
-	}
-	for _, limitation := range evidence.Limitations {
-		if !strings.Contains(wrapper, limitation) {
-			t.Fatalf("The showcase wrapper drops a limitation: %s", limitation)
-		}
-	}
-}

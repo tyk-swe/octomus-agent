@@ -36,7 +36,7 @@ def exported(directory):
 
 def main():
     backup = example_body('docs/run-evidence.md', 'owner-sqlite-backup', 'PY')
-    validate = example_body('docs/showcase.md', 'private-payload-check', 'JS')
+    validate = example_body('docs/run-evidence.md', 'private-payload-check', 'JS')
     config_result = run([str(BINARY), '--print-config'])
     assert config_result.returncode == 0, config_result.stderr
     config = json.loads(config_result.stdout)
@@ -149,7 +149,7 @@ def main():
         assert evidence['review_required_before_sharing'] and len(evidence['limitations']) == 9
         assert 'SYNTHETIC-PRIVATE-' not in json.dumps(evidence)
 
-        # Synthetic wrapping only: no real facts, redactions, approval or public build.
+        # Synthetic wrapping only: no real facts, redactions or approval.
         candidate = root / 'synthetic-candidate.json'
         payload = {'public_schema_version': 1, 'mode': 'recorded', 'evidence': evidence}
         candidate.write_text(json.dumps(payload, indent=2) + '\n')
@@ -161,13 +161,13 @@ def main():
         assert candidate.read_bytes() == candidate_bytes
         assert candidate.stat().st_mode & 0o077 == 0
 
-        # The private check reuses the showcase gate's rejection of overwritten private members.
+        # The private check reuses the candidate gate's rejection of overwritten private members.
         candidate.write_text('{"evidence":{"transcript":"SYNTHETIC-PRIVATE-TRANSCRIPT"},'
                              + candidate_bytes.decode()[1:])
         result = run(['node', '--input-type=module', '-', str(candidate)], validate)
         assert result.returncode != 0 and 'Duplicate JSON object key' in result.stderr
         assert 'Candidate SHA-256:' not in result.stdout
-    print('Synthetic snapshot examples passed: WAL backup, private CLI export, adverse evidence, hash check; no approval or build.')
+    print('Synthetic snapshot examples passed: WAL backup, private CLI export, adverse evidence, hash check; no approval.')
 
 
 if __name__ == '__main__':
