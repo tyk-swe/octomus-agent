@@ -15,8 +15,6 @@ check: dashboard
 	test -z "$$(gofmt -l version.go cmd internal web/embed*.go)"
 	go vet ./...
 	npm run check --prefix web
-	npm run showcase:check --prefix web
-	npm run site:check --prefix web
 	npm run format:check --prefix web
 
 test: build
@@ -32,8 +30,6 @@ test: build
 	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/distribution.py
 	python3 tests/package_guards.py
 	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" npm test --prefix web
-	npm run showcase:test --prefix web
-	npm run site:test --prefix web
 
 audit:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...

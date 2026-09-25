@@ -90,4 +90,4 @@ available to your provider account. The file is a reference, not a ready-to-run 
 
 For command-line options, environment variables, and the optional attention webhook, see
 [deployment and operations](deployment.md#cli). Keep account credentials in the service
-user's protected environment and runner settings, outside the public site.
+user's protected environment and runner settings, never in the repository.

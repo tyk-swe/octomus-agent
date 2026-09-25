@@ -20,7 +20,8 @@ import (
 const SchemaVersion uint32 = 1
 
 // Limitations are what this export cannot claim. Every entry must survive
-// verbatim into the public showcase wrapper, which the evidence tests guard.
+// verbatim into every export; tests/helpers/public_payload.mjs mirrors the list
+// and tests/evidence_snapshot.py runs that gate against a real export.
 var Limitations = [9]string{
 	"Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
 	"Planning completion is not task completion: a completed cycle records decisions, not delivered work.",

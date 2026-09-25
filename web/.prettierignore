@@ -1,6 +1,5 @@
 node_modules
 .svelte-kit
-.wrangler
 build
 package-lock.json
 playwright-report

@@ -6,8 +6,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 Binary releases remain pending; this section describes what
-the first release contains. The public homepage and documentation are live at
-[octomus-agent.tyk.sh](https://octomus-agent.tyk.sh/).
+the first release contains.
 
 ### Added
 
@@ -20,12 +19,6 @@ the first release contains. The public homepage and documentation are live at
   configuration drafts, connection and clean-baseline checks, and an Inspect run panel.
 - Read-only run evidence (`RunEvidenceV1`) through `GET /api/cycles/{id}/evidence` and
   `--export-run`, with a documented consistent SQLite snapshot procedure.
-- A standalone static showcase build (`web/showcase`) of recorded evidence, with
-  allowlist and duplicate-key gates, hash-bound approval and network isolation.
-- A Cloudflare Workers homepage and searchable documentation generated from the public
-  Markdown guides, with mobile navigation, heading links, and code copying.
-- A guided synthetic sample, reproducible Product Hunt gallery assets, launch copy,
-  and an optional manually triggered GitHub Pages mirror.
 - Durable admission accounting, owned pull-request capacity limits, decision memory,
   attention notifications and read-only usage reports.
 - Linux x86_64 and aarch64 release packaging and a checksum-verifying installer.
@@ -35,8 +28,8 @@ the first release contains. The public homepage and documentation are live at
 ### Changed
 
 - Refreshed dashboard and login styling, clearer setup-state explanations, and audit-first
-  guidance for installations without a recorded cycle. Public dashboard screenshots and
-  gallery assets reflect the current interface using synthetic data.
+  guidance for installations without a recorded cycle. The public dashboard screenshot
+  reflects the current interface using synthetic data.
 - Documentation tools and navigation sidebars have distinct labels for screen readers.
 - Verification runs on the reviewed revision, and a command that changes tracked state
   is recorded as failed evidence rather than passing silently.
@@ -55,5 +48,9 @@ the first release contains. The public homepage and documentation are live at
 
 ### Removed
 
+- The public website at `octomus-agent.tyk.sh` — the Cloudflare Workers homepage, the
+  generated documentation pages, the hosted showcase sample and the GitHub Pages mirror —
+  retired before the first release, together with its publishing tooling. Documentation
+  lives in `docs/` and the dashboard stays embedded in the service binary.
 - The Codex-only `GET /api/models` endpoint, superseded by `POST /api/model-catalog`,
   which reports both runners.
