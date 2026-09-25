@@ -26,7 +26,7 @@ export type Preflight = {
   mode: 'execution' | 'audit';
   ok: boolean;
   detail: string;
-  /** Canonical identity of the server's checked snapshot; any other saved value is stale. */
+  /** Canonical configuration revision the server checked; any other revision is stale. */
   baseline: string;
   at: string;
 };
@@ -167,19 +167,10 @@ export function verificationStep(draft: string[], saved: string[]): SetupStep {
   };
 }
 
-/** Object key order can differ between a local save and the server's serialized snapshot. */
-export function configIdentity(config: Config): string {
-  return JSON.stringify(config, (_key, value: unknown) =>
-    value && typeof value === 'object' && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
-      : value
-  );
-}
-
 export function preflightStep(
   preflight: Preflight | null,
   dirty: boolean,
-  baseline: string
+  revision: string
 ): SetupStep {
   const scope =
     'It validates the saved origin remote, GitHub CLI login and runner catalogs for the saved routes. It does not prove repository push permission and makes no model call.';
@@ -188,17 +179,17 @@ export function preflightStep(
       tone: 'draft',
       label: 'Unsaved edits',
       detail: `${
-        preflight && baseline && preflight.baseline === configIdentity(JSON.parse(baseline))
+        preflight && revision && preflight.baseline === revision
           ? `The ${preflight.mode} check at ${preflight.at} covered the previously saved values, not these edits. `
           : ''
       }Save or discard, then check the saved configuration.`
     };
-  if (!preflight || !baseline || preflight.baseline !== configIdentity(JSON.parse(baseline)))
+  if (!preflight || !revision || preflight.baseline !== revision)
     return {
       tone: 'missing',
       label: 'Not checked',
       detail: preflight
-        ? `The server checked different saved values. Reopen Configuration to refresh this form, then check again. ${scope}`
+        ? `The server checked a different saved configuration. Reopen Configuration to refresh this form, then check again. ${scope}`
         : `Not run for this saved configuration. ${scope}`
     };
   if (preflight.ok)

@@ -5,8 +5,16 @@
     name,
     route = $bindable(),
     catalog,
-    anchor
-  }: { name: string; route: Route; catalog?: ModelCatalog; anchor?: string } = $props();
+    anchor,
+    disabled = false
+  }: {
+    name: string;
+    route: Route;
+    catalog?: ModelCatalog;
+    anchor?: string;
+    /** True while the saved route is a display-only preview pending replacement. */
+    disabled?: boolean;
+  } = $props();
   const id = $props.id();
   const backend = $derived(route.backend ?? 'codex');
   const models = $derived(
@@ -61,6 +69,7 @@
       <select
         aria-label={name + ' runner'}
         value={backend}
+        {disabled}
         onchange={(event) => changeBackend(event.currentTarget.value as Backend)}
       >
         <option value="codex">Codex</option>
@@ -72,6 +81,7 @@
         >Provider
         <select
           aria-label={name + ' provider'}
+          {disabled}
           value={route.provider ?? ''}
           onchange={(event) => {
             route = {
@@ -96,6 +106,7 @@
       <input
         aria-label={name + ' model'}
         list={id + '-models'}
+        {disabled}
         value={route.model}
         oninput={(event) => changeModel(event.currentTarget.value)}
         placeholder="Search or enter model ID"
@@ -110,7 +121,7 @@
     {#if backend === 'codex'}
       <label
         >Reasoning effort
-        <select aria-label={name + ' reasoning effort'} bind:value={route.effort}>
+        <select aria-label={name + ' reasoning effort'} {disabled} bind:value={route.effort}>
           <option value="">Select effort</option>
           {#if route.effort && !efforts.includes(route.effort)}<option value={route.effort}
               >{route.effort} (saved)</option
@@ -123,6 +134,7 @@
         >Variant
         <select
           aria-label={name + ' variant'}
+          {disabled}
           value={route.variant ?? ''}
           onchange={(event) => {
             route.variant = event.currentTarget.value || undefined;
