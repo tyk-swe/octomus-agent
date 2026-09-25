@@ -517,10 +517,12 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
   await login(page);
   await navigate('Configuration');
   const commands = page.getByRole('textbox', { name: /^Verification commands/ });
-  const loaded = state.revision();
 
   // The served preview is marked and locked; the hidden value is never editable.
   await expect(commands).toHaveValue('echo [redacted] > /dev/null');
+  // Read the seeded revision only after the load landed: before the first GET
+  // the fixture's saved config is still null.
+  const loaded = state.revision();
   await expect(commands).toHaveJSProperty('readOnly', true);
   await expect(page.locator('#preview-verification_commands')).toContainText('hidden value');
 
