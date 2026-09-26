@@ -398,6 +398,9 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 			if err != nil {
 				return started, waiting, err
 			}
+			a.runtimeMu.Lock()
+			a.runtime.prAdmissionRefused = !admitted
+			a.runtimeMu.Unlock()
 			if !admitted {
 				requestRefresh()
 				waiting = true

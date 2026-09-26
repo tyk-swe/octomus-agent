@@ -25,6 +25,8 @@ type PrReservation struct {
 
 // PrIdentity is the configuration a PR inventory was observed under. A task
 // admitted under a different identity cannot consume that inventory's capacity.
+// Repository paths compare as config.SameRemoteIdentity compares them, so a
+// respelling that settings accept as the same repository never strands work.
 type PrIdentity struct {
 	Repository    string
 	GitHubRepo    string
@@ -36,7 +38,7 @@ func PrIdentityOf(c config.Config) PrIdentity {
 	return PrIdentity{Repository: c.Repository, GitHubRepo: strings.ToLower(c.GitHubRepo), DefaultBranch: c.DefaultBranch, BranchPrefix: c.BranchPrefix}
 }
 func (p PrIdentity) Matches(c config.Config) bool {
-	return p.Repository == c.Repository && config.EqualASCII(c.GitHubRepo, p.GitHubRepo) && p.DefaultBranch == c.DefaultBranch && p.BranchPrefix == c.BranchPrefix
+	return config.SamePath(p.Repository, c.Repository) && config.EqualASCII(c.GitHubRepo, p.GitHubRepo) && p.DefaultBranch == c.DefaultBranch && p.BranchPrefix == c.BranchPrefix
 }
 
 // errRollback aborts a transaction that ends without a caller-visible error.

@@ -92,10 +92,13 @@ type runtimeState struct {
 	checkedCycles map[string]struct{}
 	// prRefresh is the running PR capacity refresh; prObservation,
 	// prRefreshError and lastPrAttempt are its latest result and retry pacing.
-	prRefresh      *prRefreshJob
-	prObservation  *freshPrObservation
-	prRefreshError string
-	lastPrAttempt  time.Time
+	// prAdmissionRefused records that the latest new-PR admission was refused,
+	// which paces the next refresh as full capacity does.
+	prRefresh          *prRefreshJob
+	prObservation      *freshPrObservation
+	prRefreshError     string
+	lastPrAttempt      time.Time
+	prAdmissionRefused bool
 	// housekeeping marks a running retention or observation pass;
 	// lastRetention and lastObserve pace them.
 	housekeeping  bool

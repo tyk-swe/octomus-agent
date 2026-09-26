@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -177,6 +178,72 @@ func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
 	third, err := store.Get[model.Task](fixture.state, "task", "third")
 	if err != nil || third == nil || third.Status != model.StatusQueued || len(started) != 2 {
 		t.Fatalf("full inventory admitted a new PR: %+v, %v; started=%d", third, err, len(started))
+	}
+}
+
+// A new-PR admission refused while capacity remains consumed its inventory,
+// so the next refresh waits out the retry delay, as it does at full
+// capacity: a refusal with a persistent cause no longer re-reads the whole
+// open-PR inventory on every tick. A repository path respelled in a way
+// settings accept as the same repository is not such a cause: work planned
+// under the old spelling is admitted.
+func TestRefusedAdmissionPacesInventoryRefreshes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		stale  func(*config.Config)
+		live   func(*config.Config)
+		admits bool
+	}{
+		{name: "respelled repository path", live: func(cfg *config.Config) { cfg.Repository += "/" }, admits: true},
+		{name: "persistently refused task", stale: func(cfg *config.Config) { cfg.BranchPrefix = "stale/" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPlanningFixture(t)
+			cfg := fixture.cfg.Clone()
+			cfg.BranchPrefix = "tyk/"
+			planned := cfg.Clone()
+			if test.stale != nil {
+				test.stale(&planned)
+			}
+			task := queuedTask(planned, "planned", planned.DefaultBranch, planned.BranchPrefix+"planned")
+			if err := fixture.state.Put("task", task.ID, task); err != nil {
+				t.Fatal(err)
+			}
+			if test.live != nil {
+				test.live(&cfg)
+			}
+			saveSettings(t, fixture.state, cfg, model.DefaultControl())
+			started := make(chan string, 1)
+			app := New(fixture.state, fixture.dataDir, WithTaskRunner(TaskRunnerFunc(func(_ context.Context, task model.Task) error {
+				started <- task.ID
+				task.Status = model.StatusPublished
+				return fixture.state.Put("task", task.ID, task)
+			})))
+			t.Cleanup(app.Shutdown)
+			app.runtime.lastRetention = time.Now()
+			app.runtime.lastObserve = time.Now()
+			if err := app.Resume(); err != nil {
+				t.Fatal(err)
+			}
+			// Ticks stop once the task is admitted: with no queued work left a
+			// tick would start a planning pass.
+			for i := 0; i < 8 && len(started) == 0; i++ {
+				if err := app.Tick(); err != nil {
+					t.Fatal(err)
+				}
+				app.wg.Wait()
+			}
+			if admitted := len(started) == 1; admitted != test.admits {
+				t.Fatalf("task admitted = %t; want %t", admitted, test.admits)
+			}
+			log, err := os.ReadFile(filepath.Join(fixture.root, "gh-api.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reads := strings.Count(string(log), "state=open"); reads > 2 {
+				t.Fatalf("eight ticks read the open-PR inventory %d times; want the retry delay to pace refreshes", reads)
+			}
+		})
 	}
 }
 

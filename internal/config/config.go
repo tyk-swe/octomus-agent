@@ -177,8 +177,12 @@ func pathIdentity(path string) string {
 	}
 	return strings.Join(parts, "/")
 }
+
+// SamePath reports whether two repository paths name the same location
+// lexically, under pathIdentity.
+func SamePath(a, b string) bool { return pathIdentity(a) == pathIdentity(b) }
 func (c Config) SameRemoteIdentity(other Config) bool {
-	return pathIdentity(c.Repository) == pathIdentity(other.Repository) && EqualASCII(c.GitHubRepo, other.GitHubRepo) && c.DefaultBranch == other.DefaultBranch
+	return SamePath(c.Repository, other.Repository) && EqualASCII(c.GitHubRepo, other.GitHubRepo) && c.DefaultBranch == other.DefaultBranch
 }
 func (c Config) Validate(ready bool) error { return c.validateMode(ready, false) }
 func (c Config) ValidateAudit() error      { return c.validateMode(true, true) }

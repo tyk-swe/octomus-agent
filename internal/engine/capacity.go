@@ -46,6 +46,7 @@ func (a *App) invalidatePrObservation() {
 	a.runtime.prObservation = nil
 	a.runtime.prRefreshError = ""
 	a.runtime.lastPrAttempt = time.Time{}
+	a.runtime.prAdmissionRefused = false
 	a.runtimeMu.Unlock()
 }
 
@@ -175,7 +176,11 @@ func (a *App) startPrRefresh(cfg config.Config) {
 	capacity, err := a.PrCapacity()
 	available := err == nil && capacity.Remaining != nil && *capacity.Remaining > 0
 	a.runtimeMu.Lock()
-	if a.runtime.prRefresh != nil || !available && time.Since(a.runtime.lastPrAttempt) < prRefreshRetryDelay {
+	// A refresh waits out the retry delay while capacity is unavailable, and
+	// after a refused admission: a refusal consumed the observation, and a
+	// persistent cause would otherwise refresh the inventory back to back.
+	paced := !available || a.runtime.prAdmissionRefused
+	if a.runtime.prRefresh != nil || paced && time.Since(a.runtime.lastPrAttempt) < prRefreshRetryDelay {
 		a.runtimeMu.Unlock()
 		return
 	}
