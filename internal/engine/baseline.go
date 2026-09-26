@@ -21,7 +21,6 @@ import (
 const (
 	baselineCommandOutputLimit   = 16 * 1024
 	baselineAggregateOutputLimit = 1024 * 1024
-	observationFreshSeconds      = 300
 )
 
 // BaselineConflict is an operator-visible HTTP 409 conflict:
@@ -292,8 +291,8 @@ func (a *App) BaselineRevisionStatus(check *model.BaselineCheck, live config.Con
 	}
 	fresh := false
 	if at, err := time.Parse(time.RFC3339Nano, observation.ObservedAt); err == nil {
-		age := time.Since(at).Seconds()
-		fresh = age >= 0 && age <= observationFreshSeconds
+		age := time.Since(at)
+		fresh = age >= 0 && age <= observationLifetime
 	}
 	sameTarget := observation.Describes(check.Config)
 	switch {

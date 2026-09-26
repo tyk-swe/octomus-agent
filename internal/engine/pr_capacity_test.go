@@ -60,10 +60,20 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 		t.Fatalf("refresh failure did not revoke capacity with its reason: %+v, %v", capacity, err)
 	}
 
-	// An observation older than five minutes is stale.
+	// An observation older than one housekeeping interval stays fresh until
+	// the next, possibly slower, observation pass has had time to land.
 	a.runtimeMu.Lock()
 	a.runtime.prRefreshError = ""
-	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-301 * time.Second)}
+	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(observeInterval + time.Minute))}
+	a.runtimeMu.Unlock()
+	capacity, err = a.PrCapacity()
+	if err != nil || capacity.Status != "ready" || capacity.Remaining == nil {
+		t.Fatalf("observation within its lifetime was reported stale: %+v, %v", capacity, err)
+	}
+
+	// An observation older than its lifetime is stale.
+	a.runtimeMu.Lock()
+	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(prObservationLifetime + time.Second))}
 	a.runtimeMu.Unlock()
 	capacity, err = a.PrCapacity()
 	if err != nil || capacity.Status != "unavailable" || capacity.Remaining != nil {

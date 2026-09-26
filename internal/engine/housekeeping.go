@@ -24,6 +24,13 @@ const (
 	// retentionInterval and observeInterval pace the housekeeping passes.
 	retentionInterval = 15 * time.Minute
 	observeInterval   = 5 * time.Minute
+	// observationLifetime is how long a remote observation (open-PR inventory
+	// or default-branch revision) stays fresh for the dashboard. Each is
+	// stamped only after its pass's earlier steps (retention, the storage walk,
+	// the PR refresh), so a lifetime equal to observeInterval let a healthy
+	// service flip to stale while the next, slower pass was still running.
+	// Dispatch authority is separate and shorter (prAdmissionLifetime).
+	observationLifetime = 2 * observeInterval
 )
 
 type storageUsage struct {

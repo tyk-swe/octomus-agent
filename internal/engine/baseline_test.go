@@ -365,6 +365,20 @@ func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing
 	if status, _ := app.BaselineView(nil); status["revision_status"] != "unknown" {
 		t.Fatalf("expired observation: %v", status["revision_status"])
 	}
+	// An observation older than one housekeeping interval stays comparable
+	// until the next, possibly slower, pass has had time to replace it.
+	observation.Revision = revision
+	observation.ObservedAt = time.Now().UTC().Add(-(observeInterval + time.Minute)).Format(time.RFC3339)
+	setObservation(app, observation)
+	if status, _ := app.BaselineView(nil); status["revision_status"] != "matches_last_observation" {
+		t.Fatalf("observation within its lifetime: %v", status["revision_status"])
+	}
+	observation.ObservedAt = time.Now().UTC().Add(-(observationLifetime + time.Minute)).Format(time.RFC3339)
+	setObservation(app, observation)
+	if status, _ := app.BaselineView(nil); status["revision_status"] != "unknown" {
+		t.Fatalf("observation past its lifetime: %v", status["revision_status"])
+	}
+	observation.Revision = strings.Repeat("b", 40)
 	observation.ObservedAt = model.Now()
 	observation.DefaultBranch = "other"
 	setObservation(app, observation)

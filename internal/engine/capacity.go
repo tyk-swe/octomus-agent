@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	prObservationLifetime = 5 * time.Minute
+	prObservationLifetime = observationLifetime
 	prAdmissionLifetime   = time.Minute
 	prRefreshRetryDelay   = time.Minute
 )
