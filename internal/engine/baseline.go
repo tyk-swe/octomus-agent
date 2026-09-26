@@ -575,14 +575,12 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 	}
 	allOK := true
 	remaining := baselineAggregateOutputLimit
+	// CancelBaseline records its marker and cancels ctx in one gate hold, so
+	// ctx alone stops the commands; baselineWorker reads the marker once to
+	// resolve the final status.
 	for _, command := range c.VerificationCommands {
-		if err := ctx.Err(); err != nil {
-			return model.BaselineStatusRunning, errors.New("Operation cancelled")
-		}
-		if marked, err := a.baselineCancelled(check.ID); err != nil {
-			return model.BaselineStatusRunning, err
-		} else if marked {
-			return model.BaselineStatusRunning, errors.New("Operation cancelled")
+		if ctx.Err() != nil {
+			return model.BaselineStatusRunning, process.ErrCancelled
 		}
 		outcome := runCheckCommand(ctx, c, workspaceDir, command, *revision)
 		timedOut := process.IsDeadlineElapsed(outcome.capture)
@@ -590,12 +588,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		var failure error
 		if ctx.Err() != nil {
 			success = false
-			failure = errors.New("Operation cancelled")
-		} else if marked, err := a.baselineCancelled(check.ID); err != nil {
-			return model.BaselineStatusRunning, err
-		} else if marked {
-			success = false
-			failure = errors.New("Operation cancelled")
+			failure = process.ErrCancelled
 		} else {
 			switch intact, intactErr := outcome.intactResult(); {
 			case intactErr != nil:

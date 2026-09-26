@@ -539,7 +539,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 	for _, command := range cfg.VerificationCommands {
 		outcome := runCheckCommand(ctx, cfg, ws, command, revision)
 		if ctx.Err() != nil {
-			return nil, errors.New("Operation cancelled")
+			return nil, process.ErrCancelled
 		}
 		failed := outcome.failed()
 		intact, intactErr := outcome.intactResult()

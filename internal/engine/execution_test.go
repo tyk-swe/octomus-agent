@@ -20,6 +20,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -260,6 +261,41 @@ func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 		if len(saved.Verification) != 1 || saved.Verification[0].Success {
 			t.Fatalf("commands %v: verification = %+v, want one failed record", commands, saved.Verification)
 		}
+	}
+}
+
+// Cancelling verification mid-command stops the run with the shared
+// process.ErrCancelled sentinel rather than a look-alike error, and records no
+// evidence for the interrupted command or the ones after it.
+func TestVerificationCancelledMidCommandReturnsTheCancellationSentinel(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "started")
+	app, task, revision := verificationFixture(t, []string{"touch '" + started + "' && sleep 30", "true"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.verifyRevision(ctx, &task, revision)
+		done <- err
+	}()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("verification command did not start")
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, process.ErrCancelled) {
+			t.Fatalf("cancelled verification = %v; want process.ErrCancelled", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("verification did not stop after cancellation")
+	}
+	if saved := loadTask(t, app.Store, task.ID); len(saved.Verification) != 0 {
+		t.Fatalf("cancelled verification recorded evidence: %+v", saved.Verification)
 	}
 }
 
