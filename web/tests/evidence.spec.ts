@@ -3,6 +3,7 @@
  * These rules decide how saved records are named on every surface, so each case pins
  * one rule rather than one screen.
  */
+import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import {
   checksVerdict,
@@ -19,6 +20,7 @@ import {
   revisionMatchLabel,
   roundRevisionLabel,
   taskIcon,
+  TONES,
   UNKNOWN_VERDICT,
   verdictBadge
 } from '../src/lib/evidence';
@@ -393,4 +395,23 @@ test('a recorded PR reference is delivery, and its absence is named', () => {
       })
     )
   ).toMatchObject({ label: 'Recorded PR · number unavailable', tone: 'clean' });
+});
+
+/** A stylesheet's own text followed by every file it imports, in cascade order. */
+function wholeSheet(entry: URL): string {
+  const text = readFileSync(entry, 'utf8');
+  const imports = [...text.matchAll(/@import\s+'([^']+)'/g)];
+  return [text, ...imports.map(([, target]) => wholeSheet(new URL(target, entry)))].join('\n');
+}
+
+test('the dashboard stylesheet styles every badge tone and the evidence text classes', () => {
+  // A tone without a rule falls back to the neutral badge, so adverse evidence such as
+  // "no verdict recorded" would look like any other fact.
+  const css = wholeSheet(new URL('../src/app.css', import.meta.url));
+  const selector = (name: string) => new RegExp(`${name.replaceAll('.', '\\.')}(?![\\w-])`);
+  for (const tone of TONES)
+    expect(css, `app.css is missing .badge.${tone}`).toMatch(selector(`.badge.${tone}`));
+  // EvidenceText.svelte renders these without styles of its own.
+  for (const shared of ['.muted', '.expandable', '.preview'])
+    expect(css, `app.css is missing ${shared}`).toMatch(selector(shared));
 });

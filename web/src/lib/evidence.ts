@@ -24,8 +24,8 @@ import type {
 /**
  * Badge tones every surface must style. `cancelled` reads as "nothing
  * recorded", not "fine", so a surface that leaves it unstyled hides exactly
- * the adverse evidence this mapping exists to show. app.css is checked
- * against this list.
+ * the adverse evidence this mapping exists to show. tests/evidence.spec.ts
+ * checks the dashboard stylesheet (src/app.css and its imports) against this list.
  */
 export const TONES = ['clean', 'blocked', 'failed', 'running', 'cancelled'] as const;
 export type Tone = (typeof TONES)[number] | '';
