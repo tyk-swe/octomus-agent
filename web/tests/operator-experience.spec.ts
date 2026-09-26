@@ -39,6 +39,8 @@ async function configurationFixture(
     snapshot?: (snapshot: Snapshot) => void;
     /** Display-only field values plus their transform metadata, as the server reports them. */
     transformed?: { overrides: Partial<Config>; fields: TransformedField[] };
+    /** Canonical values the fixture reports as already saved. */
+    saved?: Partial<Config>;
   } = {}
 ) {
   const state = {
@@ -126,7 +128,8 @@ async function configurationFixture(
         verification_commands: options.unconfigured ? [] : ['fixture saved test'],
         roles: Object.fromEntries(Object.keys(initial.roles).map((key) => [key, { ...model }])),
         tiers: Object.fromEntries(Object.keys(initial.tiers).map((key) => [key, { ...model }])),
-        repair_route: { ...model }
+        repair_route: { ...model },
+        ...options.saved
       };
       if (options.transformed) {
         state.overrides = { ...options.transformed.overrides };
@@ -494,6 +497,28 @@ test('failed configuration loads retry, failed saves retain exact drafts, and su
   await commands.fill('another draft');
   await page.getByRole('button', { name: 'Discard changes' }).click();
   await expect(commands).toHaveValue('fixture new test\nfixture new build');
+});
+
+test('saved PR maintenance thresholds of 0 are valid and never block saving other settings', async ({
+  page,
+  isMobile
+}) => {
+  // The service accepts 0 for both thresholds: every owned open PR then counts.
+  const state = await configurationFixture(page, {
+    saved: { large_pr_lines: 0, long_lived_pr_days: 0 }
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  for (const label of ['Large PR threshold', 'Long-lived PR (days)']) {
+    const field = page.getByRole('spinbutton', { name: label });
+    await expect(field).toHaveValue('0');
+    expect(await field.evaluate((input: HTMLInputElement) => input.validity.valid)).toBe(true);
+  }
+  await page.getByLabel('Default branch', { exact: true }).fill('threshold-main');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes).toHaveLength(1);
+  expect(state.writes[0].config).toEqual({ default_branch: 'threshold-main' });
 });
 
 test('display-transformed fields stay canonical: previews lock, unrelated saves omit them, replacement is explicit', async ({

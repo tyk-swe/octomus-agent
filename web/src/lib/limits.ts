@@ -48,14 +48,14 @@ export const LIMITS: {
   {
     key: 'large_pr_lines',
     label: 'Large PR threshold',
-    help: 'Changed lines that trigger maintenance focus',
-    min: 1
+    help: 'Changed lines that trigger maintenance focus · 0 marks every owned open PR',
+    min: 0
   },
   {
     key: 'long_lived_pr_days',
     label: 'Long-lived PR (days)',
-    help: 'PR age that triggers maintenance focus',
-    min: 1
+    help: 'PR age that triggers maintenance focus · 0 marks every owned open PR',
+    min: 0
   },
   {
     key: 'max_repair_rounds',
