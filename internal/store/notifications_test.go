@@ -3,6 +3,7 @@ package store_test
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -382,7 +383,7 @@ func TestEveryBlockedReasonKeepsItsNotificationCategory(t *testing.T) {
 		putNotificationTask(t, s, fmt.Sprintf("insert-%d", reason), "blocked", reason.String())
 		want = append(want, reason.String())
 	}
-	if !contains(want, model.BlockedReasonUnknown.String()) {
+	if !slices.Contains(want, model.BlockedReasonUnknown.String()) {
 		t.Fatalf("blocked reason vocabulary: %v", want)
 	}
 	if got := categories(pendingRows(t, path)); !reflect.DeepEqual(got, want) {

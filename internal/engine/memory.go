@@ -11,7 +11,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
 type decisionRecord struct {
@@ -200,7 +200,7 @@ func (a *App) recordDecisions(ctx context.Context, cfg config.Config, cycle mode
 			ProblemKey:         proposal.ProblemIdentity(),
 			RelevantPaths:      append([]string(nil), proposal.RelevantPaths...),
 			Decision:           proposal.Decision,
-			Reason:             store.Redact(proposal.Reason),
+			Reason:             redact.Text(proposal.Reason),
 			SourceRevision:     revision,
 			ContextFingerprint: fingerprint,
 			ReconsiderAfter:    time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
@@ -236,9 +236,9 @@ func recordToMap(record decisionRecord) map[string]any {
 	return value
 }
 
-// ValidateDecisionMemory prevents unchanged rejected or already accepted work
+// validateDecisionMemory prevents unchanged rejected or already accepted work
 // from silently re-entering the executable queue.
-func ValidateDecisionMemory(proposals []model.Proposal, memory decisionMemory) error {
+func validateDecisionMemory(proposals []model.Proposal, memory decisionMemory) error {
 	requests := map[string]string{}
 	for _, request := range memory.requests {
 		if request.ID != "" {

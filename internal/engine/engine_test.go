@@ -16,11 +16,19 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
+// testStore opens a store in a fresh temporary directory; see openStore.
 func testStore(t *testing.T) *store.Store {
 	t.Helper()
-	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	return openStore(t, t.TempDir())
+}
+
+// openStore opens dir/state.db and closes it when the test ends.
+func openStore(t *testing.T, dir string) *store.Store {
+	t.Helper()
+	state, err := store.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +274,7 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	if err != nil || started.Mode != model.OperatingModeRunOnce || started.Batch == nil || started.Batch.Phase != model.BatchPhaseDraining {
 		t.Fatalf("affordable run once did not persist a batch: %+v, %v", started, err)
 	}
-	if saved, err := genericMap(started); err != nil || !reflect.DeepEqual(body, saved) {
+	if saved, err := wirejson.GenericMap(started); err != nil || !reflect.DeepEqual(body, saved) {
 		t.Fatalf("run once answered %v; want the saved control %v (%v)", body, saved, err)
 	}
 	if events, err := state.Events(&system); err != nil || len(events) != 1 || events[0].Kind != "operator" || events[0].Message != "cycle" {
@@ -1037,7 +1045,7 @@ func TestDecisionMemoryAbsorbsOnlySameCycleAlternativesAndRequiresRediscovery(t 
 		Decision: model.DecisionRejected, Reason: "Current decision", SourceRevision: "revision",
 		ContextFingerprint: "revision", ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: model.ID(),
 	}
-	if err := ValidateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{recorded}}); err == nil {
+	if err := validateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{recorded}}); err == nil {
 		t.Fatal("unchanged rejected work became executable without rediscovery")
 	}
 	auditRecommendation := decisionRecord{
@@ -1046,24 +1054,24 @@ func TestDecisionMemoryAbsorbsOnlySameCycleAlternativesAndRequiresRediscovery(t 
 		Decision: model.DecisionAccepted, Reason: "Audit recommendation", SourceRevision: "revision",
 		ContextFingerprint: "revision", ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: model.ID(),
 	}
-	if err := ValidateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{auditRecommendation}}); err != nil {
+	if err := validateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{auditRecommendation}}); err != nil {
 		t.Fatalf("audit recommendation incorrectly vetoed execution: %v", err)
 	}
 	requestID := model.ID()
 	request := rediscoveryRequest{ID: requestID, Target: cfg.DefaultBranch}
 	reconsidered := accepted.Clone()
 	reconsidered.Reconsiders = []string{requestID}
-	if err := ValidateDecisionMemory([]model.Proposal{reconsidered}, decisionMemory{decisions: []decisionRecord{recorded}, requests: []rediscoveryRequest{request}}); err != nil {
+	if err := validateDecisionMemory([]model.Proposal{reconsidered}, decisionMemory{decisions: []decisionRecord{recorded}, requests: []rediscoveryRequest{request}}); err != nil {
 		t.Fatalf("matching explicit rediscovery was rejected: %v", err)
 	}
 	wrong := reconsidered.Clone()
 	wrong.Target = "other"
-	if err := ValidateDecisionMemory([]model.Proposal{wrong}, decisionMemory{requests: []rediscoveryRequest{request}}); err == nil {
+	if err := validateDecisionMemory([]model.Proposal{wrong}, decisionMemory{requests: []rediscoveryRequest{request}}); err == nil {
 		t.Fatal("rediscovery with the wrong target was accepted")
 	}
 	oversized := accepted.Clone()
 	oversized.ProblemKey = strings.Repeat("x", 201)
-	if err := ValidateDecisionMemory([]model.Proposal{oversized}, decisionMemory{}); err == nil {
+	if err := validateDecisionMemory([]model.Proposal{oversized}, decisionMemory{}); err == nil {
 		t.Fatal("oversized decision metadata was accepted")
 	}
 }
@@ -1179,16 +1187,7 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		a.runtimeMu.Lock()
-		running := a.runtime.housekeeping
-		a.runtimeMu.Unlock()
-		if !running {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitHousekeeping(t, a)
 	if _, err := os.Stat(filepath.Join(unresolved.Workspace, "evidence.txt")); err != nil {
 		t.Fatalf("paused housekeeping removed unresolved evidence: %v", err)
 	}

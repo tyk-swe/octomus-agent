@@ -13,6 +13,8 @@ import (
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func TestShutdownOwnsRetryPreflight(t *testing.T) {
@@ -110,7 +112,7 @@ func TestShutdownWaitsForPublicationReconciliation(t *testing.T) {
 	if err := app.TaskAction(context.Background(), task.ID, "reconcile"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("reconciliation after shutdown = %v; want cancellation", err)
 	}
-	if current := loadTask(t, fixture.state, task.ID); !sameRecordJSON(&saved, &current) {
+	if current := loadTask(t, fixture.state, task.ID); !wirejson.Equal(&saved, &current) {
 		t.Fatal("reconciliation after shutdown changed the durable task")
 	}
 }
@@ -176,20 +178,19 @@ func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
 	go func() { _ = app.TaskAction(context.Background(), task.ID, "retry") }()
 	waitForPreflights(t, fixture, 1)
 	releasePreflight(t, fixture)
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if saved := loadTask(t, fixture.state, task.ID); saved.Status == model.StatusQueued {
-			if saved.Attempts != 1 || saved.ReviewBaseline != 2 {
-				t.Fatalf("retried task = %+v; want attempt 1 with review baseline 2", saved)
-			}
-			if len(saved.Reviews) != 2 || saved.AttemptReviews() != 0 {
-				t.Fatalf("retry lost retained evidence: %+v", saved)
-			}
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	var saved model.Task
+	if !testutil.WaitUntil(15*time.Second, func() bool {
+		saved = loadTask(t, fixture.state, task.ID)
+		return saved.Status == model.StatusQueued
+	}) {
+		t.Fatalf("retry did not queue: %+v", saved)
 	}
-	t.Fatalf("retry did not queue: %+v", loadTask(t, fixture.state, task.ID))
+	if saved.Attempts != 1 || saved.ReviewBaseline != 2 {
+		t.Fatalf("retried task = %+v; want attempt 1 with review baseline 2", saved)
+	}
+	if len(saved.Reviews) != 2 || saved.AttemptReviews() != 0 {
+		t.Fatalf("retry lost retained evidence: %+v", saved)
+	}
 }
 
 // TestRetryRechecksPolicyAfterRemoteChecks: a policy change during the
@@ -213,7 +214,7 @@ func TestRetryRechecksPolicyAfterRemoteChecks(t *testing.T) {
 		t.Fatalf("retry under changed policy = %v; want conflict", err)
 	}
 	saved := loadTask(t, fixture.state, task.ID)
-	if !sameRecordJSON(&saved, &task) {
+	if !wirejson.Equal(&saved, &task) {
 		t.Fatalf("conflicted retry rewrote the durable task: %+v", saved)
 	}
 }
@@ -293,7 +294,7 @@ func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *test
 					t.Fatalf("stale %s = %v; want conflict", action, err)
 				}
 				saved := loadTask(t, fixture.state, task.ID)
-				if !sameRecordJSON(&saved, &changed) {
+				if !wirejson.Equal(&saved, &changed) {
 					t.Fatalf("stale %s overwrote %s: %+v", action, scenario.mutation, saved)
 				}
 			})
@@ -311,7 +312,7 @@ func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	command(t, fixture.repo, "/usr/bin/git", "config", "remote.origin.uploadpack", path)
+	git(t, fixture.repo, "config", "remote.origin.uploadpack", path)
 	cfg := fixture.cfg.Clone()
 	cfg.CommandTimeoutSeconds = 1
 	if err := fixture.state.Put("settings", "config", cfg); err != nil {
@@ -432,7 +433,7 @@ func TestUnknownActionsAreNotReportedAsEligibilityConflicts(t *testing.T) {
 	if !errors.Is(err, ErrUnknownTaskAction) || IsActionConflict(err) {
 		t.Fatalf("bogus task action = %v; want ErrUnknownTaskAction", err)
 	}
-	if saved := loadTask(t, state, task.ID); !sameRecordJSON(&saved, &task) {
+	if saved := loadTask(t, state, task.ID); !wirejson.Equal(&saved, &task) {
 		t.Fatalf("unknown task action changed the record: %+v", saved)
 	}
 	err = app.CycleAction(cycle.ID, "bogus")
@@ -457,8 +458,8 @@ func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
 	task.Status = model.StatusBlocked
 	saveExecutionTask(t, fixture, task)
 	// The remote target and default branches move past the recorded revisions.
-	command(t, fixture.repo, "/usr/bin/git", "commit", "--allow-empty", "-m", "External work")
-	command(t, fixture.repo, "/usr/bin/git", "push", "origin", fixture.cfg.DefaultBranch)
+	git(t, fixture.repo, "commit", "--allow-empty", "-m", "External work")
+	git(t, fixture.repo, "push", "origin", fixture.cfg.DefaultBranch)
 	err := app.TaskAction(context.Background(), task.ID, "retry")
 	if err == nil || model.BlockedReasonFromError(err) != model.BlockedReasonStaleBase {
 		t.Fatalf("stale retry = %v; want the recorded stale-base failure", err)

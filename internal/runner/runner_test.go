@@ -271,9 +271,9 @@ func TestModelWireShape(t *testing.T) {
 	}
 }
 
-// The doctor's backends list keeps one byte shape whether a backend document
-// is typed or generic: keys in order, the backend by wire name, and warning as
-// an explicit null when the version matches the baseline.
+// The doctor's backends list keeps one byte shape: keys in order, the backend by
+// wire name, and warning as an explicit null when the version matches the
+// baseline.
 func TestDiagnosticsWireShape(t *testing.T) {
 	warning := "OpenCode version mismatch"
 	for _, tc := range []struct {
@@ -285,18 +285,10 @@ func TestDiagnosticsWireShape(t *testing.T) {
 		{Diagnostics{Backend: config.BackendOpencode, ProtocolVersion: "1.2.0", Version: "1.3.0", Warning: &warning},
 			`{"backend":"opencode","protocol_version":"1.2.0","version":"1.3.0","warning":"OpenCode version mismatch"}`},
 	} {
-		for form, value := range map[string]any{"typed": tc.diagnostics, "generic": tc.diagnostics.Map()} {
-			data, err := wirejson.Marshal(value)
-			if err != nil || string(data) != tc.want {
-				t.Fatalf("%s diagnostics = %s, %v; want %s", form, data, err, tc.want)
-			}
+		data, err := wirejson.Marshal(tc.diagnostics)
+		if err != nil || string(data) != tc.want {
+			t.Fatalf("diagnostics = %s, %v; want %s", data, err, tc.want)
 		}
-	}
-	// The engine doctor matches the generic backend against its wire name and
-	// reads a present warning as a string.
-	generic := Diagnostics{Backend: config.BackendCodex, Warning: &warning}.Map()
-	if generic["backend"] != "codex" || generic["warning"] != warning {
-		t.Fatalf("generic diagnostics: %#v", generic)
 	}
 }
 

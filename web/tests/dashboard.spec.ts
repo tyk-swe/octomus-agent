@@ -492,6 +492,37 @@ test('task detail polling does not overlap or apply a response after close', asy
   expect(reads).toBe(2);
 });
 
+test('an archived task shows its rediscovery request as withdrawn, not pending', async ({
+  page
+}, testInfo) => {
+  let archived = false;
+  await page.route('**/api/tasks/task-reviewed', async (route) => {
+    const body = await (await route.fetch()).json();
+    body.status = 'cancelled';
+    body.rediscovery_requested = true;
+    body.lifecycle = { archived_at: archived ? '2026-09-10T00:00:00Z' : null, discarded_at: null };
+    await route.fulfill({ json: body });
+  });
+  await login(page);
+  const pending = 'Rediscovery pending. The next execution cycle will reassess this objective.';
+  const withdrawn =
+    'Rediscovery withdrawn. The task was archived before an execution cycle reassessed this objective.';
+  const open = async () => {
+    await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+    return page.getByRole('dialog');
+  };
+  await openNavigation(page, 'Task queue', testInfo.project.name === 'mobile');
+  let dialog = await open();
+  await expect(dialog.getByRole('status').filter({ hasText: pending })).toBeVisible();
+  await expect(dialog.getByText(withdrawn)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close task details' }).click();
+
+  archived = true;
+  dialog = await open();
+  await expect(dialog.getByText(withdrawn)).toBeVisible();
+  await expect(dialog.getByText(pending)).toHaveCount(0);
+});
+
 test('expanded proposal evidence survives summary polling by cycle and proposal identity', async ({
   page
 }, testInfo) => {

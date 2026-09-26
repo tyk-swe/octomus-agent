@@ -23,6 +23,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 const OpenCodeProtocolVersion = "1.18.30"
@@ -221,13 +222,6 @@ func (o *OpenCode) Diagnose(cwd string) (Diagnostics, error) {
 		Version:         o.version,
 		Warning:         OpenCodeVersionWarning(o.version),
 	}, nil
-}
-
-// Diagnostics is Diagnose as a generic map.
-//
-// Deprecated: see Adapter.Diagnostics.
-func (o *OpenCode) Diagnostics(cwd string) (map[string]any, error) {
-	return diagnosticsMap(o.Diagnose(cwd))
 }
 
 func (o *OpenCode) endpoint(path, cwd string) string {
@@ -431,7 +425,7 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 	if !variantMatches(variant, variantOK, route) {
 		return "", fmt.Errorf("OpenCode substituted the requested model or variant")
 	}
-	if !jsonEqual(doc["permission"], permissions) {
+	if !wirejson.Equal(doc["permission"], permissions) {
 		return "", fmt.Errorf("OpenCode session has unexpected permissions")
 	}
 	return id, nil

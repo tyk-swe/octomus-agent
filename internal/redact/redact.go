@@ -27,8 +27,9 @@ const WebhookEnv = "OCTOMUS_NOTIFICATION_WEBHOOK_URL"
 // message is built here rather than formatted at each site.
 func Error(err error) string { return Text(err.Error()) }
 
-// Whitespace includes Unicode White_Space, TAB–CR and NEL.
-// Go's \s is ASCII-only, so use the equivalent class in every whitespace match.
+// tokenWhitespace is the character-class body for Unicode White_Space:
+// separators (\p{Z}), TAB through CR, and NEL. Every whitespace match uses it
+// because Go's \s is ASCII-only.
 const tokenWhitespace = `\p{Z}\x{0009}-\x{000D}\x{0085}`
 
 // tokenPattern matches bearer credentials, GitHub tokens and URL userinfo.

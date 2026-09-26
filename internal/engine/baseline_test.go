@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,19 +12,9 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
-
-func git(t *testing.T, cwd string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = cwd
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git %v: %v", args, err)
-	}
-	return strings.TrimSpace(string(output))
-}
 
 func baselineApp(t *testing.T) (*App, config.Config) {
 	t.Helper()
@@ -34,25 +23,14 @@ func baselineApp(t *testing.T) (*App, config.Config) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitInit := exec.Command("git", "init", "-b", "main")
-	gitInit.Dir = repo
-	if out, err := gitInit.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %s", out)
-	}
-	gitCfg := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %s", args, out)
-		}
-	}
-	gitCfg("config", "user.name", "Fixture")
-	gitCfg("config", "user.email", "fixture@example.com")
+	git(t, repo, "init", "-b", "main")
+	git(t, repo, "config", "user.name", "Fixture")
+	git(t, repo, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitCfg("add", ".")
-	gitCfg("commit", "-m", "initial")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
 	cfg := config.Default()
 	cfg.Repository = repo
 	cfg.GitHubRepo = "fixture/project"
@@ -61,11 +39,7 @@ func baselineApp(t *testing.T) (*App, config.Config) {
 	if err := os.MkdirAll(data, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	state, err := store.Open(filepath.Join(data, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = state.Close() })
+	state := openStore(t, data)
 	if err := state.Put("settings", "config", cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +198,7 @@ func TestBaselineCommandOutputPreservesRealCaptureTruncation(t *testing.T) {
 	if !success || diagnosticTruncated {
 		t.Fatalf("success=%v diagnostic=%v", success, diagnosticTruncated)
 	}
-	if output, truncated := boundedOutput(store.Redact(text), 16*1024, diagnosticTruncated); !truncated || len(output) > 16*1024 {
+	if output, truncated := boundedOutput(redact.Text(text), 16*1024, diagnosticTruncated); !truncated || len(output) > 16*1024 {
 		t.Fatalf("multibyte bound: %d %v", len(output), truncated)
 	}
 	captured, captureErr = process.Capture(ctx, "bash", []string{"-c", "yes 'x' | head -c 300000; exit 3"}, dir, 10, process.CaptureDiagnostic)
@@ -232,7 +206,7 @@ func TestBaselineCommandOutputPreservesRealCaptureTruncation(t *testing.T) {
 	if success || !diagnosticTruncated || !strings.Contains(text, "exit status: 3") {
 		t.Fatalf("failed capture: %v %v %.60s", success, diagnosticTruncated, text)
 	}
-	if output, truncated := boundedOutput(store.Redact(text), 16*1024, diagnosticTruncated); !truncated || len(output) > 16*1024 {
+	if output, truncated := boundedOutput(redact.Text(text), 16*1024, diagnosticTruncated); !truncated || len(output) > 16*1024 {
 		t.Fatalf("failure bound: %d %v", len(output), truncated)
 	}
 	captured, captureErr = process.Capture(ctx, "bash", []string{"-c", "echo out; echo err >&2; exit 1"}, dir, 10, process.CaptureDiagnostic)
@@ -262,7 +236,7 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 	}
 	// The exact composition executeBaseline applies per command: the 16 KiB
 	// per-command bound inside the 1 MiB aggregate budget.
-	output, truncated := boundedOutput(store.RedactSecrets(text), 16*1024, diagnosticTruncated)
+	output, truncated := boundedOutput(redact.Secrets(text), 16*1024, diagnosticTruncated)
 	if !truncated {
 		t.Fatal("shortened output must be flagged")
 	}
@@ -270,7 +244,7 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 		t.Fatalf("bounded: %d %q", len(output), output[len(output)-30:])
 	}
 	// Secret scrubbing still applies within the kept bytes.
-	redacted, _ := boundedOutput(store.RedactSecrets("token ghp_abcdefghijklmnop"), 16*1024, false)
+	redacted, _ := boundedOutput(redact.Secrets("token ghp_abcdefghijklmnop"), 16*1024, false)
 	if !strings.Contains(redacted, "[redacted]") || strings.Contains(redacted, "ghp_") {
 		t.Fatalf("redaction: %q", redacted)
 	}
@@ -529,7 +503,7 @@ func TestRecoverBaselinesFinalizesRunningRecordsAndPreservesCancelIntent(t *test
 	if err != nil || got == nil || got.Status != model.BaselineStatusPassed {
 		t.Fatalf("finished: %+v", got)
 	}
-	candidates, err := app.Store.BaselineCleanupCandidates()
+	candidates, err := app.Store.BaselineCleanupCandidates("")
 	if err != nil || len(candidates) != 3 {
 		t.Fatalf("cleanup candidates: %d %v", len(candidates), err)
 	}

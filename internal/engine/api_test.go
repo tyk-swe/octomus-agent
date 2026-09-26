@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // controlFixture builds an app whose saved configuration names every route,
@@ -564,11 +566,7 @@ func TestStateViewStatusPrecedence(t *testing.T) {
 // which the enabled outbox captures once per episode.
 func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
 	dir := t.TempDir()
-	state, err := store.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = state.Close() })
+	state := openStore(t, dir)
 	app := New(state, dir)
 	cfg := testConfig(t.TempDir())
 	if err := state.Put("settings", "config", cfg); err != nil {
@@ -623,5 +621,70 @@ func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
 	}
 	if pending() != 2 {
 		t.Fatal("recovery re-captured already-terminal episodes")
+	}
+}
+
+// mismatchAdapter reports its backend's diagnostics with a version-mismatch
+// warning, standing in for a runner whose installed version differs from the
+// tested baseline.
+type mismatchAdapter struct {
+	runner.Adapter
+	warning string
+}
+
+func (m mismatchAdapter) Diagnose(cwd string) (runner.Diagnostics, error) {
+	diagnostics, err := m.Adapter.Diagnose(cwd)
+	diagnostics.Warning = &m.warning
+	return diagnostics, err
+}
+
+// The doctor lists each backend's diagnostics in the one wire shape the
+// dashboard and CLI read, names the observed Codex version, and returns
+// version-mismatch warnings as data, also when a route check fails, for the
+// command-line doctor to print.
+func TestDoctorReportsBackendDiagnosticsAndWarnings(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	app := fixture.pausedApp(t)
+	result, warnings, err := app.DoctorFor(fixture.cfg, model.CycleModeExecution)
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("doctor = %v, warnings %q", err, warnings)
+	}
+	backends, err := wirejson.Marshal(result["backends"])
+	if want := `[{"backend":"codex","protocol_version":"scripted","version":"scripted","warning":null}]`; err != nil || string(backends) != want {
+		t.Fatalf("backends = %s, %v; want %s", backends, err, want)
+	}
+	if result["codex_version"] != "scripted" || result["tested_codex_version"] != runner.CodexTestedVersion {
+		t.Fatalf("codex versions = %v, %v", result["codex_version"], result["tested_codex_version"])
+	}
+	if message := result["message"]; message != "Repository, GitHub authentication, and all model routes are available." {
+		t.Fatalf("message = %v", message)
+	}
+
+	warning := runner.VersionWarning(config.BackendCodex, "scripted", "tested with a fixture")
+	connect := fixture.script.Connector()
+	mismatched := func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (runner.Adapter, error) {
+		client, err := connect(ctx, backend, cfg, cwd)
+		if err != nil {
+			return nil, err
+		}
+		return mismatchAdapter{Adapter: client, warning: warning}, nil
+	}
+	app = fixture.pausedApp(t, WithRunnerConnector(mismatched))
+	result, warnings, err = app.DoctorFor(fixture.cfg, model.CycleModeAudit)
+	if err != nil || len(warnings) != 1 || warnings[0] != warning {
+		t.Fatalf("doctor = %v, warnings %q; want %q", err, warnings, warning)
+	}
+	backends, err = wirejson.Marshal(result["backends"])
+	quoted, _ := json.Marshal(warning)
+	if want := `[{"backend":"codex","protocol_version":"scripted","version":"scripted","warning":` + string(quoted) + `}]`; err != nil || string(backends) != want {
+		t.Fatalf("backends = %s, %v; want %s", backends, err, want)
+	}
+	if message := result["message"]; message != "Repository, GitHub authentication, and planning model routes are available. Warning: "+warning {
+		t.Fatalf("message = %v", message)
+	}
+	fixture.script.SetCatalog()
+	result, warnings, err = app.DoctorFor(fixture.cfg, model.CycleModeAudit)
+	if err == nil || result != nil || len(warnings) != 1 || warnings[0] != warning {
+		t.Fatalf("failing doctor = %v, %v, warnings %q; want the warning with the failure", result, err, warnings)
 	}
 }

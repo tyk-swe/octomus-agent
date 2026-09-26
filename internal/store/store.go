@@ -400,11 +400,7 @@ func (s *Store) ListRaw(kind string) ([][]byte, error) {
 
 // List decodes every record of a kind, newest first.
 func List[T any](s *Store, kind string) ([]T, error) {
-	raw, err := s.ListRaw(kind)
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[T](raw)
+	return listRecords[T](s, "SELECT data FROM records WHERE kind=?1 ORDER BY rowid DESC", kind)
 }
 
 // RecordAt decodes one record of type T on a caller-owned connection, such as
@@ -419,15 +415,34 @@ func RecordAt[T any](c *sql.Conn, kind, id string) (*T, error) {
 }
 
 // QueryRecords runs query on a caller-owned connection and decodes each row's
-// single JSON column as a T, in row order. An empty result is a non-nil empty
-// slice, and an error that ends the scan early fails the whole read instead of
-// returning the rows before it.
+// single JSON column as a T, in row order. Each row is decoded as it is
+// scanned, so a large read never holds every raw row besides the decoded
+// values. An empty result is a non-nil empty slice, and an error that ends the
+// scan early, or a row that no longer decodes, fails the whole read instead
+// of returning the rows before it.
 func QueryRecords[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
-	raw, err := queryStrings(c, query, args...)
+	rows, err := c.QueryContext(background, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	return decodeAll[T](raw)
+	defer rows.Close()
+	values := []T{}
+	// data is reused for every row; decoding copies what it keeps.
+	var data sql.RawBytes
+	for rows.Next() {
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		value, err := decodeRecord[T](data)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
 }
 
 // listRecords is QueryRecords on the service connection under the store mutex.
@@ -716,18 +731,14 @@ func decodeJSON(data []byte, dst any) error {
 	return nil
 }
 
-// decodeAll decodes each saved value as a T. The result is never nil. A value
-// that no longer decodes fails the whole read, named by its id.
-func decodeAll[T any](raw [][]byte) ([]T, error) {
-	values := make([]T, 0, len(raw))
-	for _, data := range raw {
-		var value T
-		if err := decodeJSON(data, &value); err != nil {
-			return nil, fmt.Errorf("Saved record %s is unreadable: %w", savedRecordID(data), err)
-		}
-		values = append(values, value)
+// decodeRecord decodes one saved value of a listed record as a T. A value
+// that no longer decodes is named by its id.
+func decodeRecord[T any](data []byte) (T, error) {
+	var value T
+	if err := decodeJSON(data, &value); err != nil {
+		return value, fmt.Errorf("Saved record %s is unreadable: %w", savedRecordID(data), err)
 	}
-	return values, nil
+	return value, nil
 }
 
 // savedRecordID reads the "id" member of an unreadable saved value so an

@@ -11,6 +11,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,6 +24,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
@@ -592,7 +594,7 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("failed cleanup still removed the directory: %v", err)
 	}
-	candidates, err := state.BaselineCleanupCandidates()
+	candidates, err := state.BaselineCleanupCandidates("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -662,7 +664,7 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 	if err != nil || saved == nil || saved.Lifecycle.DiscardedAt != nil {
 		t.Fatalf("failed retention marked the record: %+v, %v", saved, err)
 	}
-	ids, err := state.CleanupCandidates("task", time.Now().UTC().Format(time.RFC3339))
+	ids, err := state.CleanupCandidates("task", time.Now().UTC().Format(time.RFC3339), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,6 +784,57 @@ func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
 	app.runtimeMu.Unlock()
 	if remembered != 1 || !baselineRemembered {
 		t.Fatalf("cleanup reports after recovery = %d; want only the still-refused baseline", remembered)
+	}
+}
+
+// Retention reads at most 100 candidates per pass, oldest first. More than
+// that many old tasks whose cleanup is permanently refused must not hide a
+// newer reclaimable one: the next pass resumes after the last candidate the
+// previous one visited, so the newer task is discarded on the second pass.
+func TestRetentionReachesCandidatesBehindAFullWindowOfFailures(t *testing.T) {
+	state := testStore(t)
+	dataDir := t.TempDir()
+	cfg := testConfig(t.TempDir())
+	cfg.RetainCompletedDays = 1
+	saveSettings(t, state, cfg, model.DefaultControl())
+	for i := range 101 {
+		task := discardableTask(t, cfg, dataDir, fmt.Sprintf("refused-%03d", i))
+		if err := state.Put("task", task.ID, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reclaimable := discardableTask(t, cfg, dataDir, "reclaimable")
+	if err := state.Put("task", reclaimable.ID, reclaimable); err != nil {
+		t.Fatal(err)
+	}
+	owned := filepath.Join(dataDir, "tasks", reclaimable.ID)
+	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
+		if path != owned {
+			return errors.New("removal refused")
+		}
+		return workspace.RemoveOwnedDir(root, path)
+	}))
+	t.Cleanup(app.Shutdown)
+
+	if err := app.retention(cfg); err != nil {
+		t.Fatalf("first retention pass: %v", err)
+	}
+	if saved := loadTask(t, state, reclaimable.ID); saved.Lifecycle.DiscardedAt != nil {
+		t.Fatal("the first pass read past its 100-candidate window")
+	}
+	if err := app.retention(cfg); err != nil {
+		t.Fatalf("second retention pass: %v", err)
+	}
+	if saved := loadTask(t, state, reclaimable.ID); saved.Lifecycle.DiscardedAt == nil {
+		t.Fatal("refused candidates kept a newer reclaimable task out of the retention window")
+	}
+	if _, err := os.Stat(owned); !os.IsNotExist(err) {
+		t.Fatalf("retention left the reclaimed workspace behind: %v", err)
+	}
+	for _, id := range []string{"refused-000", "refused-100"} {
+		if events := cleanupEvents(t, state, id); len(events) != 1 {
+			t.Fatalf("%s cleanup events = %+v; want one", id, events)
+		}
 	}
 }
 
@@ -1157,17 +1210,13 @@ func TestRetentionSkipsRecordsDiscardedDuringThePass(t *testing.T) {
 // waitHousekeeping waits for the running housekeeping pass to finish.
 func waitHousekeeping(t *testing.T, app *App) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	if !testutil.WaitUntil(30*time.Second, func() bool {
 		app.runtimeMu.Lock()
-		running := app.runtime.housekeeping
-		app.runtimeMu.Unlock()
-		if !running {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+		defer app.runtimeMu.Unlock()
+		return !app.runtime.housekeeping
+	}) {
+		t.Fatal("housekeeping pass did not finish")
 	}
-	t.Fatal("housekeeping pass did not finish")
 }
 
 // Retention, the storage walk and the remote observation are independent

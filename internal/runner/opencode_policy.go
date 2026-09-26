@@ -177,11 +177,3 @@ func segment(id string) (string, error) {
 	}
 	return encoded.String(), nil
 }
-
-// jsonEqual compares two decoded JSON values by canonical compact form, like
-// JSON value equality.
-func jsonEqual(a, b any) bool {
-	ea, err1 := marshal(a)
-	eb, err2 := marshal(b)
-	return err1 == nil && err2 == nil && ea == eb
-}

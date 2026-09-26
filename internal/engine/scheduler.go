@@ -9,6 +9,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -224,11 +225,11 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 		case errors.As(err, &capacityErr):
 			_ = a.handlePlanningCapacity(live, capacityErr.capacity)
 		case live.Mode == model.OperatingModeRunOnce:
-			message := store.ErrorMessage(err)
+			message := redact.Error(err)
 			_ = a.pauseLocked(&live, &message)
 			_ = a.Store.Event("system", "planning_error", message)
 		case live.Mode == model.OperatingModeContinuous:
-			message := store.ErrorMessage(err)
+			message := redact.Error(err)
 			live.Error = &message
 			live.NextCycleAt = time.Now().Unix() + int64(cfg.CycleIntervalSeconds)
 			_ = a.Store.SaveControl(live)

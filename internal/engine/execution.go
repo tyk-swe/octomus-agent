@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -80,7 +81,7 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 		// blocked below and stays retryable; recovery could only report it
 		// as an invalid workspace.
 		if err := a.saveTask(&task); err != nil {
-			_ = a.Store.Event(task.ID, "worker_error", store.ErrorMessage(err))
+			_ = a.Store.Event(task.ID, "worker_error", redact.Error(err))
 		}
 		return a.Store.Event(task.ID, "interrupted", message)
 	}
@@ -104,7 +105,7 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	}
 	model.FailRunning(task.Sessions, *task.Error)
 	if err := a.transition(&task, status); err != nil {
-		_ = a.Store.Event(task.ID, "worker_error", store.ErrorMessage(err))
+		_ = a.Store.Event(task.ID, "worker_error", redact.Error(err))
 	}
 	return a.Store.Event(task.ID, "error", message)
 }
@@ -380,13 +381,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 	if current != task.SourceRevision {
 		// Only the recorded source may advance, and only onto a dependency's
 		// recorded output; any other remote movement remains a stale base.
-		found := false
-		for _, output := range dependencyOutputs {
-			if output == current {
-				found = true
-			}
-		}
-		if !found {
+		if !slices.Contains(dependencyOutputs, current) {
 			return model.BlockedReasonStaleBase
 		}
 		task.SourceRevision = current
@@ -489,7 +484,7 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	var review model.Review
 	judge := func(thread, answer string) (string, error) {
 		if err := json.Unmarshal([]byte(answer), &review); err != nil {
-			return "", fmt.Errorf("%w: Unparseable review is not clean: %s", model.BlockedReasonInvalidReview, store.Redact(err.Error()))
+			return "", fmt.Errorf("%w: Unparseable review is not clean: %s", model.BlockedReasonInvalidReview, redact.Text(err.Error()))
 		}
 		if !review.Valid() {
 			return "", model.BlockedReasonInvalidReview

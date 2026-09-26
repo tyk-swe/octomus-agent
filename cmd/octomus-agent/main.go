@@ -141,7 +141,7 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		}
 		sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
 		defer stopSignals()
-		return runDoctor(sigCtx, app, mode, stdout)
+		return runDoctor(sigCtx, app, mode, stdout, stderr)
 	}
 	token, ok := env(redact.TokenEnv)
 	if !ok {
@@ -199,12 +199,13 @@ func newHTTPServer(handler http.Handler) *http.Server {
 	return &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 }
 
-// runDoctor validates the saved configuration for mode and prints the result.
-// Cancelling ctx (one of the shutdownSignals) shuts the app down,
-// which terminates every owned process group the checks started, and fails
-// the command. The shutdown finishes before runDoctor returns, so the caller
-// may close the store.
-func runDoctor(ctx context.Context, app *engine.App, mode model.CycleMode, stdout io.Writer) error {
+// runDoctor validates the saved configuration for mode and prints the result
+// to stdout. Each version-mismatch warning goes to stderr as a WARN line, also
+// when a check fails. Cancelling ctx (one of the shutdownSignals) shuts the app
+// down, which terminates every owned process group the checks started, and
+// fails the command. The shutdown finishes before runDoctor returns, so the
+// caller may close the store.
+func runDoctor(ctx context.Context, app *engine.App, mode model.CycleMode, stdout, stderr io.Writer) error {
 	shutdownDone := make(chan struct{})
 	stopShutdown := context.AfterFunc(ctx, func() {
 		defer close(shutdownDone)
@@ -219,7 +220,10 @@ func runDoctor(ctx context.Context, app *engine.App, mode model.CycleMode, stdou
 	if err != nil {
 		return err
 	}
-	result, err := app.DoctorFor(cfg, mode)
+	result, warnings, err := app.DoctorFor(cfg, mode)
+	for _, warning := range warnings {
+		fmt.Fprintf(stderr, "WARN %s\n", warning)
+	}
 	if ctx.Err() != nil {
 		return errors.New("Doctor interrupted")
 	}

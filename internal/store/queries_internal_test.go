@@ -32,7 +32,9 @@ func TestDashboardReportsMidIterationErrors(t *testing.T) {
 
 // Read-only exports decode their rows through QueryRecords and RecordAt, so
 // the rows arrive in query order, an empty read is an empty list rather than
-// null, and an error on a later row fails the read instead of cutting it short.
+// null, and an error or an unreadable value on a later row fails the read
+// instead of cutting it short. Rows are decoded as they are scanned into one
+// reused buffer, so no decoded value may share memory with a later row.
 func TestQueryRecordsAndRecordAtReadCallerOwnedConnections(t *testing.T) {
 	type record struct {
 		N int `json:"n"`
@@ -70,9 +72,26 @@ func TestQueryRecordsAndRecordAtReadCallerOwnedConnections(t *testing.T) {
 		if err == nil || values != nil || !strings.Contains(err.Error(), "malformed JSON") {
 			t.Fatalf("QueryRecords with a failing row = %#v, %v; want the step error", values, err)
 		}
+		values, err = QueryRecords[record](c, `SELECT CASE id WHEN 'b' THEN '{"id":"b","n":"x"}' ELSE data END FROM records WHERE kind='x' ORDER BY id`)
+		if err == nil || values != nil || !strings.HasPrefix(err.Error(), "Saved record b is unreadable: ") {
+			t.Fatalf("QueryRecords with an unreadable row = %#v, %v; want that row named", values, err)
+		}
 		values, err = QueryRecords[record](c, "SELECT data FROM no_such_table")
 		if err == nil || values != nil {
 			t.Fatalf("QueryRecords on a missing table = %#v, %v; want an error", values, err)
+		}
+		return nil
+	})
+	execStore(t, s, `INSERT INTO records VALUES ('y','a','{"s":"a longer first value"}'),('y','b','{"s":"b"}'),('y','c','{"s":"third"}')`)
+	read(func(c *sql.Conn) error {
+		texts, err := QueryRecords[map[string]string](c, "SELECT data FROM records WHERE kind='y' ORDER BY id")
+		want := []map[string]string{{"s": "a longer first value"}, {"s": "b"}, {"s": "third"}}
+		if err != nil || !reflect.DeepEqual(texts, want) {
+			t.Fatalf("QueryRecords strings = %#v, %v; want %#v", texts, err, want)
+		}
+		raw, err := QueryRecords[json.RawMessage](c, "SELECT data FROM records WHERE kind='y' ORDER BY id")
+		if err != nil || len(raw) != 3 || string(raw[0]) != `{"s":"a longer first value"}` || string(raw[1]) != `{"s":"b"}` || string(raw[2]) != `{"s":"third"}` {
+			t.Fatalf("QueryRecords raw values = %q, %v", raw, err)
 		}
 		return nil
 	})
@@ -161,9 +180,8 @@ func TestUnreadableRecordsNameTheirIdentity(t *testing.T) {
 		`{"id":7,"n":"x"}`:            "Saved record (unknown id) is unreadable: ",
 		`{"id":"cut`:                  "Saved record (unknown id) is unreadable: ",
 	} {
-		values, err := decodeAll[record]([][]byte{[]byte(`{"id":"fine","n":1}`), []byte(raw)})
-		if values != nil || err == nil || !strings.HasPrefix(err.Error(), want) {
-			t.Errorf("decodeAll(%s) = %v, %v; want %q", raw, values, err, want)
+		if value, err := decodeRecord[record]([]byte(raw)); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("decodeRecord(%s) = %v, %v; want %q", raw, value, err, want)
 		}
 	}
 }

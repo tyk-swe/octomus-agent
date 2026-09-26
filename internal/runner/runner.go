@@ -35,8 +35,8 @@ func VersionWarning(backend config.Backend, installed, expected string) string {
 }
 
 // Diagnostics is the document every backend reports to the doctor; the
-// dashboard and CLI read one shape. Fields stay in key order so the typed
-// document encodes to the same bytes as its generic map form.
+// dashboard and CLI read one shape. The fields are declared in the
+// alphabetical key order the doctor's JSON has always had.
 type Diagnostics struct {
 	Backend         config.Backend `json:"backend"`
 	ProtocolVersion string         `json:"protocol_version"`
@@ -44,33 +44,6 @@ type Diagnostics struct {
 	// Warning states a version mismatch against the protocol baseline; nil
 	// when the installed version is the tested one.
 	Warning *string `json:"warning"`
-}
-
-// Map is the generic form of d, with the backend as its wire name and a nil
-// warning when there is none.
-//
-// Deprecated: only Adapter.Diagnostics uses it, until internal/engine reads
-// the typed document from Adapter.Diagnose.
-func (d Diagnostics) Map() map[string]any {
-	var warning any
-	if d.Warning != nil {
-		warning = *d.Warning
-	}
-	return map[string]any{
-		"backend":          d.Backend.Slug(),
-		"version":          d.Version,
-		"protocol_version": d.ProtocolVersion,
-		"warning":          warning,
-	}
-}
-
-// diagnosticsMap adapts a Diagnose result to the generic Adapter.Diagnostics
-// form.
-func diagnosticsMap(d Diagnostics, err error) (map[string]any, error) {
-	if err != nil {
-		return nil, err
-	}
-	return d.Map(), nil
 }
 
 // Model is one discovered runtime model.
@@ -138,11 +111,6 @@ type Adapter interface {
 	// Diagnose reports the backend's version document, failing when the
 	// backend cannot serve sessions (for example, missing authentication).
 	Diagnose(cwd string) (Diagnostics, error)
-	// Diagnostics is Diagnose as a generic map.
-	//
-	// Deprecated: internal/engine's doctor still indexes the map; it moves to
-	// Diagnose, and this method goes away.
-	Diagnostics(cwd string) (map[string]any, error)
 	Close() error
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
@@ -110,7 +111,7 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 		// cancellation is not a housekeeping failure.
 		report := func(err error) {
 			if err != nil && a.ctx.Err() == nil {
-				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
+				_ = a.Store.Event("system", "housekeeping_error", redact.Error(err))
 			}
 		}
 		if cleanup {
@@ -138,7 +139,7 @@ func (a *App) retention(cfg config.Config) error {
 		days = maxRetainDays
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
-	checks, err := a.Store.BaselineCleanupCandidates()
+	checks, err := a.Store.BaselineCleanupCandidates(a.retentionCursor(cleanupBaseline))
 	if err != nil {
 		return err
 	}
@@ -146,6 +147,7 @@ func (a *App) retention(cfg config.Config) error {
 		if a.ctx.Err() != nil {
 			return nil
 		}
+		a.advanceRetentionCursor(cleanupBaseline, check.ID)
 		// The gate covers only the eligibility re-read; removeBaselineWorkspace
 		// claims the check and removes its clone without the scheduler gate.
 		a.gate.Lock()
@@ -165,7 +167,7 @@ func (a *App) retention(cfg config.Config) error {
 		}
 	}
 	for _, kind := range []cleanupKind{cleanupTask, cleanupCycle} {
-		ids, err := a.Store.CleanupCandidates(string(kind), cutoff)
+		ids, err := a.Store.CleanupCandidates(string(kind), cutoff, a.retentionCursor(kind))
 		if err != nil {
 			return err
 		}
@@ -173,6 +175,7 @@ func (a *App) retention(cfg config.Config) error {
 			if a.ctx.Err() != nil {
 				return nil
 			}
+			a.advanceRetentionCursor(kind, id)
 			a.gate.Lock()
 			err := a.retainCandidateLocked(kind, id)
 			a.gate.Unlock()
@@ -190,6 +193,22 @@ func (a *App) retention(cfg config.Config) error {
 	return nil
 }
 
+// retentionCursor returns the candidate of kind that retention visited last;
+// the next candidate window starts after it and wraps around to the oldest.
+func (a *App) retentionCursor(kind cleanupKind) string {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	return a.runtime.retentionCursors[kind]
+}
+
+// advanceRetentionCursor records id as the candidate of kind that retention
+// visited last.
+func (a *App) advanceRetentionCursor(kind cleanupKind, id string) {
+	a.runtimeMu.Lock()
+	a.runtime.retentionCursors[kind] = id
+	a.runtimeMu.Unlock()
+}
+
 // cleanupReport is the last cleanup failure retention reported for a target:
 // its redacted message and when the event was written.
 type cleanupReport struct {
@@ -202,7 +221,7 @@ type cleanupReport struct {
 // A changed message is reported at once. The memory is per process, so a
 // restart reports a lasting failure once more.
 func (a *App) reportCleanupFailure(kind cleanupKind, id string, err error) error {
-	message := store.ErrorMessage(err)
+	message := redact.Error(err)
 	key := cleanupKey{kind: kind, id: id}
 	now := time.Now()
 	a.runtimeMu.Lock()

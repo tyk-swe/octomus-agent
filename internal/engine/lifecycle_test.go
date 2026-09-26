@@ -10,6 +10,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // Acceptance criterion 7: repeated start → activity → cancel/shutdown cycles
@@ -94,17 +95,13 @@ func TestRepeatedLifecycleLeavesNoLeaks(t *testing.T) {
 	}
 	// A bounded settle forgives asynchronous finalizers without masking a real
 	// leak, which only grows.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	var extraFDs, extraG int
+	if !testutil.WaitUntil(10*time.Second, func() bool {
 		runtime.GC()
-		extraFDs, extraG := fds()-beforeFDs, runtime.NumGoroutine()-beforeG
-		if extraFDs <= 0 && extraG <= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("lifecycle leak: %+d descriptors and %+d goroutines after 15 cycles (baseline %d/%d)",
-				extraFDs, extraG, beforeFDs, beforeG)
-		}
-		time.Sleep(25 * time.Millisecond)
+		extraFDs, extraG = fds()-beforeFDs, runtime.NumGoroutine()-beforeG
+		return extraFDs <= 0 && extraG <= 2
+	}) {
+		t.Fatalf("lifecycle leak: %+d descriptors and %+d goroutines after 15 cycles (baseline %d/%d)",
+			extraFDs, extraG, beforeFDs, beforeG)
 	}
 }

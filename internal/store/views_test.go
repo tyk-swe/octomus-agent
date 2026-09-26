@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	published.ID = "published"
 	published.Status = model.StatusPublished
 	published.OutputCommit = str("out00001")
-	published.PRNumber = ptrU64(9)
+	published.PRNumber = new(uint64(9))
 	published.Lifecycle.ArchivedAt = str("2020-01-01T00:00:00Z")
 	blocked := task()
 	blocked.ID = "blocked"
@@ -73,7 +74,7 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 		}
 		return out
 	}
-	if got := ids(scheduling); len(got) != 3 || !contains(got, "active") || !contains(got, "queued") || !contains(got, "reserved") {
+	if got := ids(scheduling); len(got) != 3 || !slices.Contains(got, "active") || !slices.Contains(got, "queued") || !slices.Contains(got, "reserved") {
 		t.Fatalf("scheduling: %v", got)
 	}
 	withStatus, err := s.TasksWithStatus([]string{"reviewing", "blocked"})
@@ -103,7 +104,7 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	if len(runningBaselines) != 1 || runningBaselines[0].ID != "base-running" {
 		t.Fatalf("running baselines: %+v", runningBaselines)
 	}
-	cleanup, err := s.BaselineCleanupCandidates()
+	cleanup, err := s.BaselineCleanupCandidates("")
 	must(t, err)
 	if len(cleanup) != 1 || cleanup[0].ID != "base-done" {
 		t.Fatalf("baseline cleanup: %+v", cleanup)
@@ -113,7 +114,7 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	if latest == nil || latest.ID != "base-done" {
 		t.Fatalf("latest baseline: %+v", latest)
 	}
-	old, err := s.CleanupCandidates("task", "2021-01-01T00:00:00Z")
+	old, err := s.CleanupCandidates("task", "2021-01-01T00:00:00Z", "")
 	must(t, err)
 	if len(old) != 1 || old[0] != "published" {
 		t.Fatalf("cleanup candidates: %v", old)
@@ -159,8 +160,7 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	}
 
 	// Batches: starting one assigns queued unarchived tasks and counts members.
-	control := model.DefaultControl()
-	must(t, s.StartBatch(&control))
+	control := startBatch(t, s)
 	if control.Batch == nil || control.Mode != model.OperatingModeRunOnce || control.Batch.Phase != model.BatchPhaseDraining {
 		t.Fatalf("batch control: %+v", control)
 	}
@@ -256,8 +256,7 @@ func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
 
 	// A batch takes the queued tasks present when it starts; later queued
 	// work waits for the next run, but active work is always listed.
-	control := model.DefaultControl()
-	must(t, s.StartBatch(&control))
+	control := startBatch(t, s)
 	put("after-batch", queued)
 	put("publishing", status(model.StatusPublishing))
 	want = []string{"default", "default-reserved", "other-target", "executing", "publishing"}
@@ -270,13 +269,79 @@ func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
 	}
 }
 
-func ptrU64(v uint64) *uint64 { return &v }
-
-func contains(list []string, want string) bool {
-	for _, item := range list {
-		if item == want {
-			return true
+// Cleanup candidates are a window of at most 100 that starts after the
+// caller's cursor and wraps around to the oldest, so a caller that resumes
+// after the last candidate it visited reaches every candidate, however many
+// older ones stay candidates. The cursor itself comes last, and an empty,
+// unknown or no-longer-eligible cursor still positions the window.
+func TestCleanupCandidatesResumeAfterTheCursorAndWrap(t *testing.T) {
+	s := open(t, statePath(t))
+	const cutoff = "2021-01-01T00:00:00Z"
+	ids := make([]string, 105)
+	for i := range ids {
+		tk := task()
+		tk.ID = fmt.Sprintf("old-%03d", i)
+		tk.Status = model.StatusPublished
+		tk.UpdatedAt = "2020-01-01T00:00:00Z"
+		must(t, s.Put("task", tk.ID, tk))
+		ids[i] = tk.ID
+	}
+	recent := task()
+	recent.Status = model.StatusPublished
+	must(t, s.Put("task", recent.ID, recent))
+	window := func(after string) []string {
+		t.Helper()
+		got, err := s.CleanupCandidates("task", cutoff, after)
+		must(t, err)
+		return got
+	}
+	wrapped := slices.Concat(ids[100:], ids[:95])
+	for _, check := range []struct {
+		after string
+		want  []string
+	}{
+		{"", ids[:100]},
+		{"unknown", ids[:100]},
+		{ids[99], wrapped},
+		{ids[104], ids[:100]},
+		{ids[2], ids[3:103]},
+	} {
+		if got := window(check.after); !slices.Equal(got, check.want) {
+			t.Fatalf("window after %q = %v; want %v", check.after, got, check.want)
 		}
 	}
-	return false
+	discarded := task()
+	discarded.ID = ids[99]
+	discarded.Status = model.StatusPublished
+	discarded.UpdatedAt = "2020-01-01T00:00:00Z"
+	discarded.Lifecycle.DiscardedAt = str("2020-06-01T00:00:00Z")
+	must(t, s.Put("task", discarded.ID, discarded))
+	wrapped = slices.Concat(ids[100:], ids[:99])[:100]
+	if got := window(ids[99]); !slices.Equal(got, wrapped) {
+		t.Fatalf("window after a discarded cursor = %v; want %v", got, wrapped)
+	}
+
+	baseline := func(id string) model.BaselineCheck {
+		return model.BaselineCheck{ID: id, Status: model.BaselineStatusPassed, Config: config.Default(), ConfigFingerprint: "fp",
+			StartedAt: model.Now(), Commands: []model.BaselineCommand{}}
+	}
+	for _, id := range []string{"base-a", "base-b", "base-c"} {
+		must(t, s.Put("baseline", id, baseline(id)))
+	}
+	for after, want := range map[string][]string{
+		"":        {"base-a", "base-b", "base-c"},
+		"base-b":  {"base-c", "base-a", "base-b"},
+		"base-c":  {"base-a", "base-b", "base-c"},
+		"missing": {"base-a", "base-b", "base-c"},
+	} {
+		checks, err := s.BaselineCleanupCandidates(after)
+		must(t, err)
+		got := []string{}
+		for _, check := range checks {
+			got = append(got, check.ID)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("baseline window after %q = %v; want %v", after, got, want)
+		}
+	}
 }

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -469,11 +468,6 @@ func TestOpenCodeDiagnostics(t *testing.T) {
 	if diagnostics.Version != "0.0.0-fixture" || diagnostics.Warning == nil ||
 		*diagnostics.Warning != *OpenCodeVersionWarning("0.0.0-fixture") {
 		t.Fatalf("mismatched diagnostics: %+v", diagnostics)
-	}
-	// The generic form the engine doctor still reads carries the same facts.
-	generic, err := client.Diagnostics(f.workspace)
-	if err != nil || !reflect.DeepEqual(generic, diagnostics.Map()) {
-		t.Fatalf("generic diagnostics = %v, %v; want %v", generic, err, diagnostics.Map())
 	}
 }
 

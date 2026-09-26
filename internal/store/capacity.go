@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -182,7 +181,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 		if err != nil {
 			return err
 		}
-		if saved == nil || !sameJSON(*saved, inventory) {
+		if saved == nil || !wirejson.Equal(*saved, inventory) {
 			return errRollback
 		}
 		if task.Proposal.Target != task.Config.DefaultBranch || !PrIdentityOf(task.Config).Matches(cfg) {
@@ -193,7 +192,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 		if err != nil {
 			return err
 		}
-		if !found || canonical.Status != model.StatusQueued || !sameJSON(canonical, *task) {
+		if !found || canonical.Status != model.StatusQueued || !wirejson.Equal(canonical, *task) {
 			return errRollback
 		}
 		reservations, err := reservationRows(c, cfg.GitHubRepo)
@@ -304,20 +303,6 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 		return false, nil
 	}
 	return err == nil, err
-}
-
-// sameJSON reports whether two values have the same canonical wirejson
-// serialization. A value that cannot be serialized never matches.
-func sameJSON(a, b any) bool {
-	left, err := wirejson.Marshal(a)
-	if err != nil {
-		return false
-	}
-	right, err := wirejson.Marshal(b)
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(left, right)
 }
 
 // invalidTimestamp is the operator-facing reason for an unparseable inventory

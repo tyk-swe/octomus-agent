@@ -14,6 +14,7 @@ import (
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
@@ -135,21 +136,20 @@ func (a *App) baselineRuntimeIneligibility() (*string, error) {
 	planning := a.runtime.planning()
 	reconciling := a.runtime.reconcilingPublication
 	a.runtimeMu.Unlock()
-	text := func(s string) *string { return &s }
 	var reason *string
 	switch {
 	case baseline:
-		reason = text("A baseline check is already running")
+		reason = new("A baseline check is already running")
 	case a.ctx.Err() != nil:
-		reason = text("The service is shutting down")
+		reason = new("The service is shutting down")
 	case !control.Paused:
-		reason = text("Pause the service before running a baseline check")
+		reason = new("Pause the service before running a baseline check")
 	case tasks > 0:
-		reason = text("Wait for active tasks before running a baseline check")
+		reason = new("Wait for active tasks before running a baseline check")
 	case planning:
-		reason = text("Wait for planning to finish before running a baseline check")
+		reason = new("Wait for planning to finish before running a baseline check")
 	case reconciling:
-		reason = text("Wait for publication reconciliation before running a baseline check")
+		reason = new("Wait for publication reconciliation before running a baseline check")
 	}
 	return reason, nil
 }
@@ -166,7 +166,7 @@ func (a *App) baselineEligibility() (bool, *string, error) {
 		return false, nil, err
 	}
 	if err := cfg.ValidateBaseline(); err != nil {
-		message := store.ErrorMessage(err)
+		message := redact.Error(err)
 		return false, &message, nil
 	}
 	return true, nil, nil
@@ -407,7 +407,7 @@ func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 	}()
 	var cleanupError *string
 	if removeErr != nil {
-		message := store.ErrorMessage(removeErr)
+		message := redact.Error(removeErr)
 		cleanupError = &message
 	}
 	if removeErr == nil {
@@ -476,7 +476,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 		defer close(executionDone)
 		status, err := a.executeBaseline(workCtx, check)
 		if err != nil {
-			check.Error = stringPointer(store.ErrorMessage(err))
+			check.Error = stringPointer(redact.Error(err))
 			switch {
 			case workCtx.Err() != nil:
 				return model.BaselineStatusInterrupted
@@ -507,7 +507,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	switch {
 	case markerErr != nil:
 		status = model.BaselineStatusInterrupted
-		check.Error = stringPointer(store.Redact("Cancel state unreadable, refusing a clean result: " + markerErr.Error()))
+		check.Error = stringPointer(redact.Text("Cancel state unreadable, refusing a clean result: " + markerErr.Error()))
 	case marked:
 		status = model.BaselineStatusCancelled
 		check.Error = stringPointer("Cancelled by the operator")
@@ -517,12 +517,12 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	check.Status = status
 	check.CompletedAt = stringPointer(model.Now())
 	if err := a.Store.Put("baseline", id, *check); err != nil {
-		_ = a.Store.Event(id, "baseline_error", store.ErrorMessage(err))
+		_ = a.Store.Event(id, "baseline_error", redact.Error(err))
 	}
 	_ = a.Store.Event(id, "baseline", baselineStatusDebug[status])
 	a.gate.Unlock()
 	if err := a.removeBaselineWorkspace(check); err != nil {
-		_ = a.Store.Event(id, "cleanup_error", store.ErrorMessage(err))
+		_ = a.Store.Event(id, "cleanup_error", redact.Error(err))
 	}
 }
 
@@ -604,7 +604,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		if limit > baselineCommandOutputLimit {
 			limit = baselineCommandOutputLimit
 		}
-		output, outputTruncated := boundedOutput(store.RedactSecrets(text), limit, diagnosticTruncated)
+		output, outputTruncated := boundedOutput(redact.Secrets(text), limit, diagnosticTruncated)
 		remaining -= len(output)
 		if remaining < 0 {
 			remaining = 0

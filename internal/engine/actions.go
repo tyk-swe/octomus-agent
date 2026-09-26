@@ -9,10 +9,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -190,13 +192,7 @@ func (a *App) eligibleTask(id, action string) (*model.Task, error) {
 	if task == nil {
 		return nil, ErrTaskNotFound
 	}
-	allowed := false
-	for _, candidate := range task.AllowedActions() {
-		if candidate == action {
-			allowed = true
-		}
-	}
-	if !allowed {
+	if !slices.Contains(task.AllowedActions(), action) {
 		return nil, conflictError("This action is not eligible for the task's recorded failure and workspace state")
 	}
 	// An owned workspace cleanup in flight wins over every action — retry,
@@ -224,22 +220,10 @@ func (a *App) revalidateTaskAction(original *model.Task, action string) error {
 	if err != nil {
 		return err
 	}
-	if !sameRecordJSON(current, original) {
+	if !wirejson.Equal(current, original) {
 		return conflictError("Task changed during remote checks; inspect its current state before trying again")
 	}
 	return nil
-}
-
-func sameRecordJSON(a, b *model.Task) bool {
-	left, err := wirejson.Marshal(a)
-	if err != nil {
-		return false
-	}
-	right, err := wirejson.Marshal(b)
-	if err != nil {
-		return false
-	}
-	return string(left) == string(right)
 }
 
 // recordTaskError classifies err into the task's blocked reason and stores its
@@ -247,7 +231,7 @@ func sameRecordJSON(a, b *model.Task) bool {
 func recordTaskError(task *model.Task, err error) {
 	reason := model.BlockedReasonFromError(err)
 	task.BlockedReason = &reason
-	message := store.ErrorMessage(err)
+	message := redact.Error(err)
 	task.Error = &message
 }
 

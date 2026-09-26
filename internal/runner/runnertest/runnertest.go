@@ -321,17 +321,6 @@ func (c *client) Diagnose(cwd string) (runner.Diagnostics, error) {
 	return runner.Diagnostics{Backend: c.backend, ProtocolVersion: "scripted", Version: "scripted"}, nil
 }
 
-// Diagnostics is Diagnose as a generic map; it records one diagnostics call.
-//
-// Deprecated: see runner.Adapter.Diagnostics.
-func (c *client) Diagnostics(cwd string) (map[string]any, error) {
-	d, err := c.Diagnose(cwd)
-	if err != nil {
-		return nil, err
-	}
-	return d.Map(), nil
-}
-
 // Start rejects routes absent from the catalog, then resumes resume (which must
 // be a session this script started) or starts a fresh session.
 func (c *client) Start(route config.Route, cwd string, resume *string) (string, error) {

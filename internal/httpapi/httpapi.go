@@ -174,7 +174,6 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 			allowed = append(allowed, route.method)
 		}
 		if route.method == r.Method {
-			route := route
 			matched = &route
 			params = candidate
 			break
@@ -571,7 +570,9 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	if err != nil {
 		return 0, nil, err
 	}
-	result, err := a.app.DoctorFor(cfg, mode)
+	// A passing result lists any version warnings in its body; a failing one
+	// answers with the error alone. The service log never receives them.
+	result, _, err := a.app.DoctorFor(cfg, mode)
 	status := http.StatusOK
 	var body map[string]any
 	if err != nil {

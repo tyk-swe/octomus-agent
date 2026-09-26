@@ -287,7 +287,11 @@
           <strong>Blocked reason:</strong>
           {task.blocked_reason.replaceAll('_', ' ')}
         </p>{/if}
-      {#if task.rediscovery_requested}<p role="status">
+      <!-- Archiving withdraws a pending request; the saved flag stays set. -->
+      {#if task.rediscovery_requested && task.lifecycle?.archived_at}<p>
+          Rediscovery withdrawn. The task was archived before an execution cycle reassessed this
+          objective.
+        </p>{:else if task.rediscovery_requested}<p role="status">
           Rediscovery pending. The next execution cycle will reassess this objective.
         </p>{/if}
       {#if task.rediscovery_result}<p>{task.rediscovery_result}</p>{/if}

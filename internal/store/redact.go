@@ -1,46 +1,13 @@
 package store
 
-// Redaction itself lives in package redact, which process, git and runner use
-// without depending on persistence. The store scrubs event messages and
-// exports with it; the forwarding names below remain only until
-// internal/engine calls package redact directly.
+// Redaction itself lives in package redact, which process, git, runner and
+// engine use without depending on persistence. The store scrubs event messages
+// and exports with it.
 
 import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
-
-// WebhookEnv forwards redact.WebhookEnv.
-//
-// Deprecated: use redact.WebhookEnv.
-const WebhookEnv = redact.WebhookEnv
-
-// DisplayTransform forwards redact.DisplayTransform.
-//
-// Deprecated: use redact.DisplayTransform.
-type DisplayTransform = redact.DisplayTransform
-
-// ErrorMessage forwards redact.Error.
-//
-// Deprecated: use redact.Error.
-func ErrorMessage(err error) string { return redact.Error(err) }
-
-// RedactSecrets forwards redact.Secrets.
-//
-// Deprecated: use redact.Secrets.
-func RedactSecrets(input string) string { return redact.Secrets(input) }
-
-// Redact forwards redact.Text.
-//
-// Deprecated: use redact.Text.
-func Redact(input string) string { return redact.Text(input) }
-
-// DisplayJSON forwards redact.DisplayJSON.
-//
-// Deprecated: use redact.DisplayJSON.
-func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
-	return redact.DisplayJSON(object)
-}
 
 // RedactedValue serializes a typed export, decodes it as generic JSON (numbers
 // kept verbatim) and scrubs every string in place. Exports use it so redaction

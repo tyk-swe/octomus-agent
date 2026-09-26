@@ -256,15 +256,11 @@ func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
 }
 
 // BaselineCleanupCandidates lists up to 100 finished baseline checks whose
-// clone is not recorded as removed, oldest saved first.
-func (s *Store) BaselineCleanupCandidates() ([]model.BaselineCheck, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid LIMIT 100")
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[model.BaselineCheck](raw)
+// clone is not recorded as removed, in save order starting after the check
+// whose id is after and wrapping around to the oldest (see
+// CleanupCandidates). An empty or unknown after starts at the oldest.
+func (s *Store) BaselineCleanupCandidates(after string) ([]model.BaselineCheck, error) {
+	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid<=COALESCE((SELECT rowid FROM records WHERE kind='baseline' AND id=?1),0),rowid LIMIT 100", after)
 }
 
 // LatestBaseline returns the most recently started baseline check, or nil
@@ -375,25 +371,6 @@ func (s *Store) HasUnresolvedTasks() (bool, error) {
 	return exists, err
 }
 
-// StartBatch opens a run-once batch over every queued, unarchived task and
-// saves the control, without StartBatchIfAffordable's checks of the live
-// control and planning affordability. *control is updated only when the
-// transaction commits.
-func (s *Store) StartBatch(control *model.Control) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var next model.Control
-	err := s.transaction(false, func(c *sql.Conn) error {
-		var err error
-		next, err = txStartBatch(c, *control)
-		return err
-	})
-	if err == nil {
-		*control = next
-	}
-	return err
-}
-
 // txStartBatch opens a run-once batch from control inside the caller's
 // transaction: it tags every queued, unarchived task with the new batch and
 // saves the resulting control, which it returns.
@@ -437,7 +414,7 @@ func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (mo
 		if err != nil {
 			return err
 		}
-		if !sameJSON(live, *control) || !capacity.Available() {
+		if !wirejson.Equal(live, *control) || !capacity.Available() {
 			return errRollback
 		}
 		if next, err = txStartBatch(c, *control); err != nil {
@@ -484,7 +461,7 @@ func (s *Store) BeginCycleIfAffordable(cycle model.Cycle, control model.Control,
 		if err != nil {
 			return err
 		}
-		if liveFingerprint != fingerprint || !sameJSON(live, expected) || !capacity.Available() {
+		if liveFingerprint != fingerprint || !wirejson.Equal(live, expected) || !capacity.Available() {
 			return errRollback
 		}
 		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {
@@ -617,11 +594,16 @@ func statusCounts(c *sql.Conn, counts map[string]int64) error {
 	return rows.Err()
 }
 
-// CleanupCandidates lists retained record ids older than the cutoff.
-func (s *Store) CleanupCandidates(kind, cutoff string) ([]string, error) {
+// CleanupCandidates lists up to 100 ids of retained records older than the
+// cutoff, in save order starting after the record whose id is after and
+// wrapping around to the oldest. A caller that passes the last id it visited
+// therefore walks every candidate across calls, so a hundred records whose
+// cleanup keeps failing cannot hide newer ones. An empty or unknown after
+// starts at the oldest.
+func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq LIMIT 100", kind, cutoff)
+	raw, err := queryStrings(s.conn, "SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq<=COALESCE((SELECT seq FROM record_meta WHERE kind=?1 AND id=?3),0),seq LIMIT 100", kind, cutoff, after)
 	if err != nil {
 		return nil, err
 	}
@@ -693,13 +675,7 @@ func (s *Store) DecisionMemory(repository string) ([]any, error) {
 // repository. Archiving a task withdraws its pending request, as it removes
 // the task from scheduling.
 func (s *Store) RediscoveryRequests(repository string) ([]any, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[any](raw)
+	return listRecords[any](s, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
 }
 
 func latestPrOutputAt(c *sql.Conn, repository string, number uint64) (*string, error) {
