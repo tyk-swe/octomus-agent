@@ -642,14 +642,9 @@ def audit_scenario(mode):
                 assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
                 print('PASS audit-budget: refused before any admission with an explicit capacity reason')
                 return
-            for attempt in range(3):
-                code, response = service.expect('/control/audit', 'POST')
-                if code == 200:
-                    break
-                assert mode == 'queued' and code == 400 and response.get('error') == 'Control state changed during planning preflight', (mode, code, response)
-                state = service.request('/state')
-                assert state['tasks'] == queued_before and not state['cycle_active'], state
-                time.sleep(0.2)
+            # A remote observation right after the restart does not invalidate
+            # the audit preflight, so one request starts the audit.
+            code, response = service.expect('/control/audit', 'POST')
             assert code == 200, (mode, code, response)
             if mode != 'failed':
                 service.wait(lambda: (root / 'audit-entered').exists(), 'audit started')

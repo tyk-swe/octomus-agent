@@ -1344,6 +1344,96 @@ func TestRemotePreflightDoesNotHoldControlLockAndRejectsChangedPolicy(t *testing
 	}
 }
 
+// Remote observation owns ContextFingerprint and IdleStreak and may bring
+// NextCycleAt forward, always under the gate, so an observation that lands
+// during a planning preflight leaves it valid: the audit or execution pass
+// starts and keeps the observed fields. An operator-owned change (cycle
+// number, recorded error) still rejects the preflight.
+func TestPlanningPreflightSurvivesObservationButNotOperatorChanges(t *testing.T) {
+	observe := func(control *model.Control) {
+		control.ContextFingerprint = "observed-during-preflight"
+		control.IdleStreak = 3
+		control.NextCycleAt = 12345
+	}
+	for _, test := range []struct {
+		name   string
+		audit  bool
+		change func(*model.Control)
+		starts bool
+	}{
+		{name: "audit after observation", audit: true, change: observe, starts: true},
+		{name: "continuous after observation", change: observe, starts: true},
+		{name: "audit after cycle number change", audit: true, change: func(control *model.Control) { control.CycleNumber++ }},
+		{name: "audit after recorded error", audit: true, change: func(control *model.Control) {
+			message := "operator-visible failure"
+			control.Error = &message
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			completePlan(t, fixture).queue(fixture)
+			hold := filepath.Join(fixture.root, "reconcile-hold")
+			if err := os.WriteFile(hold, []byte("1"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Remove(hold) })
+			app := fixture.pausedApp(t)
+			audit := make(chan error, 1)
+			if test.audit {
+				go func() {
+					_, err := app.StartAudit(context.Background())
+					audit <- err
+				}()
+			} else {
+				if err := app.Resume(); err != nil {
+					t.Fatal(err)
+				}
+				if err := app.Tick(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			waitForFixtureFile(t, filepath.Join(fixture.root, "reconcile-entered"), "planning preflight did not reach the deterministic barrier")
+			app.gate.Lock()
+			control, err := app.Control()
+			if err == nil {
+				test.change(&control)
+				err = fixture.state.SaveControl(control)
+			}
+			app.gate.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(hold); err != nil {
+				t.Fatal(err)
+			}
+			if test.audit {
+				err = <-audit
+			}
+			app.wg.Wait() // The preflight, and any pass it started.
+
+			cycles, listErr := store.List[model.Cycle](fixture.state, "cycle")
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if !test.starts {
+				if err == nil || err.Error() != "Control state changed during planning preflight" || len(cycles) != 0 {
+					t.Fatalf("preflight after an operator change = %v with %d cycles; want it refused", err, len(cycles))
+				}
+				if turns := fixture.planningTurns(); len(turns) != 0 {
+					t.Fatalf("refused preflight ran planning turns: %+v", turns)
+				}
+				return
+			}
+			if err != nil || len(cycles) != 1 || cycles[0].Status != model.CycleCompleted {
+				t.Fatalf("preflight after an observation = %v with cycles %+v; want one completed pass", err, cycles)
+			}
+			if live, err := app.Control(); err != nil || live.ContextFingerprint != "observed-during-preflight" || live.CycleNumber != 1 {
+				t.Fatalf("started pass dropped the observation: %+v, %v", live, err)
+			}
+		})
+	}
+}
+
 func TestPlanningAllowanceConsumedDuringPreflightUsesModeSemantics(t *testing.T) {
 	for _, test := range []struct {
 		name    string

@@ -61,7 +61,7 @@ func TestTickAfterShutdownHasNoSideEffects(t *testing.T) {
 				}
 			}
 			live, err := app.Control()
-			if err != nil || !controlsEqual(live, control) {
+			if err != nil || !reflect.DeepEqual(live, control) {
 				t.Fatalf("shutdown tick changed control: %+v, %v", live, err)
 			}
 			if !app.runtime.lastRetention.IsZero() || !app.runtime.lastObserve.IsZero() || !app.runtime.lastPrAttempt.IsZero() {

@@ -192,7 +192,7 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 	a.runtime.preflightMode = model.CycleModeExecution
 	a.runtimeMu.Unlock()
 	snapshot := cfg.Clone()
-	expected := cloneControl(control)
+	expected := control.Clone()
 	a.wg.Go(func() {
 		err := a.doctor(a.ctx, snapshot, false)
 		a.gate.Lock()
@@ -214,7 +214,7 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 		}
 		// A failed preflight settles only the control it was started from.
 		live, loadErr := a.Control()
-		if loadErr != nil || !controlsEqual(live, expected) {
+		if loadErr != nil || !sameOperatorControl(live, expected) {
 			return
 		}
 		var capacityErr *planningCapacityError

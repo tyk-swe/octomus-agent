@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -248,7 +249,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 	if err != nil {
 		return "", err
 	}
-	if !controlsEqual(live, expected) {
+	if !sameOperatorControl(live, expected) {
 		return "", errors.New("Control state changed during planning preflight")
 	}
 	if mode == model.CycleModeExecution {
@@ -280,7 +281,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		return "", err
 	}
 	id := model.ID()
-	next := cloneControl(live)
+	next := live.Clone()
 	next.CycleNumber++
 	next.Error = nil
 	if mode == model.CycleModeExecution && next.Mode == model.OperatingModeRunOnce {
@@ -297,7 +298,9 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 		Repository: cfg.GitHubRepo, DecisionMemory: []any{}, RunID: runID,
 	}
-	capacity, started, err := a.Store.BeginCycleIfAffordable(cycle, next, expected, fingerprint, time.Now())
+	// live was read under the gate, so the store's compare catches only a
+	// write that bypassed it.
+	capacity, started, err := a.Store.BeginCycleIfAffordable(cycle, next, live, fingerprint, time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -322,33 +325,13 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 	return id, nil
 }
 
-func controlsEqual(a, b model.Control) bool {
-	if a.Paused != b.Paused || a.CycleNumber != b.CycleNumber || a.NextCycleAt != b.NextCycleAt || a.Mode != b.Mode || a.IdleStreak != b.IdleStreak || a.ContextFingerprint != b.ContextFingerprint {
-		return false
-	}
-	if (a.Error == nil) != (b.Error == nil) || a.Error != nil && *a.Error != *b.Error {
-		return false
-	}
-	if (a.Batch == nil) != (b.Batch == nil) {
-		return false
-	}
-	if a.Batch != nil {
-		if a.Batch.ID != b.Batch.ID || a.Batch.Phase != b.Batch.Phase || (a.Batch.CycleID == nil) != (b.Batch.CycleID == nil) || a.Batch.CycleID != nil && *a.Batch.CycleID != *b.Batch.CycleID {
-			return false
-		}
-	}
-	return true
-}
-
-func cloneControl(control model.Control) model.Control {
-	copy := control
-	if control.Error != nil {
-		value := *control.Error
-		copy.Error = &value
-	}
-	if control.Batch != nil {
-		batch := control.Batch.Clone()
-		copy.Batch = &batch
-	}
-	return copy
+// sameOperatorControl compares what admitted a planning preflight: pause and
+// mode, cycle number, recorded error and run-once batch. Remote observation
+// owns ContextFingerprint and IdleStreak and may only bring NextCycleAt
+// forward, always under the gate, so its writes never invalidate a preflight.
+func sameOperatorControl(a, b model.Control) bool {
+	a.ContextFingerprint, b.ContextFingerprint = "", ""
+	a.IdleStreak, b.IdleStreak = 0, 0
+	a.NextCycleAt, b.NextCycleAt = 0, 0
+	return reflect.DeepEqual(a, b)
 }

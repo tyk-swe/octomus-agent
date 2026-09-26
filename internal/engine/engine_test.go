@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -337,7 +338,7 @@ func TestRunOnceStaleControlIsAConflict(t *testing.T) {
 	if stale.Batch != nil || stale.Mode != model.OperatingModePaused {
 		t.Fatalf("refused start rewrote the caller's control: %+v", stale)
 	}
-	if stored, err := a.Control(); err != nil || !controlsEqual(stored, live) {
+	if stored, err := a.Control(); err != nil || !reflect.DeepEqual(stored, live) {
 		t.Fatalf("refused start changed the live control: %+v, %v", stored, err)
 	}
 	if unchanged := loadTask(t, state, task.ID); unchanged.RunID != nil {
@@ -357,7 +358,7 @@ func TestUnaffordableAuditHasNoSideEffects(t *testing.T) {
 		t.Fatal("unaffordable audit started")
 	}
 	control, err := a.Control()
-	if err != nil || !controlsEqual(control, original) {
+	if err != nil || !reflect.DeepEqual(control, original) {
 		t.Fatalf("unaffordable audit changed control: %+v, %v", control, err)
 	}
 	cycles, err := store.List[model.Cycle](state, "cycle")
