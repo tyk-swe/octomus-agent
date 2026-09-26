@@ -25,6 +25,7 @@
     decisionTone,
     modeLabel,
     planningVerdict,
+    taskIcon,
     taskOutcomeCounts
   } from '$lib/evidence';
   let connected = $state(false),
@@ -74,13 +75,73 @@
   function inspectLatestRun() {
     if (latestCycle) inspectRun(latestCycle.id, null);
   }
-  const navigation = [
-    { id: 'overview', label: 'Overview', icon: 'overview' },
-    { id: 'queue', label: 'Task queue', icon: 'queue' },
-    { id: 'proposals', label: 'Proposals', icon: 'proposals' },
-    { id: 'prs', label: 'Pull requests', icon: 'prs' },
-    { id: 'settings', label: 'Configuration', icon: 'settings' }
+  /** Each view with its page heading; the paged history views also name what they list. */
+  const navigation: {
+    id: string;
+    label: string;
+    icon: string;
+    heading: string;
+    lede: string;
+    noun?: string;
+  }[] = [
+    {
+      id: 'overview',
+      label: 'Overview',
+      icon: 'overview',
+      heading: 'The bigger picture.',
+      lede: 'A clear view of what’s happening, and what’s coming next.'
+    },
+    {
+      id: 'queue',
+      label: 'Task queue',
+      icon: 'queue',
+      heading: 'From idea to improvement.',
+      lede: 'Every task has a purpose, a workspace, and a path to a reviewed PR.',
+      noun: 'tasks'
+    },
+    {
+      id: 'proposals',
+      label: 'Proposals',
+      icon: 'proposals',
+      heading: 'Worth doing. Before doing.',
+      lede: 'Grounded opportunities, challenged from two independent perspectives.',
+      noun: 'proposals'
+    },
+    {
+      id: 'prs',
+      label: 'Pull requests',
+      icon: 'prs',
+      heading: 'Progress, ready for review.',
+      lede: 'New improvements and continued work on your existing branches.',
+      noun: 'pull requests'
+    },
+    {
+      id: 'settings',
+      label: 'Configuration',
+      icon: 'settings',
+      heading: 'Make it work your way.',
+      lede: 'Your repository, your priorities, your operating limits.'
+    }
   ];
+  const current = $derived(navigation.find((item) => item.id === view));
+  /** The operating mode as the header status names it; any other mode reads as paused. */
+  const OPERATING_MODE_LABELS: Record<string, string> = {
+    run_once: 'Run once',
+    continuous: 'Continuous operation',
+    paused: 'New work paused'
+  };
+  /** The header status: operating mode, active tasks, and whether paused work may still publish. */
+  function operatingStatus(snapshot: Snapshot): string {
+    const mode = OPERATING_MODE_LABELS[snapshot.control.mode] ?? 'New work paused';
+    const publishing =
+      snapshot.control.paused && snapshot.active_tasks > 0 ? ' · active workflows may publish' : '';
+    return `${mode} · ${snapshot.active_tasks} active tasks${publishing}`;
+  }
+  /** The continuous-operation toggle while its request is pending. */
+  const TOGGLE_PENDING_LABELS: Record<string, string> = {
+    resume: 'Starting continuous…',
+    pause: 'Pausing…'
+  };
   let filtered = $state<TaskRow[]>([]);
   let proposals = $state<ProposalRow[]>([]);
   let prRows = $state<PrObservation[]>([]);
@@ -574,9 +635,7 @@
             aria-controls="workspace-navigation"
             aria-expanded={mobileOpen}
             onclick={toggleNavigation}><Icon name="menu" /></button
-          ><span>Workspace</span><Icon name="chevron" size={13} /><strong
-            >{navigation.find((n) => n.id === view)?.label}</strong
-          >
+          ><span>Workspace</span><Icon name="chevron" size={13} /><strong>{current?.label}</strong>
         </div>
         <div class="topbar-right">
           <span class="live-indicator" class:offline={!!connectionError}
@@ -590,42 +649,19 @@
         <div class="page-heading">
           <div>
             <div class="eyebrow">YOUR PROJECT, MOVING FORWARD</div>
-            <h1>
-              {view === 'overview'
-                ? 'The bigger picture.'
-                : view === 'queue'
-                  ? 'From idea to improvement.'
-                  : view === 'proposals'
-                    ? 'Worth doing. Before doing.'
-                    : view === 'prs'
-                      ? 'Progress, ready for review.'
-                      : 'Make it work your way.'}
-            </h1>
-            <p>
-              {view === 'overview'
-                ? 'A clear view of what’s happening, and what’s coming next.'
-                : view === 'queue'
-                  ? 'Every task has a purpose, a workspace, and a path to a reviewed PR.'
-                  : view === 'proposals'
-                    ? 'Grounded opportunities, challenged from two independent perspectives.'
-                    : view === 'prs'
-                      ? 'New improvements and continued work on your existing branches.'
-                      : 'Your repository, your priorities, your operating limits.'}
-            </p>
+            <h1>{current?.heading}</h1>
+            <p>{current?.lede}</p>
           </div>
           {#if view !== 'settings'}<div class="actions">
               <button
                 class="button"
                 disabled={busy || !canControl[data.control.paused ? 'resume' : 'pause']}
                 onclick={() => control(data?.control.paused ? 'resume' : 'pause')}
-                ><Icon name={data.control.paused ? 'play' : 'pause'} size={16} />{pendingAction ===
-                'resume'
-                  ? 'Starting continuous…'
-                  : pendingAction === 'pause'
-                    ? 'Pausing…'
-                    : data.control.paused
-                      ? 'Start continuous'
-                      : 'Pause'}</button
+                ><Icon
+                  name={data.control.paused ? 'play' : 'pause'}
+                  size={16}
+                />{TOGGLE_PENDING_LABELS[pendingAction] ??
+                  (data.control.paused ? 'Start continuous' : 'Pause')}</button
               ><button
                 id="run-once-control"
                 class="button primary"
@@ -710,16 +746,7 @@
           </div>
         {/if}
         <div class="notice" role="status" aria-label="Operating mode" aria-live="polite">
-          <span
-            >{data.control.mode === 'run_once'
-              ? 'Run once'
-              : data.control.mode === 'continuous'
-                ? 'Continuous operation'
-                : 'New work paused'} · {data.active_tasks} active tasks{data.control.paused &&
-            data.active_tasks > 0
-              ? ' · active workflows may publish'
-              : ''}</span
-          >
+          <span>{operatingStatus(data)}</span>
         </div>
         {#if view === 'overview'}
           {#if !data.configured}<section class="onboarding">
@@ -1277,7 +1304,7 @@
               onchoose={chooseOnOverview}
             />
           </div>{/if}
-        {#if ['queue', 'proposals', 'prs'].includes(view)}
+        {#if current?.noun}
           <div class="actions" aria-label="History pagination">
             <button
               class="button"
@@ -1297,10 +1324,7 @@
             >
           </div>
           <!-- Background feedback follows all results, including PR delivery history. -->
-          {@render listFeedback(
-            view === 'queue' ? 'tasks' : view === 'proposals' ? 'proposals' : 'pull requests',
-            filtered.length + proposals.length + prRows.length
-          )}
+          {@render listFeedback(current.noun, filtered.length + proposals.length + prRows.length)}
         {/if}
         <footer class="content-footer">
           <span><span class="footer-dot"></span> Thoughtful progress. No artificial churn.</span
@@ -1384,18 +1408,7 @@
 {#snippet taskList(tasks: TaskRow[])}<div class="task-list">
     {#each tasks as task (task.id)}<button class="task-row" onclick={() => inspectTask(task.id)}
         ><span class={'task-type-icon ' + task.status}
-          ><Icon
-            name={task.status === 'published'
-              ? 'check'
-              : task.status === 'blocked' || task.status === 'failed'
-                ? 'alert'
-                : task.status === 'queued'
-                  ? 'clock'
-                  : ACTIVE_STATUSES.includes(task.status)
-                    ? 'activity'
-                    : 'code'}
-            size={18}
-          /></span
+          ><Icon name={taskIcon(task.status)} size={18} /></span
         ><span class="task-row-body"
           ><strong>{task.title}</strong><span
             ><span class="tier">{task.tier}</span><span>{task.category}</span><span

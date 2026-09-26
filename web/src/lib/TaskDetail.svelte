@@ -47,6 +47,17 @@
   let evidenceRequest: AbortController | null = null;
   const feedback = createCopyFeedback();
   const TABS = ['Overview', 'Sessions', 'Reviews', 'Verification', 'Activity'];
+  /** Button labels for the actions the service allows, as model.Task.AllowedActions names them. */
+  const ACTION_LABELS: Record<string, string> = {
+    retry: 'Retry task',
+    cancel: 'Cancel task',
+    supersede: 'Supersede and rediscover',
+    reconcile: 'Reconcile publication',
+    archive: 'Archive task',
+    discard: 'Discard workspace'
+  };
+  /** Actions that give up the task or its workspace. */
+  const DESTRUCTIVE_ACTIONS = new Set(['discard', 'cancel']);
   /**
    * Tabs follow the ARIA tabs pattern: only the selected tab is in the Tab order, and the
    * arrow, Home and End keys select and focus another tab.
@@ -470,20 +481,11 @@
             rel="noreferrer">Open PR #{task.pr_number}<Icon name="external" size={16} /></a
           >{/if}
         {#each task.allowed_actions as value (value)}<button
-            class={'button ' + (value === 'discard' || value === 'cancel' ? 'danger' : '')}
+            class={'button ' + (DESTRUCTIVE_ACTIONS.has(value) ? 'danger' : '')}
             disabled={busy}
             onclick={() => action(value)}
           >
-            {(
-              {
-                retry: 'Retry task',
-                cancel: 'Cancel task',
-                supersede: 'Supersede and rediscover',
-                reconcile: 'Reconcile publication',
-                archive: 'Archive task',
-                discard: 'Discard workspace'
-              } as Record<string, string>
-            )[value]}
+            {ACTION_LABELS[value]}
           </button>{/each}
       </div>
     </div>

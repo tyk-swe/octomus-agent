@@ -4,7 +4,14 @@
  * one rule rather than one screen.
  */
 import { test, expect } from '@playwright/test';
-import { decisionCounts, planningVerdict } from '../src/lib/evidence';
+import {
+  decisionCounts,
+  outcomeVerdict,
+  planningVerdict,
+  reviewerSlot,
+  taskIcon
+} from '../src/lib/evidence';
+import { ACTIVE_STATUSES } from '../src/lib/types';
 
 test.skip(({ isMobile }) => isMobile, 'Pure mapping rules run once, on the desktop project.');
 
@@ -46,4 +53,41 @@ test('an idle cycle is a finished planning pass that accepted nothing, in either
     label: 'Planning paused',
     tone: ''
   });
+});
+
+test('a task outcome takes the tone of its finished status; any other status is still running', () => {
+  expect(outcomeVerdict({ status: 'published' })).toEqual({
+    label: 'published',
+    tone: 'clean',
+    detail: 'Recorded as published. Published describes delivery, not merge.'
+  });
+  expect(outcomeVerdict({ status: 'failed' }).tone).toBe('failed');
+  expect(outcomeVerdict({ status: 'cancelled' }).tone).toBe('cancelled');
+  expect(
+    outcomeVerdict({ status: 'blocked', blocked_reason: 'repair_limit', error_recorded: true })
+  ).toEqual({
+    label: 'blocked',
+    tone: 'blocked',
+    detail: 'The saved task status, verbatim. Blocked reason: repair limit. An error is recorded.'
+  });
+  // Queued, active and unknown statuses never read as settled, let alone clean.
+  for (const status of ['queued', ...ACTIVE_STATUSES, 'unrecognised'])
+    expect(outcomeVerdict({ status })).toMatchObject({ label: status, tone: 'running' });
+});
+
+test('task rows show one icon per status family, and every active status shares one', () => {
+  expect(taskIcon('published')).toBe('check');
+  expect(taskIcon('blocked')).toBe('alert');
+  expect(taskIcon('failed')).toBe('alert');
+  expect(taskIcon('queued')).toBe('clock');
+  for (const status of ACTIVE_STATUSES) expect(taskIcon(status)).toBe('activity');
+  // A cancelled task and any status the dashboard does not know show the plain work icon.
+  expect(taskIcon('cancelled')).toBe('code');
+  expect(taskIcon('unrecognised')).toBe('code');
+});
+
+test('reviewer slots are named by position, and an unknown slot stays verbatim', () => {
+  expect(reviewerSlot('adversary-a')).toBe('Reviewer A');
+  expect(reviewerSlot('adversary-b')).toBe('Reviewer B');
+  expect(reviewerSlot('adversary-c')).toBe('adversary-c');
 });

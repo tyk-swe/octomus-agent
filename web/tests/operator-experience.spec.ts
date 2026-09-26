@@ -2089,3 +2089,59 @@ test('header and empty discovery actions share eligibility and prevent duplicate
   await expect(page.getByRole('button', { name: 'Run once', exact: true })).toBeDisabled();
   expect(writes).toEqual(['/api/control/cycle']);
 });
+
+test('the header names the operating mode, and the continuous toggle names its pending action', async ({
+  page
+}) => {
+  let mode: Snapshot['control']['mode'] = 'paused';
+  let activeTasks = 0;
+  let gate = deferred();
+  const writes: string[] = [];
+  await page.route('**/api/state', async (route) => {
+    const snapshot: Snapshot = await (await route.fetch()).json();
+    snapshot.configured = true;
+    snapshot.control.mode = mode;
+    snapshot.control.paused = mode !== 'continuous';
+    snapshot.active_tasks = activeTasks;
+    snapshot.cycle_active = false;
+    snapshot.active_cycle_mode = null;
+    snapshot.baseline_active = false;
+    await route.fulfill({ json: snapshot });
+  });
+  await page.route('**/api/control/*', async (route) => {
+    const action = new URL(route.request().url()).pathname.split('/').at(-1)!;
+    writes.push(action);
+    await gate.promise;
+    mode = action === 'resume' ? 'continuous' : 'paused';
+    await route.fulfill({ json: { paused: mode === 'paused' } });
+  });
+  await login(page);
+  const status = page.getByRole('status', { name: 'Operating mode' });
+  await expect(status).toHaveText('New work paused · 0 active tasks');
+  // Paused work that is still running may publish, and the status says so.
+  activeTasks = 2;
+  await expect(status).toHaveText(
+    'New work paused · 2 active tasks · active workflows may publish',
+    { timeout: 10000 }
+  );
+  mode = 'run_once';
+  await expect(status).toHaveText('Run once · 2 active tasks · active workflows may publish', {
+    timeout: 10000
+  });
+  activeTasks = 0;
+  await expect(status).toHaveText('Run once · 0 active tasks', { timeout: 10000 });
+
+  await page.getByRole('button', { name: 'Start continuous', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Starting continuous…', exact: true })
+  ).toBeDisabled();
+  gate.resolve();
+  await expect(status).toHaveText('Continuous operation · 0 active tasks');
+  gate = deferred();
+  await page.getByRole('button', { name: 'Pause', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Pausing…', exact: true })).toBeDisabled();
+  gate.resolve();
+  await expect(status).toHaveText('New work paused · 0 active tasks');
+  await expect(page.getByRole('button', { name: 'Start continuous', exact: true })).toBeEnabled();
+  expect(writes).toEqual(['resume', 'pause']);
+});

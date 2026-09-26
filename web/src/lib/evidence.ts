@@ -41,12 +41,12 @@ const REVIEWER_ROLES: Record<string, string> = {
 export function reviewerLabel(reviewer: string): string {
   return REVIEWER_ROLES[reviewer] ?? reviewer;
 }
+const REVIEWER_SLOTS: Record<string, string> = {
+  'adversary-a': 'Reviewer A',
+  'adversary-b': 'Reviewer B'
+};
 export function reviewerSlot(reviewer: string): string {
-  return reviewer === 'adversary-a'
-    ? 'Reviewer A'
-    : reviewer === 'adversary-b'
-      ? 'Reviewer B'
-      : reviewer;
+  return REVIEWER_SLOTS[reviewer] ?? reviewer;
 }
 
 /** Decision words keep their own badge tone; `deferred` must never read as `rejected`. */
@@ -179,6 +179,14 @@ export function revisionMatchLabel(matches: boolean | null): { label: string; to
     : { label: 'Not the recorded output commit', tone: 'blocked' };
 }
 
+/** Task statuses that end a task's work take their own tone; every other status is running. */
+const OUTCOME_TONES: Record<string, Tone> = {
+  published: 'clean',
+  failed: 'failed',
+  blocked: 'blocked',
+  cancelled: 'cancelled'
+};
+
 /** The recorded outcome word for a task, with what the status does and does not imply. */
 export function outcomeVerdict(task: {
   status: string;
@@ -194,16 +202,7 @@ export function outcomeVerdict(task: {
       : 'The saved task status, verbatim.';
   return {
     label: task.status,
-    tone:
-      task.status === 'published'
-        ? 'clean'
-        : task.status === 'failed'
-          ? 'failed'
-          : task.status === 'blocked'
-            ? 'blocked'
-            : task.status === 'cancelled'
-              ? 'cancelled'
-              : 'running',
+    tone: OUTCOME_TONES[task.status] ?? 'running',
     detail: detail + blocked + (task.error_recorded ? ' An error is recorded.' : '')
   };
 }
@@ -449,6 +448,17 @@ export function taskOutcomeCounts(
     const count = tasks.filter((task) => group.statuses.includes(task.status)).length;
     return { label: group.label(count), count, tone: group.tone };
   }).filter((group) => group.count > 0);
+}
+
+const TASK_ICONS: Record<string, string> = {
+  published: 'check',
+  blocked: 'alert',
+  failed: 'alert',
+  queued: 'clock'
+};
+/** The icon a task row shows for its status: any active status shows activity. */
+export function taskIcon(status: string): string {
+  return TASK_ICONS[status] ?? (ACTIVE_STATUSES.includes(status) ? 'activity' : 'code');
 }
 
 /** Why a configured command's state is what it is, naming the revisions involved. */
