@@ -169,6 +169,10 @@ func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 	return a.Store.Event("system", "run_complete", message)
 }
 
+// maybePlan starts an execution planning preflight when the runtime is idle
+// and planning capacity is available. Callers hold the gate, and every change
+// that makes the runtime busy happens under the gate, so the runtime stays
+// idle from the check below until the preflight flag is set.
 func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 	a.runtimeMu.Lock()
 	if !a.runtime.idle() {
@@ -184,44 +188,46 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 		return a.handlePlanningCapacity(control, capacity)
 	}
 	a.runtimeMu.Lock()
-	if !a.runtime.idle() {
-		a.runtimeMu.Unlock()
-		return nil
-	}
 	a.runtime.preflight = true
 	a.runtime.preflightMode = model.CycleModeExecution
 	a.runtimeMu.Unlock()
 	snapshot := cfg.Clone()
 	expected := cloneControl(control)
-	a.wg.Add(1)
-	go func() {
-		defer a.wg.Done()
+	a.wg.Go(func() {
 		err := a.doctor(a.ctx, snapshot, false)
 		a.gate.Lock()
 		defer a.gate.Unlock()
+		// Registered after the unlock, so it runs first: listeners are
+		// notified while the gate is still held.
+		defer a.notify()
 		if err == nil {
 			_, err = a.beginCycle(snapshot, expected, model.CycleModeExecution)
 		}
-		if err != nil {
-			a.endPreflight()
-			live, loadErr := a.Control()
-			var capacityErr *planningCapacityError
-			if loadErr == nil && controlsEqual(live, expected) && errors.As(err, &capacityErr) {
-				_ = a.handlePlanningCapacity(live, capacityErr.capacity)
-			} else if loadErr == nil && controlsEqual(live, expected) && live.Mode == model.OperatingModeRunOnce {
-				message := store.ErrorMessage(err)
-				_ = a.pauseLocked(&live, &message)
-				_ = a.Store.Event("system", "planning_error", message)
-			} else if loadErr == nil && controlsEqual(live, expected) && live.Mode == model.OperatingModeContinuous {
-				message := store.ErrorMessage(err)
-				live.Error = &message
-				live.NextCycleAt = time.Now().Unix() + int64(cfg.CycleIntervalSeconds)
-				_ = a.Store.SaveControl(live)
-				_ = a.Store.Event("system", "planning_error", message)
-			}
+		if err == nil {
+			return
 		}
-		a.notify()
-	}()
+		a.endPreflight()
+		// A failed preflight settles only the control it was started from.
+		live, loadErr := a.Control()
+		if loadErr != nil || !controlsEqual(live, expected) {
+			return
+		}
+		var capacityErr *planningCapacityError
+		switch {
+		case errors.As(err, &capacityErr):
+			_ = a.handlePlanningCapacity(live, capacityErr.capacity)
+		case live.Mode == model.OperatingModeRunOnce:
+			message := store.ErrorMessage(err)
+			_ = a.pauseLocked(&live, &message)
+			_ = a.Store.Event("system", "planning_error", message)
+		case live.Mode == model.OperatingModeContinuous:
+			message := store.ErrorMessage(err)
+			live.Error = &message
+			live.NextCycleAt = time.Now().Unix() + int64(cfg.CycleIntervalSeconds)
+			_ = a.Store.SaveControl(live)
+			_ = a.Store.Event("system", "planning_error", message)
+		}
+	})
 	return nil
 }
 
