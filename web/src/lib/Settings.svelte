@@ -176,7 +176,8 @@
     conflict = false;
     message = '';
     await load();
-    if (!loadError) message = 'Edits discarded. Saved configuration reloaded.';
+    // An edit typed while the read was in flight keeps its draft, so nothing was reloaded.
+    if (!loadError && !dirty) message = 'Edits discarded. Saved configuration reloaded.';
   }
   async function save() {
     if (!config || !editable || busy || loading || !dirty) return;
@@ -685,5 +686,12 @@
   }
   .catalog-actions button {
     scroll-margin-block: 100px;
+  }
+  /* A narrow save bar moves the reload control below the message instead of squeezing it. */
+  .settings-feedback > span {
+    flex: 1 1 16em;
+  }
+  .settings-feedback > .button {
+    flex: 0 0 auto;
   }
 </style>

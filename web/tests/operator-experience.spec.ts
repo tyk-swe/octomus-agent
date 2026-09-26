@@ -551,17 +551,31 @@ test('a revision conflict offers to discard the draft and reload the saved confi
   expect(state.writes).toHaveLength(2);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 
+  // Typing while the reload's read is in flight keeps that draft; nothing claims a reload.
+  const saved = page.getByRole('status').and(page.locator('.settings-feedback'));
+  state.loadGate = deferred();
+  await reload.click();
+  await expect.poll(() => state.reads).toBe(reads + 1);
+  await branch.fill('typed-during-reload');
+  state.loadGate.resolve();
+  state.loadGate = null;
+  await expect(page.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  await expect(branch).toHaveValue('typed-during-reload');
+  await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible();
+  await expect(saved).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(alert).toContainText('Synthetic save conflict');
+  expect(state.writes).toHaveLength(3);
+
   // The reload is explicit, drops the draft and reads the saved configuration once.
   await reload.click();
   await expect(branch).toHaveValue('external-main');
-  await expect(page.getByRole('status').and(page.locator('.settings-feedback'))).toHaveText(
-    'Edits discarded. Saved configuration reloaded.'
-  );
+  await expect(saved).toHaveText('Edits discarded. Saved configuration reloaded.');
   await expect(alert).toHaveCount(0);
   await expect(reload).toHaveCount(0);
   await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
-  expect(state.reads).toBe(reads + 1);
-  expect(state.writes).toHaveLength(2);
+  expect(state.reads).toBe(reads + 2);
+  expect(state.writes).toHaveLength(3);
 
   // The next save pins the reloaded revision and is accepted.
   await branch.fill('current-main');
