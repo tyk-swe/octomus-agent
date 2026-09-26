@@ -38,3 +38,25 @@ func TestRouteJSONRequiresExactFields(t *testing.T) {
 		}
 	}
 }
+
+func TestBackendRoundTripsItsWireNames(t *testing.T) {
+	for i, name := range []string{"codex", "opencode"} {
+		backend := Backend(i)
+		data, err := json.Marshal(backend)
+		if err != nil || string(data) != `"`+name+`"` || backend.String() != name {
+			t.Fatalf("Backend(%d) = %s, %q, %v; want %q", i, data, backend.String(), err, name)
+		}
+		var decoded Backend
+		if err := json.Unmarshal(data, &decoded); err != nil || decoded != backend {
+			t.Fatalf("json.Unmarshal(%s) = %d, %v", data, decoded, err)
+		}
+	}
+	if data, err := json.Marshal(Backend(2)); err == nil {
+		t.Fatalf("json.Marshal(Backend(2)) = %s; want an error", data)
+	}
+	decoded := BackendOpencode
+	err := json.Unmarshal([]byte(`"claude"`), &decoded)
+	if err == nil || decoded != BackendOpencode || !strings.Contains(err.Error(), "expected one of: codex, opencode") {
+		t.Fatalf("unknown backend = %d, %v; want a listed-values error and no change", decoded, err)
+	}
+}

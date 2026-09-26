@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -164,4 +165,48 @@ func TestTimestampFractionPrecision(t *testing.T) {
 			t.Errorf("%s != %s", got, want)
 		}
 	}
+}
+
+// enumRoundTrip checks that every wire name encodes, decodes and prints as the
+// value at its index, and that a value past the names cannot be saved.
+func enumRoundTrip[T interface {
+	~uint8
+	String() string
+}](t *testing.T, names []string) {
+	t.Helper()
+	for i, name := range names {
+		value := T(i)
+		data, err := json.Marshal(value)
+		if err != nil || string(data) != strconv.Quote(name) {
+			t.Fatalf("json.Marshal(%T(%d)) = %s, %v; want %q", value, i, data, err, name)
+		}
+		var decoded T
+		if err := json.Unmarshal(data, &decoded); err != nil || decoded != value {
+			t.Fatalf("json.Unmarshal(%s) = %d, %v; want %d", data, decoded, err, i)
+		}
+		if value.String() != name {
+			t.Fatalf("%T(%d).String() = %q; want %q", value, i, value.String(), name)
+		}
+	}
+	outside := T(len(names))
+	if data, err := json.Marshal(outside); err == nil {
+		t.Fatalf("json.Marshal(%T(%d)) = %s; want an error", outside, len(names), data)
+	}
+	if outside.String() != "" {
+		t.Fatalf("%T(%d).String() = %q; want empty", outside, len(names), outside.String())
+	}
+	decoded := T(1)
+	if err := json.Unmarshal([]byte(`"not-a-value"`), &decoded); err == nil || decoded != 1 {
+		t.Fatalf("unknown name = %d, %v; want an error and no change", decoded, err)
+	}
+}
+
+func TestEveryEnumRoundTripsItsWireNames(t *testing.T) {
+	enumRoundTrip[Status](t, []string{"queued", "executing", "reviewing", "repairing", "verifying", "publishing", "published", "blocked", "failed", "cancelled"})
+	enumRoundTrip[BlockedReason](t, []string{"budget_exhausted", "storage_limit", "stale_base", "remote_conflict", "publication_uncertain", "runner_unavailable", "invalid_review", "verification_failed", "dependency_blocked", "invalid_plan", "workspace_invalid", "retry_limit", "timeout", "unknown"})
+	enumRoundTrip[PlanningCapacityStatus](t, []string{"ready", "daily_exhausted", "limit_too_low"})
+	enumRoundTrip[BaselineStatus](t, []string{"running", "passed", "failed", "cancelled", "timed_out", "interrupted"})
+	enumRoundTrip[CycleMode](t, []string{"execution", "audit"})
+	enumRoundTrip[OperatingMode](t, []string{"paused", "run_once", "continuous"})
+	enumRoundTrip[BatchPhase](t, []string{"draining", "planning", "executing"})
 }
