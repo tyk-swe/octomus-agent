@@ -142,15 +142,9 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		if parsed.audit {
 			mode = model.CycleModeAudit
 		}
-		cfg, err := app.Config()
-		if err != nil {
-			return err
-		}
-		result, err := app.DoctorFor(cfg, mode)
-		if err != nil {
-			return err
-		}
-		return printJSON(stdout, result)
+		sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopSignals()
+		return runDoctor(sigCtx, app, mode, stdout)
 	}
 	token, ok := env(httpapi.TokenEnv)
 	if !ok {
@@ -190,6 +184,37 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	}
 	return components.run(sigCtx, parsed.listen, stderr)
 }
+
+// runDoctor validates the saved configuration for mode and prints the result.
+// Cancelling ctx (an interrupt or termination signal) shuts the app down,
+// which terminates every owned process group the checks started, and fails
+// the command. The shutdown finishes before runDoctor returns, so the caller
+// may close the store.
+func runDoctor(ctx context.Context, app *engine.App, mode model.CycleMode, stdout io.Writer) error {
+	shutdownDone := make(chan struct{})
+	stopShutdown := context.AfterFunc(ctx, func() {
+		defer close(shutdownDone)
+		app.Shutdown()
+	})
+	defer func() {
+		if !stopShutdown() {
+			<-shutdownDone
+		}
+	}()
+	cfg, err := app.Config()
+	if err != nil {
+		return err
+	}
+	result, err := app.DoctorFor(cfg, mode)
+	if ctx.Err() != nil {
+		return errors.New("Doctor interrupted")
+	}
+	if err != nil {
+		return err
+	}
+	return printJSON(stdout, result)
+}
+
 func parse(args []string, env func(string) (string, bool)) (arguments, string, error) {
 	a := arguments{dataDir: ".octomus", listen: "127.0.0.1:4200"}
 	for key, dst := range map[string]*string{"OCTOMUS_DATA_DIR": &a.dataDir, "OCTOMUS_LISTEN": &a.listen} {
