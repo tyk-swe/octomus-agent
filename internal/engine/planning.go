@@ -275,26 +275,30 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if err != nil {
 		return err
 	}
-	if !persisted {
-		return errors.New("Pull request inventory became stale during grounding")
-	}
-	for _, pr := range owned {
-		if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
+	// With the live policy confirmed above, a refused persist means only that
+	// a concurrent refresh (housekeeping or dispatch) whose fetch started later
+	// saved a newer inventory first. That refresh recorded its own PR
+	// observations and authority, so this older one must not overwrite them;
+	// the grounding itself is as current as if it had persisted first.
+	if persisted {
+		for _, pr := range owned {
+			if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
+				return err
+			}
+		}
+		control, err := a.Control()
+		if err != nil {
 			return err
 		}
+		// As in refreshPRs: the persisted inventory clears an earlier refresh
+		// failure in any mode, and authorizes dispatch only when not paused.
+		a.runtimeMu.Lock()
+		if control.Mode != model.OperatingModePaused {
+			a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now()}
+		}
+		a.runtime.prRefreshError = ""
+		a.runtimeMu.Unlock()
 	}
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	// As in refreshPRs: the persisted inventory clears an earlier refresh
-	// failure in any mode, and authorizes dispatch only when not paused.
-	a.runtimeMu.Lock()
-	if control.Mode != model.OperatingModePaused {
-		a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now()}
-	}
-	a.runtime.prRefreshError = ""
-	a.runtimeMu.Unlock()
 	cycle.Grounding = &grounding
 	return a.saveCycleMergedSessions(cycle)
 }

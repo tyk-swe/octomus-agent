@@ -691,3 +691,44 @@ func TestPausedGroundingClearsEarlierRefreshFailure(t *testing.T) {
 		t.Fatal("paused grounding gained dispatch authority")
 	}
 }
+
+// A concurrent refresh whose fetch started after grounding's can persist a
+// newer inventory first. Grounding's older inventory is then superseded, not a
+// failure: planning continues, and neither the newer saved inventory nor the
+// observation that refresh authorized is replaced by the older one.
+func TestGroundingSupersededByANewerInventoryContinues(t *testing.T) {
+	fixture := newScriptedPlanningFixture(t)
+	app := fixture.pausedApp(t)
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	newer := model.OpenPrInventory{Repository: fixture.cfg.GitHubRepo, ObservedAt: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), PRs: []model.PullRequest{}}
+	if persisted, err := fixture.state.PersistPrInventory(newer, nil); err != nil || !persisted {
+		t.Fatalf("persist newer inventory: %t, %v", persisted, err)
+	}
+	authority := &freshPrObservation{identity: store.PrIdentityOf(fixture.cfg), inventory: newer.Clone(), fetchedAt: time.Now()}
+	app.runtimeMu.Lock()
+	app.runtime.prObservation = authority
+	app.runtimeMu.Unlock()
+	cycle := groundingCycle(t, fixture, model.CycleModeExecution)
+	if err := app.captureGrounding(context.Background(), fixture.cfg, &cycle); err != nil {
+		t.Fatalf("superseded grounding failed planning: %v", err)
+	}
+	if cycle.Grounding == nil || cycle.Grounding.Revision == "" {
+		t.Fatalf("grounding was not recorded: %+v", cycle.Grounding)
+	}
+	saved, err := store.Get[model.Cycle](fixture.state, "cycle", cycle.ID)
+	if err != nil || saved == nil || saved.Grounding == nil || saved.Grounding.Revision != cycle.Grounding.Revision {
+		t.Fatalf("grounding was not saved with the cycle: %+v, %v", saved, err)
+	}
+	stored, err := fixture.state.OpenPrInventory()
+	if err != nil || stored == nil || stored.ObservedAt != newer.ObservedAt {
+		t.Fatalf("older grounding inventory replaced the newer one: %+v, %v", stored, err)
+	}
+	app.runtimeMu.Lock()
+	observation := app.runtime.prObservation
+	app.runtimeMu.Unlock()
+	if observation != authority {
+		t.Fatal("superseded grounding replaced the newer refresh's observation")
+	}
+}
