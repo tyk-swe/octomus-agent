@@ -66,7 +66,8 @@ func DirectorySize(path string) (uint64, error) {
 
 // RemoveOwnedDir deletes path only when it is a plainly-named direct child of
 // the owned workspace root and no component on the path — including path
-// itself — is a symlink. A missing directory is already gone, not an error.
+// itself — is a symlink. A missing directory is already gone, not an error, and
+// read-only directories inside the tree do not prevent its removal.
 func RemoveOwnedDir(root, path string) error {
 	// Dir cleans its argument, but RemoveAll uses the original path. Reject
 	// components such as link/.. before they can hide a symlink from validation.
@@ -96,5 +97,37 @@ func RemoveOwnedDir(root, path string) error {
 		}
 		ancestor = parent
 	}
+	err := os.RemoveAll(path)
+	if err == nil || !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	// Tools such as the Go module cache leave read-only directories whose
+	// entries cannot be unlinked. The validated tree is owned: make its
+	// directories writable and retry once.
+	makeDirsWritable(filepath.Dir(path), filepath.Base(path))
 	return os.RemoveAll(path)
+}
+
+// makeDirsWritable grants the owner full access to every directory in the tree
+// name below root, each before its entries are read, so a directory that could
+// not be listed or searched becomes reachable. Symlinks are never followed or
+// changed, and every access goes through an os.Root, so a directory swapped for
+// a symlink cannot redirect a change outside root. Failures are ignored: the
+// caller's retry reports whatever still cannot be removed.
+func makeDirsWritable(root, name string) {
+	owned, err := os.OpenRoot(root)
+	if err != nil {
+		return
+	}
+	defer owned.Close()
+	_ = fs.WalkDir(owned.FS(), name, func(entry string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		info, err := owned.Lstat(entry)
+		if err == nil && info.IsDir() && info.Mode().Perm()&0o700 != 0o700 {
+			_ = owned.Chmod(entry, info.Mode().Perm()|0o700)
+		}
+		return nil
+	})
 }
