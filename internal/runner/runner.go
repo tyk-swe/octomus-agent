@@ -149,10 +149,9 @@ func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd
 	return nil, fmt.Errorf("Invalid backend")
 }
 
-// FinishTurn is the Runner::turn structured-result check every adapter applies
-// to its final answer: the answer is JSON-decoded with trailing-data
-// rejection, validated, and compactly marshaled. A nil schema returns the
-// answer unchanged.
+// FinishTurn is the structured-result check every adapter applies to its final
+// answer: the answer is JSON-decoded with trailing-data rejection, validated,
+// and compactly marshaled. A nil schema returns the answer unchanged.
 func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 	if schema == nil {
 		return answer, nil

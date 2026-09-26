@@ -67,7 +67,7 @@ func newFixture(t *testing.T, name string, configure func(shim string) config.Co
 	return &fixture{t: t, root: root, workspace: workspace, cfg: configure(shim), state: state}
 }
 
-// opencodeFixture mirrors Fixture::new: an OpenCode shim with no Codex.
+// opencodeFixture is an OpenCode shim with no Codex installed.
 func opencodeFixture(t *testing.T) *fixture {
 	return newFixture(t, "opencode", func(shim string) config.Config {
 		cfg := config.Default()
@@ -79,7 +79,7 @@ func opencodeFixture(t *testing.T) *fixture {
 	})
 }
 
-// codexFixture mirrors Fixture::codex: a Codex shim with no OpenCode.
+// codexFixture is a Codex shim with no OpenCode installed.
 func codexFixture(t *testing.T) *fixture {
 	return newFixture(t, "codex", func(shim string) config.Config {
 		cfg := config.Default()

@@ -149,8 +149,9 @@ func checkModel(info map[string]any, route config.Route) error {
 	return nil
 }
 
-// segment validates an OpenCode identity and percent-encodes it like
-// NON_ALPHANUMERIC.
+// segment validates an OpenCode identity ([A-Za-z0-9_-], 1-256 bytes) and
+// percent-encodes every byte that is not an ASCII letter or digit, including
+// '_' and '-', so a runner-supplied ID is always exactly one path segment.
 func segment(id string) (string, error) {
 	valid := id != "" && len(id) <= 256
 	if valid {
