@@ -235,8 +235,8 @@ func sameRecordJSON(a, b *model.Task) bool {
 	return string(left) == string(right)
 }
 
-// recordTaskError mirrors record_error: classify the reason and preserve the
-// bounded chain on the durable task without changing its status.
+// recordTaskError classifies err into the task's blocked reason and stores its
+// redacted message as the task error, without changing the task's status.
 func recordTaskError(task *model.Task, err error) {
 	reason := model.BlockedReasonFromError(err)
 	task.BlockedReason = &reason
@@ -244,9 +244,11 @@ func recordTaskError(task *model.Task, err error) {
 	task.Error = &message
 }
 
-// reconcileLocked is reconcile_task with the caller's gate already held: it
-// releases the gate for remote work and owns its operator event so a
-// disconnected caller cannot skip it. Callers must hold a.gate.
+// reconcileLocked runs the reconcile action. Without a recorded output it
+// rechecks the task's remote prerequisites and records the result; with one it
+// publishes that output under the task deadline. Callers hold a.gate on entry;
+// reconcileLocked releases it around remote work and before it returns, and
+// records the operator event itself so a disconnected caller cannot skip it.
 func (a *App) reconcileLocked(id string, task *model.Task) error {
 	a.runtimeMu.Lock()
 	baseline := a.runtime.baseline != nil

@@ -131,8 +131,7 @@ func heldPreflightFixture(t *testing.T) (*planningFixture, *App, model.Task) {
 	return fixture, app, task
 }
 
-// TestConcurrentRetriesQueueOnlyOneAttempt ports
-// concurrent_retries_queue_only_one_attempt: two retries interleave at the
+// TestConcurrentRetriesQueueOnlyOneAttempt: two retries interleave at the
 // released gate; only the first queues an attempt.
 func TestConcurrentRetriesQueueOnlyOneAttempt(t *testing.T) {
 	fixture, app, task := heldPreflightFixture(t)
@@ -159,8 +158,7 @@ func TestConcurrentRetriesQueueOnlyOneAttempt(t *testing.T) {
 	}
 }
 
-// TestRetryStartsAFreshRepairRoundBudget ports
-// retry_starts_a_fresh_repair_round_budget: the new attempt budgets repairs
+// TestRetryStartsAFreshRepairRoundBudget: the new attempt budgets repairs
 // from the recorded reviews while retaining the earlier evidence.
 func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
 	fixture, app, task := heldPreflightFixture(t)
@@ -194,8 +192,7 @@ func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
 	t.Fatalf("retry did not queue: %+v", loadTask(t, fixture.state, task.ID))
 }
 
-// TestRetryRechecksPolicyAfterRemoteChecks ports
-// retry_rechecks_policy_after_remote_checks: a policy change during the
+// TestRetryRechecksPolicyAfterRemoteChecks: a policy change during the
 // released remote check is a conflict, and the durable task is untouched.
 func TestRetryRechecksPolicyAfterRemoteChecks(t *testing.T) {
 	fixture, app, task := heldPreflightFixture(t)
@@ -221,10 +218,9 @@ func TestRetryRechecksPolicyAfterRemoteChecks(t *testing.T) {
 	}
 }
 
-// TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions ports
-// remote_preflights_release_controls_and_preserve_concurrent_task_actions:
-// controls do not wait on held Git work, and a stale retry/reconcile cannot
-// overwrite a concurrent mutation.
+// TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions: controls
+// do not wait on held Git work, and a stale retry/reconcile cannot overwrite a
+// concurrent mutation.
 func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *testing.T) {
 	for _, action := range []string{"retry", "reconcile"} {
 		for _, scenario := range []struct {
@@ -305,9 +301,8 @@ func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *test
 	}
 }
 
-// TestRetryPreflightAdoptsTheCurrentCommandTimeout ports
-// retry_preflight_adopts_the_current_command_timeout: the remote preflight
-// runs under the live attempt policy, never the task's saved snapshot.
+// TestRetryPreflightAdoptsTheCurrentCommandTimeout: the remote preflight runs
+// under the live attempt policy, never the task's saved snapshot.
 func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	// A remote read slower than the first configured command timeout.
@@ -409,9 +404,9 @@ func TestTaskActionSupersedeArchiveDiscard(t *testing.T) {
 	}
 }
 
-// TestRetryOnStaleBaseStaysBlocked ports the stale-retry case: remote
-// movement since the recorded base fails the retry preflight and preserves
-// the stale evidence instead of queuing an attempt.
+// TestRetryOnStaleBaseStaysBlocked: remote movement since the recorded base
+// fails the retry preflight and preserves the stale evidence instead of
+// queuing an attempt.
 func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	app := New(fixture.state, fixture.dataDir)

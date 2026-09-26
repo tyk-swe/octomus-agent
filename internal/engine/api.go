@@ -20,8 +20,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// Not-found and unknown-action errors the HTTP layer maps to 404, matching
-// not-found responses.
+// Errors for an unknown record or action, which the HTTP layer maps to 404.
 var (
 	ErrCycleNotFound      = errors.New("Cycle not found")
 	ErrUnknownControl     = errors.New("Unknown control")
@@ -164,8 +163,9 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	return body, nil
 }
 
-// CycleAction handles running cycles
-// conflict, archive stamps the lifecycle and discard requires the archive.
+// CycleAction applies an operator action to a finished cycle: archive stamps
+// its lifecycle, and discard, allowed only once it is archived, removes its
+// planning workspaces. A running cycle or an in-flight cleanup conflicts.
 // Discard removes the managed directory with the gate released; the call is
 // registered service work from admission so Shutdown waits out an in-flight
 // removal instead of abandoning it mid-delete.
@@ -329,10 +329,11 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	return NewSettingsView(c)
 }
 
-// DoctorFor mirrors doctor_for: validate for the requested mode, check the
-// remote, then connect each required backend and validate every route against
-// the discovered catalog. The result names which Codex version was observed
-// when the codex backend answered.
+// DoctorFor validates cfg for mode, checks the remote, then connects each
+// backend the mode's routes use and validates every route against that
+// backend's discovered catalog, reporting every route and backend failure
+// together. The result names which Codex version was observed when the codex
+// backend answered.
 func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any, error) {
 	if mode == model.CycleModeAudit {
 		if err := cfg.ValidateAudit(); err != nil {
@@ -420,8 +421,9 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	return result, nil
 }
 
-// ModelCatalog mirrors model_catalog: validate the binary override, patch the
-// matching backend's binary on a config copy and list the discovered models.
+// ModelCatalog lists the models a backend reports when run from binary. The
+// override is validated and applied to a copy of the saved configuration only;
+// it is never saved.
 func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Model, error) {
 	if err := config.ValidateBinary(binary); err != nil {
 		return nil, err

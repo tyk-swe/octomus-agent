@@ -1210,7 +1210,9 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 	}
 }
 
-// duplicates regardless of wording.
+// TestSameCycleProposalsSharingAProblemKeyAreDuplicates: accepted proposals in
+// one cycle that share a problem key are duplicates regardless of wording,
+// while distinct problem keys are accepted together.
 func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	grounding := model.Grounding{Revision: "rev"}
@@ -1229,8 +1231,9 @@ func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	}
 }
 
-// order, rejects unowned and ambiguous matches, and never binds the default
-// branch as a PR.
+// TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder: target resolution binds
+// a branch's owned PR regardless of listing order, rejects unowned and
+// ambiguous matches, and never binds the default branch as a PR.
 func TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	fork := ownedPR("octomus/fix")

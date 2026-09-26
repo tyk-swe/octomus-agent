@@ -13,9 +13,10 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// controlFixture names every route so
-// the configuration counts as ready, with runtime scenarios that
-// manipulates directly.
+// controlFixture builds an app whose saved configuration names every route,
+// so it counts as ready, and applies scenario: "continuous" saves continuous
+// mode, while "task", "execution" and "audit" install that runtime work
+// directly, with no worker behind it.
 func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
 	t.Helper()
 	state := testStore(t)
@@ -305,7 +306,10 @@ func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
 	}
 }
 
-// stringPointer is shared with baseline_test.go's fixtures.
+// TestStateViewReportsBaselineSummaryWithoutCommands: the state view
+// summarizes the latest baseline check, with its configuration match and
+// revision, but never its command evidence, and a finished check is not
+// reported as active.
 func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
 	app, cfg := baselineApp(t)
 	fingerprint, err := BaselineFingerprint(cfg)
