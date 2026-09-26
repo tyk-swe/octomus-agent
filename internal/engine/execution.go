@@ -41,27 +41,12 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	workCtx, workCancel := context.WithCancel(ctx)
 	defer workCancel()
 	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
-	executionDone := make(chan struct{})
-	// executeErr is the callback's own result. WithDeadline drops it when the
-	// timer wins, even if the callback then finishes within the cleanup grace.
-	// It is written before executionDone closes and read only after the join.
-	var executeErr error
-	result := process.WithDeadline(ctx, workCancel, limit, func() (err error) {
-		defer close(executionDone)
-		// WithDeadline invokes this callback in its own goroutine, beyond
-		// runTask's recovery boundary. Return panics through normal supervision.
-		defer func() {
-			if panicked := recover(); panicked != nil {
-				err = fmt.Errorf("Task worker panicked: %v", panicked)
-			}
-			executeErr = err
-		}()
+	// The callback owns mutable task state and durable writes. runJoined waits
+	// for it to return, so terminal evidence is recorded, and runTask releases
+	// runtime and shutdown ownership, only after its last write.
+	result, executeErr := runJoined(ctx, workCancel, limit, "Task worker panicked", func() error {
 		return execute(workCtx, &task)
 	})
-	// WithDeadline's cleanup grace is bounded, but this callback owns mutable
-	// task state and durable writes. Join it before recording terminal evidence
-	// or allowing runTask to release runtime and shutdown ownership.
-	<-executionDone
 	// execute succeeds only after publication is durably recorded, so a
 	// deadline that expired during that final bookkeeping is not an outcome.
 	if executeErr == nil {
@@ -113,6 +98,31 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 		_ = a.Store.Event(task.ID, "worker_error", store.ErrorMessage(err))
 	}
 	return a.Store.Event(task.ID, "error", message)
+}
+
+// runJoined runs fn under limit through process.WithDeadline, then waits for
+// fn to return even past WithDeadline's bounded cleanup grace: fn may still be
+// writing durable state or remote publication, and its caller must not record
+// an outcome or release ownership beside it. It returns WithDeadline's result
+// together with fn's own result, which WithDeadline drops when the deadline
+// fires first. fn runs on WithDeadline's goroutine, beyond every caller's
+// recovery boundary, so a panic comes back as an error prefixed by panicked.
+func runJoined(ctx context.Context, cancel context.CancelFunc, limit time.Duration, panicked string, fn func() error) (process.Deadline[error], error) {
+	done := make(chan struct{})
+	// Written before done closes and read only after the join.
+	var fnErr error
+	result := process.WithDeadline(ctx, cancel, limit, func() (err error) {
+		defer close(done)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = fmt.Errorf("%s: %v", panicked, recovered)
+			}
+			fnErr = err
+		}()
+		return fn()
+	})
+	<-done
+	return result, fnErr
 }
 
 // execute drives the admitted task through executor → snapshot → review →

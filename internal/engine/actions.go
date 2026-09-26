@@ -13,7 +13,6 @@ import (
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -308,25 +307,25 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	a.gate.Unlock()
 
 	var published model.PullRequest
-	var publishErr error
 	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
 	// Uses the normal task deadline cleanup, so a stalled publication stops its
-	// owned process groups before it is reported.
-	result := process.WithDeadline(workCtx, cancel, limit, func() error {
+	// owned process groups before it is reported. The join keeps runtime
+	// ownership until Publish has returned, so no retry or dispatch can start
+	// a second publication beside one that outlived the cleanup grace.
+	result, publishErr := runJoined(workCtx, cancel, limit, "Publication reconciliation panicked", func() error {
 		p, err := gitops.Publish(workCtx, *task)
 		if err == nil {
 			published = p
 		}
 		return err
 	})
-	if result.Expired {
+	// A publication that completed after the deadline fired is delivered.
+	if publishErr != nil && result.Expired {
 		if result.AlreadyCancelled {
 			publishErr = fmt.Errorf("Publication reconciliation was interrupted; reconcile again: %w", model.BlockedReasonPublicationUncertain)
 		} else {
 			publishErr = model.BlockedReasonTimeout
 		}
-	} else {
-		publishErr = result.Output
 	}
 
 	a.gate.Lock()

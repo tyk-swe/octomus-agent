@@ -855,6 +855,36 @@ func TestExecutionWorkerPanicBlocks(t *testing.T) {
 	}
 }
 
+// TestRunJoinedReturnsTheCallbacksOwnResult: supervision and publication
+// reconciliation both learn how their callback actually ended. A callback
+// that finishes within the cleanup grace after the deadline fired keeps its
+// own result, and a panic on the deadline goroutine comes back as an error.
+// (TestExecutionTimeoutJoinsCallbackBeforeFinalizing covers the join past the
+// grace through supervision.)
+func TestRunJoinedReturnsTheCallbacksOwnResult(t *testing.T) {
+	for _, want := range []error{nil, errors.New("late failure")} {
+		ctx, cancel := context.WithCancel(context.Background())
+		result, err := runJoined(ctx, cancel, 100*time.Millisecond, "Callback panicked", func() error {
+			<-ctx.Done() // The deadline cancels the callback's scope ...
+			time.Sleep(50 * time.Millisecond)
+			return want // ... and it still finishes within the grace.
+		})
+		cancel()
+		if !result.Expired || result.AlreadyCancelled {
+			t.Fatalf("deadline result = %+v; want a genuine expiry", result)
+		}
+		if err != want {
+			t.Fatalf("late callback result = %v; want %v", err, want)
+		}
+	}
+	result, err := runJoined(context.Background(), func() {}, time.Minute, "Callback panicked", func() error {
+		panic("boom")
+	})
+	if result.Expired || err == nil || err.Error() != "Callback panicked: boom" {
+		t.Fatalf("panicking callback = %+v, %v", result, err)
+	}
+}
+
 // TestSupervisionNeverDemotesRecordedPublication: once the worker durably
 // records a delivery, neither a task deadline that fired while it finished
 // nor a bookkeeping failure after the published write may rewrite the task
