@@ -71,6 +71,8 @@
   $effect(() => {
     if (dirty) message = '';
   });
+  // Offered in config.Categories() order. TestDashboardVocabulariesMatchConfig
+  // (internal/config) checks this list and ROLES and TIERS below.
   const categories = [
     'features',
     'correctness',

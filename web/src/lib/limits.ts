@@ -14,7 +14,9 @@ type NumericConfigKey = {
  * (large_pr_lines, long_lived_pr_days) have no range in the service at all: any
  * count is accepted and 0 marks every owned open PR, so their minimum of 0 only
  * says a count is never negative. The bounds here let the form say what it will
- * accept before asking.
+ * accept before asking. TestDashboardLimitsMatchValidation (internal/config) holds
+ * every entry to the service's validation; it reads each entry's key first and its
+ * min, then any max, last.
  */
 export type Limit = {
   key: NumericConfigKey;
