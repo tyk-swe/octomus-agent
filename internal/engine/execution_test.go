@@ -965,6 +965,49 @@ func TestSupervisionNeverDemotesRecordedPublication(t *testing.T) {
 	})
 }
 
+// TestSupervisionReportsOperatorCancelOverLateDeadline: a worker that was
+// cancelled by the operator and then outlived its deadline ended because of
+// the cancel. The record says so instead of a time limit, and the deadline
+// stays in the error event.
+func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	task := queuedTask(cfg, model.ID(), cfg.DefaultBranch, "octomus/cancelled")
+	task.Status = model.StatusExecuting
+	task.Sessions = []model.Session{{ID: "executor-thread", Role: "executor", Status: model.SessionRunning}}
+	// The snapshot carries the deadline; settings validation does not apply.
+	task.Config.TaskTimeoutSeconds = 1
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkCancel(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := app.superviseExecution(cancelled, task, func(ctx context.Context, _ *model.Task) error {
+		// Ignore the cancel long enough for the deadline to fire as well.
+		time.Sleep(1200 * time.Millisecond)
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := loadTask(t, state, task.ID)
+	if saved.Status != model.StatusCancelled || saved.BlockedReason != nil || saved.Error == nil || *saved.Error != "Cancelled by the operator" {
+		t.Fatalf("cancelled task = status %s, reason %v, error %q", saved.Status, saved.BlockedReason, optionalText(saved.Error))
+	}
+	if len(saved.Sessions) != 1 || saved.Sessions[0].Status != model.SessionFailed || saved.Sessions[0].Summary != "Cancelled by the operator" {
+		t.Fatalf("cancelled session = %+v", saved.Sessions)
+	}
+	if !hasEvent(t, state, task.ID, "error", "Task time limit exceeded") {
+		t.Fatal("the late deadline was not recorded as an error event")
+	}
+}
+
 // TestExecutionDeliversFullLifecycleViaOpenCode runs the same
 // executor → fresh reviews → persistent repair → verification → publication
 // lifecycle through the OpenCode HTTP/SSE fixture peer

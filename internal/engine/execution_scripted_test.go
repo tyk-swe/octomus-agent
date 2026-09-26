@@ -241,9 +241,17 @@ func TestExecutionCancellationDuringTurn(t *testing.T) {
 	if marked, err := fixture.state.MarkerSet("cancel", task.ID); err != nil || !marked {
 		t.Fatalf("cancel marker = %v, %v", marked, err)
 	}
+	// The record names the operator cancel, not the runner error the
+	// interrupted turn happened to return; that cause stays in the events.
+	if saved.Error == nil || *saved.Error != "Cancelled by the operator" || saved.BlockedReason != nil {
+		t.Fatalf("cancelled task error = %q, reason = %v", optionalText(saved.Error), saved.BlockedReason)
+	}
 	executors := sessionByRole(saved, "executor")
-	if len(executors) != 1 || executors[0].Status != model.SessionFailed || strings.Contains(executors[0].Summary, "Never delivered") {
+	if len(executors) != 1 || executors[0].Status != model.SessionFailed || executors[0].Summary != "Cancelled by the operator" {
 		t.Fatalf("cancelled executor session = %+v", executors)
+	}
+	if !hasEvent(t, fixture.state, task.ID, "error", "context canceled") {
+		t.Fatal("the underlying cancellation cause was not recorded as an error event")
 	}
 	if len(saved.Reviews) != 0 || len(script.Turns(routes.Reviewer)) != 0 {
 		t.Fatalf("a cancelled task reached review: %+v", saved.Reviews)
@@ -383,15 +391,7 @@ func TestExecutionDeadlineCallbackPanicBlocks(t *testing.T) {
 	if len(saved.Sessions) != 1 || len(executors) != 1 || executors[0].Status != model.SessionFailed {
 		t.Fatalf("panic did not fail the running session: %+v", saved.Sessions)
 	}
-	events, err := fixture.state.Events(&task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recorded := false
-	for _, event := range events {
-		recorded = recorded || (event.Kind == "error" && strings.Contains(event.Message, "executor exploded"))
-	}
-	if !recorded {
+	if !hasEvent(t, fixture.state, task.ID, "error", "executor exploded") {
 		t.Fatal("panic did not record a supervisor error event")
 	}
 	assertNoOpenClients(t, script)
@@ -664,6 +664,30 @@ func taskEventKinds(t *testing.T, state *store.Store, id string) map[string]int 
 		kinds[event.Kind]++
 	}
 	return kinds
+}
+
+// optionalText renders an optional saved string for a failure message.
+func optionalText(value *string) string {
+	if value == nil {
+		return "<nil>"
+	}
+	return *value
+}
+
+// hasEvent reports whether an entity recorded an event of kind whose message
+// contains text.
+func hasEvent(t *testing.T, state *store.Store, id, kind, text string) bool {
+	t.Helper()
+	events, err := state.Events(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == kind && strings.Contains(event.Message, text) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestExecutionShutdownLeavesInitializedTaskForRecovery: a graceful stop
