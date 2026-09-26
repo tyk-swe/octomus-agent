@@ -691,7 +691,8 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 // one per retention pass: a task, a cycle and a baseline whose identity is
 // permanently refused each report once across passes. A changed message is
 // reported at once, an unchanged one again after a day, and a pass that
-// finally discards the target writes nothing more and forgets the failure.
+// finally discards the target writes nothing more and forgets the failure. An
+// operator discard, which retention never revisits, forgets it too.
 func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -763,6 +764,15 @@ func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
 	mu.Lock()
 	failure = ""
 	mu.Unlock()
+	if err := app.CycleAction(cycle.ID, "discard"); err != nil {
+		t.Fatalf("operator discard: %v", err)
+	}
+	app.runtimeMu.Lock()
+	_, cycleRemembered := app.runtime.cleanupReports[cleanupKey{kind: cleanupCycle, id: cycle.ID}]
+	app.runtimeMu.Unlock()
+	if cycleRemembered {
+		t.Fatal("an operator discard left the cycle's reported cleanup failure remembered")
+	}
 	pass()
 	counts(map[string]int{task.ID: 3, cycle.ID: 2, check.ID: 1})
 	if saved := loadTask(t, state, task.ID); saved.Lifecycle.DiscardedAt == nil {

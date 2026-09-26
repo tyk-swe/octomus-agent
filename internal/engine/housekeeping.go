@@ -222,7 +222,9 @@ func (a *App) reportCleanupFailure(kind cleanupKind, id string, err error) error
 }
 
 // clearCleanupReport forgets a target's reported failure once a retention
-// pass meets it without one, so a later failure is reported at once.
+// pass meets it without one, so a later failure is reported at once, and once
+// any caller discards it, since retention never visits a discarded record
+// again.
 func (a *App) clearCleanupReport(kind cleanupKind, id string) {
 	a.runtimeMu.Lock()
 	delete(a.runtime.cleanupReports, cleanupKey{kind: kind, id: id})
@@ -362,6 +364,7 @@ func (a *App) DiscardTask(task *model.Task) error {
 		return err
 	}
 	task.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
+	a.clearCleanupReport(cleanupTask, task.ID)
 	return nil
 }
 
@@ -406,6 +409,7 @@ func (a *App) DiscardCycle(cycle *model.Cycle) error {
 		return err
 	}
 	cycle.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
+	a.clearCleanupReport(cleanupCycle, cycle.ID)
 	return nil
 }
 
