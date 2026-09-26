@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/netip"
 	"os"
@@ -28,7 +27,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/report"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
-	dashboard "github.com/tyk-swe/octomus-agent/web"
 )
 
 // stateDBName is the SQLite file inside the data directory.
@@ -50,6 +48,7 @@ func printJSON(stdout io.Writer, value any) error {
 
 type arguments struct {
 	dataDir, listen                         string
+	listenAddr                              netip.AddrPort
 	assets, exportRun                       *string
 	printConfig, doctor, audit, usageReport bool
 }
@@ -95,11 +94,6 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 			return 1
 		}
 		return 0
-	}
-	// Linking the real filesystem keeps all dashboard bytes in the executable.
-	if _, err := fs.Stat(dashboard.Files(), "200.html"); err != nil {
-		fmt.Fprintf(stderr, "Error: embedded dashboard: %v\n", err)
-		return 1
 	}
 	if err := service(parsed, env, stdout, stderr); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -161,11 +155,7 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		}
 		assetsOverride = *parsed.assets
 	}
-	listen, err := netip.ParseAddrPort(parsed.listen)
-	if err != nil {
-		return fmt.Errorf("invalid value %q for '--listen': invalid socket address syntax", parsed.listen)
-	}
-	if !listen.Addr().IsLoopback() {
+	if !parsed.listenAddr.Addr().IsLoopback() {
 		fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
 	}
 	webhook, _ := env(store.WebhookEnv)
@@ -278,7 +268,7 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 				a.dataDir = value
 			case "--listen":
 				a.listen = value
-				if err := validateListen(value); err != nil {
+				if _, err := parseListen(value); err != nil {
 					return a, "", err
 				}
 			case "--assets":
@@ -311,9 +301,11 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	if a.dataDir == "" || (a.assets != nil && *a.assets == "") {
 		return a, "", fmt.Errorf("a nonempty path is required")
 	}
-	if err := validateListen(a.listen); err != nil {
+	listenAddr, err := parseListen(a.listen)
+	if err != nil {
 		return a, "", err
 	}
+	a.listenAddr = listenAddr
 	if a.audit && !a.doctor {
 		return a, "", fmt.Errorf("--audit requires --doctor")
 	}
@@ -326,16 +318,17 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	return a, "", nil
 }
 
-func validateListen(listen string) error {
+// parseListen parses a socket address for --listen or OCTOMUS_LISTEN.
+func parseListen(listen string) (netip.AddrPort, error) {
 	address, err := netip.ParseAddrPort(listen)
 	if err == nil && address.Addr().Zone() != "" {
 		// Scope IDs must be decimal 32-bit numbers, rather than interface names.
 		_, err = strconv.ParseUint(address.Addr().Zone(), 10, 32)
 	}
 	if err != nil {
-		return fmt.Errorf("invalid value %q for '--listen': invalid socket address syntax", listen)
+		return netip.AddrPort{}, fmt.Errorf("invalid value %q for '--listen': invalid socket address syntax", listen)
 	}
-	return nil
+	return address, nil
 }
 
 const help = `Continuous repository improvement through reviewed pull requests
