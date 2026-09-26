@@ -262,6 +262,31 @@ func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 	}
 }
 
+// A command that leaves the workspace state check unable to run is recorded
+// as failed evidence naming the check's failure, and stops the run.
+func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
+	// Replace the repository with a dangling gitdir link rather than only
+	// removing it: git would otherwise walk up and inspect any repository that
+	// happens to contain the test's temporary directory.
+	breaking := "rm -rf .git && printf 'gitdir: /nonexistent\\n' > .git"
+	app, task, revision := verificationFixture(t, []string{breaking, "true"})
+	_, err := app.verifyRevision(context.Background(), &task, revision)
+	if err == nil || !strings.Contains(err.Error(), "Workspace state check failed during verification") {
+		t.Fatalf("err = %v; want the state check failure", err)
+	}
+	saved, getErr := store.Get[model.Task](app.Store, "task", task.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if len(saved.Verification) != 1 {
+		t.Fatalf("verification = %+v; want one record and no further commands", saved.Verification)
+	}
+	record := saved.Verification[0]
+	if record.Command != breaking || record.Success || record.Revision != revision || !strings.Contains(record.Output, "not a git repository") {
+		t.Fatalf("state check failure evidence = %+v", record)
+	}
+}
+
 // F1: worktree mutation evidence names the mutation; F6: successful commands
 // keep both output streams.
 func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
@@ -291,6 +316,40 @@ func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
 	}
 	if !strings.Contains(saved.Verification[0].Output, "out") || !strings.Contains(saved.Verification[0].Output, "warn") {
 		t.Fatalf("verification lost an output stream: %q", saved.Verification[0].Output)
+	}
+}
+
+// TestVerificationArtifactMustBeGitIgnored: worktree cleanliness includes new
+// untracked files, so a command that leaves an artifact behind fails
+// verification as a workspace mutation unless Git ignores the artifact.
+func TestVerificationArtifactMustBeGitIgnored(t *testing.T) {
+	commands := []string{"printf report > coverage.out", "true"}
+	app, task, revision := verificationFixture(t, commands)
+	_, err := app.verifyRevision(context.Background(), &task, revision)
+	if err == nil || model.BlockedReasonFromError(err) != model.BlockedReasonWorkspaceInvalid {
+		t.Fatalf("untracked artifact err = %v; want workspace_invalid", err)
+	}
+	saved := loadTask(t, app.Store, task.ID)
+	if len(saved.Verification) != 1 || saved.Verification[0].Success ||
+		!strings.Contains(saved.Verification[0].Output, "changed during this verification command") {
+		t.Fatalf("untracked artifact evidence = %+v; want one failed mutation record", saved.Verification)
+	}
+
+	app, task, revision = verificationFixture(t, commands)
+	exclude := filepath.Join(task.Workspace, ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exclude, []byte("coverage.out\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	failures, err := app.verifyRevision(context.Background(), &task, revision)
+	if err != nil || len(failures) != 0 {
+		t.Fatalf("ignored artifact failed verification: %v, %v", failures, err)
+	}
+	saved = loadTask(t, app.Store, task.ID)
+	if len(saved.Verification) != 2 || !saved.Verification[0].Success || !saved.Verification[1].Success {
+		t.Fatalf("ignored artifact evidence = %+v; want two passing records", saved.Verification)
 	}
 }
 
@@ -581,6 +640,60 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 	})
 }
 
+// TestExecutionShutdownDuringPublicationRequeuesCheckpoint: a graceful stop
+// while publication checks run is not a publication outcome. The recorded
+// checkpoint stays active for restart recovery, which delivers it exactly once
+// without another model turn.
+func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
+	fixture := newExecutionFixture(t)
+	task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
+	task.Status = model.StatusExecuting
+	saveExecutionTask(t, fixture, task)
+	heldUploadPack(t, fixture)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	app.runTask(task)
+	waitForPreflights(t, fixture, 1)
+
+	app.Shutdown()
+	stopped := loadTask(t, fixture.state, task.ID)
+	if stopped.Status != model.StatusPublishing || stopped.OutputCommit == nil || *stopped.OutputCommit != *task.OutputCommit ||
+		stopped.Error != nil || stopped.BlockedReason != nil {
+		t.Fatalf("graceful stop recorded a publication outcome: %+v", stopped)
+	}
+	if entries := publications(t, fixture); len(entries) != 0 {
+		t.Fatalf("held publication wrote actions: %+v", entries)
+	}
+	releasePreflight(t, fixture)
+
+	restarted := New(fixture.state, fixture.dataDir)
+	t.Cleanup(restarted.Shutdown)
+	restarted.runtime.lastRetention = time.Now()
+	restarted.runtime.lastObserve = time.Now()
+	if err := restarted.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := loadTask(t, fixture.state, task.ID); recovered.Status != model.StatusQueued || recovered.Attempts != 1 {
+		t.Fatalf("interrupted publication recovery = %+v", recovered)
+	}
+	if err := restarted.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	saved := driveTask(t, fixture, restarted, task.ID)
+	if saved.Status != model.StatusPublished || saved.PRNumber == nil || *saved.OutputCommit != *task.OutputCommit {
+		t.Fatalf("recovered publication = %+v", saved)
+	}
+	if entries := publications(t, fixture); len(entries) != 1 || entries[0]["action"] != "create" {
+		t.Fatalf("publications = %+v; want exactly one create", entries)
+	}
+	if len(saved.Sessions) != 1 {
+		t.Fatalf("recovered publication ran another model turn: %+v", saved.Sessions)
+	}
+	if remote := remoteHead(t, fixture, saved.Branch); remote != *saved.OutputCommit {
+		t.Fatalf("remote = %s; want output %s", remote, *saved.OutputCommit)
+	}
+}
+
 // existingPrBranch builds the existing-owned-PR remote state: the octomus/
 // branch with earlier delivered work plus its open fixture PR.
 func existingPrBranch(t *testing.T, fixture *planningFixture) string {
@@ -651,6 +764,20 @@ func TestExecutionExistingPrAppendsComment(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(saved.Workspace, "earlier.txt")); err != nil {
 		t.Fatalf("earlier work missing from the workspace: %v", err)
+	}
+	// Follow-up reviews cover the whole PR: the comparison base is the merge
+	// base of the recorded default revision and the PR head, on every round.
+	out, err := exec.Command("/usr/bin/git", "-C", saved.Workspace, "merge-base", saved.DefaultRevision, head).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base := strings.TrimSpace(string(out)); saved.ComparisonBase != base {
+		t.Fatalf("comparison base = %q; want merge base %s", saved.ComparisonBase, base)
+	}
+	for _, round := range saved.Reviews {
+		if round.ComparisonBase != saved.ComparisonBase {
+			t.Fatalf("review round lost the comparison base: %+v", round)
+		}
 	}
 	if remote := remoteHead(t, fixture, "octomus/existing"); remote != *saved.OutputCommit {
 		t.Fatalf("remote = %s; want output %s", remote, *saved.OutputCommit)
@@ -732,12 +859,13 @@ func TestExecutionDependenciesOrderAndRollback(t *testing.T) {
 		// (the ancestry check requires the object locally).
 		command(t, fixture.repo, "/usr/bin/git", "fetch", filepath.Join(fixture.root, "remote.git"), "octomus/existing")
 		command(t, fixture.root, "/usr/bin/git", "--git-dir", filepath.Join(fixture.root, "remote.git"), "update-ref", "refs/heads/octomus/existing", head)
+		// The rewound head is the dependent's recorded source, so the preflight
+		// authorizes it; initialization then finds the dependency output is no
+		// longer an ancestor of the head. That is a dependency block, whose
+		// remedy differs from a stale base's.
 		saved := driveTask(t, fixture, app, second.ID)
-		if saved.Status != model.StatusBlocked || saved.BlockedReason == nil {
-			t.Fatalf("rollback dependent outcome = %+v", saved)
-		}
-		if *saved.BlockedReason != model.BlockedReasonDependencyBlocked && *saved.BlockedReason != model.BlockedReasonStaleBase {
-			t.Fatalf("rollback blocked as %v", *saved.BlockedReason)
+		if !blockedAs(saved, model.BlockedReasonDependencyBlocked) {
+			t.Fatalf("rollback dependent outcome = %+v; want dependency_blocked", saved)
 		}
 		if saved.OutputCommit != nil {
 			t.Fatalf("rollback authorized publication: %+v", saved)
@@ -763,6 +891,155 @@ func TestExecutionWorkerPanicBlocks(t *testing.T) {
 	saved := driveTask(t, fixture, app, task.ID)
 	if saved.Status != model.StatusBlocked || saved.Error == nil || !strings.Contains(*saved.Error, "panicked") {
 		t.Fatalf("panic outcome = %+v", saved)
+	}
+}
+
+// TestRunJoinedReturnsTheCallbacksOwnResult: supervision and publication
+// reconciliation both learn how their callback actually ended. A callback
+// that finishes within the cleanup grace after the deadline fired keeps its
+// own result, and a panic on the deadline goroutine comes back as an error.
+// (TestExecutionTimeoutJoinsCallbackBeforeFinalizing covers the join past the
+// grace through supervision.)
+func TestRunJoinedReturnsTheCallbacksOwnResult(t *testing.T) {
+	for _, want := range []error{nil, errors.New("late failure")} {
+		ctx, cancel := context.WithCancel(context.Background())
+		result, err := runJoined(ctx, cancel, 100*time.Millisecond, "Callback panicked", func() error {
+			<-ctx.Done() // The deadline cancels the callback's scope ...
+			time.Sleep(50 * time.Millisecond)
+			return want // ... and it still finishes within the grace.
+		})
+		cancel()
+		if !result.Expired || result.AlreadyCancelled {
+			t.Fatalf("deadline result = %+v; want a genuine expiry", result)
+		}
+		if err != want {
+			t.Fatalf("late callback result = %v; want %v", err, want)
+		}
+	}
+	result, err := runJoined(context.Background(), func() {}, time.Minute, "Callback panicked", func() error {
+		panic("boom")
+	})
+	if result.Expired || err == nil || err.Error() != "Callback panicked: boom" {
+		t.Fatalf("panicking callback = %+v, %v", result, err)
+	}
+}
+
+// TestSupervisionNeverDemotesRecordedPublication: once the worker durably
+// records a delivery, neither a task deadline that fired while it finished
+// nor a bookkeeping failure after the published write may rewrite the task
+// as blocked.
+func TestSupervisionNeverDemotesRecordedPublication(t *testing.T) {
+	supervise := func(t *testing.T, execute func(*App) func(context.Context, *model.Task) error) (*App, model.Task, error) {
+		t.Helper()
+		state := testStore(t)
+		cfg := testConfig(t.TempDir())
+		task := queuedTask(cfg, model.ID(), cfg.DefaultBranch, "octomus/delivered")
+		task.Status = model.StatusPublishing
+		// The snapshot carries the deadline; settings validation does not apply.
+		task.Config.TaskTimeoutSeconds = 1
+		if err := state.Put("task", task.ID, task); err != nil {
+			t.Fatal(err)
+		}
+		app := New(state, t.TempDir())
+		t.Cleanup(app.Shutdown)
+		err := app.superviseExecution(context.Background(), task, execute(app))
+		return app, loadTask(t, state, task.ID), err
+	}
+	errorEvents := func(t *testing.T, app *App, id string) []string {
+		t.Helper()
+		events, err := app.Store.Events(&id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		messages := []string{}
+		for _, event := range events {
+			if event.Kind == "error" {
+				messages = append(messages, event.Message)
+			}
+		}
+		return messages
+	}
+
+	t.Run("published after the deadline fired", func(t *testing.T) {
+		app, saved, err := supervise(t, func(app *App) func(context.Context, *model.Task) error {
+			return func(_ context.Context, task *model.Task) error {
+				// Outlive the one-second deadline but not the cleanup grace.
+				time.Sleep(1500 * time.Millisecond)
+				return app.transition(task, model.StatusPublished)
+			}
+		})
+		if err != nil {
+			t.Fatalf("a recorded delivery was reported as a failure: %v", err)
+		}
+		if saved.Status != model.StatusPublished || saved.BlockedReason != nil || saved.Error != nil {
+			t.Fatalf("late deadline rewrote the delivery: %+v", saved)
+		}
+		if messages := errorEvents(t, app, saved.ID); len(messages) != 0 {
+			t.Fatalf("late deadline recorded errors: %v", messages)
+		}
+	})
+
+	t.Run("bookkeeping failed after the published write", func(t *testing.T) {
+		app, saved, err := supervise(t, func(app *App) func(context.Context, *model.Task) error {
+			return func(_ context.Context, task *model.Task) error {
+				if err := app.transition(task, model.StatusPublished); err != nil {
+					return err
+				}
+				return errors.New("PR observation write failed")
+			}
+		})
+		if err == nil || !strings.Contains(err.Error(), "PR observation write failed") {
+			t.Fatalf("bookkeeping failure was not returned: %v", err)
+		}
+		if saved.Status != model.StatusPublished || saved.BlockedReason != nil || saved.Error != nil {
+			t.Fatalf("bookkeeping failure demoted the delivery: %+v", saved)
+		}
+		if messages := errorEvents(t, app, saved.ID); len(messages) != 1 || !strings.Contains(messages[0], "PR observation write failed") {
+			t.Fatalf("bookkeeping failure evidence = %v", messages)
+		}
+	})
+}
+
+// TestSupervisionReportsOperatorCancelOverLateDeadline: a worker that was
+// cancelled by the operator and then outlived its deadline ended because of
+// the cancel. The record says so instead of a time limit, and the deadline
+// stays in the error event.
+func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	task := queuedTask(cfg, model.ID(), cfg.DefaultBranch, "octomus/cancelled")
+	task.Status = model.StatusExecuting
+	task.Sessions = []model.Session{{ID: "executor-thread", Role: "executor", Status: model.SessionRunning}}
+	// The snapshot carries the deadline; settings validation does not apply.
+	task.Config.TaskTimeoutSeconds = 1
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkCancel(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := app.superviseExecution(cancelled, task, func(ctx context.Context, _ *model.Task) error {
+		// Ignore the cancel long enough for the deadline to fire as well.
+		time.Sleep(1200 * time.Millisecond)
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := loadTask(t, state, task.ID)
+	if saved.Status != model.StatusCancelled || saved.BlockedReason != nil || saved.Error == nil || *saved.Error != "Cancelled by the operator" {
+		t.Fatalf("cancelled task = status %s, reason %v, error %q", saved.Status, saved.BlockedReason, optionalText(saved.Error))
+	}
+	if len(saved.Sessions) != 1 || saved.Sessions[0].Status != model.SessionFailed || saved.Sessions[0].Summary != "Cancelled by the operator" {
+		t.Fatalf("cancelled session = %+v", saved.Sessions)
+	}
+	if !hasEvent(t, state, task.ID, "error", "Task time limit exceeded") {
+		t.Fatal("the late deadline was not recorded as an error event")
 	}
 }
 

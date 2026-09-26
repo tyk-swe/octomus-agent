@@ -40,49 +40,98 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 func (a *App) superviseExecution(ctx context.Context, task model.Task, execute func(context.Context, *model.Task) error) error {
 	workCtx, workCancel := context.WithCancel(ctx)
 	defer workCancel()
-	var timedOut bool
-	var taskErr error
 	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
-	executionDone := make(chan struct{})
-	result := process.WithDeadline(ctx, workCancel, limit, func() (err error) {
-		defer close(executionDone)
-		// WithDeadline invokes this callback in its own goroutine, beyond
-		// runTask's recovery boundary. Return panics through normal supervision.
-		defer func() {
-			if panicked := recover(); panicked != nil {
-				err = fmt.Errorf("Task worker panicked: %v", panicked)
-			}
-		}()
+	// The callback owns mutable task state and durable writes. runJoined waits
+	// for it to return, so terminal evidence is recorded, and runTask releases
+	// runtime and shutdown ownership, only after its last write.
+	result, executeErr := runJoined(ctx, workCancel, limit, "Task worker panicked", func() error {
 		return execute(workCtx, &task)
 	})
-	// WithDeadline's cleanup grace is bounded, but this callback owns mutable
-	// task state and durable writes. Join it before recording terminal evidence
-	// or allowing runTask to release runtime and shutdown ownership.
-	<-executionDone
-	if result.Expired {
-		timedOut = !result.AlreadyCancelled
-		task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
-		taskErr = errors.New("Task time limit exceeded")
-	} else if result.Output != nil {
-		reason := model.BlockedReasonFromError(result.Output)
-		task.BlockedReason = &reason
-		taskErr = result.Output
-	}
-	if taskErr == nil {
+	// execute succeeds only after publication is durably recorded, so a
+	// deadline that expired during that final bookkeeping is not an outcome.
+	if executeErr == nil {
 		return nil
 	}
+	if task.Status == model.StatusPublished {
+		// Delivery was recorded and only bookkeeping after it failed: keep the
+		// published record. runTask still blocks the task if the published
+		// status itself never became durable.
+		_ = a.Store.Event(task.ID, "error", executeErr.Error())
+		return executeErr
+	}
+	timedOut := result.Expired && !result.AlreadyCancelled
+	taskErr := executeErr
+	if result.Expired {
+		taskErr = errors.New("Task time limit exceeded")
+	}
 	message := taskErr.Error()
-	task.Error = stringPointer(store.Redact(message))
-	model.FailRunning(task.Sessions, store.Redact(message))
+	// Read the shutdown scope before the cancel marker. Shutdown cancels it
+	// under the gate, which an operator cancel holds until its marker is
+	// durable, so a cancel that preceded the shutdown is always seen.
+	shuttingDown := a.ctx.Err() != nil
 	operatorCancelled, _ := a.Store.MarkerSet("cancel", task.ID)
+	if shuttingDown && !operatorCancelled && !timedOut && task.Status.Active() && workspace.Initialized(task) {
+		// A service shutdown is not a task outcome. Leave the initialized
+		// record active with its sessions running, exactly as after a crash:
+		// restart recovery interrupts the sessions and requeues the task
+		// within its retry budget. Work stopped before initialization is
+		// blocked below and stays retryable; recovery could only report it
+		// as an invalid workspace.
+		if err := a.saveTask(&task); err != nil {
+			_ = a.Store.Event(task.ID, "worker_error", store.ErrorMessage(err))
+		}
+		return a.Store.Event(task.ID, "interrupted", message)
+	}
 	status := model.StatusBlocked
 	if workCtx.Err() != nil && !timedOut && task.OutputCommit == nil && (operatorCancelled || a.ctx.Err() == nil) {
 		status = model.StatusCancelled
 	}
+	switch {
+	case status == model.StatusCancelled:
+		// Only an operator cancel stops a worker outside shutdown and its
+		// deadline. Whatever the interrupted step returned, or a deadline that
+		// fired after the cancel, is not why the task ended; that cause stays
+		// in the error event below.
+		task.BlockedReason = nil
+		task.Error = stringPointer("Cancelled by the operator")
+	case result.Expired:
+		task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
+		task.Error = stringPointer(store.Redact(message))
+	default:
+		reason := model.BlockedReasonFromError(executeErr)
+		task.BlockedReason = &reason
+		task.Error = stringPointer(store.Redact(message))
+	}
+	model.FailRunning(task.Sessions, *task.Error)
 	if err := a.transition(&task, status); err != nil {
 		_ = a.Store.Event(task.ID, "worker_error", store.ErrorMessage(err))
 	}
 	return a.Store.Event(task.ID, "error", message)
+}
+
+// runJoined runs fn under limit through process.WithDeadline, then waits for
+// fn to return even past WithDeadline's bounded cleanup grace: fn may still be
+// writing durable state or remote publication, and its caller must not record
+// an outcome or release ownership beside it. It returns WithDeadline's result
+// together with fn's own result, which WithDeadline drops when the deadline
+// fires first. fn runs on WithDeadline's goroutine, beyond every caller's
+// recovery boundary, so a panic comes back as an error prefixed by panicked.
+func runJoined(ctx context.Context, cancel context.CancelFunc, limit time.Duration, panicked string, fn func() error) (process.Deadline[error], error) {
+	done := make(chan struct{})
+	// Written before done closes and read only after the join.
+	var fnErr error
+	result := process.WithDeadline(ctx, cancel, limit, func() (err error) {
+		defer close(done)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = fmt.Errorf("%s: %v", panicked, recovered)
+			}
+			fnErr = err
+		}()
+		return fn()
+	})
+	<-done
+	return result, fnErr
 }
 
 // execute drives the admitted task through executor → snapshot → review →
@@ -130,14 +179,14 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if revision == task.SourceRevision {
-			return model.BlockedReasonVerificationFailed
+			return fmt.Errorf("No changes were committed on top of the source revision: %w", model.BlockedReasonVerificationFailed)
 		}
 		names, err := gitops.Git(ctx, cfg, ws, []string{"diff", "--name-only", task.SourceRevision, revision})
 		if err != nil {
 			return err
 		}
 		if names == "" {
-			return model.BlockedReasonVerificationFailed
+			return fmt.Errorf("The change set is empty against the source revision: %w", model.BlockedReasonVerificationFailed)
 		}
 		if task.AttemptReviews() >= cfg.MaxRepairRounds+1 {
 			return model.BlockedReasonRetryLimit
@@ -154,21 +203,21 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			}
 			if len(verificationErrors) == 0 {
 				// Main movement changes the integration context; never silently publish an obsolete review.
-				if task.PRNumber == nil {
-					def, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
-					if err != nil {
-						return err
-					}
-					if def == nil || *def != task.SourceRevision {
-						return model.BlockedReasonStaleBase
-					}
+				// Publication refuses a moved default branch for every task, so check it before the
+				// checkpoint for existing-PR work too. A new-PR task's source is the default revision.
+				def, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
+				if err != nil {
+					return err
+				}
+				if def == nil || *def != task.DefaultRevision {
+					return model.BlockedReasonStaleBase
 				}
 				task.OutputCommit = &revision
 				return a.publishReviewed(ctx, task)
 			}
 		}
 		if task.AttemptReviews() > cfg.MaxRepairRounds {
-			return model.BlockedReasonVerificationFailed
+			return fmt.Errorf("Repair budget exhausted (max_repair_rounds %d): %w", cfg.MaxRepairRounds, model.BlockedReasonVerificationFailed)
 		}
 		if previous == revision {
 			noProgress++
@@ -177,7 +226,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			previous = revision
 		}
 		if noProgress >= cfg.MaxNoProgressRounds {
-			return model.BlockedReasonVerificationFailed
+			return fmt.Errorf("Repairs made no progress on the reviewed revision (max_no_progress_rounds %d): %w", cfg.MaxNoProgressRounds, model.BlockedReasonVerificationFailed)
 		}
 		if err := a.repair(ctx, task, client, review, verificationErrors); err != nil {
 			return err
@@ -259,12 +308,32 @@ func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 	if !authorized {
 		return model.BlockedReasonStaleBase
 	}
-	// A task that already started work must still hold the workspace it recorded;
-	// one that never started is retried into a fresh workspace.
+	// A task that started work must still hold its initialized workspace; one
+	// whose initialization was recorded but never started a session may resume
+	// only in a fully initialized clone at its source revision.
 	if task.ExecutionSession != nil && !workspace.Initialized(*task) {
 		return model.BlockedReasonWorkspaceInvalid
 	}
+	if task.ExecutionSession == nil && task.Workspace != "" {
+		return a.validateRecordedWorkspace(ctx, task)
+	}
 	return nil
+}
+
+// validateRecordedWorkspace accepts a recorded workspace only when it is the
+// task's own managed clone, initialization recorded its comparison base, and
+// the clone sits cleanly at the task's source revision. Partial clones and
+// edits made before a session was recorded are preserved for operator
+// inspection, never reused.
+func (a *App) validateRecordedWorkspace(ctx context.Context, task *model.Task) error {
+	ws := a.taskWorkspace(task.ID)
+	if !samePath(task.Workspace, ws) || task.ComparisonBase == "" {
+		return model.BlockedReasonWorkspaceInvalid
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+		return model.BlockedReasonWorkspaceInvalid
+	}
+	return ensureWorkspaceAt(ctx, task.ExecutionConfig(), ws, task.SourceRevision)
 }
 
 // initializeTask prepares a task's workspace and reserves its first executor
@@ -341,14 +410,14 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return model.BlockedReasonStaleBase
 		}
 	}
-	if err := a.admit(task.CycleID, task, "executor", task.Route); err != nil {
-		return err
-	}
 	if _, err := uuid.Parse(task.ID); err != nil {
 		return fmt.Errorf("Invalid task workspace identity: %w", err)
 	}
-	ws := a.taskWorkspace(task.ID)
+	if err := a.admit(task.CycleID, task, "executor", task.Route); err != nil {
+		return err
+	}
 	if task.Workspace == "" {
+		ws := a.taskWorkspace(task.ID)
 		task.Workspace = ws
 		if err := a.saveTask(task); err != nil {
 			return err
@@ -357,37 +426,21 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if task.PRNumber != nil {
-			base, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
-			if err != nil {
-				return err
-			}
-			if base == nil {
-				return errors.New("Default branch missing")
-			}
-			task.ComparisonBase, err = gitops.Git(ctx, cfg, ws, []string{"merge-base", *base, task.SourceRevision})
+			// The default revision was verified against the remote above and is
+			// in the clone's object store; re-reading the remote here could name
+			// a commit pushed after the fetch that the clone does not have.
+			task.ComparisonBase, err = gitops.Git(ctx, cfg, ws, []string{"merge-base", task.DefaultRevision, task.SourceRevision})
 			if err != nil {
 				return err
 			}
 		} else {
 			task.ComparisonBase = task.SourceRevision
 		}
-		if err := a.saveTask(task); err != nil {
-			return err
-		}
-	} else {
-		// A failed runner start can be retried in a fully initialized clone. Partial clones
-		// and edits made before a session was recorded are preserved for operator inspection.
-		if !samePath(task.Workspace, ws) || task.ComparisonBase == "" {
-			return model.BlockedReasonWorkspaceInvalid
-		}
-		if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
-			return model.BlockedReasonWorkspaceInvalid
-		}
-		if err := ensureWorkspaceAt(ctx, cfg, ws, task.SourceRevision); err != nil {
-			return err
-		}
+		return a.saveTask(task)
 	}
-	return nil
+	// A failed runner start can be retried in a fully initialized clone, at
+	// the source revision after any dependency advance above.
+	return a.validateRecordedWorkspace(ctx, task)
 }
 
 func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.Runners, admissionReserved bool) error {
@@ -397,7 +450,20 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 			return nil
 		}
 	}
-	prompt := fmt.Sprintf(
+	_, _, err := a.invoke(ctx, client, invocation{
+		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
+		resume: task.ExecutionSession, keep: func(session string) { task.ExecutionSession = &session },
+		prompt: executorPrompt(task, cfg), reserved: admissionReserved,
+	})
+	return err
+}
+
+// executorPrompt is the executor's task prompt. Its "Implement this accepted
+// task" prefix is matched by the e2e runner fixtures (tests/fixtures), and it
+// carries required policy: the full comparison base and no publication by
+// the worker.
+func executorPrompt(task *model.Task, cfg config.Config) string {
+	return fmt.Sprintf(
 		"Implement this accepted task end to end in this workspace. Source revision: %s. Full comparison base: %s. Existing PR: %s. Preserve existing accumulated branch behavior; inspect its full diff. Do not push, publish, merge or deploy. Required repository verification commands: %s. Objective and constraints:\n%s\nProblem: %s\nBenefit: %s\nScope: %s\nEvidence: %s\nReturn a concise summary of actual changes, verification and material risks or migration notes.",
 		task.SourceRevision,
 		task.ComparisonBase,
@@ -408,12 +474,6 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 		task.Proposal.Benefit,
 		task.Proposal.Scope,
 		debugList(task.Proposal.Evidence))
-	_, _, err := a.invoke(ctx, client, invocation{
-		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
-		resume: task.ExecutionSession, keep: func(session string) { task.ExecutionSession = &session },
-		prompt: prompt, reserved: admissionReserved,
-	})
-	return err
 }
 
 func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runner.Runners, revision string) (model.Review, error) {
@@ -426,9 +486,6 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	if !ok {
 		return model.Review{}, errors.New("code_reviewer route is missing")
 	}
-	prompt := fmt.Sprintf(
-		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
-		task.ComparisonBase, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
 	var review model.Review
 	judge := func(thread, answer string) (string, error) {
 		if err := json.Unmarshal([]byte(answer), &review); err != nil {
@@ -445,18 +502,28 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	}
 	if _, _, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "reviewer", route: route, workspace: ws,
-		prompt: prompt, schema: schemas.ReviewSchema(), judge: judge,
+		prompt: reviewPrompt(task, revision), schema: schemas.ReviewSchema(), judge: judge,
 	}); err != nil {
 		return model.Review{}, err
 	}
 	return review, nil
 }
 
+// reviewPrompt is a fresh reviewer's prompt for revision. Its "Perform a
+// fresh code review" prefix is matched by the e2e runner fixtures, and it
+// requires the full diff from the comparison base, never only the last commit.
+func reviewPrompt(task *model.Task, revision string) string {
+	return fmt.Sprintf(
+		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
+		task.ComparisonBase, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
+}
+
 // verifyRevision runs every configured verification command against exactly
 // `revision`. Worktree and HEAD are checked before the first command and after
-// each one, so a command that changes tracked state is recorded as failed
-// evidence and stops the run instead of lending its success to the reviewed
-// revision.
+// each one, so a command that leaves the worktree unclean (including a new
+// untracked file that is not git-ignored) or moves HEAD, or leaves the check
+// itself unable to run, is recorded as failed evidence and stops the run
+// instead of lending its success to the reviewed revision.
 func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision string) ([]string, error) {
 	cfg := task.ExecutionConfig()
 	ws := task.Workspace
@@ -474,18 +541,23 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		}
 		failed := outcome.failed()
 		output := outcome.outputText()
-		intact, err := outcome.intactResult()
-		if err != nil {
-			return nil, err
-		}
-		if !intact {
+		intact, intactErr := outcome.intactResult()
+		switch {
+		case intactErr != nil:
+			// The state check itself failed, for example because the command
+			// removed the repository: still evidence against this command.
+			output += "\n" + intactErr.Error()
+		case !intact:
 			output += "\nWorkspace or HEAD changed during this verification command"
 		}
 		task.Verification = append(task.Verification, model.Verification{
-			Command: command, Success: intact && !failed, Output: store.Redact(output), Revision: revision, CreatedAt: model.Now(),
+			Command: command, Success: intactErr == nil && intact && !failed, Output: store.Redact(output), Revision: revision, CreatedAt: model.Now(),
 		})
 		if err := a.saveTask(task); err != nil {
 			return nil, err
+		}
+		if intactErr != nil {
+			return nil, fmt.Errorf("Workspace state check failed during verification: %w", intactErr)
 		}
 		if !intact {
 			return nil, model.BlockedReasonWorkspaceInvalid
@@ -502,21 +574,10 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	if err := a.transition(task, model.StatusRepairing); err != nil {
 		return err
 	}
-	findings := review.Findings
-	if findings == nil {
-		findings = []model.Finding{}
-	}
-	findingsJSON, err := wirejson.Marshal(findings)
+	prompt, err := repairPrompt(task, cfg, review, verificationErrors)
 	if err != nil {
 		return err
 	}
-	prompt := fmt.Sprintf(
-		"Repair actionable findings and verification failures for this task. Preserve useful capabilities and meaningful tests. Do not push, publish, merge or deploy. If a finding is unsupported, explain the technical evidence in your final summary; the next fresh reviewer must independently assess it. Rerun relevant verification %s. Full comparison base: %s. Task: %s. Findings: %s. Verification failures: %s",
-		debugList(cfg.VerificationCommands),
-		task.ComparisonBase,
-		task.Proposal.Prompt,
-		string(findingsJSON),
-		debugList(verificationErrors))
 	// The repair thread persists across rounds: the first repair starts it and
 	// every later round resumes it.
 	_, _, err = a.invoke(ctx, client, invocation{
@@ -525,6 +586,28 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 		prompt: prompt,
 	})
 	return err
+}
+
+// repairPrompt is a repair round's prompt: the review's findings as JSON (an
+// empty list when there are none) and the failed verification output. Its
+// "Repair actionable findings" prefix is matched by the e2e runner fixtures,
+// and it carries the no-publication policy.
+func repairPrompt(task *model.Task, cfg config.Config, review model.Review, verificationErrors []string) (string, error) {
+	findings := review.Findings
+	if findings == nil {
+		findings = []model.Finding{}
+	}
+	findingsJSON, err := wirejson.Marshal(findings)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(
+		"Repair actionable findings and verification failures for this task. Preserve useful capabilities and meaningful tests. Do not push, publish, merge or deploy. If a finding is unsupported, explain the technical evidence in your final summary; the next fresh reviewer must independently assess it. Rerun relevant verification %s. Full comparison base: %s. Task: %s. Findings: %s. Verification failures: %s",
+		debugList(cfg.VerificationCommands),
+		task.ComparisonBase,
+		task.Proposal.Prompt,
+		string(findingsJSON),
+		debugList(verificationErrors)), nil
 }
 
 func (a *App) published(task *model.Task, p model.PullRequest) error {
@@ -642,6 +725,10 @@ func pathIdentityComponents(path string) []string {
 	}
 	return parts
 }
+
+// debugOption, debugList and debugString render prompt values in Rust's Debug
+// notation. The service was ported from Rust and its runner fixtures match
+// the prompts it produced, so the notation is kept for byte-stable prompts.
 
 // debugOption renders a saved optional value as `Some("…")` or `None`.
 func debugOption(value *string) string {

@@ -3,7 +3,9 @@
 // all pass through invoke, which owns storage measurement and the daily
 // admission, session start or resume, the session record lifecycle, the turn
 // itself and redaction. Callers build prompts and interpret answers; they
-// never reserve admissions, resume threads or mark session records.
+// never resume threads or mark session records. Only executor initialization
+// reserves an admission itself, for the first executor turn, which it then
+// invokes as reserved.
 package engine
 
 import (
@@ -75,6 +77,11 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		return clients.Close()
 	}
 	defer func() { _ = closeClients() }()
+	// A turn whose owner is already cancelled could only fail at session
+	// start; refuse it before it measures storage or spends an admission.
+	if err := ctx.Err(); err != nil {
+		return "", "", fmt.Errorf("Operation cancelled: %w", err)
+	}
 
 	var resume *string
 	if inv.resume != nil {

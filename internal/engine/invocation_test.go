@@ -142,6 +142,86 @@ func TestInvocationRejectsReservedResume(t *testing.T) {
 	assertAdmissions(t, state, 0, "a refused turn admits nothing")
 }
 
+// TestInvocationSkipsCancelledOwner: a turn whose owner is already cancelled
+// is refused before it measures storage, reserves a daily admission, prepares
+// a workspace or reaches the runner, and an owned client scope still closes.
+func TestInvocationSkipsCancelledOwner(t *testing.T) {
+	state := testStore(t)
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	script := runnertest.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clients := runner.New(ctx, config.Default(), script.Connector())
+	prepared := false
+
+	_, answer, err := app.invoke(ctx, clients, invocation{
+		cycleID: "cycle", role: "discovery-0", route: config.NewRoute("scripted-discovery", "medium"),
+		workspace: t.TempDir(), prompt: "unused", ownsClients: true,
+		prepare: func() error { prepared = true; return nil },
+	})
+	if err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "Operation cancelled") {
+		t.Fatalf("cancelled owner error = %v", err)
+	}
+	if answer != "" || prepared {
+		t.Fatalf("a cancelled turn answered %q or prepared its workspace (%v)", answer, prepared)
+	}
+	if calls := script.Calls(); len(calls) != 0 {
+		t.Fatalf("a cancelled turn reached the runner: %+v", calls)
+	}
+	assertAdmissions(t, state, 0, "a cancelled owner admits nothing")
+	assertNoOpenClients(t, script)
+}
+
+// TestInvocationCloseFailureFailsPlanningTurn: a planning turn owns its client
+// scope and closes it before its record is finalized, so a scope that fails
+// to close fails an otherwise good turn. The answer is discarded and the cycle
+// records the role's session as failed with the close error.
+func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
+	state := testStore(t)
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	cycleID := "close-failure-cycle"
+	cycle := model.Cycle{
+		Mode: model.CycleModeAudit, ID: cycleID, Number: 1, Status: model.CycleRunning, StartedAt: model.Now(),
+		Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
+	}
+	if err := state.Put("cycle", cycleID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	route := config.NewRoute("scripted-discovery", "medium")
+	script := runnertest.New(runnertest.CatalogFor(route)...)
+	script.Answer(route, "Discovered")
+	// FailClose applies to the backend's next close, so the turn is invoked
+	// directly: a full planning cycle's preflight could consume it first.
+	script.FailClose(route.Backend, errors.New("fixture close"))
+	clients := runner.New(context.Background(), config.Default(), script.Connector())
+
+	session, answer, err := app.invoke(context.Background(), clients, invocation{
+		cycleID: cycleID, role: "discovery-0", route: route, workspace: t.TempDir(),
+		prompt: "Discover", ownsClients: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "fixture close") {
+		t.Fatalf("close failure error = %v", err)
+	}
+	if answer != "" {
+		t.Fatalf("a turn whose clients failed to close kept its answer %q", answer)
+	}
+	if turns := script.Turns(route); len(turns) != 1 || turns[0].Session != session {
+		t.Fatalf("turns = %+v; want the one turn on %s", turns, session)
+	}
+	saved, err := store.Get[model.Cycle](state, "cycle", cycleID)
+	if err != nil || saved == nil {
+		t.Fatalf("load cycle: %+v, %v", saved, err)
+	}
+	if len(saved.Sessions) != 1 || saved.Sessions[0].ID != session || saved.Sessions[0].Role != "discovery-0" ||
+		saved.Sessions[0].Status != model.SessionFailed || !strings.Contains(saved.Sessions[0].Summary, "fixture close") {
+		t.Fatalf("cycle sessions = %+v; want the discovery session failed with the close error", saved.Sessions)
+	}
+	assertAdmissions(t, state, 1, "the one discovery turn")
+	assertNoOpenClients(t, script)
+}
+
 // secretToken is secret-shaped: the store's redaction replaces it.
 const secretToken = "ghp_invocationSecret0123456789"
 

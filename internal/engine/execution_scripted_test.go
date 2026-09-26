@@ -10,7 +10,11 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -116,6 +120,41 @@ func TestExecutionMalformedAndIncompleteReviewsNeverPublish(t *testing.T) {
 	}
 }
 
+// TestExecutionReviewerWorkspaceEditBlocks: a reviewer must not modify the
+// workspace. A clean answer from a reviewer that left a new file behind is not
+// recorded as a review round, because it would no longer describe the tree at
+// the reviewed revision; the task blocks as workspace_invalid before any
+// verification, and the failed reviewer session keeps the rejected answer.
+func TestExecutionReviewerWorkspaceEditBlocks(t *testing.T) {
+	fixture := newScriptedFixture(t)
+	fixture.configure(t, func(cfg *config.Config) {
+		cfg.VerificationCommands = []string{"test -f feature.txt"}
+	})
+	routes, script := fixture.routes, fixture.script
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "fixed\n")})
+	script.Queue(routes.Reviewer, runnertest.Reply{Answer: cleanReview("Looks fine"), Effect: writeFile("stray.txt", "reviewer edit\n")})
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	saveExecutionTask(t, fixture.planningFixture, task)
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if !blockedAs(saved, model.BlockedReasonWorkspaceInvalid) {
+		t.Fatalf("reviewer workspace edit outcome = %+v", saved)
+	}
+	if len(saved.Reviews) != 0 || len(saved.Verification) != 0 {
+		t.Fatalf("a review of an edited workspace was recorded or verified: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
+	}
+	reviewers := sessionByRole(saved, "reviewer")
+	if len(reviewers) != 1 || reviewers[0].Status != model.SessionFailed || !strings.Contains(reviewers[0].Summary, "Looks fine") {
+		t.Fatalf("reviewer session = %+v; want it failed with the rejected answer", reviewers)
+	}
+	if len(script.Turns(routes.Repair)) != 0 {
+		t.Fatal("a rejected review reached repair")
+	}
+	assertUnpublished(t, fixture, saved)
+	assertAdmissions(t, fixture.state, 2, "executor + reviewer")
+	assertNoOpenClients(t, script)
+}
+
 // TestExecutionFailedVerificationExhaustsRepairBudget: every review is clean
 // but verification fails every time; the repair budget, not the reviewer,
 // decides the outcome, and one persistent repair thread carries every round.
@@ -142,6 +181,9 @@ func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
 	if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
 		t.Fatalf("failed verification outcome = %+v", saved)
 	}
+	if saved.Error == nil || !strings.Contains(*saved.Error, "Repair budget exhausted (max_repair_rounds 2)") {
+		t.Fatalf("the block must name the exhausted repair budget: %q", optionalText(saved.Error))
+	}
 	if len(saved.Reviews) != 3 || len(saved.Verification) != 3 {
 		t.Fatalf("evidence: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
 	}
@@ -154,6 +196,19 @@ func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
 	}
 	if len(revisions) != 3 {
 		t.Fatalf("every repair must progress to a new revision: %+v", saved.Reviews)
+	}
+	// Each fresh reviewer is asked for the full diff at its own round's
+	// revision, and each repair is handed the failed verification.
+	reviewTurns := script.Turns(routes.Reviewer)
+	for i, round := range saved.Reviews {
+		if !strings.Contains(reviewTurns[i].Prompt, "git diff "+saved.ComparisonBase+" HEAD. Recorded HEAD: "+round.Revision+".") {
+			t.Fatalf("review %d prompt does not name its full diff and revision: %q", i, reviewTurns[i].Prompt)
+		}
+	}
+	for i, turn := range script.Turns(routes.Repair) {
+		if !strings.Contains(turn.Prompt, `Verification failures: ["false: `) {
+			t.Fatalf("repair %d prompt lacks the verification failure: %q", i, turn.Prompt)
+		}
 	}
 	repairs := sessionByRole(saved, "repair")
 	if len(repairs) != 1 || saved.RepairSession == nil || repairs[0].ID != *saved.RepairSession || repairs[0].Status != model.SessionCompleted {
@@ -196,6 +251,9 @@ func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
 	if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
 		t.Fatalf("no-progress outcome = %+v", saved)
 	}
+	if saved.Error == nil || !strings.Contains(*saved.Error, "Repairs made no progress") {
+		t.Fatalf("the block must name the no-progress limit: %q", optionalText(saved.Error))
+	}
 	if len(saved.Reviews) != 3 {
 		t.Fatalf("reviews = %+v; want 3 rounds ending on the repeated revision", saved.Reviews)
 	}
@@ -208,6 +266,129 @@ func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
 	assertUnpublished(t, fixture, saved)
 	assertAdmissions(t, fixture.state, 6, "executor + 3 reviewers + 2 repairs")
 	assertNoOpenClients(t, script)
+}
+
+// TestExecutionRepairPromptCarriesRoundEvidence: a repair turn is handed what
+// its round found. A clean review whose verification failed passes the
+// failing command with its output and no findings; a review with findings
+// skips verification and passes the findings as JSON with no failures.
+func TestExecutionRepairPromptCarriesRoundEvidence(t *testing.T) {
+	t.Run("verification failure", func(t *testing.T) {
+		fixture := newScriptedFixture(t)
+		// The output FAIL-42 does not appear in the command text itself.
+		failing := "echo FAIL-$((40+2)); false"
+		fixture.configure(t, func(cfg *config.Config) {
+			cfg.VerificationCommands = []string{failing}
+			cfg.MaxRepairRounds = 1
+		})
+		routes, script := fixture.routes, fixture.script
+		script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature.txt", Effect: writeFile("feature.txt", "draft\n")})
+		script.Answer(routes.Reviewer, cleanReview("Round one"), cleanReview("Round two"))
+		script.Queue(routes.Repair, runnertest.Reply{Answer: "Repaired", Effect: writeFile("feature.txt", "repaired\n")})
+		task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+		saveExecutionTask(t, fixture.planningFixture, task)
+
+		saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+		if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
+			t.Fatalf("failed verification outcome = %+v", saved)
+		}
+		turns := script.Turns(routes.Repair)
+		if len(turns) != 1 {
+			t.Fatalf("repair turns = %+v; want one", turns)
+		}
+		prompt := turns[0].Prompt
+		_, failures, found := strings.Cut(prompt, "Verification failures: ")
+		if !found || !strings.HasPrefix(failures, `["`+failing+": ") || !strings.Contains(failures, "FAIL-42") {
+			t.Fatalf("repair prompt lacks the failing command and its output: %q", prompt)
+		}
+		if !strings.Contains(prompt, "Findings: []. Verification failures: ") {
+			t.Fatalf("a clean review must hand repair an empty findings list: %q", prompt)
+		}
+		assertUnpublished(t, fixture, saved)
+		assertNoOpenClients(t, script)
+	})
+
+	t.Run("review findings", func(t *testing.T) {
+		fixture := newScriptedFixture(t)
+		fixture.configure(t, func(cfg *config.Config) {
+			cfg.VerificationCommands = []string{"test -f feature.txt"}
+			cfg.MaxRepairRounds = 1
+		})
+		routes, script := fixture.routes, fixture.script
+		finding := map[string]any{"title": "Handle the empty input", "file": "feature.txt:1", "detail": "The draft ignores empty input.", "priority": "P1"}
+		review := mustJSON(t, map[string]any{"completed": true, "summary": "One finding", "findings": []any{finding}})
+		script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature.txt", Effect: writeFile("feature.txt", "draft\n")})
+		script.Answer(routes.Reviewer, review, review)
+		script.Queue(routes.Repair, runnertest.Reply{Answer: "Repaired", Effect: writeFile("feature.txt", "repaired\n")})
+		task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+		saveExecutionTask(t, fixture.planningFixture, task)
+
+		saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+		if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
+			t.Fatalf("unresolved finding outcome = %+v", saved)
+		}
+		if len(saved.Reviews) != 2 || len(saved.Verification) != 0 {
+			t.Fatalf("a review with findings must skip verification: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
+		}
+		turns := script.Turns(routes.Repair)
+		if len(turns) != 1 {
+			t.Fatalf("repair turns = %+v; want one", turns)
+		}
+		want := `Findings: [{"title":"Handle the empty input","file":"feature.txt:1","detail":"The draft ignores empty input.","priority":"P1"}]. Verification failures: []`
+		if !strings.HasSuffix(turns[0].Prompt, want) {
+			t.Fatalf("repair prompt lacks the review findings: %q", turns[0].Prompt)
+		}
+		assertUnpublished(t, fixture, saved)
+		assertNoOpenClients(t, script)
+	})
+}
+
+// TestExecutionWithoutChangesBlocksBeforeReview: an executor that leaves no
+// change against the source revision, whether it commits nothing or only
+// commits that cancel out, blocks as verification_failed with an error that
+// says so, and no reviewer or repair turn is spent on it.
+func TestExecutionWithoutChangesBlocksBeforeReview(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		effect func(cwd string) error
+		want   string
+	}{
+		{"no commit", nil, "No changes were committed on top of the source revision"},
+		{"net-empty commit", func(cwd string) error {
+			command := exec.Command("git", "-c", "user.name=Executor", "-c", "user.email=executor@example.test",
+				"commit", "--allow-empty", "-m", "Nothing changed")
+			command.Dir = cwd
+			if output, err := command.CombinedOutput(); err != nil {
+				return fmt.Errorf("empty commit: %v: %s", err, output)
+			}
+			return nil
+		}, "The change set is empty against the source revision"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newScriptedFixture(t)
+			routes, script := fixture.routes, fixture.script
+			script.Queue(routes.Executor, runnertest.Reply{Answer: "Nothing needed changing", Effect: test.effect})
+			task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+			saveExecutionTask(t, fixture.planningFixture, task)
+
+			saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+			if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
+				t.Fatalf("unchanged outcome = %+v", saved)
+			}
+			if saved.Error == nil || !strings.Contains(*saved.Error, test.want) {
+				t.Fatalf("unchanged error = %q; want it to contain %q", optionalText(saved.Error), test.want)
+			}
+			if executors := sessionByRole(saved, "executor"); len(executors) != 1 || executors[0].Status != model.SessionCompleted {
+				t.Fatalf("executor session = %+v", executors)
+			}
+			if len(saved.Reviews) != 0 || len(script.Turns(routes.Reviewer)) != 0 || len(script.Turns(routes.Repair)) != 0 {
+				t.Fatalf("an unchanged task reached review or repair: %+v", saved.Reviews)
+			}
+			assertUnpublished(t, fixture, saved)
+			assertAdmissions(t, fixture.state, 1, "the executor turn only")
+			assertNoOpenClients(t, script)
+		})
+	}
 }
 
 // TestExecutionCancellationDuringTurn: the operator cancel reaches a running
@@ -237,9 +418,17 @@ func TestExecutionCancellationDuringTurn(t *testing.T) {
 	if marked, err := fixture.state.MarkerSet("cancel", task.ID); err != nil || !marked {
 		t.Fatalf("cancel marker = %v, %v", marked, err)
 	}
+	// The record names the operator cancel, not the runner error the
+	// interrupted turn happened to return; that cause stays in the events.
+	if saved.Error == nil || *saved.Error != "Cancelled by the operator" || saved.BlockedReason != nil {
+		t.Fatalf("cancelled task error = %q, reason = %v", optionalText(saved.Error), saved.BlockedReason)
+	}
 	executors := sessionByRole(saved, "executor")
-	if len(executors) != 1 || executors[0].Status != model.SessionFailed || strings.Contains(executors[0].Summary, "Never delivered") {
+	if len(executors) != 1 || executors[0].Status != model.SessionFailed || executors[0].Summary != "Cancelled by the operator" {
 		t.Fatalf("cancelled executor session = %+v", executors)
+	}
+	if !hasEvent(t, fixture.state, task.ID, "error", "context canceled") {
+		t.Fatal("the underlying cancellation cause was not recorded as an error event")
 	}
 	if len(saved.Reviews) != 0 || len(script.Turns(routes.Reviewer)) != 0 {
 		t.Fatalf("a cancelled task reached review: %+v", saved.Reviews)
@@ -379,15 +568,7 @@ func TestExecutionDeadlineCallbackPanicBlocks(t *testing.T) {
 	if len(saved.Sessions) != 1 || len(executors) != 1 || executors[0].Status != model.SessionFailed {
 		t.Fatalf("panic did not fail the running session: %+v", saved.Sessions)
 	}
-	events, err := fixture.state.Events(&task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recorded := false
-	for _, event := range events {
-		recorded = recorded || (event.Kind == "error" && strings.Contains(event.Message, "executor exploded"))
-	}
-	if !recorded {
+	if !hasEvent(t, fixture.state, task.ID, "error", "executor exploded") {
 		t.Fatal("panic did not record a supervisor error event")
 	}
 	assertNoOpenClients(t, script)
@@ -519,4 +700,269 @@ func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
 	}
 	assertAdmissions(t, fixture.state, 2, "resumed executor + reviewer")
 	assertNoOpenClients(t, script)
+}
+
+// advanceRemoteMain lands an external commit on the fixture remote's main,
+// as a maintainer merge would. It reports errors instead of failing the test
+// so it can run inside a scripted reply effect.
+func advanceRemoteMain(fixture *scriptedFixture) error {
+	remote := filepath.Join(fixture.root, "remote.git")
+	git := func(args ...string) (string, error) {
+		out, err := exec.Command("/usr/bin/git", append([]string{"--git-dir", remote}, args...)...).CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("git %v: %w: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	tree, err := git("rev-parse", "main^{tree}")
+	if err != nil {
+		return err
+	}
+	next, err := git("-c", "user.name=External", "-c", "user.email=fixture@example.com", "commit-tree", tree, "-p", "main", "-m", "External main change")
+	if err != nil {
+		return err
+	}
+	_, err = git("update-ref", "refs/heads/main", next)
+	return err
+}
+
+// existingPrTask is a follow-up task on the fixture's owned open PR #42.
+func existingPrTask(t *testing.T, fixture *scriptedFixture) model.Task {
+	t.Helper()
+	head := existingPrBranch(t, fixture.planningFixture)
+	task := executionTask(t, fixture.planningFixture, "octomus/existing")
+	task.Branch = "octomus/existing"
+	task.SourceRevision = head
+	number := uint64(42)
+	task.PRNumber = &number
+	url := "https://github.com/fixture/project/pull/42"
+	task.PRURL = &url
+	return task
+}
+
+// TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint: publication refuses
+// every task whose default branch moved, so an existing-PR task whose main
+// moved during execution blocks as a stale base before recording an output
+// checkpoint that could never publish, and keeps its cancel action.
+func TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	routes, script := fixture.routes, fixture.script
+	task := existingPrTask(t, fixture)
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: func(cwd string) error {
+		if err := writeFile("feature.txt", "fixed\n")(cwd); err != nil {
+			return err
+		}
+		return advanceRemoteMain(fixture)
+	}})
+	script.Answer(routes.Reviewer, cleanReview("Complete"))
+	saveExecutionTask(t, fixture.planningFixture, task)
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if !blockedAs(saved, model.BlockedReasonStaleBase) {
+		t.Fatalf("moved default branch outcome = %+v", saved)
+	}
+	if saved.OutputCommit != nil || len(publications(t, fixture.planningFixture)) != 0 {
+		t.Fatalf("an unpublishable checkpoint was recorded: %+v", saved)
+	}
+	if !slices.Contains(saved.AllowedActions(), "cancel") {
+		t.Fatalf("stale existing-PR task lost its cancel action: %v", saved.AllowedActions())
+	}
+	if len(saved.Reviews) != 1 || len(saved.Verification) == 0 {
+		t.Fatalf("the block must follow a clean, verified review: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
+	}
+	assertNoOpenClients(t, script)
+}
+
+// TestExecutionExistingPrComparisonBaseSurvivesMainMovingAfterClone: an
+// existing-PR task compares against the merge base of its verified default
+// revision. Main moving while the workspace is cloned must not replace that
+// base with a commit the clone never fetched; the move surfaces as a stale
+// base before the output checkpoint instead.
+func TestExecutionExistingPrComparisonBaseSurvivesMainMovingAfterClone(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	routes, script := fixture.routes, fixture.script
+	task := existingPrTask(t, fixture)
+	ws := filepath.Join(fixture.dataDir, "tasks", task.ID, "workspace")
+	moved := filepath.Join(fixture.root, "main-moved")
+	// Every remote read of the configured checkout goes through this
+	// upload-pack. The first one after the task clone exists finds main
+	// already moved, as if a maintainer merged while the clone ran.
+	uploadPack := filepath.Join(fixture.root, "moving-upload-pack")
+	remote := filepath.Join(fixture.root, "remote.git")
+	body := fmt.Sprintf(`#!/bin/sh
+if [ -d %[1]q ] && [ ! -e %[2]q ]; then
+  touch %[2]q
+  tree=$(/usr/bin/git --git-dir %[3]q rev-parse 'main^{tree}') || exit 1
+  next=$(/usr/bin/git --git-dir %[3]q -c user.name=External -c user.email=fixture@example.com commit-tree "$tree" -p main -m 'External main change') || exit 1
+  /usr/bin/git --git-dir %[3]q update-ref refs/heads/main "$next" || exit 1
+fi
+exec git-upload-pack "$@"
+`, filepath.Join(ws, ".git"), moved, remote)
+	if err := os.WriteFile(uploadPack, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command(t, fixture.repo, "/usr/bin/git", "config", "remote.origin.uploadpack", uploadPack)
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "fixed\n")})
+	script.Answer(routes.Reviewer, cleanReview("Complete"))
+	saveExecutionTask(t, fixture.planningFixture, task)
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if _, err := os.Stat(moved); err != nil {
+		t.Fatalf("main never moved after the clone: %v", err)
+	}
+	if !blockedAs(saved, model.BlockedReasonStaleBase) || saved.OutputCommit != nil {
+		t.Fatalf("main moving after the clone = %+v; want a stale base before the checkpoint", saved)
+	}
+	out, err := exec.Command("/usr/bin/git", "-C", saved.Workspace, "merge-base", task.DefaultRevision, task.SourceRevision).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base := strings.TrimSpace(string(out)); saved.ComparisonBase != base {
+		t.Fatalf("comparison base = %q; want the merge base %s of the verified default revision", saved.ComparisonBase, base)
+	}
+	if len(saved.Reviews) != 1 || saved.Reviews[0].ComparisonBase != saved.ComparisonBase {
+		t.Fatalf("review rounds must record the comparison base: %+v", saved.Reviews)
+	}
+	if executors := sessionByRole(saved, "executor"); len(executors) != 1 || executors[0].Status != model.SessionCompleted {
+		t.Fatalf("initialization did not complete before the executor: %+v", executors)
+	}
+	assertNoOpenClients(t, script)
+}
+
+// taskEventKinds lists the kinds of a task's recorded events.
+func taskEventKinds(t *testing.T, state *store.Store, id string) map[string]int {
+	t.Helper()
+	events, err := state.Events(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]int{}
+	for _, event := range events {
+		kinds[event.Kind]++
+	}
+	return kinds
+}
+
+// optionalText renders an optional saved string for a failure message.
+func optionalText(value *string) string {
+	if value == nil {
+		return "<nil>"
+	}
+	return *value
+}
+
+// hasEvent reports whether an entity recorded an event of kind whose message
+// contains text.
+func hasEvent(t *testing.T, state *store.Store, id, kind, text string) bool {
+	t.Helper()
+	events, err := state.Events(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == kind && strings.Contains(event.Message, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestExecutionShutdownLeavesInitializedTaskForRecovery: a graceful stop
+// during an executor turn is not a task outcome. The initialized task keeps
+// its active record and running session, as after a crash, so restart
+// recovery requeues it and the executor thread resumes to deliver once.
+func TestExecutionShutdownLeavesInitializedTaskForRecovery(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	routes, script := fixture.routes, fixture.script
+	gate := runnertest.NewGate()
+	t.Cleanup(gate.Release)
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Never delivered", Gate: gate})
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	saveExecutionTask(t, fixture.planningFixture, task)
+	app := fixture.newApp(t)
+
+	tickUntil(t, app, gate.Entered(), "held executor turn")
+	app.Shutdown()
+	stopped := loadTask(t, fixture.state, task.ID)
+	if stopped.Status != model.StatusExecuting || stopped.ExecutionSession == nil || stopped.Error != nil || stopped.BlockedReason != nil {
+		t.Fatalf("graceful stop recorded a task outcome: %+v", stopped)
+	}
+	thread := *stopped.ExecutionSession
+	if executors := sessionByRole(stopped, "executor"); len(executors) != 1 || executors[0].Status != model.SessionRunning {
+		t.Fatalf("graceful stop finalized the executor session: %+v", executors)
+	}
+	if kinds := taskEventKinds(t, fixture.state, task.ID); kinds["interrupted"] != 1 || kinds["error"] != 0 {
+		t.Fatalf("graceful stop events = %v; want one interruption and no error", kinds)
+	}
+	if marked, _ := fixture.state.MarkerSet("cancel", task.ID); marked {
+		t.Fatal("a graceful stop must not be recorded as an operator cancellation")
+	}
+	assertNoOpenClients(t, script)
+
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "fixed\n")})
+	script.Answer(routes.Reviewer, cleanReview("Complete"))
+	restarted := New(fixture.state, fixture.dataDir, WithRunnerConnector(script.Connector()))
+	t.Cleanup(restarted.Shutdown)
+	restarted.runtime.lastRetention = time.Now()
+	restarted.runtime.lastObserve = time.Now()
+	if err := restarted.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := loadTask(t, fixture.state, task.ID)
+	if recovered.Status != model.StatusQueued || recovered.Attempts != 1 || recovered.BlockedReason != nil {
+		t.Fatalf("interrupted task recovery = %+v", recovered)
+	}
+	if executors := sessionByRole(recovered, "executor"); len(executors) != 1 || executors[0].Status != model.SessionInterrupted {
+		t.Fatalf("running session not interrupted by recovery: %+v", executors)
+	}
+	if err := restarted.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	saved := driveTask(t, fixture.planningFixture, restarted, task.ID)
+	if saved.Status != model.StatusPublished || saved.ExecutionSession == nil || *saved.ExecutionSession != thread {
+		t.Fatalf("recovered delivery = %+v", saved)
+	}
+	starts := script.Starts(routes.Executor)
+	if len(starts) != 2 || starts[0].Resume != nil || starts[1].Resume == nil || *starts[1].Resume != thread {
+		t.Fatalf("executor starts = %+v; want the interrupted thread resumed", starts)
+	}
+	if entries := publications(t, fixture.planningFixture); len(entries) != 1 || entries[0]["action"] != "create" {
+		t.Fatalf("publications = %+v; want exactly one create", entries)
+	}
+	assertAdmissions(t, fixture.state, 3, "interrupted executor + resumed executor + reviewer")
+	assertNoOpenClients(t, script)
+}
+
+// TestExecutionShutdownBeforeInitializationStaysRetryable: a graceful stop
+// while the remote preflight of a never-initialized task runs has no
+// workspace for recovery to resume, so the task is blocked and keeps its
+// retry action; restart recovery leaves that block alone.
+func TestExecutionShutdownBeforeInitializationStaysRetryable(t *testing.T) {
+	fixture := newScriptedFixture(t)
+	heldUploadPack(t, fixture.planningFixture)
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	task.Status = model.StatusExecuting
+	saveExecutionTask(t, fixture.planningFixture, task)
+	app := fixture.pausedApp(t)
+	app.runTask(task)
+	waitForPreflights(t, fixture.planningFixture, 1)
+
+	app.Shutdown()
+	stopped := loadTask(t, fixture.state, task.ID)
+	if stopped.Status != model.StatusBlocked || stopped.ExecutionSession != nil || stopped.Workspace != "" {
+		t.Fatalf("stop before initialization = %+v", stopped)
+	}
+	if !slices.Contains(stopped.AllowedActions(), "retry") {
+		t.Fatalf("stop before initialization is not retryable: %v (%+v)", stopped.AllowedActions(), stopped)
+	}
+	restarted := New(fixture.state, fixture.dataDir, WithRunnerConnector(fixture.script.Connector()))
+	t.Cleanup(restarted.Shutdown)
+	if err := restarted.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := loadTask(t, fixture.state, task.ID); !sameRecordJSON(&recovered, &stopped) {
+		t.Fatalf("recovery changed a retryable block: %+v", recovered)
+	}
+	assertAdmissions(t, fixture.state, 0, "no work was admitted before the preflight")
+	assertNoOpenClients(t, fixture.script)
 }

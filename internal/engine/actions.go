@@ -13,7 +13,6 @@ import (
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -236,8 +235,8 @@ func sameRecordJSON(a, b *model.Task) bool {
 	return string(left) == string(right)
 }
 
-// recordTaskError mirrors record_error: classify the reason and preserve the
-// bounded chain on the durable task without changing its status.
+// recordTaskError classifies err into the task's blocked reason and stores its
+// redacted message as the task error, without changing the task's status.
 func recordTaskError(task *model.Task, err error) {
 	reason := model.BlockedReasonFromError(err)
 	task.BlockedReason = &reason
@@ -245,9 +244,11 @@ func recordTaskError(task *model.Task, err error) {
 	task.Error = &message
 }
 
-// reconcileLocked is reconcile_task with the caller's gate already held: it
-// releases the gate for remote work and owns its operator event so a
-// disconnected caller cannot skip it. Callers must hold a.gate.
+// reconcileLocked runs the reconcile action. Without a recorded output it
+// rechecks the task's remote prerequisites and records the result; with one it
+// publishes that output under the task deadline. Callers hold a.gate on entry;
+// reconcileLocked releases it around remote work and before it returns, and
+// records the operator event itself so a disconnected caller cannot skip it.
 func (a *App) reconcileLocked(id string, task *model.Task) error {
 	a.runtimeMu.Lock()
 	baseline := a.runtime.baseline != nil
@@ -308,25 +309,25 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	a.gate.Unlock()
 
 	var published model.PullRequest
-	var publishErr error
 	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
 	// Uses the normal task deadline cleanup, so a stalled publication stops its
-	// owned process groups before it is reported.
-	result := process.WithDeadline(workCtx, cancel, limit, func() error {
+	// owned process groups before it is reported. The join keeps runtime
+	// ownership until Publish has returned, so no retry or dispatch can start
+	// a second publication beside one that outlived the cleanup grace.
+	result, publishErr := runJoined(workCtx, cancel, limit, "Publication reconciliation panicked", func() error {
 		p, err := gitops.Publish(workCtx, *task)
 		if err == nil {
 			published = p
 		}
 		return err
 	})
-	if result.Expired {
+	// A publication that completed after the deadline fired is delivered.
+	if publishErr != nil && result.Expired {
 		if result.AlreadyCancelled {
 			publishErr = fmt.Errorf("Publication reconciliation was interrupted; reconcile again: %w", model.BlockedReasonPublicationUncertain)
 		} else {
 			publishErr = model.BlockedReasonTimeout
 		}
-	} else {
-		publishErr = result.Output
 	}
 
 	a.gate.Lock()

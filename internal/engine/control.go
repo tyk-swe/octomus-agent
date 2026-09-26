@@ -113,15 +113,29 @@ func (a *App) RunOnce() error {
 	if control.Mode != model.OperatingModePaused {
 		return ErrNotPaused
 	}
-	capacity, started, err := a.Store.StartBatchIfAffordable(&control, time.Now())
-	if err != nil {
+	if err := a.startRunOnceBatch(&control); err != nil {
 		return err
-	}
-	if !started {
-		return capacity.EnsureAvailable()
 	}
 	a.notify()
 	return a.Store.Event("system", "operator", "Run once started")
+}
+
+// startRunOnceBatch starts a run-once batch from the expected control record
+// in one transaction with planning affordability. The store refuses both an
+// unaffordable pass and a control record that changed since the caller read
+// it; the second is a conflict, never a batch reported as started.
+func (a *App) startRunOnceBatch(control *model.Control) error {
+	capacity, started, err := a.Store.StartBatchIfAffordable(control, time.Now())
+	if err != nil {
+		return err
+	}
+	if started {
+		return nil
+	}
+	if err := capacity.EnsureAvailable(); err != nil {
+		return err
+	}
+	return conflictError("Control state changed; try again")
 }
 
 // StartAudit validates remote and route availability outside gate, then

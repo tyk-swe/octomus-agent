@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -96,23 +97,44 @@ func TestIdleDelayMatchesDurableBackoffContract(t *testing.T) {
 	}
 }
 
-func TestPausePreservesDurableErrorEvidence(t *testing.T) {
-	state := testStore(t)
-	cfg := testConfig(t.TempDir())
-	control := model.DefaultControl()
-	control.SetMode(model.OperatingModeContinuous)
-	message := "recorded planning failure"
-	control.Error = &message
-	saveSettings(t, state, cfg, control)
-	app := New(state, t.TempDir())
-	t.Cleanup(app.Shutdown)
+// controlEntry is one way an operator reaches a control: the direct method
+// or the ControlAction the HTTP API calls.
+type controlEntry struct {
+	name string
+	run  func(*App) error
+}
 
-	if err := app.Pause(); err != nil {
-		t.Fatal(err)
+func controlEntries(direct func(*App) error, action string) []controlEntry {
+	return []controlEntry{
+		{"direct", direct},
+		{"control action", func(a *App) error {
+			_, err := a.ControlAction(action)
+			return err
+		}},
 	}
-	paused, err := app.Control()
-	if err != nil || paused.Mode != model.OperatingModePaused || paused.Error == nil || *paused.Error != message {
-		t.Fatalf("pause did not preserve durable error evidence: %+v, %v", paused, err)
+}
+
+func TestPausePreservesDurableErrorEvidence(t *testing.T) {
+	for _, entry := range controlEntries((*App).Pause, "pause") {
+		t.Run(entry.name, func(t *testing.T) {
+			state := testStore(t)
+			cfg := testConfig(t.TempDir())
+			control := model.DefaultControl()
+			control.SetMode(model.OperatingModeContinuous)
+			message := "recorded planning failure"
+			control.Error = &message
+			saveSettings(t, state, cfg, control)
+			app := New(state, t.TempDir())
+			t.Cleanup(app.Shutdown)
+
+			if err := entry.run(app); err != nil {
+				t.Fatal(err)
+			}
+			paused, err := app.Control()
+			if err != nil || paused.Mode != model.OperatingModePaused || paused.Error == nil || *paused.Error != message {
+				t.Fatalf("pause did not preserve durable error evidence: %+v, %v", paused, err)
+			}
+		})
 	}
 }
 
@@ -209,64 +231,117 @@ func TestPlanningAdmissionBudgetIsAtomicUnderConcurrency(t *testing.T) {
 }
 
 func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
+	for _, entry := range controlEntries((*App).RunOnce, "cycle") {
+		t.Run(entry.name, func(t *testing.T) {
+			state := testStore(t)
+			cfg := testConfig(t.TempDir())
+			cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired() - 1
+			task := queuedTask(cfg, "original", cfg.DefaultBranch, "octomus/original")
+			if err := state.Put("task", task.ID, task); err != nil {
+				t.Fatal(err)
+			}
+			saveSettings(t, state, cfg, model.DefaultControl())
+			a := New(state, t.TempDir())
+			t.Cleanup(a.Shutdown)
+			if err := entry.run(a); err == nil || !errors.Is(err, model.BlockedReasonBudgetExhausted) {
+				t.Fatalf("unaffordable run once = %v; want a budget refusal", err)
+			}
+			control, err := a.Control()
+			if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil {
+				t.Fatalf("unaffordable request changed control: %+v, %v", control, err)
+			}
+			system := "system"
+			if events, err := state.Events(&system); err != nil || len(events) != 0 {
+				t.Fatalf("unaffordable request recorded events: %+v, %v", events, err)
+			}
+			unchanged := loadTask(t, state, task.ID)
+			if unchanged.RunID != nil {
+				t.Fatalf("unaffordable request tagged task with run %q", *unchanged.RunID)
+			}
+
+			cfg.MaxSessionsPerDay++
+			if err := state.Put("settings", "config", cfg); err != nil {
+				t.Fatal(err)
+			}
+			if err := entry.run(a); err != nil {
+				t.Fatalf("affordable run once failed: %v", err)
+			}
+			started, err := a.Control()
+			if err != nil || started.Batch == nil {
+				t.Fatalf("affordable run once did not persist a batch: %+v, %v", started, err)
+			}
+			member := loadTask(t, state, task.ID)
+			if member.RunID == nil || *member.RunID != started.Batch.ID {
+				t.Fatalf("original queued task is not a batch member: %+v", member.RunID)
+			}
+			later := queuedTask(cfg, "later", cfg.DefaultBranch, "octomus/later")
+			if err := state.Put("task", later.ID, later); err != nil {
+				t.Fatal(err)
+			}
+			laterSaved := loadTask(t, state, later.ID)
+			if laterSaved.RunID != nil {
+				t.Fatal("task queued after RunOnce start joined the batch")
+			}
+
+			member.Status = model.StatusBlocked
+			if err := state.Put("task", member.ID, member); err != nil {
+				t.Fatal(err)
+			}
+			member.Status = model.StatusQueued
+			member.RunID = nil
+			if err := state.Put("task", member.ID, member); err != nil {
+				t.Fatal(err)
+			}
+			pending, unresolved, err := state.BatchCounts(started.Batch.ID)
+			if err != nil || pending != 0 || unresolved != 1 {
+				t.Fatalf("late retry erased batch failure: pending=%d unresolved=%d, %v", pending, unresolved, err)
+			}
+		})
+	}
+}
+
+// TestRunOnceStaleControlIsAConflict: the store refuses to start a batch from
+// a control record that changed after the caller read it. While planning is
+// still affordable, that refusal must reach the operator as a conflict rather
+// than as a run once that reports success without starting, and it must not
+// tag queued work or rewrite the live control.
+func TestRunOnceStaleControlIsAConflict(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
-	cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired() - 1
-	task := queuedTask(cfg, "original", cfg.DefaultBranch, "octomus/original")
+	task := queuedTask(cfg, "member", cfg.DefaultBranch, "octomus/member")
 	if err := state.Put("task", task.ID, task); err != nil {
 		t.Fatal(err)
 	}
 	saveSettings(t, state, cfg, model.DefaultControl())
 	a := New(state, t.TempDir())
 	t.Cleanup(a.Shutdown)
-	if err := a.RunOnce(); err == nil {
-		t.Fatal("unaffordable run once succeeded")
+	if capacity, err := state.PlanningCapacity(); err != nil || !capacity.Available() {
+		t.Fatalf("the scenario needs an affordable planning pass: %+v, %v", capacity, err)
 	}
-	control, err := a.Control()
-	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil {
-		t.Fatalf("unaffordable request changed control: %+v, %v", control, err)
-	}
-	unchanged, _ := store.Get[model.Task](state, "task", task.ID)
-	if unchanged.RunID != nil {
-		t.Fatalf("unaffordable request tagged task with run %q", *unchanged.RunID)
-	}
-
-	cfg.MaxSessionsPerDay++
-	if err := state.Put("settings", "config", cfg); err != nil {
+	stale, err := a.Control()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.RunOnce(); err != nil {
-		t.Fatalf("affordable run once failed: %v", err)
-	}
-	started, err := a.Control()
-	if err != nil || started.Batch == nil {
-		t.Fatalf("affordable run once did not persist a batch: %+v, %v", started, err)
-	}
-	member, _ := store.Get[model.Task](state, "task", task.ID)
-	if member.RunID == nil || *member.RunID != started.Batch.ID {
-		t.Fatalf("original queued task is not a batch member: %+v", member.RunID)
-	}
-	later := queuedTask(cfg, "later", cfg.DefaultBranch, "octomus/later")
-	if err := state.Put("task", later.ID, later); err != nil {
+	// A write that did not pass through the gate changes the live record
+	// after the request read it.
+	live := stale.Clone()
+	message := "Recorded while run once was deciding"
+	live.Error = &message
+	if err := state.SaveControl(live); err != nil {
 		t.Fatal(err)
 	}
-	laterSaved, _ := store.Get[model.Task](state, "task", later.ID)
-	if laterSaved.RunID != nil {
-		t.Fatal("task queued after RunOnce start joined the batch")
+	err = a.startRunOnceBatch(&stale)
+	if err == nil || !IsActionConflict(err) || model.BlockedReasonFromError(err) != model.BlockedReasonUnknown {
+		t.Fatalf("stale control start = %v; want a plain conflict", err)
 	}
-
-	member.Status = model.StatusBlocked
-	if err := state.Put("task", member.ID, *member); err != nil {
-		t.Fatal(err)
+	if stale.Batch != nil || stale.Mode != model.OperatingModePaused {
+		t.Fatalf("refused start rewrote the caller's control: %+v", stale)
 	}
-	member.Status = model.StatusQueued
-	member.RunID = nil
-	if err := state.Put("task", member.ID, *member); err != nil {
-		t.Fatal(err)
+	if stored, err := a.Control(); err != nil || !controlsEqual(stored, live) {
+		t.Fatalf("refused start changed the live control: %+v, %v", stored, err)
 	}
-	pending, unresolved, err := state.BatchCounts(started.Batch.ID)
-	if err != nil || pending != 0 || unresolved != 1 {
-		t.Fatalf("late retry erased batch failure: pending=%d unresolved=%d, %v", pending, unresolved, err)
+	if unchanged := loadTask(t, state, task.ID); unchanged.RunID != nil {
+		t.Fatalf("refused start tagged queued work: %+v", unchanged)
 	}
 }
 
@@ -459,9 +534,67 @@ func TestRecoverySeedsOnlyResumableAndCheckpointedPrReservations(t *testing.T) {
 	if !got[initialized.ID] || !got[unresolvedCheckpoint.ID] || !got[resumableCheckpoint.ID] || got[invalidQueued.ID] || got[doomedActive.ID] || got[cancelledCheckpoint.ID] {
 		t.Fatalf("unexpected recovery reservations: %+v", got)
 	}
-	recovered, err := store.Get[model.Task](state, "task", resumableCheckpoint.ID)
-	if err != nil || recovered == nil || recovered.Status != model.StatusQueued || recovered.Attempts != 1 || recovered.Sessions[0].Status != model.SessionInterrupted {
-		t.Fatalf("checkpoint recovery lost resumable evidence: %+v, %v", recovered, err)
+	recovered := loadTask(t, state, resumableCheckpoint.ID)
+	if recovered.Status != model.StatusQueued || recovered.Attempts != 1 || recovered.Sessions[0].Status != model.SessionInterrupted {
+		t.Fatalf("checkpoint recovery lost resumable evidence: %+v", recovered)
+	}
+}
+
+// TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget: an interrupted
+// publication whose retry budget is spent still holds reviewed and verified
+// output. Recovery blocks it for reconciliation, which publishes without
+// another attempt or model turn, instead of as a retry limit whose only retry
+// is refused. Work without a checkpoint keeps the retry limit.
+func TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget(t *testing.T) {
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	session := "execution-session"
+	commit := "output-commit"
+	exhausted := func(id string, status model.Status, output *string) model.Task {
+		task := queuedTask(cfg, id, cfg.DefaultBranch, cfg.BranchPrefix+id)
+		task.Status = status
+		task.OutputCommit = output
+		task.ExecutionSession = &session
+		task.Workspace = filepath.Join(t.TempDir(), id)
+		task.Attempts = cfg.MaxRetries
+		task.Sessions = []model.Session{model.NewSession("running", "executor", task.Route)}
+		if err := os.MkdirAll(filepath.Join(task.Workspace, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Put("task", task.ID, task); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	checkpoint := exhausted("publishing-checkpoint", model.StatusPublishing, &commit)
+	uncommitted := exhausted("reviewing-without-checkpoint", model.StatusReviewing, nil)
+
+	a := New(state, t.TempDir())
+	t.Cleanup(a.Shutdown)
+	if err := a.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := loadTask(t, state, checkpoint.ID)
+	if !blockedAs(recovered, model.BlockedReasonPublicationUncertain) || recovered.Attempts != cfg.MaxRetries ||
+		recovered.OutputCommit == nil || *recovered.OutputCommit != commit || recovered.Sessions[0].Status != model.SessionInterrupted {
+		t.Fatalf("exhausted checkpoint recovery = %+v", recovered)
+	}
+	if actions := recovered.AllowedActions(); !slices.Contains(actions, "reconcile") || slices.Contains(actions, "retry") {
+		t.Fatalf("exhausted checkpoint actions = %v; want reconcile instead of retry", actions)
+	}
+	if recovered.Error == nil || !strings.Contains(*recovered.Error, "Reconcile publication") {
+		t.Fatalf("exhausted checkpoint must name its remedy: %v", recovered.Error)
+	}
+	reservations, err := state.PrReservations(cfg.GitHubRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(reservations, func(r store.PrReservation) bool { return r.TaskID == checkpoint.ID }) {
+		t.Fatalf("exhausted checkpoint lost its PR reservation: %+v", reservations)
+	}
+	if other := loadTask(t, state, uncommitted.ID); !blockedAs(other, model.BlockedReasonRetryLimit) || other.Attempts != cfg.MaxRetries {
+		t.Fatalf("exhausted work without a checkpoint = %+v; want the retry limit", other)
 	}
 }
 
@@ -574,11 +707,7 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 	if err := a.RunOnce(); err != nil {
 		t.Fatal(err)
 	}
-	saved, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || saved == nil {
-		t.Fatal(err)
-	}
-	task = *saved
+	task = loadTask(t, state, task.ID)
 	task.Proposal.Dependencies = []string{"missing"}
 	if err := state.Put("task", task.ID, task); err != nil {
 		t.Fatal(err)
@@ -610,9 +739,8 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 	if err != nil || len(cycles) != 0 {
 		t.Fatalf("failed drain created a planning cycle: %+v, %v", cycles, err)
 	}
-	blocked, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || blocked == nil || blocked.Status != model.StatusBlocked {
-		t.Fatalf("invalid draining task was not durably blocked: %+v, %v", blocked, err)
+	if blocked := loadTask(t, state, task.ID); blocked.Status != model.StatusBlocked {
+		t.Fatalf("invalid draining task was not durably blocked: %+v", blocked)
 	}
 }
 
@@ -830,10 +958,7 @@ func TestRunnerExitBlocksStillActiveTask(t *testing.T) {
 	a.runTask(task)
 	a.wg.Wait()
 
-	saved, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || saved == nil {
-		t.Fatalf("reload task: %+v, %v", saved, err)
-	}
+	saved := loadTask(t, state, task.ID)
 	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonUnknown {
 		t.Fatalf("runner exit did not block active task: %+v", saved)
 	}
@@ -886,9 +1011,8 @@ func TestSchedulerWaitsForExecutionSlotBeforeRefreshingCapacity(t *testing.T) {
 	if refreshing || called {
 		t.Fatalf("capacity refresh or execution started without a free slot: refreshing=%t called=%t", refreshing, called)
 	}
-	saved, err := store.Get[model.Task](state, "task", queued.ID)
-	if err != nil || saved.Status != model.StatusQueued {
-		t.Fatalf("queued work changed while execution was full: %+v, %v", saved, err)
+	if saved := loadTask(t, state, queued.ID); saved.Status != model.StatusQueued {
+		t.Fatalf("queued work changed while execution was full: %+v", saved)
 	}
 }
 
@@ -1081,13 +1205,14 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 	if data, err := os.ReadFile(filepath.Join(external, "evidence.txt")); err != nil || string(data) != "outside" {
 		t.Fatalf("symlink cleanup escaped owned root: %q, %v", data, err)
 	}
-	saved, err := store.Get[model.Task](state, "task", published.ID)
-	if err != nil || saved == nil || saved.Lifecycle.DiscardedAt != nil {
-		t.Fatalf("rejected cleanup was recorded as successful: %+v, %v", saved, err)
+	if saved := loadTask(t, state, published.ID); saved.Lifecycle.DiscardedAt != nil {
+		t.Fatalf("rejected cleanup was recorded as successful: %+v", saved)
 	}
 }
 
-// duplicates regardless of wording.
+// TestSameCycleProposalsSharingAProblemKeyAreDuplicates: accepted proposals in
+// one cycle that share a problem key are duplicates regardless of wording,
+// while distinct problem keys are accepted together.
 func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	grounding := model.Grounding{Revision: "rev"}
@@ -1106,8 +1231,9 @@ func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	}
 }
 
-// order, rejects unowned and ambiguous matches, and never binds the default
-// branch as a PR.
+// TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder: target resolution binds
+// a branch's owned PR regardless of listing order, rejects unowned and
+// ambiguous matches, and never binds the default branch as a PR.
 func TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	fork := ownedPR("octomus/fix")
