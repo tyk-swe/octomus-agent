@@ -88,3 +88,26 @@ func TestStructuredResultErrorsNameTheField(t *testing.T) {
 		})
 	}
 }
+
+// A schema this package cannot check refuses every answer instead of passing
+// it, also below the root.
+func TestUnsupportedSchemasRefuseEveryAnswer(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		value  any
+		schema Schema
+		want   string
+	}{
+		{"number", 1.0, Schema{"type": "number"}, "Unsupported structured result schema"},
+		{"no type", "x", Schema{}, "Unsupported structured result schema"},
+		{"nested number", map[string]any{"n": 1.0}, Object(Schema{"n": Schema{"type": "number"}}), "Unsupported structured result schema"},
+		{"array of numbers", []any{1.0}, Array(Schema{"type": "number"}), "Unsupported structured result schema"},
+		{"object without properties", map[string]any{}, Schema{"type": "object"}, "Invalid object schema"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := Validate(test.value, test.schema); err == nil || err.Error() != test.want {
+				t.Fatalf("Validate() = %v; want %q", err, test.want)
+			}
+		})
+	}
+}
