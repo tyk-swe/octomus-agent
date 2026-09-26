@@ -113,6 +113,8 @@
     commands = view.config.verification_commands.join('\n');
     baselineCommands = commands;
     replaced = {};
+    // Every caller passes a fresh server view, so an earlier load failure is resolved.
+    loadError = '';
   }
   // clearPath drops one display-transformed value so only deliberately supplied
   // text is ever sent back; hidden originals are never combined into a replacement.

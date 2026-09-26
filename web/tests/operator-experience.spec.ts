@@ -587,6 +587,34 @@ test('failed configuration loads retry, failed saves retain exact drafts, and su
   await expect(commands).toHaveValue('fixture new test\nfixture new build');
 });
 
+test('a successful save clears an earlier failed configuration refresh', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  await login(page);
+  await navigate('Configuration');
+  const branch = page.getByLabel('Default branch', { exact: true });
+  await expect(branch).toHaveValue('fixture-main');
+  state.failLoad = true;
+  await navigate('Overview');
+  await navigate('Configuration');
+  const stale = page.getByText(/Could not refresh saved configuration/);
+  await expect(stale).toBeVisible();
+  await expect(branch).toHaveValue('fixture-main');
+  state.failLoad = false;
+  await branch.fill('saved-after-failure');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  // The form now shows the service's fresh canonical view, not the last loaded values.
+  await expect(stale).toHaveCount(0);
+  await expect(branch).toHaveValue('saved-after-failure');
+  expect(state.writes.map((write) => write.config)).toEqual([
+    { default_branch: 'saved-after-failure' }
+  ]);
+});
+
 test('saved PR maintenance thresholds of 0 are valid and never block saving other settings', async ({
   page,
   isMobile
