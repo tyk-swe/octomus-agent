@@ -308,12 +308,32 @@ func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 	if !authorized {
 		return model.BlockedReasonStaleBase
 	}
-	// A task that already started work must still hold the workspace it recorded;
-	// one that never started is retried into a fresh workspace.
+	// A task that started work must still hold its initialized workspace; one
+	// whose initialization was recorded but never started a session may resume
+	// only in a fully initialized clone at its source revision.
 	if task.ExecutionSession != nil && !workspace.Initialized(*task) {
 		return model.BlockedReasonWorkspaceInvalid
 	}
+	if task.ExecutionSession == nil && task.Workspace != "" {
+		return a.validateRecordedWorkspace(ctx, task)
+	}
 	return nil
+}
+
+// validateRecordedWorkspace accepts a recorded workspace only when it is the
+// task's own managed clone, initialization recorded its comparison base, and
+// the clone sits cleanly at the task's source revision. Partial clones and
+// edits made before a session was recorded are preserved for operator
+// inspection, never reused.
+func (a *App) validateRecordedWorkspace(ctx context.Context, task *model.Task) error {
+	ws := a.taskWorkspace(task.ID)
+	if !samePath(task.Workspace, ws) || task.ComparisonBase == "" {
+		return model.BlockedReasonWorkspaceInvalid
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+		return model.BlockedReasonWorkspaceInvalid
+	}
+	return ensureWorkspaceAt(ctx, task.ExecutionConfig(), ws, task.SourceRevision)
 }
 
 // initializeTask prepares a task's workspace and reserves its first executor
@@ -390,14 +410,14 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return model.BlockedReasonStaleBase
 		}
 	}
-	if err := a.admit(task.CycleID, task, "executor", task.Route); err != nil {
-		return err
-	}
 	if _, err := uuid.Parse(task.ID); err != nil {
 		return fmt.Errorf("Invalid task workspace identity: %w", err)
 	}
-	ws := a.taskWorkspace(task.ID)
+	if err := a.admit(task.CycleID, task, "executor", task.Route); err != nil {
+		return err
+	}
 	if task.Workspace == "" {
+		ws := a.taskWorkspace(task.ID)
 		task.Workspace = ws
 		if err := a.saveTask(task); err != nil {
 			return err
@@ -416,23 +436,11 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 		} else {
 			task.ComparisonBase = task.SourceRevision
 		}
-		if err := a.saveTask(task); err != nil {
-			return err
-		}
-	} else {
-		// A failed runner start can be retried in a fully initialized clone. Partial clones
-		// and edits made before a session was recorded are preserved for operator inspection.
-		if !samePath(task.Workspace, ws) || task.ComparisonBase == "" {
-			return model.BlockedReasonWorkspaceInvalid
-		}
-		if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
-			return model.BlockedReasonWorkspaceInvalid
-		}
-		if err := ensureWorkspaceAt(ctx, cfg, ws, task.SourceRevision); err != nil {
-			return err
-		}
+		return a.saveTask(task)
 	}
-	return nil
+	// A failed runner start can be retried in a fully initialized clone, at
+	// the source revision after any dependency advance above.
+	return a.validateRecordedWorkspace(ctx, task)
 }
 
 func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.Runners, admissionReserved bool) error {

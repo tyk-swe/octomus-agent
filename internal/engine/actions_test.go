@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -442,4 +443,96 @@ func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
 	if saved.Attempts != 0 {
 		t.Fatalf("stale retry consumed an attempt: %+v", saved)
 	}
+}
+
+// TestRetryChecksARecordedWorkspaceBeforeQueuing: a task whose initialization
+// recorded a workspace but never started a session may resume only in a fully
+// initialized, clean clone at its source revision. Retry refuses anything else
+// up front, before any runner start or daily admission, and reconcile records
+// the same verdict instead of reporting restored prerequisites.
+func TestRetryChecksARecordedWorkspaceBeforeQueuing(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		action string
+		// prepare lays out the recorded workspace and returns the comparison
+		// base initialization recorded, "" when it never got that far.
+		prepare func(t *testing.T, fixture *scriptedFixture, task model.Task, ws string) string
+		queued  bool
+	}{
+		{"initialized clone", "retry", cloneAtSource, true},
+		{"partial clone", "retry", func(t *testing.T, _ *scriptedFixture, _ model.Task, ws string) string {
+			if err := os.MkdirAll(ws, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return ""
+		}, false},
+		{"edited clone", "retry", func(t *testing.T, fixture *scriptedFixture, task model.Task, ws string) string {
+			base := cloneAtSource(t, fixture, task, ws)
+			if err := os.WriteFile(filepath.Join(ws, "edit.txt"), []byte("before any session\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return base
+		}, false},
+		{"partial clone reconcile", "reconcile", func(t *testing.T, _ *scriptedFixture, _ model.Task, ws string) string {
+			if err := os.MkdirAll(ws, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return ""
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newScriptedFixture(t)
+			task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+			task.Status = model.StatusBlocked
+			reason := model.BlockedReasonUnknown
+			if test.action == "reconcile" {
+				reason = model.BlockedReasonRemoteConflict
+			}
+			task.BlockedReason = &reason
+			task.Workspace = filepath.Join(fixture.dataDir, "tasks", task.ID, "workspace")
+			task.ComparisonBase = test.prepare(t, fixture, task, task.Workspace)
+			saveExecutionTask(t, fixture.planningFixture, task)
+			app := fixture.newApp(t)
+
+			err := app.TaskAction(context.Background(), task.ID, test.action)
+			saved := loadTask(t, fixture.state, task.ID)
+			switch {
+			case test.queued:
+				if err != nil || saved.Status != model.StatusQueued || saved.Attempts != 1 {
+					t.Fatalf("retry in an initialized clone = %v; status %s, attempts %d", err, saved.Status, saved.Attempts)
+				}
+				return
+			case test.action == "retry":
+				if err == nil || !IsActionConflict(err) || model.BlockedReasonFromError(err) != model.BlockedReasonWorkspaceInvalid {
+					t.Fatalf("retry = %v; want a workspace_invalid conflict", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("reconcile = %v", err)
+				}
+			}
+			if !blockedAs(saved, model.BlockedReasonWorkspaceInvalid) || saved.Attempts != task.Attempts {
+				t.Fatalf("%s outcome = status %s, reason %v, attempts %d", test.action, saved.Status, saved.BlockedReason, saved.Attempts)
+			}
+			// Nothing was queued, so ticking the scheduler starts no work.
+			if err := app.Tick(); err != nil {
+				t.Fatal(err)
+			}
+			app.wg.Wait()
+			if calls := fixture.script.Calls(); len(calls) != 0 {
+				t.Fatalf("a refused %s reached the runner: %+v", test.action, calls)
+			}
+			assertAdmissions(t, fixture.state, 0, "a refused "+test.action+" admits nothing")
+		})
+	}
+}
+
+// cloneAtSource clones the task's source revision into ws and returns the
+// comparison base initialization records for a new-PR task.
+func cloneAtSource(t *testing.T, fixture *scriptedFixture, task model.Task, ws string) string {
+	t.Helper()
+	if err := gitops.CloneAt(context.Background(), fixture.cfg, ws, task.SourceRevision); err != nil {
+		t.Fatal(err)
+	}
+	return task.SourceRevision
 }
