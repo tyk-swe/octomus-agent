@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -174,8 +175,15 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	}
 	next := cycleFor(queued)
 	next.ID = "cycle-next"
+	expected := control.Clone()
 	control.Batch.CycleID = str(next.ID)
-	must(t, s.BeginCycle(next, control))
+	fingerprint, err := config.Default().Fingerprint()
+	must(t, err)
+	_, started, err := s.BeginCycleIfAffordable(next, control, expected, fingerprint, time.Now())
+	must(t, err)
+	if !started {
+		t.Fatal("begin cycle refused an affordable cycle under the saved control")
+	}
 	reloaded, err := store.Get[model.Control](s, "settings", "control")
 	must(t, err)
 	if reloaded == nil || reloaded.Batch == nil || reloaded.Batch.CycleID == nil || *reloaded.Batch.CycleID != "cycle-next" {

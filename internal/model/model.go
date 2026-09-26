@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func Now() string { return timestamp(time.Now()) }
@@ -245,17 +244,3 @@ func (c *Control) SetMode(mode OperatingMode) {
 		c.Batch = nil
 	}
 }
-func (c *Control) UnmarshalJSON(data []byte) error {
-	type plain Control
-	var saved plain
-	if err := wirejson.Decode(data, &saved, false, false); err != nil {
-		return err
-	}
-	*c = Control(saved)
-	return nil
-}
-func (c Control) MarshalJSON() ([]byte, error) {
-	type plain Control
-	return wirejson.Record(plain(c))
-}
-func (c Control) Clone() Control { return wirejson.Clone(c) }

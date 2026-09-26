@@ -4,7 +4,6 @@ package report
 
 import (
 	"database/sql"
-	"encoding/json"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -74,31 +73,7 @@ type Report struct {
 
 // records decodes every saved record of one kind in id order.
 func records[T any](c *sql.Conn, kind string) ([]T, error) {
-	return queryJSON[T](c, "SELECT data FROM records WHERE kind=?1 ORDER BY id", kind)
-}
-
-// queryJSON decodes each row's single JSON column. An empty result is a
-// non-nil empty slice, and an error that ends the scan early fails the whole
-// read instead of returning the rows before it.
-func queryJSON[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
-	rows, err := c.QueryContext(store.Background(), query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	values := []T{}
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, err
-		}
-		var value T
-		if err := json.Unmarshal([]byte(data), &value); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, rows.Err()
+	return store.QueryRecords[T](c, "SELECT data FROM records WHERE kind=?1 ORDER BY id", kind)
 }
 
 // UsageReport reads one consistent snapshot of the state database and returns
@@ -125,7 +100,7 @@ func UsageReport(path string) (map[string]any, error) {
 func assemble(c *sql.Conn) (Report, error) {
 	// Every version-7 database has the admission ledger; OpenReadOnly refuses
 	// any other schema.
-	admissions, err := queryJSON[store.Admission](c, "SELECT data FROM admissions ORDER BY at,id")
+	admissions, err := store.QueryRecords[store.Admission](c, "SELECT data FROM admissions ORDER BY at,id")
 	if err != nil {
 		return Report{}, err
 	}

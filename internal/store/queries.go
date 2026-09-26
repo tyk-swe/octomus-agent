@@ -224,7 +224,7 @@ func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeTasks(raw)
+	return decodeAll[model.Task](raw)
 }
 
 // TasksWithStatus lists up to 500 unarchived tasks in the given statuses, oldest first.
@@ -239,7 +239,7 @@ func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeTasks(raw)
+	return decodeAll[model.Task](raw)
 }
 
 func (s *Store) RunningCycles() ([]model.Cycle, error) {
@@ -288,7 +288,7 @@ func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeTasks(raw)
+	return decodeAll[model.Task](raw)
 }
 
 // Snapshot runs fn inside one deferred transaction on the service connection.
@@ -329,29 +329,33 @@ func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([
 		if err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var id string
-			var title, key sql.NullString
-			if err := rows.Scan(&id, &title, &key); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			if !title.Valid {
-				rows.Close()
-				return nil, fmt.Errorf("Task %s has no saved proposal title", id)
-			}
-			saved := model.ProblemIdentity(title.String, key.String)
-			for _, proposed := range identities {
-				if equalASCIIFold(strings.TrimSpace(title.String), proposed.title) || saved == proposed.identity {
-					if _, dup := found[id]; !dup {
-						found[id] = struct{}{}
-						ids = append(ids, id)
+		// rows.Err, not a later rows.Close, reports a step error: Next closes
+		// the rows when it fails, and Close then returns nil.
+		err = func() error {
+			defer rows.Close()
+			for rows.Next() {
+				var id string
+				var title, key sql.NullString
+				if err := rows.Scan(&id, &title, &key); err != nil {
+					return err
+				}
+				if !title.Valid {
+					return fmt.Errorf("Task %s has no saved proposal title", id)
+				}
+				saved := model.ProblemIdentity(title.String, key.String)
+				for _, proposed := range identities {
+					if equalASCIIFold(strings.TrimSpace(title.String), proposed.title) || saved == proposed.identity {
+						if _, dup := found[id]; !dup {
+							found[id] = struct{}{}
+							ids = append(ids, id)
+						}
+						break
 					}
-					break
 				}
 			}
-		}
-		if err := rows.Close(); err != nil {
+			return rows.Err()
+		}()
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -464,18 +468,6 @@ func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (mo
 	return capacity, started, err
 }
 
-// BeginCycle saves a new cycle and the control that references it together.
-func (s *Store) BeginCycle(cycle model.Cycle, control model.Control) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.transaction(false, func(c *sql.Conn) error {
-		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {
-			return err
-		}
-		return txPut(c, "settings", "control", control)
-	})
-}
-
 // BeginCycleIfAffordable atomically revalidates the exact live configuration,
 // the expected control record, and planning affordability before exposing a
 // running cycle or changing the RunOnce phase.
@@ -553,20 +545,7 @@ func (s *Store) Dashboard() (Dashboard, error) {
 	var result Dashboard
 	err := s.transaction(false, func(c *sql.Conn) error {
 		result.Counts = map[string]int64{}
-		rows, err := c.QueryContext(background, fmt.Sprintf("SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN (%s) OR archived=0) GROUP BY status HAVING sum(count)>0", statusList(model.AttentionStatuses())))
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var status string
-			var count int64
-			if err := rows.Scan(&status, &count); err != nil {
-				rows.Close()
-				return err
-			}
-			result.Counts[status] = count
-		}
-		if err := rows.Close(); err != nil {
+		if err := statusCounts(c, result.Counts); err != nil {
 			return err
 		}
 		hundred := 100
@@ -645,6 +624,25 @@ func (s *Store) Dashboard() (Dashboard, error) {
 		return nil
 	})
 	return result, err
+}
+
+// statusCounts adds the dashboard's task count per status to counts: archived
+// tasks count only outside the attention statuses.
+func statusCounts(c *sql.Conn, counts map[string]int64) error {
+	rows, err := c.QueryContext(background, fmt.Sprintf("SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN (%s) OR archived=0) GROUP BY status HAVING sum(count)>0", statusList(model.AttentionStatuses())))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int64
+		if err := rows.Scan(&status, &count); err != nil {
+			return err
+		}
+		counts[status] = count
+	}
+	return rows.Err()
 }
 
 func summaryID(item json.RawMessage) string {
@@ -730,7 +728,7 @@ func (s *Store) DecisionMemory(repository string) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeValues(raw)
+	return decodeAll[any](raw)
 }
 
 // RediscoveryRequests lists cancelled tasks awaiting rediscovery for a repository.
@@ -741,7 +739,7 @@ func (s *Store) RediscoveryRequests(repository string) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeValues(raw)
+	return decodeAll[any](raw)
 }
 
 func latestPrOutputAt(c *sql.Conn, repository string, number uint64) (*string, error) {
@@ -767,30 +765,6 @@ func prObservationAt(c *sql.Conn, repository string, number uint64) (string, *mo
 		return "", nil, err
 	}
 	return id, &observation, nil
-}
-
-func decodeAll[T any](raw [][]byte) ([]T, error) {
-	values := make([]T, 0, len(raw))
-	for _, data := range raw {
-		var value T
-		if err := decodeJSON(data, &value); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, nil
-}
-
-func decodeValues(raw [][]byte) ([]any, error) {
-	values := make([]any, 0, len(raw))
-	for _, data := range raw {
-		var value any
-		if err := decodeJSON(data, &value); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, nil
 }
 
 // MarshalJSON renders a page with compact canonical formatting.

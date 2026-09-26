@@ -11,10 +11,8 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -36,19 +34,43 @@ func VersionWarning(backend config.Backend, installed, expected string) string {
 	return fmt.Sprintf("%s version mismatch: installed %s; %s; protocol compatibility is unverified.", backend.Display(), installed, expected)
 }
 
-// diagnosticsValue is the diagnostics document both backends report; the
-// dashboard reads one shape.
-func diagnosticsValue(backend config.Backend, version, protocolVersion string, warning *string) map[string]any {
-	var w any
-	if warning != nil {
-		w = *warning
+// Diagnostics is the document every backend reports to the doctor; the
+// dashboard and CLI read one shape. Fields stay in key order so the typed
+// document encodes to the same bytes as its generic map form.
+type Diagnostics struct {
+	Backend         config.Backend `json:"backend"`
+	ProtocolVersion string         `json:"protocol_version"`
+	Version         string         `json:"version"`
+	// Warning states a version mismatch against the protocol baseline; nil
+	// when the installed version is the tested one.
+	Warning *string `json:"warning"`
+}
+
+// Map is the generic form of d, with the backend as its wire name and a nil
+// warning when there is none.
+//
+// Deprecated: only Adapter.Diagnostics uses it, until internal/engine reads
+// the typed document from Adapter.Diagnose.
+func (d Diagnostics) Map() map[string]any {
+	var warning any
+	if d.Warning != nil {
+		warning = *d.Warning
 	}
 	return map[string]any{
-		"backend":          backend.Slug(),
-		"version":          version,
-		"protocol_version": protocolVersion,
-		"warning":          w,
+		"backend":          d.Backend.Slug(),
+		"version":          d.Version,
+		"protocol_version": d.ProtocolVersion,
+		"warning":          warning,
 	}
+}
+
+// diagnosticsMap adapts a Diagnose result to the generic Adapter.Diagnostics
+// form.
+func diagnosticsMap(d Diagnostics, err error) (map[string]any, error) {
+	if err != nil {
+		return nil, err
+	}
+	return d.Map(), nil
 }
 
 // Model is one discovered runtime model.
@@ -113,6 +135,13 @@ type Adapter interface {
 	Models(cwd string) ([]Model, error)
 	Start(route config.Route, cwd string, resume *string) (string, error)
 	Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error)
+	// Diagnose reports the backend's version document, failing when the
+	// backend cannot serve sessions (for example, missing authentication).
+	Diagnose(cwd string) (Diagnostics, error)
+	// Diagnostics is Diagnose as a generic map.
+	//
+	// Deprecated: internal/engine's doctor still indexes the map; it moves to
+	// Diagnose, and this method goes away.
 	Diagnostics(cwd string) (map[string]any, error)
 	Close() error
 }
@@ -150,13 +179,26 @@ func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd
 }
 
 // FinishTurn is the structured-result check every adapter applies to its final
-// answer: the answer is JSON-decoded with trailing-data rejection, validated,
-// and compactly marshaled. A nil schema returns the answer unchanged.
+// answer: the answer is JSON-decoded with trailing-data rejection and duplicate
+// keys refused, validated, and compactly marshaled. A nil schema returns the
+// answer unchanged.
 func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 	if schema == nil {
 		return answer, nil
 	}
 	parsed, err := decodeJSON([]byte(answer))
+	if err == nil {
+		// The decoded value keeps the last of repeated keys, so an ambiguous
+		// answer such as a findings list followed by "findings":[] would pass
+		// as whichever came last. Only answer text (Codex, scripted runners)
+		// can still repeat a key here: OpenCode's structured result arrives
+		// already decoded from its message response.
+		dec := json.NewDecoder(strings.NewReader(answer))
+		// Exact numbers, as decodeJSON reads them: a float64 token would
+		// refuse an out-of-range literal decodeJSON accepted.
+		dec.UseNumber()
+		err = uniqueKeys(dec)
+	}
 	if err != nil {
 		return "", fmt.Errorf("Runner returned invalid JSON: %w", err)
 	}
@@ -232,7 +274,7 @@ func (r *Runners) ValidateRoutes(cfg config.Config, cwd string, audit bool) erro
 			if err != nil {
 				return fmt.Errorf("%s route: %w", named.Name, err)
 			}
-			if _, err := client.Diagnostics(cwd); err != nil {
+			if _, err := client.Diagnose(cwd); err != nil {
 				return fmt.Errorf("%s diagnostics: %w", named.Route.Backend.Display(), err)
 			}
 			checked[named.Route.Backend] = struct{}{}
@@ -323,10 +365,12 @@ func strAt(m map[string]any, key string) (string, bool) {
 	return s, ok
 }
 
-// decodeJSON decodes one JSON value with strict UTF-8 and
-// string escapes, exact number literals preserved, and trailing data rejected.
+// decodeJSON decodes one JSON value with strict UTF-8 and string escapes
+// (wirejson.ValidStrings), exact number literals preserved, and trailing data
+// rejected. Its errors stay plain, never *wirejson.Error, which the API
+// classifies as an internal codec failure rather than a runner fault.
 func decodeJSON(data []byte) (any, error) {
-	if err := validJSONStrings(data); err != nil {
+	if err := wirejson.ValidStrings(data); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -341,52 +385,44 @@ func decodeJSON(data []byte) (any, error) {
 	return v, nil
 }
 
-// validJSONStrings checks malformed escapes at wire
-// boundaries: invalid UTF-8 and unpaired surrogate escapes are rejected where
-// Go's decoder would silently substitute U+FFFD.
-func validJSONStrings(data []byte) error {
-	if !utf8.Valid(data) {
-		return fmt.Errorf("invalid UTF-8")
+// uniqueKeys reads one JSON value from dec and refuses an object key that is
+// repeated at any depth, comparing keys after unescaping. Call it only on
+// input decodeJSON accepted: the decoder's nesting limit bounds the recursion.
+// Its errors stay plain, like decodeJSON's.
+func uniqueKeys(dec *json.Decoder) error {
+	token, err := dec.Token()
+	if err != nil {
+		return err
 	}
-	inString := false
-	for i := 0; i < len(data); i++ {
-		if data[i] == '"' {
-			inString = !inString
-			continue
-		}
-		if !inString || data[i] != '\\' {
-			continue
-		}
-		i++
-		if i >= len(data) {
-			break
-		}
-		if data[i] != 'u' {
-			continue
-		}
-		if i+5 > len(data) {
-			return fmt.Errorf("invalid Unicode escape")
-		}
-		n, err := strconv.ParseUint(string(data[i+1:i+5]), 16, 16)
-		if err != nil {
-			return err
-		}
-		i += 4
-		if n >= 0xdc00 && n <= 0xdfff {
-			return fmt.Errorf("unpaired low surrogate")
-		}
-		if n >= 0xd800 && n <= 0xdbff {
-			if i+7 > len(data) || string(data[i+1:i+3]) != `\u` {
-				return fmt.Errorf("unpaired high surrogate")
+	switch token {
+	case json.Delim('{'):
+		seen := map[string]struct{}{}
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return err
 			}
-			low, err := strconv.ParseUint(string(data[i+3:i+7]), 16, 16)
-			if err != nil || low < 0xdc00 || low > 0xdfff {
-				return fmt.Errorf("unpaired high surrogate")
+			name, _ := key.(string)
+			if _, ok := seen[name]; ok {
+				return fmt.Errorf("duplicate field %q", name)
 			}
-			i += 6
+			seen[name] = struct{}{}
+			if err := uniqueKeys(dec); err != nil {
+				return err
+			}
 		}
+	case json.Delim('['):
+		for dec.More() {
+			if err := uniqueKeys(dec); err != nil {
+				return err
+			}
+		}
+	default:
+		return nil
 	}
-	return nil
+	// The closing delimiter.
+	_, err = dec.Token()
+	return err
 }
 
 // marshal compactly serializes a protocol value.

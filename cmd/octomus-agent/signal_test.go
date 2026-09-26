@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/httpapi"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
 // serviceHelperData names the data directory a re-executed test binary runs
@@ -63,7 +63,7 @@ func startServiceProcess(t *testing.T, hangupIgnored bool) *serviceProcess {
 			env = append(env, entry)
 		}
 	}
-	command.Env = append(env, serviceHelperData+"="+t.TempDir(), httpapi.TokenEnv+"="+strings.Repeat("t", 32))
+	command.Env = append(env, serviceHelperData+"="+t.TempDir(), redact.TokenEnv+"="+strings.Repeat("t", 32))
 	stderr, err := command.StderrPipe()
 	if err != nil {
 		t.Fatal(err)

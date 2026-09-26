@@ -6,7 +6,6 @@
 package httpapi
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
@@ -25,13 +24,11 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/evidence"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	"modernc.org/sqlite"
 )
-
-// TokenEnv names the operator access token variable; its value is a secret.
-const TokenEnv = "OCTOMUS_TOKEN"
 
 const bodyLimit = 256 * 1024
 
@@ -206,7 +203,7 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 		if errors.As(err, &be) {
 			writeBodyError(w, be)
 		} else {
-			writeAPIError(w, apiStatus(err), store.ErrorMessage(err))
+			writeAPIError(w, apiStatus(err), redact.Error(err))
 		}
 		return
 	}
@@ -262,8 +259,7 @@ func writeAPIError(w http.ResponseWriter, status int, message string) {
 // server-generated settings transform metadata, then writes compact JSON.
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	_, settingsView := value.(*engine.SettingsView)
-	var generic any
-	err := genericJSON(value, &generic)
+	generic, err := wirejson.Generic(value)
 	var out []byte
 	if err == nil {
 		if object, ok := generic.(map[string]any); ok && settingsView {
@@ -272,14 +268,14 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 			// lose the association between a redacted preview and its config field.
 			transforms, hasTransforms := object["transformed_fields"]
 			delete(object, "transformed_fields")
-			// Keep the redacted value RedactJSON returns rather than relying on
+			// Keep the redacted value redact.JSON returns rather than relying on
 			// it scrubbing the map in place.
-			generic = store.RedactJSON(object)
+			generic = redact.JSON(object)
 			if redacted, ok := generic.(map[string]any); ok && hasTransforms {
 				redacted["transformed_fields"] = transforms
 			}
 		} else {
-			generic = store.RedactJSON(generic)
+			generic = redact.JSON(generic)
 		}
 		out, err = wirejson.Marshal(generic)
 	}
@@ -290,18 +286,6 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(out)
-}
-
-// genericJSON re-encodes value into dst as generic JSON (maps, slices and
-// json.Number), so numbers keep their exact encoded form.
-func genericJSON(value, dst any) error {
-	data, err := wirejson.Marshal(value)
-	if err != nil {
-		return err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	return decoder.Decode(dst)
 }
 
 // writeRawJSON answers without redaction: healthz and assets never carry
@@ -467,8 +451,8 @@ func (a *api) taskDetail(_ http.ResponseWriter, _ *http.Request, params map[stri
 	if task == nil {
 		return 0, nil, engine.ErrTaskNotFound
 	}
-	var value map[string]any
-	if err := genericJSON(*task, &value); err != nil {
+	value, err := wirejson.GenericMap(*task)
+	if err != nil {
 		return 0, nil, err
 	}
 	value["allowed_actions"] = task.AllowedActions()
@@ -505,15 +489,7 @@ type configUpdateBody struct {
 	Config           map[string]json.RawMessage `json:"config"`
 }
 
-func (v *configUpdateBody) UnmarshalJSON(data []byte) error {
-	type plain configUpdateBody
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = configUpdateBody(decoded)
-	return nil
-}
+func (v *configUpdateBody) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 
 func (a *api) saveConfig(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 	var body configUpdateBody
@@ -537,15 +513,7 @@ type baselineStartBody struct {
 	ExpectedRevision string `json:"expected_revision"`
 }
 
-func (v *baselineStartBody) UnmarshalJSON(data []byte) error {
-	type plain baselineStartBody
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = baselineStartBody(decoded)
-	return nil
-}
+func (v *baselineStartBody) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 
 func (a *api) baselineStart(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 	var body baselineStartBody
@@ -609,12 +577,12 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	var body map[string]any
 	if err != nil {
 		status = apiStatus(err)
-		body = map[string]any{"error": store.ErrorMessage(err)}
+		body = map[string]any{"error": redact.Error(err)}
 	} else {
 		body = result
 	}
-	var checked any
-	if err := genericJSON(cfg, &checked); err != nil {
+	checked, err := wirejson.Generic(cfg)
+	if err != nil {
 		return 0, nil, err
 	}
 	body["checked_config"] = checked
@@ -634,15 +602,7 @@ type catalogRequest struct {
 	Binary  string         `json:"binary"`
 }
 
-func (v *catalogRequest) UnmarshalJSON(data []byte) error {
-	type plain catalogRequest
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = catalogRequest(decoded)
-	return nil
-}
+func (v *catalogRequest) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 
 func (a *api) modelCatalog(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 	var request catalogRequest

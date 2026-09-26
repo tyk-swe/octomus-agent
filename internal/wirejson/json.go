@@ -42,6 +42,38 @@ func Decode(data []byte, dst any, strict, defaultAll bool) error {
 	return marked(decode(data, dst, strict, defaultAll))
 }
 
+// DecodeStrict decodes a request body or structured answer: unknown fields
+// fail, and every field that is not a pointer or tagged wire:"default" is
+// required. Decoding starts from a zero T, so absent optional fields are
+// zero rather than dst's old values, and dst is changed only on success.
+// T's own UnmarshalJSON is never called, so that method may pass its receiver.
+func DecodeStrict[T any](data []byte, dst *T) error {
+	var decoded T
+	return decodeInto(data, dst, decoded, true, false)
+}
+
+// DecodeRecord decodes a saved record like DecodeStrict, except that unknown
+// fields are ignored.
+func DecodeRecord[T any](data []byte, dst *T) error {
+	var decoded T
+	return decodeInto(data, dst, decoded, false, false)
+}
+
+// DecodeWithDefaults decodes an object whose fields may all be absent:
+// unknown fields fail, and absent fields take their values from defaults,
+// never from dst. dst is changed only on success.
+func DecodeWithDefaults[T any](data []byte, dst *T, defaults T) error {
+	return decodeInto(data, dst, defaults, true, true)
+}
+
+func decodeInto[T any](data []byte, dst *T, decoded T, strict, defaultAll bool) error {
+	if err := Decode(data, &decoded, strict, defaultAll); err != nil {
+		return err
+	}
+	*dst = decoded
+	return nil
+}
+
 func decode(data []byte, dst any, strict, defaultAll bool) error {
 	original := reflect.ValueOf(dst).Elem()
 	v := reflect.New(original.Type()).Elem()
@@ -65,7 +97,7 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 			if err != nil {
 				return err
 			}
-			if err := validStrings(data[start:dec.InputOffset()]); err != nil {
+			if err := ValidStrings(data[start:dec.InputOffset()]); err != nil {
 				return err
 			}
 			name := key.(string)
@@ -138,7 +170,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 			if err != nil {
 				return err
 			}
-			if err := validStrings(raw[start:dec.InputOffset()]); err != nil {
+			if err := ValidStrings(raw[start:dec.InputOffset()]); err != nil {
 				return err
 			}
 			name := key.(string)
@@ -173,7 +205,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 		v.Set(result)
 		return nil
 	case reflect.String:
-		if err := validStrings(raw); err != nil {
+		if err := ValidStrings(raw); err != nil {
 			return err
 		}
 		return json.Unmarshal(raw, v.Addr().Interface())
@@ -191,7 +223,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 		v.Set(result)
 		return nil
 	case reflect.Interface:
-		if err := validStrings(raw); err != nil {
+		if err := ValidStrings(raw); err != nil {
 			return err
 		}
 		dec := json.NewDecoder(bytes.NewReader(raw))
@@ -217,6 +249,37 @@ func Marshal(value any) ([]byte, error) {
 
 func markedPair(data []byte, err error) ([]byte, error) {
 	return data, marked(err)
+}
+
+// Generic re-reads value's Marshal output as generic JSON (maps, slices,
+// strings, booleans, nil and json.Number), so every number keeps its exact
+// encoded spelling. Marshal failures stay marked; a decode failure, which
+// Marshal's own output never causes, is plain.
+func Generic(value any) (any, error) {
+	var result any
+	if err := genericInto(value, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GenericMap is Generic for a value that encodes as a JSON object.
+func GenericMap(value any) (map[string]any, error) {
+	var result map[string]any
+	if err := genericInto(value, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func genericInto(value, dst any) error {
+	data, err := Marshal(value)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(dst)
 }
 
 // Record serializes a value alias with non-null empty containers.
@@ -293,8 +356,11 @@ func clone(v reflect.Value) reflect.Value {
 	}
 }
 
-// Reject malformed Unicode rather than silently replacing it.
-func validStrings(data []byte) error {
+// ValidStrings rejects invalid UTF-8 and unpaired or truncated \u escapes,
+// which encoding/json would silently replace with U+FFFD. It scans raw JSON
+// text of any shape. Its errors are plain, not *Error, so each caller chooses
+// how a failure is classified: the runner's protocol boundaries rely on that.
+func ValidStrings(data []byte) error {
 	if !utf8.Valid(data) {
 		return fmt.Errorf("invalid UTF-8")
 	}
@@ -350,7 +416,7 @@ func UnmarshalEnum[T ~uint8](data []byte, names []string, dst *T) error {
 }
 
 func enumOf(data []byte, names []string) (uint8, error) {
-	if err := validStrings(data); err != nil {
+	if err := ValidStrings(data); err != nil {
 		return 0, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))

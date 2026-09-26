@@ -114,8 +114,15 @@ func TestValidStringsRefusesMalformedUnicode(t *testing.T) {
 		{`["\\", "\udc00"]`, "unpaired low surrogate"},
 		{`{"ok":"\\","\ud800x":1}`, "unpaired high surrogate"},
 	} {
-		if err := validStrings([]byte(tc.raw)); err == nil || err.Error() != tc.message {
-			t.Errorf("validStrings(%s) = %v; want %q", tc.raw, err, tc.message)
+		err := ValidStrings([]byte(tc.raw))
+		if err == nil || err.Error() != tc.message {
+			t.Errorf("ValidStrings(%s) = %v; want %q", tc.raw, err, tc.message)
+		}
+		// Plain errors: the runner reports these as protocol failures, and a
+		// marked *Error would be classified as an internal codec failure.
+		var marked *Error
+		if errors.As(err, &marked) {
+			t.Errorf("ValidStrings(%s) returned a marked *Error", tc.raw)
 		}
 	}
 	for _, raw := range []string{
@@ -129,8 +136,8 @@ func TestValidStringsRefusesMalformedUnicode(t *testing.T) {
 		`["\\\\", "\"", "\ud83d\ude00"]`,
 		`{"k":[1,true,null,"\ud83d\ude00"]}`,
 	} {
-		if err := validStrings([]byte(raw)); err != nil {
-			t.Errorf("validStrings(%s) = %v; want nil", raw, err)
+		if err := ValidStrings([]byte(raw)); err != nil {
+			t.Errorf("ValidStrings(%s) = %v; want nil", raw, err)
 		}
 	}
 }
@@ -253,15 +260,8 @@ type strictItem struct {
 	N string `json:"n"`
 }
 
-func (v *strictItem) UnmarshalJSON(data []byte) error {
-	type plain strictItem
-	decoded := plain{}
-	if err := Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = strictItem(decoded)
-	return nil
-}
+// The receiver goes to the helper as is: Decode never calls it back.
+func (v *strictItem) UnmarshalJSON(data []byte) error { return DecodeStrict(data, v) }
 
 type outerRecord struct {
 	Item  strictItem   `json:"item"`
@@ -289,6 +289,62 @@ func TestNestedDecodersKeepTheirOwnStrictness(t *testing.T) {
 		if !errors.As(err, &typed) || err.Error() != tc.message {
 			t.Errorf("Decode(%s) = %v; want typed %q", tc.raw, err, tc.message)
 		}
+	}
+}
+
+// Record UnmarshalJSON methods pass their receiver, which may hold an earlier
+// value, so each helper starts from a zero value (or the given defaults):
+// nothing from dst may survive into the result, and a refusal leaves dst alone.
+func TestDecodeHelpersStartFreshAndChangeDstOnlyOnSuccess(t *testing.T) {
+	stale := "stale"
+	populated := func() decodeRecord {
+		return decodeRecord{S: "old", P: &stale, D: "old", L: []string{"old"}, M: map[string]int{"old": 1}, A: "old"}
+	}
+	fresh := decodeRecord{S: "x", L: []string{}, M: map[string]int{}}
+	for name, decode := range map[string]func([]byte, *decodeRecord) error{
+		"DecodeStrict": DecodeStrict[decodeRecord],
+		"DecodeRecord": DecodeRecord[decodeRecord],
+	} {
+		dst := populated()
+		if err := decode([]byte(`{"s":"x"}`), &dst); err != nil || !reflect.DeepEqual(dst, fresh) {
+			t.Fatalf("%s into a populated record = %#v, %v; want %#v", name, dst, err, fresh)
+		}
+		for _, raw := range []string{`{"p":"y"}`, `{"s":"y","s":"z"}`, `{"s":null}`, `[]`, `{"s":"y"} {}`} {
+			dst := populated()
+			err := decode([]byte(raw), &dst)
+			var typed *Error
+			if !errors.As(err, &typed) || !reflect.DeepEqual(dst, populated()) {
+				t.Fatalf("%s(%s) = %v and dst %#v; want a typed error and dst unchanged", name, raw, err, dst)
+			}
+		}
+	}
+	unknown := []byte(`{"s":"x","unknown":1}`)
+	dst := populated()
+	if err := DecodeStrict(unknown, &dst); err == nil || err.Error() != `unknown field "unknown"` || !reflect.DeepEqual(dst, populated()) {
+		t.Fatalf("DecodeStrict(unknown field) = %v and dst %#v; want refused and dst unchanged", err, dst)
+	}
+	if err := DecodeRecord(unknown, &dst); err != nil || !reflect.DeepEqual(dst, fresh) {
+		t.Fatalf("DecodeRecord(unknown field) = %#v, %v; want %#v", dst, err, fresh)
+	}
+
+	defaults := decodeRecord{S: "default", D: "default"}
+	dst = populated()
+	want := decodeRecord{S: "default", D: "set", L: []string{}, M: map[string]int{}}
+	if err := DecodeWithDefaults([]byte(`{"d":"set"}`), &dst, defaults); err != nil || !reflect.DeepEqual(dst, want) {
+		t.Fatalf("DecodeWithDefaults = %#v, %v; want %#v", dst, err, want)
+	}
+	if defaults.D != "default" {
+		t.Fatalf("DecodeWithDefaults changed the defaults to %#v", defaults)
+	}
+	dst = populated()
+	if err := DecodeWithDefaults(unknown, &dst, defaults); err == nil || err.Error() != `unknown field "unknown"` || !reflect.DeepEqual(dst, populated()) {
+		t.Fatalf("DecodeWithDefaults(unknown field) = %v and dst %#v; want refused and dst unchanged", err, dst)
+	}
+
+	// A method that hands its receiver to a helper is not called back.
+	var item strictItem
+	if err := json.Unmarshal([]byte(`{"n":"x"}`), &item); err != nil || item.N != "x" {
+		t.Fatalf("strictItem = %#v, %v", item, err)
 	}
 }
 
@@ -328,6 +384,51 @@ func TestRecordWritesEmptyContainersThatDecodeStrictly(t *testing.T) {
 }
 
 func second(_ []byte, err error) error { return err }
+
+// Generic views feed API responses and exports, so a uint64 beyond float64's
+// exact range must keep its saved spelling instead of being rounded.
+func TestGenericKeepsExactNumbersAndMarksEncodeFailures(t *testing.T) {
+	type record struct {
+		N    uint64         `json:"n"`
+		F    float64        `json:"f"`
+		List []int64        `json:"list"`
+		Any  any            `json:"any"`
+		Map  map[string]any `json:"map"`
+	}
+	value := record{
+		N: 18446744073709551615, F: 0.1, List: []int64{-9007199254740993},
+		Any: json.Number("12345678901234567890.5"), Map: map[string]any{"k": true},
+	}
+	want := map[string]any{
+		"n": json.Number("18446744073709551615"), "f": json.Number("0.1"),
+		"list": []any{json.Number("-9007199254740993")},
+		"any":  json.Number("12345678901234567890.5"), "map": map[string]any{"k": true},
+	}
+	object, err := GenericMap(value)
+	if err != nil || !reflect.DeepEqual(object, want) {
+		t.Fatalf("GenericMap = %#v, %v; want %#v", object, err, want)
+	}
+	generic, err := Generic(value)
+	if err != nil || !reflect.DeepEqual(generic, any(want)) {
+		t.Fatalf("Generic = %#v, %v; want %#v", generic, err, want)
+	}
+	if generic, err := Generic([]uint64{18446744073709551615}); err != nil ||
+		!reflect.DeepEqual(generic, []any{json.Number("18446744073709551615")}) {
+		t.Fatalf("Generic(list) = %#v, %v", generic, err)
+	}
+	if object, err := GenericMap([]int{1}); err == nil {
+		t.Fatalf("GenericMap(list) = %#v; want an error", object)
+	}
+	for name, err := range map[string]error{
+		"Generic":    func() error { _, err := Generic(make(chan int)); return err }(),
+		"GenericMap": func() error { _, err := GenericMap(struct{ C chan int }{}); return err }(),
+	} {
+		var typed *Error
+		if !errors.As(err, &typed) {
+			t.Errorf("%s(chan) = %v; want a typed encode error", name, err)
+		}
+	}
+}
 
 type cloneItem struct {
 	Tags []string

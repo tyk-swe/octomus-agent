@@ -16,6 +16,7 @@ import (
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -165,23 +166,35 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	return c, nil
 }
 
-// Diagnostics reports authentication state plus the installed CLI's version
+// Diagnose reports authentication state plus the installed CLI's version
 // against the tested baseline.
-func (c *Codex) Diagnostics(cwd string) (map[string]any, error) {
+func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
 	account, err := c.rpc("account/read", map[string]any{"refreshToken": false})
 	if err != nil {
-		return nil, err
+		return Diagnostics{}, err
 	}
 	m, _ := asObject(account)
 	if m["requiresOpenaiAuth"] != false && m["account"] == nil {
-		return nil, fmt.Errorf("Codex authentication is missing; run codex login as the service user")
+		return Diagnostics{}, fmt.Errorf("Codex authentication is missing; run codex login as the service user")
 	}
 	version, err := process.RunMachine(c.ctx, c.binary, []string{"--version"}, cwd, min(c.commandTimeout, 60))
 	if err != nil {
-		return nil, err
+		return Diagnostics{}, err
 	}
 	version = strings.TrimSpace(version)
-	return diagnosticsValue(config.BackendCodex, version, CodexTestedVersion, CodexVersionWarning(version)), nil
+	return Diagnostics{
+		Backend:         config.BackendCodex,
+		ProtocolVersion: CodexTestedVersion,
+		Version:         version,
+		Warning:         CodexVersionWarning(version),
+	}, nil
+}
+
+// Diagnostics is Diagnose as a generic map.
+//
+// Deprecated: see Adapter.Diagnostics.
+func (c *Codex) Diagnostics(cwd string) (map[string]any, error) {
+	return diagnosticsMap(c.Diagnose(cwd))
 }
 
 // framed marshals a protocol message and applies the exact outbound bound to
@@ -318,7 +331,7 @@ func (c *Codex) rpc(method string, params map[string]any) (any, error) {
 		if idMatches(v["id"], id) {
 			if e, hasErr := v["error"]; hasErr {
 				encoded, _ := marshal(e)
-				return nil, fmt.Errorf("Codex %s: %s", method, store.Redact(encoded))
+				return nil, fmt.Errorf("Codex %s: %s", method, redact.Text(encoded))
 			}
 			result, ok := v["result"]
 			if !ok {
@@ -553,7 +566,7 @@ func (c *Codex) awaitTurn(thread, turn string, deadline time.Time) (string, erro
 			}
 			if s, _ := strAt(completed, "status"); s != "completed" {
 				encoded, _ := marshal(completed["error"])
-				return "", fmt.Errorf("Codex turn did not complete successfully: %s", store.Redact(encoded))
+				return "", fmt.Errorf("Codex turn did not complete successfully: %s", redact.Text(encoded))
 			}
 			if strings.TrimSpace(answer) == "" {
 				return "", fmt.Errorf("Codex returned no final result")

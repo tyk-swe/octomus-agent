@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	_ "modernc.org/sqlite"
 )
@@ -42,15 +44,7 @@ func NewAdmission(cycleID string, taskID *string, role string, route config.Rout
 	}
 	return Admission{ID: model.ID(), At: model.Now(), CycleID: cycleID, TaskID: task, Role: role, Route: route.Clone()}
 }
-func (v *Admission) UnmarshalJSON(data []byte) error {
-	type plain Admission
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = Admission(decoded)
-	return nil
-}
+func (v *Admission) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v Admission) MarshalJSON() ([]byte, error) {
 	type plain Admission
 	return wirejson.Record(plain(v))
@@ -404,15 +398,30 @@ func List[T any](s *Store, kind string) ([]T, error) {
 	if err != nil {
 		return nil, err
 	}
-	values := make([]T, 0, len(raw))
-	for _, data := range raw {
-		var value T
-		if err := decodeJSON(data, &value); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
+	return decodeAll[T](raw)
+}
+
+// RecordAt decodes one record of type T on a caller-owned connection, such as
+// inside a read-only snapshot. An absent record is nil with no error.
+func RecordAt[T any](c *sql.Conn, kind, id string) (*T, error) {
+	var value T
+	found, err := txGet(c, kind, id, &value)
+	if err != nil || !found {
+		return nil, err
 	}
-	return values, nil
+	return &value, nil
+}
+
+// QueryRecords runs query on a caller-owned connection and decodes each row's
+// single JSON column as a T, in row order. An empty result is a non-nil empty
+// slice, and an error that ends the scan early fails the whole read instead of
+// returning the rows before it.
+func QueryRecords[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
+	raw, err := queryStrings(c, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeAll[T](raw)
 }
 
 // Event appends a redacted operator-visible event.
@@ -425,7 +434,7 @@ func (s *Store) Event(entity, kind, message string) error {
 // txEvent appends a redacted event on a caller-owned connection or
 // transaction, so every event path applies the same redaction.
 func txEvent(c *sql.Conn, entity, kind, message string) error {
-	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, Redact(message))
+	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, redact.Text(message))
 	return err
 }
 
@@ -674,18 +683,33 @@ func queryStrings(c *sql.Conn, query string, args ...any) ([][]byte, error) {
 	return out, rows.Err()
 }
 
-// decodeJSON reads saved JSON with exact numbers; generic destinations receive
-// json.Number rather than float64 so re-encoding preserves the saved spelling.
+// decodeJSON reads one saved JSON value with exact numbers: generic
+// destinations receive json.Number rather than float64, so re-encoding keeps
+// the saved spelling. Anything after the value but white space is refused,
+// as json.Unmarshal would, including a stray closing bracket.
 func decodeJSON(data []byte, dst any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	if err := dec.Decode(dst); err != nil {
 		return err
 	}
-	if dec.More() {
+	if _, err := dec.Token(); err != io.EOF {
 		return errors.New("trailing JSON data")
 	}
 	return nil
+}
+
+// decodeAll decodes each saved value as a T. The result is never nil.
+func decodeAll[T any](raw [][]byte) ([]T, error) {
+	values := make([]T, 0, len(raw))
+	for _, data := range raw {
+		var value T
+		if err := decodeJSON(data, &value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, nil
 }
 
 // StorageLimitError is the refusal an admission gets when the workspace already

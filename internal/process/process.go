@@ -21,13 +21,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"golang.org/x/sys/unix"
 )
-
-// TokenEnv is the operator-token variable removed from every child environment;
-// it must not reach child processes.
-const TokenEnv = "OCTOMUS_TOKEN"
 
 // Command builds an owned command: a new process group (pgid = child pid), the
 // service's secret environment and Git's repository-locating variables
@@ -41,7 +37,7 @@ func Command(binary string, cwd string) *exec.Cmd {
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {
-		case TokenEnv, store.WebhookEnv, "GIT_TERMINAL_PROMPT":
+		case redact.TokenEnv, redact.WebhookEnv, "GIT_TERMINAL_PROMPT":
 			continue
 		// Repository-locating Git variables (as exported into Git hooks) would
 		// redirect every child git away from cmd.Dir; Git itself clears them
@@ -420,10 +416,10 @@ func failureText(binary string, output *ProcessOutput) string {
 	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
 	budget := failureTextLimit - utf8.RuneCountInString(prefix)
 	stdout, stderr := output.Stdout.Preview(), output.Stderr.Preview()
-	if joined := store.RedactSecrets(stdout + "\n" + stderr); utf8.RuneCountInString(joined) <= budget {
+	if joined := redact.Secrets(stdout + "\n" + stderr); utf8.RuneCountInString(joined) <= budget {
 		return prefix + joined
 	}
-	stdout, stderr = store.RedactSecrets(stdout), store.RedactSecrets(stderr)
+	stdout, stderr = redact.Secrets(stdout), redact.Secrets(stderr)
 	if stderr == "" {
 		return prefix + elideMiddle(stdout, budget)
 	}
@@ -476,13 +472,12 @@ func DiagnosticText(binary string, output *ProcessOutput) (string, error) {
 	return text, nil
 }
 
-func checked(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (string, error) {
-	output, err := Capture(ctx, binary, args, cwd, seconds, mode)
+// RunMachine executes a command whose stdout is machine output: fail closed on
+// any command failure, truncation past the machine ceiling, or invalid UTF-8.
+func RunMachine(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
+	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureMachine)
 	if err != nil {
 		return "", err
-	}
-	if mode == CaptureDiagnostic {
-		return DiagnosticText(binary, output)
 	}
 	if err := ensureSuccess(binary, output); err != nil {
 		return "", err
@@ -494,18 +489,6 @@ func checked(ctx context.Context, binary string, args []string, cwd string, seco
 		return "", errors.New("Machine output is not valid UTF-8")
 	}
 	return string(output.Stdout.Bytes), nil
-}
-
-// Run executes a command for human-readable evidence, keeping bounded stdout
-// and stderr on success.
-func Run(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
-	return checked(ctx, binary, args, cwd, seconds, CaptureDiagnostic)
-}
-
-// RunMachine executes a command whose stdout is machine output: fail closed on
-// any command failure, truncation past the machine ceiling, or invalid UTF-8.
-func RunMachine(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
-	return checked(ctx, binary, args, cwd, seconds, CaptureMachine)
 }
 
 // ShellCheck runs one operator-configured verification command through

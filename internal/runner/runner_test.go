@@ -5,9 +5,11 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func repoRoot(t *testing.T) string {
@@ -280,6 +283,35 @@ func TestModelWireShape(t *testing.T) {
 	}
 }
 
+// The doctor's backends list keeps one byte shape whether a backend document
+// is typed or generic: keys in order, the backend by wire name, and warning as
+// an explicit null when the version matches the baseline.
+func TestDiagnosticsWireShape(t *testing.T) {
+	warning := "OpenCode version mismatch"
+	for _, tc := range []struct {
+		diagnostics Diagnostics
+		want        string
+	}{
+		{Diagnostics{Backend: config.BackendCodex, ProtocolVersion: "0.1.0", Version: "codex-cli 0.1.0"},
+			`{"backend":"codex","protocol_version":"0.1.0","version":"codex-cli 0.1.0","warning":null}`},
+		{Diagnostics{Backend: config.BackendOpencode, ProtocolVersion: "1.2.0", Version: "1.3.0", Warning: &warning},
+			`{"backend":"opencode","protocol_version":"1.2.0","version":"1.3.0","warning":"OpenCode version mismatch"}`},
+	} {
+		for form, value := range map[string]any{"typed": tc.diagnostics, "generic": tc.diagnostics.Map()} {
+			data, err := wirejson.Marshal(value)
+			if err != nil || string(data) != tc.want {
+				t.Fatalf("%s diagnostics = %s, %v; want %s", form, data, err, tc.want)
+			}
+		}
+	}
+	// The engine doctor matches the generic backend against its wire name and
+	// reads a present warning as a string.
+	generic := Diagnostics{Backend: config.BackendCodex, Warning: &warning}.Map()
+	if generic["backend"] != "codex" || generic["warning"] != warning {
+		t.Fatalf("generic diagnostics: %#v", generic)
+	}
+}
+
 func TestVersionWarnings(t *testing.T) {
 	if warning := CodexVersionWarning("codex-cli 0.153.4"); warning != nil {
 		t.Fatalf("exact match must not warn: %q", *warning)
@@ -421,5 +453,117 @@ func TestRunnersErrorsKeepBlockedReason(t *testing.T) {
 		t.Fatal("turn on a missing session must fail")
 	} else if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonRunnerUnavailable {
 		t.Fatalf("turn blocked reason lost: %v (%v)", reason, err)
+	}
+}
+
+// Every runner wire boundary decodes through decodeJSON. Go's decoder would
+// turn a lone surrogate or an invalid byte into U+FFFD, so decodeJSON refuses
+// them first, keeps exact number literals and refuses trailing data. Its
+// errors stay plain: a marked *wirejson.Error would turn a runner protocol
+// failure into an internal API error.
+func TestDecodeJSONStrict(t *testing.T) {
+	for _, tc := range []struct{ raw, message string }{
+		{`"\ud800"`, "unpaired high surrogate"},
+		{`"\udc00"`, "unpaired low surrogate"},
+		{`"\ud800A"`, "unpaired high surrogate"},
+		{`"\ud800\u0041"`, "unpaired high surrogate"},
+		{`{"k":["ok","\ud800"]}`, "unpaired high surrogate"},
+		{`"\u12"`, "invalid Unicode escape"},
+		{"\"\xff\"", "invalid UTF-8"},
+		{`{} {}`, "trailing JSON data"},
+		{`{"a":1} x`, "trailing JSON data"},
+	} {
+		value, err := decodeJSON([]byte(tc.raw))
+		if err == nil || err.Error() != tc.message {
+			t.Errorf("decodeJSON(%s) = %v, %v; want %q", tc.raw, value, err, tc.message)
+		}
+		var marked *wirejson.Error
+		if errors.As(err, &marked) {
+			t.Errorf("decodeJSON(%s) returned a marked *wirejson.Error", tc.raw)
+		}
+	}
+	// A truncated escape followed by more data and an unterminated string
+	// are refused too; their messages come from the parsers.
+	for _, raw := range []string{`["\u12", 1]`, `"abc\`, `{"a":`} {
+		if value, err := decodeJSON([]byte(raw)); err == nil {
+			t.Errorf("decodeJSON(%s) = %v; want an error", raw, value)
+		}
+	}
+	for _, tc := range []struct {
+		raw  string
+		want any
+	}{
+		{`"x😀"`, "x😀"},
+		{`"\ud83d\ude00"`, "😀"},
+		{`"\\ud800"`, `\ud800`},
+		{`"\u0041"`, "A"},
+		{`{"n":1.50,"big":12345678901234567890}`, map[string]any{"n": json.Number("1.50"), "big": json.Number("12345678901234567890")}},
+		{" [1, \"a\"] \n", []any{json.Number("1"), "a"}},
+	} {
+		value, err := decodeJSON([]byte(tc.raw))
+		if err != nil || !reflect.DeepEqual(value, tc.want) {
+			t.Errorf("decodeJSON(%s) = %#v, %v; want %#v", tc.raw, value, err, tc.want)
+		}
+	}
+}
+
+// A structured answer that repeats a key at any depth is ambiguous: the decoded
+// value would keep whichever came last, so a listed finding followed by
+// "findings":[] would read as a clean review. FinishTurn refuses it like any
+// other invalid JSON, while the same key in separate objects stays valid.
+func TestFinishTurnRejectsDuplicateKeys(t *testing.T) {
+	finding := `{"detail":"d","file":"a.go","priority":"high","title":"SQL injection"}`
+	proposal := map[string]any{}
+	for _, key := range []string{"id", "title", "problem", "benefit", "category", "target", "tier", "scope", "prompt", "reason", "problem_key"} {
+		proposal[key] = key
+	}
+	proposal["decision"] = "accept"
+	for _, key := range []string{"evidence", "dependencies", "relevant_paths", "reconsiders"} {
+		proposal[key] = []any{}
+	}
+	encoded, err := json.Marshal(map[string]any{"proposals": []any{proposal}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposals := string(encoded)
+	if got, err := FinishTurn(proposals, schemas.ProposalSchema()); err != nil || got != proposals {
+		t.Fatalf("valid proposals = %q, %v", got, err)
+	}
+	for _, tc := range []struct {
+		name, answer, field string
+		schema              schemas.Schema
+	}{
+		{"top level", `{"completed":true,"summary":"Reviewed","findings":[` + finding + `],"findings":[]}`, "findings", schemas.ReviewSchema()},
+		{"inside a finding", `{"completed":false,"summary":"s","findings":[{"title":"a","title":"b","file":"f","detail":"d","priority":"p"}]}`, "title", schemas.ReviewSchema()},
+		{"escaped", `{"summary":"a","\u0073ummary":"b","completed":true,"findings":[]}`, "summary", schemas.ReviewSchema()},
+		{"inside a proposal", strings.Replace(proposals, `"decision":"accept"`, `"decision":"accept","decision":"reject"`, 1), "decision", schemas.ProposalSchema()},
+	} {
+		got, err := FinishTurn(tc.answer, tc.schema)
+		want := fmt.Sprintf("Runner returned invalid JSON: duplicate field %q", tc.field)
+		if err == nil || err.Error() != want {
+			t.Errorf("%s: FinishTurn = %q, %v; want %q", tc.name, got, err, want)
+		}
+		var marked *wirejson.Error
+		if errors.As(err, &marked) {
+			t.Errorf("%s: returned a marked *wirejson.Error", tc.name)
+		}
+	}
+	for _, tc := range []struct{ answer, want string }{
+		{`{"summary":"s","completed":true,"findings":[]}`, `{"completed":true,"findings":[],"summary":"s"}`},
+		{`{"completed":false,"summary":"s","findings":[` + finding + `,` + finding + `]}`, `{"completed":false,"findings":[` + finding + `,` + finding + `],"summary":"s"}`},
+	} {
+		if got, err := FinishTurn(tc.answer, schemas.ReviewSchema()); err != nil || got != tc.want {
+			t.Errorf("FinishTurn(%s) = %q, %v; want %q", tc.answer, got, err, tc.want)
+		}
+	}
+	// The key scan refuses only repeated keys: a number decodeJSON keeps
+	// exactly, even one beyond float64, still reaches schema validation.
+	if got, err := FinishTurn(`{"completed":true,"summary":"s","findings":[],"n":1e400}`, schemas.ReviewSchema()); err == nil || err.Error() != "Runner returned an invalid structured result: Structured result has an unexpected field" {
+		t.Errorf("out-of-range number = %q, %v", got, err)
+	}
+	// Without a schema the answer is plain text and is returned unchanged.
+	text := `{"a":1,"a":2}`
+	if got, err := FinishTurn(text, nil); err != nil || got != text {
+		t.Fatalf("unstructured answer = %q, %v", got, err)
 	}
 }

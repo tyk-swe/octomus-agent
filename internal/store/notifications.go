@@ -162,8 +162,8 @@ func (s *Store) NotificationHealth() (NotificationHealth, error) {
 	return health, nil
 }
 
-// rfc3339 matches chrono's `to_rfc3339` for a UTC instant: seconds precision
-// only when the instant has no sub-second part, otherwise nanoseconds.
+// rfc3339 formats a UTC instant for outbox timestamps: whole seconds when there
+// is no sub-second part, otherwise nanoseconds.
 func rfc3339(at time.Time) string {
 	at = at.UTC()
 	if at.Nanosecond() == 0 {

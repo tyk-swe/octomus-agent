@@ -17,7 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/process"
-	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
 // waitUntil polls ready every 10 ms until it holds or timeout elapses.
@@ -176,7 +176,7 @@ func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := process.Run(ctx, "bash",
+		_, err := process.RunMachine(ctx, "bash",
 			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, 10)
 		done <- err
 	}()
@@ -347,7 +347,7 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 	// counted in the baseline; a leak only ever grows the count.
 	for i := 0; i < 3; i++ {
 		_, _ = process.Capture(context.Background(), "octomus-no-such-binary", nil, temp, 10, process.CaptureDiagnostic)
-		_, _ = process.Run(context.Background(), "true", nil, temp, 10)
+		_, _ = process.RunMachine(context.Background(), "true", nil, temp, 10)
 	}
 	runtime.GC()
 	beforeFDs, beforeG := fds(), runtime.NumGoroutine()
@@ -359,7 +359,7 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 		}
 	}
 	for i := 0; i < 10; i++ {
-		if _, err := process.Run(context.Background(), "true", nil, temp, 10); err != nil {
+		if _, err := process.RunMachine(context.Background(), "true", nil, temp, 10); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -376,12 +376,14 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 // terminal-prompt guard.
 func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	temp := t.TempDir()
-	t.Setenv("OCTOMUS_TOKEN", "test-token-value-that-must-not-leak")
-	t.Setenv("OCTOMUS_NOTIFICATION_WEBHOOK_URL", "https://example.invalid/hook")
+	// The names come from the constants the service reads its secrets from, so
+	// renaming a variable cannot leave the scrubbed name behind.
+	t.Setenv(redact.TokenEnv, "test-token-value-that-must-not-leak")
+	t.Setenv(redact.WebhookEnv, "https://example.invalid/hook")
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
-	out, err := process.Run(context.Background(), "bash", []string{"-c",
-		`printf 't=%s w=%s g=%s' "${OCTOMUS_TOKEN-unset}" "${OCTOMUS_NOTIFICATION_WEBHOOK_URL-unset}" "$GIT_TERMINAL_PROMPT"`},
-		temp, 10)
+	script := fmt.Sprintf(`printf 't=%%s w=%%s g=%%s' "${%s-unset}" "${%s-unset}" "$GIT_TERMINAL_PROMPT"`,
+		redact.TokenEnv, redact.WebhookEnv)
+	out, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, temp, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +411,7 @@ func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
 	t.Setenv("GIT_CONFIG_KEY_0", "user.name")
 	t.Setenv("GIT_CONFIG_VALUE_0", "Kept Operator")
 	script := `for key in "$@"; do printf '%s=%s ' "$key" "${!key-unset}"; done`
-	out, err := process.Run(context.Background(), "bash",
+	out, err := process.RunMachine(context.Background(), "bash",
 		append([]string{"-c", script, "env"}, append(located, "GIT_CONFIG_COUNT")...), temp, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -418,7 +420,7 @@ func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
 	for _, key := range located {
 		want.WriteString(key + "=unset ")
 	}
-	want.WriteString("GIT_CONFIG_COUNT=1")
+	want.WriteString("GIT_CONFIG_COUNT=1 ")
 	if out != want.String() {
 		t.Fatalf("child environment = %q; want %q", out, want.String())
 	}
@@ -616,7 +618,7 @@ exit 1`
 	if n := utf8.RuneCountInString(text); n > failureTextLimit {
 		t.Fatalf("failure text has %d characters; want at most %d", n, failureTextLimit)
 	}
-	if store.ErrorMessage(err) != text {
+	if redact.Error(err) != text {
 		t.Fatal("recording the failure text must not shorten it further")
 	}
 	// Callers wrap failures in context before recording them; the recorded
@@ -626,7 +628,7 @@ exit 1`
 		fmt.Errorf("Repository remote preflight failed: %w",
 			fmt.Errorf("%w: %w", errors.New("Publication result is uncertain; reconcile the preserved output commit"), err)),
 	} {
-		if recorded := store.ErrorMessage(wrapped); !strings.HasSuffix(recorded, "[stderr]\ngh: API rate limit exceeded (HTTP 403)\n") {
+		if recorded := redact.Error(wrapped); !strings.HasSuffix(recorded, "[stderr]\ngh: API rate limit exceeded (HTTP 403)\n") {
 			t.Fatalf("recorded wrapped failure lost the stderr cause: ...%q", recorded[max(len(recorded)-120, 0):])
 		}
 	}

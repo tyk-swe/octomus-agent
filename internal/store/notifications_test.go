@@ -120,6 +120,35 @@ func TestAttentionTriggersEnqueueOneRowPerEpisode(t *testing.T) {
 	}
 }
 
+// The attention triggers name each blocked reason in SQL. Every reason the
+// model defines, "unknown" included, must reach the outbox as its own
+// category through both the insert and the update trigger, never as a
+// silent "unknown".
+func TestAttentionCategoryCoversEveryBlockedReason(t *testing.T) {
+	path := statePath(t)
+	s := open(t, path)
+	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
+	want := []string{}
+	for r := model.BlockedReason(0); r.String() != ""; r++ {
+		putNotificationTask(t, s, "insert-"+r.String(), "blocked", r.String())
+		putNotificationTask(t, s, "update-"+r.String(), "queued", "")
+		putNotificationTask(t, s, "update-"+r.String(), "blocked", r.String())
+		want = append(want, r.String(), r.String())
+	}
+	if len(want) < 2*int(model.BlockedReasonUnknown+1) {
+		t.Fatalf("only %d reasons were enumerated", len(want)/2)
+	}
+	rows := pendingRows(t, path)
+	if len(rows) != len(want) {
+		t.Fatalf("%d pending rows; want %d", len(rows), len(want))
+	}
+	for i, row := range rows {
+		if row["category"] != want[i] || row["action"] != "inspect_task" {
+			t.Fatalf("row %d %+v; want category %q", i, row, want[i])
+		}
+	}
+}
+
 func TestControlErrorPauseEnqueuesOncePerPauseEpisode(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)

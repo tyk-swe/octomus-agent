@@ -23,7 +23,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
-	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
 // blocked attaches a typed reason beneath a detailed message ("message:
@@ -634,8 +634,8 @@ func preparePublication(task model.Task, existing *model.PullRequest, commit str
 	refuse := func(message string) (publicationMetadata, error) {
 		return publicationMetadata{}, blocked(model.BlockedReasonWorkspaceInvalid, message)
 	}
-	title := store.RedactSecrets(task.Proposal.Title)
-	body := store.RedactSecrets(prBody(task, existing, commit))
+	title := redact.Secrets(task.Proposal.Title)
+	body := redact.Secrets(prBody(task, existing, commit))
 	// New PR titles are passed as process arguments, which cannot contain NUL;
 	// keep all public metadata free of it so refusal happens before branch push.
 	if strings.ContainsRune(title, '\x00') || strings.ContainsRune(body, '\x00') {

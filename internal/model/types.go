@@ -25,15 +25,7 @@ type Proposal struct {
 	Reconsiders   []string `json:"reconsiders"`
 }
 
-func (v *Proposal) UnmarshalJSON(data []byte) error {
-	type plain Proposal
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = Proposal(decoded)
-	return nil
-}
+func (v *Proposal) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 func (v Proposal) MarshalJSON() ([]byte, error) {
 	type plain Proposal
 	return wirejson.Record(plain(v))
@@ -50,15 +42,7 @@ type PlanningCapacity struct {
 	Status      PlanningCapacityStatus `json:"status"`
 }
 
-func (v *PlanningCapacity) UnmarshalJSON(data []byte) error {
-	type plain PlanningCapacity
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = PlanningCapacity(decoded)
-	return nil
-}
+func (v *PlanningCapacity) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v PlanningCapacity) MarshalJSON() ([]byte, error) {
 	type plain PlanningCapacity
 	return wirejson.Record(plain(v))
@@ -73,15 +57,7 @@ type AttemptPolicy struct {
 	CommandTimeoutSeconds uint64 `json:"command_timeout_seconds"`
 }
 
-func (v *AttemptPolicy) UnmarshalJSON(data []byte) error {
-	type plain AttemptPolicy
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = AttemptPolicy(decoded)
-	return nil
-}
+func (v *AttemptPolicy) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v AttemptPolicy) MarshalJSON() ([]byte, error) {
 	type plain AttemptPolicy
 	return wirejson.Record(plain(v))
@@ -92,15 +68,7 @@ type WorkspaceLifecycle struct {
 	DiscardedAt *string `json:"discarded_at"`
 }
 
-func (v *WorkspaceLifecycle) UnmarshalJSON(data []byte) error {
-	type plain WorkspaceLifecycle
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = WorkspaceLifecycle(decoded)
-	return nil
-}
+func (v *WorkspaceLifecycle) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v WorkspaceLifecycle) MarshalJSON() ([]byte, error) {
 	type plain WorkspaceLifecycle
 	return wirejson.Record(plain(v))
@@ -113,15 +81,7 @@ type Finding struct {
 	Priority string `json:"priority"`
 }
 
-func (v *Finding) UnmarshalJSON(data []byte) error {
-	type plain Finding
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = Finding(decoded)
-	return nil
-}
+func (v *Finding) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 func (v Finding) MarshalJSON() ([]byte, error) {
 	type plain Finding
 	return wirejson.Record(plain(v))
@@ -133,16 +93,8 @@ type Review struct {
 	Findings  []Finding `json:"findings"`
 }
 
-func (v *Review) UnmarshalJSON(data []byte) error {
-	type plain Review
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = Review(decoded)
-	return nil
-}
-func (v Review) MarshalJSON() ([]byte, error) { type plain Review; return wirejson.Record(plain(v)) }
+func (v *Review) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
+func (v Review) MarshalJSON() ([]byte, error)     { type plain Review; return wirejson.Record(plain(v)) }
 
 type ReviewRound struct {
 	SessionID      string `json:"session_id"`
@@ -152,15 +104,7 @@ type ReviewRound struct {
 	CreatedAt      string `json:"created_at"`
 }
 
-func (v *ReviewRound) UnmarshalJSON(data []byte) error {
-	type plain ReviewRound
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = ReviewRound(decoded)
-	return nil
-}
+func (v *ReviewRound) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v ReviewRound) MarshalJSON() ([]byte, error) {
 	type plain ReviewRound
 	return wirejson.Record(plain(v))
@@ -174,15 +118,7 @@ type Verification struct {
 	CreatedAt string `json:"created_at"`
 }
 
-func (v *Verification) UnmarshalJSON(data []byte) error {
-	type plain Verification
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = Verification(decoded)
-	return nil
-}
+func (v *Verification) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v Verification) MarshalJSON() ([]byte, error) {
 	type plain Verification
 	return wirejson.Record(plain(v))
@@ -196,15 +132,7 @@ type BaselineCommand struct {
 	CreatedAt       string `json:"created_at"`
 }
 
-func (v *BaselineCommand) UnmarshalJSON(data []byte) error {
-	type plain BaselineCommand
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = BaselineCommand(decoded)
-	return nil
-}
+func (v *BaselineCommand) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v BaselineCommand) MarshalJSON() ([]byte, error) {
 	type plain BaselineCommand
 	return wirejson.Record(plain(v))
@@ -224,15 +152,7 @@ type BaselineCheck struct {
 	CleanupError      *string           `json:"cleanup_error"`
 }
 
-func (v *BaselineCheck) UnmarshalJSON(data []byte) error {
-	type plain BaselineCheck
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = BaselineCheck(decoded)
-	return nil
-}
+func (v *BaselineCheck) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v BaselineCheck) MarshalJSON() ([]byte, error) {
 	type plain BaselineCheck
 	return wirejson.Record(plain(v))
@@ -246,13 +166,7 @@ type DefaultBranchObservation struct {
 }
 
 func (v *DefaultBranchObservation) UnmarshalJSON(data []byte) error {
-	type plain DefaultBranchObservation
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = DefaultBranchObservation(decoded)
-	return nil
+	return wirejson.DecodeRecord(data, v)
 }
 func (v DefaultBranchObservation) MarshalJSON() ([]byte, error) {
 	type plain DefaultBranchObservation
@@ -268,15 +182,7 @@ type Session struct {
 	Summary   string       `json:"summary"`
 }
 
-func (v *Session) UnmarshalJSON(data []byte) error {
-	type plain Session
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = Session(decoded)
-	return nil
-}
+func (v *Session) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v Session) MarshalJSON() ([]byte, error) {
 	type plain Session
 	return wirejson.Record(plain(v))
@@ -318,17 +224,9 @@ type Task struct {
 	Lifecycle            WorkspaceLifecycle `json:"lifecycle"`
 }
 
-func (v *Task) UnmarshalJSON(data []byte) error {
-	type plain Task
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = Task(decoded)
-	return nil
-}
-func (v Task) MarshalJSON() ([]byte, error) { type plain Task; return wirejson.Record(plain(v)) }
-func (v Task) Clone() Task                  { return wirejson.Clone(v) }
+func (v *Task) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v Task) MarshalJSON() ([]byte, error)     { type plain Task; return wirejson.Record(plain(v)) }
+func (v Task) Clone() Task                      { return wirejson.Clone(v) }
 
 type PullRequest struct {
 	Number         uint64 `json:"number"`
@@ -346,15 +244,7 @@ type PullRequest struct {
 	BaseRepository string `json:"base_repository"`
 }
 
-func (v *PullRequest) UnmarshalJSON(data []byte) error {
-	type plain PullRequest
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = PullRequest(decoded)
-	return nil
-}
+func (v *PullRequest) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v PullRequest) MarshalJSON() ([]byte, error) {
 	type plain PullRequest
 	return wirejson.Record(plain(v))
@@ -369,15 +259,7 @@ type PrObservation struct {
 	ExternalHeadMovement bool        `json:"external_head_movement"`
 }
 
-func (v *PrObservation) UnmarshalJSON(data []byte) error {
-	type plain PrObservation
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = PrObservation(decoded)
-	return nil
-}
+func (v *PrObservation) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v PrObservation) MarshalJSON() ([]byte, error) {
 	type plain PrObservation
 	return wirejson.Record(plain(v))
@@ -393,15 +275,7 @@ type Grounding struct {
 	MaintenanceTargets []string            `json:"maintenance_targets"`
 }
 
-func (v *Grounding) UnmarshalJSON(data []byte) error {
-	type plain Grounding
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = Grounding(decoded)
-	return nil
-}
+func (v *Grounding) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v Grounding) MarshalJSON() ([]byte, error) {
 	type plain Grounding
 	return wirejson.Record(plain(v))
@@ -421,15 +295,7 @@ type ExternalPrContext struct {
 	BodyTruncated  bool   `json:"body_truncated"`
 }
 
-func (v *ExternalPrContext) UnmarshalJSON(data []byte) error {
-	type plain ExternalPrContext
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = ExternalPrContext(decoded)
-	return nil
-}
+func (v *ExternalPrContext) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v ExternalPrContext) MarshalJSON() ([]byte, error) {
 	type plain ExternalPrContext
 	return wirejson.Record(plain(v))
@@ -448,15 +314,7 @@ type PrCoverage struct {
 	MaxContextBytes  uint64  `json:"max_context_bytes"`
 }
 
-func (v *PrCoverage) UnmarshalJSON(data []byte) error {
-	type plain PrCoverage
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = PrCoverage(decoded)
-	return nil
-}
+func (v *PrCoverage) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v PrCoverage) MarshalJSON() ([]byte, error) {
 	type plain PrCoverage
 	return wirejson.Record(plain(v))
@@ -468,15 +326,7 @@ type OpenPrInventory struct {
 	PRs        []PullRequest `json:"prs"`
 }
 
-func (v *OpenPrInventory) UnmarshalJSON(data []byte) error {
-	type plain OpenPrInventory
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = OpenPrInventory(decoded)
-	return nil
-}
+func (v *OpenPrInventory) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v OpenPrInventory) MarshalJSON() ([]byte, error) {
 	type plain OpenPrInventory
 	return wirejson.Record(plain(v))
@@ -493,15 +343,7 @@ type PrCapacity struct {
 	Reason     *string `json:"reason"`
 }
 
-func (v *PrCapacity) UnmarshalJSON(data []byte) error {
-	type plain PrCapacity
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = PrCapacity(decoded)
-	return nil
-}
+func (v *PrCapacity) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v PrCapacity) MarshalJSON() ([]byte, error) {
 	type plain PrCapacity
 	return wirejson.Record(plain(v))
@@ -525,17 +367,9 @@ type Cycle struct {
 	Lifecycle      WorkspaceLifecycle `json:"lifecycle,omitzero" wire:"default"` // omitted while both timestamps are nil
 }
 
-func (v *Cycle) UnmarshalJSON(data []byte) error {
-	type plain Cycle
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = Cycle(decoded)
-	return nil
-}
-func (v Cycle) MarshalJSON() ([]byte, error) { type plain Cycle; return wirejson.Record(plain(v)) }
-func (v Cycle) Clone() Cycle                 { return wirejson.Clone(v) }
+func (v *Cycle) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v Cycle) MarshalJSON() ([]byte, error)     { type plain Cycle; return wirejson.Record(plain(v)) }
+func (v Cycle) Clone() Cycle                     { return wirejson.Clone(v) }
 
 type RunBatch struct {
 	ID      string     `json:"id"`
@@ -543,15 +377,7 @@ type RunBatch struct {
 	CycleID *string    `json:"cycle_id"`
 }
 
-func (v *RunBatch) UnmarshalJSON(data []byte) error {
-	type plain RunBatch
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = RunBatch(decoded)
-	return nil
-}
+func (v *RunBatch) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v RunBatch) MarshalJSON() ([]byte, error) {
 	type plain RunBatch
 	return wirejson.Record(plain(v))
@@ -569,6 +395,13 @@ type Control struct {
 	ContextFingerprint string        `json:"context_fingerprint"`
 }
 
+func (c *Control) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, c) }
+func (c Control) MarshalJSON() ([]byte, error) {
+	type plain Control
+	return wirejson.Record(plain(c))
+}
+func (c Control) Clone() Control { return wirejson.Clone(c) }
+
 type Event struct {
 	ID       int64  `json:"id"`
 	At       string `json:"at"`
@@ -577,13 +410,5 @@ type Event struct {
 	Message  string `json:"message"`
 }
 
-func (v *Event) UnmarshalJSON(data []byte) error {
-	type plain Event
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = Event(decoded)
-	return nil
-}
-func (v Event) MarshalJSON() ([]byte, error) { type plain Event; return wirejson.Record(plain(v)) }
+func (v *Event) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v Event) MarshalJSON() ([]byte, error)     { type plain Event; return wirejson.Record(plain(v)) }
