@@ -50,8 +50,13 @@ echo $! > '{root}/home/child.pid'
     assert (root / 'home/state').exists() and (root / 'checkout/source').exists()
     assert not (root / 'forbidden/escape').exists()
     pid = (root / 'home/child.pid').read_text().strip()
-    stat = Path(f'/proc/{pid}/stat')
-    assert not stat.exists() or stat.read_text().split()[2] == 'Z', 'Child survived control-group cleanup'
+    # Gone means reaped or a zombie; the state follows the last ')', since the
+    # command name before it may contain spaces or parentheses.
+    try:
+        state = Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        state = 'reaped'
+    assert state in ['reaped', 'Z', 'X'], f'Child survived control-group cleanup (state {state})'
     print('PASS systemd: allowed writes, protected filesystem and child cleanup')
 finally:
     subprocess.run(['systemctl', 'stop', unit], check=False, capture_output=True)

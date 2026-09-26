@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from e2e import Service, setup, existing_pr, git, usage_report, TOKEN
+from e2e import Service, setup, existing_pr, git, process_gone, usage_report, TOKEN
 
 
 def run(mode):
@@ -351,6 +351,7 @@ def run(mode):
                 assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
             service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot completion')
             cycles = len(service.request('/state')['cycles'])
+            # Past one scheduler tick (schedulerInterval in internal/engine/engine.go).
             service.stop(); service.start(); time.sleep(1.2)
             assert service.request('/state')['control']['mode'] == 'paused'
             assert len(service.request('/state')['cycles']) == cycles
@@ -415,13 +416,7 @@ def reconciliation_deadline():
             assert len(calls) == 2 and calls[0]['args'][:2] == ['auth', 'status'] and calls[1]['args'][0] == 'api', calls
             for call in calls:
                 for pid in [call['pid'], call['child_pid']]:
-                    stat = Path(f'/proc/{pid}/stat')
-                    def stopped():
-                        try:
-                            return ') Z' in stat.read_text()
-                        except FileNotFoundError:
-                            return True
-                    service.wait(stopped, f'reconciliation process {pid} stopped', seconds=2)
+                    service.wait(lambda: process_gone(pid), f'reconciliation process {pid} stopped', seconds=2)
             (root / 'reconcile-delay').unlink()
             service.request('/tasks/' + task['id'] + '/retry', 'POST')
             service.request('/control/cycle', 'POST')

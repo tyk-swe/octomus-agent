@@ -59,6 +59,19 @@ def service_log(root, tail=None):
     return text if tail is None else '\n'.join(text.splitlines()[-tail:])
 
 
+def process_gone(pid):
+    """Whether `pid` has exited: reaped, or a zombie its parent has not reaped yet.
+
+    The state is the first field after the last ')', because the command name
+    before it is arbitrary text and may itself contain ') Z'.
+    """
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text()
+    except (FileNotFoundError, ProcessLookupError):  # Reaped before or while reading.
+        return True
+    return stat.rpartition(')')[2].split()[0] in ['Z', 'X']
+
+
 def base_config(service, commands, **overrides):
     """Loads the saved display configuration every scenario starts from.
 
@@ -653,6 +666,8 @@ def audit_scenario(mode):
                 assert row['planning_admissions'] == 13
             service.stop()
             service.start()
+            # Negative checks sleep past a scheduler tick (schedulerInterval,
+            # 1 s, in internal/engine/engine.go) so a restart could act first.
             time.sleep(1.2)
             assert service.request('/state')['tasks'] == queued_before
             current_publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
@@ -670,11 +685,13 @@ def audit_scenario(mode):
 
 
 def harness_scenario():
-    """Service.wait against a scripted HTTP peer (no service binary).
+    """The harness itself, against a scripted HTTP peer and plain child
+    processes (no service binary).
 
     Error responses, even ones whose body is cut short, are retried until the
     predicate succeeds. A timeout raises one labelled report with the last
     error, the /state outcome (even when unreadable) and the service.log tail.
+    process_gone tells a live process from a zombie or a reaped one.
     """
     calls = {}
 
@@ -740,7 +757,22 @@ def harness_scenario():
             server.shutdown()
             server.server_close()
             service.log.close()
-    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop')
+
+    # A live process whose command name mimics a zombie's stat line.
+    child = subprocess.Popen([sys.executable, '-c', "from pathlib import Path; import time; Path('/proc/self/comm').write_text('x) Z 0'); print('ready', flush=True); time.sleep(30)"], stdout=subprocess.PIPE, text=True)
+    try:
+        with child.stdout:
+            assert child.stdout.readline() == 'ready\n'
+        assert ') Z 0)' in Path(f'/proc/{child.pid}/stat').read_text()
+        assert not process_gone(child.pid)
+        child.kill()
+        assert poll(lambda: process_gone(child.pid), 5), 'killed child never became a zombie'
+        assert Path(f'/proc/{child.pid}').exists(), 'the zombie was reaped early'
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+    assert process_gone(child.pid)
+    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field')
 
 
 if __name__ == '__main__':

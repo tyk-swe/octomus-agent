@@ -7,7 +7,7 @@ import shutil
 import signal
 import tempfile
 
-from e2e import Service, base_config, setup, usage_report, git
+from e2e import Service, base_config, process_gone, setup, usage_report, git
 
 
 def route(backend, planning=False, provider='fixture', variant='high'):
@@ -185,8 +185,7 @@ def task_deadline():
             task = service.wait(service.terminal_task, 'task deadline cleanup', seconds=20)
             assert task['status'] == 'blocked' and task['error'] == 'Task time limit exceeded', task
             pid = int((root / 'opencode-child-pid').read_text())
-            stat = Path(f'/proc/{pid}/stat')
-            assert not stat.exists() or ') Z' in stat.read_text(), 'Detached shell survived the task deadline'
+            assert process_gone(pid), 'Detached shell survived the task deadline'
             assert (root / 'opencode-aborts.jsonl').exists()
             assert not (root / 'publications.jsonl').exists()
             print('PASS task deadline: abort finishes before server cleanup; no detached shell or publication')
