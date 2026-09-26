@@ -87,6 +87,24 @@ func TestCodexModelsPagination(t *testing.T) {
 	}
 }
 
+// A Codex app-server that fails while initializing reports its redacted
+// stderr with the disconnect.
+func TestCodexStartupFailureReportsStderr(t *testing.T) {
+	f := codexFixture(t)
+	f.mode("codex", "init-failure")
+	client, err := f.connectCodex(context.Background())
+	if client != nil {
+		client.Close()
+		t.Fatal("a failed initialize must not connect")
+	}
+	if !errors.Is(err, errCodexDisconnected) || !strings.Contains(err.Error(), "; stderr: fixture init failure token=[redacted]") {
+		t.Fatalf("connect error must explain the failure: %v", err)
+	}
+	if strings.Contains(err.Error(), "ghp_") {
+		t.Fatalf("connect error leaked a secret: %v", err)
+	}
+}
+
 // A held turn exceeds the session limit, interrupts the turn, and the
 // unawaited interrupt response must not satisfy the next RPC.
 func TestCodexTimeoutInterruptsTurn(t *testing.T) {

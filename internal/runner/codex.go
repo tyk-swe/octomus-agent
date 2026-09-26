@@ -78,6 +78,10 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	}
 	cmd.Stdin = stdinR
 	cmd.Stdout = stdoutW
+	// Stderr is kept only as a bounded tail that explains a connect failure.
+	tail := &stderrTail{}
+	cmd.Stderr = tail
+	cmd.WaitDelay = stderrWaitDelay
 	if err := cmd.Start(); err != nil {
 		stdinR.Close()
 		stdinW.Close()
@@ -106,7 +110,7 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	go func() { c.waitCh <- cmd.Wait() }()
 	fail := func(err error) (*Codex, error) {
 		_ = c.Close()
-		return nil, err
+		return nil, tail.explain(err)
 	}
 	if _, err := c.rpc("initialize", map[string]any{
 		"clientInfo":   map[string]any{"name": "octomus_agent", "title": "Octomus Agent", "version": octomus.Version},

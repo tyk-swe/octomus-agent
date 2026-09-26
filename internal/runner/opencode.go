@@ -119,6 +119,10 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		return nil, err
 	}
 	cmd.Stdout = stdoutW
+	// Stderr is kept only as a bounded tail that explains a connect failure.
+	tail := &stderrTail{}
+	cmd.Stderr = tail
+	cmd.WaitDelay = stderrWaitDelay
 	if err := cmd.Start(); err != nil {
 		stdoutR.Close()
 		stdoutW.Close()
@@ -137,7 +141,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		child.Close()
 		stdoutR.Close()
 		_ = joinOwned(waitCh, drained(lines), "OpenCode server did not exit during cleanup")
-		return nil, err
+		return nil, tail.explain(err)
 	}
 	base, err := process.Bounded(ctx, min(cfg.CommandTimeoutSeconds, 60), "OpenCode startup timed out", func(wctx context.Context) (string, error) {
 		for range 1000 {
@@ -194,7 +198,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	// goroutine, and child wait; the connect error is still the result.
 	fail := func(err error) (*OpenCode, error) {
 		_ = server.Close()
-		return nil, err
+		return nil, tail.explain(err)
 	}
 	health, err := server.json("GET", "/global/health", cwd, nil, 60)
 	if err != nil {

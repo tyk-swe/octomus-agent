@@ -1,17 +1,78 @@
 package runner
 
-// Shared cleanup for the owned Codex app-server and OpenCode server children.
+// Shared cleanup and startup diagnostics for the owned Codex app-server and
+// OpenCode server children.
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
+	"unicode"
+
+	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // cleanupBudget bounds how long an owner waits for its killed child and the
 // child's stdout reader to finish.
 const cleanupBudget = 30 * time.Second
+
+// stderrWaitDelay bounds how long a child's wait waits for its stderr to close
+// after the child exits, in case a descendant still holds it.
+const stderrWaitDelay = 2 * time.Second
+
+// stderrTailLimit bounds the stderr bytes kept to explain a connect failure.
+const stderrTailLimit = 2048
+
+// stderrTail keeps the last bytes a child wrote to stderr so a connect failure
+// can say why. It is reported only on connect failures and never persisted
+// otherwise, so no raw transcript is kept.
+type stderrTail struct {
+	mu   sync.Mutex
+	data []byte
+	cut  bool
+}
+
+// Write keeps the last stderrTailLimit bytes and never fails.
+func (t *stderrTail) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.data = append(t.data, p...)
+	if extra := len(t.data) - stderrTailLimit; extra > 0 {
+		t.data = append(t.data[:0], t.data[extra:]...)
+		t.cut = true
+	}
+	return len(p), nil
+}
+
+// explain appends the redacted stderr tail to a connect failure, keeping err
+// in the chain. Call it only after the child's wait has been joined, so the
+// tail is complete.
+func (t *stderrTail) explain(err error) error {
+	t.mu.Lock()
+	text, cut := string(t.data), t.cut
+	t.mu.Unlock()
+	text = strings.TrimRightFunc(text, unicode.IsSpace)
+	if cut {
+		// The cut can split a secret so that redaction no longer recognises
+		// it; report only whole lines, or the whole words of one long line.
+		if _, rest, found := strings.Cut(text, "\n"); found {
+			text = rest
+		} else if i := strings.IndexFunc(text, unicode.IsSpace); i >= 0 {
+			text = text[i:]
+		} else {
+			text = ""
+		}
+	}
+	text = strings.TrimSpace(strings.ToValidUTF8(text, "\uFFFD"))
+	if text == "" {
+		return err
+	}
+	return fmt.Errorf("%w; stderr: %s", err, store.Redact(text))
+}
 
 // drained discards lines until the reader closes them and reports that.
 func drained(lines <-chan lineResult) <-chan struct{} {
@@ -51,7 +112,8 @@ func killed(err error) bool {
 }
 
 // joinOwned waits, under the cleanup budget, for an owned child's exit and for
-// its stdout reader. A SIGKILL exit is expected; any other exit error is
+// its stdout reader. A SIGKILL exit is expected, as is a clean exit whose
+// stderr a descendant held past stderrWaitDelay; any other exit error is
 // returned, and stuck is joined in when the budget runs out. Each channel is
 // consumed once and then ignored, because a closed channel fires repeatedly.
 func joinOwned(waitCh <-chan error, readerDone <-chan struct{}, stuck string) error {
@@ -61,7 +123,7 @@ func joinOwned(waitCh <-chan error, readerDone <-chan struct{}, stuck string) er
 	for waitCh != nil || readerDone != nil {
 		select {
 		case err := <-waitCh:
-			if err != nil && !killed(err) {
+			if err != nil && !killed(err) && !errors.Is(err, exec.ErrWaitDelay) {
 				errs = errors.Join(errs, err)
 			}
 			waitCh = nil

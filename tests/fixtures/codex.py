@@ -19,6 +19,12 @@ threads.mkdir(exist_ok=True)
 def mode():
     return worker_mode('codex')
 
+if mode() == 'init-failure':
+    # The app-server rejects its configuration while initializing.
+    sys.stdin.readline()
+    print('fixture init failure token=ghp_fixtureStartupSecret0001', file=sys.stderr, flush=True)
+    sys.exit(2)
+
 def emit(value):
     print(json.dumps(value), flush=True)
 

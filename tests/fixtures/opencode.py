@@ -24,6 +24,9 @@ if sys.argv[1:] == ['--version']:
     sys.exit(0)
 if mode() == 'startup-failure':
     sys.exit(1)
+if mode() == 'startup-stderr':
+    print('fixture startup failure token=ghp_fixtureStartupSecret0001', file=sys.stderr, flush=True)
+    sys.exit(1)
 if mode() == 'startup-hang':
     time.sleep(120)
 assert sys.argv[1] == 'serve'
@@ -103,7 +106,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.setup_request():
             return
-        if self.parts == ['global', 'health']:
+        if self.parts == ['global', 'health'] and mode() == 'unhealthy-stderr':
+            print('fixture health failure token=ghp_fixtureStartupSecret0001', file=sys.stderr, flush=True)
+            self.send_json({'healthy': False, 'version': '1.18.30'})
+        elif self.parts == ['global', 'health']:
             self.send_json({'healthy': True, 'version': '0.0.0-fixture' if mode() == 'version-mismatch' else '1.18.30'})
         elif self.parts == ['config']:
             self.send_json({**policy, 'share': 'auto'} if mode() == 'wrong-policy' else policy)

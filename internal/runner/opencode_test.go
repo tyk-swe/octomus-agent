@@ -343,6 +343,29 @@ func TestOpenCodeStdoutStaysDrainedAfterOverlongLine(t *testing.T) {
 	}
 }
 
+// Connect failures before and after readiness report the server's redacted
+// stderr; a silent failure keeps its plain message.
+func TestOpenCodeStartupFailureReportsStderr(t *testing.T) {
+	for mode, want := range map[string]string{
+		"startup-failure":  "OpenCode exited before server readiness",
+		"startup-stderr":   "OpenCode exited before server readiness; stderr: fixture startup failure token=[redacted]",
+		"unhealthy-stderr": "OpenCode is not healthy; stderr: fixture health failure token=[redacted]",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			f := opencodeFixture(t)
+			f.mode("opencode", mode)
+			client, err := f.connect(context.Background())
+			if client != nil {
+				client.Close()
+				t.Fatalf("%s must not connect", mode)
+			}
+			if err == nil || err.Error() != want {
+				t.Fatalf("connect error: %v", err)
+			}
+		})
+	}
+}
+
 // A redirect is never followed; the 3xx response fails closed.
 func TestOpenCodeRedirectRefusal(t *testing.T) {
 	f := opencodeFixture(t)

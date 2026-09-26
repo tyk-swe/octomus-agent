@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -93,6 +94,27 @@ func TestJoinOwnedReportsUnexpectedExits(t *testing.T) {
 	if err := joinOwned(waitCh, closed, "stuck"); err == nil || !strings.Contains(err.Error(), "exit status 3") {
 		t.Fatalf("an unexpected exit must be reported: %v", err)
 	}
+
+	// A clean exit whose stderr a descendant still holds ends the wait with
+	// ErrWaitDelay, which is not a failure.
+	cmd := process.Command("sh", t.TempDir())
+	cmd.Args = append(cmd.Args, "-c", "sleep 5 & exit 0")
+	cmd.Stderr = &stderrTail{}
+	cmd.WaitDelay = 100 * time.Millisecond
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(process.NewGroupChild(cmd).Close)
+	held := make(chan error, 1)
+	go func() { held <- cmd.Wait() }()
+	err := waitResult(t, held)
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("the fixture must end its wait with ErrWaitDelay: %v", err)
+	}
+	held <- err
+	if err := joinOwned(held, closed, "stuck"); err != nil {
+		t.Fatalf("a held stderr after a clean exit must join cleanly: %v", err)
+	}
 }
 
 // A server's stdout stays drained after an over-long line ends the line
@@ -138,5 +160,56 @@ func TestDiscardStdoutSurvivesOverlongLine(t *testing.T) {
 				t.Fatal("the drain did not end")
 			}
 		})
+	}
+}
+
+// The stderr tail keeps a bounded end of the stream, reports only whole lines
+// or words once it was cut, redacts secrets and leaves a silent failure as is.
+func TestStderrTailExplainsConnectFailures(t *testing.T) {
+	cause := errors.New("connect failed")
+	if err := (&stderrTail{}).explain(cause); err != cause {
+		t.Fatalf("no stderr must keep the error: %v", err)
+	}
+	tail := &stderrTail{}
+	fmt.Fprint(tail, "  \n\t ")
+	if err := tail.explain(cause); err != cause {
+		t.Fatalf("blank stderr must keep the error: %v", err)
+	}
+
+	tail = &stderrTail{}
+	fmt.Fprint(tail, "warming up\nconfig invalid: token ghp_fixtureStartupSecret0001\n")
+	err := tail.explain(cause)
+	if !errors.Is(err, cause) || err.Error() != "connect failed; stderr: warming up\nconfig invalid: token [redacted]" {
+		t.Fatalf("explained error: %q", err)
+	}
+
+	// A secret cut at the start of the kept tail is dropped with its line.
+	tail = &stderrTail{}
+	fmt.Fprint(tail, "token ghp_fixtureStartupSecret0001\n")
+	kept := "StartupSecret0001\n"
+	rest := strings.Repeat("y", stderrTailLimit-len(kept)-len("\nlast line")) + "\nlast line"
+	fmt.Fprint(tail, rest)
+	if len(tail.data) != stderrTailLimit || !strings.HasPrefix(string(tail.data), kept) {
+		t.Fatalf("fixture math: %d %q", len(tail.data), string(tail.data[:20]))
+	}
+	if err := tail.explain(cause); err.Error() != "connect failed; stderr: "+rest {
+		t.Fatalf("cut tail: %q", err)
+	}
+
+	// One long line, terminated or not, keeps only whole words after the cut.
+	for _, end := range []string{"", "\n"} {
+		tail = &stderrTail{}
+		fmt.Fprint(tail, "ghp_fixtureStartupSecret0001 "+strings.Repeat("word ", stderrTailLimit/5)+end)
+		err = tail.explain(cause)
+		if strings.Contains(err.Error(), "Secret") || !strings.HasSuffix(err.Error(), "; stderr: "+strings.TrimSpace(strings.Repeat("word ", (stderrTailLimit-2)/5))) {
+			t.Fatalf("long line: %q", err)
+		}
+	}
+
+	// A cut run with no line or word boundary is not reported at all.
+	tail = &stderrTail{}
+	fmt.Fprint(tail, strings.Repeat("z", 3*stderrTailLimit))
+	if err := tail.explain(cause); err != cause {
+		t.Fatalf("an unbroken cut run must not be reported: %v", err)
 	}
 }
