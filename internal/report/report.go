@@ -58,6 +58,8 @@ type TierRow struct {
 	Admissions    uint64 `json:"admissions"`
 }
 
+// Report is the usage report. HasAdmissionLedger is always true on version-7
+// state; the field keeps the report shape stable.
 type Report struct {
 	SchemaVersion      uint32            `json:"schema_version"`
 	GeneratedAt        string            `json:"generated_at"`
@@ -121,17 +123,11 @@ func UsageReport(path string) (map[string]any, error) {
 }
 
 func assemble(c *sql.Conn) (Report, error) {
-	ctx := store.Background()
-	var hasLedger bool
-	if err := c.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='admissions')").Scan(&hasLedger); err != nil {
+	// Every version-7 database has the admission ledger; OpenReadOnly refuses
+	// any other schema.
+	admissions, err := queryJSON[store.Admission](c, "SELECT data FROM admissions ORDER BY at,id")
+	if err != nil {
 		return Report{}, err
-	}
-	admissions := []store.Admission{}
-	if hasLedger {
-		var err error
-		if admissions, err = queryJSON[store.Admission](c, "SELECT data FROM admissions ORDER BY at,id"); err != nil {
-			return Report{}, err
-		}
 	}
 	cycles, err := records[model.Cycle](c, "cycle")
 	if err != nil {
@@ -216,7 +212,7 @@ func assemble(c *sql.Conn) (Report, error) {
 		tiers = append(tiers, row)
 	}
 	return Report{
-		SchemaVersion: 1, GeneratedAt: model.Now(), HasAdmissionLedger: hasLedger,
+		SchemaVersion: 1, GeneratedAt: model.Now(), HasAdmissionLedger: true,
 		Measurement: Measurement, Daily: daily, Cycles: cycleRows, Tasks: taskRows,
 		Tiers: tiers, Admissions: admissions,
 	}, nil

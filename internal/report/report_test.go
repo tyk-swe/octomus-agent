@@ -17,8 +17,7 @@ import (
 // (json() and json_extract() reject it), the shape of an I/O or corruption
 // error partway through a scan. Primary keys match each report query's order,
 // so rows stream from the index instead of a sorter that would evaluate them
-// all before the first row. The main admissions table still marks the ledger
-// as present.
+// all before the first row.
 func ledgerFixture(t *testing.T) *sql.Conn {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
