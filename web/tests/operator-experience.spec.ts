@@ -309,6 +309,40 @@ test('baseline refresh preserves server staleness and rejects obsolete responses
   expect(state.baselines).toHaveLength(0);
 });
 
+test('opening Configuration reads the baseline status once, and a new saved revision reads it again at once', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  // Each read is held open until released, so a second read can only come from something
+  // that starts one alongside it: polling waits for the read in flight.
+  let gate = deferred();
+  let reads = 0;
+  await page.route('**/api/baseline-checks/latest', async (route) => {
+    reads++;
+    await gate.promise;
+    await route.fulfill({ json: state.baselineView }).catch(() => {});
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  await expect.poll(() => reads).toBe(1);
+  await page.waitForTimeout(1000);
+  expect(reads).toBe(1);
+  gate.resolve();
+  await expect(page.locator('#check-baseline')).toBeEnabled();
+
+  // The next poll's read is held; saving a change must not wait for it.
+  gate = deferred();
+  await expect.poll(() => reads, { timeout: 10000 }).toBe(2);
+  await page.getByLabel('Default branch', { exact: true }).fill('baseline-main');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  await expect.poll(() => reads).toBe(3);
+  gate.resolve();
+  await expect(page.locator('#check-baseline')).toBeEnabled();
+  expect(state.baselines).toHaveLength(0);
+});
+
 test('the baseline confirmation takes focus, and Back returns it to the button that opened it', async ({
   page,
   isMobile

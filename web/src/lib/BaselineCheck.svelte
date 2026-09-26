@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { api, relative } from './api';
   import { baselineStatusLabel, type Tone } from './evidence';
   import type { BaselineCheck, BaselineView } from './types';
@@ -15,7 +15,7 @@
     active: boolean;
     editable: boolean;
     /** Canonical revision of the saved configuration; the check always runs that exact state. */
-    savedRevision: string | null;
+    savedRevision: string;
     dirty: boolean;
     onchanged: () => void;
   } = $props();
@@ -23,12 +23,12 @@
     error = $state(''),
     pending = $state(''),
     confirming = $state(false);
-  let generation = 0,
-    lastSaved = '';
+  let generation = 0;
+  /** The revision already read on mount; only a later saved revision forces a new read. */
+  let lastSaved = untrack(() => savedRevision);
   let request: AbortController | null = null;
   const check = $derived(view?.check ?? null);
   const running = $derived(check?.status === 'running');
-  const savedKey = $derived(savedRevision ?? '');
   const configMatches = $derived(
     view?.config_matches === false ||
       (check && savedRevision && check.config_fingerprint !== savedRevision)
@@ -80,10 +80,10 @@
     };
   });
   $effect(() => {
-    if (savedKey === lastSaved) return;
-    lastSaved = savedKey;
+    if (savedRevision === lastSaved) return;
+    lastSaved = savedRevision;
     confirming = false;
-    generation += 1;
+    // The forced load supersedes any read still in flight for the previous revision.
     if (active) void load(true);
   });
   $effect(() => {
