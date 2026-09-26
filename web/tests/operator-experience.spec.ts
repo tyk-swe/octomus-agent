@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { test, expect, type Locator, type Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 import type {
   BaselineView,
   Config,
@@ -297,6 +298,51 @@ test('baseline refresh preserves server staleness and rejects obsolete responses
   ).toBeVisible();
   await expect(page.getByText('Obsolete baseline response')).toHaveCount(0);
   expect(state.baselines).toHaveLength(0);
+});
+
+test('the baseline confirmation takes focus, and Back returns it to the button that opened it', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const open = page.locator('#check-baseline');
+  await expect(open).toBeEnabled();
+  await open.focus();
+  await page.keyboard.press('Enter');
+  // The confirmation replaces the focused button; focus moves into it, never to the page.
+  const dialog = page.getByRole('alertdialog', { name: 'Confirm baseline check' });
+  const run = dialog.getByRole('button', { name: 'Run baseline check' });
+  await expect(run).toBeFocused();
+  await expect(dialog).toHaveAccessibleDescription(
+    /^Run the saved verification commands on a disposable clone/
+  );
+  const accessibility = await new AxeBuilder({ page })
+    .include('[role="alertdialog"]')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(
+    accessibility.violations.map((v) => ({ rule: v.id, elements: v.nodes.map((n) => n.target) }))
+  ).toEqual([]);
+  await page.keyboard.press('Tab');
+  await expect(dialog.getByRole('button', { name: 'Back' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(open).toBeFocused();
+
+  // Closing because the operator started an edit leaves focus on the field being edited.
+  await open.click();
+  await expect(run).toBeFocused();
+  const branch = page.getByLabel('Default branch', { exact: true });
+  await branch.fill('edited-main');
+  await expect(dialog).toHaveCount(0);
+  await expect(open).toBeDisabled();
+  await expect(branch).toBeFocused();
+  await page.keyboard.type('-next');
+  await expect(branch).toHaveValue('edited-main-next');
+  expect(state.baselines).toHaveLength(0);
+  expect(state.writes).toHaveLength(0);
 });
 
 test('the baseline panel never denies a recorded check while its status loads or is unavailable', async ({

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { api, relative } from './api';
   import { baselineStatusLabel, type Tone } from './evidence';
   import type { BaselineCheck, BaselineView } from './types';
@@ -92,6 +93,21 @@
     )
       confirming = false;
   });
+  /**
+   * The confirmation replaces the button that opened it, so focus moves into the dialog and
+   * back to that button on Back. An automatic close (an edit, a new revision) never moves
+   * focus: the operator is working elsewhere.
+   */
+  async function openConfirm() {
+    confirming = true;
+    await tick();
+    document.getElementById('run-baseline-check')?.focus();
+  }
+  async function closeConfirm() {
+    confirming = false;
+    await tick();
+    document.getElementById('check-baseline')?.focus();
+  }
   async function start() {
     if (!savedRevision || !editable || dirty || pending || view?.eligible !== true) return;
     confirming = false;
@@ -227,19 +243,26 @@
       Save or discard edits before checking the baseline.
     </p>{/if}
   {#if confirming}
-    <div class="notice" role="alertdialog" aria-label="Confirm baseline check">
-      <p>
+    <div
+      class="notice"
+      role="alertdialog"
+      aria-label="Confirm baseline check"
+      aria-describedby="baseline-confirm-text"
+    >
+      <p id="baseline-confirm-text">
         Run the saved verification commands on a disposable clone of the remote default branch?
         Commands run with the service user's permissions and may have external effects. No model
         calls or tasks will be created.
       </p>
       <div class="actions">
-        <button class="button primary" onclick={start} disabled={pending !== ''}
+        <button
+          id="run-baseline-check"
+          class="button primary"
+          onclick={start}
+          disabled={pending !== ''}
           >{pending === 'start' ? 'Starting…' : 'Run baseline check'}</button
         >
-        <button class="button" onclick={() => (confirming = false)} disabled={pending !== ''}
-          >Back</button
-        >
+        <button class="button" onclick={closeConfirm} disabled={pending !== ''}>Back</button>
       </div>
     </div>
   {:else}
@@ -247,7 +270,7 @@
       <button
         id="check-baseline"
         class="button"
-        onclick={() => (confirming = true)}
+        onclick={openConfirm}
         disabled={!savedRevision || !editable || dirty || pending !== '' || view?.eligible !== true}
         ><Icon name="shield" size={16} />Check clean baseline</button
       >
