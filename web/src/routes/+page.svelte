@@ -385,14 +385,14 @@
       if (p.detailLoading === revision) p.detailLoading = undefined;
     }
   }
-  async function cycleAction(value: string) {
+  async function cycleAction(value: 'archive' | 'discard') {
     if (busy) return;
     const currentSession = sessionGeneration;
     busy = true;
     pendingAction = value;
     error = '';
     try {
-      await api(`/cycles/${proposalCycle}/${value}`, 'POST');
+      await api(`/cycles/${encodeURIComponent(proposalCycle)}/${value}`, 'POST');
       await loadCycles();
       await refresh();
     } catch (e) {

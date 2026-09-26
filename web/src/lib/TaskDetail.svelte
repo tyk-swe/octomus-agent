@@ -127,7 +127,7 @@
     loading = true;
     try {
       const [nextTask, nextEvents] = await Promise.all([
-        api<Task>(`/tasks/${id}`, 'GET', undefined, controller.signal),
+        api<Task>(`/tasks/${encodeURIComponent(id)}`, 'GET', undefined, controller.signal),
         api<Event[]>(
           `/events?entity=${encodeURIComponent(id)}`,
           'GET',
@@ -177,7 +177,7 @@
     busy = true;
     error = '';
     try {
-      await api(`/tasks/${id}/${value}`, 'POST');
+      await api(`/tasks/${encodeURIComponent(id)}/${encodeURIComponent(value)}`, 'POST');
       await load(true);
       onaction();
     } catch (e) {

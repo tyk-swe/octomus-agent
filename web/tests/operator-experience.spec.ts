@@ -1973,6 +1973,67 @@ test('a polled change to task actions keeps keyboard focus on the same action', 
   await expect(archive).toBeFocused();
 });
 
+test('a record identity stays one path segment in every request', async ({ page, isMobile }) => {
+  // Service identities are UUIDs, but no path may rely on that: an identity holding a
+  // reserved character must still address its own record, never another endpoint.
+  const taskId = 'synthetic/task?one#two';
+  const cycleId = 'synthetic/cycle?one#two';
+  const requests: string[] = [];
+  page.on('request', (request) => {
+    const { pathname } = new URL(request.url());
+    if (/^\/api\/(tasks|cycles)\//.test(pathname)) requests.push(`${request.method()} ${pathname}`);
+  });
+  await page.route('**/api/tasks?*', async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { items: TaskRow[] };
+    body.items = body.items.map((row) =>
+      row.id === 'task-blocked' ? { ...row, id: taskId } : row
+    );
+    await route.fulfill({ response, json: body });
+  });
+  const taskPath = `/api/tasks/${encodeURIComponent(taskId)}`;
+  await page.route(
+    (url) => url.pathname === taskPath,
+    async (route) => {
+      const url = new URL('/api/tasks/task-blocked', route.request().url()).toString();
+      const response = await route.fetch({ url });
+      const task = (await response.json()) as Task;
+      await route.fulfill({ response, json: { ...task, id: taskId } });
+    }
+  );
+  await page.route(
+    (url) => url.pathname === `${taskPath}/archive`,
+    (route) => route.fulfill({ json: { ok: true } })
+  );
+  await page.route('**/api/cycles?*', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.items = body.items.map((cycle: { id: string }) =>
+      cycle.id === 'cycle-1' ? { ...cycle, id: cycleId } : cycle
+    );
+    await route.fulfill({ response, json: body });
+  });
+  const cyclePath = `/api/cycles/${encodeURIComponent(cycleId)}`;
+  await page.route(
+    (url) => url.pathname === `${cyclePath}/archive`,
+    (route) => route.fulfill({ json: { ok: true } })
+  );
+  await login(page);
+  await openNavigation(page, 'Task queue', !!isMobile);
+  await page.getByRole('button', { name: /Handle interrupted verification commands/ }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Archive task' }).click();
+  await expect.poll(() => requests).toContain(`POST ${taskPath}/archive`);
+  expect(requests).toContain(`GET ${taskPath}`);
+  await dialog.getByRole('button', { name: 'Close task details' }).click();
+  await openNavigation(page, 'Proposals', !!isMobile);
+  await page.getByLabel('Cycle', { exact: true }).selectOption(cycleId);
+  await page.getByRole('button', { name: 'Archive cycle', exact: true }).click();
+  await expect.poll(() => requests).toContain(`POST ${cyclePath}/archive`);
+  // No request ever split an identity into a second path segment.
+  expect(requests.filter((request) => request.includes('/synthetic/'))).toEqual([]);
+});
+
 test('an action taken while a poll is in flight shows the state after the action', async ({
   page
 }) => {

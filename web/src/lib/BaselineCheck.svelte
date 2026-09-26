@@ -129,7 +129,7 @@
     pending = 'cancel';
     error = '';
     try {
-      await api(`/baseline-checks/${id}/cancel`, 'POST');
+      await api(`/baseline-checks/${encodeURIComponent(id)}/cancel`, 'POST');
       await load(true);
       onchanged();
     } catch (e) {
