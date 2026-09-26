@@ -25,12 +25,17 @@ type TaskRunner interface {
 	RunTask(context.Context, model.Task) error
 }
 
+// TaskRunnerFunc adapts a function to TaskRunner.
 type TaskRunnerFunc func(context.Context, model.Task) error
 
+// RunTask calls f.
 func (f TaskRunnerFunc) RunTask(ctx context.Context, task model.Task) error { return f(ctx, task) }
 
+// Option adjusts an App as New builds it, before any work can start.
 type Option func(*App)
 
+// WithTaskRunner replaces the supervised execution lifecycle that owns each
+// admitted task; tests use it to observe or script dispatch.
 func WithTaskRunner(runner TaskRunner) Option { return func(a *App) { a.taskRunner = runner } }
 
 // WithRunnerConnector makes every runner client the engine builds (task
@@ -66,22 +71,44 @@ type taskJob struct {
 	cancel context.CancelFunc
 }
 
+// runtimeState is the process-local picture of in-flight work, guarded by
+// App.runtimeMu. Nothing here is durable: a restart starts from an empty
+// runtime and Recover turns interrupted durable records into explicit state.
 type runtimeState struct {
-	cycle                  *cycleJob
-	preflight              bool
-	preflightMode          model.CycleMode
-	tasks                  map[string]taskJob
-	checkedCycles          map[string]struct{}
-	prRefresh              *prRefreshJob
-	prObservation          *freshPrObservation
-	prRefreshError         string
-	lastPrAttempt          time.Time
-	housekeeping           bool
-	lastRetention          time.Time
-	lastObserve            time.Time
+	// cycle is the running planning cycle (execution or audit) and its cancel.
+	cycle *cycleJob
+	// preflight marks a planning launch whose remote and route checks are in
+	// flight before a cycle exists; preflightMode says which kind of cycle it
+	// will start. beginCycle clears it when it assigns cycle.
+	preflight     bool
+	preflightMode model.CycleMode
+	// tasks holds every in-flight owner of a task's work, keyed by task ID:
+	// scheduler workers (runTask) and the publication reconcile owner
+	// (reconcileLocked). An entry reserves its branch for dispatch, and its
+	// cancel stops that work on operator cancel or Shutdown.
+	tasks map[string]taskJob
+	// checkedCycles caches the queued cycles whose task sets the scheduler
+	// has already validated.
+	checkedCycles map[string]struct{}
+	// prRefresh is the running PR capacity refresh; prObservation,
+	// prRefreshError and lastPrAttempt are its latest result and retry pacing.
+	prRefresh      *prRefreshJob
+	prObservation  *freshPrObservation
+	prRefreshError string
+	lastPrAttempt  time.Time
+	// housekeeping marks a running retention or observation pass;
+	// lastRetention and lastObserve pace them.
+	housekeeping  bool
+	lastRetention time.Time
+	lastObserve   time.Time
+	// reconcilingPublication marks a publication reconcile in flight; the
+	// scheduler dispatches nothing beside it.
 	reconcilingPublication bool
-	baseline               *baselineJob
-	defaultObservation     *model.DefaultBranchObservation
+	// baseline is the running baseline check, which excludes all other work.
+	baseline *baselineJob
+	// defaultObservation is the newest default-branch revision observed for
+	// the configured repository.
+	defaultObservation *model.DefaultBranchObservation
 	// cleanups holds the in-memory exclusive cleanup claims by entity kind and
 	// durable ID. Claims are taken under the gate, held across the off-gate
 	// removal, and released on every exit; nothing persists them, so a restart
@@ -93,10 +120,31 @@ func (r *runtimeState) idle() bool {
 	return r.cycle == nil && !r.preflight && len(r.tasks) == 0 && r.baseline == nil
 }
 
+// App is the engine: the scheduler, planning and task execution, and the
+// operator controls, over one durable store and managed data directory.
+//
+// Concurrency contract:
+//   - gate serialises durable decisions: every eligibility check and the
+//     durable write it authorises happen under it. Long-running Git, GitHub,
+//     runner and filesystem work runs with it released, and the result is
+//     revalidated under the gate before it is written.
+//   - runtimeMu guards only runtime (in-memory state). It may be taken on its
+//     own, or while the gate is held, but the gate is never taken while
+//     runtimeMu is held: the lock order is gate, then runtimeMu.
+//   - wg counts service-owned work that Shutdown waits for. Every wg.Add runs
+//     under the gate after checking that ctx is live, because Shutdown cancels
+//     ctx under the gate before it waits; work registered that way is always
+//     either refused or waited for, never started after the wait.
+//   - retryTask, reconcileLocked, DiscardTask and DiscardCycle release the
+//     gate for remote or filesystem work and re-acquire it (reconcileLocked
+//     returns with it released). Their callers revalidate durable state
+//     afterwards instead of trusting what they read before.
 type App struct {
-	Store      *store.Store
-	DataDir    string
-	gate       sync.Mutex
+	Store   *store.Store
+	DataDir string
+	// gate serialises durable decisions; see the App contract above.
+	gate sync.Mutex
+	// runtimeMu guards runtime and is always taken after gate, never before.
 	runtimeMu  sync.Mutex
 	runtime    runtimeState
 	ctx        context.Context
@@ -107,7 +155,8 @@ type App struct {
 	// removeDir deletes one managed workspace directory (workspace.RemoveOwnedDir
 	// in production). Cleanup callers invoke it with the gate released.
 	removeDir func(root, path string) error
-	wg        sync.WaitGroup
+	// wg counts service-owned work; Add only under gate while ctx is live.
+	wg sync.WaitGroup
 }
 
 // runners owns the runner clients of one invocation scope (a task, a planning
@@ -132,6 +181,8 @@ func (a *App) connect(entity string) runner.Connector {
 	return runner.DefaultConnector(a.Store, entity)
 }
 
+// New builds an idle App over state and dataDir. Nothing runs until the
+// service owner calls Recover and then Run (or Tick in tests).
 func New(state *store.Store, dataDir string, options ...Option) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
@@ -174,6 +225,8 @@ func (a *App) Config() (config.Config, error) {
 	return *cfg, nil
 }
 
+// Control returns the saved operating control record, or the paused default
+// when none is saved.
 func (a *App) Control() (model.Control, error) {
 	control, err := store.Get[model.Control](a.Store, "settings", "control")
 	if err != nil {
@@ -208,6 +261,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
+// Shutdown cancels the service scope and every in-flight job under the gate,
+// so no new work can register, then waits for all registered work to return.
+// It is safe to call more than once.
 func (a *App) Shutdown() {
 	a.gate.Lock()
 	a.cancel()
