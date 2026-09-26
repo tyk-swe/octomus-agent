@@ -11,21 +11,33 @@ import (
 )
 
 // WebhookEnv forwards redact.WebhookEnv.
+//
+// Deprecated: use redact.WebhookEnv.
 const WebhookEnv = redact.WebhookEnv
 
 // DisplayTransform forwards redact.DisplayTransform.
+//
+// Deprecated: use redact.DisplayTransform.
 type DisplayTransform = redact.DisplayTransform
 
 // ErrorMessage forwards redact.Error.
+//
+// Deprecated: use redact.Error.
 func ErrorMessage(err error) string { return redact.Error(err) }
 
 // RedactSecrets forwards redact.Secrets.
+//
+// Deprecated: use redact.Secrets.
 func RedactSecrets(input string) string { return redact.Secrets(input) }
 
 // Redact forwards redact.Text.
+//
+// Deprecated: use redact.Text.
 func Redact(input string) string { return redact.Text(input) }
 
 // DisplayJSON forwards redact.DisplayJSON.
+//
+// Deprecated: use redact.DisplayJSON.
 func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
 	return redact.DisplayJSON(object)
 }
