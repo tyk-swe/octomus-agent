@@ -44,6 +44,10 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	var taskErr error
 	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
 	executionDone := make(chan struct{})
+	// executeErr is the callback's own result. WithDeadline drops it when the
+	// timer wins, even if the callback then finishes within the cleanup grace.
+	// It is written before executionDone closes and read only after the join.
+	var executeErr error
 	result := process.WithDeadline(ctx, workCancel, limit, func() (err error) {
 		defer close(executionDone)
 		// WithDeadline invokes this callback in its own goroutine, beyond
@@ -52,6 +56,7 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 			if panicked := recover(); panicked != nil {
 				err = fmt.Errorf("Task worker panicked: %v", panicked)
 			}
+			executeErr = err
 		}()
 		return execute(workCtx, &task)
 	})
@@ -59,17 +64,26 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	// task state and durable writes. Join it before recording terminal evidence
 	// or allowing runTask to release runtime and shutdown ownership.
 	<-executionDone
+	// execute succeeds only after publication is durably recorded, so a
+	// deadline that expired during that final bookkeeping is not an outcome.
+	if executeErr == nil {
+		return nil
+	}
+	if task.Status == model.StatusPublished {
+		// Delivery was recorded and only bookkeeping after it failed: keep the
+		// published record. runTask still blocks the task if the published
+		// status itself never became durable.
+		_ = a.Store.Event(task.ID, "error", executeErr.Error())
+		return executeErr
+	}
 	if result.Expired {
 		timedOut = !result.AlreadyCancelled
 		task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
 		taskErr = errors.New("Task time limit exceeded")
-	} else if result.Output != nil {
-		reason := model.BlockedReasonFromError(result.Output)
+	} else {
+		reason := model.BlockedReasonFromError(executeErr)
 		task.BlockedReason = &reason
-		taskErr = result.Output
-	}
-	if taskErr == nil {
-		return nil
+		taskErr = executeErr
 	}
 	message := taskErr.Error()
 	task.Error = stringPointer(store.Redact(message))

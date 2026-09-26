@@ -766,6 +766,82 @@ func TestExecutionWorkerPanicBlocks(t *testing.T) {
 	}
 }
 
+// TestSupervisionNeverDemotesRecordedPublication: once the worker durably
+// records a delivery, neither a task deadline that fired while it finished
+// nor a bookkeeping failure after the published write may rewrite the task
+// as blocked.
+func TestSupervisionNeverDemotesRecordedPublication(t *testing.T) {
+	supervise := func(t *testing.T, execute func(*App) func(context.Context, *model.Task) error) (*App, model.Task, error) {
+		t.Helper()
+		state := testStore(t)
+		cfg := testConfig(t.TempDir())
+		task := queuedTask(cfg, model.ID(), cfg.DefaultBranch, "octomus/delivered")
+		task.Status = model.StatusPublishing
+		// The snapshot carries the deadline; settings validation does not apply.
+		task.Config.TaskTimeoutSeconds = 1
+		if err := state.Put("task", task.ID, task); err != nil {
+			t.Fatal(err)
+		}
+		app := New(state, t.TempDir())
+		t.Cleanup(app.Shutdown)
+		err := app.superviseExecution(context.Background(), task, execute(app))
+		return app, loadTask(t, state, task.ID), err
+	}
+	errorEvents := func(t *testing.T, app *App, id string) []string {
+		t.Helper()
+		events, err := app.Store.Events(&id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		messages := []string{}
+		for _, event := range events {
+			if event.Kind == "error" {
+				messages = append(messages, event.Message)
+			}
+		}
+		return messages
+	}
+
+	t.Run("published after the deadline fired", func(t *testing.T) {
+		app, saved, err := supervise(t, func(app *App) func(context.Context, *model.Task) error {
+			return func(_ context.Context, task *model.Task) error {
+				// Outlive the one-second deadline but not the cleanup grace.
+				time.Sleep(1500 * time.Millisecond)
+				return app.transition(task, model.StatusPublished)
+			}
+		})
+		if err != nil {
+			t.Fatalf("a recorded delivery was reported as a failure: %v", err)
+		}
+		if saved.Status != model.StatusPublished || saved.BlockedReason != nil || saved.Error != nil {
+			t.Fatalf("late deadline rewrote the delivery: %+v", saved)
+		}
+		if messages := errorEvents(t, app, saved.ID); len(messages) != 0 {
+			t.Fatalf("late deadline recorded errors: %v", messages)
+		}
+	})
+
+	t.Run("bookkeeping failed after the published write", func(t *testing.T) {
+		app, saved, err := supervise(t, func(app *App) func(context.Context, *model.Task) error {
+			return func(_ context.Context, task *model.Task) error {
+				if err := app.transition(task, model.StatusPublished); err != nil {
+					return err
+				}
+				return errors.New("PR observation write failed")
+			}
+		})
+		if err == nil || !strings.Contains(err.Error(), "PR observation write failed") {
+			t.Fatalf("bookkeeping failure was not returned: %v", err)
+		}
+		if saved.Status != model.StatusPublished || saved.BlockedReason != nil || saved.Error != nil {
+			t.Fatalf("bookkeeping failure demoted the delivery: %+v", saved)
+		}
+		if messages := errorEvents(t, app, saved.ID); len(messages) != 1 || !strings.Contains(messages[0], "PR observation write failed") {
+			t.Fatalf("bookkeeping failure evidence = %v", messages)
+		}
+	})
+}
+
 // TestExecutionDeliversFullLifecycleViaOpenCode runs the same
 // executor → fresh reviews → persistent repair → verification → publication
 // lifecycle through the OpenCode HTTP/SSE fixture peer
