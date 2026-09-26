@@ -530,7 +530,7 @@ func TestRecoverBaselinesFinalizesRunningRecordsAndPreservesCancelIntent(t *test
 	if err != nil || got == nil || got.Status != model.BaselineStatusPassed {
 		t.Fatalf("finished: %+v", got)
 	}
-	candidates, err := app.Store.BaselineCleanupCandidates()
+	candidates, err := app.Store.BaselineCleanupCandidates("")
 	if err != nil || len(candidates) != 3 {
 		t.Fatalf("cleanup candidates: %d %v", len(candidates), err)
 	}

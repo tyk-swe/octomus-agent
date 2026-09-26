@@ -129,6 +129,10 @@ type runtimeState struct {
 	// each target, so an unchanged failure is an event once a day rather
 	// than every pass. Like the claims it is never persisted.
 	cleanupReports map[cleanupKey]cleanupReport
+	// retentionCursors holds, per cleanup kind, the candidate retention
+	// visited last. Each pass reads a bounded candidate window starting after
+	// it, so candidates whose cleanup keeps failing cannot hold the window.
+	retentionCursors map[cleanupKind]string
 }
 
 // The runtimeState predicates and setters below require App.runtimeMu.
@@ -234,7 +238,7 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 		ctx:     ctx,
 		cancel:  cancel,
 		wake:    make(chan struct{}, 1),
-		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}},
+		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}, retentionCursors: map[cleanupKind]string{}},
 	}
 	// The production runner is the supervised execution lifecycle; tests
 	// substitute it with WithTaskRunner.

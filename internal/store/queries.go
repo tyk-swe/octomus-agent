@@ -256,9 +256,11 @@ func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
 }
 
 // BaselineCleanupCandidates lists up to 100 finished baseline checks whose
-// clone is not recorded as removed, oldest saved first.
-func (s *Store) BaselineCleanupCandidates() ([]model.BaselineCheck, error) {
-	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid LIMIT 100")
+// clone is not recorded as removed, in save order starting after the check
+// whose id is after and wrapping around to the oldest (see
+// CleanupCandidates). An empty or unknown after starts at the oldest.
+func (s *Store) BaselineCleanupCandidates(after string) ([]model.BaselineCheck, error) {
+	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid<=COALESCE((SELECT rowid FROM records WHERE kind='baseline' AND id=?1),0),rowid LIMIT 100", after)
 }
 
 // LatestBaseline returns the most recently started baseline check, or nil
@@ -592,11 +594,16 @@ func statusCounts(c *sql.Conn, counts map[string]int64) error {
 	return rows.Err()
 }
 
-// CleanupCandidates lists retained record ids older than the cutoff.
-func (s *Store) CleanupCandidates(kind, cutoff string) ([]string, error) {
+// CleanupCandidates lists up to 100 ids of retained records older than the
+// cutoff, in save order starting after the record whose id is after and
+// wrapping around to the oldest. A caller that passes the last id it visited
+// therefore walks every candidate across calls, so a hundred records whose
+// cleanup keeps failing cannot hide newer ones. An empty or unknown after
+// starts at the oldest.
+func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq LIMIT 100", kind, cutoff)
+	raw, err := queryStrings(s.conn, "SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq<=COALESCE((SELECT seq FROM record_meta WHERE kind=?1 AND id=?3),0),seq LIMIT 100", kind, cutoff, after)
 	if err != nil {
 		return nil, err
 	}
