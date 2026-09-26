@@ -4,6 +4,7 @@
   import type {
     Backend,
     Config,
+    CycleMode,
     Model,
     ModelCatalog,
     Route,
@@ -237,7 +238,7 @@
       pending = '';
     }
   }
-  async function doctor(mode: 'execution' | 'audit') {
+  async function doctor(mode: CycleMode) {
     if (!config || dirty || busy || loading) return;
     pending = mode;
     error = '';

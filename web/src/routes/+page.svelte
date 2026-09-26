@@ -201,7 +201,7 @@
   /** Status totals behind the queue filter tabs; 'active' and 'attention' are status groups. */
   let queueTabCounts = $derived.by(() => {
     const counts = data?.counts ?? {};
-    const sum = (keys: string[]) => keys.reduce((n, k) => n + (counts[k] ?? 0), 0);
+    const sum = (keys: readonly string[]) => keys.reduce((n, k) => n + (counts[k] ?? 0), 0);
     return {
       all: sum(Object.keys(counts)),
       active: sum(ACTIVE_STATUSES),

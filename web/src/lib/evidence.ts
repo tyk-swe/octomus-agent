@@ -14,6 +14,7 @@ import type {
   CommandEvidence,
   CommandResult,
   CommandState,
+  CycleMode,
   ReviewRoundEvidence,
   ReviewerVerdict,
   RunEvidenceV1,
@@ -363,7 +364,7 @@ export function shortCommit(value: string | null): string {
  * service's successful cycle that accepted nothing: no queued work, or no accepted
  * audit recommendation.
  */
-export function planningVerdict(cycle: { status: string; mode: 'execution' | 'audit' }): Verdict {
+export function planningVerdict(cycle: { status: string; mode: CycleMode }): Verdict {
   const noun = cycle.mode === 'audit' ? 'Audit' : 'Planning';
   const outputs = cycle.mode === 'audit' ? 'recommendations' : 'decisions';
   switch (cycle.status) {
@@ -429,7 +430,11 @@ export function decisionCounts(
     .filter((entry) => entry.count > 0);
 }
 
-const OUTCOME_GROUPS: { label: (count: number) => string; tone: Tone; statuses: string[] }[] = [
+const OUTCOME_GROUPS: {
+  label: (count: number) => string;
+  tone: Tone;
+  statuses: readonly string[];
+}[] = [
   {
     label: (n) => (n === 1 ? 'published task' : 'published tasks'),
     tone: 'clean',
