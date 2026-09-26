@@ -38,7 +38,9 @@ func TestDecisionFingerprintTreatsPathsLiterally(t *testing.T) {
 	ctx := context.Background()
 
 	nothing := fmt.Sprintf("%x", sha256.Sum256(nil))
-	for _, paths := range [][]string{{":(glob)*.md"}, {":!README.md"}} {
+	// ":/README.md" names the tracked README.md as pathspec magic, so only a
+	// literal match keeps it from silently listing that file.
+	for _, paths := range [][]string{{":(glob)*.md"}, {":!README.md"}, {":/README.md"}} {
 		fingerprint, err := decisionFingerprint(ctx, fixture.cfg, revision, paths)
 		if err != nil {
 			t.Fatalf("pathspec-like path %q failed the fingerprint: %v", paths, err)
@@ -56,6 +58,10 @@ func TestDecisionFingerprintTreatsPathsLiterally(t *testing.T) {
 	fingerprint, err := decisionFingerprint(ctx, fixture.cfg, revision, []string{"README.md"})
 	if err != nil || fingerprint != want {
 		t.Fatalf("ordinary path fingerprint = %s, %v; want %s", fingerprint, err, want)
+	}
+	// A decision without relevant paths is bound to the revision itself.
+	if fingerprint, err := decisionFingerprint(ctx, fixture.cfg, revision, []string{}); err != nil || fingerprint != revision {
+		t.Fatalf("pathless fingerprint = %s, %v; want the revision %s", fingerprint, err, revision)
 	}
 }
 
