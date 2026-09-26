@@ -1041,39 +1041,39 @@ func TestDecisionMemoryAbsorbsOnlySameCycleAlternativesAndRequiresRediscovery(t 
 	if stored["mode"] != model.CycleModeExecution || stored["cycle_mode"] != nil || stored["kind"] != nil || stored["reconsideration_due"] != nil || !pathsOK || paths == nil {
 		t.Fatalf("decision record changed: %+v", stored)
 	}
-	recorded := recordToMap(decisionRecord{
+	recorded := decisionRecord{
 		Kind: "decision", ID: model.ID(), CycleMode: model.CycleModeExecution,
 		Repository: cfg.GitHubRepo, Target: cfg.DefaultBranch, ProblemKey: accepted.ProblemIdentity(),
 		Decision: model.DecisionRejected, Reason: "Current decision", SourceRevision: "revision",
 		ContextFingerprint: "revision", ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: model.ID(),
-	})
-	if err := ValidateDecisionMemory([]model.Proposal{accepted}, []any{recorded}); err == nil {
+	}
+	if err := ValidateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{recorded}}); err == nil {
 		t.Fatal("unchanged rejected work became executable without rediscovery")
 	}
-	auditRecommendation := recordToMap(decisionRecord{
+	auditRecommendation := decisionRecord{
 		Kind: "decision", ID: model.ID(), CycleMode: model.CycleModeAudit,
 		Repository: cfg.GitHubRepo, Target: cfg.DefaultBranch, ProblemKey: accepted.ProblemIdentity(),
 		Decision: model.DecisionAccepted, Reason: "Audit recommendation", SourceRevision: "revision",
 		ContextFingerprint: "revision", ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: model.ID(),
-	})
-	if err := ValidateDecisionMemory([]model.Proposal{accepted}, []any{auditRecommendation}); err != nil {
+	}
+	if err := ValidateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{auditRecommendation}}); err != nil {
 		t.Fatalf("audit recommendation incorrectly vetoed execution: %v", err)
 	}
 	requestID := model.ID()
-	request := map[string]any{"kind": "rediscovery", "id": requestID, "target": cfg.DefaultBranch}
+	request := rediscoveryRequest{ID: requestID, Target: cfg.DefaultBranch}
 	reconsidered := accepted.Clone()
 	reconsidered.Reconsiders = []string{requestID}
-	if err := ValidateDecisionMemory([]model.Proposal{reconsidered}, []any{recorded, request}); err != nil {
+	if err := ValidateDecisionMemory([]model.Proposal{reconsidered}, decisionMemory{decisions: []decisionRecord{recorded}, requests: []rediscoveryRequest{request}}); err != nil {
 		t.Fatalf("matching explicit rediscovery was rejected: %v", err)
 	}
 	wrong := reconsidered.Clone()
 	wrong.Target = "other"
-	if err := ValidateDecisionMemory([]model.Proposal{wrong}, []any{request}); err == nil {
+	if err := ValidateDecisionMemory([]model.Proposal{wrong}, decisionMemory{requests: []rediscoveryRequest{request}}); err == nil {
 		t.Fatal("rediscovery with the wrong target was accepted")
 	}
 	oversized := accepted.Clone()
 	oversized.ProblemKey = strings.Repeat("x", 201)
-	if err := ValidateDecisionMemory([]model.Proposal{oversized}, nil); err == nil {
+	if err := ValidateDecisionMemory([]model.Proposal{oversized}, decisionMemory{}); err == nil {
 		t.Fatal("oversized decision metadata was accepted")
 	}
 }

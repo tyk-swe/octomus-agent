@@ -98,9 +98,8 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if err != nil {
 		return err
 	}
-	requests := rediscoveryRequests(memory)
 	if cycle.Mode == model.CycleModeExecution {
-		if err := a.seedRediscoveries(cycle, requests); err != nil {
+		if err := a.seedRediscoveries(cycle, memory.requests); err != nil {
 			return err
 		}
 	}
@@ -113,7 +112,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 		return err
 	}
 	capacity := prCapacityFrom(cfg, inventory, reservations)
-	contextValue := map[string]any{"grounding": cycle.Grounding, "decision_memory": memory, "pr_capacity": capacity}
+	contextValue := map[string]any{"grounding": cycle.Grounding, "decision_memory": memory.promptEntries(), "pr_capacity": capacity}
 	contextBytes, err := wirejson.Marshal(contextValue)
 	if err != nil {
 		return err
@@ -146,7 +145,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 		return err
 	}
 	if cycle.Mode == model.CycleModeExecution {
-		if err := checkRediscoveryDecisions(requests, proposals); err != nil {
+		if err := checkRediscoveryDecisions(memory.requests, proposals); err != nil {
 			return err
 		}
 	}
@@ -165,9 +164,9 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 
 // seedRediscoveries adds each pending rediscovery request to an execution
 // pass as a candidate that reconsiders the cancelled task it came from.
-func (a *App) seedRediscoveries(cycle *model.Cycle, requests []map[string]any) error {
+func (a *App) seedRediscoveries(cycle *model.Cycle, requests []rediscoveryRequest) error {
 	for _, request := range requests {
-		id, _ := request["id"].(string)
+		id := request.ID
 		if id == "" {
 			return errors.New("Missing rediscovery identity")
 		}
@@ -202,9 +201,9 @@ func plannedStatus(proposals []model.Proposal) string {
 
 // checkRediscoveryDecisions requires every rediscovery request to be decided by
 // exactly one returned proposal.
-func checkRediscoveryDecisions(requests []map[string]any, proposals []model.Proposal) error {
+func checkRediscoveryDecisions(requests []rediscoveryRequest, proposals []model.Proposal) error {
 	for _, request := range requests {
-		id, _ := request["id"].(string)
+		id := request.ID
 		count := 0
 		for _, proposal := range proposals {
 			if slices.Contains(proposal.Reconsiders, id) {

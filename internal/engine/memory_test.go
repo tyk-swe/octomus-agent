@@ -80,7 +80,7 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	if err := ValidateProposals(cfg, keyed, model.Grounding{}, nil); err != nil {
 		t.Fatalf("long rejected title with a short key: %v", err)
 	}
-	if err := ValidateDecisionMemory(keyed, nil); err != nil {
+	if err := ValidateDecisionMemory(keyed, decisionMemory{}); err != nil {
 		t.Fatalf("long rejected title with a short key: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	if err := ValidateProposals(cfg, fallback, model.Grounding{}, nil); err != nil {
 		t.Fatalf("rejected proposals carry no title bound: %v", err)
 	}
-	err := ValidateDecisionMemory(fallback, nil)
+	err := ValidateDecisionMemory(fallback, decisionMemory{})
 	if err == nil || !strings.Contains(err.Error(), `"d1-long"`) || !strings.Contains(err.Error(), "problem identity is 270 bytes") || !strings.Contains(err.Error(), "exceeds bounds") {
 		t.Fatalf("title-derived identity bound = %v; want the proposal, field and size", err)
 	}
@@ -97,7 +97,7 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	for i := 0; i < 41; i++ {
 		paths.RelevantPaths = append(paths.RelevantPaths, fmt.Sprintf("file-%d.go", i))
 	}
-	if err := ValidateDecisionMemory(normalized(paths), nil); err == nil || !strings.Contains(err.Error(), `"d1-paths"`) || !strings.Contains(err.Error(), "41 relevant_paths") {
+	if err := ValidateDecisionMemory(normalized(paths), decisionMemory{}); err == nil || !strings.Contains(err.Error(), `"d1-paths"`) || !strings.Contains(err.Error(), "41 relevant_paths") {
 		t.Fatalf("relevant_paths bound = %v; want the proposal and field", err)
 	}
 
@@ -105,7 +105,7 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	for i := 0; i < 101; i++ {
 		reconsiders.Reconsiders = append(reconsiders.Reconsiders, fmt.Sprintf("task-%d", i))
 	}
-	if err := ValidateDecisionMemory(normalized(reconsiders), nil); err == nil || !strings.Contains(err.Error(), `"d1-reconsiders"`) || !strings.Contains(err.Error(), "101 reconsiders") {
+	if err := ValidateDecisionMemory(normalized(reconsiders), decisionMemory{}); err == nil || !strings.Contains(err.Error(), `"d1-reconsiders"`) || !strings.Contains(err.Error(), "101 reconsiders") {
 		t.Fatalf("reconsiders bound = %v; want the proposal and field", err)
 	}
 }
@@ -191,32 +191,20 @@ func TestPlanningMemoryReconsiderationRules(t *testing.T) {
 			t.Fatalf("%s: %v", label, err)
 		}
 		due := map[string]bool{}
-		var rediscovery map[string]any
-		for _, value := range memory {
-			entry, ok := value.(map[string]any)
-			if !ok {
-				t.Fatalf("%s: memory entry %T", label, value)
+		for _, record := range memory.decisions {
+			if _, duplicate := due[record.ID]; duplicate {
+				t.Fatalf("%s: decision %s listed twice", label, record.ID)
 			}
-			id, _ := entry["id"].(string)
-			switch entry["kind"] {
-			case "decision":
-				if _, duplicate := due[id]; duplicate {
-					t.Fatalf("%s: decision %s listed twice", label, id)
-				}
-				due[id], _ = entry["reconsideration_due"].(bool)
-			case "rediscovery":
-				if rediscovery != nil {
-					t.Fatalf("%s: more than one rediscovery request: %+v", label, memory)
-				}
-				rediscovery = entry
-			default:
-				t.Fatalf("%s: memory entry of unknown kind: %+v", label, entry)
-			}
+			due[record.ID] = record.ReconsiderationDue
 		}
 		if fmt.Sprint(due) != fmt.Sprint(wantDue) {
 			t.Fatalf("%s: reconsideration_due by decision = %v; want %v", label, due, wantDue)
 		}
-		if rediscovery == nil || rediscovery["id"] != cancelled.ID || rediscovery["target"] != "main" || rediscovery["title"] != cancelled.Proposal.Title {
+		if len(memory.requests) != 1 {
+			t.Fatalf("%s: rediscovery requests = %+v; want one", label, memory.requests)
+		}
+		rediscovery := memory.requests[0]
+		if rediscovery.ID != cancelled.ID || rediscovery.Target != "main" || rediscovery.entry["title"] != cancelled.Proposal.Title {
 			t.Fatalf("%s: rediscovery request = %+v", label, rediscovery)
 		}
 	}
@@ -279,7 +267,7 @@ func TestPlanningMemoryPromptJSONIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := wirejson.Marshal(memory)
+	got, err := wirejson.Marshal(memory.promptEntries())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -161,28 +161,29 @@ func TestConsolidationNamesTheOffendingProposal(t *testing.T) {
 
 func TestDecisionMemoryAndRediscoveryNameTheOffendingProposal(t *testing.T) {
 	cfg := testConfig(t.TempDir())
-	request := map[string]any{"kind": "rediscovery", "id": "request-1", "target": cfg.DefaultBranch}
+	request := rediscoveryRequest{ID: "request-1", Target: cfg.DefaultBranch}
+	pending := decisionMemory{requests: []rediscoveryRequest{request}}
 	reconsidering := func(target string, requests ...string) model.Proposal {
 		p := proposal("a", target)
 		p.Reconsiders = requests
 		return p
 	}
-	assertErrorNames(t, ValidateDecisionMemory([]model.Proposal{reconsidering(cfg.DefaultBranch, "request-2")}, []any{request}),
+	assertErrorNames(t, ValidateDecisionMemory([]model.Proposal{reconsidering(cfg.DefaultBranch, "request-2")}, pending),
 		"does not match a pending request", `proposal "a" reconsiders "request-2", which is not pending`)
-	assertErrorNames(t, ValidateDecisionMemory([]model.Proposal{reconsidering("octomus/existing", "request-1")}, []any{request}),
+	assertErrorNames(t, ValidateDecisionMemory([]model.Proposal{reconsidering("octomus/existing", "request-1")}, pending),
 		"does not match a pending request", `proposal "a" targets "octomus/existing" but request "request-1" targets "main"`)
 
 	accepted := proposal("a", cfg.DefaultBranch)
-	recorded := recordToMap(decisionRecord{
+	recorded := decisionRecord{
 		Kind: "decision", ID: "cycle-1:a", CycleMode: model.CycleModeExecution,
 		Repository: cfg.GitHubRepo, Target: cfg.DefaultBranch, ProblemKey: accepted.ProblemIdentity(),
 		Decision: model.DecisionRejected, Reason: "Current decision", SourceRevision: "revision",
 		ContextFingerprint: "revision", ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: "cycle-1",
-	})
-	assertErrorNames(t, ValidateDecisionMemory([]model.Proposal{accepted}, []any{recorded}),
+	}
+	assertErrorNames(t, ValidateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{recorded}}),
 		"repeats a current recorded decision", `(proposal "a", decision "cycle-1:a")`)
 
-	requests := []map[string]any{request}
+	requests := []rediscoveryRequest{request}
 	assertErrorNames(t, checkRediscoveryDecisions(requests, []model.Proposal{proposal("a", cfg.DefaultBranch)}),
 		"exactly one fresh decision (request request-1 had 0)")
 	twice := []model.Proposal{reconsidering(cfg.DefaultBranch, "request-1"), reconsidering(cfg.DefaultBranch, "request-1")}
