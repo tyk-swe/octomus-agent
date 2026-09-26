@@ -3,9 +3,13 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // A step error on a later row closes the rows inside Next, after which Close
@@ -127,6 +131,39 @@ func TestSchedulingPlanNeverWalksTaskHistory(t *testing.T) {
 			if strings.HasSuffix(step, "(kind=?)") || strings.Contains(step, "AUTOMATIC") || !bounded {
 				t.Fatalf("scheduling plan step %q walks task history; plan:\n%s", step, strings.Join(steps, "\n"))
 			}
+		}
+	}
+}
+
+// A saved record that no longer decodes names itself, so an operator whose
+// service paused on it can find the row, and the wrapped error keeps its
+// class for the API's status mapping.
+func TestUnreadableRecordsNameTheirIdentity(t *testing.T) {
+	s := fullOpen(t)
+	execStore(t, s, `INSERT INTO records VALUES ('task','broken','{"id":"broken","status":"executing"}')`)
+	_, err := s.SchedulingTasks(nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "Saved record broken is unreadable: ") || !errors.As(err, new(*wirejson.Error)) {
+		t.Fatalf("SchedulingTasks = %v; want the unreadable record named, as a wirejson error", err)
+	}
+	var task model.Task
+	found, err := s.Get("task", "broken", &task)
+	if !found || err == nil || !strings.HasPrefix(err.Error(), "Saved task broken is unreadable: ") || !errors.As(err, new(*wirejson.Error)) {
+		t.Fatalf("Get = %v, %v; want the unreadable record named, as a wirejson error", found, err)
+	}
+
+	type record struct {
+		N int `json:"n"`
+	}
+	for raw, want := range map[string]string{
+		`{"id":"wrong-type","n":"x"}`: "Saved record wrong-type is unreadable: ",
+		`{"id":"trailing","n":1}}`:    "Saved record trailing is unreadable: trailing JSON data",
+		`{"n":"x"}`:                   "Saved record (unknown id) is unreadable: ",
+		`{"id":7,"n":"x"}`:            "Saved record (unknown id) is unreadable: ",
+		`{"id":"cut`:                  "Saved record (unknown id) is unreadable: ",
+	} {
+		values, err := decodeAll[record]([][]byte{[]byte(`{"id":"fine","n":1}`), []byte(raw)})
+		if values != nil || err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("decodeAll(%s) = %v, %v; want %q", raw, values, err, want)
 		}
 	}
 }

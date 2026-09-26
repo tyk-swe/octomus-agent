@@ -641,13 +641,17 @@ func txGetRaw(c *sql.Conn, kind, id string) ([]byte, bool, error) {
 }
 
 // txGet reads one record inside a caller-owned transaction. dst is left alone
-// when the record is absent.
+// when the record is absent; a record that no longer decodes is found and
+// named in the error.
 func txGet(c *sql.Conn, kind, id string, dst any) (bool, error) {
 	data, found, err := txGetRaw(c, kind, id)
 	if err != nil || !found {
 		return false, err
 	}
-	return true, decodeJSON(data, dst)
+	if err := decodeJSON(data, dst); err != nil {
+		return true, fmt.Errorf("Saved %s %s is unreadable: %w", kind, id, err)
+	}
+	return true, nil
 }
 
 // txPut upserts one record inside a caller-owned transaction.
@@ -712,17 +716,30 @@ func decodeJSON(data []byte, dst any) error {
 	return nil
 }
 
-// decodeAll decodes each saved value as a T. The result is never nil.
+// decodeAll decodes each saved value as a T. The result is never nil. A value
+// that no longer decodes fails the whole read, named by its id.
 func decodeAll[T any](raw [][]byte) ([]T, error) {
 	values := make([]T, 0, len(raw))
 	for _, data := range raw {
 		var value T
 		if err := decodeJSON(data, &value); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Saved record %s is unreadable: %w", savedRecordID(data), err)
 		}
 		values = append(values, value)
 	}
 	return values, nil
+}
+
+// savedRecordID reads the "id" member of an unreadable saved value so an
+// operator can find its row; every listed record kind carries one.
+func savedRecordID(data []byte) string {
+	var probe struct {
+		ID string `json:"id"`
+	}
+	if json.NewDecoder(bytes.NewReader(data)).Decode(&probe) != nil || probe.ID == "" {
+		return "(unknown id)"
+	}
+	return probe.ID
 }
 
 // StorageLimitError is the refusal an admission gets when the workspace already

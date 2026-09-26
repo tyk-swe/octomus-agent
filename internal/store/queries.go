@@ -690,7 +690,7 @@ func prObservationAt(c *sql.Conn, repository string, number uint64) (string, *mo
 	}
 	var observation model.PrObservation
 	if err := decodeJSON([]byte(data), &observation); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("Saved pr %s is unreadable: %w", id, err)
 	}
 	return id, &observation, nil
 }
