@@ -383,7 +383,11 @@ func (a *App) runTask(task model.Task) {
 		}()
 		a.gate.Lock()
 		current, loadErr := store.Get[model.Task](a.Store, "task", task.ID)
-		if loadErr == nil && current != nil && current.Status.Active() {
+		// During shutdown an initialized task that is still active is left to
+		// restart recovery, exactly as after a crash; anything else still
+		// active is blocked here.
+		interrupted := a.ctx.Err() != nil && current != nil && workspace.Initialized(*current)
+		if loadErr == nil && current != nil && current.Status.Active() && !interrupted {
 			if runErr == nil || errors.Is(runErr, context.Canceled) {
 				runErr = errors.New("Task worker exited unexpectedly; inspect the preserved workspace")
 			}

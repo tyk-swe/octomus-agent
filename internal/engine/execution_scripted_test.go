@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -519,4 +520,118 @@ func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
 	}
 	assertAdmissions(t, fixture.state, 2, "resumed executor + reviewer")
 	assertNoOpenClients(t, script)
+}
+
+// taskEventKinds lists the kinds of a task's recorded events.
+func taskEventKinds(t *testing.T, state *store.Store, id string) map[string]int {
+	t.Helper()
+	events, err := state.Events(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]int{}
+	for _, event := range events {
+		kinds[event.Kind]++
+	}
+	return kinds
+}
+
+// TestExecutionShutdownLeavesInitializedTaskForRecovery: a graceful stop
+// during an executor turn is not a task outcome. The initialized task keeps
+// its active record and running session, as after a crash, so restart
+// recovery requeues it and the executor thread resumes to deliver once.
+func TestExecutionShutdownLeavesInitializedTaskForRecovery(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	routes, script := fixture.routes, fixture.script
+	gate := runnertest.NewGate()
+	t.Cleanup(gate.Release)
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Never delivered", Gate: gate})
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	saveExecutionTask(t, fixture.planningFixture, task)
+	app := fixture.newApp(t)
+
+	tickUntil(t, app, gate.Entered(), "held executor turn")
+	app.Shutdown()
+	stopped := loadTask(t, fixture.state, task.ID)
+	if stopped.Status != model.StatusExecuting || stopped.ExecutionSession == nil || stopped.Error != nil || stopped.BlockedReason != nil {
+		t.Fatalf("graceful stop recorded a task outcome: %+v", stopped)
+	}
+	thread := *stopped.ExecutionSession
+	if executors := sessionByRole(stopped, "executor"); len(executors) != 1 || executors[0].Status != model.SessionRunning {
+		t.Fatalf("graceful stop finalized the executor session: %+v", executors)
+	}
+	if kinds := taskEventKinds(t, fixture.state, task.ID); kinds["interrupted"] != 1 || kinds["error"] != 0 {
+		t.Fatalf("graceful stop events = %v; want one interruption and no error", kinds)
+	}
+	if marked, _ := fixture.state.MarkerSet("cancel", task.ID); marked {
+		t.Fatal("a graceful stop must not be recorded as an operator cancellation")
+	}
+	assertNoOpenClients(t, script)
+
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "fixed\n")})
+	script.Answer(routes.Reviewer, cleanReview("Complete"))
+	restarted := New(fixture.state, fixture.dataDir, WithRunnerConnector(script.Connector()))
+	t.Cleanup(restarted.Shutdown)
+	restarted.runtime.lastRetention = time.Now()
+	restarted.runtime.lastObserve = time.Now()
+	if err := restarted.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := loadTask(t, fixture.state, task.ID)
+	if recovered.Status != model.StatusQueued || recovered.Attempts != 1 || recovered.BlockedReason != nil {
+		t.Fatalf("interrupted task recovery = %+v", recovered)
+	}
+	if executors := sessionByRole(recovered, "executor"); len(executors) != 1 || executors[0].Status != model.SessionInterrupted {
+		t.Fatalf("running session not interrupted by recovery: %+v", executors)
+	}
+	if err := restarted.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	saved := driveTask(t, fixture.planningFixture, restarted, task.ID)
+	if saved.Status != model.StatusPublished || saved.ExecutionSession == nil || *saved.ExecutionSession != thread {
+		t.Fatalf("recovered delivery = %+v", saved)
+	}
+	starts := script.Starts(routes.Executor)
+	if len(starts) != 2 || starts[0].Resume != nil || starts[1].Resume == nil || *starts[1].Resume != thread {
+		t.Fatalf("executor starts = %+v; want the interrupted thread resumed", starts)
+	}
+	if entries := publications(t, fixture.planningFixture); len(entries) != 1 || entries[0]["action"] != "create" {
+		t.Fatalf("publications = %+v; want exactly one create", entries)
+	}
+	assertAdmissions(t, fixture.state, 3, "interrupted executor + resumed executor + reviewer")
+	assertNoOpenClients(t, script)
+}
+
+// TestExecutionShutdownBeforeInitializationStaysRetryable: a graceful stop
+// while the remote preflight of a never-initialized task runs has no
+// workspace for recovery to resume, so the task is blocked and keeps its
+// retry action; restart recovery leaves that block alone.
+func TestExecutionShutdownBeforeInitializationStaysRetryable(t *testing.T) {
+	fixture := newScriptedFixture(t)
+	heldUploadPack(t, fixture.planningFixture)
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	task.Status = model.StatusExecuting
+	saveExecutionTask(t, fixture.planningFixture, task)
+	app := fixture.pausedApp(t)
+	app.runTask(task)
+	waitForPreflights(t, fixture.planningFixture, 1)
+
+	app.Shutdown()
+	stopped := loadTask(t, fixture.state, task.ID)
+	if stopped.Status != model.StatusBlocked || stopped.ExecutionSession != nil || stopped.Workspace != "" {
+		t.Fatalf("stop before initialization = %+v", stopped)
+	}
+	if !slices.Contains(stopped.AllowedActions(), "retry") {
+		t.Fatalf("stop before initialization is not retryable: %v (%+v)", stopped.AllowedActions(), stopped)
+	}
+	restarted := New(fixture.state, fixture.dataDir, WithRunnerConnector(fixture.script.Connector()))
+	t.Cleanup(restarted.Shutdown)
+	if err := restarted.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := loadTask(t, fixture.state, task.ID); !sameRecordJSON(&recovered, &stopped) {
+		t.Fatalf("recovery changed a retryable block: %+v", recovered)
+	}
+	assertAdmissions(t, fixture.state, 0, "no work was admitted before the preflight")
+	assertNoOpenClients(t, fixture.script)
 }

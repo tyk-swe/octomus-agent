@@ -581,6 +581,60 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 	})
 }
 
+// TestExecutionShutdownDuringPublicationRequeuesCheckpoint: a graceful stop
+// while publication checks run is not a publication outcome. The recorded
+// checkpoint stays active for restart recovery, which delivers it exactly once
+// without another model turn.
+func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
+	fixture := newExecutionFixture(t)
+	task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
+	task.Status = model.StatusExecuting
+	saveExecutionTask(t, fixture, task)
+	heldUploadPack(t, fixture)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	app.runTask(task)
+	waitForPreflights(t, fixture, 1)
+
+	app.Shutdown()
+	stopped := durableTask(t, fixture, task.ID)
+	if stopped.Status != model.StatusPublishing || stopped.OutputCommit == nil || *stopped.OutputCommit != *task.OutputCommit ||
+		stopped.Error != nil || stopped.BlockedReason != nil {
+		t.Fatalf("graceful stop recorded a publication outcome: %+v", stopped)
+	}
+	if entries := publications(t, fixture); len(entries) != 0 {
+		t.Fatalf("held publication wrote actions: %+v", entries)
+	}
+	releasePreflight(t, fixture)
+
+	restarted := New(fixture.state, fixture.dataDir)
+	t.Cleanup(restarted.Shutdown)
+	restarted.runtime.lastRetention = time.Now()
+	restarted.runtime.lastObserve = time.Now()
+	if err := restarted.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := durableTask(t, fixture, task.ID); recovered.Status != model.StatusQueued || recovered.Attempts != 1 {
+		t.Fatalf("interrupted publication recovery = %+v", recovered)
+	}
+	if err := restarted.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	saved := driveTask(t, fixture, restarted, task.ID)
+	if saved.Status != model.StatusPublished || saved.PRNumber == nil || *saved.OutputCommit != *task.OutputCommit {
+		t.Fatalf("recovered publication = %+v", saved)
+	}
+	if entries := publications(t, fixture); len(entries) != 1 || entries[0]["action"] != "create" {
+		t.Fatalf("publications = %+v; want exactly one create", entries)
+	}
+	if len(saved.Sessions) != 1 {
+		t.Fatalf("recovered publication ran another model turn: %+v", saved.Sessions)
+	}
+	if remote := remoteHead(t, fixture, saved.Branch); remote != *saved.OutputCommit {
+		t.Fatalf("remote = %s; want output %s", remote, *saved.OutputCommit)
+	}
+}
+
 // existingPrBranch builds the existing-owned-PR remote state: the octomus/
 // branch with earlier delivered work plus its open fixture PR.
 func existingPrBranch(t *testing.T, fixture *planningFixture) string {

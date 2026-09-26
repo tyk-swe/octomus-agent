@@ -40,8 +40,6 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 func (a *App) superviseExecution(ctx context.Context, task model.Task, execute func(context.Context, *model.Task) error) error {
 	workCtx, workCancel := context.WithCancel(ctx)
 	defer workCancel()
-	var timedOut bool
-	var taskErr error
 	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
 	executionDone := make(chan struct{})
 	// executeErr is the callback's own result. WithDeadline drops it when the
@@ -76,19 +74,37 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 		_ = a.Store.Event(task.ID, "error", executeErr.Error())
 		return executeErr
 	}
+	timedOut := result.Expired && !result.AlreadyCancelled
+	taskErr := executeErr
 	if result.Expired {
-		timedOut = !result.AlreadyCancelled
-		task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
 		taskErr = errors.New("Task time limit exceeded")
+	}
+	message := taskErr.Error()
+	// Read the shutdown scope before the cancel marker. Shutdown cancels it
+	// under the gate, which an operator cancel holds until its marker is
+	// durable, so a cancel that preceded the shutdown is always seen.
+	shuttingDown := a.ctx.Err() != nil
+	operatorCancelled, _ := a.Store.MarkerSet("cancel", task.ID)
+	if shuttingDown && !operatorCancelled && !timedOut && task.Status.Active() && workspace.Initialized(task) {
+		// A service shutdown is not a task outcome. Leave the initialized
+		// record active with its sessions running, exactly as after a crash:
+		// restart recovery interrupts the sessions and requeues the task
+		// within its retry budget. Work stopped before initialization is
+		// blocked below and stays retryable; recovery could only report it
+		// as an invalid workspace.
+		if err := a.saveTask(&task); err != nil {
+			_ = a.Store.Event(task.ID, "worker_error", store.ErrorMessage(err))
+		}
+		return a.Store.Event(task.ID, "interrupted", message)
+	}
+	if result.Expired {
+		task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
 	} else {
 		reason := model.BlockedReasonFromError(executeErr)
 		task.BlockedReason = &reason
-		taskErr = executeErr
 	}
-	message := taskErr.Error()
 	task.Error = stringPointer(store.Redact(message))
 	model.FailRunning(task.Sessions, store.Redact(message))
-	operatorCancelled, _ := a.Store.MarkerSet("cancel", task.ID)
 	status := model.StatusBlocked
 	if workCtx.Err() != nil && !timedOut && task.OutputCommit == nil && (operatorCancelled || a.ctx.Err() == nil) {
 		status = model.StatusCancelled
