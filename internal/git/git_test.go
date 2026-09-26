@@ -278,6 +278,66 @@ func TestRemoteValidationAndRevisionLookup(t *testing.T) {
 	}
 }
 
+// TestValidateRemoteForms pins which origin URLs name the configured GitHub
+// repository. Task clones copy the origin into their own configuration and
+// publication pushes to it, so a URL carrying credentials, another host or
+// transport, or another path must never pass. It runs real Git with no global
+// or system configuration, so no url.insteadOf rewrite changes what origin
+// reports, and a stub gh that answers only the auth check.
+func TestValidateRemoteForms(t *testing.T) {
+	repo := initRepo(t)
+	bin := t.TempDir()
+	writeFile(t, filepath.Join(bin, "gh"),
+		"#!/bin/sh\n[ \"$*\" = \"auth status --hostname github.com\" ] || exit 1\n[ -e \"$0.unauthenticated\" ] && exit 1\nexit 0\n")
+	if err := os.Chmod(filepath.Join(bin, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	c := testConfig()
+	c.Repository = repo
+	ctx := context.Background()
+	realGit(t, repo, "remote", "add", "origin", "https://github.com/fixture/project.git")
+	const (
+		transport = "Origin must use github.com via SSH or credential-free HTTPS"
+		mismatch  = "Origin does not match configured GitHub repository"
+	)
+	for _, tc := range []struct {
+		origin string
+		want   string // "" accepts
+	}{
+		{"https://github.com/fixture/project.git", ""},
+		{"git@github.com:fixture/project.git", ""},
+		{"ssh://git@github.com/fixture/project.git", ""},
+		{"https://github.com/fixture/project", ""},
+		{"https://github.com/Fixture/Project.git", ""},
+		{"https://user:token@github.com/fixture/project.git", transport},
+		{"https://x-access-token:ghp_abc@github.com/fixture/project.git", transport},
+		{"http://github.com/fixture/project.git", transport},
+		{"https://gitlab.com/fixture/project.git", transport},
+		{"ssh://git@github.com:22/fixture/project.git", transport},
+		{"https://github.com/other/project.git", mismatch},
+		{"https://github.com/fixture/project/extra.git", mismatch},
+		{"git@github.com:fixture/project.git/", mismatch},
+	} {
+		realGit(t, repo, "remote", "set-url", "origin", tc.origin)
+		err := git.ValidateRemote(ctx, c)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("origin %q rejected: %v", tc.origin, err)
+		case tc.want != "" && (err == nil || err.Error() != tc.want):
+			t.Errorf("origin %q = %v; want %q", tc.origin, err, tc.want)
+		}
+	}
+	// A valid origin still needs gh authenticated against github.com.
+	realGit(t, repo, "remote", "set-url", "origin", "https://github.com/fixture/project.git")
+	writeFile(t, filepath.Join(bin, "gh.unauthenticated"), "")
+	if err := git.ValidateRemote(ctx, c); err == nil {
+		t.Fatal("an unauthenticated gh must fail remote validation")
+	}
+}
+
 // TestRemoteRevisionIgnoresTailMatchingRefs: ls-remote patterns also match the
 // tail of longer ref names, so a branch named `a/refs/heads/main` answers the
 // query for `refs/heads/main` too, and sorts first. Only the exact ref may
