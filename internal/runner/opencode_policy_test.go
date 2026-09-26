@@ -5,9 +5,10 @@ import (
 	"testing"
 )
 
-// The owned server must report a loopback root address: plain http, the
-// literal 127.0.0.1, a nonzero explicit port, and no credentials, path,
-// query or fragment. Anything else is refused rather than normalized.
+// The owned server must report a loopback root address: http, host
+// 127.0.0.1, a nonzero explicit port, and no credentials, path, query or
+// fragment. The address is returned rebuilt from its port; credentials, a
+// path, a query or a fragment are refused rather than stripped.
 func TestParseReadyURL(t *testing.T) {
 	for _, endpoint := range []string{"http://127.0.0.1:4096", "http://127.0.0.1:4096/"} {
 		got, err := parseReadyURL(endpoint)

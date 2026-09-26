@@ -36,17 +36,19 @@ func sseResults(t *testing.T, body io.Reader) []valueResult {
 	return results
 }
 
-// Each frame's data lines are joined and decoded once its blank line
-// arrives, however the stream is fragmented: CRLF or LF endings, comments and
-// other fields ignored, "data:" with or without its space, and a multibyte
-// character split across reads. The loop then ends with exactly one error.
+// Each frame's data lines are joined by newlines and decoded once its blank
+// line arrives, however the stream is fragmented: CRLF or LF endings,
+// comments and other fields ignored, "data:" with or without its space, and a
+// multibyte character split across reads. The loop then ends with exactly one
+// error.
 func TestSSEFraming(t *testing.T) {
 	boom := errors.New("connection reset")
 	for _, tc := range []struct {
 		name   string
 		body   io.Reader
 		values []any
-		err    string // the final error's text, or for a wrapped error its prefix
+		err    string // the final error's exact text
+		prefix bool   // err is only the prefix of a wrapped error's text
 	}{
 		{
 			name: "mixed framing one byte at a time",
@@ -66,9 +68,16 @@ func TestSSEFraming(t *testing.T) {
 			err:    "OpenCode event stream disconnected",
 		},
 		{
-			name: "invalid JSON",
-			body: strings.NewReader("data: x\n\ndata: 1\n\n"),
-			err:  "Invalid OpenCode event JSON: ",
+			name:   "invalid JSON",
+			body:   strings.NewReader("data: x\n\ndata: 1\n\n"),
+			err:    "Invalid OpenCode event JSON: ",
+			prefix: true,
+		},
+		{
+			// Concatenated, these lines would decode as the single value 12.
+			name: "data lines are joined by a newline",
+			body: strings.NewReader("data: 1\ndata: 2\n\n"),
+			err:  "Invalid OpenCode event JSON: trailing JSON data",
 		},
 		{
 			name: "invalid UTF-8",
@@ -96,7 +105,9 @@ func TestSSEFraming(t *testing.T) {
 					t.Fatalf("result %d: %#v %v, want %#v", i, results[i].value, results[i].err, want)
 				}
 			}
-			if last := results[len(results)-1]; last.err == nil || !strings.HasPrefix(last.err.Error(), tc.err) || last.value != nil {
+			last := results[len(results)-1]
+			matches := last.err != nil && (last.err.Error() == tc.err || tc.prefix && strings.HasPrefix(last.err.Error(), tc.err))
+			if !matches || last.value != nil {
 				t.Fatalf("final result: %#v %v, want error %q", last.value, last.err, tc.err)
 			}
 		})
