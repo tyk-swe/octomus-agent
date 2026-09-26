@@ -152,6 +152,41 @@ func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(
 	}
 }
 
+// TestAuditControlRecordsOneOperatorEvent: one operator click that starts an
+// audit is recorded once, on the cycle it started, and the response is the
+// still-paused control record.
+func TestAuditControlRecordsOneOperatorEvent(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	app := fixture.pausedApp(t)
+	body, err := app.ControlAction("audit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["mode"] != "paused" {
+		t.Fatalf("audit response mode = %v", body["mode"])
+	}
+	cycles, err := store.List[model.Cycle](fixture.state, "cycle")
+	if err != nil || len(cycles) != 1 || cycles[0].Mode != model.CycleModeAudit {
+		t.Fatalf("audit cycles = %+v, %v", cycles, err)
+	}
+	// No planning replies are scripted, so the audit ends at its first role;
+	// only the launch is under test.
+	waitCycle(t, fixture.state, cycles[0].ID)
+	events, err := fixture.state.Events(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator := []model.Event{}
+	for _, event := range events {
+		if event.Kind == "operator" {
+			operator = append(operator, event)
+		}
+	}
+	if len(operator) != 1 || operator[0].EntityID != cycles[0].ID || operator[0].Message != "Audit started" {
+		t.Fatalf("operator events = %+v; want one \"Audit started\" on cycle %s", operator, cycles[0].ID)
+	}
+}
+
 func TestBaselineGateBlocksControlsConfigAndReconcile(t *testing.T) {
 	app, cfg := baselineApp(t)
 	// A synthetic live slot exercises every gate deterministically; the real

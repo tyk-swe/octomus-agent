@@ -84,18 +84,13 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	}
 	if action == "audit" {
 		// Audit includes a remote preflight, so the gate drops for remote work
-		// and the launch itself revalidates paused and idle state.
+		// and the launch itself revalidates paused and idle state. The launch
+		// records the operator event on the cycle it starts.
 		a.gate.Unlock()
-		_, err := a.StartAudit(a.ctx)
+		if _, err := a.StartAudit(a.ctx); err != nil {
+			return nil, err
+		}
 		a.gate.Lock()
-		if err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
-		if err := a.Store.Event("system", "operator", "audit"); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
 		control, err = a.Control()
 		if err != nil {
 			a.gate.Unlock()
