@@ -731,11 +731,13 @@ func (s *Store) DecisionMemory(repository string) ([]any, error) {
 	return decodeAll[any](raw)
 }
 
-// RediscoveryRequests lists cancelled tasks awaiting rediscovery for a repository.
+// RediscoveryRequests lists cancelled tasks awaiting rediscovery for a
+// repository. Archiving a task withdraws its pending request, as it removes
+// the task from scheduling.
 func (s *Store) RediscoveryRequests(repository string) ([]any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
+	raw, err := queryStrings(s.conn, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
 	if err != nil {
 		return nil, err
 	}

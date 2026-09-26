@@ -902,6 +902,37 @@ func TestRediscoveryNeedsExactlyOneFreshDecision(t *testing.T) {
 	}
 }
 
+// Archiving a task with a pending rediscovery request withdraws the request,
+// as archiving removes the task from scheduling: later execution passes no
+// longer seed it, so they neither assess it nor fail for leaving it undecided.
+func TestArchivingWithdrawsARediscoveryRequest(t *testing.T) {
+	fixture := newScriptedPlanningFixture(t)
+	request := saveRediscoveryRequest(t, fixture)
+	completePlan(t, fixture).queue(fixture)
+	app := fixture.pausedApp(t)
+	if err := app.TaskAction(context.Background(), request.ID, "archive"); err != nil {
+		t.Fatal(err)
+	}
+	if requests, err := fixture.state.RediscoveryRequests(fixture.cfg.GitHubRepo); err != nil || len(requests) != 0 {
+		t.Fatalf("archived request still pending: %+v, %v", requests, err)
+	}
+	if err := app.RunOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	cycle := waitOnlyCycle(t, fixture.state)
+	if cycle.Status != model.CycleCompleted {
+		t.Fatalf("pass status=%s error=%v; want the plan completed without the archived request", cycle.Status, cycle.Error)
+	}
+	for _, turn := range fixture.planningTurns() {
+		if strings.Contains(turn.Prompt, "rediscover-"+request.ID) {
+			t.Fatalf("a planning role was asked about the archived request: %.300s", turn.Prompt)
+		}
+	}
+}
+
 // The one decision on a rediscovery request resolves it: an accepted
 // candidate becomes a task that supersedes the cancelled one, a rejected one
 // records why the work is obsolete. Either way the request is no longer
