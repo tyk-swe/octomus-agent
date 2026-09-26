@@ -15,6 +15,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,11 +142,13 @@ func segs(pattern string) []string { return strings.Split(strings.TrimPrefix(pat
 
 // serveAPI applies route-layer semantics: path matching picks the
 // route (and its middleware) independent of method, so authentication and the
-// content-type rule run before the 405 dispatch. Unmatched paths get the same
-// 404 body without either check.
+// content-type rule run before the 405 dispatch, which names the path's
+// methods in Allow. Unmatched paths get the same 404 body without either check.
 func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 	parts := segs(path)
-	pathMatched := false
+	// allowed collects the methods of every route matching the path; the loop
+	// only completes without a method match, which is exactly the 405 case.
+	var allowed []string
 	var matched *apiRoute
 	params := map[string]string{}
 	for _, route := range a.routes() {
@@ -166,7 +169,9 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 		if !ok {
 			continue
 		}
-		pathMatched = true
+		if !slices.Contains(allowed, route.method) {
+			allowed = append(allowed, route.method)
+		}
 		if route.method == r.Method {
 			route := route
 			matched = &route
@@ -174,7 +179,7 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 			break
 		}
 	}
-	if !pathMatched {
+	if len(allowed) == 0 {
 		writeAPIError(w, http.StatusNotFound, "Unknown API route")
 		return
 	}
@@ -187,6 +192,7 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	if matched == nil {
+		w.Header().Set("Allow", strings.Join(allowed, ", "))
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}

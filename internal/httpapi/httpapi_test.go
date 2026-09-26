@@ -239,6 +239,12 @@ func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
 	if response.Body.String() != "override dashboard" {
 		t.Fatalf("override: %q", response.Body.String())
 	}
+	for name, assets := range map[string]http.Handler{"embedded": router, "override": Router(app, token, override, "test")} {
+		response := request(t, assets, "POST", "/", "", false)
+		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" {
+			t.Fatalf("%s POST: %d allow %q", name, response.Code, response.Header().Get("Allow"))
+		}
+	}
 	// Index pages in an override are HTML under their resolved name, not the
 	// extensionless request path: nosniff would otherwise make browsers
 	// download them.
@@ -399,8 +405,33 @@ func TestBaselineAPIAuthenticationRoutesAndMissingRecords(t *testing.T) {
 	if response := call(t, router, "POST", "/api/baseline-checks/no-such-check/cancel", "{}"); response.Code != http.StatusConflict {
 		t.Fatalf("missing cancel: %d", response.Code)
 	}
-	if response := call(t, router, "POST", "/api/baseline-checks/latest", "{}"); response.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("wrong method: %d", response.Code)
+	if response := call(t, router, "POST", "/api/baseline-checks/latest", "{}"); response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET" {
+		t.Fatalf("wrong method: %d allow %q", response.Code, response.Header().Get("Allow"))
+	}
+}
+
+// A 405 names every method the matched path answers, once each and in route
+// order, after authentication and the content-type rule have run.
+func TestMethodNotAllowedNamesThePathMethods(t *testing.T) {
+	app, _ := testApp(t)
+	router := Router(app, token, "", "test")
+	for _, check := range []struct{ method, path, allow string }{
+		{"DELETE", "/api/state", "GET"},
+		{"DELETE", "/api/config", "GET, PUT"},
+		{"PATCH", "/api/cycles/cycle-1/evidence", "GET, POST"},
+		{"GET", "/api/cycles/cycle-1/archive", "POST"},
+		{"DELETE", "/api/baseline-checks/latest", "GET"},
+		{"GET", "/api/doctor", "POST"},
+	} {
+		response := call(t, router, check.method, check.path, "{}")
+		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != check.allow || response.Body.Len() != 0 {
+			t.Fatalf("%s %s: %d allow %q body %q", check.method, check.path, response.Code, response.Header().Get("Allow"), response.Body.String())
+		}
+	}
+	// Unauthenticated requests learn nothing about the path's methods.
+	response := request(t, router, "DELETE", "/api/config", "{}", false)
+	if response.Code != http.StatusUnauthorized || response.Header().Get("Allow") != "" {
+		t.Fatalf("unauthenticated: %d allow %q", response.Code, response.Header().Get("Allow"))
 	}
 }
 

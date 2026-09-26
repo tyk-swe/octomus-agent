@@ -19,6 +19,9 @@ import (
 
 const indexName = "200.html"
 
+// assetMethods is the Allow value for the only methods assets answer.
+const assetMethods = "GET, HEAD"
+
 func assetHandler(override string) http.Handler {
 	if override != "" {
 		return &overrideAssets{root: http.Dir(override)}
@@ -76,6 +79,7 @@ type embeddedAssets struct{ files fs.FS }
 
 func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", assetMethods)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -110,6 +114,7 @@ type overrideAssets struct{ root http.FileSystem }
 
 func (o *overrideAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", assetMethods)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
