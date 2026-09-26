@@ -570,7 +570,9 @@ func planningErrors(t *testing.T, state *store.Store, entity string) []model.Eve
 
 // A failed pass commits nothing of its plan and logs one planning_error for
 // its cycle in either execution mode: Run once pauses, Continuous keeps
-// running and reports the failure in control.
+// running and reports the failure in control. A failure is not an idle plan:
+// the idle streak stays as it was, and Continuous retries after the backoff
+// that streak already set.
 func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 	for _, mode := range []model.OperatingMode{model.OperatingModeRunOnce, model.OperatingModeContinuous} {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -578,6 +580,11 @@ func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 			plan := completePlan(t, fixture)
 			plan.discovery[0] = runnertest.Reply{Answer: "this discovery answer is not JSON"}
 			plan.queue(fixture)
+			seeded := model.DefaultControl()
+			seeded.IdleStreak = 2
+			if err := fixture.state.SaveControl(seeded); err != nil {
+				t.Fatal(err)
+			}
 			app := fixture.pausedApp(t)
 			start := app.RunOnce
 			if mode == model.OperatingModeContinuous {
@@ -586,11 +593,13 @@ func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 			if err := start(); err != nil {
 				t.Fatal(err)
 			}
+			before := time.Now().Unix()
 			if err := app.Tick(); err != nil {
 				t.Fatal(err)
 			}
 			failed := waitOnlyCycle(t, fixture.state)
 			app.wg.Wait() // Cycle status is persisted before control finalization finishes.
+			after := time.Now().Unix()
 			if failed.Status != model.CycleFailed || failed.Error == nil || !strings.Contains(*failed.Error, "invalid JSON") {
 				t.Fatalf("malformed discovery was accepted: %+v", failed)
 			}
@@ -616,14 +625,267 @@ func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 			if mode == model.OperatingModeRunOnce && (control.Mode != model.OperatingModePaused || control.Batch != nil || control.Error == nil) {
 				t.Fatalf("failed RunOnce planning was not paused: %+v", control)
 			}
-			if mode == model.OperatingModeContinuous && (control.Mode != model.OperatingModeContinuous || control.Error == nil || *control.Error != *failed.Error) {
+			if mode == model.OperatingModeContinuous && (control.Mode != model.OperatingModeContinuous || control.Batch != nil || control.Error == nil || *control.Error != *failed.Error) {
 				t.Fatalf("failed Continuous planning did not keep running with its error: %+v", control)
+			}
+			if control.IdleStreak != 2 {
+				t.Fatalf("a failed pass changed the idle streak to %d", control.IdleStreak)
+			}
+			if delay := int64(2 * fixture.cfg.CycleIntervalSeconds); mode == model.OperatingModeContinuous && (control.NextCycleAt < before+delay || control.NextCycleAt > after+delay) {
+				t.Fatalf("failed Continuous planning scheduled the next cycle at %d; want the streak's backoff %d after %d..%d", control.NextCycleAt, delay, before, after)
 			}
 			if events := planningErrors(t, fixture.state, failed.ID); len(events) != 1 || events[0].Message != *failed.Error {
 				t.Fatalf("failed pass logged %+v; want one planning_error with the cycle error", events)
 			}
 			assertNoOpenClients(t, fixture.script)
 		})
+	}
+}
+
+// saveRediscoveryRequest saves a cancelled default-branch task whose operator
+// asked for a fresh assessment against current context.
+func saveRediscoveryRequest(t *testing.T, f *scriptedFixture) model.Task {
+	t.Helper()
+	task := queuedTask(f.cfg, model.ID(), f.cfg.DefaultBranch, "octomus/rediscovered")
+	task.Status = model.StatusCancelled
+	task.RediscoveryRequested = true
+	if err := f.state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+// seededRediscovery is the candidate an execution pass seeds for request, as
+// consolidation returns it with decision and reconsiders.
+func seededRediscovery(request model.Task, decision, reason string, reconsiders ...string) model.Proposal {
+	proposal := request.Proposal.Clone()
+	proposal.ID = "rediscover-" + request.ID
+	proposal.Dependencies = []string{}
+	proposal.Reconsiders = append([]string{}, reconsiders...)
+	proposal.Decision, proposal.Reason = decision, reason
+	return proposal
+}
+
+// rediscoveryPlan scripts a pass over one pending rediscovery request: both
+// adversaries assess the seeded candidate and the fixture proposal, and
+// consolidation returns proposals.
+func rediscoveryPlan(t *testing.T, f *scriptedFixture, request model.Task, proposals ...any) scriptedPlan {
+	t.Helper()
+	plan := completePlan(t, f)
+	assessments := mustJSON(t, map[string]any{"assessments": []any{
+		map[string]any{"id": "rediscover-" + request.ID, "decision": "accepted", "reason": "Still worthwhile against current context."},
+		map[string]any{"id": "d0-feature", "decision": "rejected", "reason": "Not needed now."},
+	}})
+	for i := range plan.reviews {
+		plan.reviews[i] = runnertest.Reply{Answer: assessments}
+	}
+	plan.consolidation = runnertest.Reply{Answer: mustJSON(t, map[string]any{"proposals": proposals})}
+	return plan
+}
+
+// runOncePlan starts a Run once batch and waits for its planning pass.
+func runOncePlan(t *testing.T, f *scriptedFixture) (*App, model.Cycle) {
+	t.Helper()
+	app := f.pausedApp(t)
+	if err := app.RunOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	cycle := waitOnlyCycle(t, f.state)
+	app.wg.Wait() // Cycle status is persisted before control finalization finishes.
+	return app, cycle
+}
+
+// An execution pass seeds each pending rediscovery request as a candidate
+// that every adversary assesses. Consolidation must decide the request in
+// exactly one returned proposal; otherwise the pass fails and the request
+// stays pending with no lineage recorded.
+func TestRediscoveryNeedsExactlyOneFreshDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		references int
+	}{{name: "undecided", references: 0}, {name: "decided twice", references: 2}} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			request := saveRediscoveryRequest(t, fixture)
+			seeded := seededRediscovery(request, model.DecisionRejected, "Obsolete against current context.")
+			feature := fixtureProposal(model.DecisionRejected, "Not needed now.")
+			if tc.references == 2 {
+				seeded.Reconsiders = []string{request.ID}
+				feature["reconsiders"] = []string{request.ID}
+			}
+			rediscoveryPlan(t, fixture, request, seeded, feature).queue(fixture)
+			_, cycle := runOncePlan(t, fixture)
+			want := fmt.Sprintf("Every rediscovery request needs exactly one fresh decision (request %s had %d)", request.ID, tc.references)
+			if cycle.Status != model.CycleFailed || cycle.Error == nil || *cycle.Error != want {
+				t.Fatalf("pass status=%s error=%v; want failed with %q", cycle.Status, cycle.Error, want)
+			}
+			for _, turn := range fixture.script.Turns(fixture.routes.ProposalReviewer) {
+				if !strings.Contains(turn.Prompt, `"id":"rediscover-`+request.ID+`"`) {
+					t.Fatalf("an adversary was not asked about the seeded candidate: %.300s", turn.Prompt)
+				}
+			}
+			saved, err := store.Get[model.Task](fixture.state, "task", request.ID)
+			if err != nil || saved == nil || !saved.RediscoveryRequested || len(saved.SupersededBy) != 0 || saved.RediscoveryResult != nil {
+				t.Fatalf("a failed pass changed the request's lineage: %+v, %v", saved, err)
+			}
+			tasks, err := store.List[model.Task](fixture.state, "task")
+			if err != nil || len(tasks) != 1 {
+				t.Fatalf("a failed pass committed tasks: %d, %v", len(tasks), err)
+			}
+		})
+	}
+}
+
+// The one decision on a rediscovery request resolves it: an accepted
+// candidate becomes a task that supersedes the cancelled one, a rejected one
+// records why the work is obsolete. Either way the request is no longer
+// pending.
+func TestRediscoveryDecisionResolvesTheRequest(t *testing.T) {
+	for _, decision := range []string{model.DecisionAccepted, model.DecisionRejected} {
+		t.Run(decision, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			request := saveRediscoveryRequest(t, fixture)
+			reason := "Decided against current context."
+			seeded := seededRediscovery(request, decision, reason, request.ID)
+			rediscoveryPlan(t, fixture, request, seeded, fixtureProposal(model.DecisionRejected, "Not needed now.")).queue(fixture)
+			_, cycle := runOncePlan(t, fixture)
+			wantStatus := model.CycleIdle
+			if decision == model.DecisionAccepted {
+				wantStatus = model.CycleCompleted
+			}
+			if cycle.Status != wantStatus {
+				t.Fatalf("pass status=%s error=%v; want %s", cycle.Status, cycle.Error, wantStatus)
+			}
+			tasks, err := store.List[model.Task](fixture.state, "task")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var old *model.Task
+			fresh := []model.Task{}
+			for i := range tasks {
+				if tasks[i].ID == request.ID {
+					old = &tasks[i]
+				} else {
+					fresh = append(fresh, tasks[i])
+				}
+			}
+			if old == nil || old.RediscoveryRequested || old.RediscoveryResult == nil || *old.RediscoveryResult != decision+": "+reason {
+				t.Fatalf("the request was not resolved with its decision: %+v", old)
+			}
+			if decision == model.DecisionAccepted {
+				if len(fresh) != 1 || fresh[0].Proposal.ID != seeded.ID || !slices.Equal(fresh[0].Supersedes, []string{request.ID}) || !slices.Equal(old.SupersededBy, []string{fresh[0].ID}) {
+					t.Fatalf("accepted rediscovery lineage: old=%v new=%+v", old.SupersededBy, fresh)
+				}
+			} else if len(fresh) != 0 || len(old.SupersededBy) != 0 {
+				t.Fatalf("rejected rediscovery committed work: old=%v new=%+v", old.SupersededBy, fresh)
+			}
+			pending, err := fixture.state.RediscoveryRequests(fixture.cfg.GitHubRepo)
+			if err != nil || len(pending) != 0 {
+				t.Fatalf("the request is still pending: %+v, %v", pending, err)
+			}
+		})
+	}
+}
+
+// Continuous planning backs off after consecutive idle plans: each idle plan
+// lengthens the streak and schedules the next cycle IdleDelay later, and a plan
+// that queues work ends the streak and returns to the ordinary interval.
+func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
+	fixture := newScriptedPlanningFixture(t)
+	// Three complete passes in one day.
+	fixture.configure(t, func(cfg *config.Config) { cfg.MaxSessionsPerDay = 3 * cfg.PlanningAdmissionsRequired() })
+	app := fixture.pausedApp(t)
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	interval := int64(fixture.cfg.CycleIntervalSeconds)
+	pass := func(label string, plan scriptedPlan, cycles int) model.Control {
+		t.Helper()
+		control, err := app.Control()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Due now, as the backoff that the previous pass set has elapsed.
+		control.NextCycleAt = 0
+		if err := fixture.state.SaveControl(control); err != nil {
+			t.Fatal(err)
+		}
+		plan.queue(fixture)
+		if err := app.Tick(); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			all, err := store.List[model.Cycle](fixture.state, "cycle")
+			if err != nil {
+				t.Fatal(err)
+			}
+			finished := 0
+			for _, cycle := range all {
+				if cycle.Status == model.CycleFailed {
+					t.Fatalf("%s: planning failed: %v", label, cycle.Error)
+				}
+				if cycle.Status != model.CycleRunning {
+					finished++
+				}
+			}
+			if len(all) == cycles && finished == cycles {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: planning pass did not finish", label)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		app.wg.Wait() // Control finalization follows the cycle's terminal save.
+		control, err = app.Control()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if control.Mode != model.OperatingModeContinuous || control.Error != nil {
+			t.Fatalf("%s: control = %+v", label, control)
+		}
+		return control
+	}
+	idle := func() scriptedPlan {
+		plan := completePlan(t, fixture)
+		plan.consolidation = runnertest.Reply{Answer: mustJSON(t, map[string]any{"proposals": []any{fixtureProposal(model.DecisionRejected, "No measured benefit yet.")}})}
+		return plan
+	}
+	for streak := uint32(1); streak <= 2; streak++ {
+		before := time.Now().Unix()
+		control := pass(fmt.Sprintf("idle plan %d", streak), idle(), int(streak))
+		delay := interval << (streak - 1)
+		if control.IdleStreak != streak || control.NextCycleAt < before+delay || control.NextCycleAt > time.Now().Unix()+delay {
+			t.Fatalf("idle plan %d: streak=%d next=%d; want streak %d and next about now+%d", streak, control.IdleStreak, control.NextCycleAt, streak, delay)
+		}
+	}
+
+	// A plan that queues work, here a new problem the recorded rejections do
+	// not cover, ends the streak.
+	guide := func(decision, reason string) map[string]any {
+		proposal := fixtureProposal(decision, reason)
+		proposal["id"], proposal["title"], proposal["problem_key"] = "d0-guide", "Document the feature contract", "document-feature-contract"
+		return proposal
+	}
+	plan := completePlan(t, fixture)
+	plan.discovery[0] = runnertest.Reply{Answer: mustJSON(t, map[string]any{"proposals": []any{guide(model.DecisionCandidate, "Documents the contract.")}})}
+	assessments := mustJSON(t, map[string]any{"assessments": []any{map[string]any{"id": "d0-guide", "decision": "accepted", "reason": "Concrete and useful."}}})
+	for i := range plan.reviews {
+		plan.reviews[i] = runnertest.Reply{Answer: assessments}
+	}
+	plan.consolidation = runnertest.Reply{Answer: mustJSON(t, map[string]any{"proposals": []any{guide(model.DecisionAccepted, "Both reviews accept it.")}})}
+	before := time.Now().Unix()
+	control := pass("planned work", plan, 3)
+	if control.IdleStreak != 0 || control.NextCycleAt < before+interval || control.NextCycleAt > time.Now().Unix()+interval {
+		t.Fatalf("planned work: streak=%d next=%d; want streak 0 and next about now+%d", control.IdleStreak, control.NextCycleAt, interval)
+	}
+	tasks, err := store.List[model.Task](fixture.state, "task")
+	if err != nil || len(tasks) != 1 || tasks[0].Proposal.ID != "d0-guide" {
+		t.Fatalf("planned work was not queued: %+v, %v", tasks, err)
 	}
 }
 
