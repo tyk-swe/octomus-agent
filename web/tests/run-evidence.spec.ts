@@ -1240,6 +1240,37 @@ test('overview and run evidence list only the proposal decisions that occurred',
   });
 });
 
+test('an idle cycle reads as finished planning that accepted nothing on the overview and in run evidence', async ({
+  page
+}) => {
+  // The service saves `idle` for a successful cycle that queued no work.
+  await page.route('**/api/state', async (route) => {
+    const snapshot = await (await route.fetch()).json();
+    snapshot.cycles[0].status = 'idle';
+    snapshot.cycles[0].decisions = { accepted: 0, rejected: 2, deferred: 0, candidate: 0 };
+    await route.fulfill({ json: snapshot });
+  });
+  await page.route('**/api/cycles/*/evidence', async (route) => {
+    const body = await (await route.fetch()).json();
+    body.cycle.status = 'idle';
+    await route.fulfill({ json: body });
+  });
+  await login(page);
+  const panel = page.locator('.cycle-panel');
+  await expect(
+    panel.getByText('Planning complete · nothing accepted', { exact: true })
+  ).toBeVisible();
+  await expect(panel).toContainText('An empty task set is a successful idle cycle');
+  await expect(page.getByText('Planning idle')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  const evidence = page.getByRole('dialog');
+  await expect(
+    evidence.getByText('Planning complete · nothing accepted', { exact: true }).first()
+  ).toBeVisible();
+  await expect(evidence.getByText('Planning idle')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close run evidence' }).click();
+});
+
 for (const status of [404, 503]) {
   test(`task evidence retains ${status} until explicit retry or a saved revision changes`, async ({
     page,

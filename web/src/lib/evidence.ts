@@ -355,7 +355,9 @@ export function shortCommit(value: string | null): string {
 
 /**
  * The planning-only outcome word for a cycle. `completed` means planning finished and
- * decisions are recorded; it never means the run's work is complete.
+ * decisions are recorded; it never means the run's work is complete. `idle` is the
+ * service's successful cycle that accepted nothing: no queued work, or no accepted
+ * audit recommendation.
  */
 export function planningVerdict(cycle: { status: string; mode: 'execution' | 'audit' }): Verdict {
   const noun = cycle.mode === 'audit' ? 'Audit' : 'Planning';
@@ -366,6 +368,15 @@ export function planningVerdict(cycle: { status: string; mode: 'execution' | 'au
         label: `${noun} complete`,
         tone: 'clean',
         detail: `Proposal ${outputs} are recorded. Planning completion is not task completion.`
+      };
+    case 'idle':
+      return {
+        label: `${noun} complete · nothing accepted`,
+        tone: 'clean',
+        detail:
+          cycle.mode === 'audit'
+            ? 'The audit finished and no recommendation was accepted.'
+            : 'Planning finished and accepted no work. An empty task set is a successful idle cycle; planning completion is not task completion.'
       };
     case 'running':
       return {
