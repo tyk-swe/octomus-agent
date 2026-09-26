@@ -405,11 +405,21 @@ func prComments(ctx context.Context, c config.Config, number uint64) ([]string, 
 	return bodies, err
 }
 
+// taskMarkerPrefix opens every task's publication marker: ownership needs any
+// task's marker, delivery identity the exact one from taskMarkerFor.
+const taskMarkerPrefix = "<!-- octomus:task:"
+
+// taskMarkerFor returns the exact publication marker for one task; delivery
+// identity, ownership and idempotency all depend on these bytes.
+func taskMarkerFor(taskID string) string {
+	return taskMarkerPrefix + taskID + " -->"
+}
+
 // TaskMarker reports whether the task's publication marker is attached to the
 // pull request: in the description when this task originated the request, or
 // in an append-only comment when it delivered a follow-up.
 func TaskMarker(ctx context.Context, c config.Config, taskID string, p model.PullRequest) (bool, error) {
-	marker := "<!-- octomus:task:" + taskID + " -->"
+	marker := taskMarkerFor(taskID)
 	if strings.Contains(p.Body, marker) {
 		return true, nil
 	}
@@ -443,7 +453,7 @@ func parsePR(p map[string]any, c config.Config) (model.PullRequest, error) {
 	owned := strings.HasPrefix(branch, c.BranchPrefix) &&
 		headRepoOk && config.EqualASCII(headRepo, c.GitHubRepo) &&
 		baseRepoOk && config.EqualASCII(baseRepo, c.GitHubRepo) &&
-		strings.Contains(body, "<!-- octomus:task:")
+		strings.Contains(body, taskMarkerPrefix)
 	return model.PullRequest{
 		Number:         number,
 		Title:          text(p, "title"),
@@ -570,7 +580,7 @@ func prBody(task model.Task, existing *model.PullRequest, commit string) string 
 		}
 		verification = append(verification, fmt.Sprintf("- `%s`: %s", v.Command, result))
 	}
-	marker := fmt.Sprintf("<!-- octomus:task:%s -->", task.ID)
+	marker := taskMarkerFor(task.ID)
 	summary := ""
 	for i := len(task.Sessions) - 1; i >= 0; i-- {
 		if role := task.Sessions[i].Role; role == "executor" || role == "repair" {
@@ -645,7 +655,7 @@ func preparePublication(task model.Task, existing *model.PullRequest, commit str
 	if utf8.RuneCountInString(body) > maxPublicationBodyChars {
 		return refuse("Publication body exceeds the remote size limit")
 	}
-	marker := fmt.Sprintf("<!-- octomus:task:%s -->", task.ID)
+	marker := taskMarkerFor(task.ID)
 	if !strings.Contains(body, marker) {
 		return refuse("Publication metadata cannot carry the task's delivery marker")
 	}
@@ -742,7 +752,7 @@ func createPR(ctx context.Context, c config.Config, task model.Task, title strin
 	if err != nil {
 		return model.PullRequest{}, err
 	}
-	marker := fmt.Sprintf("<!-- octomus:task:%s -->", task.ID)
+	marker := taskMarkerFor(task.ID)
 	if err := ValidatePublication(task, published,
 		strings.Contains(published.Body, marker), false); err != nil {
 		return model.PullRequest{}, err
