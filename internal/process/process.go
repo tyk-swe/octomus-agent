@@ -519,9 +519,10 @@ func ShellCheck(ctx context.Context, command string, cwd string, seconds uint64)
 // RunPredicate executes a command whose exit status is itself the answer.
 // Success means true, falseCodes are the documented "predicate is false"
 // statuses, and every other failure — spawn, timeout, signal, an unexpected
-// code — still fails closed rather than reading as a false predicate.
+// code — still fails closed rather than reading as a false predicate. Output
+// is kept only as diagnostic evidence for such a failure.
 func RunPredicate(ctx context.Context, binary string, args []string, cwd string, seconds uint64, falseCodes []int) (bool, error) {
-	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureMachine)
+	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureDiagnostic)
 	if err != nil {
 		return false, err
 	}
@@ -531,10 +532,7 @@ func RunPredicate(ctx context.Context, binary string, args []string, cwd string,
 	if code, ok := output.Status.Code(); ok && slices.Contains(falseCodes, code) {
 		return false, nil
 	}
-	if err := ensureSuccess(binary, output); err != nil {
-		return false, err
-	}
-	return false, nil
+	return false, ensureSuccess(binary, output)
 }
 
 // deadlineGrace is the bounded window for a cancelled future to unwind before
