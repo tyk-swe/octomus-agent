@@ -34,19 +34,43 @@ func VersionWarning(backend config.Backend, installed, expected string) string {
 	return fmt.Sprintf("%s version mismatch: installed %s; %s; protocol compatibility is unverified.", backend.Display(), installed, expected)
 }
 
-// diagnosticsValue is the diagnostics document both backends report; the
-// dashboard reads one shape.
-func diagnosticsValue(backend config.Backend, version, protocolVersion string, warning *string) map[string]any {
-	var w any
-	if warning != nil {
-		w = *warning
+// Diagnostics is the document every backend reports to the doctor; the
+// dashboard and CLI read one shape. Fields stay in key order so the typed
+// document encodes to the same bytes as its generic map form.
+type Diagnostics struct {
+	Backend         config.Backend `json:"backend"`
+	ProtocolVersion string         `json:"protocol_version"`
+	Version         string         `json:"version"`
+	// Warning states a version mismatch against the protocol baseline; nil
+	// when the installed version is the tested one.
+	Warning *string `json:"warning"`
+}
+
+// Map is the generic form of d, with the backend as its wire name and a nil
+// warning when there is none.
+//
+// Deprecated: only Adapter.Diagnostics uses it, until internal/engine reads
+// the typed document from Adapter.Diagnose.
+func (d Diagnostics) Map() map[string]any {
+	var warning any
+	if d.Warning != nil {
+		warning = *d.Warning
 	}
 	return map[string]any{
-		"backend":          backend.Slug(),
-		"version":          version,
-		"protocol_version": protocolVersion,
-		"warning":          w,
+		"backend":          d.Backend.Slug(),
+		"version":          d.Version,
+		"protocol_version": d.ProtocolVersion,
+		"warning":          warning,
 	}
+}
+
+// diagnosticsMap adapts a Diagnose result to the generic Adapter.Diagnostics
+// form.
+func diagnosticsMap(d Diagnostics, err error) (map[string]any, error) {
+	if err != nil {
+		return nil, err
+	}
+	return d.Map(), nil
 }
 
 // Model is one discovered runtime model.
@@ -111,6 +135,13 @@ type Adapter interface {
 	Models(cwd string) ([]Model, error)
 	Start(route config.Route, cwd string, resume *string) (string, error)
 	Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error)
+	// Diagnose reports the backend's version document, failing when the
+	// backend cannot serve sessions (for example, missing authentication).
+	Diagnose(cwd string) (Diagnostics, error)
+	// Diagnostics is Diagnose as a generic map.
+	//
+	// Deprecated: internal/engine's doctor still indexes the map; it moves to
+	// Diagnose, and this method goes away.
 	Diagnostics(cwd string) (map[string]any, error)
 	Close() error
 }
@@ -243,7 +274,7 @@ func (r *Runners) ValidateRoutes(cfg config.Config, cwd string, audit bool) erro
 			if err != nil {
 				return fmt.Errorf("%s route: %w", named.Name, err)
 			}
-			if _, err := client.Diagnostics(cwd); err != nil {
+			if _, err := client.Diagnose(cwd); err != nil {
 				return fmt.Errorf("%s diagnostics: %w", named.Route.Backend.Display(), err)
 			}
 			checked[named.Route.Backend] = struct{}{}

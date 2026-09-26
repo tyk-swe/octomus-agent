@@ -311,14 +311,25 @@ func (c *client) Models(cwd string) ([]runner.Model, error) {
 	return c.models(), nil
 }
 
-func (c *client) Diagnostics(cwd string) (map[string]any, error) {
+func (c *client) Diagnose(cwd string) (runner.Diagnostics, error) {
 	c.script.mu.Lock()
 	defer c.script.mu.Unlock()
 	c.record(Call{Kind: CallDiagnostics, Cwd: cwd})
 	if err := c.usable(); err != nil {
+		return runner.Diagnostics{}, err
+	}
+	return runner.Diagnostics{Backend: c.backend, ProtocolVersion: "scripted", Version: "scripted"}, nil
+}
+
+// Diagnostics is Diagnose as a generic map; it records one diagnostics call.
+//
+// Deprecated: see runner.Adapter.Diagnostics.
+func (c *client) Diagnostics(cwd string) (map[string]any, error) {
+	d, err := c.Diagnose(cwd)
+	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"backend": c.backend.Slug(), "version": "scripted", "protocol_version": "scripted", "warning": nil}, nil
+	return d.Map(), nil
 }
 
 // Start rejects routes absent from the catalog, then resumes resume (which must

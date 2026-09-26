@@ -212,10 +212,22 @@ func (o *OpenCode) ProtocolSchema(cwd string) (any, error) {
 
 func (o *OpenCode) Version() string { return o.version }
 
-// Diagnostics reports the server version against the documented protocol
+// Diagnose reports the server version against the documented protocol
 // baseline.
+func (o *OpenCode) Diagnose(cwd string) (Diagnostics, error) {
+	return Diagnostics{
+		Backend:         config.BackendOpencode,
+		ProtocolVersion: OpenCodeProtocolVersion,
+		Version:         o.version,
+		Warning:         OpenCodeVersionWarning(o.version),
+	}, nil
+}
+
+// Diagnostics is Diagnose as a generic map.
+//
+// Deprecated: see Adapter.Diagnostics.
 func (o *OpenCode) Diagnostics(cwd string) (map[string]any, error) {
-	return diagnosticsValue(config.BackendOpencode, o.version, OpenCodeProtocolVersion, OpenCodeVersionWarning(o.version)), nil
+	return diagnosticsMap(o.Diagnose(cwd))
 }
 
 func (o *OpenCode) endpoint(path, cwd string) string {

@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
 
@@ -444,12 +446,13 @@ func TestOpenCodeDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	diagnostics, err := client.Diagnostics(f.workspace)
+	diagnostics, err := client.Diagnose(f.workspace)
 	if err != nil {
 		t.Fatalf("diagnostics: %v", err)
 	}
-	if diagnostics["protocol_version"] != OpenCodeProtocolVersion || diagnostics["warning"] != nil {
-		t.Fatalf("baseline diagnostics: %v", diagnostics)
+	if diagnostics.Backend != config.BackendOpencode || diagnostics.ProtocolVersion != OpenCodeProtocolVersion ||
+		diagnostics.Version != client.Version() || diagnostics.Warning != nil {
+		t.Fatalf("baseline diagnostics: %+v", diagnostics)
 	}
 	client.Close()
 	f.mode("opencode", "version-mismatch")
@@ -458,12 +461,18 @@ func TestOpenCodeDiagnostics(t *testing.T) {
 		t.Fatalf("reconnect: %v", err)
 	}
 	defer client.Close()
-	diagnostics, err = client.Diagnostics(f.workspace)
+	diagnostics, err = client.Diagnose(f.workspace)
 	if err != nil {
 		t.Fatalf("diagnostics: %v", err)
 	}
-	if diagnostics["version"] != "0.0.0-fixture" || diagnostics["warning"] == nil {
-		t.Fatalf("mismatched diagnostics: %v", diagnostics)
+	if diagnostics.Version != "0.0.0-fixture" || diagnostics.Warning == nil ||
+		*diagnostics.Warning != *OpenCodeVersionWarning("0.0.0-fixture") {
+		t.Fatalf("mismatched diagnostics: %+v", diagnostics)
+	}
+	// The generic form the engine doctor still reads carries the same facts.
+	generic, err := client.Diagnostics(f.workspace)
+	if err != nil || !reflect.DeepEqual(generic, diagnostics.Map()) {
+		t.Fatalf("generic diagnostics = %v, %v; want %v", generic, err, diagnostics.Map())
 	}
 }
 

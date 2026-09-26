@@ -7,12 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -266,29 +268,35 @@ func TestCodexDiagnosticsAndAccount(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer client.Close()
-	diagnostics, err := client.Diagnostics(f.workspace)
+	diagnostics, err := client.Diagnose(f.workspace)
 	if err != nil {
 		t.Fatalf("diagnostics: %v", err)
 	}
-	if diagnostics["backend"] != "codex" ||
-		diagnostics["version"] != "codex-cli "+CodexTestedVersion ||
-		diagnostics["protocol_version"] != CodexTestedVersion ||
-		diagnostics["warning"] != nil {
-		t.Fatalf("baseline diagnostics: %v", diagnostics)
+	if diagnostics != (Diagnostics{Backend: config.BackendCodex, ProtocolVersion: CodexTestedVersion, Version: "codex-cli " + CodexTestedVersion}) {
+		t.Fatalf("baseline diagnostics: %+v", diagnostics)
 	}
 	if err := os.WriteFile(f.path("version"), []byte("0.0.0-fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	diagnostics, err = client.Diagnostics(f.workspace)
+	diagnostics, err = client.Diagnose(f.workspace)
 	if err != nil {
 		t.Fatalf("diagnostics: %v", err)
 	}
-	if diagnostics["version"] != "codex-cli 0.0.0-fixture" || diagnostics["warning"] == nil {
-		t.Fatalf("mismatched diagnostics: %v", diagnostics)
+	if diagnostics.Version != "codex-cli 0.0.0-fixture" || diagnostics.Warning == nil ||
+		*diagnostics.Warning != *CodexVersionWarning("codex-cli 0.0.0-fixture") {
+		t.Fatalf("mismatched diagnostics: %+v", diagnostics)
+	}
+	// The generic form the engine doctor still reads carries the same facts.
+	generic, err := client.Diagnostics(f.workspace)
+	if err != nil || !reflect.DeepEqual(generic, diagnostics.Map()) {
+		t.Fatalf("generic diagnostics = %v, %v; want %v", generic, err, diagnostics.Map())
 	}
 	f.mode("codex", "no-auth")
-	if _, err := client.Diagnostics(f.workspace); err == nil || !strings.Contains(err.Error(), "authentication") {
+	if _, err := client.Diagnose(f.workspace); err == nil || !strings.Contains(err.Error(), "authentication") {
 		t.Fatalf("a missing account must fail diagnostics: %v", err)
+	}
+	if generic, err := client.Diagnostics(f.workspace); err == nil || generic != nil {
+		t.Fatalf("a missing account must fail generic diagnostics: %v, %v", generic, err)
 	}
 }
 
