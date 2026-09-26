@@ -1205,6 +1205,35 @@ for (const recentMatches of [true, false]) {
   });
 }
 
+test('overview and run evidence list only the proposal decisions that occurred', async ({
+  page
+}) => {
+  let decisions: Record<string, number> | null = null;
+  await page.route('**/api/state', async (route) => {
+    const snapshot = await (await route.fetch()).json();
+    if (decisions) snapshot.cycles[0].decisions = decisions;
+    await route.fulfill({ json: snapshot });
+  });
+  await login(page);
+  // The cycle summary reports every decision, with 0 for those that never occurred.
+  const overview = page
+    .locator('.run-outcome')
+    .getByRole('list', { name: 'Proposal decisions', exact: true });
+  await expect(overview.getByRole('listitem')).toHaveCount(1);
+  await expect(overview.getByRole('listitem')).toHaveText('3accepted');
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  const recorded = page
+    .getByRole('dialog')
+    .getByRole('list', { name: 'Proposal decisions', exact: true });
+  await expect(recorded.getByRole('listitem')).toHaveText(['3accepted']);
+  await page.getByRole('button', { name: 'Close run evidence' }).click();
+
+  decisions = { accepted: 0, rejected: 0, deferred: 0, candidate: 0 };
+  await expect(overview.getByRole('listitem')).toHaveText(['No decisions recorded'], {
+    timeout: 10000
+  });
+});
+
 for (const status of [404, 503]) {
   test(`task evidence retains ${status} until explicit retry or a saved revision changes`, async ({
     page,

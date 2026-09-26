@@ -394,18 +394,24 @@ export function planningVerdict(cycle: { status: string; mode: 'execution' | 'au
   }
 }
 
-/** Decision counts in a fixed order, so accepted never trades places with deferred. */
+/**
+ * Decision counts in a fixed order, so accepted never trades places with deferred.
+ * Only decisions that occurred are listed: the cycle summary reports every decision
+ * with a 0 count, while run evidence names only the decisions it saw.
+ */
 export function decisionCounts(
   decisions: Record<string, number>
 ): { decision: string; count: number; tone: Tone }[] {
   const extra = Object.keys(decisions)
     .filter((key) => !DECISIONS.some((decision) => decision === key))
     .sort();
-  return [...DECISIONS.filter((key) => key in decisions), ...extra].map((decision) => ({
-    decision,
-    count: decisions[decision] ?? 0,
-    tone: decisionTone(decision)
-  }));
+  return [...DECISIONS.filter((key) => key in decisions), ...extra]
+    .map((decision) => ({
+      decision,
+      count: decisions[decision] ?? 0,
+      tone: decisionTone(decision)
+    }))
+    .filter((entry) => entry.count > 0);
 }
 
 const OUTCOME_GROUPS: { label: (count: number) => string; tone: Tone; statuses: string[] }[] = [
