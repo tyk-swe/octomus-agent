@@ -146,9 +146,17 @@ func jnum(v any) (uint64, bool) {
 // configured GitHub repository over SSH or credential-free HTTPS, and gh to be
 // authenticated against github.com.
 func ValidateRemote(ctx context.Context, c config.Config) error {
+	_, err := validatedOrigin(ctx, c)
+	return err
+}
+
+// validatedOrigin performs ValidateRemote's checks and returns the exact origin
+// URL they accepted, so publication pushes to the URL that was validated
+// rather than one read again afterwards.
+func validatedOrigin(ctx context.Context, c config.Config) (string, error) {
 	remote, err := originURL(ctx, c, c.Repository)
 	if err != nil {
-		return err
+		return "", err
 	}
 	repo, ok := strings.CutPrefix(remote, "git@github.com:")
 	if !ok {
@@ -158,16 +166,18 @@ func ValidateRemote(ctx context.Context, c config.Config) error {
 		repo, ok = strings.CutPrefix(remote, "ssh://git@github.com/")
 	}
 	if !ok {
-		return errors.New("Origin must use github.com via SSH or credential-free HTTPS")
+		return "", errors.New("Origin must use github.com via SSH or credential-free HTTPS")
 	}
 	for strings.HasSuffix(repo, ".git") {
 		repo = strings.TrimSuffix(repo, ".git")
 	}
 	if !config.EqualASCII(repo, c.GitHubRepo) {
-		return errors.New("Origin does not match configured GitHub repository")
+		return "", errors.New("Origin does not match configured GitHub repository")
 	}
-	_, err = gh(ctx, c, []string{"auth", "status", "--hostname", "github.com"})
-	return err
+	if _, err := gh(ctx, c, []string{"auth", "status", "--hostname", "github.com"}); err != nil {
+		return "", err
+	}
+	return remote, nil
 }
 
 // Fetch refreshes the configured checkout's view of origin.
@@ -784,10 +794,7 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 	fail := func(err error) (model.PullRequest, error) {
 		return model.PullRequest{}, err
 	}
-	if err := ValidateRemote(ctx, c); err != nil {
-		return fail(err)
-	}
-	trustedRemote, err := originURL(ctx, c, c.Repository)
+	trustedRemote, err := validatedOrigin(ctx, c)
 	if err != nil {
 		return fail(err)
 	}
