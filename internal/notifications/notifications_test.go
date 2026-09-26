@@ -15,6 +15,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	_ "modernc.org/sqlite"
 )
 
@@ -124,14 +125,9 @@ func (r *receiver) next(t *testing.T) []byte {
 
 func waitUntil(t *testing.T, seconds float64, condition func() bool, what string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Duration(seconds * float64(time.Second)))
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testutil.WaitUntil(time.Duration(seconds*float64(time.Second)), condition) {
+		t.Fatalf("timed out waiting for %s", what)
 	}
-	t.Fatalf("timed out waiting for %s", what)
 }
 
 func TestWebhookURLPolicyAcceptsHTTPSAndLoopbackHTTPOnly(t *testing.T) {

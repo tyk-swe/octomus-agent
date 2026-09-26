@@ -20,14 +20,21 @@ import (
 
 const token = "operator-fixture-token-with-at-least-32-characters"
 
-func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store) {
+// openStore opens dir/state.db and closes it when the test ends.
+func openStore(t *testing.T, dir string) *store.Store {
 	t.Helper()
-	dir := t.TempDir()
 	state, err := store.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = state.Close() })
+	return state
+}
+
+func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	state := openStore(t, dir)
 	return engine.New(state, dir, options...), state
 }
 
@@ -110,11 +117,7 @@ func githubFixture(t *testing.T, commands []string) (*engine.App, *store.Store, 
 	t.Setenv("OCTOMUS_FIXTURE", root)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	data := t.TempDir()
-	state, err := store.Open(filepath.Join(data, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = state.Close() })
+	state := openStore(t, data)
 	cfg := config.Default()
 	cfg.Repository = checkout
 	cfg.GitHubRepo = "fixture/project"

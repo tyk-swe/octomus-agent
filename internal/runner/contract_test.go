@@ -16,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func contract(t *testing.T, backend config.Backend, binary string) {
@@ -46,7 +47,7 @@ func contract(t *testing.T, backend config.Backend, binary string) {
 		}
 	})
 	var port string
-	if !waitUntil(5*time.Second, func() bool {
+	if !testutil.WaitUntil(5*time.Second, func() bool {
 		var ok bool
 		port, ok = published(filepath.Join(root, "provider-port"))
 		return ok
@@ -231,7 +232,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 		t.Fatalf("resume changed session identity: %q", resumed)
 	}
 	turn := turnIn(client, session, route, workspace, "CANCEL_CONTRACT_TURN", nil)
-	if !waitUntil(10*time.Second, func() bool { return fileExists(filepath.Join(root, "turn-entered")) }) {
+	if !testutil.WaitUntil(10*time.Second, func() bool { return fileExists(filepath.Join(root, "turn-entered")) }) {
 		t.Fatal("controlled cancellation request never reached the provider")
 	}
 	cancel()

@@ -18,21 +18,8 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
-
-// waitUntil polls ready every 10 ms until it holds or timeout elapses.
-func waitUntil(timeout time.Duration, ready func() bool) bool {
-	deadline := time.Now().Add(timeout)
-	for {
-		if ready() {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
 
 // waitForPid returns the pid a fixture command writes to path once the value
 // has fully landed: the shell creates the file before `echo` writes it, and
@@ -40,7 +27,7 @@ func waitUntil(timeout time.Duration, ready func() bool) bool {
 func waitForPid(t *testing.T, path string) string {
 	t.Helper()
 	var pid string
-	if !waitUntil(5*time.Second, func() bool {
+	if !testutil.WaitUntil(5*time.Second, func() bool {
 		data, err := os.ReadFile(path)
 		if err != nil || !strings.HasSuffix(string(data), "\n") {
 			return false
@@ -52,17 +39,6 @@ func waitForPid(t *testing.T, path string) string {
 		t.Fatalf("the command never wrote %s", filepath.Base(path))
 	}
 	return pid
-}
-
-// processGone reports whether pid no longer runs: the proc entry is gone or it
-// is a zombie awaiting its parent's reap.
-func processGone(pid string) bool {
-	stat, err := os.ReadFile("/proc/" + pid + "/stat")
-	if err != nil {
-		return errors.Is(err, os.ErrNotExist)
-	}
-	fields := strings.Fields(string(stat))
-	return len(fields) > 2 && fields[2] == "Z"
 }
 
 // processReaped reports whether a waited child left no trace at all.
@@ -150,7 +126,7 @@ sys.exit(int(sys.argv[2]))
 		t.Fatalf("descendant never wrote its pid: %v", err)
 	}
 	pid := strings.TrimSpace(string(childData))
-	if !waitUntil(5*time.Second, func() bool { return processGone(pid) }) {
+	if !testutil.WaitUntil(5*time.Second, func() bool { return testutil.ProcessGone(pid) }) {
 		t.Fatal("descendant survived leader completion")
 	}
 	// The leader was successfully started, so it must have been reaped: its
@@ -185,7 +161,7 @@ func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 	if err := <-done; err == nil {
 		t.Fatal("cancellation must fail the command")
 	}
-	if !waitUntil(time.Second, func() bool { return processGone(pid) }) {
+	if !testutil.WaitUntil(time.Second, func() bool { return testutil.ProcessGone(pid) }) {
 		t.Fatal("Child process survived cancellation")
 	}
 }
@@ -210,7 +186,7 @@ func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("capture did not return after its deadline")
 	}
-	if !waitUntil(time.Second, func() bool { return processGone(pid) }) {
+	if !testutil.WaitUntil(time.Second, func() bool { return testutil.ProcessGone(pid) }) {
 		t.Fatal("Child process survived deadline expiration")
 	}
 }
@@ -239,7 +215,7 @@ func TestStoppedGroupsCanCleanUp(t *testing.T) {
 				_, err := process.Capture(ctx, "bash", []string{"-c", script}, temp, tc.seconds, process.CaptureDiagnostic)
 				done <- err
 			}()
-			if !waitUntil(5*time.Second, func() bool {
+			if !testutil.WaitUntil(5*time.Second, func() bool {
 				_, err := os.Stat(filepath.Join(temp, "started"))
 				return err == nil
 			}) {
@@ -294,7 +270,7 @@ func TestTermIgnoringGroupIsStillKilled(t *testing.T) {
 		t.Fatalf("cancellation took %v; want the short grace then a kill", elapsed)
 	}
 	for _, pid := range []string{leader, child} {
-		if !waitUntil(time.Second, func() bool { return processGone(pid) }) {
+		if !testutil.WaitUntil(time.Second, func() bool { return testutil.ProcessGone(pid) }) {
 			t.Fatalf("process %s survived cancellation", pid)
 		}
 	}
