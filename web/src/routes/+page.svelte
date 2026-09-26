@@ -63,6 +63,7 @@
     selected = id;
   }
   async function closePanels() {
+    if (!selected && !evidence) return;
     selected = null;
     evidence = null;
     const opener = panelOpener;

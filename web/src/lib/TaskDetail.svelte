@@ -160,8 +160,10 @@
   bind:this={dialog}
   class="task-dialog"
   aria-labelledby="task-title"
-  onkeydown={(e) => {
-    if (e.key === 'Escape') onclose();
+  oncancel={(e) => {
+    // Every close request, wherever focus is, closes through the page's panel state.
+    e.preventDefault();
+    onclose();
   }}
 >
   <div class="dialog-top">

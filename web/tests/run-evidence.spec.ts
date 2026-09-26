@@ -5,7 +5,7 @@
  * rehearsal report, and no test asserts a live model identity or a fresh GitHub
  * observation, because the feature does not claim either.
  */
-import { test, expect, type Route } from '@playwright/test';
+import { test, expect, type Page, type Route } from '@playwright/test';
 import {
   A,
   B,
@@ -1033,6 +1033,79 @@ test('closing a panel returns keyboard focus to the control that opened it, incl
   await page.getByRole('button', { name: 'Close task details' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(inspect).toBeFocused();
+});
+
+const focusOnBody = (page: Page) => page.evaluate(() => document.activeElement === document.body);
+
+test('Escape closes task details through page state after its focused action was disabled', async ({
+  page
+}, testInfo) => {
+  await page.clock.install();
+  // Task and task-event reads show whether the closed panel still polls.
+  let taskReads = 0;
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname === '/api/tasks/task-reviewed' ||
+      (url.pathname === '/api/events' && url.searchParams.get('entity') === 'task-reviewed')
+    )
+      taskReads++;
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/api/tasks/task-reviewed/archive', async (route) => {
+    await held;
+    // Terminates in the browser: the shared fixture task stays published.
+    await route.fulfill({ json: { ok: true } });
+  });
+  await login(page);
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Task queue', exact: true })
+    .click();
+  const row = page.getByRole('button', { name: /Explain the local development workflow/ });
+  await row.click();
+  const archive = page.getByRole('dialog').getByRole('button', { name: 'Archive task' });
+  await archive.click();
+  // The pending action disables the focused button, so focus falls to the document body.
+  await expect(archive).toBeDisabled();
+  await expect.poll(() => focusOnBody(page)).toBe(true);
+  release();
+  await expect(archive).toBeEnabled();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const reads = taskReads;
+  await page.clock.runFor(12000);
+  expect(taskReads).toBe(reads);
+  await row.click();
+  await expect(
+    page.getByRole('dialog').getByRole('button', { name: 'Archive task' })
+  ).toBeVisible();
+});
+
+test('Escape closes run evidence after its focused retry control was replaced', async ({
+  page
+}) => {
+  let fail = true;
+  await page.route('**/api/cycles/cycle-1/evidence', async (route: Route) => {
+    if (fail) await route.fulfill({ status: 503, json: { error: 'Synthetic evidence outage' } });
+    else await route.fulfill({ json: await (await route.fetch()).json() });
+  });
+  await login(page);
+  const inspect = page.getByRole('button', { name: 'Inspect run' });
+  await inspect.click();
+  const dialog = page.getByRole('dialog');
+  fail = false;
+  await dialog.getByRole('button', { name: 'Try again' }).click();
+  await expect(dialog.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
+  // The retry button is gone, so focus has fallen to the document body.
+  expect(await focusOnBody(page)).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await inspect.click();
+  await expect(dialog.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
 });
 
 test('a failed initial evidence request explains itself and offers a retry', async ({ page }) => {
