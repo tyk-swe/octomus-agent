@@ -542,29 +542,28 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 			return nil, process.ErrCancelled
 		}
 		failed := outcome.failed()
-		intact, intactErr := outcome.intactResult()
 		// The state-check note follows the command's evidence, which is
 		// bounded to leave room for it, so no bound ever cuts the note.
 		note := ""
 		switch {
-		case intactErr != nil:
+		case outcome.intactErr != nil:
 			// The state check itself failed, for example because the command
 			// removed the repository: still evidence against this command.
-			note = "\n" + boundedTail(redact.Secrets(intactErr.Error()), verificationNoteLimit, false)
-		case !intact:
+			note = "\n" + boundedTail(redact.Secrets(outcome.intactErr.Error()), verificationNoteLimit, false)
+		case !outcome.intact:
 			note = "\nWorkspace or HEAD changed during this verification command"
 		}
 		output := outcome.evidenceText(verificationOutputLimit-len(note)) + note
 		task.Verification = append(task.Verification, model.Verification{
-			Command: command, Success: intactErr == nil && intact && !failed, Output: output, Revision: revision, CreatedAt: model.Now(),
+			Command: command, Success: outcome.intactErr == nil && outcome.intact && !failed, Output: output, Revision: revision, CreatedAt: model.Now(),
 		})
 		if err := a.saveTask(task); err != nil {
 			return nil, err
 		}
-		if intactErr != nil {
-			return nil, fmt.Errorf("Workspace state check failed during verification: %w", intactErr)
+		if outcome.intactErr != nil {
+			return nil, fmt.Errorf("Workspace state check failed during verification: %w", outcome.intactErr)
 		}
-		if !intact {
+		if !outcome.intact {
 			return nil, model.BlockedReasonWorkspaceInvalid
 		}
 		if failed {
@@ -733,18 +732,15 @@ func boundedTail(text string, limit int, captureTruncated bool) string {
 	return prefix + text[start:] + suffix
 }
 
-func (o checkOutcome) intactResult() (bool, error) { return o.intact, o.intactErr }
-
 // runCheckCommand runs one `bash -o pipefail -c` verification command in ws,
 // then checks the workspace still sits at revision. The integrity read is
 // skipped once ctx fires: it needs a live process and could only report the
-// cancellation rather than the workspace state.
+// cancellation rather than the workspace state, so the outcome's integrity
+// fields are meaningful only while ctx is live, and callers check ctx first.
 func runCheckCommand(ctx context.Context, cfg config.Config, ws, command, revision string) checkOutcome {
 	captured, captureErr := process.ShellCheck(ctx, command, ws, cfg.CommandTimeoutSeconds)
 	outcome := checkOutcome{captured: captured, capture: captureErr}
-	if ctx.Err() != nil {
-		outcome.intact = false
-	} else {
+	if ctx.Err() == nil {
 		outcome.intact, outcome.intactErr = gitops.At(ctx, cfg, ws, revision)
 	}
 	return outcome

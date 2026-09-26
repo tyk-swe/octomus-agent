@@ -590,12 +590,12 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 			success = false
 			failure = process.ErrCancelled
 		} else {
-			switch intact, intactErr := outcome.intactResult(); {
-			case intactErr != nil:
+			switch {
+			case outcome.intactErr != nil:
 				success = false
-				text += "\n" + intactErr.Error()
-				failure = fmt.Errorf("Workspace state check failed during verification: %w", intactErr)
-			case !intact:
+				text += "\n" + outcome.intactErr.Error()
+				failure = fmt.Errorf("Workspace state check failed during verification: %w", outcome.intactErr)
+			case !outcome.intact:
 				success = false
 				text += "\nWorkspace or HEAD changed during this verification command"
 				failure = errors.New("Workspace or HEAD changed during verification")
