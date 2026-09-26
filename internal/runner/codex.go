@@ -42,7 +42,6 @@ type queuedMessage struct {
 // Codex owns a `codex app-server --listen stdio://` child and speaks its
 // newline-delimited JSON-RPC protocol.
 type Codex struct {
-	cfg          config.Config
 	child        *process.GroupChild
 	stdin        *os.File
 	stdout       *os.File
@@ -58,6 +57,9 @@ type Codex struct {
 	done         chan struct{}
 	once         sync.Once
 	closeErr     error
+	// binary and commandTimeout bound the Diagnostics version check.
+	binary         string
+	commandTimeout uint64
 }
 
 func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string) (*Codex, error) {
@@ -95,7 +97,6 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	stdoutW.Close()
 	done := make(chan struct{})
 	c := &Codex{
-		cfg:     cfg.Clone(),
 		child:   process.NewGroupChild(cmd),
 		stdin:   stdinW,
 		stdout:  stdoutR,
@@ -106,6 +107,9 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 		entity:  entity,
 		waitCh:  make(chan error, 1),
 		done:    done,
+
+		binary:         cfg.CodexBinary,
+		commandTimeout: cfg.CommandTimeoutSeconds,
 	}
 	go func() { c.waitCh <- cmd.Wait() }()
 	fail := func(err error) (*Codex, error) {
@@ -135,7 +139,7 @@ func (c *Codex) Diagnostics(cwd string) (map[string]any, error) {
 	if m["requiresOpenaiAuth"] != false && m["account"] == nil {
 		return nil, fmt.Errorf("Codex authentication is missing; run codex login as the service user")
 	}
-	version, err := process.RunMachine(c.ctx, c.cfg.CodexBinary, []string{"--version"}, cwd, min(c.cfg.CommandTimeoutSeconds, 60))
+	version, err := process.RunMachine(c.ctx, c.binary, []string{"--version"}, cwd, min(c.commandTimeout, 60))
 	if err != nil {
 		return nil, err
 	}

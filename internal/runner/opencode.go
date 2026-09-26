@@ -44,7 +44,6 @@ func OpenCodeVersionWarning(version string) *string {
 // OpenCode owns a `serve --hostname 127.0.0.1 --port 0` child and speaks its
 // HTTP/SSE API.
 type OpenCode struct {
-	cfg       config.Config
 	child     *process.GroupChild
 	stdout    *os.File
 	client    *http.Client
@@ -179,7 +178,6 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	// stream ends the line reader.
 	drainDone := discardStdout(lines, stdoutR)
 	server := &OpenCode{
-		cfg:       cfg.Clone(),
 		child:     child,
 		stdout:    stdoutR,
 		client:    client,
