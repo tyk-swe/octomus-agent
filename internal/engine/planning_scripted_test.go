@@ -404,6 +404,79 @@ func TestRunOnceCommitsCompletePlanningQueueAndPhase(t *testing.T) {
 	}
 }
 
+// The plan commit rewrites control (batch phase, idle streak), so it waits for
+// the scheduler gate that operator controls hold across their control
+// read-modify-write: nothing of the plan becomes durable while it is held.
+func TestPlanCommitSerializesWithTheSchedulerGate(t *testing.T) {
+	fixture := newScriptedPlanningFixture(t)
+	plan := completePlan(t, fixture)
+	consolidation := runnertest.NewGate()
+	plan.consolidation.Gate = consolidation
+	plan.queue(fixture)
+	app := fixture.pausedApp(t)
+	if err := app.RunOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-consolidation.Entered():
+	case <-time.After(30 * time.Second):
+		t.Fatal("planning did not reach consolidation")
+	}
+	app.gate.Lock()
+	held := true
+	defer func() {
+		if held {
+			app.gate.Unlock()
+		}
+	}()
+	consolidation.Release()
+	// Wait until the finished consolidation is recorded, then give the rest of
+	// the pass (decision fingerprints, task snapshots) time to reach its commit.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		cycles, err := store.List[model.Cycle](fixture.state, "cycle")
+		if err != nil || len(cycles) != 1 {
+			t.Fatalf("cycles: %d, %v", len(cycles), err)
+		}
+		done := false
+		for _, session := range cycles[0].Sessions {
+			done = done || session.Role == "consolidation" && session.Status == model.SessionCompleted
+		}
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("consolidation did not finish")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for settle := time.Now().Add(time.Second); time.Now().Before(settle); time.Sleep(20 * time.Millisecond) {
+		tasks, err := store.List[model.Task](fixture.state, "task")
+		if err != nil || len(tasks) != 0 {
+			t.Fatalf("plan committed %d tasks while the gate was held: %v", len(tasks), err)
+		}
+		cycle, err := store.List[model.Cycle](fixture.state, "cycle")
+		if err != nil || len(cycle) != 1 || cycle[0].Status != model.CycleRunning {
+			t.Fatalf("plan finished its cycle while the gate was held: %+v, %v", cycle, err)
+		}
+	}
+	held = false
+	app.gate.Unlock()
+	cycle := waitOnlyCycle(t, fixture.state)
+	assertScriptedPlanningPass(t, fixture, cycle)
+	tasks, err := store.List[model.Task](fixture.state, "task")
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("released plan did not commit its task: %d, %v", len(tasks), err)
+	}
+	control, err := app.Control()
+	if err != nil || control.Mode != model.OperatingModeRunOnce || control.Batch == nil || control.Batch.Phase != model.BatchPhaseExecuting {
+		t.Fatalf("plan commit did not advance the batch phase: %+v, %v", control, err)
+	}
+}
+
 func TestResumeClearsOldDelayAndNextTickStartsPlanning(t *testing.T) {
 	for _, action := range []string{"direct", "control action"} {
 		t.Run(action, func(t *testing.T) {

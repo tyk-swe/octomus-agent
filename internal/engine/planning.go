@@ -187,9 +187,20 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 			}
 		}
 		cycle.CompletedAt = stringPointer(model.Now())
-		return a.Store.CommitPlan(*cycle, nil)
+		return a.commitPlan(*cycle, nil)
 	}
 	return a.commitTasks(cfg, cycle)
+}
+
+// commitPlan makes a finished plan durable under the scheduler gate. The
+// commit rewrites control (batch phase, idle streak), and operator controls
+// read and save control under the gate, so an unserialized commit landing
+// between their read and save would be lost. The plan's remote and runner
+// work stays outside the gate; plan never runs with it held.
+func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task) error {
+	a.gate.Lock()
+	defer a.gate.Unlock()
+	return a.Store.CommitPlan(cycle, tasks)
 }
 
 // captureGrounding records the cycle's grounding and returns the complete
@@ -815,7 +826,7 @@ func (a *App) commitTasks(cfg config.Config, cycle *model.Cycle) error {
 		cycle.Status = model.CycleCompleted
 	}
 	cycle.CompletedAt = stringPointer(model.Now())
-	return a.Store.CommitPlan(*cycle, planned)
+	return a.commitPlan(*cycle, planned)
 }
 
 func cloneStringPointer(value *string) *string {
