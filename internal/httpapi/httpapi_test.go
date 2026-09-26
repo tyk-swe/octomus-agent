@@ -240,10 +240,20 @@ func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
 	if response.Body.String() != "override dashboard" {
 		t.Fatalf("override: %q", response.Body.String())
 	}
+	// Both asset sources share one boundary: the method is checked before the
+	// path, and an unsafe path is refused before any file is looked up.
 	for name, assets := range map[string]http.Handler{"embedded": router, "override": Router(app, token, override, "test")} {
-		response := request(t, assets, "POST", "/", "", false)
-		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" {
-			t.Fatalf("%s POST: %d allow %q", name, response.Code, response.Header().Get("Allow"))
+		for _, uri := range []string{"/", "/%2e%2e/go.mod"} {
+			response := request(t, assets, "POST", uri, "", false)
+			if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" || response.Body.Len() != 0 {
+				t.Fatalf("%s POST %s: %d allow %q body %q", name, uri, response.Code, response.Header().Get("Allow"), response.Body.String())
+			}
+		}
+		for _, method := range []string{"GET", "HEAD"} {
+			response := request(t, assets, method, "/%2e%2e/go.mod", "", false)
+			if response.Code != http.StatusBadRequest || response.Header().Get("Allow") != "" || response.Body.Len() != 0 {
+				t.Fatalf("%s %s traversal: %d allow %q body %q", name, method, response.Code, response.Header().Get("Allow"), response.Body.String())
+			}
 		}
 	}
 	// Index pages in an override are HTML under their resolved name, not the

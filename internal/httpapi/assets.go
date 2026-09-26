@@ -48,6 +48,23 @@ func decodedPath(urlPath string) (string, bool) {
 	return trimmed, true
 }
 
+// assetName applies the boundary both asset handlers share: only GET and HEAD
+// are answered (405 naming them otherwise), then an unsafe path is a 400. It
+// returns the decoded name, or false once it has written the rejection.
+func assetName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", assetMethods)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return "", false
+	}
+	name, ok := decodedPath(r.URL.Path)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return "", false
+	}
+	return name, true
+}
+
 // hasExtension treats a trailing dot as an extension,
 // a leading-dot name has none.
 func hasExtension(name string) bool {
@@ -78,14 +95,8 @@ func contentType(name string) string {
 type embeddedAssets struct{ files fs.FS }
 
 func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", assetMethods)
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	name, ok := decodedPath(r.URL.Path)
+	name, ok := assetName(w, r)
 	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	if name == "" {
@@ -113,14 +124,8 @@ func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type overrideAssets struct{ root http.FileSystem }
 
 func (o *overrideAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", assetMethods)
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	name, ok := decodedPath(r.URL.Path)
+	name, ok := assetName(w, r)
 	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	data, served, found := o.read(name)
@@ -161,10 +166,6 @@ func (o *overrideAssets) read(name string) (data []byte, served string, ok bool)
 		defer index.Close()
 		file = index
 	}
-	data, err = readAll(file)
+	data, err = io.ReadAll(file)
 	return data, name, err == nil
-}
-
-func readAll(file http.File) ([]byte, error) {
-	return io.ReadAll(file)
 }
