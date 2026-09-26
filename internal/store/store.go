@@ -264,14 +264,17 @@ func (s *Store) CommitPlan(cycle model.Cycle, tasks []model.Task) error {
 				return err
 			}
 		}
+		// Control is read once and written once at the end; nothing else in
+		// this transaction touches it.
 		var control model.Control
-		if found, err := txGet(c, "settings", "control", &control); err != nil {
+		hasControl, err := txGet(c, "settings", "control", &control)
+		if err != nil {
 			return err
-		} else if found && control.Batch != nil && cycle.RunID != nil && *cycle.RunID == control.Batch.ID && control.Batch.CycleID != nil && *control.Batch.CycleID == cycle.ID {
+		}
+		controlChanged := false
+		if hasControl && control.Batch != nil && cycle.RunID != nil && *cycle.RunID == control.Batch.ID && control.Batch.CycleID != nil && *control.Batch.CycleID == cycle.ID {
 			control.Batch.Phase = model.BatchPhaseExecuting
-			if err := txPut(c, "settings", "control", control); err != nil {
-				return err
-			}
+			controlChanged = true
 		}
 		for _, task := range tasks {
 			for _, oldID := range task.Supersedes {
@@ -314,10 +317,7 @@ func (s *Store) CommitPlan(cycle model.Cycle, tasks []model.Task) error {
 					}
 				}
 			}
-			var control model.Control
-			if found, err := txGet(c, "settings", "control", &control); err != nil {
-				return err
-			} else if found {
+			if hasControl {
 				if len(tasks) == 0 {
 					if control.IdleStreak < ^uint32(0) {
 						control.IdleStreak++
@@ -325,10 +325,11 @@ func (s *Store) CommitPlan(cycle model.Cycle, tasks []model.Task) error {
 				} else {
 					control.IdleStreak = 0
 				}
-				if err := txPut(c, "settings", "control", control); err != nil {
-					return err
-				}
+				controlChanged = true
 			}
+		}
+		if controlChanged {
+			return txPut(c, "settings", "control", control)
 		}
 		return nil
 	})

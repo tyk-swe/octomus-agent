@@ -761,9 +761,10 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	s := open(t, statePath(t))
 	// A control batch in the planning phase makes commit_plan write settings
 	// mid-transaction, so a surviving "executing" phase would prove a partial commit.
+	// A non-zero idle streak shows both control changes land in the same write.
 	control := map[string]any{
 		"paused": false, "mode": "run_once", "cycle_number": 1, "next_cycle_at": 0,
-		"error": nil, "idle_streak": 0, "context_fingerprint": "",
+		"error": nil, "idle_streak": 3, "context_fingerprint": "",
 		"batch": map[string]any{"id": "run-1", "phase": "planning", "cycle_id": "cycle-1"},
 	}
 	must(t, s.Put("settings", "control", control))
@@ -826,13 +827,13 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	if d, _, _ := s.GetValue("decision", "decision-1"); d == nil {
 		t.Fatal("decision memory missing")
 	}
-	// An empty plan grows the idle streak.
+	// An empty plan grows the idle streak and leaves the batch phase alone.
 	empty := cycleFor(valid)
 	empty.ID = "cycle-2"
 	must(t, s.CommitPlan(empty, nil))
 	saved, err = store.Get[model.Control](s, "settings", "control")
 	must(t, err)
-	if saved.IdleStreak != 1 {
+	if saved.IdleStreak != 1 || saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting {
 		t.Fatalf("%+v", saved)
 	}
 }
