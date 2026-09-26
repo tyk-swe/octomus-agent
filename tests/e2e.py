@@ -2,6 +2,7 @@
 """Runs the actual service, scheduler, SQLite, and Git against deterministic external peers.
 No network writes, real Codex turns, credentials, or spending. Run after make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
 """
+import http.server
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -126,7 +128,7 @@ class Service:
             except urllib.error.HTTPError as error:
                 try:
                     body = error.read()[:2000].decode(errors='replace')
-                except OSError as read_error:
+                except Exception as read_error:  # A cut-off body raises IncompleteRead, not OSError.
                     body = f'<body unavailable: {read_error!r}>'
                 last_error = f'HTTP {error.code}: {body}'
                 raise
@@ -142,7 +144,7 @@ class Service:
             return result
         try:
             state = json.dumps(self.request('/state'), indent=2)
-        except (OSError, urllib.error.URLError, ValueError) as error:
+        except Exception as error:  # Any failure (even BadStatusLine) is reported, never raised.
             state = f'<state unavailable: {error!r}>'
         raise AssertionError(f'{label} timed out after {seconds}s; last error: {last_error}\nstate: {state}\nservice.log tail:\n{service_log(self.root, tail=100)}')
 
@@ -661,7 +663,63 @@ def audit_scenario(mode):
             service.log.close()
 
 
+def harness_scenario():
+    """Service.wait against a scripted HTTP peer (no service binary).
+
+    Error responses, even ones whose body is cut short, are retried until the
+    predicate succeeds. A timeout raises one labelled report with the last
+    error, the /state outcome (even when unreadable) and the service.log tail.
+    """
+    calls = {}
+
+    class Peer(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls[self.path] = calls.get(self.path, 0) + 1
+            if self.path == '/api/state':
+                self.wfile.write(b'not an HTTP status line\r\n\r\n')
+            elif self.path == '/api/recovers' and calls[self.path] < 3:
+                # The body stops short of its Content-Length, so reading it raises IncompleteRead.
+                self.reply(500, b'{"error":', length=64)
+            elif self.path == '/api/recovers':
+                self.reply(200, b'{"ok":true}')
+            else:
+                self.reply(404, b'{"error":"Unknown API route"}')
+
+        def reply(self, status, body, length=None):
+            self.send_response(status)
+            self.send_header('Content-Length', str(length or len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with tempfile.TemporaryDirectory(prefix='octomus-harness-') as tmp:
+        root = Path(tmp)
+        (root / 'service.log').write_text('earlier line\nlast service line\n')
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Peer)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        service = Service(root)
+        service.port = server.server_address[1]
+        try:
+            assert service.wait(lambda: service.request('/recovers'), 'recovering request', seconds=10) == {'ok': True}
+            assert calls['/api/recovers'] == 3, calls
+            report = None
+            try:
+                service.wait(lambda: service.request('/missing'), 'missing route', seconds=1)
+            except AssertionError as error:
+                report = str(error)
+            assert report and report.startswith('missing route timed out after 1s; last error: HTTP 404: {"error":"Unknown API route"}\nstate: <state unavailable: BadStatusLine('), report
+            assert report.endswith('service.log tail:\nearlier line\nlast service line'), report
+        finally:
+            server.shutdown()
+            server.server_close()
+            service.log.close()
+    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail')
+
+
 if __name__ == '__main__':
+    harness_scenario()
     settings_scenario()
     for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']:
         scenario(mode)
