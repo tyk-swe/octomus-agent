@@ -4,8 +4,11 @@ import type {
   BaselineView,
   Config,
   Model,
+  PrObservation,
   SettingsView,
   Snapshot,
+  Task,
+  TaskRow,
   TransformedField
 } from '../src/lib/types';
 import { login, openNavigation, token, trackWrites } from './synthetic';
@@ -1237,6 +1240,93 @@ test('polling keeps the second task under the same mouse position', async ({ pag
     gate.resolve();
     gate = null;
   }
+});
+
+test('polling that adds a task keeps keyboard focus on the same task', async ({
+  page,
+  isMobile
+}) => {
+  let prepend = false;
+  await page.route('**/api/tasks?*', async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { items: TaskRow[] };
+    if (prepend) body.items.unshift({ ...body.items[0], id: 'task-new', title: 'Brand new task' });
+    await route.fulfill({ response, json: body });
+  });
+  await login(page);
+  await openNavigation(page, 'Task queue', !!isMobile);
+  const rows = page.locator('.task-row');
+  const target = rows.nth(1);
+  await expect(target).toBeVisible();
+  const title = await target.locator('strong').innerText();
+  await target.focus();
+  prepend = true;
+  await expect(rows.first()).toContainText('Brand new task', { timeout: 10000 });
+  expect(
+    await page.evaluate(() => document.activeElement?.querySelector('strong')?.textContent)
+  ).toBe(title);
+  await page.keyboard.press('Enter');
+  await expect(
+    page.getByRole('dialog').getByRole('heading', { name: title, exact: true })
+  ).toBeVisible();
+});
+
+test('polling that adds a pull request keeps keyboard focus on the same link', async ({
+  page,
+  isMobile
+}) => {
+  let prepend = false;
+  await page.route('**/api/prs?*', async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { items: PrObservation[] };
+    const [first] = body.items;
+    if (prepend)
+      body.items.unshift({
+        ...first,
+        pr: {
+          ...first.pr,
+          number: 99,
+          title: 'Brand new pull request',
+          url: first.pr.url.replace(/\d+$/, '99')
+        }
+      });
+    await route.fulfill({ response, json: body });
+  });
+  await login(page);
+  await openNavigation(page, 'Pull requests', !!isMobile);
+  const rows = page.locator('.pr-row');
+  const target = rows.nth(1);
+  await expect(target).toBeVisible();
+  const href = await target.getAttribute('href');
+  await target.focus();
+  prepend = true;
+  await expect(rows.first()).toContainText('Brand new pull request', { timeout: 10000 });
+  expect(await page.evaluate(() => document.activeElement?.getAttribute('href'))).toBe(href);
+});
+
+test('a polled change to task actions keeps keyboard focus on the same action', async ({
+  page,
+  isMobile
+}) => {
+  let withoutCancel = false;
+  await page.route('**/api/tasks/task-blocked', async (route) => {
+    const response = await route.fetch();
+    const task = (await response.json()) as Task;
+    if (withoutCancel) task.allowed_actions = task.allowed_actions.filter((a) => a !== 'cancel');
+    await route.fulfill({ response, json: task });
+  });
+  await login(page);
+  await openNavigation(page, 'Task queue', !!isMobile);
+  await page.getByRole('button', { name: /Handle interrupted verification commands/ }).click();
+  const dialog = page.getByRole('dialog');
+  const cancel = dialog.getByRole('button', { name: 'Cancel task' });
+  await expect(cancel).toBeVisible();
+  // Archive follows Cancel, so removing Cancel shifts every later action.
+  const archive = dialog.getByRole('button', { name: 'Archive task' });
+  await archive.focus();
+  withoutCancel = true;
+  await expect(cancel).toHaveCount(0, { timeout: 10000 });
+  await expect(archive).toBeFocused();
 });
 
 test('header and empty discovery actions share eligibility and prevent duplicate pending controls', async ({

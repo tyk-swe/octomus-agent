@@ -450,7 +450,7 @@
             target="_blank"
             rel="noreferrer">Open PR #{task.pr_number}<Icon name="external" size={16} /></a
           >{/if}
-        {#each task.allowed_actions as value}<button
+        {#each task.allowed_actions as value (value)}<button
             class={'button ' + (value === 'discard' || value === 'cancel' ? 'danger' : '')}
             disabled={busy}
             onclick={() => action(value)}

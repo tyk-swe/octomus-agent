@@ -85,6 +85,9 @@
   let filtered = $state<TaskRow[]>([]);
   let proposals = $state<ProposalRow[]>([]);
   let prRows = $state<PrObservation[]>([]);
+  /** A PR record's identity: the repository compared case-insensitively, plus the number. */
+  const prKey = (observed: PrObservation) =>
+    `${observed.repository.toLowerCase()}#${observed.pr.number}`;
   let cycleRows = $state<CycleSummary[]>([]);
   let cycleCursor = $state<number | null>(null);
   let cycleRequest = Promise.resolve();
@@ -1167,7 +1170,7 @@
               </div>
               <span class="count">{prRows.length}</span>
             </div>
-            {#each prRows as observed}{@const pr = observed.pr}<a
+            {#each prRows as observed (prKey(observed))}{@const pr = observed.pr}<a
                 class="pr-row"
                 href={safeUrl(pr.url)}
                 target="_blank"
@@ -1327,7 +1330,7 @@
       >{:else}<kbd class="search-hint" aria-hidden="true">/</kbd>{/if}</label
   >{/snippet}
 {#snippet taskList(tasks: TaskRow[])}<div class="task-list">
-    {#each tasks as task}<button class="task-row" onclick={() => inspectTask(task.id)}
+    {#each tasks as task (task.id)}<button class="task-row" onclick={() => inspectTask(task.id)}
         ><span class={'task-type-icon ' + task.status}
           ><Icon
             name={task.status === 'published'
