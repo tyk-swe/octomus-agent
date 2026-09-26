@@ -301,7 +301,7 @@ func TestScriptedCatalogRejectsMissingRoute(t *testing.T) {
 		t.Fatalf("missing reviewer route outcome = %+v", saved)
 	}
 	if saved.Error == nil || !strings.Contains(*saved.Error, routes.Reviewer.String()) {
-		t.Fatalf("the block must name the missing route: %v", saved.Error)
+		t.Fatalf("the block must name the missing route: %s", optionalText(saved.Error))
 	}
 	if saved.Workspace != "" || saved.ExecutionSession != nil || len(saved.Sessions) != 0 {
 		t.Fatalf("a rejected route initialized the task: %+v", saved)

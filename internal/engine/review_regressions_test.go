@@ -261,7 +261,7 @@ func TestPrAdmissionFreshnessUsesInventoryObservation(t *testing.T) {
 		{name: "recent", age: 10 * time.Second, wantFresh: true},
 		{name: "at admission limit", age: time.Minute, wantFresh: true},
 		{name: "slow refresh within dashboard lifetime", age: 61 * time.Second},
-		{name: "older than dashboard lifetime", age: 6 * time.Minute},
+		{name: "older than dashboard lifetime", age: prObservationLifetime + time.Minute},
 		{name: "invalid observation time", invalid: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {

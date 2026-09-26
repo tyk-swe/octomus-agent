@@ -477,7 +477,7 @@ func TestExecutionTaskTimeout(t *testing.T) {
 		t.Fatalf("timeout outcome = %+v", saved)
 	}
 	if saved.Error == nil || !strings.Contains(*saved.Error, "time limit") {
-		t.Fatalf("timeout error evidence = %+v", saved.Error)
+		t.Fatalf("timeout error evidence = %s", optionalText(saved.Error))
 	}
 	executors := sessionByRole(saved, "executor")
 	if len(executors) != 1 || executors[0].Status != model.SessionFailed || !strings.Contains(executors[0].Summary, "time limit") {

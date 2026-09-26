@@ -139,7 +139,7 @@ func assertScriptedPlanningPass(t *testing.T, f *scriptedFixture, cycle model.Cy
 	t.Helper()
 	want := int(f.cfg.DiscoveryAgents + 4)
 	if cycle.Status != model.CycleCompleted || len(cycle.Sessions) != want || len(cycle.Assessments) != 2 {
-		t.Fatalf("incomplete planning pass: status=%s sessions=%d/%d assessments=%d error=%v", cycle.Status, len(cycle.Sessions), want, len(cycle.Assessments), cycle.Error)
+		t.Fatalf("incomplete planning pass: status=%s sessions=%d/%d assessments=%d error=%s", cycle.Status, len(cycle.Sessions), want, len(cycle.Assessments), optionalText(cycle.Error))
 	}
 	sessions := map[string]model.Session{}
 	roles := map[string]int{}
@@ -340,7 +340,7 @@ func TestAuditPlanningContextReportsTheGroundedPrCapacity(t *testing.T) {
 			}
 			cycle := waitCycle(t, fixture.state, cycleID)
 			if cycle.Status != model.CycleCompleted || cycle.Grounding == nil || cycle.Grounding.PRCoverage.ObservedAt == nil {
-				t.Fatalf("audit did not complete with grounding: status=%s error=%v", cycle.Status, cycle.Error)
+				t.Fatalf("audit did not complete with grounding: status=%s error=%s", cycle.Status, optionalText(cycle.Error))
 			}
 			capacity := consolidationPrCapacity(t, fixture)
 			if capacity["status"] != tc.status || capacity["remaining"] != tc.remaining || capacity["reason"] != tc.reason {
@@ -887,7 +887,7 @@ func TestRediscoveryNeedsExactlyOneFreshDecision(t *testing.T) {
 			_, cycle := runOncePlan(t, fixture)
 			want := fmt.Sprintf("Every rediscovery request needs exactly one fresh decision (request %s had %d)", request.ID, tc.references)
 			if cycle.Status != model.CycleFailed || cycle.Error == nil || *cycle.Error != want {
-				t.Fatalf("pass status=%s error=%v; want failed with %q", cycle.Status, cycle.Error, want)
+				t.Fatalf("pass status=%s error=%s; want failed with %q", cycle.Status, optionalText(cycle.Error), want)
 			}
 			for _, turn := range fixture.script.Turns(fixture.routes.ProposalReviewer) {
 				if !strings.Contains(turn.Prompt, `"id":"rediscover-`+request.ID+`"`) {
@@ -928,7 +928,7 @@ func TestArchivingWithdrawsARediscoveryRequest(t *testing.T) {
 	}
 	cycle := waitOnlyCycle(t, fixture.state)
 	if cycle.Status != model.CycleCompleted {
-		t.Fatalf("pass status=%s error=%v; want the plan completed without the archived request", cycle.Status, cycle.Error)
+		t.Fatalf("pass status=%s error=%s; want the plan completed without the archived request", cycle.Status, optionalText(cycle.Error))
 	}
 	for _, turn := range fixture.planningTurns() {
 		if strings.Contains(turn.Prompt, "rediscover-"+request.ID) {
@@ -955,7 +955,7 @@ func TestRediscoveryDecisionResolvesTheRequest(t *testing.T) {
 				wantStatus = model.CycleCompleted
 			}
 			if cycle.Status != wantStatus {
-				t.Fatalf("pass status=%s error=%v; want %s", cycle.Status, cycle.Error, wantStatus)
+				t.Fatalf("pass status=%s error=%s; want %s", cycle.Status, optionalText(cycle.Error), wantStatus)
 			}
 			tasks, err := store.List[model.Task](fixture.state, "task")
 			if err != nil {
@@ -1024,7 +1024,7 @@ func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
 			finished := 0
 			for _, cycle := range all {
 				if cycle.Status == model.CycleFailed {
-					t.Fatalf("%s: planning failed: %v", label, cycle.Error)
+					t.Fatalf("%s: planning failed: %s", label, optionalText(cycle.Error))
 				}
 				if cycle.Status != model.CycleRunning {
 					finished++
@@ -1128,7 +1128,7 @@ func TestPlanningStagesReceiveTheGroundingSummaryText(t *testing.T) {
 			t.Fatal(err)
 		}
 		if cycle := waitCycle(t, fixture.state, cycleID); cycle.Status != model.CycleCompleted {
-			t.Fatalf("audit status=%s error=%v; want completed", cycle.Status, cycle.Error)
+			t.Fatalf("audit status=%s error=%s; want completed", cycle.Status, optionalText(cycle.Error))
 		}
 		const summary = "Grounding: Small fixture with a feature contract in README.md."
 		later := 0

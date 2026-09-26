@@ -50,7 +50,7 @@ func TestTickBlocksInvalidQueuedPlan(t *testing.T) {
 			t.Fatalf("load %s: %+v, %v", id, task, err)
 		}
 		if task.Status != model.StatusBlocked || task.BlockedReason == nil || *task.BlockedReason != model.BlockedReasonInvalidPlan || task.Error == nil || !strings.Contains(*task.Error, "total dependency order") {
-			t.Fatalf("queued member %s was not blocked as an invalid plan: status=%s reason=%v error=%v", id, task.Status, task.BlockedReason, task.Error)
+			t.Fatalf("queued member %s was not blocked as an invalid plan: status=%s reason=%v error=%s", id, task.Status, task.BlockedReason, optionalText(task.Error))
 		}
 	}
 	running, err := store.Get[model.Task](state, "task", active.ID)

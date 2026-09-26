@@ -220,7 +220,7 @@ func TestDiscardReleasesTheGateAndClaimsTheWorkspace(t *testing.T) {
 		t.Fatalf("discarded record: %+v, %v", saved, err)
 	}
 	if saved.Error == nil || *saved.Error != "late unrelated evidence" {
-		t.Fatalf("finalization clobbered a concurrent write: %+v", saved.Error)
+		t.Fatalf("finalization clobbered a concurrent write: %s", optionalText(saved.Error))
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "tasks", task.ID)); !os.IsNotExist(err) {
 		t.Fatalf("owned task directory still present: %v", err)

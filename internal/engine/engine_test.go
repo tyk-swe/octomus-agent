@@ -577,7 +577,7 @@ func TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget(t *testing.T) {
 		t.Fatalf("exhausted checkpoint actions = %v; want reconcile instead of retry", actions)
 	}
 	if recovered.Error == nil || !strings.Contains(*recovered.Error, "Reconcile publication") {
-		t.Fatalf("exhausted checkpoint must name its remedy: %v", recovered.Error)
+		t.Fatalf("exhausted checkpoint must name its remedy: %s", optionalText(recovered.Error))
 	}
 	reservations, err := state.PrReservations(cfg.GitHubRepo)
 	if err != nil {
@@ -956,7 +956,7 @@ func TestRunnerExitBlocksStillActiveTask(t *testing.T) {
 		t.Fatalf("runner exit did not block active task: %+v", saved)
 	}
 	if saved.Error == nil || !strings.Contains(*saved.Error, "exited unexpectedly") {
-		t.Fatalf("runner exit did not preserve a useful error: %+v", saved.Error)
+		t.Fatalf("runner exit did not preserve a useful error: %s", optionalText(saved.Error))
 	}
 	a.runtimeMu.Lock()
 	running := len(a.runtime.tasks)
