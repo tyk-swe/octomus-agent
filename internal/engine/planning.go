@@ -198,9 +198,6 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if err := a.doctor(ctx, cfg, cycle.Mode == model.CycleModeAudit); err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	if err := gitops.Fetch(ctx, cfg); err != nil {
-		return model.OpenPrInventory{}, err
-	}
 	observedAt := model.Now()
 	revision, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
 	if err != nil {
@@ -228,6 +225,12 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		if authoritative, ok := byNumber[pr.Number]; ok {
 			inventory.PRs[i] = authoritative
 		}
+	}
+	// Fetch only after reading the remote heads, so every commit observed above
+	// that fast-forwards its branch is local for the role clones and decision
+	// fingerprints that use it.
+	if err := gitops.Fetch(ctx, cfg); err != nil {
+		return model.OpenPrInventory{}, err
 	}
 	external, coverage, err := ExternalContext(inventory)
 	if err != nil {

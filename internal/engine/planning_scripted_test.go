@@ -319,6 +319,63 @@ func TestAuditPlanningContextReportsTheGroundedPrCapacity(t *testing.T) {
 	}
 }
 
+// advanceMainDuringObservation replaces the fixture's git shim with one that,
+// once, advances main on the bare remote just before grounding reads the
+// remote default-branch head, and records the new commit in the returned path.
+func advanceMainDuringObservation(t *testing.T, f *scriptedFixture) string {
+	t.Helper()
+	fixtures := filepath.Join(repositoryRoot(t), "tests", "fixtures")
+	advanced := filepath.Join(f.root, "concurrent-main")
+	script := fmt.Sprintf(`#!/usr/bin/env python3
+import os, runpy, subprocess, sys
+from pathlib import Path
+root = Path(%[1]q)
+os.environ['OCTOMUS_FIXTURE'] = str(root)
+sys.path.insert(0, %[2]q)
+args = sys.argv[1:]
+marker = root / 'advance-main-on-ls-remote'
+if marker.exists() and args[:2] == ['ls-remote', '--heads'] and args[-1] == 'refs/heads/main':
+    marker.unlink()
+    remote = str(root / 'remote.git')
+    identity = dict(os.environ, GIT_AUTHOR_NAME='Maintainer', GIT_AUTHOR_EMAIL='maintainer@example.com',
+                    GIT_COMMITTER_NAME='Maintainer', GIT_COMMITTER_EMAIL='maintainer@example.com')
+    commit = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, 'commit-tree', 'main^{tree}', '-p', 'main', '-m', 'Concurrent main'], text=True, env=identity).strip()
+    subprocess.check_call(['/usr/bin/git', '--git-dir', remote, 'update-ref', 'refs/heads/main', commit])
+    Path(%[3]q).write_text(commit)
+runpy.run_path(%[4]q, run_name='__main__')
+`, f.root, fixtures, advanced, filepath.Join(fixtures, "git.py"))
+	if err := os.WriteFile(filepath.Join(f.root, "bin", "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "advance-main-on-ls-remote"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return advanced
+}
+
+// Main can advance after the checkout's last fetch and before grounding reads
+// the remote head. Grounding records that head, so it must be local before any
+// role clones the checkout at it.
+func TestGroundingFetchesTheRemoteHeadsItObserved(t *testing.T) {
+	fixture := newScriptedPlanningFixture(t)
+	advanced := advanceMainDuringObservation(t, fixture)
+	completePlan(t, fixture).queue(fixture)
+	app := fixture.pausedApp(t)
+	cycleID, err := app.StartAudit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle := waitCycle(t, fixture.state, cycleID)
+	assertScriptedPlanningPass(t, fixture, cycle)
+	commit, err := os.ReadFile(advanced)
+	if err != nil {
+		t.Fatalf("main did not advance during grounding: %v", err)
+	}
+	if cycle.Grounding == nil || cycle.Grounding.Revision != strings.TrimSpace(string(commit)) {
+		t.Fatalf("grounding revision %+v; want the concurrently pushed %s", cycle.Grounding, commit)
+	}
+}
+
 func TestRunOnceCommitsCompletePlanningQueueAndPhase(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	completePlan(t, fixture).queue(fixture)
