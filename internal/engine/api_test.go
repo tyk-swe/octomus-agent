@@ -371,7 +371,7 @@ func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
 // its command evidence, and a finished check is not reported as active.
 func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
 	app, cfg := baselineApp(t)
-	fingerprint, err := BaselineFingerprint(cfg)
+	fingerprint, err := cfg.Fingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}

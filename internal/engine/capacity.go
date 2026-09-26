@@ -209,16 +209,9 @@ func (a *App) startPrRefresh(cfg config.Config) {
 	}()
 }
 
-// RefreshPRs performs a complete remote observation without holding gate and
-// revalidates configuration and mode before the result can authorize work.
-func (a *App) RefreshPRs(ctx context.Context) error {
-	cfg, err := a.Config()
-	if err != nil {
-		return err
-	}
-	return a.refreshPRs(ctx, cfg)
-}
-
+// refreshPRs performs a complete remote observation of snapshot's repository
+// without holding the gate and revalidates configuration and mode before the
+// result can authorize work.
 func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result error) {
 	startedAt := time.Now()
 	defer func() {

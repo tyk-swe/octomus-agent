@@ -146,8 +146,8 @@ func (a *App) retention(cfg config.Config) error {
 		if a.ctx.Err() != nil {
 			return nil
 		}
-		// The gate covers only the eligibility re-read; CleanupBaseline claims
-		// the check and removes its clone without the scheduler gate.
+		// The gate covers only the eligibility re-read; removeBaselineWorkspace
+		// claims the check and removes its clone without the scheduler gate.
 		a.gate.Lock()
 		current, loadErr := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
 		terminal := current != nil && current.Status != model.BaselineStatusRunning
@@ -156,7 +156,7 @@ func (a *App) retention(cfg config.Config) error {
 		a.runtimeMu.Unlock()
 		a.gate.Unlock()
 		if loadErr == nil && terminal && !active {
-			loadErr = a.CleanupBaseline(current)
+			loadErr = a.removeBaselineWorkspace(current)
 		}
 		if loadErr == nil {
 			a.clearCleanupReport(cleanupBaseline, check.ID)
@@ -247,13 +247,13 @@ func (a *App) retainCandidateLocked(kind cleanupKind, id string) error {
 		if task.Status.Active() || running {
 			return nil
 		}
-		return a.DiscardTask(task)
+		return a.discardTask(task)
 	}
 	cycle, err := store.Get[model.Cycle](a.Store, "cycle", id)
 	if err != nil || cycle == nil || cycle.Lifecycle.DiscardedAt != nil || cycle.Status == model.CycleRunning {
 		return err
 	}
-	return a.DiscardCycle(cycle)
+	return a.discardCycle(cycle)
 }
 
 // cleanupKind names the durable entity kind a cleanup claim owns. Each kind
@@ -276,10 +276,11 @@ type cleanupKey struct {
 
 // claimCleanup takes exclusive cleanup ownership of (kind, id) and reports
 // whether it was free. Callers claim while the scheduler gate is held so
-// eligibility and ownership are one atomic admission — except CleanupBaseline,
-// which claims first because its callers already serialized eligibility:
-// retention re-reads the record under the gate and the finished check's worker
-// owns its record. The map itself sits under runtimeMu.
+// eligibility and ownership are one atomic admission — except
+// removeBaselineWorkspace, which claims first because its callers already
+// serialized eligibility: retention re-reads the record under the gate and the
+// finished check's worker owns its record. The map itself sits under
+// runtimeMu.
 func (a *App) claimCleanup(kind cleanupKind, id string) bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
@@ -310,14 +311,14 @@ func (a *App) releaseCleanup(kind cleanupKind, id string) {
 	a.runtimeMu.Unlock()
 }
 
-// DiscardTask removes only the task's owned direct-child directory and marks
+// discardTask removes only the task's owned direct-child directory and marks
 // the durable record after successful removal. Callers hold a.gate and get it
 // back held: eligibility and the cleanup claim are checked under the gate,
 // the recursive deletion runs with it released so unrelated controls stay
 // responsive, and finalization re-reads the durable record so only the
 // cleanup-owned field changes. A record already discarded conflicts, so its
 // discarded_at is written once.
-func (a *App) DiscardTask(task *model.Task) error {
+func (a *App) discardTask(task *model.Task) error {
 	if task.Status.Active() || task.Status == model.StatusQueued {
 		return errors.New("Active or queued workspaces cannot be discarded")
 	}
@@ -367,11 +368,11 @@ func (a *App) DiscardTask(task *model.Task) error {
 	return nil
 }
 
-// DiscardCycle removes a UUID-named planning directory and records disposal,
-// under the same gate contract as DiscardTask: callers hold a.gate and the
+// discardCycle removes a UUID-named planning directory and records disposal,
+// under the same gate contract as discardTask: callers hold a.gate and the
 // filesystem removal runs with it released. A record already discarded
 // conflicts, so its discarded_at is written once.
-func (a *App) DiscardCycle(cycle *model.Cycle) error {
+func (a *App) discardCycle(cycle *model.Cycle) error {
 	if cycle.Status == model.CycleRunning {
 		return errors.New("Running planning work cannot be discarded")
 	}

@@ -87,7 +87,7 @@ func (a *App) TaskAction(_ context.Context, id, action string) error {
 		task.Lifecycle.ArchivedAt = &now
 		actionErr = a.saveTask(task)
 	case "discard":
-		actionErr = a.DiscardTask(task)
+		actionErr = a.discardTask(task)
 	}
 	if actionErr == nil {
 		actionErr = a.Store.Event(id, "operator", action)

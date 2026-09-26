@@ -30,10 +30,6 @@ type baselineJob struct {
 	cancel context.CancelFunc
 }
 
-// BaselineFingerprint is the exact-configuration identity a check recorded at
-// start; the view compares it against the live configuration's fingerprint.
-func BaselineFingerprint(cfg config.Config) (string, error) { return cfg.Fingerprint() }
-
 // boundedOutput shortens output to limit bytes on a UTF-8 boundary, appending
 // the truncation marker inside the limit, and reports whether anything was cut.
 func boundedOutput(text string, limit int, diagnosticTruncated bool) (string, bool) {
@@ -188,7 +184,7 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 	if err != nil {
 		return nil, err
 	}
-	fingerprint, err := BaselineFingerprint(live)
+	fingerprint, err := live.Fingerprint()
 	if err != nil {
 		return nil, err
 	}
@@ -262,16 +258,16 @@ func (a *App) CancelBaseline(id string) error {
 	return nil
 }
 
-// BaselineConfigMatches reports whether the live configuration still matches
-// the fingerprint a check recorded at start.
-func (a *App) BaselineConfigMatches(check *model.BaselineCheck, live config.Config) bool {
-	fingerprint, err := BaselineFingerprint(live)
+// baselineConfigMatches reports whether the live configuration's fingerprint
+// is still the one a check recorded at start.
+func baselineConfigMatches(check *model.BaselineCheck, live config.Config) bool {
+	fingerprint, err := live.Fingerprint()
 	return err == nil && fingerprint == check.ConfigFingerprint
 }
 
-// BaselineRevisionStatus compares a check's recorded revision to the freshest
+// baselineRevisionStatus compares a check's recorded revision to the freshest
 // in-memory default-branch observation of the same remote.
-func (a *App) BaselineRevisionStatus(check *model.BaselineCheck, live config.Config) string {
+func (a *App) baselineRevisionStatus(check *model.BaselineCheck, live config.Config) string {
 	if !live.SameRemoteIdentity(check.Config) {
 		return "unknown"
 	}
@@ -323,9 +319,9 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 	var configRevision any
 	revisionStatus := "unknown"
 	if check != nil {
-		configMatches = a.BaselineConfigMatches(check, live)
+		configMatches = baselineConfigMatches(check, live)
 		configRevision = check.ConfigFingerprint
-		revisionStatus = a.BaselineRevisionStatus(check, live)
+		revisionStatus = a.baselineRevisionStatus(check, live)
 	}
 	a.runtimeMu.Lock()
 	observation := a.runtime.defaultObservation
@@ -386,16 +382,16 @@ func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted
 	return a.Store.Put("baseline", check.ID, *check)
 }
 
-// CleanupBaseline removes the check's owned clone directory and records the
-// outcome; a refusal is evidence, not a worker failure. Callers must not hold
-// the scheduler gate: the check is claimed, the recursive deletion runs
+// removeBaselineWorkspace removes the check's owned clone directory and records
+// the outcome; a refusal is evidence, not a worker failure. Callers must not
+// hold the scheduler gate: the check is claimed, the recursive deletion runs
 // gate-free so unrelated controls stay responsive, then the gate serializes a
 // finalization that applies only the cleanup fields to the current durable
 // record. A record that vanished mid-removal is left vanished — writing the
 // caller's stale copy back would resurrect it. A check already claimed by
 // another cleanup is skipped, not double-removed — callers see success, since
 // ownership means the outcome is being recorded by the owner.
-func (a *App) CleanupBaseline(check *model.BaselineCheck) error {
+func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 	if _, err := uuid.Parse(check.ID); err != nil {
 		return errors.New("Invalid baseline identity")
 	}
@@ -525,7 +521,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	}
 	_ = a.Store.Event(id, "baseline", baselineStatusDebug[status])
 	a.gate.Unlock()
-	if err := a.CleanupBaseline(check); err != nil {
+	if err := a.removeBaselineWorkspace(check); err != nil {
 		_ = a.Store.Event(id, "cleanup_error", store.ErrorMessage(err))
 	}
 }

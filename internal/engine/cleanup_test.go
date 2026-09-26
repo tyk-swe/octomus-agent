@@ -380,7 +380,7 @@ func TestCycleDiscardClaimsConflictsAndShutdownWaits(t *testing.T) {
 // Archive and discard each happen once. Repeating either, or archiving after
 // the discard, conflicts instead of rewriting the recorded lifecycle time or
 // adding another operator event, and a repeated discard never reaches
-// workspace removal. DiscardTask and DiscardCycle hold the same rule for every
+// workspace removal. discardTask and discardCycle hold the same rule for every
 // caller, not only the operator controls.
 func TestLifecycleArchiveAndDiscardHappenOnce(t *testing.T) {
 	state := testStore(t)
@@ -438,14 +438,14 @@ func TestLifecycleArchiveAndDiscardHappenOnce(t *testing.T) {
 		}
 	}
 	app.gate.Lock()
-	cycleErr := app.DiscardCycle(&discarded)
-	taskErr := app.DiscardTask(&task)
+	cycleErr := app.discardCycle(&discarded)
+	taskErr := app.discardTask(&task)
 	app.gate.Unlock()
 	if cycleErr == nil || !IsActionConflict(cycleErr) {
-		t.Fatalf("DiscardCycle on a discarded cycle = %v; want a conflict", cycleErr)
+		t.Fatalf("discardCycle on a discarded cycle = %v; want a conflict", cycleErr)
 	}
 	if taskErr == nil || !IsActionConflict(taskErr) {
-		t.Fatalf("DiscardTask on a discarded task = %v; want a conflict", taskErr)
+		t.Fatalf("discardTask on a discarded task = %v; want a conflict", taskErr)
 	}
 	if removals.Load() != 1 {
 		t.Fatalf("a repeated discard reached workspace removal: %d removals", removals.Load())
@@ -494,7 +494,7 @@ func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *tes
 	t.Cleanup(app.Shutdown)
 
 	done := make(chan error, 1)
-	go func() { done <- app.CleanupBaseline(&check) }()
+	go func() { done <- app.removeBaselineWorkspace(&check) }()
 	barrier.wait(t)
 
 	if err := completesDuring(t, "pause", app.Pause); err != nil {
@@ -502,7 +502,7 @@ func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *tes
 	}
 	if err := completesDuring(t, "duplicate cleanup", func() error {
 		duplicate := check
-		return app.CleanupBaseline(&duplicate)
+		return app.removeBaselineWorkspace(&duplicate)
 	}); err != nil {
 		t.Fatalf("duplicate baseline cleanup = %v; want deduped success", err)
 	}
@@ -567,7 +567,7 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 	}))
 	t.Cleanup(app.Shutdown)
 
-	if err := app.CleanupBaseline(&check); err != nil {
+	if err := app.removeBaselineWorkspace(&check); err != nil {
 		t.Fatalf("cleanup error must be recorded, not returned: %v", err)
 	}
 	if check.WorkspaceRemoved || check.CleanupError == nil {
@@ -595,7 +595,7 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 		t.Fatal("failed cleanup left the candidate list")
 	}
 
-	if err := app.CleanupBaseline(&check); err != nil {
+	if err := app.removeBaselineWorkspace(&check); err != nil {
 		t.Fatalf("retry after a failed cleanup: %v", err)
 	}
 	saved, err = store.Get[model.BaselineCheck](state, "baseline", check.ID)

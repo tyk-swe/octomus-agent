@@ -192,7 +192,7 @@ func (a *App) CycleAction(id, action string) error {
 		if cycle.Lifecycle.ArchivedAt == nil {
 			return conflictError("Archive the cycle before discarding its workspace")
 		}
-		if err := a.DiscardCycle(cycle); err != nil {
+		if err := a.discardCycle(cycle); err != nil {
 			return err
 		}
 	}
@@ -536,8 +536,8 @@ func (a *App) StateView() (map[string]any, error) {
 			"completed_at":    latest.CompletedAt,
 			"error":           latest.Error,
 			"config_revision": latest.ConfigFingerprint,
-			"config_matches":  a.BaselineConfigMatches(latest, cfg),
-			"revision_status": a.BaselineRevisionStatus(latest, cfg),
+			"config_matches":  baselineConfigMatches(latest, cfg),
+			"revision_status": a.baselineRevisionStatus(latest, cfg),
 		}
 	}
 	// A missing record reads as nil.

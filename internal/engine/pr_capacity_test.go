@@ -11,6 +11,16 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
+// refreshLive runs one complete PR refresh against the live saved
+// configuration, as housekeeping and dispatch do.
+func refreshLive(app *App) error {
+	cfg, err := app.Config()
+	if err != nil {
+		return err
+	}
+	return app.refreshPRs(context.Background(), cfg)
+}
+
 // persisted inventory is evidence only; capacity is reported as remaining only
 // while this process holds a fresh, error-free observation under the live policy.
 func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
@@ -133,7 +143,7 @@ func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T)
 	}
 
 	// A complete observation of the empty fixture inventory clears the failure.
-	if err := app.RefreshPRs(context.Background()); err != nil {
+	if err := refreshLive(app); err != nil {
 		t.Fatal(err)
 	}
 	capacity, err = app.PrCapacity()
@@ -179,7 +189,7 @@ func TestPausedRefreshClearsEarlierFailureWithoutAuthorizingDispatch(t *testing.
 	app.runtimeMu.Lock()
 	app.runtime.prRefreshError = "earlier fixture failure"
 	app.runtimeMu.Unlock()
-	if err := app.RefreshPRs(context.Background()); err != nil {
+	if err := refreshLive(app); err != nil {
 		t.Fatal(err)
 	}
 	app.runtimeMu.Lock()

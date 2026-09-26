@@ -219,7 +219,7 @@ func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.RefreshPRs(context.Background()); err != nil {
+	if err := refreshLive(app); err != nil {
 		t.Fatal(err)
 	}
 	before, err := app.PrCapacity()
@@ -232,7 +232,7 @@ func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.RefreshPRs(context.Background()); err == nil {
+	if err := refreshLive(app); err == nil {
 		t.Fatal("malformed remote inventory unexpectedly refreshed")
 	}
 	after, err := app.PrCapacity()
@@ -255,7 +255,7 @@ func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("[]"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.RefreshPRs(context.Background()); err != nil {
+	if err := refreshLive(app); err != nil {
 		t.Fatalf("restored inventory did not refresh: %v", err)
 	}
 	recovered, err := app.PrCapacity()
@@ -284,7 +284,7 @@ func TestRefreshReleasesOnlyRemotelySettledCheckpointReservation(t *testing.T) {
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.RefreshPRs(context.Background()); err != nil {
+	if err := refreshLive(app); err != nil {
 		t.Fatal(err)
 	}
 	reservations, err := fixture.state.PrReservations(fixture.cfg.GitHubRepo)

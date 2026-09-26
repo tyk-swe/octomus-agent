@@ -164,7 +164,7 @@ func (r *runtimeState) startPreflight(mode model.CycleMode) { r.preflight = &mod
 //     under the gate after checking that ctx is live, because Shutdown cancels
 //     ctx under the gate before it waits; work registered that way is always
 //     either refused or waited for, never started after the wait.
-//   - retryTask, reconcileLocked, DiscardTask and DiscardCycle take the gate
+//   - retryTask, reconcileLocked, discardTask and discardCycle take the gate
 //     held and return it held, releasing it only inside withoutGate for
 //     remote or filesystem work. They and their callers revalidate durable
 //     state afterwards instead of trusting what they read before.
