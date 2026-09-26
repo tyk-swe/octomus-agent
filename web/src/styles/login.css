@@ -32,11 +32,6 @@
   color: #637954;
   font-size: 13px;
 }
-.login-brand > .version {
-  margin-left: auto;
-  letter-spacing: 1.3px;
-  color: #667657;
-}
 .login-layout {
   display: grid;
   grid-template-columns: 1.2fr 1fr;

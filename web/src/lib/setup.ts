@@ -27,7 +27,7 @@ export type Preflight = {
   ok: boolean;
   detail: string;
   /** Canonical configuration revision the server checked; any other revision is stale. */
-  baseline: string;
+  checkedRevision: string;
   at: string;
 };
 export type SetupStatus = {
@@ -101,7 +101,7 @@ export function routeValidated(
     : !route.variant || model.variants.includes(route.variant);
 }
 
-/** Mirrors Config::routes_for: audits skip the code reviewer, execution tiers and repair. */
+/** Mirrors config.Config.RoutesFor (internal/config): audits skip the code reviewer, execution tiers and repair. */
 export function requiredRoutes(config: Config, audit: boolean): [string, Route][] {
   const roles = Object.entries(config.roles).filter(([role]) => !audit || role !== 'code_reviewer');
   return audit
@@ -179,12 +179,12 @@ export function preflightStep(
       tone: 'draft',
       label: 'Unsaved edits',
       detail: `${
-        preflight && revision && preflight.baseline === revision
+        preflight && revision && preflight.checkedRevision === revision
           ? `The ${preflight.mode} check at ${preflight.at} covered the previously saved values, not these edits. `
           : ''
       }Save or discard, then check the saved configuration.`
     };
-  if (!preflight || !revision || preflight.baseline !== revision)
+  if (!preflight || !revision || preflight.checkedRevision !== revision)
     return {
       tone: 'missing',
       label: 'Not checked',

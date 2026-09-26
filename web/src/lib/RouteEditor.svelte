@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Backend, ModelCatalog, Route } from './types';
+  import { backendLabel } from './routes';
 
   let {
     name,
@@ -55,9 +56,20 @@
   function changeModel(value: string) {
     if (value === route.model) return;
     route.model = value;
+    // An ID that begins a longer catalog ID may be a step on the way to it, so its
+    // choices are checked when the field is committed instead.
+    if (!models.some((model) => model.model !== value && model.model.startsWith(value)))
+      pruneChoices(value);
+  }
+  /**
+   * Only a catalog entry for the model proves a choice unsupported; an unknown or
+   * partially typed model keeps the current choice and `problem` flags it.
+   */
+  function pruneChoices(value: string) {
     const model = models.find((model) => model.model === value);
-    if (!model?.efforts.includes(route.effort)) route.effort = '';
-    if (!model?.variants.includes(route.variant ?? '')) route.variant = undefined;
+    if (!model) return;
+    if (route.effort && !model.efforts.includes(route.effort)) route.effort = '';
+    if (route.variant && !model.variants.includes(route.variant)) route.variant = undefined;
   }
 </script>
 
@@ -109,6 +121,7 @@
         {disabled}
         value={route.model}
         oninput={(event) => changeModel(event.currentTarget.value)}
+        onchange={(event) => pruneChoices(event.currentTarget.value)}
         placeholder="Search or enter model ID"
         aria-describedby={problem ? id + '-problem' : undefined}
       />
@@ -124,7 +137,7 @@
         <select aria-label={name + ' reasoning effort'} {disabled} bind:value={route.effort}>
           <option value="">Select effort</option>
           {#if route.effort && !efforts.includes(route.effort)}<option value={route.effort}
-              >{route.effort} (saved)</option
+              >{route.effort} (current)</option
             >{/if}
           {#each efforts as effort}<option value={effort}>{effort}</option>{/each}
         </select>
@@ -142,7 +155,7 @@
         >
           <option value="">Provider default</option>
           {#if route.variant && !variants.includes(route.variant)}<option value={route.variant}
-              >{route.variant} (saved)</option
+              >{route.variant} (current)</option
             >{/if}
           {#each variants as variant}<option value={variant}>{variant}</option>{/each}
         </select>
@@ -155,7 +168,7 @@
   {#if !catalog?.loaded}<p class="route-help">
       {catalog?.error
         ? 'Catalog unavailable. Saved values are preserved.'
-        : `Load ${backend === 'codex' ? 'Codex' : 'OpenCode'} models to see available choices.`}
+        : `Load ${backendLabel(backend)} models to see available choices.`}
     </p>{/if}
 </div>
 
@@ -166,7 +179,6 @@
     border-top: 1px solid var(--line);
   }
   h3 {
-    font-size: 14px;
     margin: 0 0 12px;
   }
   .route-fields {
@@ -188,9 +200,7 @@
   }
   input,
   select {
-    width: 100%;
     min-width: 0;
-    scroll-margin-block: 100px 260px;
   }
   .route-help,
   .route-problem {
@@ -201,7 +211,7 @@
     color: var(--muted);
   }
   .route-problem {
-    color: #9f3f32;
+    color: var(--bad-fg);
   }
   @media (max-width: 1100px) {
     .route-fields,

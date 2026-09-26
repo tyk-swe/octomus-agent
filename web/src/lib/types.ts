@@ -106,6 +106,11 @@ export type AttemptPolicy = Pick<
 >;
 export type Page<T> = { items: T[]; next_cursor: number | null; counts: Record<string, number> };
 export type ProposalDetail = Proposal & { content_revision: number };
+/**
+ * One /api/proposals row. List rows blank `prompt` and `evidence` and truncate `problem`
+ * and `reason` to 2,000 characters; load the ProposalDetail for the full values.
+ * `detail`, `detailRequested` and `detailLoading` are client-only state, never sent.
+ */
 export type ProposalRow = ProposalDetail & {
   cycle: number;
   cycle_id: string;
@@ -114,6 +119,10 @@ export type ProposalRow = ProposalDetail & {
   detailRequested?: boolean;
   detailLoading?: number;
 };
+/**
+ * Snapshot.prs and /api/prs rows are summaries: `pr.body` is omitted and `pr.title` is
+ * truncated to 200 characters.
+ */
 export type PrObservation = {
   repository: string;
   pr: PR;
@@ -221,13 +230,11 @@ export type Cycle = {
     maintenance_due: boolean;
     maintenance_targets: string[];
   } | null;
+  repository?: string;
+  decision_memory?: unknown[];
+  run_id?: string | null;
+  lifecycle?: { archived_at?: string | null; discarded_at?: string | null };
 };
-/**
- * GET /api/cycles/{id}/evidence and `--export-run <cycle-id>`. Mirrors internal/evidence.
- * Recorded review and check evidence only: no live HEAD, workspace, remote,
- * authorization or current PR state is inspected, and free text still requires
- * manual review before sharing.
- */
 export type VerdictState = 'recorded' | 'missing' | 'duplicate' | 'malformed';
 export type ReviewerVerdict = {
   reviewer: string;
@@ -337,6 +344,12 @@ export type CycleEvidence = {
   grounding_revision: string | null;
   planning: PlanningOutcome;
 };
+/**
+ * GET /api/cycles/{id}/evidence and `--export-run <cycle-id>`. Mirrors internal/evidence.
+ * Recorded review and check evidence only: no live HEAD, workspace, remote,
+ * authorization or current PR state is inspected, and free text still requires
+ * manual review before sharing.
+ */
 export type RunEvidenceV1 = {
   schema_version: number;
   generated_at: string;

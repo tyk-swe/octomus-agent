@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, ApiError, relative } from './api';
+  import { api, ApiError, clockTime, relative } from './api';
   import type {
     Backend,
     Config,
@@ -11,6 +11,7 @@
     TransformedField
   } from './types';
   import RouteEditor from './RouteEditor.svelte';
+  import { BACKENDS, backendLabel } from './routes';
   import SetupChecklist from './SetupChecklist.svelte';
   import BaselineCheck from './BaselineCheck.svelte';
   import { parseCommands, type Preflight, type SetupStatus } from './setup';
@@ -33,9 +34,10 @@
   let config = $state<Config | null>(null),
     /** Canonical revision the displayed values came from; writes pin it and checks use it. */
     revision = $state(''),
-    /** Serialized display baseline for the draft/dirty comparison. */
-    baseline = $state(''),
-    baselineCommands = $state(''),
+    /** The saved configuration as displayed, serialized for the draft/dirty comparison. */
+    savedJson = $state(''),
+    /** The saved verification commands as displayed, one per line. */
+    savedCommands = $state(''),
     /** Every field the server transformed for display; those values are previews only. */
     transformed = $state<TransformedField[]>([]),
     /** Transformed fields the operator deliberately chose to replace in full. */
@@ -43,6 +45,8 @@
     loading = $state(false),
     loadError = $state(''),
     error = $state(''),
+    /** The last save was refused because another save changed the revision first. */
+    conflict = $state(false),
     message = $state(''),
     pending = $state(''),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
@@ -51,9 +55,9 @@
     preflight = $state<Preflight | null>(null);
   const busy = $derived(pending !== '');
   const dirty = $derived(
-    config !== null && (JSON.stringify(config) !== baseline || commands !== baselineCommands)
+    config !== null && (JSON.stringify(config) !== savedJson || commands !== savedCommands)
   );
-  const savedConfig = $derived<Config | null>(baseline ? JSON.parse(baseline) : null);
+  const savedConfig = $derived<Config | null>(savedJson ? JSON.parse(savedJson) : null);
   const transformedByField = $derived(new Map(transformed.map((entry) => [entry.field, entry])));
   // A transformed collection is a read-only preview until deliberately replaced:
   // its hidden members must never be merged back by position.
@@ -78,13 +82,21 @@
     'dependencies',
     'documentation'
   ];
+  const categoryLabel = (category: string) => (category === 'ux-dx' ? 'UX & DX' : category);
   const names: Record<string, string> = {
     orchestrator: 'Orchestrator',
     discovery: 'Discovery agents',
     proposal_reviewer: 'Proposal reviewers',
     code_reviewer: 'Code reviewer'
   };
-  const limits = LIMITS;
+  // Routes render in pipeline and size order, mirroring config.Roles() and config.Tiers();
+  // the service's JSON sorts map keys. Any unexpected key follows in received order.
+  const ROLES = ['orchestrator', 'discovery', 'proposal_reviewer', 'code_reviewer'];
+  const TIERS = ['XS', 'S', 'M', 'L', 'XL'];
+  const ordered = (keys: string[], known: string[]) => [
+    ...known.filter((key) => keys.includes(key)),
+    ...keys.filter((key) => !known.includes(key))
+  ];
   async function load() {
     if (loading || busy || dirty) return;
     loading = true;
@@ -100,19 +112,22 @@
     }
   }
   function acceptSaved(view: SettingsView) {
-    if (!baseline || view.revision !== revision) {
+    if (!savedJson || view.revision !== revision) {
       error = '';
+      conflict = false;
       message = '';
       // A connection check only ever covers the exact saved revision it ran against.
       preflight = null;
     }
     config = view.config;
-    baseline = JSON.stringify(view.config);
+    savedJson = JSON.stringify(view.config);
     revision = view.revision;
     transformed = view.transformed_fields;
     commands = view.config.verification_commands.join('\n');
-    baselineCommands = commands;
+    savedCommands = commands;
     replaced = {};
+    // Every caller passes a fresh server view, so an earlier load failure is resolved.
+    loadError = '';
   }
   // clearPath drops one display-transformed value so only deliberately supplied
   // text is ever sent back; hidden originals are never combined into a replacement.
@@ -140,16 +155,36 @@
   }
   function discard() {
     if (!dirty || busy) return;
-    config = JSON.parse(baseline);
-    commands = baselineCommands;
+    config = JSON.parse(savedJson);
+    commands = savedCommands;
     replaced = {};
     error = '';
+    conflict = false;
     message = 'Changes discarded. Saved configuration restored.';
+  }
+  /**
+   * The service answers a stale save with 409 and asks to reload settings. This is the
+   * explicit way to follow that in place: drop the draft, then load the saved configuration.
+   */
+  async function reload() {
+    if (busy || loading) return;
+    if (config) {
+      config = JSON.parse(savedJson);
+      commands = savedCommands;
+      replaced = {};
+    }
+    error = '';
+    conflict = false;
+    message = '';
+    await load();
+    // An edit typed while the read was in flight keeps its draft, so nothing was reloaded.
+    if (!loadError && !dirty) message = 'Edits discarded. Saved configuration reloaded.';
   }
   async function save() {
     if (!config || !editable || busy || loading || !dirty) return;
     pending = 'save';
     error = '';
+    conflict = false;
     message = '';
     try {
       const draft: Config = { ...config, verification_commands: parseCommands(commands) };
@@ -157,7 +192,7 @@
       // replaces its canonical value completely and omitted fields keep theirs.
       const patch: Record<string, unknown> = {};
       for (const key of Object.keys(draft) as (keyof Config)[]) {
-        if (!savedConfig || JSON.stringify(draft[key]) !== JSON.stringify(savedConfig[key]))
+        if (JSON.stringify(draft[key]) !== JSON.stringify(savedConfig?.[key]))
           patch[key] = draft[key];
       }
       const view = await api<SettingsView>('/config', 'PUT', {
@@ -169,6 +204,9 @@
       onsaved();
     } catch (e) {
       error = (e as Error).message;
+      // The service also answers 409 when it is no longer paused or when tasks must be
+      // resolved first; a reload fixes neither. Only the stale-revision conflict asks for one.
+      conflict = e instanceof ApiError && e.status === 409 && /\breload\b/i.test(error);
     } finally {
       pending = '';
     }
@@ -183,11 +221,12 @@
     const binary = config[`${backend}_binary`];
     pending = `catalog-${backend}`;
     error = '';
+    conflict = false;
     message = '';
     try {
       const models = await api<Model[]>('/model-catalog', 'POST', { backend, binary });
       catalogs[backend] = { binary, models, loaded: true };
-      message = `${models.filter((model) => model.available).length} ${backend === 'codex' ? 'Codex' : 'OpenCode'} models available. Routes are never silently substituted.`;
+      message = `${models.filter((model) => model.available).length} ${backendLabel(backend)} models available. Routes are never silently substituted.`;
     } catch (e) {
       error = (e as Error).message;
       catalogs[backend] = { binary, models: [], loaded: false, error };
@@ -199,8 +238,9 @@
     if (!config || dirty || busy || loading) return;
     pending = mode;
     error = '';
+    conflict = false;
     message = '';
-    const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const at = clockTime();
     try {
       const result = await api<{ message: string; checked_revision: string }>(
         `/doctor?mode=${mode}`,
@@ -211,21 +251,18 @@
         mode,
         ok: true,
         detail: result.message,
-        baseline: result.checked_revision,
+        checkedRevision: result.checked_revision,
         at
       };
     } catch (e) {
       error = (e as Error).message;
       preflight =
         e instanceof ApiError && e.checkedRevision
-          ? { mode, ok: false, detail: error, baseline: e.checkedRevision, at }
+          ? { mode, ok: false, detail: error, checkedRevision: e.checkedRevision, at }
           : null;
     } finally {
       pending = '';
     }
-  }
-  function numberValue(key: keyof Config, value: string) {
-    if (config) (config as unknown as Record<string, unknown>)[key] = Number(value);
   }
   /** Checklist links move focus to the existing control; they never edit, save or start work. */
   function focusControl(target: string) {
@@ -244,10 +281,11 @@
     Connection checks validate saved configuration. Save or discard edits before checking. Model
     catalogs use the executable paths entered below.
   </p>
-  <div class="actions" aria-describedby="connection-check-help">
+  <div class="actions">
     <button
       id="check-connection"
       class="button"
+      aria-describedby="connection-check-help"
       onclick={() => doctor('execution')}
       disabled={!config || busy || loading || dirty}
       ><Icon name="shield" size={16} />{pending === 'execution'
@@ -257,6 +295,7 @@
     <button
       id="check-audit-connection"
       class="button"
+      aria-describedby="connection-check-help"
       onclick={() => doctor('audit')}
       disabled={!config || busy || loading || dirty}
       >{pending === 'audit' ? 'Checking audit connection…' : 'Check audit connection'}</button
@@ -385,6 +424,7 @@
             >Codex executable<input
               bind:value={config.codex_binary}
               readonly={locked('codex_binary')}
+              required
             />{@render previewNote('codex_binary', 'value', false)}</label
           >
           <label
@@ -393,6 +433,7 @@
               aria-describedby="opencode-executable-help"
               bind:value={config.opencode_binary}
               readonly={locked('opencode_binary')}
+              required
             />{@render previewNote('opencode_binary', 'value', false)}<small
               id="opencode-executable-help"
               >Uses the service user's configured providers and login.</small
@@ -400,29 +441,24 @@
           >
         </div>
         <div class="catalog-actions">
-          <button
-            id="load-codex-models"
-            type="button"
-            class="button small"
-            onclick={() => catalog('codex')}
-            disabled={loading}
-            >{pending === 'catalog-codex' ? 'Loading Codex models…' : 'Load Codex models'}</button
-          >
-          <button
-            id="load-opencode-models"
-            type="button"
-            class="button small"
-            onclick={() => catalog('opencode')}
-            disabled={loading}
-            >{pending === 'catalog-opencode'
-              ? 'Loading OpenCode models…'
-              : 'Load OpenCode models'}</button
-          >
+          {#each BACKENDS as backend}
+            {@const label = backendLabel(backend)}
+            <button
+              id={`load-${backend}-models`}
+              type="button"
+              class="button small"
+              onclick={() => catalog(backend)}
+              disabled={loading}
+              >{pending === `catalog-${backend}`
+                ? `Loading ${label} models…`
+                : `Load ${label} models`}</button
+            >
+          {/each}
         </div>
         {@render previewNote('roles', 'role routes', true)}
-        {#each Object.keys(config.roles) as role}
+        {#each ordered(Object.keys(config.roles), ROLES) as role}
           <RouteEditor
-            name={names[role]}
+            name={names[role] ?? role}
             anchor={'route-' + role}
             bind:route={config.roles[role]}
             catalog={routeCatalog(config.roles[role])}
@@ -430,7 +466,7 @@
           />
         {/each}
         {@render previewNote('tiers', 'tier routes', true)}
-        {#each Object.keys(config.tiers) as tier}
+        {#each ordered(Object.keys(config.tiers), TIERS) as tier}
           <RouteEditor
             name={tier + ' execution'}
             bind:route={config.tiers[tier]}
@@ -466,7 +502,7 @@
                 value={category}
                 disabled={locked('categories')}
                 bind:group={config.categories}
-              /><span>{category.replace('-', ' & ')}</span></label
+              /><span>{categoryLabel(category)}</span></label
             >{/each}
         </div>
       </section>
@@ -480,9 +516,9 @@
         </div>
         {@render previewNote('runner_storage_paths', 'storage paths', true)}
         <div class="form-grid">
-          {#each ['codex', 'opencode'] as backend}
+          {#each BACKENDS as backend}
             <label
-              >{backend === 'codex' ? 'Codex' : 'OpenCode'} storage measurement path (optional)
+              >{backendLabel(backend)} storage measurement path (optional)
               <input
                 value={config.runner_storage_paths[backend] ?? ''}
                 placeholder="Absolute path to runner storage"
@@ -499,14 +535,13 @@
               >
             </label>
           {/each}
-          {#each limits as limit}<label
+          {#each LIMITS as limit}<label
               >{limit.label}<input
                 type="number"
                 min={limit.min}
                 max={limit.max}
                 step="1"
-                value={config[limit.key] as number}
-                oninput={(e) => numberValue(limit.key, e.currentTarget.value)}
+                bind:value={config[limit.key]}
                 required
               /><small>{limit.help}</small></label
             >{/each}
@@ -534,7 +569,14 @@
           /></button
         >
       </div>
-      {#if error}<div class="notice error settings-feedback" role="alert">{error}</div>{/if}
+      {#if error}<div class="notice error settings-feedback" role="alert">
+          <span>{error}</span>{#if conflict}<button
+              type="button"
+              class="button small"
+              onclick={reload}
+              disabled={busy || loading}>Discard edits and reload</button
+            >{/if}
+        </div>{/if}
       {#if message}<div class="notice success settings-feedback" role="status">{message}</div>{/if}
     </div>
   </form>
@@ -553,7 +595,7 @@
     </div>
     {#if status?.notifications}
       {@const health = status.notifications}
-      <dl class="baseline-facts">
+      <dl class="facts notification-facts">
         <div>
           <dt>State</dt>
           <dd>
@@ -606,7 +648,7 @@
     font-weight: 400;
     font-size: 12px;
     line-height: 1.7;
-    color: #835d29;
+    color: var(--warn-fg);
   }
   /* Notes for whole collections sit at section level, outside the form grid. */
   .settings-section > .preview-note {
@@ -622,19 +664,8 @@
     cursor: pointer;
     text-decoration: underline;
   }
-  .baseline-facts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 12px;
-    margin: 0 24px 20px;
-  }
-  .baseline-facts dt {
-    color: var(--muted);
-    font-size: 12px;
-  }
-  .baseline-facts dd {
-    margin: 4px 0 0;
-    overflow-wrap: anywhere;
+  .notification-facts {
+    margin-bottom: 20px;
   }
   .catalog-actions {
     display: flex;
@@ -644,5 +675,12 @@
   }
   .catalog-actions button {
     scroll-margin-block: 100px;
+  }
+  /* A narrow save bar moves the reload control below the message instead of squeezing it. */
+  .settings-feedback > span {
+    flex: 1 1 16em;
+  }
+  .settings-feedback > .button {
+    flex: 0 0 auto;
   }
 </style>

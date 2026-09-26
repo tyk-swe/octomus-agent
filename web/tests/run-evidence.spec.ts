@@ -5,7 +5,8 @@
  * rehearsal report, and no test asserts a live model identity or a fresh GitHub
  * observation, because the feature does not claim either.
  */
-import { test, expect, type Route } from '@playwright/test';
+import { test, expect, type Locator, type Page, type Route } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 import {
   A,
   B,
@@ -14,6 +15,7 @@ import {
   command,
   login,
   now,
+  openNavigation,
   openProposalEvidence,
   proposalEvidence,
   proposalRow,
@@ -25,6 +27,12 @@ import {
   token,
   trackWrites
 } from './synthetic';
+
+// A poll can still be inside a route handler when a test ends; closing the page then
+// disposes its response. That teardown error says nothing about the test's result.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
 
 test('inspect run reports recorded reviewer roles, review, checks and delivery, then hands off to the task', async ({
   page
@@ -239,6 +247,62 @@ test('accepted, rejected, deferred and missing reviewer assessments each render 
   ).toBeVisible();
 
   expect(writes).toEqual([]);
+});
+
+test('a decision word keeps one badge style on proposal cards, counts and the final decision', async ({
+  page
+}, testInfo) => {
+  const decisions = ['accepted', 'rejected', 'deferred', 'candidate'];
+  await serveProposals(
+    page,
+    decisions.map((decision) =>
+      proposalRow(`${decision}-proposal`, 'synthetic-cycle', 7, { decision })
+    )
+  );
+  await page.route('**/api/cycles/synthetic-cycle/evidence', async (route: Route) => {
+    await route.fulfill({
+      json: runEvidence({
+        proposals: decisions.map((decision) =>
+          proposalEvidence(`${decision}-proposal`, { final_decision: decision })
+        )
+      })
+    });
+  });
+  const look = (badge: Locator) =>
+    badge.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return `${style.color} on ${style.backgroundColor}, border ${style.borderColor}`;
+    });
+  await login(page);
+  await openNavigation(page, 'Proposals', testInfo.project.name === 'mobile');
+  const counts = page.getByRole('group', { name: 'Decision counts' });
+  for (const decision of decisions) {
+    const card = page.locator('.proposal-card').filter({ hasText: `${decision}-proposal` });
+    const badge = card.locator('.proposal-meta .badge');
+    await expect(badge).toHaveText(decision);
+    expect(await look(badge), decision).toBe(
+      await look(counts.getByText(`${decision}: 1`, { exact: true }))
+    );
+  }
+  // Every decision badge in the list, the candidate's included, stays legible.
+  const scan = await new AxeBuilder({ page })
+    .include('.proposal-controls')
+    .include('.proposal-list')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(scan.violations.map((violation) => violation.id)).toEqual([]);
+  // The recorded final decision in run evidence reads the same as the list.
+  await page
+    .locator('.proposal-card')
+    .filter({ hasText: 'candidate-proposal' })
+    .getByRole('button', { name: 'Inspect decision evidence' })
+    .click();
+  const final = page
+    .getByRole('dialog')
+    .locator('section', { has: page.getByRole('heading', { name: 'Final decision' }) })
+    .locator('.row-between .badge');
+  await expect(final).toHaveText('candidate');
+  expect(await look(final)).toBe(await look(counts.getByText('candidate: 1', { exact: true })));
 });
 
 test('equal proposal identities in different cycles resolve to their own recorded evidence', async ({
@@ -1012,6 +1076,49 @@ for (const source of ['run', 'task', 'state'] as const) {
   });
 }
 
+for (const action of [
+  { button: 'Run once', endpoint: 'control/cycle' },
+  { button: 'Archive cycle', endpoint: 'cycles/cycle-1/archive' }
+]) {
+  test(`a 401 from ${action.button} keeps the session-expired explanation`, async ({
+    page
+  }, testInfo) => {
+    // A configured, paused, idle service makes Run once available; nothing reaches the service.
+    await page.route('**/api/state', async (route) => {
+      const snapshot = await (await route.fetch()).json();
+      snapshot.configured = true;
+      snapshot.control.paused = true;
+      snapshot.control.mode = 'paused';
+      snapshot.active_tasks = 0;
+      snapshot.cycle_active = false;
+      snapshot.active_cycle_mode = null;
+      snapshot.baseline_active = false;
+      await route.fulfill({ json: snapshot });
+    });
+    const rejected: string[] = [];
+    await page.route(`**/api/${action.endpoint}`, async (route) => {
+      rejected.push(route.request().method());
+      await route.fulfill({ status: 401, json: { error: 'Synthetic expired session' } });
+    });
+    await login(page);
+    if (action.button === 'Archive cycle') {
+      if (testInfo.project.name === 'mobile')
+        await page.getByRole('button', { name: 'Toggle navigation' }).click();
+      await page
+        .getByRole('navigation')
+        .getByRole('button', { name: 'Proposals', exact: true })
+        .click();
+      await page.getByLabel('Cycle', { exact: true }).selectOption('cycle-1');
+    }
+    await page.getByRole('button', { name: action.button, exact: true }).click();
+    await expect(page.getByLabel('Operator access token')).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveText(
+      'Session expired. Connect again to inspect private records.'
+    );
+    expect(rejected).toEqual(['POST']);
+  });
+}
+
 test('closing a panel returns keyboard focus to the control that opened it, including after hand-off', async ({
   page
 }) => {
@@ -1033,6 +1140,83 @@ test('closing a panel returns keyboard focus to the control that opened it, incl
   await page.getByRole('button', { name: 'Close task details' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(inspect).toBeFocused();
+});
+
+const focusOnBody = (page: Page) => page.evaluate(() => document.activeElement === document.body);
+
+test('Escape closes task details through page state after its focused action was disabled', async ({
+  page
+}, testInfo) => {
+  await page.clock.install();
+  // Task and task-event reads show whether the closed panel still polls.
+  let taskReads = 0;
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname === '/api/tasks/task-reviewed' ||
+      (url.pathname === '/api/events' && url.searchParams.get('entity') === 'task-reviewed')
+    )
+      taskReads++;
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/api/tasks/task-reviewed/archive', async (route) => {
+    await held;
+    // Terminates in the browser: the shared fixture task stays published.
+    await route.fulfill({ json: { ok: true } });
+  });
+  await login(page);
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Task queue', exact: true })
+    .click();
+  const row = page.getByRole('button', { name: /Explain the local development workflow/ });
+  await row.click();
+  const archive = page.getByRole('dialog').getByRole('button', { name: 'Archive task' });
+  await archive.click();
+  // The pending action disables the focused button, so focus falls to the document body.
+  await expect(archive).toBeDisabled();
+  await expect.poll(() => focusOnBody(page)).toBe(true);
+  release();
+  await expect(archive).toBeEnabled();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const reads = taskReads;
+  await page.clock.runFor(12000);
+  expect(taskReads).toBe(reads);
+  await row.click();
+  await expect(
+    page.getByRole('dialog').getByRole('button', { name: 'Archive task' })
+  ).toBeVisible();
+});
+
+test('Escape closes run evidence after its focused retry control was replaced', async ({
+  page
+}) => {
+  let fail = true;
+  await page.route('**/api/cycles/cycle-1/evidence', async (route: Route) => {
+    if (fail) await route.fulfill({ status: 503, json: { error: 'Synthetic evidence outage' } });
+    else await route.fulfill({ json: await (await route.fetch()).json() });
+  });
+  await login(page);
+  const inspect = page.getByRole('button', { name: 'Inspect run' });
+  await inspect.click();
+  const dialog = page.getByRole('dialog');
+  // The first request must have failed before the retry is allowed to succeed.
+  await expect(
+    dialog.getByRole('heading', { name: 'Recorded evidence could not be loaded' })
+  ).toBeVisible();
+  fail = false;
+  await dialog.getByRole('button', { name: 'Try again' }).click();
+  await expect(dialog.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
+  // The retry button is gone, so focus has fallen to the document body.
+  expect(await focusOnBody(page)).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await inspect.click();
+  await expect(dialog.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
 });
 
 test('a failed initial evidence request explains itself and offers a retry', async ({ page }) => {
@@ -1084,6 +1268,66 @@ for (const recentMatches of [true, false]) {
     expect(evidenceCalls).toBe(1);
   });
 }
+
+test('overview and run evidence list only the proposal decisions that occurred', async ({
+  page
+}) => {
+  let decisions: Record<string, number> | null = null;
+  await page.route('**/api/state', async (route) => {
+    const snapshot = await (await route.fetch()).json();
+    if (decisions) snapshot.cycles[0].decisions = decisions;
+    await route.fulfill({ json: snapshot });
+  });
+  await login(page);
+  // The cycle summary reports every decision, with 0 for those that never occurred.
+  const overview = page
+    .locator('.run-outcome')
+    .getByRole('list', { name: 'Proposal decisions', exact: true });
+  await expect(overview.getByRole('listitem')).toHaveCount(1);
+  await expect(overview.getByRole('listitem')).toHaveText('3accepted');
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  const recorded = page
+    .getByRole('dialog')
+    .getByRole('list', { name: 'Proposal decisions', exact: true });
+  await expect(recorded.getByRole('listitem')).toHaveText(['3accepted']);
+  await page.getByRole('button', { name: 'Close run evidence' }).click();
+
+  decisions = { accepted: 0, rejected: 0, deferred: 0, candidate: 0 };
+  await expect(overview.getByRole('listitem')).toHaveText(['No decisions recorded'], {
+    timeout: 10000
+  });
+});
+
+test('an idle cycle reads as finished planning that accepted nothing on the overview and in run evidence', async ({
+  page
+}) => {
+  // The service saves `idle` for a successful cycle that queued no work.
+  await page.route('**/api/state', async (route) => {
+    const snapshot = await (await route.fetch()).json();
+    snapshot.cycles[0].status = 'idle';
+    snapshot.cycles[0].decisions = { accepted: 0, rejected: 2, deferred: 0, candidate: 0 };
+    await route.fulfill({ json: snapshot });
+  });
+  await page.route('**/api/cycles/*/evidence', async (route) => {
+    const body = await (await route.fetch()).json();
+    body.cycle.status = 'idle';
+    await route.fulfill({ json: body });
+  });
+  await login(page);
+  const panel = page.locator('.cycle-panel');
+  await expect(
+    panel.getByText('Planning complete · nothing accepted', { exact: true })
+  ).toBeVisible();
+  await expect(panel).toContainText('An empty task set is a successful idle cycle');
+  await expect(page.getByText('Planning idle')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Inspect run' }).click();
+  const evidence = page.getByRole('dialog');
+  await expect(
+    evidence.getByText('Planning complete · nothing accepted', { exact: true }).first()
+  ).toBeVisible();
+  await expect(evidence.getByText('Planning idle')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close run evidence' }).click();
+});
 
 for (const status of [404, 503]) {
   test(`task evidence retains ${status} until explicit retry or a saved revision changes`, async ({

@@ -8,7 +8,11 @@ export default defineConfig({
     command: 'python3 ../tests/serve_ui.py',
     url: 'http://127.0.0.1:4299/healthz',
     reuseExistingServer: false,
-    timeout: 30000
+    // The fixture compiles tests/fixturedb with `go run`; a cold build cache needs longer.
+    timeout: 120000,
+    // SIGINT lets serve_ui.py stop the service and remove its temporary state directory;
+    // without it Playwright SIGKILLs the process group and the directory is left behind.
+    gracefulShutdown: { signal: 'SIGINT', timeout: 10000 }
   },
   projects: [
     {

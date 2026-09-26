@@ -11,6 +11,7 @@
   import { routeLabel } from './routes';
   import { createCopyFeedback } from './copyFeedback.svelte';
   import Icon from './Icon.svelte';
+  import PanelDialog from './PanelDialog.svelte';
   import Sha from './Sha.svelte';
   import Badge from './Badge.svelte';
   import EvidenceText from './EvidenceText.svelte';
@@ -48,22 +49,23 @@
     onclose: () => void;
     onopentask: (id: string) => void;
   } = $props();
-  let dialog: HTMLDialogElement;
   let run = $state<RunEvidenceV1 | null>(null),
     cycleDetail = $state<Cycle | null>(null),
     contextError = $state(''),
     error = $state(''),
     stale = $state(false),
     loading = $state(true),
-    focus = $state<string | null>(null),
+    selectedProposalId = $state<string | null>(null),
     taskFocus = $state<{ proposal: string; task: string } | null>(null),
     rawOpen = $state(false);
   let generation = 0;
   let request: AbortController | null = null;
   const feedback = createCopyFeedback();
   let proposals = $derived<ProposalEvidence[]>(run?.proposals ?? []);
-  let focused = $derived<ProposalEvidence | null>(proposals.find((p) => p.id === focus) ?? null);
-  let missingFocus = $derived(!!run && !!focus && !focused);
+  let focused = $derived<ProposalEvidence | null>(
+    proposals.find((p) => p.id === selectedProposalId) ?? null
+  );
+  let missingFocus = $derived(!!run && !!selectedProposalId && !focused);
   let linked = $derived<TaskEvidence[]>(focused?.linked_tasks ?? []);
   // Multiple matches are preserved and never resolved for the operator: one must be
   // chosen explicitly before its review, check and delivery evidence is shown.
@@ -104,7 +106,8 @@
       error = '';
       stale = false;
       // A removed selection stays explicit; another proposal is never silently substituted.
-      if (focus === null) focus = proposalId ?? next.proposals[0]?.id ?? null;
+      if (selectedProposalId === null)
+        selectedProposalId = proposalId ?? next.proposals[0]?.id ?? null;
     } catch (e) {
       if (current !== generation || controller.signal.aborted || cycle !== cycleId) return;
       error = (e as Error).message;
@@ -134,7 +137,7 @@
     error = '';
     stale = false;
     loading = true;
-    focus = proposalId;
+    selectedProposalId = proposalId;
     taskFocus = null;
     void load(cycle);
     const timer = setInterval(() => {
@@ -148,7 +151,6 @@
     };
   });
   onMount(() => {
-    dialog.showModal();
     return () => {
       feedback.dispose();
       generation++;
@@ -177,21 +179,13 @@
       </ul>
     </details>{/if}{/snippet}
 
-<dialog
-  bind:this={dialog}
-  class="task-dialog evidence-dialog"
-  aria-labelledby="run-evidence-title"
-  onkeydown={(e) => {
-    if (e.key === 'Escape') onclose();
-  }}
+<PanelDialog
+  eyebrow="RECORDED RUN EVIDENCE"
+  closeLabel="Close run evidence"
+  labelledby="run-evidence-title"
+  class="evidence-dialog"
+  {onclose}
 >
-  <div class="dialog-top">
-    <span class="eyebrow">RECORDED RUN EVIDENCE</span><button
-      class="icon-button"
-      aria-label="Close run evidence"
-      onclick={onclose}><Icon name="close" /></button
-    >
-  </div>
   {#if run && planning}
     <div class="task-title">
       <div class="badge-row">
@@ -291,9 +285,9 @@
       {#if proposals.length}
         <div class="evidence-picker">
           <label for="evidence-proposal">Proposal</label>
-          <select id="evidence-proposal" bind:value={focus}>
-            {#if missingFocus}<option value={focus} disabled
-                >Selected proposal missing: {focus}</option
+          <select id="evidence-proposal" bind:value={selectedProposalId}>
+            {#if missingFocus}<option value={selectedProposalId} disabled
+                >Selected proposal missing: {selectedProposalId}</option
               >{/if}
             {#each proposals as p (p.id)}<option value={p.id}>{p.final_decision} · {p.title}</option
               >{/each}
@@ -306,8 +300,8 @@
       {/if}
       {#if missingFocus}<div class="notice" role="status">
           <Icon name="alert" size={18} /><span
-            >The selected proposal ({focus}) is not recorded in this run. Choose another proposal to
-            inspect its evidence.</span
+            >The selected proposal ({selectedProposalId}) is not recorded in this run. Choose
+            another proposal to inspect its evidence.</span
           >
         </div>{/if}
       {#if focused}
@@ -387,9 +381,7 @@
           <section class="evidence-section" aria-labelledby="decision-heading">
             <div class="row-between">
               <h3 id="decision-heading">Final decision</h3>
-              <span class={'badge ' + decisionTone(focused.final_decision)}
-                >{focused.final_decision}</span
-              >
+              <Badge label={focused.final_decision} tone={decisionTone(focused.final_decision)} />
             </div>
             <dl class="fact-row">
               <div>
@@ -716,4 +708,4 @@
       >
     </div>
   {/if}
-</dialog>
+</PanelDialog>
