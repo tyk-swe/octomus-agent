@@ -341,18 +341,24 @@ func TestRunnerStorageDistinguishesUnavailableFromEmpty(t *testing.T) {
 		TaskBytes         uint64      `json:"task_bytes"`
 		PlanningBytes     uint64      `json:"planning_bytes"`
 	}
+	// The dashboard reads the saved summary under exactly these keys.
+	const message = `"message":"Runner storage reported separately. Application admission measures the data directory."`
 	for _, test := range []struct {
 		name       string
 		paths      map[string]string
 		codexState string
 		state      string
 		bytes      uint64
+		saved      string
 	}{
-		{name: "unconfigured", paths: map[string]string{}, codexState: "unconfigured", state: "unavailable"},
+		{name: "unconfigured", paths: map[string]string{}, codexState: "unconfigured", state: "unavailable",
+			saved: `"runner_transcripts":{"bytes":null,` + message + `,"runners":{"codex":{"bytes":null,"status":"unconfigured"},"opencode":{"bytes":null,"status":"unconfigured"}},"status":"unavailable"}`},
 		{name: "missing directory", paths: map[string]string{"codex": missing}, codexState: "unavailable", state: "unavailable"},
 		{name: "not a directory", paths: map[string]string{"codex": file}, codexState: "unavailable", state: "unavailable"},
-		{name: "empty directory", paths: map[string]string{"codex": empty}, codexState: "measured", state: "partial"},
-		{name: "one missing runner", paths: map[string]string{"codex": missing, "opencode": populated}, codexState: "unavailable", state: "partial", bytes: 5},
+		{name: "empty directory", paths: map[string]string{"codex": empty}, codexState: "measured", state: "partial",
+			saved: `"runner_transcripts":{"bytes":0,` + message + `,"runners":{"codex":{"bytes":0,"status":"measured"},"opencode":{"bytes":null,"status":"unconfigured"}},"status":"partial"}`},
+		{name: "one missing runner", paths: map[string]string{"codex": missing, "opencode": populated}, codexState: "unavailable", state: "partial", bytes: 5,
+			saved: `"runner_transcripts":{"bytes":5,` + message + `,"runners":{"codex":{"bytes":null,"status":"unavailable"},"opencode":{"bytes":5,"status":"measured"}},"status":"partial"}`},
 		{name: "both measured", paths: map[string]string{"codex": populated, "opencode": empty}, codexState: "measured", state: "measured", bytes: 5},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -374,6 +380,12 @@ func TestRunnerStorageDistinguishesUnavailableFromEmpty(t *testing.T) {
 			}
 			if saved.TaskBytes != 0 || saved.PlanningBytes != 0 {
 				t.Fatalf("absent application workspaces should measure zero: %+v", saved)
+			}
+			if test.saved != "" {
+				raw, found, err := state.GetRaw("settings", "storage")
+				if err != nil || !found || !strings.Contains(string(raw), test.saved) {
+					t.Fatalf("saved storage = %s, %t, %v; want %s", raw, found, err, test.saved)
+				}
 			}
 		})
 	}

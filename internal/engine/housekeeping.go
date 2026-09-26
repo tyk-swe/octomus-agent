@@ -37,11 +37,33 @@ const (
 )
 
 type storageUsage struct {
-	MeasuredAt        string         `json:"measured_at"`
-	ApplicationBytes  uint64         `json:"application_bytes"`
-	TaskBytes         uint64         `json:"task_bytes"`
-	PlanningBytes     uint64         `json:"planning_bytes"`
-	RunnerTranscripts map[string]any `json:"runner_transcripts"`
+	MeasuredAt        string            `json:"measured_at"`
+	ApplicationBytes  uint64            `json:"application_bytes"`
+	TaskBytes         uint64            `json:"task_bytes"`
+	PlanningBytes     uint64            `json:"planning_bytes"`
+	RunnerTranscripts runnerTranscripts `json:"runner_transcripts"`
+}
+
+// runnerStorageMessage tells the operator that runner transcript storage is
+// informational: storage admission measures only the data directory.
+const runnerStorageMessage = "Runner storage reported separately. Application admission measures the data directory."
+
+// runnerTranscripts is the dashboard's runner transcript storage summary.
+// Bytes totals the measured runners and is null when none was measured.
+// Fields are declared in key order, so the saved JSON keeps the sorted key
+// order it has always had.
+type runnerTranscripts struct {
+	Bytes   *uint64                  `json:"bytes"`
+	Message string                   `json:"message"`
+	Runners map[string]runnerStorage `json:"runners"`
+	Status  string                   `json:"status"`
+}
+
+// runnerStorage is one runner's transcript storage: Bytes is set only when
+// Status is "measured".
+type runnerStorage struct {
+	Bytes  *uint64 `json:"bytes"`
+	Status string  `json:"status"`
 }
 
 // maybeStartHousekeeping may be called while gate is held. It only starts an
@@ -345,38 +367,36 @@ func (a *App) measureStorage(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	runners := map[string]any{}
+	backends := []config.Backend{config.BackendCodex, config.BackendOpencode}
+	runners := make(map[string]runnerStorage, len(backends))
 	var total uint64
 	measured := 0
-	for _, backend := range []string{"codex", "opencode"} {
-		path, configured := cfg.RunnerStoragePaths[backend]
-		entry := map[string]any{"bytes": nil, "status": "unconfigured"}
+	for _, backend := range backends {
+		name := backend.Slug()
+		path, configured := cfg.RunnerStoragePaths[name]
+		entry := runnerStorage{Status: "unconfigured"}
 		if configured {
 			info, statErr := os.Stat(path)
 			if statErr != nil || !info.IsDir() {
-				entry["status"] = "unavailable"
+				entry.Status = "unavailable"
+			} else if bytes, sizeErr := workspace.DirectorySize(path); sizeErr != nil {
+				entry.Status = "error"
 			} else {
-				bytes, sizeErr := workspace.DirectorySize(path)
-				if sizeErr != nil {
-					entry["status"] = "error"
-				} else {
-					entry["bytes"] = bytes
-					entry["status"] = "measured"
-					total += bytes
-					measured++
-				}
+				entry.Bytes = &bytes
+				entry.Status = "measured"
+				total += bytes
+				measured++
 			}
 		}
-		runners[backend] = entry
+		runners[name] = entry
 	}
-	status := "partial"
-	var runnerBytes any = total
+	transcripts := runnerTranscripts{Bytes: &total, Message: runnerStorageMessage, Runners: runners, Status: "partial"}
 	if measured == 0 {
-		status, runnerBytes = "unavailable", nil
-	} else if measured == 2 {
-		status = "measured"
+		transcripts.Bytes, transcripts.Status = nil, "unavailable"
+	} else if measured == len(backends) {
+		transcripts.Status = "measured"
 	}
-	usage := storageUsage{MeasuredAt: model.Now(), ApplicationBytes: application, TaskBytes: tasks, PlanningBytes: planning, RunnerTranscripts: map[string]any{"bytes": runnerBytes, "status": status, "runners": runners, "message": "Runner storage reported separately. Application admission measures the data directory."}}
+	usage := storageUsage{MeasuredAt: model.Now(), ApplicationBytes: application, TaskBytes: tasks, PlanningBytes: planning, RunnerTranscripts: transcripts}
 	return a.Store.Put("settings", "storage", usage)
 }
 
