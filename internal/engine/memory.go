@@ -128,7 +128,10 @@ func decisionFingerprint(ctx context.Context, cfg config.Config, revision string
 	if _, err := model.DecisionMemoryFingerprint(revision, paths, ""); err != nil {
 		return "", err
 	}
-	args := []string{"ls-tree", "-r", revision, "--"}
+	// relevant_paths are model-supplied: match them literally, never as
+	// pathspec magic such as ":(glob)" or ":!", which ls-tree refuses with a
+	// fatal error that would fail the whole plan. Ordinary paths list the same.
+	args := []string{"--literal-pathspecs", "ls-tree", "-r", revision, "--"}
 	args = append(args, paths...)
 	output, err := gitops.Git(ctx, cfg, cfg.Repository, args)
 	if err != nil {
