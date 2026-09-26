@@ -16,7 +16,7 @@
   import BaselineCheck from './BaselineCheck.svelte';
   import { parseCommands, type Preflight, type SetupStatus } from './setup';
   import Icon from './Icon.svelte';
-  import { LIMITS } from './limits';
+  import { LIMITS, limitHelp } from './limits';
   let {
     active,
     editable,
@@ -554,7 +554,7 @@
                 step="1"
                 bind:value={config[limit.key]}
                 required
-              /><small>{limit.help}</small></label
+              /><small>{limitHelp(limit)}</small></label
             >{/each}
         </div>
       </section>

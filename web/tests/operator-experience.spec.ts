@@ -1057,6 +1057,14 @@ test('operating limits refuse values above the service maxima before saving', as
       valid: input.validity.valid,
       overflow: input.validity.rangeOverflow
     }));
+  // Each help text ends with the range its input enforces; an unbounded limit names none.
+  for (const help of [
+    'Owned open PRs allowed before new-PR work waits · 1–1,000',
+    'Block new sessions when storage reaches this limit · 1,000,000–1,000,000,000,000,000',
+    'Total limit for execution, review and delivery, at least the session timeout · 10–604,800',
+    'Changed lines that trigger maintenance focus · 0 marks every owned open PR'
+  ])
+    await expect(page.getByText(help, { exact: true })).toBeVisible();
   // Upper bounds internal/config enforces on save.
   const maxima: [RegExp, number][] = [
     [/^Cycle interval/, 604800],
