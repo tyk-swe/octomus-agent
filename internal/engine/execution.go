@@ -88,21 +88,19 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	if workCtx.Err() != nil && !timedOut && task.OutputCommit == nil && (operatorCancelled || a.ctx.Err() == nil) {
 		status = model.StatusCancelled
 	}
-	switch {
-	case status == model.StatusCancelled:
+	if status == model.StatusCancelled {
 		// Only an operator cancel stops a worker outside shutdown and its
 		// deadline. Whatever the interrupted step returned, or a deadline that
 		// fired after the cancel, is not why the task ended; that cause stays
 		// in the error event below.
 		task.BlockedReason = nil
 		task.Error = stringPointer("Cancelled by the operator")
-	case result.Expired:
-		task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
-		task.Error = stringPointer(store.Redact(message))
-	default:
-		reason := model.BlockedReasonFromError(executeErr)
-		task.BlockedReason = &reason
-		task.Error = stringPointer(store.Redact(message))
+	} else {
+		recordTaskError(&task, taskErr)
+		if result.Expired {
+			// The time-limit error carries no blocked reason of its own.
+			task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
+		}
 	}
 	model.FailRunning(task.Sessions, *task.Error)
 	if err := a.transition(&task, status); err != nil {

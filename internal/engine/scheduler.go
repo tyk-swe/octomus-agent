@@ -406,15 +406,8 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 				waiting = true
 				continue
 			}
-		} else {
-			task.Status = model.StatusExecuting
-			task.UpdatedAt = model.Now()
-			if err := a.Store.Put("task", task.ID, *task); err != nil {
-				return started, waiting, err
-			}
-			if err := a.Store.Event(task.ID, "status", "Executing"); err != nil {
-				return started, waiting, err
-			}
+		} else if err := a.transition(task, model.StatusExecuting); err != nil {
+			return started, waiting, err
 		}
 		activeByBranch[task.Branch] = struct{}{}
 		available--

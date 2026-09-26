@@ -449,16 +449,10 @@ func (a *App) Recover() error {
 
 func stringPointer(value string) *string { return &value }
 
+// setTaskError blocks task with err's classified reason and redacted message.
 func (a *App) setTaskError(task *model.Task, err error) error {
-	reason := model.BlockedReasonFromError(err)
-	task.Status = model.StatusBlocked
-	task.BlockedReason = &reason
-	task.Error = stringPointer(store.ErrorMessage(err))
-	task.UpdatedAt = model.Now()
-	if saveErr := a.Store.Put("task", task.ID, *task); saveErr != nil {
-		return saveErr
-	}
-	return a.Store.Event(task.ID, "status", "Blocked")
+	recordTaskError(task, err)
+	return a.transition(task, model.StatusBlocked)
 }
 
 func (a *App) runTask(task model.Task) {
