@@ -153,7 +153,7 @@ export function reviewerAgreement(verdicts: ReviewerVerdict[]): Verdict {
  * Badge for one saved review round in the task's own review history.
  *
  * Zero findings alone is not "Clean": an incomplete round or a blank summary is
- * reported as such, matching `ReviewRoundResult::clean` on the server.
+ * reported as such, matching `model.Review.Clean` (internal/model) on the server.
  */
 export function reviewRoundBadge(round: {
   result: { completed: boolean; summary: string; findings: unknown[] };
