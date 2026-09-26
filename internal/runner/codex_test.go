@@ -344,8 +344,8 @@ func TestCodexRPCPerMessageBound(t *testing.T) {
 	if value, _ := asObject(result); value["ok"] != true {
 		t.Fatalf("result: %v", result)
 	}
-	if len(client.pending) != 5 {
-		t.Fatalf("pre-response notifications must be queued in order: %d", len(client.pending))
+	if len(client.pending.items) != 5 {
+		t.Fatalf("pre-response notifications must be queued in order: %d", len(client.pending.items))
 	}
 }
 
@@ -423,8 +423,8 @@ func TestCodexBacklogBounds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("a backlog at the bound must be kept: %v", err)
 			}
-			if len(client.pending) != len(tc.lines) || client.pendingBytes != tc.bytes {
-				t.Fatalf("backlog: %d messages, %d bytes", len(client.pending), client.pendingBytes)
+			if len(client.pending.items) != len(tc.lines) || client.pending.bytes != tc.bytes {
+				t.Fatalf("backlog: %d messages, %d bytes", len(client.pending.items), client.pending.bytes)
 			}
 		})
 	}
@@ -444,8 +444,8 @@ func TestCodexTurnSkipsQueuedStaleResponse(t *testing.T) {
 	if err != nil || answer != "ok" {
 		t.Fatalf("turn: %q %v", answer, err)
 	}
-	if len(client.pending) != 0 || client.pendingBytes != 0 {
-		t.Fatalf("the backlog must drain: %d messages, %d bytes", len(client.pending), client.pendingBytes)
+	if len(client.pending.items) != 0 || client.pending.bytes != 0 {
+		t.Fatalf("the backlog must drain: %d messages, %d bytes", len(client.pending.items), client.pending.bytes)
 	}
 }
 

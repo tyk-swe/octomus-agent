@@ -39,24 +39,61 @@ type queuedMessage struct {
 	size  int
 }
 
+// backlog keeps, in order, the notifications that arrive before an RPC
+// response, bounded to 10000 messages and 8 MiB of compact JSON.
+type backlog struct {
+	items []queuedMessage
+	bytes int
+}
+
+func (b *backlog) push(value map[string]any) error {
+	if len(b.items) >= 10000 {
+		return fmt.Errorf("Codex notification backlog exceeded")
+	}
+	encoded, err := marshal(value)
+	if err != nil {
+		return err
+	}
+	if b.bytes+len(encoded) > 8*1024*1024 {
+		return fmt.Errorf("Codex notification backlog exceeds 8 MB")
+	}
+	b.bytes += len(encoded)
+	b.items = append(b.items, queuedMessage{value, len(encoded)})
+	return nil
+}
+
+// pop removes and returns the oldest queued notification.
+func (b *backlog) pop() (map[string]any, bool) {
+	if len(b.items) == 0 {
+		return nil, false
+	}
+	queued := b.items[0]
+	b.items[0] = queuedMessage{}
+	b.items = b.items[1:]
+	if len(b.items) == 0 {
+		b.items = nil
+	}
+	b.bytes -= queued.size
+	return queued.value, true
+}
+
 // Codex owns a `codex app-server --listen stdio://` child and speaks its
 // newline-delimited JSON-RPC protocol.
 type Codex struct {
-	child        *process.GroupChild
-	stdin        *os.File
-	stdout       *os.File
-	lines        chan lineResult
-	serial       uint64
-	pending      []queuedMessage
-	pendingBytes int
-	timeout      uint64
-	ctx          context.Context
-	state        *store.Store
-	entity       string
-	waitCh       chan error
-	done         chan struct{}
-	once         sync.Once
-	closeErr     error
+	child    *process.GroupChild
+	stdin    *os.File
+	stdout   *os.File
+	lines    chan lineResult
+	serial   uint64
+	pending  backlog
+	timeout  uint64
+	ctx      context.Context
+	state    *store.Store
+	entity   string
+	waitCh   chan error
+	done     chan struct{}
+	once     sync.Once
+	closeErr error
 	// binary and commandTimeout bound the Diagnostics version check.
 	binary         string
 	commandTimeout uint64
@@ -289,19 +326,9 @@ func (c *Codex) rpc(method string, params map[string]any) (any, error) {
 			}
 			return result, nil
 		}
-		if len(c.pending) >= 10000 {
-			return nil, fmt.Errorf("Codex notification backlog exceeded")
-		}
-		encoded, err := marshal(v)
-		if err != nil {
+		if err := c.pending.push(v); err != nil {
 			return nil, err
 		}
-		size := len(encoded)
-		if c.pendingBytes+size > 8*1024*1024 {
-			return nil, fmt.Errorf("Codex notification backlog exceeds 8 MB")
-		}
-		c.pendingBytes += size
-		c.pending = append(c.pending, queuedMessage{v, size})
 	}
 }
 
@@ -424,7 +451,24 @@ func (c *Codex) Turn(session string, route config.Route, cwd, prompt string, sch
 	return FinishTurn(answer, schema)
 }
 
+// turn starts a turn and follows it to completion; any failure after the
+// turn has started interrupts it.
 func (c *Codex) turn(thread string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
+	turn, err := c.startTurn(thread, route, cwd, prompt, schema)
+	if err != nil {
+		return "", err
+	}
+	deadline := time.Now().Add(time.Duration(c.timeout) * time.Second)
+	answer, err := c.awaitTurn(thread, turn, deadline)
+	if err != nil {
+		c.interrupt(thread, turn)
+		return "", err
+	}
+	return answer, nil
+}
+
+// startTurn submits turn/start and returns the new turn's identity.
+func (c *Codex) startTurn(thread string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
 	params := map[string]any{
 		"threadId":       thread,
 		"cwd":            cwd,
@@ -447,90 +491,91 @@ func (c *Codex) turn(thread string, route config.Route, cwd, prompt string, sche
 	if !ok {
 		return "", fmt.Errorf("Missing turn identity")
 	}
-	deadline := time.Now().Add(time.Duration(c.timeout) * time.Second)
-	answer, turnErr := func() (string, error) {
-		var answer string
-		for {
-			if c.ctx.Err() != nil {
-				return "", process.ErrSessionCancelled
-			}
-			if !time.Now().Before(deadline) {
-				return "", fmt.Errorf("Codex session time limit exceeded")
-			}
-			var event map[string]any
-			if len(c.pending) > 0 {
-				queued := c.pending[0]
-				c.pending[0] = queuedMessage{}
-				c.pending = c.pending[1:]
-				if len(c.pending) == 0 {
-					c.pending = nil
-				}
-				c.pendingBytes -= queued.size
-				event = queued.value
-			} else {
-				v, err := c.receive(deadline, "Codex session time limit exceeded")
-				if err != nil {
-					return "", err
-				}
-				event = v
-			}
-			params, _ := asObject(event["params"])
-			if s, _ := strAt(params, "threadId"); s != thread {
-				continue
-			}
-			if id, ok := strAt(params, "turnId"); ok && id != turn {
-				continue
-			}
-			method, _ := strAt(event, "method")
-			switch method {
-			case "item/completed":
-				item, _ := asObject(params["item"])
-				itemType, _ := strAt(item, "type")
-				phase, _ := strAt(item, "phase")
-				if itemType == "agentMessage" && phase != "commentary" {
-					answer, _ = strAt(item, "text")
-				}
-				// Only record metadata, never raw tool arguments or command
-				// output from session notifications.
-				itemStatus, _ := strAt(item, "status")
-				if itemType == "" {
-					itemType = "item"
-				}
-				if itemStatus == "" {
-					itemStatus = "completed"
-				}
-				if err := c.state.Event(c.entity, "session_progress", fmt.Sprintf("%s · %s · %s", thread, itemType, itemStatus)); err != nil {
-					return "", err
-				}
-			case "turn/completed":
-				completed, _ := asObject(params["turn"])
-				if s, _ := strAt(completed, "id"); s != turn {
-					continue
-				}
-				if s, _ := strAt(completed, "status"); s != "completed" {
-					encoded, _ := marshal(completed["error"])
-					return "", fmt.Errorf("Codex turn did not complete successfully: %s", store.Redact(encoded))
-				}
-				if strings.TrimSpace(answer) == "" {
-					return "", fmt.Errorf("Codex returned no final result")
-				}
-				return answer, nil
-			}
-		}
-	}()
-	if turnErr != nil {
-		// Best-effort interrupt bypasses the owner context so it still reaches
-		// the server after operator cancellation; the response is not awaited.
-		c.serial++
-		_, _ = process.Bounded(context.Background(), 5, "Codex interrupt timed out", func(wctx context.Context) (struct{}, error) {
-			return struct{}{}, c.sendBestEffort(wctx, map[string]any{
-				"id":     c.serial,
-				"method": "turn/interrupt",
-				"params": map[string]any{"threadId": thread, "turnId": turn},
-			})
-		})
+	return turn, nil
+}
+
+// nextEvent checks cancellation and the turn deadline, then returns the
+// oldest queued notification or receives the next message.
+func (c *Codex) nextEvent(deadline time.Time) (map[string]any, error) {
+	if c.ctx.Err() != nil {
+		return nil, process.ErrSessionCancelled
 	}
-	return answer, turnErr
+	if !time.Now().Before(deadline) {
+		return nil, fmt.Errorf("Codex session time limit exceeded")
+	}
+	if event, ok := c.pending.pop(); ok {
+		return event, nil
+	}
+	return c.receive(deadline, "Codex session time limit exceeded")
+}
+
+// awaitTurn follows the turn's events until it completes and returns the
+// final agent message.
+func (c *Codex) awaitTurn(thread, turn string, deadline time.Time) (string, error) {
+	var answer string
+	for {
+		event, err := c.nextEvent(deadline)
+		if err != nil {
+			return "", err
+		}
+		params, _ := asObject(event["params"])
+		if s, _ := strAt(params, "threadId"); s != thread {
+			continue
+		}
+		if id, ok := strAt(params, "turnId"); ok && id != turn {
+			continue
+		}
+		method, _ := strAt(event, "method")
+		switch method {
+		case "item/completed":
+			item, _ := asObject(params["item"])
+			itemType, _ := strAt(item, "type")
+			phase, _ := strAt(item, "phase")
+			if itemType == "agentMessage" && phase != "commentary" {
+				answer, _ = strAt(item, "text")
+			}
+			// Only record metadata, never raw tool arguments or command
+			// output from session notifications.
+			itemStatus, _ := strAt(item, "status")
+			if itemType == "" {
+				itemType = "item"
+			}
+			if itemStatus == "" {
+				itemStatus = "completed"
+			}
+			if err := c.state.Event(c.entity, "session_progress", fmt.Sprintf("%s · %s · %s", thread, itemType, itemStatus)); err != nil {
+				return "", err
+			}
+		case "turn/completed":
+			completed, _ := asObject(params["turn"])
+			if s, _ := strAt(completed, "id"); s != turn {
+				continue
+			}
+			if s, _ := strAt(completed, "status"); s != "completed" {
+				encoded, _ := marshal(completed["error"])
+				return "", fmt.Errorf("Codex turn did not complete successfully: %s", store.Redact(encoded))
+			}
+			if strings.TrimSpace(answer) == "" {
+				return "", fmt.Errorf("Codex returned no final result")
+			}
+			return answer, nil
+		}
+	}
+}
+
+// interrupt sends a best-effort turn/interrupt that bypasses the owner
+// context, so it still reaches the server after operator cancellation; the
+// response is not awaited.
+func (c *Codex) interrupt(thread, turn string) {
+	c.serial++
+	id := c.serial
+	_, _ = process.Bounded(context.Background(), 5, "Codex interrupt timed out", func(wctx context.Context) (struct{}, error) {
+		return struct{}{}, c.sendBestEffort(wctx, map[string]any{
+			"id":     id,
+			"method": "turn/interrupt",
+			"params": map[string]any{"threadId": thread, "turnId": turn},
+		})
+	})
 }
 
 // Close kills the process group, closes the pipes, and joins both the line
