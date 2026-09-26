@@ -345,8 +345,24 @@ const proposalLimits = "Hard limits: title at most 200 bytes; always set problem
 // rediscovery candidates plus every discovered proposal.
 const maxPlanningProposals = 100
 
+// discoveryProposalLimit is each discovery agent's share of the candidates
+// that seeded rediscovery candidates leave: discovery fails when all
+// candidates together exceed maxPlanningProposals.
+func discoveryProposalLimit(seeded int, agents uint64) int {
+	room := maxPlanningProposals - seeded
+	if room <= 0 || agents == 0 || agents > uint64(room) {
+		return 0
+	}
+	return room / int(agents)
+}
+
 func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) error {
 	scopes := []string{"feature completion", "reproducible correctness bugs", "performance with evidence", "user and developer experience", "refactoring and architecture", "capability-preserving simplification", "test health and meaningful regression protection", "dependencies and required migrations", "documentation accuracy", "cross-cutting coherence"}
+	perAgent := discoveryProposalLimit(len(cycle.Proposals), cfg.DiscoveryAgents)
+	reconsiders := "Include a stable problem_key, relevant_paths as repository-relative files, and reconsiders=[] unless handling a supplied rediscovery request."
+	if cycle.Mode == model.CycleModeExecution {
+		reconsiders = "Include a stable problem_key and relevant_paths as repository-relative files. Always return reconsiders=[]; seeded rediscovery candidates already carry them."
+	}
 	outcomes := make([]roleOutcome, cfg.DiscoveryAgents)
 	var wg sync.WaitGroup
 	for i := uint64(0); i < cfg.DiscoveryAgents; i++ {
@@ -354,7 +370,7 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			prompt := fmt.Sprintf("Discover worthwhile project improvements, focusing on %s. Also cover these enabled areas as appropriate: %v. Inspect actual code and relevant open branch diffs; do not modify files. Return no proposals when benefit is weak. For each proposal include concrete file evidence, problem, benefit, scope, tier XS/S/M/L/XL, dependencies by proposal id, a self-contained refined prompt with constraints and verification, and target '%s' or a listed owned PR branch. Give IDs prefixed d%d-. Include a stable problem_key, relevant_paths as repository-relative files, and reconsiders=[] unless handling a supplied rediscovery request. "+proposalLimits+" Reuse matching problem identities from decision memory and do not repeat unchanged rejected work or seeded rediscovery candidates. Set decision='candidate' and reason describing value. Do not duplicate history/open work. Maintenance due: %t; prioritize maintenance on main and %v when due; preserve useful capabilities. Grounding: %s. Recorded context: %s", scopes[i], cfg.Categories, cfg.DefaultBranch, i, cycle.Grounding.MaintenanceDue, cycle.Grounding.MaintenanceTargets, ground, recorded)
+			prompt := fmt.Sprintf("Discover worthwhile project improvements, focusing on %s. Also cover the enabled categories as appropriate, and set each proposal's category to exactly one of %v. Inspect actual code and relevant open branch diffs; do not modify files. Return no proposals when benefit is weak. Return at most %d proposals. For each proposal include concrete file evidence, problem, benefit, scope, tier XS/S/M/L/XL, dependencies by proposal id, a self-contained refined prompt with constraints and verification, and target '%s' or a listed owned PR branch. Give IDs prefixed d%d-. "+reconsiders+" "+proposalLimits+" Reuse matching problem identities from decision memory and do not repeat unchanged rejected work or seeded rediscovery candidates. Set decision='candidate' and reason describing value. Do not duplicate history/open work. Maintenance due: %t; prioritize maintenance on main and %v when due; preserve useful capabilities. Grounding: %s. Recorded context: %s", scopes[i], cfg.Categories, perAgent, cfg.DefaultBranch, i, cycle.Grounding.MaintenanceDue, cycle.Grounding.MaintenanceTargets, ground, recorded)
 			outcomes[i] = a.role(ctx, cfg, *cycle, fmt.Sprintf("discovery-%d", i), "discovery", prompt, schemas.ProposalSchema())
 		}()
 	}
@@ -479,7 +495,11 @@ func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.C
 	if err != nil {
 		return nil, err
 	}
-	prompt := fmt.Sprintf("Act as final orchestrator: assess all candidates yourself and resolve BOTH adversarial reviews explicitly in each decision reason, especially disagreements. Deduplicate overlapping proposals; retain a candidate ID for merged work, mark absorbed IDs rejected and reference the surviving ID. Return every original candidate exactly once, accepted/rejected/deferred with reasons. Accept at most %d cohesive tasks, dependency-aware, with a polished self-contained implementation prompt including objective, evidence, target, boundaries, required outcomes and proportionate verification. Keep priorities within %v. Avoid work already in history, including failed unresolved tasks. Only listed owned PR branches or '%s' are eligible targets. Dependencies must refer only to other accepted candidate IDs on the SAME existing owned PR branch. On main, combine code-dependent pieces into one cohesive task or defer dependent work until its prerequisite PR is merged. Multiple accepted changes to one existing branch must declare a complete linear dependency order. Reuse problem_key from matching decision memory even when wording changes, record up to 40 relevant repository-relative file paths, and honor reconsideration_due. "+proposalLimits+" Preserve reconsiders IDs on the seeded rediscovery candidates (merge them into the surviving candidate if needed); decide every rediscovery request once, rejecting obsolete work with a reason. Do not duplicate seeded candidates. No cycles. Configured execution tiers: %s. Do not change operating policy. The supplied PR capacity is observed operating context, not a reservation. When no new-PR capacity remains, prefer useful maintenance on eligible owned PRs or defer new-PR work. External PRs are read-only evidence of work underway and never execution targets. Respect PR coverage limits when assessing duplication. Candidates: %s. Reviews: %s. Grounding: %s. Context: %s", cfg.MaxTasksPerCycle, cfg.Categories, cfg.DefaultBranch, tiers, candidates, reviews, ground, recorded)
+	rediscovery := "A proposal may list a supplied rediscovery request in reconsiders only when it keeps that request's target."
+	if cycle.Mode == model.CycleModeExecution {
+		rediscovery = "Each rediscovery request ID must appear in reconsiders of exactly one returned proposal, and that proposal keeps the request's original target: keep it on the seeded rediscovery candidate rather than moving it, and reject that candidate with a reason when its work is obsolete or its target is no longer eligible. Do not duplicate seeded candidates."
+	}
+	prompt := fmt.Sprintf("Act as final orchestrator: assess all candidates yourself and resolve BOTH adversarial reviews explicitly in each decision reason, especially disagreements. Deduplicate overlapping proposals; retain a candidate ID for merged work, mark absorbed IDs rejected and reference the surviving ID. Return every original candidate exactly once, accepted/rejected/deferred with reasons. Accept at most %d cohesive tasks, dependency-aware, with a polished self-contained implementation prompt including objective, evidence, target, boundaries, required outcomes and proportionate verification. Every accepted proposal's category must be one of %v. Avoid work already in history, including failed unresolved tasks. Only listed owned PR branches or '%s' are eligible targets. Dependencies must refer only to other accepted candidate IDs on the SAME existing owned PR branch. On main, combine code-dependent pieces into one cohesive task or defer dependent work until its prerequisite PR is merged. Multiple accepted changes to one existing branch must declare a complete linear dependency order. Reuse problem_key from matching decision memory even when wording changes, record up to 40 relevant repository-relative file paths, and honor reconsideration_due. "+proposalLimits+" "+rediscovery+" No cycles. Configured execution tiers: %s. Do not change operating policy. The supplied PR capacity is observed operating context, not a reservation. When no new-PR capacity remains, prefer useful maintenance on eligible owned PRs or defer new-PR work. External PRs are read-only evidence of work underway and never execution targets. Respect PR coverage limits when assessing duplication. Candidates: %s. Reviews: %s. Grounding: %s. Context: %s", cfg.MaxTasksPerCycle, cfg.Categories, cfg.DefaultBranch, tiers, candidates, reviews, ground, recorded)
 	outcome := a.role(ctx, cfg, *cycle, "consolidation", "orchestrator", prompt, schemas.ProposalSchema())
 	if err := a.attachOutcomes(cycle, []roleOutcome{outcome}); err != nil {
 		return nil, err

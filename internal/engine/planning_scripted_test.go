@@ -202,6 +202,46 @@ func assertScriptedPlanningPass(t *testing.T, f *scriptedFixture, cycle model.Cy
 	assertNoOpenClients(t, f.script)
 }
 
+// assertPlanningRulePrompts checks that the proposing roles are told the rules
+// the core enforces on their output in mode: the enabled categories, the
+// discovery share of the candidate limit and how rediscovery requests are
+// decided.
+func assertPlanningRulePrompts(t *testing.T, f *scriptedFixture, mode model.CycleMode) {
+	t.Helper()
+	categories := fmt.Sprint(f.cfg.Categories)
+	execution := mode == model.CycleModeExecution
+	discoveries := f.script.Turns(f.routes.Discovery)
+	if len(discoveries) != int(f.cfg.DiscoveryAgents) {
+		t.Fatalf("checked %d discovery prompts; want %d", len(discoveries), f.cfg.DiscoveryAgents)
+	}
+	for _, turn := range discoveries {
+		for _, rule := range []string{"set each proposal's category to exactly one of " + categories + ".", fmt.Sprintf("Return at most %d proposals.", 100/int(f.cfg.DiscoveryAgents))} {
+			if !strings.Contains(turn.Prompt, rule) {
+				t.Fatalf("discovery prompt omits %q: %.300s", rule, turn.Prompt)
+			}
+		}
+		if strings.Contains(turn.Prompt, "Always return reconsiders=[]") != execution || strings.Contains(turn.Prompt, "reconsiders=[] unless handling a supplied rediscovery request") == execution {
+			t.Fatalf("%s discovery prompt states the wrong reconsiders rule: %.600s", mode, turn.Prompt)
+		}
+	}
+	consolidations := 0
+	for _, turn := range f.script.Turns(f.routes.Orchestrator) {
+		if !strings.HasPrefix(turn.Prompt, "Act as final orchestrator") {
+			continue
+		}
+		consolidations++
+		if rule := "Every accepted proposal's category must be one of " + categories + "."; !strings.Contains(turn.Prompt, rule) {
+			t.Fatalf("consolidation prompt omits %q", rule)
+		}
+		if strings.Contains(turn.Prompt, "Each rediscovery request ID must appear in reconsiders of exactly one returned proposal") != execution || strings.Contains(turn.Prompt, "only when it keeps that request's target") == execution {
+			t.Fatalf("%s consolidation prompt states the wrong rediscovery rule", mode)
+		}
+	}
+	if consolidations != 1 {
+		t.Fatalf("checked %d consolidation prompts; want 1", consolidations)
+	}
+}
+
 func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	completePlan(t, fixture).queue(fixture)
@@ -232,6 +272,7 @@ func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
 	if proposing != int(fixture.cfg.DiscoveryAgents)+1 {
 		t.Fatalf("checked %d proposal prompts; want every discovery and the consolidation", proposing)
 	}
+	assertPlanningRulePrompts(t, fixture, model.CycleModeAudit)
 	control, err := app.Control()
 	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil {
 		t.Fatalf("audit changed queue mode: %+v, %v", control, err)
@@ -402,6 +443,7 @@ func TestRunOnceCommitsCompletePlanningQueueAndPhase(t *testing.T) {
 	if tasks[0].Route.String() != fixture.routes.Executor.String() || tasks[0].Proposal.ID != "d0-feature" {
 		t.Fatalf("planned task did not take the accepted proposal and its tier route: %+v", tasks[0])
 	}
+	assertPlanningRulePrompts(t, fixture, model.CycleModeExecution)
 }
 
 // The plan commit rewrites control (batch phase, idle streak), so it waits for

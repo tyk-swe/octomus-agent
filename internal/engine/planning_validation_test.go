@@ -175,3 +175,21 @@ func TestDecisionMemoryAndRediscoveryNameTheOffendingProposal(t *testing.T) {
 		t.Fatalf("one decision per request rejected: %v", err)
 	}
 }
+
+// Discovery agents share the candidate limit that seeded rediscovery
+// candidates leave; a full seeded pass leaves them nothing.
+func TestDiscoveryProposalLimitSharesTheRemainingCandidates(t *testing.T) {
+	for _, tc := range []struct {
+		seeded int
+		agents uint64
+		want   int
+	}{
+		{seeded: 0, agents: 9, want: 11}, {seeded: 0, agents: 10, want: 10}, {seeded: 10, agents: 9, want: 10},
+		{seeded: 92, agents: 9, want: 0}, {seeded: 100, agents: 8, want: 0}, {seeded: 150, agents: 8, want: 0},
+		{seeded: 0, agents: 0, want: 0}, {seeded: 0, agents: ^uint64(0), want: 0},
+	} {
+		if got := discoveryProposalLimit(tc.seeded, tc.agents); got != tc.want {
+			t.Fatalf("discoveryProposalLimit(%d, %d) = %d; want %d", tc.seeded, tc.agents, got, tc.want)
+		}
+	}
+}
