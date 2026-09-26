@@ -31,7 +31,15 @@ func Error(err error) string { return Text(err.Error()) }
 // Go's \s is ASCII-only, so use the equivalent class in every whitespace match.
 const tokenWhitespace = `\p{Z}\x{0009}-\x{000D}\x{0085}`
 
-var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-Za-z0-9._~+/=-]+|(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]{10,}|[a-z]+://[^` + tokenWhitespace + `/@]+:[^` + tokenWhitespace + `/@]+@`)
+// tokenPattern matches bearer credentials, GitHub tokens and URL userinfo.
+var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-Za-z0-9._~+/=-]+|(?:gh[pousr]_|github_pat_)[A-Za-z0-9_-]{10,}|[a-z]+://[^` + tokenWhitespace + `/@]+:[^` + tokenWhitespace + `/@]+@`)
+
+// keyPattern matches sk- API keys; group 1 is the key itself. A key must start
+// a token, because ordinary words such as task-, risk- or disk- also end in
+// "sk-": it may follow anything but an ASCII letter, or an escape sequence
+// that ends in a letter in encoded text (\n or \u003e in JSON, %3D in a URL,
+// a terminal color code such as ESC[32m).
+var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|[A-Za-z])|%[0-9A-Fa-f]{2}|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
 
 var (
 	secretsOnce sync.Once
@@ -66,6 +74,9 @@ func scrub(input string, values []string) string {
 	var spans [][2]int
 	for _, match := range tokenPattern.FindAllStringIndex(input, -1) {
 		spans = append(spans, [2]int{match[0], match[1]})
+	}
+	for _, match := range keyPattern.FindAllStringSubmatchIndex(input, -1) {
+		spans = append(spans, [2]int{match[2], match[3]})
 	}
 	for _, value := range values {
 		if value == "" {

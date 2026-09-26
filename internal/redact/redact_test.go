@@ -68,6 +68,53 @@ func TestRedactsTokens(t *testing.T) {
 	}
 }
 
+// An sk- key is redacted where it starts a token, including right after an
+// escape sequence in encoded text, but ordinary words that end in "sk" before
+// a hyphen stay readable: repository paths, executables and PR titles are not
+// secrets. GitHub token prefixes match anywhere, as before.
+func TestSkKeysMustStartAToken(t *testing.T) {
+	for _, kept := range []string{
+		"/opt/task-automation/bin/codex",
+		"/srv/projects/task-management-app",
+		"/home/me/desk-applications/codex",
+		"Fix task-scheduling race",
+		"Harden risk-assessment module",
+		"Add disk-usage-reporting",
+		"pip install flask-sqlalchemy-utils",
+		"FIX TASK-SCHEDULING-RACE",
+	} {
+		if got := redact.Secrets(kept); got != kept {
+			t.Errorf("Secrets(%q) = %q; want it unchanged", kept, got)
+		}
+	}
+	for input, want := range map[string]string{
+		"sk-live0123456789abc":                         "[redacted]",
+		"Use sk-live0123456789abc":                     "Use [redacted]",
+		"OPENAI_API_KEY=sk-proj-abcdefghijklmnop":      "OPENAI_API_KEY=[redacted]",
+		"key: 'sk-abcdefghijklmnop'":                   "key: '[redacted]'",
+		`{"key":"sk-abcdefghijklmnop"}`:                `{"key":"[redacted]"}`,
+		"line\nsk-abcdefghijklmnop":                    "line\n[redacted]",
+		"KEY_sk-abcdefghijklmnop":                      "KEY_[redacted]",
+		"key-sk-abcdefghijklmnop":                      "key-[redacted]",
+		"v2sk-abcdefghijklmnop":                        "v2[redacted]",
+		"(sk-abcdefghijklmnop)":                        "([redacted])",
+		"https://api.example/?key=sk-abcdefghijklmnop": "https://api.example/?key=[redacted]",
+		// Escapes whose last character is a letter: JSON, percent-encoding
+		// and terminal colors.
+		`"line\nsk-abcdefghijklmnop"`:                  `"line\n[redacted]"`,
+		`"\u003esk-abcdefghijklmnop"`:                  `"\u003e[redacted]"`,
+		"?next=%3Fkey%3Dsk-abcdefghijklmnop":           "?next=%3Fkey%3D[redacted]",
+		"\x1b[32msk-abcdefghijklmnop\x1b[0m":           "\x1b[32m[redacted]\x1b[0m",
+		"task-ghp_abcdefghijklmnop":                    "task-[redacted]",
+		"xghp_abcdefghijklmnop":                        "x[redacted]",
+		"Fix task-scheduling with sk-abcdefghijklmnop": "Fix task-scheduling with [redacted]",
+	} {
+		if got := redact.Secrets(input); got != want {
+			t.Errorf("Secrets(%q) = %q; want %q", input, got, want)
+		}
+	}
+}
+
 func TestRedactsTokensUnicodeWhitespace(t *testing.T) {
 	// Every Unicode White_Space code point, including ASCII vertical tab.
 	whitespace := "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
