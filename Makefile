@@ -1,4 +1,4 @@
-.PHONY: dashboard build build-race check test package audit
+.PHONY: dashboard build build-race check test test-race-e2e package audit
 
 # Integration suites run the freshly built binary and stream their PASS lines
 # (Python block-buffers stdout when it is a pipe, as under make and CI).
@@ -10,8 +10,8 @@ dashboard:
 build: dashboard
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/octomus-agent ./cmd/octomus-agent
 
-# Race-instrumented service build for subprocess-driven concurrency scenarios;
-# the release binary stays CGO_ENABLED=0.
+# Race-instrumented service build used by `make test-race-e2e`; the release
+# binary stays CGO_ENABLED=0.
 build-race: dashboard
 	CGO_ENABLED=1 go build -race -o bin/octomus-agent-race ./cmd/octomus-agent
 
@@ -36,6 +36,15 @@ test: build
 	$(E2E_ENV) python3 tests/distribution.py
 	python3 tests/package_guards.py
 	$(E2E_ENV) npm test --prefix web
+
+# Opt-in (about 7 minutes; needs a C compiler): the core integration suite
+# against the race-instrumented service, so real HTTP, scheduler and runner
+# subprocess interleavings reach the race detector. A detected race exits the
+# service with status 66, which fails the scenario (the harness checks it on
+# every stop, shutdown races included). Not part of `make test`: the race
+# runtime can perturb the timing assertions of the other suites.
+test-race-e2e: build-race
+	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent-race" GORACE=halt_on_error=1 PYTHONUNBUFFERED=1 python3 tests/e2e.py
 
 # `go run pkg@version` selects a toolchain from govulncheck's own go.mod, which
 # can be older than this module's and then cannot type-check it; pin the

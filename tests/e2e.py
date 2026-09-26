@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -18,6 +19,10 @@ import urllib.request
 PROJECT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent')))
 TOKEN = 'fixture-operator-token-with-at-least-32-characters'
+# The Go race detector's default exit status (GORACE exitcode). Only a
+# race-instrumented build (make test-race-e2e) exits with it; the service
+# itself uses 0, 1 and 2.
+RACE_EXIT_STATUS = 66
 
 
 def git(*args, cwd):
@@ -68,6 +73,7 @@ class Service:
     def __init__(self, root):
         self.root = root
         self.process = None
+        self.race_reported = False
         self.log = (root / 'service.log').open('a')
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
@@ -90,6 +96,11 @@ class Service:
                 self.process.kill()
                 self.process.wait(timeout=5)
                 raise AssertionError(f'service did not stop within 15s of {"SIGKILL" if crash else "SIGTERM"}; service.log tail:\n{service_log(self.root, tail=100)}')
+        # A race detected at any point, shutdown included, fails the scenario
+        # once, with the report from the log.
+        if self.process and self.process.returncode == RACE_EXIT_STATUS and not self.race_reported:
+            self.race_reported = True
+            raise AssertionError(f'service exited with status {RACE_EXIT_STATUS}: the race detector reported a data race; service.log tail:\n{service_log(self.root, tail=200)}')
 
     def _open(self, path, method, value, api, timeout):
         """Sends one authenticated request; `timeout` bounds each socket operation,
@@ -706,11 +717,30 @@ def harness_scenario():
                 report = str(error)
             assert report and report.startswith('missing route timed out after 1s; last error: HTTP 404: {"error":"Unknown API route"}\nstate: <state unavailable: BadStatusLine('), report
             assert report.endswith('service.log tail:\nearlier line\nlast service line'), report
+
+            # A race-instrumented service exits with the race detector's status
+            # even from a graceful SIGTERM shutdown; stop() reports it once.
+            service.process = subprocess.Popen([sys.executable, '-c', 'import signal, sys, time\nsignal.signal(signal.SIGTERM, lambda *_: sys.exit(66))\nprint("ready", flush=True)\ntime.sleep(30)'], stdout=subprocess.PIPE, text=True)
+            with service.process.stdout:
+                assert service.process.stdout.readline() == 'ready\n'
+            report = None
+            try:
+                service.stop()
+            except AssertionError as error:
+                report = str(error)
+            assert report and report.startswith('service exited with status 66: the race detector reported a data race; service.log tail:\n'), report
+            service.stop()
+            # A clean exit, or a crash stop's SIGKILL, is not a race report.
+            service.race_reported = False
+            for command in ['pass', 'import time; time.sleep(30)']:
+                service.process = subprocess.Popen([sys.executable, '-c', command])
+                service.stop(crash=True)
+                assert service.process.returncode in [0, -9], service.process.returncode
         finally:
             server.shutdown()
             server.server_close()
             service.log.close()
-    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail')
+    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop')
 
 
 if __name__ == '__main__':
