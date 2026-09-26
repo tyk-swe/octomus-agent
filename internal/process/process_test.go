@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -525,8 +526,13 @@ func TestDiagnosticTextAndStatusFormat(t *testing.T) {
 	}
 }
 
-// failureTextLimit mirrors the store's display bound for recorded messages.
-const failureTextLimit = 16384
+// displayLimit mirrors the store's display bound for recorded messages, and
+// failureTextLimit the part of it a failure message may use: the rest is left
+// for the context callers wrap around a failure before recording it.
+const (
+	displayLimit     = 16384
+	failureTextLimit = displayLimit - 1024
+)
 
 // TestFailureTextFitsWhole: a failure whose output fits the display bound is
 // reported exactly as before — the status, stdout, a newline, then stderr.
@@ -566,6 +572,17 @@ exit 1`
 	}
 	if store.ErrorMessage(err) != text {
 		t.Fatal("recording the failure text must not shorten it further")
+	}
+	// Callers wrap failures in context before recording them; the recorded
+	// message must still end with the cause.
+	for _, wrapped := range []error{
+		fmt.Errorf("Open pull request inventory failed: %w", err),
+		fmt.Errorf("Repository remote preflight failed: %w",
+			fmt.Errorf("%w: %w", errors.New("Publication result is uncertain; reconcile the preserved output commit"), err)),
+	} {
+		if recorded := store.ErrorMessage(wrapped); !strings.HasSuffix(recorded, "[stderr]\ngh: API rate limit exceeded (HTTP 403)\n") {
+			t.Fatalf("recorded wrapped failure lost the stderr cause: ...%q", recorded[max(len(recorded)-120, 0):])
+		}
 	}
 }
 

@@ -437,10 +437,12 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 }
 
 const (
-	// failureTextLimit is the store's display bound for recorded messages, in
-	// characters: a failure message built within it is never cut again when it
-	// is saved or shown.
-	failureTextLimit = 16384
+	// failureTextLimit bounds a failure message, in characters. The store cuts
+	// recorded messages at 16,384 characters, and callers usually wrap a
+	// failure in context first ("Open pull request inventory failed: ", a
+	// blocked reason), so the message leaves room for that context: recording
+	// a wrapped failure then never cuts the stderr tail that states the cause.
+	failureTextLimit = 16384 - 1024
 	// stderrShare is the part of an over-long failure message stderr may always
 	// claim, however much stdout there was: stderr usually carries the cause
 	// (an HTTP error, a "fatal:" line) while stdout carries bulk output.
@@ -458,7 +460,7 @@ func ensureSuccess(binary string, output *ProcessOutput) error {
 }
 
 // failureText renders a failed command for operators: its exit status, then
-// scrubbed stdout and stderr. Output that fits the display bound is kept
+// scrubbed stdout and stderr. Output that fits failureTextLimit is kept
 // whole, as `<stdout>\n<stderr>`. Longer output keeps both ends of each stream
 // around an explicit omission marker, in `<stdout>\n[stderr]\n<stderr>` form
 // (no section when stderr is empty); stderr may always use up to stderrShare
