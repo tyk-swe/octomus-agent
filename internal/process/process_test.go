@@ -376,12 +376,14 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 // terminal-prompt guard.
 func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	temp := t.TempDir()
-	t.Setenv("OCTOMUS_TOKEN", "test-token-value-that-must-not-leak")
-	t.Setenv("OCTOMUS_NOTIFICATION_WEBHOOK_URL", "https://example.invalid/hook")
+	// The names come from the constants the service reads its secrets from, so
+	// renaming a variable cannot leave the scrubbed name behind.
+	t.Setenv(redact.TokenEnv, "test-token-value-that-must-not-leak")
+	t.Setenv(redact.WebhookEnv, "https://example.invalid/hook")
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
-	out, err := process.Run(context.Background(), "bash", []string{"-c",
-		`printf 't=%s w=%s g=%s' "${OCTOMUS_TOKEN-unset}" "${OCTOMUS_NOTIFICATION_WEBHOOK_URL-unset}" "$GIT_TERMINAL_PROMPT"`},
-		temp, 10)
+	script := fmt.Sprintf(`printf 't=%%s w=%%s g=%%s' "${%s-unset}" "${%s-unset}" "$GIT_TERMINAL_PROMPT"`,
+		redact.TokenEnv, redact.WebhookEnv)
+	out, err := process.Run(context.Background(), "bash", []string{"-c", script}, temp, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

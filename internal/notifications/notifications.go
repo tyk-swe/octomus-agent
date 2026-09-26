@@ -23,9 +23,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// WebhookEnv names the notification destination variable; its value is a secret.
-const WebhookEnv = store.WebhookEnv
-
 const (
 	maxPayloadBytes    = 8192
 	maxRepositoryBytes = 256

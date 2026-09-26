@@ -13,6 +13,11 @@ import (
 	"sync"
 )
 
+// TokenEnv names the operator access token variable. Its value is a secret:
+// the service authenticates API requests with it, and it never reaches a child
+// process.
+const TokenEnv = "OCTOMUS_TOKEN"
+
 // WebhookEnv names the notification destination variable; its value is a secret.
 const WebhookEnv = "OCTOMUS_NOTIFICATION_WEBHOOK_URL"
 

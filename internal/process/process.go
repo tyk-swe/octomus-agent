@@ -25,10 +25,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// TokenEnv is the operator-token variable removed from every child environment;
-// it must not reach child processes.
-const TokenEnv = "OCTOMUS_TOKEN"
-
 // Command builds an owned command: a new process group (pgid = child pid), the
 // service's secret environment and Git's repository-locating variables
 // removed, Git prompting disabled, and stdin on the null device. Callers
@@ -41,7 +37,7 @@ func Command(binary string, cwd string) *exec.Cmd {
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {
-		case TokenEnv, redact.WebhookEnv, "GIT_TERMINAL_PROMPT":
+		case redact.TokenEnv, redact.WebhookEnv, "GIT_TERMINAL_PROMPT":
 			continue
 		// Repository-locating Git variables (as exported into Git hooks) would
 		// redirect every child git away from cmd.Dir; Git itself clears them

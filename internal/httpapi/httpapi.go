@@ -30,9 +30,6 @@ import (
 	"modernc.org/sqlite"
 )
 
-// TokenEnv names the operator access token variable; its value is a secret.
-const TokenEnv = "OCTOMUS_TOKEN"
-
 const bodyLimit = 256 * 1024
 
 type api struct {

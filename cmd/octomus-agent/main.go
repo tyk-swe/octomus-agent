@@ -143,12 +143,12 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		defer stopSignals()
 		return runDoctor(sigCtx, app, mode, stdout)
 	}
-	token, ok := env(httpapi.TokenEnv)
+	token, ok := env(redact.TokenEnv)
 	if !ok {
-		return fmt.Errorf("Set %s to a random operator token of at least 32 characters (openssl rand -hex 32)", httpapi.TokenEnv)
+		return fmt.Errorf("Set %s to a random operator token of at least 32 characters (openssl rand -hex 32)", redact.TokenEnv)
 	}
 	if len(token) < 32 {
-		return fmt.Errorf("%s must contain at least 32 characters", httpapi.TokenEnv)
+		return fmt.Errorf("%s must contain at least 32 characters", redact.TokenEnv)
 	}
 	var assetsOverride string
 	if parsed.assets != nil {
