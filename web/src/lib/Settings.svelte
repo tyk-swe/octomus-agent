@@ -595,7 +595,7 @@
     </div>
     {#if status?.notifications}
       {@const health = status.notifications}
-      <dl class="baseline-facts">
+      <dl class="facts notification-facts">
         <div>
           <dt>State</dt>
           <dd>
@@ -664,19 +664,8 @@
     cursor: pointer;
     text-decoration: underline;
   }
-  .baseline-facts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 12px;
-    margin: 0 24px 20px;
-  }
-  .baseline-facts dt {
-    color: var(--muted);
-    font-size: 12px;
-  }
-  .baseline-facts dd {
-    margin: 4px 0 0;
-    overflow-wrap: anywhere;
+  .notification-facts {
+    margin-bottom: 20px;
   }
   .catalog-actions {
     display: flex;

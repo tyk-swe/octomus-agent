@@ -932,6 +932,24 @@ details p {
   margin-bottom: 20px;
   padding-bottom: 24px;
 }
+/* A labelled list of short read-only facts inside a settings section. */
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 18px;
+  margin: 0 24px;
+}
+.facts dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.facts dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

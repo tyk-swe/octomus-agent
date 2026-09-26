@@ -154,7 +154,7 @@
   </div>
   {#if error}<div class="notice error" role="alert">{error}</div>{/if}
   {#if check}
-    <dl class="baseline-facts">
+    <dl class="facts">
       <div>
         <dt>Status</dt>
         <dd>
@@ -282,22 +282,6 @@
 </section>
 
 <style>
-  .baseline-facts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 10px 18px;
-    margin: 0 24px;
-  }
-  .baseline-facts dt {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-  }
-  .baseline-facts dd {
-    margin: 2px 0 0;
-    font-size: 13px;
-  }
   .baseline-commands {
     list-style: none;
     margin: 12px 24px 0;
