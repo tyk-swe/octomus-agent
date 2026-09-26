@@ -18,6 +18,7 @@
   import { parseCommands, type Preflight, type SetupStatus } from './setup';
   import Icon from './Icon.svelte';
   import { LIMITS, limitHelp } from './limits';
+  import { plural } from './evidence';
   let {
     active,
     editable,
@@ -232,7 +233,8 @@
     try {
       const models = await api<Model[]>('/model-catalog', 'POST', { backend, binary });
       catalogs[backend] = { binary, models, loaded: true };
-      message = `${models.filter((model) => model.available).length} ${backendLabel(backend)} models available. Routes are never silently substituted.`;
+      const available = models.filter((model) => model.available).length;
+      message = `${plural(available, `${backendLabel(backend)} model`)} available. Routes are never silently substituted.`;
     } catch (e) {
       error = (e as Error).message;
       catalogs[backend] = { binary, models: [], loaded: false, error };

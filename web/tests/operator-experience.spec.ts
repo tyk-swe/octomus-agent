@@ -1257,7 +1257,7 @@ test('a previewed runner executable is never sent for a model catalog until it i
   await expect(page.locator('#catalog-preview-codex')).toHaveCount(0);
   await executable.fill('/draft/codex');
   await load.click();
-  await expect(page.getByText('1 Codex models available.')).toBeVisible();
+  await expect(page.getByText('1 Codex model available.')).toBeVisible();
   expect(state.catalogs).toEqual([{ backend: 'codex', binary: '/draft/codex' }]);
 });
 
