@@ -656,6 +656,7 @@ test('loaded older cycles and their actions survive background refresh', async (
 }, testInfo) => {
   let newest = 102;
   let archived = false;
+  let discarded = false;
   await page.route('**/api/cycles?*', async (route) => {
     const before = Number(new URL(route.request().url()).searchParams.get('before') ?? newest + 1);
     const cycles = Array.from({ length: newest }, (_, i) => ({
@@ -668,7 +669,13 @@ test('loaded older cycles and their actions survive background refresh', async (
       error: null,
       session_count: 0,
       decisions: {},
-      lifecycle: newest - i === 1 && archived ? { archived_at: '2026-09-10T00:00:00Z' } : {}
+      lifecycle:
+        newest - i === 1 && archived
+          ? {
+              archived_at: '2026-09-10T00:00:00Z',
+              ...(discarded ? { discarded_at: '2026-09-10T00:02:00Z' } : {})
+            }
+          : {}
     })).filter((cycle) => cycle.number < before);
     const items = cycles.slice(0, 100);
     await route.fulfill({
@@ -679,8 +686,12 @@ test('loaded older cycles and their actions survive background refresh', async (
       }
     });
   });
-  await page.route('**/api/cycles/history-1/archive', async (route) => {
-    archived = true;
+  const actions: string[] = [];
+  await page.route('**/api/cycles/history-1/*', async (route) => {
+    const action = new URL(route.request().url()).pathname.split('/').at(-1)!;
+    actions.push(action);
+    if (action === 'archive') archived = true;
+    if (action === 'discard') discarded = true;
     await route.fulfill({ json: { ok: true } });
   });
   await page.goto('/');
@@ -702,9 +713,26 @@ test('loaded older cycles and their actions survive background refresh', async (
   await expect(picker.locator('option')).toHaveCount(104);
   await expect(picker).toHaveValue('history-1');
   await expect(page.getByRole('button', { name: 'Load older cycles' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Archive cycle', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Discard cycle workspaces' })).toBeVisible();
+  const archive = page.getByRole('button', { name: 'Archive cycle', exact: true });
+  const discard = page.getByRole('button', { name: 'Discard cycle workspaces' });
+  await expect(discard).toHaveCount(0);
+  await archive.click();
+  await expect(discard).toBeVisible();
   await expect(picker).toHaveValue('history-1');
+  // Archiving again would only restart the cycle's retention clock, so it is not offered.
+  await expect(archive).toHaveCount(0);
+  await expect(picker.locator('option[value="history-1"]')).toHaveText(
+    'Execution cycle #001 · completed · archived'
+  );
+  await discard.click();
+  // Discarded workspaces leave no lifecycle action for this cycle.
+  await expect(picker.locator('option[value="history-1"]')).toHaveText(
+    'Execution cycle #001 · completed · workspaces discarded'
+  );
+  await expect(archive).toHaveCount(0);
+  await expect(discard).toHaveCount(0);
+  await expect(picker).toHaveValue('history-1');
+  expect(actions).toEqual(['archive', 'discard']);
 });
 
 test('a failed request for older cycles is reported and the control stays usable', async ({

@@ -163,6 +163,14 @@
   const prKey = (observed: PrObservation) =>
     `${observed.repository.toLowerCase()}#${observed.pr.number}`;
   let cycleRows = $state<CycleSummary[]>([]);
+  /**
+   * The picked cycle's loaded summary. Its lifecycle decides which workspace action is
+   * still open: archiving again would restart the retention clock, and a discarded
+   * cycle has nothing left to discard.
+   */
+  let selectedCycle = $derived(
+    proposalCycle === 'all' ? undefined : cycleRows.find((c) => c.id === proposalCycle)
+  );
   let cycleCursor = $state<number | null>(null);
   let cyclesLoading = $state(false);
   let decisionCounts = $state<Record<string, number>>({});
@@ -813,11 +821,13 @@
                 disabled={cyclesLoading}
                 onclick={loadOlderCycles}>Load older cycles</button
               >{/if}
-            {#if proposalCycle !== 'all' && cycleRows.find((c) => c.id === proposalCycle)?.status !== 'running'}
-              <button class="button" disabled={busy} onclick={() => cycleAction('archive')}
-                >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
-              >
-              {#if cycleRows.find((c) => c.id === proposalCycle)?.lifecycle.archived_at}<button
+            {#if selectedCycle && selectedCycle.status !== 'running'}
+              {#if !selectedCycle.lifecycle.archived_at}<button
+                  class="button"
+                  disabled={busy}
+                  onclick={() => cycleAction('archive')}
+                  >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
+                >{:else if !selectedCycle.lifecycle.discarded_at}<button
                   class="button danger"
                   disabled={busy}
                   onclick={() => cycleAction('discard')}
@@ -833,7 +843,11 @@
               <select id="proposal-cycle" bind:value={proposalCycle}>
                 <option value="all">All cycles</option>
                 {#each cycleRows as cycle}<option value={cycle.id}
-                    >{cycleLabel(cycle)} · {cycle.status}</option
+                    >{cycleLabel(cycle)} · {cycle.status}{cycle.lifecycle.discarded_at
+                      ? ' · workspaces discarded'
+                      : cycle.lifecycle.archived_at
+                        ? ' · archived'
+                        : ''}</option
                   >{/each}
               </select>
             </div>
