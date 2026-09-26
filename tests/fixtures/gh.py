@@ -7,6 +7,9 @@ import subprocess
 import sys
 import time
 root = Path(os.environ['OCTOMUS_FIXTURE'])
+# The service strips its operator token and webhook URL from every child.
+assert 'OCTOMUS_TOKEN' not in os.environ
+assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 import fcntl
 lock = (root / 'github.lock').open('a')
 fcntl.flock(lock, fcntl.LOCK_EX)

@@ -10,6 +10,8 @@ import uuid
 from worker import mode as worker_mode
 
 root = Path(os.environ['OCTOMUS_FIXTURE'])
+# The service strips its operator token and webhook URL from every child.
+assert 'OCTOMUS_TOKEN' not in os.environ
 assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 if sys.argv[1:] == ['--version']:
     print('codex-cli ' + ((root / 'version').read_text().strip() if (root / 'version').exists() else '0.153.4'))

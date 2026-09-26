@@ -140,7 +140,7 @@ def scenario(mode):
             return
         if mode in ['env-strip', 'env-strip-opencode']:
             service.start()
-            config = configuration(service) if mode == 'env-strip-opencode' else base_config(service, [f'test -z "${{{ENV}+x}}"', 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], cycle_interval_seconds=3600, task_timeout_seconds=120)
+            config = configuration(service) if mode == 'env-strip-opencode' else base_config(service, [f'test -z "${{{ENV}+x}}"', 'test -z "${OCTOMUS_TOKEN+x}"', 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], cycle_interval_seconds=3600, task_timeout_seconds=120)
             if mode == 'env-strip':
                 use_codex_routes(config)
             service.save_config(config)
@@ -148,7 +148,7 @@ def scenario(mode):
             task = service.wait(service.terminal_task, 'published task')
             assert task['status'] == 'published', task['error']
             assert SECRET not in (root / 'service.log').read_text()
-            print('PASS env-strip: published work never saw the webhook environment')
+            print(f'PASS {mode}: published work never saw the webhook URL or operator token')
             return
         raise AssertionError(f'unknown notifications scenario {mode}')
 

@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+# The service strips its operator token and webhook URL from every child.
+assert 'OCTOMUS_TOKEN' not in os.environ
+assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 args = sys.argv[1:]
 if args == ['remote', 'get-url', 'origin']:
     print('https://github.com/fixture/project.git')
