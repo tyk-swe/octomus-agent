@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -459,7 +460,7 @@ func (a *App) StateView() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	prCapacity, err := a.PrCapacity()
+	prCapacity, err := a.prCapacity(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -487,7 +488,7 @@ func (a *App) StateView() (map[string]any, error) {
 	// A committed running cycle is durable before its runtime slot is assigned.
 	// Read it from the same snapshot as the visible cycles: a later store query
 	// could see its terminal status and contradict the returned cycle summary.
-	if !cycleActive || cycleMode == nil {
+	if !cycleActive {
 		for _, raw := range snapshot.Cycles {
 			var cycle struct {
 				Mode   model.CycleMode `json:"mode"`
@@ -539,14 +540,12 @@ func (a *App) StateView() (map[string]any, error) {
 			"revision_status": a.BaselineRevisionStatus(latest, cfg),
 		}
 	}
-	storage, found, err := a.Store.GetValue("settings", "storage")
+	// A missing record reads as nil.
+	storage, _, err := a.Store.GetValue("settings", "storage")
 	if err != nil {
 		return nil, err
 	}
-	if !found {
-		storage = nil
-	}
-	for key, value := range map[string]any{
+	maps.Copy(view, map[string]any{
 		"status":            status,
 		"control":           controlJSON,
 		"repository":        cfg.GitHubRepo,
@@ -563,8 +562,6 @@ func (a *App) StateView() (map[string]any, error) {
 		"storage":           storage,
 		"planning_capacity": planningCapacity,
 		"pr_capacity":       prCapacity,
-	} {
-		view[key] = value
-	}
+	})
 	return view, nil
 }

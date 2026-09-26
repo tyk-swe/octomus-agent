@@ -84,6 +84,12 @@ func (a *App) PrCapacity() (model.PrCapacity, error) {
 	if err != nil {
 		return model.PrCapacity{}, err
 	}
+	return a.prCapacity(cfg)
+}
+
+// prCapacity is PrCapacity under cfg, the saved configuration a caller has
+// already read.
+func (a *App) prCapacity(cfg config.Config) (model.PrCapacity, error) {
 	reservations, err := a.Store.PrReservations(cfg.GitHubRepo)
 	if err != nil {
 		return model.PrCapacity{}, err
@@ -173,7 +179,7 @@ func (a *App) startPrRefresh(cfg config.Config) {
 	if inFlight {
 		return
 	}
-	capacity, err := a.PrCapacity()
+	capacity, err := a.prCapacity(cfg)
 	available := err == nil && capacity.Remaining != nil && *capacity.Remaining > 0
 	a.runtimeMu.Lock()
 	// A refresh waits out the retry delay while capacity is unavailable, and
