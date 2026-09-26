@@ -60,7 +60,8 @@ func TestCycleEvidenceRouteRequiresAuthAndSeparatesUnknownCycles(t *testing.T) {
 }
 
 // Archiving a cycle persists lifecycle.archived_at and the detail route keeps
-// serving the archived record; an unrecognized action still reports 404.
+// serving the archived record; archiving again conflicts without rewriting
+// it, and an unrecognized action still reports 404.
 func TestCycleDetailStaysReadableAfterArchivePersistsLifecycle(t *testing.T) {
 	app, state := testApp(t)
 	if err := state.Put("cycle", "cycle-a", cycleRecord("cycle-a")); err != nil {
@@ -85,6 +86,14 @@ func TestCycleDetailStaysReadableAfterArchivePersistsLifecycle(t *testing.T) {
 	lifecycle, _ := body["lifecycle"].(map[string]any)
 	if body["id"] != "cycle-a" || lifecycle["archived_at"] == nil {
 		t.Fatalf("detail body lost the archive evidence: %v", body)
+	}
+	response = call(t, router, "POST", "/api/cycles/cycle-a/archive", "{}")
+	if response.Code != http.StatusConflict || decode(t, response)["error"] != "The cycle is already archived" {
+		t.Fatalf("repeated archive: %d %s", response.Code, response.Body.String())
+	}
+	if again, err := store.Get[model.Cycle](state, "cycle", "cycle-a"); err != nil || again == nil ||
+		again.Lifecycle.ArchivedAt == nil || *again.Lifecycle.ArchivedAt != *archived.Lifecycle.ArchivedAt {
+		t.Fatalf("repeated archive rewrote lifecycle.archived_at: %+v, %v", again, err)
 	}
 	if response := call(t, router, "POST", "/api/cycles/cycle-a/bogus", "{}"); response.Code != http.StatusNotFound {
 		t.Fatalf("unknown action: %d", response.Code)
@@ -169,5 +178,9 @@ func TestCycleDiscardOverHTTPLeavesControlsResponsive(t *testing.T) {
 	}
 	if _, err := os.Stat(cycleDir); !os.IsNotExist(err) {
 		t.Fatalf("cycle directory still present: %v", err)
+	}
+	response = call(t, router, "POST", "/api/cycles/"+id+"/discard", "{}")
+	if response.Code != http.StatusConflict || decode(t, response)["error"] != "The cycle workspaces were already discarded" {
+		t.Fatalf("repeated discard: %d %s", response.Code, response.Body.String())
 	}
 }

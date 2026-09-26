@@ -266,10 +266,14 @@ func (a *App) releaseCleanup(kind cleanupKind, id string) {
 // back held: eligibility and the cleanup claim are checked under the gate,
 // the recursive deletion runs with it released so unrelated controls stay
 // responsive, and finalization re-reads the durable record so only the
-// cleanup-owned field changes.
+// cleanup-owned field changes. A record already discarded conflicts, so its
+// discarded_at is written once.
 func (a *App) DiscardTask(task *model.Task) error {
 	if task.Status.Active() || task.Status == model.StatusQueued {
 		return errors.New("Active or queued workspaces cannot be discarded")
+	}
+	if task.Lifecycle.DiscardedAt != nil {
+		return conflictError("The task workspace was already discarded")
 	}
 	owner := ""
 	if task.Workspace != "" {
@@ -316,10 +320,14 @@ func (a *App) DiscardTask(task *model.Task) error {
 
 // DiscardCycle removes a UUID-named planning directory and records disposal,
 // under the same gate contract as DiscardTask: callers hold a.gate and the
-// filesystem removal runs with it released.
+// filesystem removal runs with it released. A record already discarded
+// conflicts, so its discarded_at is written once.
 func (a *App) DiscardCycle(cycle *model.Cycle) error {
 	if cycle.Status == model.CycleRunning {
 		return errors.New("Running planning work cannot be discarded")
+	}
+	if cycle.Lifecycle.DiscardedAt != nil {
+		return conflictError("The cycle workspaces were already discarded")
 	}
 	if _, err := uuid.Parse(cycle.ID); err != nil {
 		return errors.New("Invalid cycle workspace identity")

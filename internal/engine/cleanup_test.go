@@ -377,6 +377,105 @@ func TestCycleDiscardClaimsConflictsAndShutdownWaits(t *testing.T) {
 	}
 }
 
+// Archive and discard each happen once. Repeating either, or archiving after
+// the discard, conflicts instead of rewriting the recorded lifecycle time or
+// adding another operator event, and a repeated discard never reaches
+// workspace removal. DiscardTask and DiscardCycle hold the same rule for every
+// caller, not only the operator controls.
+func TestLifecycleArchiveAndDiscardHappenOnce(t *testing.T) {
+	state := testStore(t)
+	dataDir := t.TempDir()
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	cycle := discardableCycle(t, dataDir)
+	cycle.Lifecycle.ArchivedAt = nil
+	if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	task := discardableTask(t, cfg, dataDir, "discarded-task")
+	task.Lifecycle.DiscardedAt = stringPointer(cleanupOldTimestamp)
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	var removals atomic.Int32
+	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
+		removals.Add(1)
+		return workspace.RemoveOwnedDir(root, path)
+	}))
+	t.Cleanup(app.Shutdown)
+	loadCycle := func() model.Cycle {
+		t.Helper()
+		saved, err := store.Get[model.Cycle](state, "cycle", cycle.ID)
+		if err != nil || saved == nil {
+			t.Fatalf("reload cycle: %+v, %v", saved, err)
+		}
+		return *saved
+	}
+
+	if err := app.CycleAction(cycle.ID, "archive"); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	archivedAt := loadCycle().Lifecycle.ArchivedAt
+	if archivedAt == nil {
+		t.Fatal("archive did not record archived_at")
+	}
+	if err := app.CycleAction(cycle.ID, "archive"); err == nil || !IsActionConflict(err) || err.Error() != "The cycle is already archived" {
+		t.Fatalf("repeated archive = %v; want the already-archived conflict", err)
+	}
+	if err := app.CycleAction(cycle.ID, "discard"); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	discarded := loadCycle()
+	if discarded.Lifecycle.DiscardedAt == nil || removals.Load() != 1 {
+		t.Fatalf("discard: %+v after %d removals", discarded.Lifecycle, removals.Load())
+	}
+	for action, want := range map[string]string{
+		"discard": "The cycle workspaces were already discarded",
+		"archive": "The cycle is already archived",
+	} {
+		if err := app.CycleAction(cycle.ID, action); err == nil || !IsActionConflict(err) || err.Error() != want {
+			t.Fatalf("%s after discard = %v; want %q", action, err, want)
+		}
+	}
+	app.gate.Lock()
+	cycleErr := app.DiscardCycle(&discarded)
+	taskErr := app.DiscardTask(&task)
+	app.gate.Unlock()
+	if cycleErr == nil || !IsActionConflict(cycleErr) {
+		t.Fatalf("DiscardCycle on a discarded cycle = %v; want a conflict", cycleErr)
+	}
+	if taskErr == nil || !IsActionConflict(taskErr) {
+		t.Fatalf("DiscardTask on a discarded task = %v; want a conflict", taskErr)
+	}
+	if removals.Load() != 1 {
+		t.Fatalf("a repeated discard reached workspace removal: %d removals", removals.Load())
+	}
+	saved := loadCycle()
+	if *saved.Lifecycle.ArchivedAt != *archivedAt || *saved.Lifecycle.DiscardedAt != *discarded.Lifecycle.DiscardedAt {
+		t.Fatalf("repeated actions rewrote the lifecycle: %+v; want archived %s, discarded %s",
+			saved.Lifecycle, *archivedAt, *discarded.Lifecycle.DiscardedAt)
+	}
+	if savedTask := loadTask(t, state, task.ID); savedTask.Lifecycle.DiscardedAt == nil || *savedTask.Lifecycle.DiscardedAt != cleanupOldTimestamp {
+		t.Fatalf("repeated task discard rewrote discarded_at: %+v", savedTask.Lifecycle)
+	}
+	if _, err := os.Stat(task.Workspace); err != nil {
+		t.Fatalf("repeated task discard touched the workspace: %v", err)
+	}
+	events, err := state.Events(&cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator := map[string]int{}
+	for _, event := range events {
+		if event.Kind == "operator" {
+			operator[event.Message]++
+		}
+	}
+	if len(operator) != 2 || operator["archive"] != 1 || operator["discard"] != 1 {
+		t.Fatalf("operator events = %v; want one archive and one discard", operator)
+	}
+}
+
 // Baseline cleanup claims the check, dedupes a second cleanup instead of
 // waiting, keeps the terminal-check cancel refusal honest, and applies only
 // the cleanup fields to the current durable record so a write that lands

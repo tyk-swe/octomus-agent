@@ -165,8 +165,10 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 
 // CycleAction applies an operator action to a finished cycle: archive stamps
 // its lifecycle, and discard, allowed only once it is archived, removes its
-// planning workspaces. Any other action name is ErrUnknownCycleAction before
-// any state is read. A running cycle or an in-flight cleanup conflicts.
+// planning workspaces. Each happens once: repeating either conflicts rather
+// than rewriting the recorded lifecycle time. Any other action name is
+// ErrUnknownCycleAction before any state is read. A running cycle or an
+// in-flight cleanup conflicts.
 // Discard removes the managed directory with the gate released; the call is
 // registered service work from admission so Shutdown waits out an in-flight
 // removal instead of abandoning it mid-delete.
@@ -197,6 +199,9 @@ func (a *App) CycleAction(id, action string) error {
 	}
 	switch action {
 	case "archive":
+		if cycle.Lifecycle.ArchivedAt != nil {
+			return conflictError("The cycle is already archived")
+		}
 		now := model.Now()
 		cycle.Lifecycle.ArchivedAt = &now
 		if err := a.Store.Put("cycle", id, *cycle); err != nil {
