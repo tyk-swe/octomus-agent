@@ -320,6 +320,7 @@
   }
   async function cycleAction(value: string) {
     if (busy) return;
+    const currentSession = sessionGeneration;
     busy = true;
     pendingAction = value;
     error = '';
@@ -328,7 +329,8 @@
       await loadCycles();
       await refresh();
     } catch (e) {
-      error = (e as Error).message;
+      // A 401 has already ended the session and explained why on the login screen.
+      if (currentSession === sessionGeneration) error = (e as Error).message;
     } finally {
       busy = false;
       pendingAction = '';
@@ -441,6 +443,7 @@
   }
   async function control(action: ControlAction) {
     if (busy || !canControl[action]) return;
+    const currentSession = sessionGeneration;
     busy = true;
     pendingAction = action;
     error = '';
@@ -453,7 +456,8 @@
         await navigate('proposals');
       }
     } catch (e) {
-      error = (e as Error).message;
+      // A 401 has already ended the session and explained why on the login screen.
+      if (currentSession === sessionGeneration) error = (e as Error).message;
     } finally {
       busy = false;
       pendingAction = '';

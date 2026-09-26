@@ -1012,6 +1012,49 @@ for (const source of ['run', 'task', 'state'] as const) {
   });
 }
 
+for (const action of [
+  { button: 'Run once', endpoint: 'control/cycle' },
+  { button: 'Archive cycle', endpoint: 'cycles/cycle-1/archive' }
+]) {
+  test(`a 401 from ${action.button} keeps the session-expired explanation`, async ({
+    page
+  }, testInfo) => {
+    // A configured, paused, idle service makes Run once available; nothing reaches the service.
+    await page.route('**/api/state', async (route) => {
+      const snapshot = await (await route.fetch()).json();
+      snapshot.configured = true;
+      snapshot.control.paused = true;
+      snapshot.control.mode = 'paused';
+      snapshot.active_tasks = 0;
+      snapshot.cycle_active = false;
+      snapshot.active_cycle_mode = null;
+      snapshot.baseline_active = false;
+      await route.fulfill({ json: snapshot });
+    });
+    const rejected: string[] = [];
+    await page.route(`**/api/${action.endpoint}`, async (route) => {
+      rejected.push(route.request().method());
+      await route.fulfill({ status: 401, json: { error: 'Synthetic expired session' } });
+    });
+    await login(page);
+    if (action.button === 'Archive cycle') {
+      if (testInfo.project.name === 'mobile')
+        await page.getByRole('button', { name: 'Toggle navigation' }).click();
+      await page
+        .getByRole('navigation')
+        .getByRole('button', { name: 'Proposals', exact: true })
+        .click();
+      await page.getByLabel('Cycle', { exact: true }).selectOption('cycle-1');
+    }
+    await page.getByRole('button', { name: action.button, exact: true }).click();
+    await expect(page.getByLabel('Operator access token')).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveText(
+      'Session expired. Connect again to inspect private records.'
+    );
+    expect(rejected).toEqual(['POST']);
+  });
+}
+
 test('closing a panel returns keyboard focus to the control that opened it, including after hand-off', async ({
   page
 }) => {
