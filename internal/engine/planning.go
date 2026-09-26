@@ -592,7 +592,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 	roleRoot := filepath.Join(a.DataDir, "cycles", cycleID, label)
 	roleWorkspace := filepath.Join(roleRoot, "workspace")
 	// Each planning role owns its client scope; the invocation closes it.
-	_, outcome.answer, outcome.err = a.invoke(ctx, a.runners(ctx, cfg, cycleID), invocation{
+	outcome.answer, outcome.err = a.invoke(ctx, a.runners(ctx, cfg, cycleID), invocation{
 		cycleID: cycleID, role: label, route: route, workspace: roleWorkspace,
 		prompt: prompt, schema: schema, ownsClients: true,
 		prepare: func() error {

@@ -452,7 +452,7 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 			return nil
 		}
 	}
-	_, _, err := a.invoke(ctx, client, invocation{
+	_, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
 		resume: task.ExecutionSession, keep: func(session string) { task.ExecutionSession = &session },
 		prompt: executorPrompt(task, cfg), reserved: admissionReserved,
@@ -502,7 +502,7 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 		task.Reviews = append(task.Reviews, model.ReviewRound{SessionID: thread, Revision: revision, ComparisonBase: task.ComparisonBase, Result: review, CreatedAt: model.Now()})
 		return review.Summary, nil
 	}
-	if _, _, err := a.invoke(ctx, client, invocation{
+	if _, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "reviewer", route: route, workspace: ws,
 		prompt: reviewPrompt(task, revision), schema: schemas.ReviewSchema(), judge: judge,
 	}); err != nil {
@@ -584,7 +584,7 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	}
 	// The repair thread persists across rounds: the first repair starts it and
 	// every later round resumes it.
-	_, _, err = a.invoke(ctx, client, invocation{
+	_, err = a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "repair", route: cfg.RepairRoute, workspace: task.Workspace,
 		resume: task.RepairSession, keep: func(session string) { task.RepairSession = &session },
 		prompt: prompt,
