@@ -270,6 +270,51 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	}
 }
 
+// TestRunOnceStaleControlIsAConflict: the store refuses to start a batch from
+// a control record that changed after the caller read it. While planning is
+// still affordable, that refusal must reach the operator as a conflict rather
+// than as a run once that reports success without starting, and it must not
+// tag queued work or rewrite the live control.
+func TestRunOnceStaleControlIsAConflict(t *testing.T) {
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	task := queuedTask(cfg, "member", cfg.DefaultBranch, "octomus/member")
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	saveSettings(t, state, cfg, model.DefaultControl())
+	a := New(state, t.TempDir())
+	t.Cleanup(a.Shutdown)
+	if capacity, err := state.PlanningCapacity(); err != nil || !capacity.Available() {
+		t.Fatalf("the scenario needs an affordable planning pass: %+v, %v", capacity, err)
+	}
+	stale, err := a.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A write that did not pass through the gate changes the live record
+	// after the request read it.
+	live := stale.Clone()
+	message := "Recorded while run once was deciding"
+	live.Error = &message
+	if err := state.SaveControl(live); err != nil {
+		t.Fatal(err)
+	}
+	err = a.startRunOnceBatch(&stale)
+	if err == nil || !IsActionConflict(err) || model.BlockedReasonFromError(err) != model.BlockedReasonUnknown {
+		t.Fatalf("stale control start = %v; want a plain conflict", err)
+	}
+	if stale.Batch != nil || stale.Mode != model.OperatingModePaused {
+		t.Fatalf("refused start rewrote the caller's control: %+v", stale)
+	}
+	if stored, err := a.Control(); err != nil || !controlsEqual(stored, live) {
+		t.Fatalf("refused start changed the live control: %+v, %v", stored, err)
+	}
+	if unchanged, err := store.Get[model.Task](state, "task", task.ID); err != nil || unchanged.RunID != nil {
+		t.Fatalf("refused start tagged queued work: %+v, %v", unchanged, err)
+	}
+}
+
 func TestUnaffordableAuditHasNoSideEffects(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
