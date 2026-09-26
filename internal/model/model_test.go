@@ -306,7 +306,8 @@ func TestTaskAllowedActions(t *testing.T) {
 			}
 			want := append([]string{"cancel", "archive"}, tail...)
 			if got := (Task{Status: status, BlockedReason: &r}).AllowedActions(); !reflect.DeepEqual(got, want) {
-				t.Errorf("%s %s: AllowedActions() = %#v; want %#v", status, r, got, want)
+				// BlockedReason is an error, so %s alone would print its guidance.
+				t.Errorf("%s %s: AllowedActions() = %#v; want %#v", status, r.String(), got, want)
 			}
 		}
 	}
