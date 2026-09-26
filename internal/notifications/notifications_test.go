@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -128,6 +130,31 @@ func waitUntil(t *testing.T, seconds float64, condition func() bool, what string
 	if !testutil.WaitUntil(time.Duration(seconds*float64(time.Second)), condition) {
 		t.Fatalf("timed out waiting for %s", what)
 	}
+}
+
+// refusingAddress returns a loopback address that refuses connections for the
+// rest of the test. A socket that never listens holds its port, so no other
+// process can bind it, and a connection attempt is refused at once.
+func refusingAddress(t *testing.T) string {
+	t.Helper()
+	syscall.ForkLock.RLock()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err == nil {
+		syscall.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("127.0.0.1:%d", bound.(*syscall.SockaddrInet4).Port)
 }
 
 func TestWebhookURLPolicyAcceptsHTTPSAndLoopbackHTTPOnly(t *testing.T) {
@@ -409,9 +436,7 @@ func TestWorkerFailsOversizedEventsTerminally(t *testing.T) {
 // stays pending for a later attempt with no HTTP status recorded.
 func TestWorkerRetriesTransportFailures(t *testing.T) {
 	state, path := testStore(t)
-	refused := httptest.NewServer(http.NotFoundHandler())
-	destination := refused.URL + "/hook"
-	refused.Close()
+	destination := "http://" + refusingAddress(t) + "/hook"
 	worker, err := Start(context.Background(), state, destination)
 	if err != nil {
 		t.Fatal(err)
