@@ -12,9 +12,12 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
+// ErrNotPaused and ErrBusy refuse an audit or run once that needs paused,
+// idle operation. They are conflicts (HTTP 409), like the same refusal
+// ControlAction reports before it releases the gate.
 var (
-	ErrNotPaused = errors.New("Octomus must be paused for this operation")
-	ErrBusy      = errors.New("Octomus has active work")
+	ErrNotPaused = conflictError("Octomus must be paused for this operation")
+	ErrBusy      = conflictError("Octomus has active work")
 )
 
 type planningCapacityError struct {
@@ -235,6 +238,10 @@ func (a *App) endPreflight() {
 	a.notify()
 }
 
+// beginCycle admits the planning pass a preflight validated; callers hold the
+// gate. Work that started, or an operator change made, while the preflight ran
+// with the gate released is a conflict: the state ControlAction refuses before
+// a preflight starts.
 func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.CycleMode) (string, error) {
 	if err := a.ctx.Err(); err != nil {
 		return "", err
@@ -243,14 +250,14 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 	runtimeBusy := a.runtime.cycle != nil || len(a.runtime.tasks) > 0
 	a.runtimeMu.Unlock()
 	if runtimeBusy {
-		return "", errors.New("Work started during planning preflight")
+		return "", conflictError("Work started during planning preflight")
 	}
 	live, err := a.Control()
 	if err != nil {
 		return "", err
 	}
 	if !sameOperatorControl(live, expected) {
-		return "", errors.New("Control state changed during planning preflight")
+		return "", conflictError("Control state changed during planning preflight")
 	}
 	if mode == model.CycleModeExecution {
 		if live.Mode == model.OperatingModeRunOnce {
@@ -308,7 +315,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		if !capacity.Available() {
 			return "", &planningCapacityError{capacity: capacity}
 		}
-		return "", errors.New("Configuration or control state changed during planning preflight")
+		return "", conflictError("Configuration or control state changed during planning preflight")
 	}
 	cycleCtx, cancel := context.WithCancel(a.ctx)
 	a.runtimeMu.Lock()

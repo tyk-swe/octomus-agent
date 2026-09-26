@@ -422,6 +422,16 @@ func TestUnknownActionsOnLiveRecordsAreNotFound(t *testing.T) {
 	}
 }
 
+// The paused-and-idle refusals StartAudit reports after ControlAction has
+// released the gate answer the same 409 as the gate-held check, never 400.
+func TestControlRaceRefusalsAreConflicts(t *testing.T) {
+	for _, err := range []error{engine.ErrBusy, engine.ErrNotPaused} {
+		if status := apiStatus(err); status != http.StatusConflict {
+			t.Fatalf("%q: status %d; want 409", err, status)
+		}
+	}
+}
+
 func TestBaselineAPIAuthenticationRoutesAndMissingRecords(t *testing.T) {
 	app, _, _ := baselineFixture(t)
 	router := Router(app, token, "", "test")

@@ -1451,7 +1451,7 @@ func TestPlanningPreflightSurvivesObservationButNotOperatorChanges(t *testing.T)
 				t.Fatal(listErr)
 			}
 			if !test.starts {
-				if err == nil || err.Error() != "Control state changed during planning preflight" || len(cycles) != 0 {
+				if err == nil || err.Error() != "Control state changed during planning preflight" || !IsActionConflict(err) || len(cycles) != 0 {
 					t.Fatalf("preflight after an operator change = %v with %d cycles; want it refused", err, len(cycles))
 				}
 				if turns := fixture.planningTurns(); len(turns) != 0 {

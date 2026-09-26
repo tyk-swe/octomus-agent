@@ -153,6 +153,42 @@ func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(
 	}
 }
 
+// ControlAction checks paused, idle operation under the gate, then releases
+// it before StartAudit admits the audit. A launch or mode change landing in
+// that window is refused there as ErrBusy or ErrNotPaused, and those refusals
+// are the same conflict the gate-held check reports, not a bad request.
+// RunOnce refuses the same states with the same conflicts.
+func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
+	for _, test := range []struct {
+		scenario string
+		want     error
+	}{
+		{"audit preflight", ErrBusy},
+		{"task", ErrBusy},
+		{"continuous", ErrNotPaused},
+	} {
+		t.Run(test.scenario, func(t *testing.T) {
+			app, control := controlFixture(t, test.scenario)
+			if test.scenario == "audit preflight" {
+				app.runtimeMu.Lock()
+				app.runtime.preflight = true
+				app.runtime.preflightMode = model.CycleModeAudit
+				app.runtimeMu.Unlock()
+			}
+			_, auditErr := app.StartAudit(context.Background())
+			runErr := app.RunOnce()
+			for name, err := range map[string]error{"StartAudit": auditErr, "RunOnce": runErr} {
+				if !errors.Is(err, test.want) || !IsActionConflict(err) {
+					t.Fatalf("%s = %v; want the %q conflict", name, err, test.want)
+				}
+			}
+			if saved, err := app.Control(); err != nil || saved.Mode != control.Mode || saved.Batch != nil {
+				t.Fatalf("refused launch changed control: %+v, %v", saved, err)
+			}
+		})
+	}
+}
+
 // TestAuditControlRecordsOneOperatorEvent: one operator click that starts an
 // audit is recorded once, on the cycle it started, and the response is the
 // still-paused control record.
