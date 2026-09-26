@@ -16,12 +16,14 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -86,21 +88,19 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	if workCtx.Err() != nil && !timedOut && task.OutputCommit == nil && (operatorCancelled || a.ctx.Err() == nil) {
 		status = model.StatusCancelled
 	}
-	switch {
-	case status == model.StatusCancelled:
+	if status == model.StatusCancelled {
 		// Only an operator cancel stops a worker outside shutdown and its
 		// deadline. Whatever the interrupted step returned, or a deadline that
 		// fired after the cancel, is not why the task ended; that cause stays
 		// in the error event below.
 		task.BlockedReason = nil
 		task.Error = stringPointer("Cancelled by the operator")
-	case result.Expired:
-		task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
-		task.Error = stringPointer(store.Redact(message))
-	default:
-		reason := model.BlockedReasonFromError(executeErr)
-		task.BlockedReason = &reason
-		task.Error = stringPointer(store.Redact(message))
+	} else {
+		recordTaskError(&task, taskErr)
+		if result.Expired {
+			// The time-limit error carries no blocked reason of its own.
+			task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
+		}
 	}
 	model.FailRunning(task.Sessions, *task.Error)
 	if err := a.transition(&task, status); err != nil {
@@ -327,7 +327,7 @@ func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 // inspection, never reused.
 func (a *App) validateRecordedWorkspace(ctx context.Context, task *model.Task) error {
 	ws := a.taskWorkspace(task.ID)
-	if !samePath(task.Workspace, ws) || task.ComparisonBase == "" {
+	if !config.SamePath(task.Workspace, ws) || task.ComparisonBase == "" {
 		return model.BlockedReasonWorkspaceInvalid
 	}
 	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
@@ -450,7 +450,7 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 			return nil
 		}
 	}
-	_, _, err := a.invoke(ctx, client, invocation{
+	_, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
 		resume: task.ExecutionSession, keep: func(session string) { task.ExecutionSession = &session },
 		prompt: executorPrompt(task, cfg), reserved: admissionReserved,
@@ -500,7 +500,7 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 		task.Reviews = append(task.Reviews, model.ReviewRound{SessionID: thread, Revision: revision, ComparisonBase: task.ComparisonBase, Result: review, CreatedAt: model.Now()})
 		return review.Summary, nil
 	}
-	if _, _, err := a.invoke(ctx, client, invocation{
+	if _, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "reviewer", route: route, workspace: ws,
 		prompt: reviewPrompt(task, revision), schema: schemas.ReviewSchema(), judge: judge,
 	}); err != nil {
@@ -537,29 +537,31 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 	for _, command := range cfg.VerificationCommands {
 		outcome := runCheckCommand(ctx, cfg, ws, command, revision)
 		if ctx.Err() != nil {
-			return nil, errors.New("Operation cancelled")
+			return nil, process.ErrCancelled
 		}
 		failed := outcome.failed()
-		output := outcome.outputText()
-		intact, intactErr := outcome.intactResult()
+		// The state-check note follows the command's evidence, which is
+		// bounded to leave room for it, so no bound ever cuts the note.
+		note := ""
 		switch {
-		case intactErr != nil:
+		case outcome.intactErr != nil:
 			// The state check itself failed, for example because the command
 			// removed the repository: still evidence against this command.
-			output += "\n" + intactErr.Error()
-		case !intact:
-			output += "\nWorkspace or HEAD changed during this verification command"
+			note = "\n" + boundedTail(redact.Secrets(outcome.intactErr.Error()), verificationNoteLimit, false)
+		case !outcome.intact:
+			note = "\nWorkspace or HEAD changed during this verification command"
 		}
+		output := outcome.evidenceText(verificationOutputLimit-len(note)) + note
 		task.Verification = append(task.Verification, model.Verification{
-			Command: command, Success: intactErr == nil && intact && !failed, Output: store.Redact(output), Revision: revision, CreatedAt: model.Now(),
+			Command: command, Success: outcome.intactErr == nil && outcome.intact && !failed, Output: output, Revision: revision, CreatedAt: model.Now(),
 		})
 		if err := a.saveTask(task); err != nil {
 			return nil, err
 		}
-		if intactErr != nil {
-			return nil, fmt.Errorf("Workspace state check failed during verification: %w", intactErr)
+		if outcome.intactErr != nil {
+			return nil, fmt.Errorf("Workspace state check failed during verification: %w", outcome.intactErr)
 		}
-		if !intact {
+		if !outcome.intact {
 			return nil, model.BlockedReasonWorkspaceInvalid
 		}
 		if failed {
@@ -580,7 +582,7 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	}
 	// The repair thread persists across rounds: the first repair starts it and
 	// every later round resumes it.
-	_, _, err = a.invoke(ctx, client, invocation{
+	_, err = a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "repair", route: cfg.RepairRoute, workspace: task.Workspace,
 		resume: task.RepairSession, keep: func(session string) { task.RepairSession = &session },
 		prompt: prompt,
@@ -657,37 +659,86 @@ type checkOutcome struct {
 	intactErr error
 }
 
-// failed reports the command-failure condition process.Run reports as an
-// error: a capture failure or a nonzero exit.
+// failed reports a command failure: a capture failure or a nonzero exit.
 func (o checkOutcome) failed() bool {
 	return o.capture != nil || !o.captured.Status.Success()
 }
 
-// outputText returns the text process.Run would have returned for this
-// capture: bounded diagnostic output on success, the error chain on failure.
-func (o checkOutcome) outputText() string {
+const (
+	// verificationOutputLimit bounds one command's verification evidence, in
+	// bytes, so a saved record always fits the 16,384-character display bound
+	// and any shortening is marked in the text itself.
+	verificationOutputLimit = 16 * 1024
+	// verificationNoteLimit bounds a failed state check's text appended to
+	// that evidence.
+	verificationNoteLimit = 4096
+	// outputTruncatedMarker marks command evidence that a bound or the
+	// capture shortened.
+	outputTruncatedMarker = "[output truncated]"
+)
+
+// evidenceText renders the command for its verification record and the repair
+// prompt in at most limit bytes: stdout, then a [stderr] section, then the
+// exit status on failure. Secrets are scrubbed from each whole stream before
+// anything is cut. Each stream keeps its end, where test runners and compilers
+// report failures. stderr may use half the bound however long stdout is, since
+// it usually states the cause, and any room stdout leaves; stdout may use
+// whatever stderr leaves.
+func (o checkOutcome) evidenceText(limit int) string {
 	if o.capture != nil {
-		return o.capture.Error()
+		return boundedTail(redact.Secrets(o.capture.Error()), limit, false)
 	}
-	text, err := process.DiagnosticText("bash", o.captured)
-	if err != nil {
-		return err.Error()
+	clean := func(stream process.Captured) string {
+		return redact.Secrets(strings.TrimSpace(strings.ToValidUTF8(string(stream.Bytes), "\uFFFD")))
 	}
-	return text
+	status := ""
+	if !o.captured.Status.Success() {
+		status = "\n" + o.captured.Status.String()
+	}
+	stdout := clean(o.captured.Stdout)
+	// stdoutWhole is what stdout needs uncut, with its capture marker.
+	stdoutWhole := len(stdout)
+	if o.captured.Stdout.Truncated {
+		stdoutWhole += len("\n" + outputTruncatedMarker)
+	}
+	stderr := ""
+	if text := clean(o.captured.Stderr); text != "" || o.captured.Stderr.Truncated {
+		const separator = "\n[stderr]\n"
+		budget := max(limit/2, limit-len(separator)-stdoutWhole-len(status))
+		stderr = separator + boundedTail(text, budget, o.captured.Stderr.Truncated)
+	}
+	return boundedTail(stdout, limit-len(stderr)-len(status), o.captured.Stdout.Truncated) + stderr + status
 }
 
-func (o checkOutcome) intactResult() (bool, error) { return o.intact, o.intactErr }
+// boundedTail keeps the end of text within limit bytes, cut on a rune
+// boundary behind an outputTruncatedMarker line when its beginning is
+// dropped. captureTruncated reports that the capture itself stopped early,
+// which a trailing marker line states. limit must leave room for both markers.
+func boundedTail(text string, limit int, captureTruncated bool) string {
+	suffix := ""
+	if captureTruncated {
+		suffix = "\n" + outputTruncatedMarker
+	}
+	if len(text)+len(suffix) <= limit {
+		return text + suffix
+	}
+	const prefix = outputTruncatedMarker + "\n"
+	start := len(text) - max(limit-len(prefix)-len(suffix), 0)
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return prefix + text[start:] + suffix
+}
 
 // runCheckCommand runs one `bash -o pipefail -c` verification command in ws,
 // then checks the workspace still sits at revision. The integrity read is
 // skipped once ctx fires: it needs a live process and could only report the
-// cancellation rather than the workspace state.
+// cancellation rather than the workspace state, so the outcome's integrity
+// fields are meaningful only while ctx is live, and callers check ctx first.
 func runCheckCommand(ctx context.Context, cfg config.Config, ws, command, revision string) checkOutcome {
 	captured, captureErr := process.ShellCheck(ctx, command, ws, cfg.CommandTimeoutSeconds)
 	outcome := checkOutcome{captured: captured, capture: captureErr}
-	if ctx.Err() != nil {
-		outcome.intact = false
-	} else {
+	if ctx.Err() == nil {
 		outcome.intact, outcome.intactErr = gitops.At(ctx, cfg, ws, revision)
 	}
 	return outcome
@@ -700,30 +751,6 @@ func sourcePtrEqual(a, b *string) bool {
 		return a == b
 	}
 	return *a == *b
-}
-
-// samePath compares workspace paths by component: separators and interior "."
-// are normalized; ".." stays literal.
-func samePath(a, b string) bool {
-	if a == b {
-		return true
-	}
-	return strings.Join(pathIdentityComponents(a), "/") == strings.Join(pathIdentityComponents(b), "/")
-}
-
-func pathIdentityComponents(path string) []string {
-	parts := []string{}
-	for i, part := range strings.Split(filepath.ToSlash(path), "/") {
-		if i == 0 && part == "" {
-			parts = append(parts, "/")
-			continue
-		}
-		if part == "" || part == "." {
-			continue
-		}
-		parts = append(parts, part)
-	}
-	return parts
 }
 
 // debugOption, debugList and debugString render prompt values in Rust's Debug

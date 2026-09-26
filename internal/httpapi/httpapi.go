@@ -225,12 +225,11 @@ func (a *api) authenticate(w http.ResponseWriter, r *http.Request) bool {
 
 // apiStatus classifies a handler error: storage (sqlite) and codec (wirejson)
 // failures are internal (500), the not-found and unknown-action sentinels are
-// 404, baseline and action conflicts are 409, and anything else is a bad
-// request (400).
+// 404, engine conflicts (baseline conflicts included) are 409, and anything
+// else is a bad request (400).
 func apiStatus(err error) int {
 	var jc *wirejson.Error
 	var sq *sqlite.Error
-	var bc *engine.BaselineConflict
 	switch {
 	case errors.As(err, &sq) || errors.As(err, &jc):
 		return http.StatusInternalServerError
@@ -242,7 +241,7 @@ func apiStatus(err error) int {
 		errors.Is(err, engine.ErrBaselineNotFound),
 		errors.Is(err, engine.ErrProposalNotFound):
 		return http.StatusNotFound
-	case errors.As(err, &bc) || engine.IsActionConflict(err):
+	case engine.IsActionConflict(err):
 		return http.StatusConflict
 	default:
 		return http.StatusBadRequest

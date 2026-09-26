@@ -416,7 +416,7 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 		return "", fmt.Errorf("OpenCode substituted the requested session")
 	}
 	directory, ok := strAt(doc, "directory")
-	if !ok || !samePath(directory, cwd) {
+	if !ok || !config.SamePath(directory, cwd) {
 		return "", fmt.Errorf("OpenCode session belongs to a different workspace")
 	}
 	sessionModel, _ := asObject(doc["model"])

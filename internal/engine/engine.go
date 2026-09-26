@@ -35,8 +35,15 @@ func (f TaskRunnerFunc) RunTask(ctx context.Context, task model.Task) error { re
 type Option func(*App)
 
 // WithTaskRunner replaces the supervised execution lifecycle that owns each
-// admitted task; tests use it to observe or script dispatch.
-func WithTaskRunner(runner TaskRunner) Option { return func(a *App) { a.taskRunner = runner } }
+// admitted task; tests use it to observe or script dispatch. Nil keeps the
+// production runner.
+func WithTaskRunner(runner TaskRunner) Option {
+	return func(a *App) {
+		if runner != nil {
+			a.taskRunner = runner
+		}
+	}
+}
 
 // WithRunnerConnector makes every runner client the engine builds (task
 // execution, planning roles, doctor/preflight, the settings preflight and
@@ -77,11 +84,11 @@ type taskJob struct {
 type runtimeState struct {
 	// cycle is the running planning cycle (execution or audit) and its cancel.
 	cycle *cycleJob
-	// preflight marks a planning launch whose remote and route checks are in
-	// flight before a cycle exists; preflightMode says which kind of cycle it
-	// will start. beginCycle clears it when it assigns cycle.
-	preflight     bool
-	preflightMode model.CycleMode
+	// preflight is the kind of cycle a planning launch will start while its
+	// remote and route checks are in flight, before the cycle exists, and nil
+	// when no launch is. startPreflight sets it; endPreflight, and beginCycle
+	// when it assigns cycle, clear it.
+	preflight *model.CycleMode
 	// tasks holds every in-flight owner of a task's work, keyed by task ID:
 	// scheduler workers (runTask) and the publication reconcile owner
 	// (reconcileLocked). An entry reserves its branch for dispatch, and its
@@ -92,10 +99,13 @@ type runtimeState struct {
 	checkedCycles map[string]struct{}
 	// prRefresh is the running PR capacity refresh; prObservation,
 	// prRefreshError and lastPrAttempt are its latest result and retry pacing.
-	prRefresh      *prRefreshJob
-	prObservation  *freshPrObservation
-	prRefreshError string
-	lastPrAttempt  time.Time
+	// prAdmissionRefused records that the latest new-PR admission was refused,
+	// which paces the next refresh as full capacity does.
+	prRefresh          *prRefreshJob
+	prObservation      *freshPrObservation
+	prRefreshError     string
+	lastPrAttempt      time.Time
+	prAdmissionRefused bool
 	// housekeeping marks a running retention or observation pass;
 	// lastRetention and lastObserve pace them.
 	housekeeping  bool
@@ -114,11 +124,30 @@ type runtimeState struct {
 	// removal, and released on every exit; nothing persists them, so a restart
 	// never inherits a lockout.
 	cleanups map[cleanupKey]struct{}
+	// cleanupReports holds the last cleanup failure retention reported for
+	// each target, so an unchanged failure is an event once a day rather
+	// than every pass. Like the claims it is never persisted.
+	cleanupReports map[cleanupKey]cleanupReport
 }
 
+// The runtimeState predicates and setters below require App.runtimeMu.
+
+// idle reports that no planning, task or baseline work is in flight.
 func (r *runtimeState) idle() bool {
-	return r.cycle == nil && !r.preflight && len(r.tasks) == 0 && r.baseline == nil
+	return !r.planning() && len(r.tasks) == 0 && r.baseline == nil
 }
+
+// planning reports a running cycle or a planning preflight in flight.
+func (r *runtimeState) planning() bool { return r.cycle != nil || r.preflight != nil }
+
+// auditActive reports a running audit or an audit preflight in flight.
+func (r *runtimeState) auditActive() bool {
+	return r.cycle != nil && r.cycle.mode == model.CycleModeAudit ||
+		r.preflight != nil && *r.preflight == model.CycleModeAudit
+}
+
+// startPreflight marks a planning launch of mode as in flight.
+func (r *runtimeState) startPreflight(mode model.CycleMode) { r.preflight = &mode }
 
 // App is the engine: the scheduler, planning and task execution, and the
 // operator controls, over one durable store and managed data directory.
@@ -135,10 +164,12 @@ func (r *runtimeState) idle() bool {
 //     under the gate after checking that ctx is live, because Shutdown cancels
 //     ctx under the gate before it waits; work registered that way is always
 //     either refused or waited for, never started after the wait.
-//   - retryTask, reconcileLocked, DiscardTask and DiscardCycle release the
-//     gate for remote or filesystem work and re-acquire it (reconcileLocked
-//     returns with it released). Their callers revalidate durable state
-//     afterwards instead of trusting what they read before.
+//   - retryTask, reconcileLocked, discardTask and discardCycle take the gate
+//     held and return it held, releasing it only inside withoutGate for
+//     remote or filesystem work. They and their callers revalidate durable
+//     state afterwards instead of trusting what they read before.
+//   - Operator entry points release the gate with defer, so a panic that
+//     net/http recovers from a handler never leaves the gate locked.
 type App struct {
 	Store   *store.Store
 	DataDir string
@@ -157,6 +188,16 @@ type App struct {
 	removeDir func(root, path string) error
 	// wg counts service-owned work; Add only under gate while ctx is live.
 	wg sync.WaitGroup
+}
+
+// withoutGate runs fn with the gate released and takes it back before
+// returning, even when fn panics, so a caller's deferred Unlock stays
+// balanced. Callers hold the gate. Anything may change while fn runs: callers
+// revalidate durable state afterwards.
+func (a *App) withoutGate(fn func()) {
+	a.gate.Unlock()
+	defer a.gate.Lock()
+	fn()
 }
 
 // runners owns the runner clients of one invocation scope (a task, a planning
@@ -192,7 +233,7 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 		ctx:     ctx,
 		cancel:  cancel,
 		wake:    make(chan struct{}, 1),
-		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}},
+		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}},
 	}
 	// The production runner is the supervised execution lifecycle; tests
 	// substitute it with WithTaskRunner.
@@ -296,22 +337,22 @@ func (a *App) Drained() bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	r := &a.runtime
-	return len(r.tasks) == 0 && r.cycle == nil && !r.preflight && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
+	return len(r.tasks) == 0 && !r.planning() && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
 }
 
+// fail pauses the service after a failed scheduling pass through the
+// scheduler's pause, recording the error on the control, and then records it
+// as an event. The event is written even when the control cannot be loaded or
+// saved.
 func (a *App) fail(err error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	message := store.ErrorMessage(err)
-	_ = a.Store.Event("system", "error", message)
-	control, loadErr := a.Control()
-	if loadErr != nil {
-		return
+	if control, loadErr := a.Control(); loadErr == nil {
+		redacted := store.Redact(message)
+		_ = a.pauseLocked(&control, &redacted)
 	}
-	redacted := store.Redact(message)
-	control.Error = &redacted
-	control.SetMode(model.OperatingModePaused)
-	_ = a.Store.SaveControl(control)
+	_ = a.Store.Event("system", "error", message)
 }
 
 // Recover turns interrupted in-memory work into explicit durable state and
@@ -392,7 +433,7 @@ func (a *App) Recover() error {
 		model.InterruptRunning(cycle.Sessions)
 		cycle.Status = model.CycleInterrupted
 		cycle.CompletedAt = stringPointer(model.Now())
-		cycle.Error = stringPointer("Discovery interrupted; incomplete proposals were not dispatched")
+		cycle.Error = stringPointer(interruptedPlanningMessage)
 		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
 			return err
 		}
@@ -415,16 +456,10 @@ func (a *App) Recover() error {
 
 func stringPointer(value string) *string { return &value }
 
+// setTaskError blocks task with err's classified reason and redacted message.
 func (a *App) setTaskError(task *model.Task, err error) error {
-	reason := model.BlockedReasonFromError(err)
-	task.Status = model.StatusBlocked
-	task.BlockedReason = &reason
-	task.Error = stringPointer(store.ErrorMessage(err))
-	task.UpdatedAt = model.Now()
-	if saveErr := a.Store.Put("task", task.ID, *task); saveErr != nil {
-		return saveErr
-	}
-	return a.Store.Event(task.ID, "status", "Blocked")
+	recordTaskError(task, err)
+	return a.transition(task, model.StatusBlocked)
 }
 
 func (a *App) runTask(task model.Task) {

@@ -316,6 +316,35 @@ func TestRepositoryIdentity(t *testing.T) {
 	}
 }
 
+// SamePath is the lexical path identity settings, task workspaces and runner
+// session directories use: repeated separators, a trailing slash and interior
+// '.' segments do not matter, '..' stays literal, a leading relative '.' is
+// kept, an empty path is not the root, and a relative path never names an
+// absolute one.
+func TestSamePath(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"/srv/repo", "/srv/repo", true},
+		{"/srv/repo", "/srv/repo/", true},
+		{"/srv/repo", "/srv//repo", true},
+		{"/srv/repo", "/srv/./repo", true},
+		{"/srv/repo/../x", "/srv/x", false},
+		{"/srv/repo", "/srv/other", false},
+		{"srv/repo", "/srv/repo", false},
+		{"/", "//", true},
+		{"./srv", "srv", false},
+		{"./srv/./repo", "./srv/repo", true},
+		{"", "/", false},
+		{"", "", true},
+	} {
+		if got := SamePath(tc.a, tc.b); got != tc.want {
+			t.Errorf("SamePath(%q, %q) = %t; want %t", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
 // Route errors name the route and the component that failed.
 func TestRouteErrorsNameTheRouteAndComponent(t *testing.T) {
 	text := func(s string) *string { return &s }

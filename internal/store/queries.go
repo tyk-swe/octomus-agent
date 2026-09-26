@@ -244,14 +244,19 @@ func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
 }
 
+// RunningCycles lists every cycle recorded as running, in no particular order.
 func (s *Store) RunningCycles() ([]model.Cycle, error) {
 	return listRecords[model.Cycle](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'")
 }
 
+// RunningBaselines lists every baseline check recorded as running, in no
+// particular order.
 func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
 	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')='running'")
 }
 
+// BaselineCleanupCandidates lists up to 100 finished baseline checks whose
+// clone is not recorded as removed, oldest saved first.
 func (s *Store) BaselineCleanupCandidates() ([]model.BaselineCheck, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -262,6 +267,8 @@ func (s *Store) BaselineCleanupCandidates() ([]model.BaselineCheck, error) {
 	return decodeAll[model.BaselineCheck](raw)
 }
 
+// LatestBaseline returns the most recently started baseline check, or nil
+// when there is none.
 func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
 	var id string
 	found, err := s.Get("settings", "baseline_latest", &id)
@@ -271,6 +278,8 @@ func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
 	return Get[model.BaselineCheck](s, "baseline", id)
 }
 
+// TasksForCycle lists every task the cycle created, archived ones included,
+// oldest first.
 func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
 	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq", id)
 }
@@ -366,26 +375,49 @@ func (s *Store) HasUnresolvedTasks() (bool, error) {
 	return exists, err
 }
 
-// StartBatch opens a run-once batch over every queued task and saves the control.
+// StartBatch opens a run-once batch over every queued, unarchived task and
+// saves the control, without StartBatchIfAffordable's checks of the live
+// control and planning affordability. *control is updated only when the
+// transaction commits.
 func (s *Store) StartBatch(control *model.Control) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.transaction(false, func(c *sql.Conn) error {
-		id := model.ID()
-		control.SetMode(model.OperatingModeRunOnce)
-		control.Batch = &model.RunBatch{ID: id, Phase: model.BatchPhaseDraining, CycleID: nil}
-		control.Error = nil
-		control.NextCycleAt = 0
-		if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
-			return err
-		}
-		return txPut(c, "settings", "control", *control)
+	var next model.Control
+	err := s.transaction(false, func(c *sql.Conn) error {
+		var err error
+		next, err = txStartBatch(c, *control)
+		return err
 	})
+	if err == nil {
+		*control = next
+	}
+	return err
 }
 
-// StartBatchIfAffordable starts a run-once batch only when the live
-// configuration can still fund a complete planning pass. The affordability
-// decision and every RunOnce side effect share one transaction.
+// txStartBatch opens a run-once batch from control inside the caller's
+// transaction: it tags every queued, unarchived task with the new batch and
+// saves the resulting control, which it returns.
+func txStartBatch(c *sql.Conn, control model.Control) (model.Control, error) {
+	id := model.ID()
+	next := control.Clone()
+	next.SetMode(model.OperatingModeRunOnce)
+	next.Batch = &model.RunBatch{ID: id, Phase: model.BatchPhaseDraining, CycleID: nil}
+	next.Error = nil
+	next.NextCycleAt = 0
+	if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
+		return model.Control{}, err
+	}
+	if err := txPut(c, "settings", "control", next); err != nil {
+		return model.Control{}, err
+	}
+	return next, nil
+}
+
+// StartBatchIfAffordable opens a run-once batch over every queued, unarchived
+// task and saves the control, only when the live control still equals
+// *control and the live configuration can still fund a complete planning
+// pass. The checks and every side effect share one transaction; *control is
+// updated only when the batch started.
 func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (model.PlanningCapacity, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -408,16 +440,7 @@ func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (mo
 		if !sameJSON(live, *control) || !capacity.Available() {
 			return errRollback
 		}
-		id := model.ID()
-		next = control.Clone()
-		next.SetMode(model.OperatingModeRunOnce)
-		next.Batch = &model.RunBatch{ID: id, Phase: model.BatchPhaseDraining, CycleID: nil}
-		next.Error = nil
-		next.NextCycleAt = 0
-		if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
-			return err
-		}
-		if err := txPut(c, "settings", "control", next); err != nil {
+		if next, err = txStartBatch(c, *control); err != nil {
 			return err
 		}
 		started = true
@@ -503,6 +526,11 @@ type Dashboard struct {
 	SessionsToday  int64             `json:"sessions_today"`
 }
 
+// Dashboard reads the polled dashboard summary in one transaction: task
+// counts by status, up to 300 task summaries (the newest 100 active and 100
+// queued first, then the newest others), the newest 20 cycles and 100 PR
+// records, the newest 200 events, today's sessions, the merged-PR count and
+// the newest 5 tasks that need attention.
 func (s *Store) Dashboard() (Dashboard, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -604,6 +632,8 @@ func (s *Store) CleanupCandidates(kind, cutoff string) ([]string, error) {
 	return ids, nil
 }
 
+// LatestPrOutput returns the output commit of the most recently updated
+// published task for the repository's PR number, or nil when there is none.
 func (s *Store) LatestPrOutput(repository string, number uint64) (*string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -659,11 +689,13 @@ func (s *Store) DecisionMemory(repository string) ([]any, error) {
 	return listRecords[any](s, "SELECT data FROM records WHERE kind='decision' AND json_extract(data,'$.repository')=?1 COLLATE NOCASE ORDER BY rowid DESC LIMIT 100", repository)
 }
 
-// RediscoveryRequests lists cancelled tasks awaiting rediscovery for a repository.
+// RediscoveryRequests lists cancelled tasks awaiting rediscovery for a
+// repository. Archiving a task withdraws its pending request, as it removes
+// the task from scheduling.
 func (s *Store) RediscoveryRequests(repository string) ([]any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
+	raw, err := queryStrings(s.conn, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
 	if err != nil {
 		return nil, err
 	}

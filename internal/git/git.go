@@ -221,7 +221,8 @@ func CloneAt(ctx context.Context, c config.Config, path string, revision string)
 }
 
 // Snapshot stages every workspace change, commits when anything changed, and
-// returns the resulting HEAD.
+// returns the resulting HEAD. The commit message is secret-scrubbed, as PR
+// metadata is, because it is published with the branch.
 func Snapshot(ctx context.Context, c config.Config, path string, message string) (string, error) {
 	if _, err := Git(ctx, c, path, []string{"add", "--all"}); err != nil {
 		return "", err
@@ -232,7 +233,7 @@ func Snapshot(ctx context.Context, c config.Config, path string, message string)
 	}
 	if changed != "" {
 		if _, err := Git(ctx, c, path, []string{
-			"-c", "core.hooksPath=/dev/null", "commit", "-m", message,
+			"-c", "core.hooksPath=/dev/null", "commit", "-m", redact.Secrets(message),
 		}); err != nil {
 			return "", err
 		}

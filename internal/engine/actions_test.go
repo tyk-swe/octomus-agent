@@ -404,6 +404,48 @@ func TestTaskActionSupersedeArchiveDiscard(t *testing.T) {
 	}
 }
 
+// An action name outside the controls is unknown, never an eligibility
+// conflict: a bogus task action on an existing blocked task and a bogus cycle
+// action on a running cycle both answer the unknown-action sentinel (404 over
+// HTTP) and leave the records and their events untouched.
+func TestUnknownActionsAreNotReportedAsEligibilityConflicts(t *testing.T) {
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	task := queuedTask(cfg, "blocked-task", cfg.DefaultBranch, cfg.BranchPrefix+"blocked-task")
+	task.Status = model.StatusBlocked
+	cycle := model.Cycle{
+		Mode: model.CycleModeExecution, ID: model.ID(), Number: 1, Status: model.CycleRunning,
+		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{},
+		Sessions: []model.Session{}, Repository: cfg.GitHubRepo,
+	}
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+
+	err := app.TaskAction(context.Background(), task.ID, "bogus")
+	if !errors.Is(err, ErrUnknownTaskAction) || IsActionConflict(err) {
+		t.Fatalf("bogus task action = %v; want ErrUnknownTaskAction", err)
+	}
+	if saved := loadTask(t, state, task.ID); !sameRecordJSON(&saved, &task) {
+		t.Fatalf("unknown task action changed the record: %+v", saved)
+	}
+	err = app.CycleAction(cycle.ID, "bogus")
+	if !errors.Is(err, ErrUnknownCycleAction) || IsActionConflict(err) {
+		t.Fatalf("bogus action on a running cycle = %v; want ErrUnknownCycleAction", err)
+	}
+	for _, id := range []string{task.ID, cycle.ID} {
+		if events, err := state.Events(&id); err != nil || len(events) != 0 {
+			t.Fatalf("unknown action recorded events for %s: %+v, %v", id, events, err)
+		}
+	}
+}
+
 // TestRetryOnStaleBaseStaysBlocked: remote movement since the recorded base
 // fails the retry preflight and preserves the stale evidence instead of
 // queuing an attempt.

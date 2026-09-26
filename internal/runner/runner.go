@@ -433,22 +433,3 @@ func marshal(v any) (string, error) {
 	}
 	return string(data), nil
 }
-
-// pathComponents compares paths by components: repeated separators and interior
-// dots are ignored, '..' is not resolved, and a leading relative '.' is kept.
-func pathComponents(path string) []string {
-	parts := []string{}
-	if strings.HasPrefix(path, "/") {
-		parts = append(parts, "/")
-	}
-	for i, p := range strings.Split(path, "/") {
-		if p != "" && (p != "." || i == 0) {
-			parts = append(parts, p)
-		}
-	}
-	return parts
-}
-
-func samePath(a, b string) bool {
-	return slices.Equal(pathComponents(a), pathComponents(b))
-}

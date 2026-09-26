@@ -23,14 +23,6 @@ const (
 	baselineAggregateOutputLimit = 1024 * 1024
 )
 
-// BaselineConflict is an operator-visible HTTP 409 conflict:
-// ineligible starts, stale expected configurations and invalid cancellations.
-type BaselineConflict struct{ message string }
-
-func (e *BaselineConflict) Error() string { return e.message }
-
-func baselineConflict(message string) error { return &BaselineConflict{message} }
-
 // baselineJob is the live check's cancellation handle and identity; clearing it
 // is the worker's last act (the guard in baselineWorker).
 type baselineJob struct {
@@ -38,17 +30,13 @@ type baselineJob struct {
 	cancel context.CancelFunc
 }
 
-// BaselineFingerprint is the exact-configuration identity a check recorded at
-// start; the view compares it against the live configuration's fingerprint.
-func BaselineFingerprint(cfg config.Config) (string, error) { return cfg.Fingerprint() }
-
 // boundedOutput shortens output to limit bytes on a UTF-8 boundary, appending
 // the truncation marker inside the limit, and reports whether anything was cut.
 func boundedOutput(text string, limit int, diagnosticTruncated bool) (string, bool) {
 	if limit == 0 {
 		return "", diagnosticTruncated || text != ""
 	}
-	const marker = "\n[output truncated]"
+	const marker = "\n" + outputTruncatedMarker
 	if !diagnosticTruncated && len(text) <= limit {
 		return text, false
 	}
@@ -144,7 +132,7 @@ func (a *App) baselineRuntimeIneligibility() (*string, error) {
 	a.runtimeMu.Lock()
 	baseline := a.runtime.baseline != nil
 	tasks := len(a.runtime.tasks)
-	planning := a.runtime.cycle != nil || a.runtime.preflight
+	planning := a.runtime.planning()
 	reconciling := a.runtime.reconcilingPublication
 	a.runtimeMu.Unlock()
 	text := func(s string) *string { return &s }
@@ -196,19 +184,19 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 	if err != nil {
 		return nil, err
 	}
-	fingerprint, err := BaselineFingerprint(live)
+	fingerprint, err := live.Fingerprint()
 	if err != nil {
 		return nil, err
 	}
 	if fingerprint != expectedRevision {
-		return nil, baselineConflict("The saved configuration changed; reload settings and check the current values")
+		return nil, conflictError("The saved configuration changed; reload settings and check the current values")
 	}
 	reason, err := a.baselineRuntimeIneligibility()
 	if err != nil {
 		return nil, err
 	}
 	if reason != nil {
-		return nil, baselineConflict(*reason)
+		return nil, conflictError(*reason)
 	}
 	if err := live.ValidateBaseline(); err != nil {
 		return nil, err
@@ -249,10 +237,10 @@ func (a *App) CancelBaseline(id string) error {
 		return err
 	}
 	if check == nil {
-		return baselineConflict("Baseline check not found")
+		return conflictError("Baseline check not found")
 	}
 	if check.Status != model.BaselineStatusRunning {
-		return baselineConflict("The baseline check already finished")
+		return conflictError("The baseline check already finished")
 	}
 	a.runtimeMu.Lock()
 	var cancel context.CancelFunc
@@ -261,7 +249,7 @@ func (a *App) CancelBaseline(id string) error {
 	}
 	a.runtimeMu.Unlock()
 	if cancel == nil {
-		return baselineConflict("The baseline check is no longer running")
+		return conflictError("The baseline check is no longer running")
 	}
 	if err := a.Store.Put("baseline_cancel", id, model.Now()); err != nil {
 		return err
@@ -270,16 +258,16 @@ func (a *App) CancelBaseline(id string) error {
 	return nil
 }
 
-// BaselineConfigMatches reports whether the live configuration still matches
-// the fingerprint a check recorded at start.
-func (a *App) BaselineConfigMatches(check *model.BaselineCheck, live config.Config) bool {
-	fingerprint, err := BaselineFingerprint(live)
+// baselineConfigMatches reports whether the live configuration's fingerprint
+// is still the one a check recorded at start.
+func baselineConfigMatches(check *model.BaselineCheck, live config.Config) bool {
+	fingerprint, err := live.Fingerprint()
 	return err == nil && fingerprint == check.ConfigFingerprint
 }
 
-// BaselineRevisionStatus compares a check's recorded revision to the freshest
+// baselineRevisionStatus compares a check's recorded revision to the freshest
 // in-memory default-branch observation of the same remote.
-func (a *App) BaselineRevisionStatus(check *model.BaselineCheck, live config.Config) string {
+func (a *App) baselineRevisionStatus(check *model.BaselineCheck, live config.Config) string {
 	if !live.SameRemoteIdentity(check.Config) {
 		return "unknown"
 	}
@@ -331,9 +319,9 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 	var configRevision any
 	revisionStatus := "unknown"
 	if check != nil {
-		configMatches = a.BaselineConfigMatches(check, live)
+		configMatches = baselineConfigMatches(check, live)
 		configRevision = check.ConfigFingerprint
-		revisionStatus = a.BaselineRevisionStatus(check, live)
+		revisionStatus = a.baselineRevisionStatus(check, live)
 	}
 	a.runtimeMu.Lock()
 	observation := a.runtime.defaultObservation
@@ -394,16 +382,16 @@ func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted
 	return a.Store.Put("baseline", check.ID, *check)
 }
 
-// CleanupBaseline removes the check's owned clone directory and records the
-// outcome; a refusal is evidence, not a worker failure. Callers must not hold
-// the scheduler gate: the check is claimed, the recursive deletion runs
+// removeBaselineWorkspace removes the check's owned clone directory and records
+// the outcome; a refusal is evidence, not a worker failure. Callers must not
+// hold the scheduler gate: the check is claimed, the recursive deletion runs
 // gate-free so unrelated controls stay responsive, then the gate serializes a
 // finalization that applies only the cleanup fields to the current durable
 // record. A record that vanished mid-removal is left vanished — writing the
 // caller's stale copy back would resurrect it. A check already claimed by
 // another cleanup is skipped, not double-removed — callers see success, since
 // ownership means the outcome is being recorded by the owner.
-func (a *App) CleanupBaseline(check *model.BaselineCheck) error {
+func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 	if _, err := uuid.Parse(check.ID); err != nil {
 		return errors.New("Invalid baseline identity")
 	}
@@ -533,7 +521,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	}
 	_ = a.Store.Event(id, "baseline", baselineStatusDebug[status])
 	a.gate.Unlock()
-	if err := a.CleanupBaseline(check); err != nil {
+	if err := a.removeBaselineWorkspace(check); err != nil {
 		_ = a.Store.Event(id, "cleanup_error", store.ErrorMessage(err))
 	}
 }
@@ -583,14 +571,12 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 	}
 	allOK := true
 	remaining := baselineAggregateOutputLimit
+	// CancelBaseline records its marker and cancels ctx in one gate hold, so
+	// ctx alone stops the commands; baselineWorker reads the marker once to
+	// resolve the final status.
 	for _, command := range c.VerificationCommands {
-		if err := ctx.Err(); err != nil {
-			return model.BaselineStatusRunning, errors.New("Operation cancelled")
-		}
-		if marked, err := a.baselineCancelled(check.ID); err != nil {
-			return model.BaselineStatusRunning, err
-		} else if marked {
-			return model.BaselineStatusRunning, errors.New("Operation cancelled")
+		if ctx.Err() != nil {
+			return model.BaselineStatusRunning, process.ErrCancelled
 		}
 		outcome := runCheckCommand(ctx, c, workspaceDir, command, *revision)
 		timedOut := process.IsDeadlineElapsed(outcome.capture)
@@ -598,19 +584,14 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		var failure error
 		if ctx.Err() != nil {
 			success = false
-			failure = errors.New("Operation cancelled")
-		} else if marked, err := a.baselineCancelled(check.ID); err != nil {
-			return model.BaselineStatusRunning, err
-		} else if marked {
-			success = false
-			failure = errors.New("Operation cancelled")
+			failure = process.ErrCancelled
 		} else {
-			switch intact, intactErr := outcome.intactResult(); {
-			case intactErr != nil:
+			switch {
+			case outcome.intactErr != nil:
 				success = false
-				text += "\n" + intactErr.Error()
-				failure = fmt.Errorf("Workspace state check failed during verification: %w", intactErr)
-			case !intact:
+				text += "\n" + outcome.intactErr.Error()
+				failure = fmt.Errorf("Workspace state check failed during verification: %w", outcome.intactErr)
+			case !outcome.intact:
 				success = false
 				text += "\nWorkspace or HEAD changed during this verification command"
 				failure = errors.New("Workspace or HEAD changed during verification")

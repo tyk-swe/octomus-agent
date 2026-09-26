@@ -15,10 +15,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -119,19 +121,13 @@ func TestExecutionDeliversFullLifecycle(t *testing.T) {
 	fixture.cfg = cfg
 	task := executionTask(t, fixture, cfg.DefaultBranch)
 	saveExecutionTask(t, fixture, task)
-	app := New(fixture.state, fixture.dataDir)
-	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
-	if err := app.Resume(); err != nil {
-		t.Fatal(err)
-	}
+	app := newExecutionApp(t, fixture)
 	saved := driveTask(t, fixture, app, task.ID)
 	if saved.Status != model.StatusPublished {
 		t.Fatalf("task did not publish: %+v", saved)
 	}
 	if saved.OutputCommit == nil || *saved.OutputCommit == saved.SourceRevision {
-		t.Fatalf("missing output checkpoint: %+v", saved.OutputCommit)
+		t.Fatalf("missing output checkpoint: %s", optionalText(saved.OutputCommit))
 	}
 	if saved.PRNumber == nil || saved.PRURL == nil || !strings.Contains(*saved.PRURL, "github.com/fixture/project/pull/") {
 		t.Fatalf("missing publication identity: %+v", saved)
@@ -181,14 +177,7 @@ func TestExecutionDeliversFullLifecycle(t *testing.T) {
 	if remote != *saved.OutputCommit {
 		t.Fatalf("remote branch = %s, want output %s", remote, *saved.OutputCommit)
 	}
-	data, err := os.ReadFile(filepath.Join(fixture.root, "prs.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var prs []map[string]any
-	if err := json.Unmarshal(data, &prs); err != nil {
-		t.Fatal(err)
-	}
+	prs := prsJSON(t, fixture)
 	if len(prs) != 1 {
 		t.Fatalf("expected exactly one PR, got %d", len(prs))
 	}
@@ -240,8 +229,9 @@ func verificationFixture(t *testing.T, commands []string) (*App, model.Task, str
 	return app, task, revision
 }
 
-// F1: a verification command that mutates tracked state is recorded as failed
-// evidence and stops the remaining commands.
+// F1: a verification command that changes a tracked file or moves HEAD is the
+// run's single recorded failure, naming the command and the mutation; later
+// commands, including one that would restore the file, never run.
 func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 	for _, commands := range [][]string{
 		{"printf 1 > impl.txt", "test \"$(cat impl.txt)\" = 1", "git checkout -- impl.txt"},
@@ -259,6 +249,44 @@ func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 		if len(saved.Verification) != 1 || saved.Verification[0].Success {
 			t.Fatalf("commands %v: verification = %+v, want one failed record", commands, saved.Verification)
 		}
+		if record := saved.Verification[0]; record.Command != commands[0] || !strings.Contains(record.Output, "changed during this verification command") {
+			t.Fatalf("commands %v: record = %+v; want the mutating command with mutation evidence", commands, record)
+		}
+	}
+}
+
+// Cancelling verification mid-command stops the run with the shared
+// process.ErrCancelled sentinel rather than a look-alike error, and records no
+// evidence for the interrupted command or the ones after it.
+func TestVerificationCancelledMidCommandReturnsTheCancellationSentinel(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "started")
+	app, task, revision := verificationFixture(t, []string{"touch '" + started + "' && sleep 30", "true"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.verifyRevision(ctx, &task, revision)
+		done <- err
+	}()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("verification command did not start")
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, process.ErrCancelled) {
+			t.Fatalf("cancelled verification = %v; want process.ErrCancelled", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("verification did not stop after cancellation")
+	}
+	if saved := loadTask(t, app.Store, task.ID); len(saved.Verification) != 0 {
+		t.Fatalf("cancelled verification recorded evidence: %+v", saved.Verification)
 	}
 }
 
@@ -314,8 +342,99 @@ func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
 			t.Fatalf("verification record not bound to the reviewed revision: %+v", v)
 		}
 	}
-	if !strings.Contains(saved.Verification[0].Output, "out") || !strings.Contains(saved.Verification[0].Output, "warn") {
+	if saved.Verification[0].Output != "out\n[stderr]\nwarn" {
 		t.Fatalf("verification lost an output stream: %q", saved.Verification[0].Output)
+	}
+}
+
+// Verification evidence is bounded and says so: each stream keeps its end,
+// where runners report the failure, stderr survives however long stdout is,
+// a failure ends with its exit status, and a state-check note is never cut.
+// The repair prompt receives the same text.
+func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
+	long := "head -c 20000 /dev/zero | tr '\\0' a; echo; echo TAIL-OF'-STDOUT'; "
+	for _, test := range []struct {
+		name    string
+		command string
+		success bool
+		want    []string
+		absent  []string
+		suffix  string
+	}{
+		{name: "long failure", command: long + "echo FAIL'URE-DETAIL' >&2; exit 1", want: []string{"TAIL-OF-STDOUT", "\n[stderr]\nFAILURE-DETAIL", outputTruncatedMarker}, suffix: "\nexit status: 1"},
+		{name: "long success", command: long + "echo PASS'-WARNING' >&2", success: true, want: []string{"TAIL-OF-STDOUT", "\n[stderr]\nPASS-WARNING", outputTruncatedMarker}},
+		{name: "long stderr", command: "{ head -c 20000 /dev/zero | tr '\\0' e; echo; echo STDERR'-TAIL'; } >&2; echo STDOUT'-KEPT'; exit 3", want: []string{"STDOUT-KEPT\n[stderr]\n" + outputTruncatedMarker, "STDERR-TAIL"}, suffix: "\nexit status: 3"},
+		// stderr keeps the room short stdout leaves, so a compiler's first
+		// error survives when the whole report fits the bound.
+		{name: "stderr within the room stdout leaves", command: "{ echo STDERR'-HEAD'; head -c 12000 /dev/zero | tr '\\0' e; echo; echo STDERR'-TAIL'; } >&2; echo out; exit 1", want: []string{"out\n[stderr]\nSTDERR-HEAD", "STDERR-TAIL"}, absent: []string{outputTruncatedMarker}, suffix: "\nexit status: 1"},
+		{name: "short failure", command: "echo out; echo err >&2; exit 3", want: []string{"out\n[stderr]\nerr\nexit status: 3"}},
+		{name: "secret", command: "echo token=ghp_abcdefghij0123456789; exit 2", want: []string{"token=[redacted]"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, task, revision := verificationFixture(t, []string{test.command})
+			failures, err := app.verifyRevision(context.Background(), &task, revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := loadTask(t, app.Store, task.ID)
+			if len(saved.Verification) != 1 {
+				t.Fatalf("verification = %+v; want one record", saved.Verification)
+			}
+			record := saved.Verification[0]
+			if record.Success != test.success || len(record.Output) > verificationOutputLimit || !utf8.ValidString(record.Output) {
+				t.Fatalf("record success=%t, %d bytes; want success=%t within %d bytes", record.Success, len(record.Output), test.success, verificationOutputLimit)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(record.Output, want) {
+					t.Fatalf("evidence lacks %q:\n%s", want, record.Output)
+				}
+			}
+			for _, absent := range test.absent {
+				if strings.Contains(record.Output, absent) {
+					t.Fatalf("evidence has %q:\n%s", absent, record.Output)
+				}
+			}
+			if !strings.HasSuffix(record.Output, test.suffix) || strings.Contains(record.Output, "ghp_") {
+				t.Fatalf("evidence does not end with %q or kept a secret:\n%s", test.suffix, record.Output)
+			}
+			if test.success != (len(failures) == 0) || !test.success && failures[0] != test.command+": "+record.Output {
+				t.Fatalf("repair prompt failures = %q; want the saved evidence", failures)
+			}
+		})
+	}
+
+	mutating := "head -c 20000 /dev/zero | tr '\\0' a; printf 1 > impl.txt"
+	app, task, revision := verificationFixture(t, []string{mutating})
+	if _, err := app.verifyRevision(context.Background(), &task, revision); model.BlockedReasonFromError(err) != model.BlockedReasonWorkspaceInvalid {
+		t.Fatalf("mutation err = %v; want workspace_invalid", err)
+	}
+	record := loadTask(t, app.Store, task.ID).Verification[0]
+	if len(record.Output) > verificationOutputLimit || !strings.HasPrefix(record.Output, outputTruncatedMarker+"\n") || !strings.HasSuffix(record.Output, "\nWorkspace or HEAD changed during this verification command") {
+		t.Fatalf("long mutation evidence (%d bytes) lost its marker or note:\n%s", len(record.Output), record.Output)
+	}
+}
+
+func TestBoundedTailKeepsTheEndWithinTheLimit(t *testing.T) {
+	marker := outputTruncatedMarker
+	for _, test := range []struct {
+		name             string
+		text             string
+		limit            int
+		captureTruncated bool
+		want             string
+	}{
+		{name: "fits exactly", text: strings.Repeat("x", 32), limit: 32, want: strings.Repeat("x", 32)},
+		{name: "over the limit", text: "head-" + strings.Repeat("x", 40) + "-tail", limit: 32, want: marker + "\n" + strings.Repeat("x", 8) + "-tail"},
+		{name: "capture truncated", text: "short", limit: 64, captureTruncated: true, want: "short\n" + marker},
+		{name: "both markers", text: strings.Repeat("x", 60) + "-tail", limit: 48, captureTruncated: true, want: marker + "\n" + strings.Repeat("x", 5) + "-tail\n" + marker},
+		{name: "rune boundary", text: strings.Repeat("é", 20), limit: 24, want: marker + "\n" + strings.Repeat("é", 2)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := boundedTail(test.text, test.limit, test.captureTruncated)
+			if got != test.want || len(got) > test.limit || !utf8.ValidString(got) {
+				t.Fatalf("boundedTail = %q (%d bytes); want %q within %d", got, len(got), test.want, test.limit)
+			}
+		})
 	}
 }
 
@@ -351,18 +470,6 @@ func TestVerificationArtifactMustBeGitIgnored(t *testing.T) {
 	if len(saved.Verification) != 2 || !saved.Verification[0].Success || !saved.Verification[1].Success {
 		t.Fatalf("ignored artifact evidence = %+v; want two passing records", saved.Verification)
 	}
-}
-
-func waitForFile(t *testing.T, path string, label string) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("%s did not appear", label)
 }
 
 // writeFixtureMode arms a deterministic fixture-peer mode file.
@@ -410,8 +517,7 @@ func newExecutionApp(t *testing.T, fixture *planningFixture) *App {
 	t.Helper()
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -528,6 +634,28 @@ func checkpointedTask(t *testing.T, fixture *planningFixture, target string) mod
 	return task
 }
 
+// seedFixturePR records a checkpointed task's delivery on the fixture remote:
+// its output commit pushed to the task branch and PR 1 for that branch, marked
+// with the task, in the given state.
+func seedFixturePR(t *testing.T, fixture *planningFixture, task model.Task, state string) {
+	t.Helper()
+	command(t, task.Workspace, "/usr/bin/git", "push", filepath.Join(fixture.root, "remote.git"), *task.OutputCommit+":refs/heads/"+task.Branch)
+	pr := []map[string]any{{
+		"number": 1, "title": "x", "body": "<!-- octomus:task:" + task.ID + " -->",
+		"head":     map[string]any{"ref": task.Branch, "sha": "", "repo": map[string]any{"full_name": "fixture/project"}},
+		"base":     map[string]any{"ref": "main"},
+		"html_url": "https://github.com/fixture/project/pull/1", "state": state,
+		"merged_at": nil, "additions": 1, "deletions": 0, "created_at": "2026-09-07T00:00:00Z",
+	}}
+	data, err := json.Marshal(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestExecutionRestartReconcilesPublicationCheckpoint: a durable publishing
 // checkpoint plus an intact workspace is requeued and delivered without
 // duplicating remote writes — covering both the lost-acknowledgement and the
@@ -568,21 +696,7 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 		task.Status = model.StatusPublishing
 		// The remote already has the pushed branch and the created PR; only the
 		// client's acknowledgement was lost.
-		command(t, task.Workspace, "/usr/bin/git", "push", filepath.Join(fixture.root, "remote.git"), *task.OutputCommit+":refs/heads/"+task.Branch)
-		pr := []map[string]any{{
-			"number": 1, "title": "x", "body": "<!-- octomus:task:" + task.ID + " -->",
-			"head":     map[string]any{"ref": task.Branch, "sha": "", "repo": map[string]any{"full_name": "fixture/project"}},
-			"base":     map[string]any{"ref": "main"},
-			"html_url": "https://github.com/fixture/project/pull/1", "state": "open",
-			"merged_at": nil, "additions": 1, "deletions": 0, "created_at": "2026-09-07T00:00:00Z",
-		}}
-		data, err := json.Marshal(pr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		seedFixturePR(t, fixture, task, "open")
 		saveExecutionTask(t, fixture, task)
 		app := New(fixture.state, fixture.dataDir)
 		t.Cleanup(app.Shutdown)
@@ -604,23 +718,9 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 		fixture := newExecutionFixture(t)
 		task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
 		task.Status = model.StatusPublishing
-		command(t, task.Workspace, "/usr/bin/git", "push", filepath.Join(fixture.root, "remote.git"), *task.OutputCommit+":refs/heads/"+task.Branch)
 		// The delivered PR was closed before the checkpoint reconciled: the
 		// closed match is explicit reconcile evidence, not a new write.
-		pr := []map[string]any{{
-			"number": 1, "title": "x", "body": "<!-- octomus:task:" + task.ID + " -->",
-			"head":     map[string]any{"ref": task.Branch, "sha": "", "repo": map[string]any{"full_name": "fixture/project"}},
-			"base":     map[string]any{"ref": "main"},
-			"html_url": "https://github.com/fixture/project/pull/1", "state": "closed",
-			"merged_at": nil, "additions": 1, "deletions": 0, "created_at": "2026-09-07T00:00:00Z",
-		}}
-		data, err := json.Marshal(pr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		seedFixturePR(t, fixture, task, "closed")
 		saveExecutionTask(t, fixture, task)
 		app := New(fixture.state, fixture.dataDir)
 		t.Cleanup(app.Shutdown)
@@ -668,8 +768,7 @@ func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
 
 	restarted := New(fixture.state, fixture.dataDir)
 	t.Cleanup(restarted.Shutdown)
-	restarted.runtime.lastRetention = time.Now()
-	restarted.runtime.lastObserve = time.Now()
+	deferHousekeeping(restarted)
 	if err := restarted.Recover(); err != nil {
 		t.Fatal(err)
 	}
@@ -883,8 +982,7 @@ func TestExecutionWorkerPanicBlocks(t *testing.T) {
 		panic("worker exploded")
 	})))
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -1045,8 +1143,8 @@ func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
 
 // TestExecutionDeliversFullLifecycleViaOpenCode runs the same
 // executor → fresh reviews → persistent repair → verification → publication
-// lifecycle through the OpenCode HTTP/SSE fixture peer
-// requires the lifecycle on both runners.
+// lifecycle through the OpenCode HTTP/SSE fixture peer, so both runners are
+// held to the whole lifecycle.
 func TestExecutionDeliversFullLifecycleViaOpenCode(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	opencode := filepath.Join(fixture.root, "opencode")

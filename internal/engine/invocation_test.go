@@ -129,7 +129,7 @@ func TestInvocationRejectsReservedResume(t *testing.T) {
 	task := &model.Task{ID: "reserved-resume", CycleID: "cycle", ExecutionSession: &thread,
 		Sessions: []model.Session{{ID: thread, Role: "executor", Status: model.SessionRunning}}}
 
-	_, _, err := app.invoke(context.Background(), clients, invocation{
+	_, err := app.invoke(context.Background(), clients, invocation{
 		cycleID: task.CycleID, task: task, role: "executor", route: config.NewRoute("scripted-executor", "medium"),
 		workspace: t.TempDir(), resume: task.ExecutionSession, prompt: "unused", reserved: true,
 	})
@@ -155,7 +155,7 @@ func TestInvocationSkipsCancelledOwner(t *testing.T) {
 	clients := runner.New(ctx, config.Default(), script.Connector())
 	prepared := false
 
-	_, answer, err := app.invoke(ctx, clients, invocation{
+	answer, err := app.invoke(ctx, clients, invocation{
 		cycleID: "cycle", role: "discovery-0", route: config.NewRoute("scripted-discovery", "medium"),
 		workspace: t.TempDir(), prompt: "unused", ownsClients: true,
 		prepare: func() error { prepared = true; return nil },
@@ -197,7 +197,7 @@ func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
 	script.FailClose(route.Backend, errors.New("fixture close"))
 	clients := runner.New(context.Background(), config.Default(), script.Connector())
 
-	session, answer, err := app.invoke(context.Background(), clients, invocation{
+	answer, err := app.invoke(context.Background(), clients, invocation{
 		cycleID: cycleID, role: "discovery-0", route: route, workspace: t.TempDir(),
 		prompt: "Discover", ownsClients: true,
 	})
@@ -207,14 +207,15 @@ func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
 	if answer != "" {
 		t.Fatalf("a turn whose clients failed to close kept its answer %q", answer)
 	}
-	if turns := script.Turns(route); len(turns) != 1 || turns[0].Session != session {
-		t.Fatalf("turns = %+v; want the one turn on %s", turns, session)
+	turns := script.Turns(route)
+	if len(turns) != 1 {
+		t.Fatalf("turns = %+v; want the one discovery turn", turns)
 	}
 	saved, err := store.Get[model.Cycle](state, "cycle", cycleID)
 	if err != nil || saved == nil {
 		t.Fatalf("load cycle: %+v, %v", saved, err)
 	}
-	if len(saved.Sessions) != 1 || saved.Sessions[0].ID != session || saved.Sessions[0].Role != "discovery-0" ||
+	if len(saved.Sessions) != 1 || saved.Sessions[0].ID != turns[0].Session || saved.Sessions[0].Role != "discovery-0" ||
 		saved.Sessions[0].Status != model.SessionFailed || !strings.Contains(saved.Sessions[0].Summary, "fixture close") {
 		t.Fatalf("cycle sessions = %+v; want the discovery session failed with the close error", saved.Sessions)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -11,9 +12,12 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
+// ErrNotPaused and ErrBusy refuse an audit that needs paused, idle operation.
+// They are conflicts (HTTP 409), like the same refusal ControlAction reports
+// before it releases the gate.
 var (
-	ErrNotPaused = errors.New("Octomus must be paused for this operation")
-	ErrBusy      = errors.New("Octomus has active work")
+	ErrNotPaused = conflictError("Octomus must be paused for this operation")
+	ErrBusy      = conflictError("Octomus has active work")
 )
 
 type planningCapacityError struct {
@@ -29,50 +33,8 @@ func (a *App) runtimeIdle() bool {
 	return a.runtime.idle()
 }
 
-// Pause durably prevents new work and invalidates process-local remote
-// observations. Already-running task workers retain their durable evidence.
-func (a *App) Pause() error {
-	a.gate.Lock()
-	defer a.gate.Unlock()
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	control.SetMode(model.OperatingModePaused)
-	if err := a.Store.SaveControl(control); err != nil {
-		return err
-	}
-	a.invalidatePrObservation()
-	return a.Store.Event("system", "operator", "Paused")
-}
-
-// Resume enters durable Continuous mode after validating all execution and
-// planning policy. An audit remains isolated from queue execution.
-func (a *App) Resume() error {
-	a.gate.Lock()
-	defer a.gate.Unlock()
-	a.runtimeMu.Lock()
-	busyAudit := a.runtime.cycle != nil && a.runtime.cycle.mode == model.CycleModeAudit || a.runtime.preflight && a.runtime.preflightMode == model.CycleModeAudit
-	busyBaseline := a.runtime.baseline != nil
-	a.runtimeMu.Unlock()
-	if busyAudit {
-		return errors.New("Cannot resume while an audit is running")
-	}
-	if busyBaseline {
-		return errors.New("Cannot resume while a baseline check is running")
-	}
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	if err := a.enterContinuous(&control); err != nil {
-		return err
-	}
-	return a.Store.Event("system", "operator", "Continuous mode started")
-}
-
-// enterContinuous is the durable Resume transition shared by direct controls
-// and the authenticated API. Callers hold gate and check runtime conflicts.
+// enterContinuous is ControlAction's durable resume transition. Callers hold
+// gate and check runtime conflicts.
 func (a *App) enterContinuous(control *model.Control) error {
 	cfg, err := a.Config()
 	if err != nil {
@@ -89,35 +51,6 @@ func (a *App) enterContinuous(control *model.Control) error {
 	}
 	a.notify()
 	return nil
-}
-
-// RunOnce creates a durable membership snapshot only if a complete planning
-// pass is affordable in the same database transaction.
-func (a *App) RunOnce() error {
-	a.gate.Lock()
-	defer a.gate.Unlock()
-	if !a.runtimeIdle() {
-		return ErrBusy
-	}
-	cfg, err := a.Config()
-	if err != nil {
-		return err
-	}
-	if err := cfg.Validate(true); err != nil {
-		return err
-	}
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	if control.Mode != model.OperatingModePaused {
-		return ErrNotPaused
-	}
-	if err := a.startRunOnceBatch(&control); err != nil {
-		return err
-	}
-	a.notify()
-	return a.Store.Event("system", "operator", "Run once started")
 }
 
 // startRunOnceBatch starts a run-once batch from the expected control record
@@ -141,48 +74,10 @@ func (a *App) startRunOnceBatch(control *model.Control) error {
 // StartAudit validates remote and route availability outside gate, then
 // atomically starts an audit only if paused state and policy are unchanged.
 func (a *App) StartAudit(ctx context.Context) (string, error) {
-	a.gate.Lock()
-	if err := a.ctx.Err(); err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	if !a.runtimeIdle() {
-		a.gate.Unlock()
-		return "", ErrBusy
-	}
-	cfg, err := a.Config()
+	cfg, control, err := a.admitAuditPreflight()
 	if err != nil {
-		a.gate.Unlock()
 		return "", err
 	}
-	if err := cfg.ValidateAudit(); err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	control, err := a.Control()
-	if err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	if control.Mode != model.OperatingModePaused {
-		a.gate.Unlock()
-		return "", ErrNotPaused
-	}
-	capacity, err := a.Store.PlanningCapacity()
-	if err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	if err := capacity.EnsureAvailable(); err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	a.runtimeMu.Lock()
-	a.runtime.preflight = true
-	a.runtime.preflightMode = model.CycleModeAudit
-	a.runtimeMu.Unlock()
-	a.wg.Add(1)
-	a.gate.Unlock()
 	defer a.wg.Done()
 	preflightCtx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(a.ctx, cancel)
@@ -211,6 +106,47 @@ func (a *App) StartAudit(ctx context.Context) (string, error) {
 	return id, nil
 }
 
+// admitAuditPreflight admits an audit's remote preflight under the gate: the
+// service is live, idle and paused, audit policy validates and a complete
+// planning pass is affordable. It then marks the audit preflight in flight and
+// registers it as service work, which the caller ends with a.wg.Done.
+func (a *App) admitAuditPreflight() (config.Config, model.Control, error) {
+	a.gate.Lock()
+	defer a.gate.Unlock()
+	if err := a.ctx.Err(); err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	if !a.runtimeIdle() {
+		return config.Config{}, model.Control{}, ErrBusy
+	}
+	cfg, err := a.Config()
+	if err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	if err := cfg.ValidateAudit(); err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	control, err := a.Control()
+	if err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	if control.Mode != model.OperatingModePaused {
+		return config.Config{}, model.Control{}, ErrNotPaused
+	}
+	capacity, err := a.Store.PlanningCapacity()
+	if err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	if err := capacity.EnsureAvailable(); err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	a.runtimeMu.Lock()
+	a.runtime.startPreflight(model.CycleModeAudit)
+	a.runtimeMu.Unlock()
+	a.wg.Add(1)
+	return cfg, control, nil
+}
+
 func (a *App) doctor(ctx context.Context, cfg config.Config, audit bool) error {
 	if err := gitops.ValidateRemote(ctx, cfg); err != nil {
 		return fmt.Errorf("Repository remote preflight failed: %w", err)
@@ -226,14 +162,19 @@ func (a *App) doctor(ctx context.Context, cfg config.Config, audit bool) error {
 	return nil
 }
 
+// endPreflight clears a preflight that will not start its cycle and wakes the
+// scheduler.
 func (a *App) endPreflight() {
 	a.runtimeMu.Lock()
-	a.runtime.preflight = false
-	a.runtime.preflightMode = model.CycleModeExecution
+	a.runtime.preflight = nil
 	a.runtimeMu.Unlock()
 	a.notify()
 }
 
+// beginCycle admits the planning pass a preflight validated; callers hold the
+// gate. Work that started, or an operator change made, while the preflight ran
+// with the gate released is a conflict: the state ControlAction refuses before
+// a preflight starts.
 func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.CycleMode) (string, error) {
 	if err := a.ctx.Err(); err != nil {
 		return "", err
@@ -242,14 +183,14 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 	runtimeBusy := a.runtime.cycle != nil || len(a.runtime.tasks) > 0
 	a.runtimeMu.Unlock()
 	if runtimeBusy {
-		return "", errors.New("Work started during planning preflight")
+		return "", conflictError("Work started during planning preflight")
 	}
 	live, err := a.Control()
 	if err != nil {
 		return "", err
 	}
-	if !controlsEqual(live, expected) {
-		return "", errors.New("Control state changed during planning preflight")
+	if !sameOperatorControl(live, expected) {
+		return "", conflictError("Control state changed during planning preflight")
 	}
 	if mode == model.CycleModeExecution {
 		if live.Mode == model.OperatingModeRunOnce {
@@ -280,7 +221,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		return "", err
 	}
 	id := model.ID()
-	next := cloneControl(live)
+	next := live.Clone()
 	next.CycleNumber++
 	next.Error = nil
 	if mode == model.CycleModeExecution && next.Mode == model.OperatingModeRunOnce {
@@ -297,7 +238,9 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 		Repository: cfg.GitHubRepo, DecisionMemory: []any{}, RunID: runID,
 	}
-	capacity, started, err := a.Store.BeginCycleIfAffordable(cycle, next, expected, fingerprint, time.Now())
+	// live was read under the gate, so the store's compare catches only a
+	// write that bypassed it.
+	capacity, started, err := a.Store.BeginCycleIfAffordable(cycle, next, live, fingerprint, time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -305,12 +248,11 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		if !capacity.Available() {
 			return "", &planningCapacityError{capacity: capacity}
 		}
-		return "", errors.New("Configuration or control state changed during planning preflight")
+		return "", conflictError("Configuration or control state changed during planning preflight")
 	}
 	cycleCtx, cancel := context.WithCancel(a.ctx)
 	a.runtimeMu.Lock()
-	a.runtime.preflight = false
-	a.runtime.preflightMode = model.CycleModeExecution
+	a.runtime.preflight = nil
 	a.runtime.cycle = &cycleJob{id: id, mode: mode, cancel: cancel}
 	a.runtimeMu.Unlock()
 	a.wg.Add(1)
@@ -322,33 +264,13 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 	return id, nil
 }
 
-func controlsEqual(a, b model.Control) bool {
-	if a.Paused != b.Paused || a.CycleNumber != b.CycleNumber || a.NextCycleAt != b.NextCycleAt || a.Mode != b.Mode || a.IdleStreak != b.IdleStreak || a.ContextFingerprint != b.ContextFingerprint {
-		return false
-	}
-	if (a.Error == nil) != (b.Error == nil) || a.Error != nil && *a.Error != *b.Error {
-		return false
-	}
-	if (a.Batch == nil) != (b.Batch == nil) {
-		return false
-	}
-	if a.Batch != nil {
-		if a.Batch.ID != b.Batch.ID || a.Batch.Phase != b.Batch.Phase || (a.Batch.CycleID == nil) != (b.Batch.CycleID == nil) || a.Batch.CycleID != nil && *a.Batch.CycleID != *b.Batch.CycleID {
-			return false
-		}
-	}
-	return true
-}
-
-func cloneControl(control model.Control) model.Control {
-	copy := control
-	if control.Error != nil {
-		value := *control.Error
-		copy.Error = &value
-	}
-	if control.Batch != nil {
-		batch := control.Batch.Clone()
-		copy.Batch = &batch
-	}
-	return copy
+// sameOperatorControl compares what admitted a planning preflight: pause and
+// mode, cycle number, recorded error and run-once batch. Remote observation
+// owns ContextFingerprint and IdleStreak and may only bring NextCycleAt
+// forward, always under the gate, so its writes never invalidate a preflight.
+func sameOperatorControl(a, b model.Control) bool {
+	a.ContextFingerprint, b.ContextFingerprint = "", ""
+	a.IdleStreak, b.IdleStreak = 0, 0
+	a.NextCycleAt, b.NextCycleAt = 0, 0
+	return reflect.DeepEqual(a, b)
 }

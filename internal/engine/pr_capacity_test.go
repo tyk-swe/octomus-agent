@@ -3,13 +3,26 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
+
+// refreshLive runs one complete PR refresh against the live saved
+// configuration, as housekeeping and dispatch do.
+func refreshLive(app *App) error {
+	cfg, err := app.Config()
+	if err != nil {
+		return err
+	}
+	return app.refreshPRs(context.Background(), cfg)
+}
 
 // persisted inventory is evidence only; capacity is reported as remaining only
 // while this process holds a fresh, error-free observation under the live policy.
@@ -133,7 +146,7 @@ func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T)
 	}
 
 	// A complete observation of the empty fixture inventory clears the failure.
-	if err := app.RefreshPRs(context.Background()); err != nil {
+	if err := refreshLive(app); err != nil {
 		t.Fatal(err)
 	}
 	capacity, err = app.PrCapacity()
@@ -179,7 +192,7 @@ func TestPausedRefreshClearsEarlierFailureWithoutAuthorizingDispatch(t *testing.
 	app.runtimeMu.Lock()
 	app.runtime.prRefreshError = "earlier fixture failure"
 	app.runtimeMu.Unlock()
-	if err := app.RefreshPRs(context.Background()); err != nil {
+	if err := refreshLive(app); err != nil {
 		t.Fatal(err)
 	}
 	app.runtimeMu.Lock()
@@ -259,5 +272,321 @@ func TestCancelledCheckpointsAreNeverReseeded(t *testing.T) {
 		if has, err := state.HasPrReservation(id); err != nil || has {
 			t.Fatalf("recovery reseeded a reservation for %s: %t, %v", id, has, err)
 		}
+	}
+}
+
+func TestPauseCancelsHeldCapacityRefreshAndRejectsItsResult(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	delay := filepath.Join(fixture.root, "reconcile-delay")
+	if err := os.WriteFile(delay, []byte("60"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(delay) })
+	queued := queuedTask(fixture.cfg, "waiting-for-refresh", fixture.cfg.DefaultBranch, fixture.cfg.BranchPrefix+"waiting")
+	if err := fixture.state.Put("task", queued.ID, queued); err != nil {
+		t.Fatal(err)
+	}
+	app := New(fixture.state, fixture.dataDir, WithTaskRunner(TaskRunnerFunc(func(context.Context, model.Task) error { return nil })))
+	t.Cleanup(app.Shutdown)
+	deferHousekeeping(app)
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	waitForFixtureFile(t, filepath.Join(fixture.root, "reconcile-processes.jsonl"), "capacity refresh did not reach the deterministic barrier")
+	if err := app.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	app.wg.Wait()
+	// The pause made the held refresh obsolete; its cancellation is not a
+	// remote inventory failure to report for the rest of the pause.
+	app.runtimeMu.Lock()
+	refreshError := app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("cancelled refresh was recorded as a failure: %q", refreshError)
+	}
+	if err := os.Remove(delay); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	capacity, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capacity.Status != "unavailable" || capacity.Remaining != nil {
+		t.Fatalf("cancelled refresh authorized resumed work: %+v", capacity)
+	}
+	saved, err := store.Get[model.Task](fixture.state, "task", queued.ID)
+	if err != nil || saved.Status != model.StatusQueued {
+		t.Fatalf("held refresh changed queued work: %+v, %v", saved, err)
+	}
+}
+
+func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	queued := queuedTask(fixture.cfg, "waiting-for-capacity", fixture.cfg.DefaultBranch, fixture.cfg.BranchPrefix+"waiting")
+	if err := fixture.state.Put("task", queued.ID, queued); err != nil {
+		t.Fatal(err)
+	}
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshLive(app); err != nil {
+		t.Fatal(err)
+	}
+	before, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Status != "ready" {
+		t.Fatalf("capacity after complete refresh = %s: %v", before.Status, before.Reason)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshLive(app); err == nil {
+		t.Fatal("malformed remote inventory unexpectedly refreshed")
+	}
+	after, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != "unavailable" || after.Reason == nil {
+		t.Fatalf("capacity survived failed refresh: %+v", after)
+	}
+	control, err := app.Control()
+	if err != nil || control.Mode != model.OperatingModeContinuous || control.Error != nil {
+		t.Fatalf("refresh failure failed Continuous operation: %+v, %v", control, err)
+	}
+	saved, err := store.Get[model.Task](fixture.state, "task", queued.ID)
+	if err != nil || saved.Status != model.StatusQueued {
+		t.Fatalf("refresh failure changed queued work: %+v, %v", saved, err)
+	}
+	// A later complete observation clears the failure and restores ready
+	// capacity — capacity_reports_refresh_state_and_clears_error_after_observation.
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshLive(app); err != nil {
+		t.Fatalf("restored inventory did not refresh: %v", err)
+	}
+	recovered, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != "ready" || recovered.Reason != nil || recovered.Remaining == nil || *recovered.Remaining != fixture.cfg.MaxOpenPRs {
+		t.Fatalf("successful refresh did not clear the failure: %+v", recovered)
+	}
+}
+
+func TestRefreshReleasesOnlyRemotelySettledCheckpointReservation(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	checkpoint := queuedTask(fixture.cfg, "cancelled-checkpoint", fixture.cfg.DefaultBranch, fixture.cfg.BranchPrefix+"checkpoint")
+	checkpoint.Status = model.StatusCancelled
+	commit := "checkpoint-output"
+	checkpoint.OutputCommit = &commit
+	if err := fixture.state.Put("task", checkpoint.ID, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.state.SeedPrReservation(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshLive(app); err != nil {
+		t.Fatal(err)
+	}
+	reservations, err := fixture.state.PrReservations(fixture.cfg.GitHubRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reservations) != 0 {
+		t.Fatalf("remote proved publication absent but reservation remained: %+v", reservations)
+	}
+}
+
+func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	cfg := fixture.cfg.Clone()
+	cfg.BranchPrefix = "tyk/"
+	cfg.MaxOpenPRs = 3
+	cfg.ExecutionConcurrency = 2
+	saveSettings(t, fixture.state, cfg, model.DefaultControl())
+	for _, id := range []string{"first", "second", "third"} {
+		task := queuedTask(cfg, id, cfg.DefaultBranch, cfg.BranchPrefix+id)
+		if err := fixture.state.Put("task", task.ID, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := make(chan string, 3)
+	app := New(fixture.state, fixture.dataDir, WithTaskRunner(TaskRunnerFunc(func(_ context.Context, task model.Task) error {
+		started <- task.ID
+		task.Status = model.StatusPublished
+		return fixture.state.Put("task", task.ID, task)
+	})))
+	t.Cleanup(app.Shutdown)
+	deferHousekeeping(app)
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	// The first pass fetches an inventory; the next admits both available slots.
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	app.wg.Wait()
+	if len(started) != 0 {
+		t.Fatal("tasks started before a complete inventory was available")
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	app.wg.Wait()
+	if len(started) != 2 {
+		t.Fatalf("one inventory admitted %d tasks; want both slots in the same batch", len(started))
+	}
+	capacity, err := app.PrCapacity()
+	if err != nil || capacity.Status != "ready" || capacity.Remaining == nil || *capacity.Remaining != 1 {
+		t.Fatalf("consuming admission evidence lost dashboard capacity: %+v, %v", capacity, err)
+	}
+
+	// Another owned PR now fills the last slot alongside our two reservations.
+	// The scheduler must observe it before admitting the next batch.
+	command(t, fixture.root, "/usr/bin/git", "--git-dir", filepath.Join(fixture.root, "remote.git"), "branch", "tyk/another-session", "main")
+	pr := `[{"number":7,"title":"Other owned work","body":"<!-- octomus:task:other -->","head":{"ref":"tyk/another-session","sha":"","repo":{"full_name":"fixture/project"}},"base":{"ref":"main","repo":{"full_name":"fixture/project"}},"html_url":"https://github.com/fixture/project/pull/7","state":"open","merged_at":null,"additions":1,"deletions":0,"created_at":"2026-09-07T00:00:00Z"}]`
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte(pr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	app.wg.Wait()
+	if len(started) != 2 {
+		t.Fatal("the previous inventory authorized a second admission batch")
+	}
+	capacity, err = app.PrCapacity()
+	if err != nil || capacity.Status != "full" || capacity.OwnedOpen == nil || *capacity.OwnedOpen != 1 || capacity.Reserved != 2 {
+		t.Fatalf("next batch did not refresh immediately and observe the full capacity: %+v, %v", capacity, err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	app.wg.Wait()
+	third, err := store.Get[model.Task](fixture.state, "task", "third")
+	if err != nil || third == nil || third.Status != model.StatusQueued || len(started) != 2 {
+		t.Fatalf("full inventory admitted a new PR: %+v, %v; started=%d", third, err, len(started))
+	}
+}
+
+// A new-PR admission refused while capacity remains consumed its inventory,
+// so the next refresh waits out the retry delay, as it does at full
+// capacity: a refusal with a persistent cause no longer re-reads the whole
+// open-PR inventory on every tick. A repository path respelled in a way
+// settings accept as the same repository is not such a cause: work planned
+// under the old spelling is admitted.
+func TestRefusedAdmissionPacesInventoryRefreshes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		stale  func(*config.Config)
+		live   func(*config.Config)
+		admits bool
+	}{
+		{name: "respelled repository path", live: func(cfg *config.Config) { cfg.Repository += "/" }, admits: true},
+		{name: "persistently refused task", stale: func(cfg *config.Config) { cfg.BranchPrefix = "stale/" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPlanningFixture(t)
+			cfg := fixture.cfg.Clone()
+			cfg.BranchPrefix = "tyk/"
+			planned := cfg.Clone()
+			if test.stale != nil {
+				test.stale(&planned)
+			}
+			task := queuedTask(planned, "planned", planned.DefaultBranch, planned.BranchPrefix+"planned")
+			if err := fixture.state.Put("task", task.ID, task); err != nil {
+				t.Fatal(err)
+			}
+			if test.live != nil {
+				test.live(&cfg)
+			}
+			saveSettings(t, fixture.state, cfg, model.DefaultControl())
+			started := make(chan string, 1)
+			app := New(fixture.state, fixture.dataDir, WithTaskRunner(TaskRunnerFunc(func(_ context.Context, task model.Task) error {
+				started <- task.ID
+				task.Status = model.StatusPublished
+				return fixture.state.Put("task", task.ID, task)
+			})))
+			t.Cleanup(app.Shutdown)
+			deferHousekeeping(app)
+			if err := app.Resume(); err != nil {
+				t.Fatal(err)
+			}
+			// Ticks stop once the task is admitted: with no queued work left a
+			// tick would start a planning pass.
+			for i := 0; i < 8 && len(started) == 0; i++ {
+				if err := app.Tick(); err != nil {
+					t.Fatal(err)
+				}
+				app.wg.Wait()
+			}
+			if admitted := len(started) == 1; admitted != test.admits {
+				t.Fatalf("task admitted = %t; want %t", admitted, test.admits)
+			}
+			log, err := os.ReadFile(filepath.Join(fixture.root, "gh-api.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reads := strings.Count(string(log), "state=open"); reads > 2 {
+				t.Fatalf("eight ticks read the open-PR inventory %d times; want the retry delay to pace refreshes", reads)
+			}
+		})
+	}
+}
+
+func TestPrAdmissionFreshnessUsesInventoryObservation(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+	app := New(testStore(t), t.TempDir())
+	t.Cleanup(app.Shutdown)
+	now := time.Now()
+	for _, test := range []struct {
+		name      string
+		age       time.Duration
+		invalid   bool
+		wantFresh bool
+	}{
+		{name: "recent", age: 10 * time.Second, wantFresh: true},
+		{name: "at admission limit", age: time.Minute, wantFresh: true},
+		{name: "slow refresh within dashboard lifetime", age: 61 * time.Second},
+		{name: "older than dashboard lifetime", age: prObservationLifetime + time.Minute},
+		{name: "invalid observation time", invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			observed := now.Add(-test.age).UTC().Format(time.RFC3339Nano)
+			if test.invalid {
+				observed = "invalid"
+			}
+			app.runtime.prObservation = &freshPrObservation{
+				identity: store.PrIdentityOf(cfg), fetchedAt: now,
+				inventory: model.OpenPrInventory{Repository: cfg.GitHubRepo, ObservedAt: observed, PRs: []model.PullRequest{}},
+			}
+			inventory, reason := app.takePrAdmissionInventory(cfg, now)
+			if (inventory != nil) != test.wantFresh {
+				t.Fatalf("admission freshness = %t, want %t: %s", inventory != nil, test.wantFresh, reason)
+			}
+			if test.wantFresh {
+				if second, _ := app.takePrAdmissionInventory(cfg, now); second != nil {
+					t.Fatal("consumed inventory remained admission authority")
+				}
+			}
+		})
 	}
 }

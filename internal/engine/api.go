@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -46,130 +47,116 @@ func genericMap(value any) (map[string]any, error) {
 	return result, nil
 }
 
-// ControlAction runs the conflict check under the scheduler gate, then the durable mode transition and its
-// operator event. The response is the serialized control record (plus
-// planning_capacity for resume), exactly as the dashboard reads it.
+// ControlAction runs the conflict check under the scheduler gate, then the
+// durable mode transition and its operator event. The response is the
+// serialized control record (plus planning_capacity for resume), exactly as
+// the dashboard reads it.
 func (a *App) ControlAction(action string) (map[string]any, error) {
 	a.gate.Lock()
+	defer a.gate.Unlock()
 	control, err := a.Control()
 	if err != nil {
-		a.gate.Unlock()
 		return nil, err
 	}
-	a.runtimeMu.Lock()
-	baselineActive := a.runtime.baseline != nil
-	idle := a.runtime.idle()
-	auditActive := a.runtime.cycle != nil && a.runtime.cycle.mode == model.CycleModeAudit ||
-		a.runtime.preflight && a.runtime.preflightMode == model.CycleModeAudit
-	a.runtimeMu.Unlock()
-	if ((action == "audit" || action == "cycle") && (!control.Paused || !idle)) ||
-		((action == "resume" || action == "cycle") && auditActive) ||
-		(action == "resume" && baselineActive) {
-		a.gate.Unlock()
-		var message string
-		if baselineActive {
-			message = "Wait for the baseline check to finish."
-		} else {
-			switch action {
-			case "audit":
-				message = "Audits require paused operation with no active work. Pause the service and wait for active work to finish."
-			case "cycle":
-				message = "Run once requires paused operation with no active work. Pause the service and wait for active work to finish."
-			default:
-				message = "Wait for the audit to finish before starting continuous operation."
-			}
-		}
-		return nil, conflictError(message)
+	if err := a.controlConflict(action, control); err != nil {
+		return nil, err
 	}
-	if action == "audit" {
+	switch action {
+	case "audit":
 		// Audit includes a remote preflight, so the gate drops for remote work
 		// and the launch itself revalidates paused and idle state. The launch
 		// records the operator event on the cycle it starts.
-		a.gate.Unlock()
-		if _, err := a.StartAudit(a.ctx); err != nil {
+		a.withoutGate(func() { _, err = a.StartAudit(a.ctx) })
+		if err != nil {
 			return nil, err
 		}
-		a.gate.Lock()
 		control, err = a.Control()
 		if err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
-		body, err := genericMap(control)
-		a.gate.Unlock()
-		return body, err
-	}
-	body := map[string]any{}
-	switch action {
+		return genericMap(control)
 	case "pause":
-		control.SetMode(model.OperatingModePaused)
-		a.invalidatePrObservation()
+		if err := a.pauseLocked(&control, nil); err != nil {
+			return nil, err
+		}
 	case "resume":
 		if err := a.enterContinuous(&control); err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 	case "cycle":
 		cfg, err := a.Config()
 		if err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 		if err := cfg.Validate(true); err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
-		capacity, err := a.Store.PlanningCapacity()
-		if err != nil {
-			a.gate.Unlock()
+		// Saves the batch's control itself, in the transaction that checks
+		// planning affordability.
+		if err := a.startRunOnceBatch(&control); err != nil {
 			return nil, err
 		}
-		if err := capacity.EnsureAvailable(); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
-		if err := a.Store.StartBatch(&control); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
+		a.notify()
 	default:
-		a.gate.Unlock()
 		return nil, ErrUnknownControl
 	}
-	if action != "resume" {
-		if err := a.Store.SaveControl(control); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
-	}
 	if err := a.Store.Event("system", "operator", action); err != nil {
-		a.gate.Unlock()
 		return nil, err
 	}
-	body, err = genericMap(control)
+	body, err := genericMap(control)
 	if err != nil {
-		a.gate.Unlock()
 		return nil, err
 	}
 	if action == "resume" {
 		capacity, err := a.Store.PlanningCapacity()
 		if err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 		body["planning_capacity"] = capacity
 	}
-	a.gate.Unlock()
 	return body, nil
+}
+
+// controlConflict returns the conflict that refuses action in the current
+// runtime and durable mode, or nil. Audit and run once need paused operation
+// with no active work, and neither run once nor resume may start beside an
+// audit; resume also waits for a baseline check. Callers hold the gate.
+func (a *App) controlConflict(action string, control model.Control) error {
+	a.runtimeMu.Lock()
+	baselineActive := a.runtime.baseline != nil
+	idle := a.runtime.idle()
+	auditActive := a.runtime.auditActive()
+	a.runtimeMu.Unlock()
+	refused := (action == "audit" || action == "cycle") && (!control.Paused || !idle) ||
+		(action == "resume" || action == "cycle") && auditActive ||
+		action == "resume" && baselineActive
+	switch {
+	case !refused:
+		return nil
+	case baselineActive:
+		return conflictError("Wait for the baseline check to finish.")
+	case action == "audit":
+		return conflictError("Audits require paused operation with no active work. Pause the service and wait for active work to finish.")
+	case action == "cycle":
+		return conflictError("Run once requires paused operation with no active work. Pause the service and wait for active work to finish.")
+	default:
+		return conflictError("Wait for the audit to finish before starting continuous operation.")
+	}
 }
 
 // CycleAction applies an operator action to a finished cycle: archive stamps
 // its lifecycle, and discard, allowed only once it is archived, removes its
-// planning workspaces. A running cycle or an in-flight cleanup conflicts.
+// planning workspaces. Each happens once: repeating either conflicts rather
+// than rewriting the recorded lifecycle time. Any other action name is
+// ErrUnknownCycleAction before any state is read. A running cycle or an
+// in-flight cleanup conflicts.
 // Discard removes the managed directory with the gate released; the call is
 // registered service work from admission so Shutdown waits out an in-flight
 // removal instead of abandoning it mid-delete.
 func (a *App) CycleAction(id, action string) error {
+	if action != "archive" && action != "discard" {
+		return ErrUnknownCycleAction
+	}
 	a.gate.Lock()
 	if err := a.ctx.Err(); err != nil {
 		a.gate.Unlock()
@@ -193,6 +180,9 @@ func (a *App) CycleAction(id, action string) error {
 	}
 	switch action {
 	case "archive":
+		if cycle.Lifecycle.ArchivedAt != nil {
+			return conflictError("The cycle is already archived")
+		}
 		now := model.Now()
 		cycle.Lifecycle.ArchivedAt = &now
 		if err := a.Store.Put("cycle", id, *cycle); err != nil {
@@ -202,11 +192,9 @@ func (a *App) CycleAction(id, action string) error {
 		if cycle.Lifecycle.ArchivedAt == nil {
 			return conflictError("Archive the cycle before discarding its workspace")
 		}
-		if err := a.DiscardCycle(cycle); err != nil {
+		if err := a.discardCycle(cycle); err != nil {
 			return err
 		}
-	default:
-		return ErrUnknownCycleAction
 	}
 	return a.Store.Event(id, "operator", action)
 }
@@ -311,6 +299,10 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix {
+		// HasUnresolvedTasks counts every unarchived task not yet published
+		// or cancelled: queued and active work too, unlike
+		// model.UnresolvedStatuses. All of it still depends on the old
+		// repository identity and branch policy.
 		unresolved, err := a.Store.HasUnresolvedTasks()
 		if err != nil {
 			return nil, err
@@ -468,7 +460,7 @@ func (a *App) StateView() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	prCapacity, err := a.PrCapacity()
+	prCapacity, err := a.prCapacity(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -485,8 +477,8 @@ func (a *App) StateView() (map[string]any, error) {
 	if a.runtime.cycle != nil {
 		mode := a.runtime.cycle.mode
 		cycleMode = &mode
-	} else if a.runtime.preflight {
-		mode := a.runtime.preflightMode
+	} else if a.runtime.preflight != nil {
+		mode := *a.runtime.preflight
 		cycleMode = &mode
 	}
 	activeTasks := len(a.runtime.tasks)
@@ -496,7 +488,7 @@ func (a *App) StateView() (map[string]any, error) {
 	// A committed running cycle is durable before its runtime slot is assigned.
 	// Read it from the same snapshot as the visible cycles: a later store query
 	// could see its terminal status and contradict the returned cycle summary.
-	if !cycleActive || cycleMode == nil {
+	if !cycleActive {
 		for _, raw := range snapshot.Cycles {
 			var cycle struct {
 				Mode   model.CycleMode `json:"mode"`
@@ -544,18 +536,16 @@ func (a *App) StateView() (map[string]any, error) {
 			"completed_at":    latest.CompletedAt,
 			"error":           latest.Error,
 			"config_revision": latest.ConfigFingerprint,
-			"config_matches":  a.BaselineConfigMatches(latest, cfg),
-			"revision_status": a.BaselineRevisionStatus(latest, cfg),
+			"config_matches":  baselineConfigMatches(latest, cfg),
+			"revision_status": a.baselineRevisionStatus(latest, cfg),
 		}
 	}
-	storage, found, err := a.Store.GetValue("settings", "storage")
+	// A missing record reads as nil.
+	storage, _, err := a.Store.GetValue("settings", "storage")
 	if err != nil {
 		return nil, err
 	}
-	if !found {
-		storage = nil
-	}
-	for key, value := range map[string]any{
+	maps.Copy(view, map[string]any{
 		"status":            status,
 		"control":           controlJSON,
 		"repository":        cfg.GitHubRepo,
@@ -572,8 +562,6 @@ func (a *App) StateView() (map[string]any, error) {
 		"storage":           storage,
 		"planning_capacity": planningCapacity,
 		"pr_capacity":       prCapacity,
-	} {
-		view[key] = value
-	}
+	})
 	return view, nil
 }

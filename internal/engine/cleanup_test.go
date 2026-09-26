@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,20 @@ func (b *removalBarrier) remove(root, path string) error {
 		<-b.release
 	}
 	return workspace.RemoveOwnedDir(root, path)
+}
+
+// failOnceRemoval is a WithWorkspaceRemoval seam whose next removal of target
+// fails with message; every other removal goes through the real
+// managed-directory checks. Storing true in the returned flag re-arms it.
+func failOnceRemoval(target, message string) (Option, *atomic.Bool) {
+	fail := &atomic.Bool{}
+	fail.Store(true)
+	return WithWorkspaceRemoval(func(root, path string) error {
+		if path == target && fail.Swap(false) {
+			return errors.New(message)
+		}
+		return workspace.RemoveOwnedDir(root, path)
+	}), fail
 }
 
 // wait confirms removal of the blocked path was admitted and is in flight.
@@ -220,7 +235,7 @@ func TestDiscardReleasesTheGateAndClaimsTheWorkspace(t *testing.T) {
 		t.Fatalf("discarded record: %+v, %v", saved, err)
 	}
 	if saved.Error == nil || *saved.Error != "late unrelated evidence" {
-		t.Fatalf("finalization clobbered a concurrent write: %+v", saved.Error)
+		t.Fatalf("finalization clobbered a concurrent write: %s", optionalText(saved.Error))
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "tasks", task.ID)); !os.IsNotExist(err) {
 		t.Fatalf("owned task directory still present: %v", err)
@@ -377,6 +392,105 @@ func TestCycleDiscardClaimsConflictsAndShutdownWaits(t *testing.T) {
 	}
 }
 
+// Archive and discard each happen once. Repeating either, or archiving after
+// the discard, conflicts instead of rewriting the recorded lifecycle time or
+// adding another operator event, and a repeated discard never reaches
+// workspace removal. discardTask and discardCycle hold the same rule for every
+// caller, not only the operator controls.
+func TestLifecycleArchiveAndDiscardHappenOnce(t *testing.T) {
+	state := testStore(t)
+	dataDir := t.TempDir()
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	cycle := discardableCycle(t, dataDir)
+	cycle.Lifecycle.ArchivedAt = nil
+	if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	task := discardableTask(t, cfg, dataDir, "discarded-task")
+	task.Lifecycle.DiscardedAt = stringPointer(cleanupOldTimestamp)
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	var removals atomic.Int32
+	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
+		removals.Add(1)
+		return workspace.RemoveOwnedDir(root, path)
+	}))
+	t.Cleanup(app.Shutdown)
+	loadCycle := func() model.Cycle {
+		t.Helper()
+		saved, err := store.Get[model.Cycle](state, "cycle", cycle.ID)
+		if err != nil || saved == nil {
+			t.Fatalf("reload cycle: %+v, %v", saved, err)
+		}
+		return *saved
+	}
+
+	if err := app.CycleAction(cycle.ID, "archive"); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	archivedAt := loadCycle().Lifecycle.ArchivedAt
+	if archivedAt == nil {
+		t.Fatal("archive did not record archived_at")
+	}
+	if err := app.CycleAction(cycle.ID, "archive"); err == nil || !IsActionConflict(err) || err.Error() != "The cycle is already archived" {
+		t.Fatalf("repeated archive = %v; want the already-archived conflict", err)
+	}
+	if err := app.CycleAction(cycle.ID, "discard"); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	discarded := loadCycle()
+	if discarded.Lifecycle.DiscardedAt == nil || removals.Load() != 1 {
+		t.Fatalf("discard: %+v after %d removals", discarded.Lifecycle, removals.Load())
+	}
+	for action, want := range map[string]string{
+		"discard": "The cycle workspaces were already discarded",
+		"archive": "The cycle is already archived",
+	} {
+		if err := app.CycleAction(cycle.ID, action); err == nil || !IsActionConflict(err) || err.Error() != want {
+			t.Fatalf("%s after discard = %v; want %q", action, err, want)
+		}
+	}
+	app.gate.Lock()
+	cycleErr := app.discardCycle(&discarded)
+	taskErr := app.discardTask(&task)
+	app.gate.Unlock()
+	if cycleErr == nil || !IsActionConflict(cycleErr) {
+		t.Fatalf("discardCycle on a discarded cycle = %v; want a conflict", cycleErr)
+	}
+	if taskErr == nil || !IsActionConflict(taskErr) {
+		t.Fatalf("discardTask on a discarded task = %v; want a conflict", taskErr)
+	}
+	if removals.Load() != 1 {
+		t.Fatalf("a repeated discard reached workspace removal: %d removals", removals.Load())
+	}
+	saved := loadCycle()
+	if *saved.Lifecycle.ArchivedAt != *archivedAt || *saved.Lifecycle.DiscardedAt != *discarded.Lifecycle.DiscardedAt {
+		t.Fatalf("repeated actions rewrote the lifecycle: %+v; want archived %s, discarded %s",
+			saved.Lifecycle, *archivedAt, *discarded.Lifecycle.DiscardedAt)
+	}
+	if savedTask := loadTask(t, state, task.ID); savedTask.Lifecycle.DiscardedAt == nil || *savedTask.Lifecycle.DiscardedAt != cleanupOldTimestamp {
+		t.Fatalf("repeated task discard rewrote discarded_at: %+v", savedTask.Lifecycle)
+	}
+	if _, err := os.Stat(task.Workspace); err != nil {
+		t.Fatalf("repeated task discard touched the workspace: %v", err)
+	}
+	events, err := state.Events(&cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator := map[string]int{}
+	for _, event := range events {
+		if event.Kind == "operator" {
+			operator[event.Message]++
+		}
+	}
+	if len(operator) != 2 || operator["archive"] != 1 || operator["discard"] != 1 {
+		t.Fatalf("operator events = %v; want one archive and one discard", operator)
+	}
+}
+
 // Baseline cleanup claims the check, dedupes a second cleanup instead of
 // waiting, keeps the terminal-check cancel refusal honest, and applies only
 // the cleanup fields to the current durable record so a write that lands
@@ -395,7 +509,7 @@ func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *tes
 	t.Cleanup(app.Shutdown)
 
 	done := make(chan error, 1)
-	go func() { done <- app.CleanupBaseline(&check) }()
+	go func() { done <- app.removeBaselineWorkspace(&check) }()
 	barrier.wait(t)
 
 	if err := completesDuring(t, "pause", app.Pause); err != nil {
@@ -403,13 +517,12 @@ func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *tes
 	}
 	if err := completesDuring(t, "duplicate cleanup", func() error {
 		duplicate := check
-		return app.CleanupBaseline(&duplicate)
+		return app.removeBaselineWorkspace(&duplicate)
 	}); err != nil {
 		t.Fatalf("duplicate baseline cleanup = %v; want deduped success", err)
 	}
-	var conflict *BaselineConflict
-	if err := app.CancelBaseline(check.ID); err == nil || !errors.As(err, &conflict) {
-		t.Fatalf("cancel on a terminal claimed check = %v; want baseline conflict", err)
+	if err := app.CancelBaseline(check.ID); err == nil || !IsActionConflict(err) {
+		t.Fatalf("cancel on a terminal claimed check = %v; want a conflict", err)
 	}
 	// A write landing mid-removal — e.g. the worker's last evidence — must
 	// survive finalization.
@@ -459,17 +572,11 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := filepath.Join(dataDir, "baselines", check.ID)
-	var fail atomic.Bool
-	fail.Store(true)
-	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
-		if path == target && fail.Swap(false) {
-			return errors.New("removal failed after reading bearer fixturesecrettoken123")
-		}
-		return workspace.RemoveOwnedDir(root, path)
-	}))
+	removal, _ := failOnceRemoval(target, "removal failed after reading bearer fixturesecrettoken123")
+	app := New(state, dataDir, removal)
 	t.Cleanup(app.Shutdown)
 
-	if err := app.CleanupBaseline(&check); err != nil {
+	if err := app.removeBaselineWorkspace(&check); err != nil {
 		t.Fatalf("cleanup error must be recorded, not returned: %v", err)
 	}
 	if check.WorkspaceRemoved || check.CleanupError == nil {
@@ -489,15 +596,11 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	remaining := false
-	for _, candidate := range candidates {
-		remaining = remaining || candidate.ID == check.ID
-	}
-	if !remaining {
+	if !slices.ContainsFunc(candidates, func(candidate model.BaselineCheck) bool { return candidate.ID == check.ID }) {
 		t.Fatal("failed cleanup left the candidate list")
 	}
 
-	if err := app.CleanupBaseline(&check); err != nil {
+	if err := app.removeBaselineWorkspace(&check); err != nil {
 		t.Fatalf("retry after a failed cleanup: %v", err)
 	}
 	saved, err = store.Get[model.BaselineCheck](state, "baseline", check.ID)
@@ -526,14 +629,8 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := filepath.Join(dataDir, "tasks", task.ID)
-	var fail atomic.Bool
-	fail.Store(true)
-	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
-		if path == target && fail.Swap(false) {
-			return errors.New("removal failed after reading bearer fixturesecrettoken123")
-		}
-		return workspace.RemoveOwnedDir(root, path)
-	}))
+	removal, fail := failOnceRemoval(target, "removal failed after reading bearer fixturesecrettoken123")
+	app := New(state, dataDir, removal)
 	t.Cleanup(app.Shutdown)
 
 	err := app.TaskAction(context.Background(), task.ID, "discard")
@@ -569,11 +666,7 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	remaining := false
-	for _, id := range ids {
-		remaining = remaining || id == task.ID
-	}
-	if !remaining {
+	if !slices.Contains(ids, task.ID) {
 		t.Fatal("failed cleanup left the candidate list")
 	}
 
@@ -586,6 +679,109 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("retried cleanup left the directory: %v", err)
+	}
+}
+
+// A cleanup that keeps failing the same way is one cleanup_error event, not
+// one per retention pass: a task, a cycle and a baseline whose identity is
+// permanently refused each report once across passes. A changed message is
+// reported at once, an unchanged one again after a day, and a pass that
+// finally discards the target writes nothing more and forgets the failure. An
+// operator discard, which retention never revisits, forgets it too.
+func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
+	state := testStore(t)
+	dataDir := t.TempDir()
+	cfg := testConfig(t.TempDir())
+	cfg.RetainCompletedDays = 1
+	saveSettings(t, state, cfg, model.DefaultControl())
+	task := discardableTask(t, cfg, dataDir, "stuck-task")
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	cycle := discardableCycle(t, dataDir)
+	if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	check := makeCheck(cfg, model.BaselineStatusFailed)
+	check.ID = "not-a-uuid"
+	check.CompletedAt = stringPointer(model.Now())
+	if err := state.Put("baseline", check.ID, check); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	failure := "removal refused: bearer fixturesecrettoken123"
+	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
+		mu.Lock()
+		message := failure
+		mu.Unlock()
+		if message != "" {
+			return errors.New(message)
+		}
+		return workspace.RemoveOwnedDir(root, path)
+	}))
+	t.Cleanup(app.Shutdown)
+	pass := func() {
+		t.Helper()
+		if err := app.retention(cfg); err != nil {
+			t.Fatalf("retention: %v", err)
+		}
+	}
+	counts := func(want map[string]int) {
+		t.Helper()
+		for id, n := range want {
+			if events := cleanupEvents(t, state, id); len(events) != n {
+				t.Fatalf("%s cleanup events = %+v; want %d", id, events, n)
+			}
+		}
+	}
+
+	pass()
+	pass()
+	counts(map[string]int{task.ID: 1, cycle.ID: 1, check.ID: 1})
+	if events := cleanupEvents(t, state, task.ID); strings.Contains(events[0].Message, "fixturesecrettoken123") {
+		t.Fatalf("cleanup failure not redacted: %q", events[0].Message)
+	}
+
+	mu.Lock()
+	failure = "removal refused: a different reason"
+	mu.Unlock()
+	pass()
+	counts(map[string]int{task.ID: 2, cycle.ID: 2, check.ID: 1})
+
+	app.runtimeMu.Lock()
+	aged := app.runtime.cleanupReports[cleanupKey{kind: cleanupTask, id: task.ID}]
+	aged.at = aged.at.Add(-cleanupReportInterval)
+	app.runtime.cleanupReports[cleanupKey{kind: cleanupTask, id: task.ID}] = aged
+	app.runtimeMu.Unlock()
+	pass()
+	counts(map[string]int{task.ID: 3, cycle.ID: 2, check.ID: 1})
+
+	mu.Lock()
+	failure = ""
+	mu.Unlock()
+	if err := app.CycleAction(cycle.ID, "discard"); err != nil {
+		t.Fatalf("operator discard: %v", err)
+	}
+	app.runtimeMu.Lock()
+	_, cycleRemembered := app.runtime.cleanupReports[cleanupKey{kind: cleanupCycle, id: cycle.ID}]
+	app.runtimeMu.Unlock()
+	if cycleRemembered {
+		t.Fatal("an operator discard left the cycle's reported cleanup failure remembered")
+	}
+	pass()
+	counts(map[string]int{task.ID: 3, cycle.ID: 2, check.ID: 1})
+	if saved := loadTask(t, state, task.ID); saved.Lifecycle.DiscardedAt == nil {
+		t.Fatalf("recovered cleanup did not discard the task: %+v", saved.Lifecycle)
+	}
+	if saved, err := store.Get[model.Cycle](state, "cycle", cycle.ID); err != nil || saved == nil || saved.Lifecycle.DiscardedAt == nil {
+		t.Fatalf("recovered cleanup did not discard the cycle: %+v, %v", saved, err)
+	}
+	app.runtimeMu.Lock()
+	remembered := len(app.runtime.cleanupReports)
+	_, baselineRemembered := app.runtime.cleanupReports[cleanupKey{kind: cleanupBaseline, id: check.ID}]
+	app.runtimeMu.Unlock()
+	if remembered != 1 || !baselineRemembered {
+		t.Fatalf("cleanup reports after recovery = %d; want only the still-refused baseline", remembered)
 	}
 }
 
@@ -625,6 +821,60 @@ func TestDiscardRefusesAnUnownedPathWithoutMarking(t *testing.T) {
 	}
 }
 
+// A workspace removal that panics runs with the gate released; the operator
+// request that owns it is recovered per request by net/http. The gate must
+// come back balanced, so the request's own release neither deadlocks later
+// controls nor unlocks an unlocked gate, and the cleanup claim must be
+// released, so the next discard is not refused as already in progress.
+func TestWorkspaceRemovalPanicReleasesTheGateAndClaim(t *testing.T) {
+	state := testStore(t)
+	dataDir := t.TempDir()
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	task := discardableTask(t, cfg, dataDir, "panicking-removal")
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	var panicking atomic.Bool
+	panicking.Store(true)
+	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
+		if panicking.Load() {
+			panic("removal failed unexpectedly")
+		}
+		return workspace.RemoveOwnedDir(root, path)
+	}))
+	t.Cleanup(app.Shutdown)
+
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != "removal failed unexpectedly" {
+				t.Fatalf("discard recovered %v; want the removal panic", recovered)
+			}
+		}()
+		_ = app.TaskAction(context.Background(), task.ID, "discard")
+	}()
+	if err := completesDuring(t, "pause after a panicking removal", func() error {
+		_, err := app.ControlAction("pause")
+		return err
+	}); err != nil {
+		t.Fatalf("pause after a panicking removal: %v", err)
+	}
+	if app.cleanupClaimed(cleanupTask, task.ID) {
+		t.Fatal("a panicking removal leaked its claim")
+	}
+	if saved := loadTask(t, state, task.ID); saved.Lifecycle.DiscardedAt != nil {
+		t.Fatalf("a panicking removal marked the record discarded: %+v", saved.Lifecycle)
+	}
+
+	panicking.Store(false)
+	if err := app.TaskAction(context.Background(), task.ID, "discard"); err != nil {
+		t.Fatalf("discard after a panicking removal: %v", err)
+	}
+	if saved := loadTask(t, state, task.ID); saved.Lifecycle.DiscardedAt == nil {
+		t.Fatal("the repeated discard did not mark the record")
+	}
+}
+
 // A claim excludes every workspace user, not only a second cleanup: retry,
 // cancel and reconcile conflict on claimed records, and execution admission
 // leaves a claimed queued task queued until the claim is released.
@@ -655,8 +905,7 @@ func TestCleanupClaimConflictsTaskActionsAndExecutionAdmission(t *testing.T) {
 		return ctx.Err()
 	})))
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 
 	app.gate.Lock()
 	claimed := app.claimCleanup(cleanupTask, blocked.ID) &&
@@ -1067,4 +1316,80 @@ func TestHousekeepingRunsOneJobAtATime(t *testing.T) {
 		t.Fatalf("no housekeeping pass started after the previous one ended: retention=%v observe=%v", retention, observe)
 	}
 	waitHousekeeping(t, app)
+}
+
+// Housekeeping's storage pass reports each runner transcript directory as
+// measured, unavailable (missing or not a directory) or unconfigured, and the
+// total as measured only when every runner was, partial when some were, and
+// unavailable when none was: an empty directory is measured, not missing.
+func TestRunnerStorageDistinguishesUnavailableFromEmpty(t *testing.T) {
+	state := testStore(t)
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	cfg := testConfig(t.TempDir())
+	empty := t.TempDir()
+	populated := t.TempDir()
+	file := filepath.Join(populated, "transcript")
+	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing-mount")
+	type measurement struct {
+		Bytes   *uint64                `json:"bytes"`
+		Status  string                 `json:"status"`
+		Runners map[string]measurement `json:"runners"`
+	}
+	type usage struct {
+		RunnerTranscripts measurement `json:"runner_transcripts"`
+		TaskBytes         uint64      `json:"task_bytes"`
+		PlanningBytes     uint64      `json:"planning_bytes"`
+	}
+	// The dashboard reads the saved summary under exactly these keys.
+	const message = `"message":"Runner storage reported separately. Application admission measures the data directory."`
+	for _, test := range []struct {
+		name       string
+		paths      map[string]string
+		codexState string
+		state      string
+		bytes      uint64
+		saved      string
+	}{
+		{name: "unconfigured", paths: map[string]string{}, codexState: "unconfigured", state: "unavailable",
+			saved: `"runner_transcripts":{"bytes":null,` + message + `,"runners":{"codex":{"bytes":null,"status":"unconfigured"},"opencode":{"bytes":null,"status":"unconfigured"}},"status":"unavailable"}`},
+		{name: "missing directory", paths: map[string]string{"codex": missing}, codexState: "unavailable", state: "unavailable"},
+		{name: "not a directory", paths: map[string]string{"codex": file}, codexState: "unavailable", state: "unavailable"},
+		{name: "empty directory", paths: map[string]string{"codex": empty}, codexState: "measured", state: "partial",
+			saved: `"runner_transcripts":{"bytes":0,` + message + `,"runners":{"codex":{"bytes":0,"status":"measured"},"opencode":{"bytes":null,"status":"unconfigured"}},"status":"partial"}`},
+		{name: "one missing runner", paths: map[string]string{"codex": missing, "opencode": populated}, codexState: "unavailable", state: "partial", bytes: 5,
+			saved: `"runner_transcripts":{"bytes":5,` + message + `,"runners":{"codex":{"bytes":null,"status":"unavailable"},"opencode":{"bytes":5,"status":"measured"}},"status":"partial"}`},
+		{name: "both measured", paths: map[string]string{"codex": populated, "opencode": empty}, codexState: "measured", state: "measured", bytes: 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg.RunnerStoragePaths = test.paths
+			if err := app.measureStorage(cfg); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := store.Get[usage](state, "settings", "storage")
+			if err != nil || saved == nil {
+				t.Fatalf("storage measurement: %+v, %v", saved, err)
+			}
+			runners := saved.RunnerTranscripts
+			codex := runners.Runners["codex"]
+			if codex.Status != test.codexState || (codex.Bytes != nil) != (test.codexState == "measured") {
+				t.Fatalf("runner measurement = %+v; want %s", codex, test.codexState)
+			}
+			if runners.Status != test.state || (runners.Bytes != nil) != (test.state != "unavailable") || runners.Bytes != nil && *runners.Bytes != test.bytes {
+				t.Fatalf("aggregate measurement = %+v; want %s, %d bytes", runners, test.state, test.bytes)
+			}
+			if saved.TaskBytes != 0 || saved.PlanningBytes != 0 {
+				t.Fatalf("absent application workspaces should measure zero: %+v", saved)
+			}
+			if test.saved != "" {
+				raw, found, err := state.GetRaw("settings", "storage")
+				if err != nil || !found || !strings.Contains(string(raw), test.saved) {
+					t.Fatalf("saved storage = %s, %t, %v; want %s", raw, found, err, test.saved)
+				}
+			}
+		})
+	}
 }

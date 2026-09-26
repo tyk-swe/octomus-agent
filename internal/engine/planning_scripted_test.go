@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -138,7 +139,7 @@ func assertScriptedPlanningPass(t *testing.T, f *scriptedFixture, cycle model.Cy
 	t.Helper()
 	want := int(f.cfg.DiscoveryAgents + 4)
 	if cycle.Status != model.CycleCompleted || len(cycle.Sessions) != want || len(cycle.Assessments) != 2 {
-		t.Fatalf("incomplete planning pass: status=%s sessions=%d/%d assessments=%d error=%v", cycle.Status, len(cycle.Sessions), want, len(cycle.Assessments), cycle.Error)
+		t.Fatalf("incomplete planning pass: status=%s sessions=%d/%d assessments=%d error=%s", cycle.Status, len(cycle.Sessions), want, len(cycle.Assessments), optionalText(cycle.Error))
 	}
 	sessions := map[string]model.Session{}
 	roles := map[string]int{}
@@ -339,7 +340,7 @@ func TestAuditPlanningContextReportsTheGroundedPrCapacity(t *testing.T) {
 			}
 			cycle := waitCycle(t, fixture.state, cycleID)
 			if cycle.Status != model.CycleCompleted || cycle.Grounding == nil || cycle.Grounding.PRCoverage.ObservedAt == nil {
-				t.Fatalf("audit did not complete with grounding: status=%s error=%v", cycle.Status, cycle.Error)
+				t.Fatalf("audit did not complete with grounding: status=%s error=%s", cycle.Status, optionalText(cycle.Error))
 			}
 			capacity := consolidationPrCapacity(t, fixture)
 			if capacity["status"] != tc.status || capacity["remaining"] != tc.remaining || capacity["reason"] != tc.reason {
@@ -642,6 +643,172 @@ func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 	}
 }
 
+// allPlanningErrors returns every planning_error event, whatever its entity.
+func allPlanningErrors(t *testing.T, state *store.Store) []model.Event {
+	t.Helper()
+	events, err := state.Events(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := []model.Event{}
+	for _, event := range events {
+		if event.Kind == "planning_error" {
+			found = append(found, event)
+		}
+	}
+	return found
+}
+
+// A pass that graceful shutdown cuts short is recorded as restart recovery
+// records one a crash cut short: the cycle is interrupted, not failed, and
+// control is left for recovery with no error and no planning_error event.
+// Recovery then pauses a Run once whose plan never committed, and Continuous
+// plans again at once.
+func TestGracefulShutdownDuringPlanningRecordsInterruption(t *testing.T) {
+	for _, mode := range []string{"audit", "run once", "continuous"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			plan := completePlan(t, fixture)
+			grounding := runnertest.NewGate()
+			plan.grounding.Gate = grounding
+			plan.queue(fixture)
+			app := fixture.pausedApp(t)
+			switch mode {
+			case "audit":
+				if _, err := app.StartAudit(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			case "run once":
+				if err := app.RunOnce(); err != nil {
+					t.Fatal(err)
+				}
+			case "continuous":
+				if err := app.Resume(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode != "audit" {
+				if err := app.Tick(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-grounding.Entered():
+			case <-time.After(30 * time.Second):
+				t.Fatal("planning did not reach grounding")
+			}
+			started, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			app.Shutdown()
+
+			cycles, err := store.List[model.Cycle](fixture.state, "cycle")
+			if err != nil || len(cycles) != 1 {
+				t.Fatalf("cycles: %d, %v", len(cycles), err)
+			}
+			cycle := cycles[0]
+			if cycle.Status != model.CycleInterrupted || cycle.Error == nil || *cycle.Error != interruptedPlanningMessage || cycle.CompletedAt == nil {
+				t.Fatalf("shutdown recorded the cut-short pass as %+v; want it interrupted", cycle)
+			}
+			// The cut-short turn is interrupted too, not a runner failure.
+			if len(cycle.Sessions) != 1 || cycle.Sessions[0].Status != model.SessionInterrupted {
+				t.Fatalf("shutdown recorded the cut-short turn as %+v; want one interrupted session", cycle.Sessions)
+			}
+			control, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(control, started) {
+				t.Fatalf("shutdown settled control %+v; want it left as the pass started it, %+v", control, started)
+			}
+			if control.Error != nil {
+				t.Fatalf("shutdown recorded a control error: %s", *control.Error)
+			}
+			if events := allPlanningErrors(t, fixture.state); len(events) != 0 {
+				t.Fatalf("shutdown logged planning errors: %+v", events)
+			}
+			if tasks, err := store.List[model.Task](fixture.state, "task"); err != nil || len(tasks) != 0 {
+				t.Fatalf("cut-short pass queued tasks: %+v, %v", tasks, err)
+			}
+
+			restarted := New(fixture.state, fixture.dataDir)
+			t.Cleanup(restarted.Shutdown)
+			if err := restarted.Recover(); err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := restarted.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "run once":
+				if recovered.Mode != model.OperatingModePaused || recovered.Batch != nil || recovered.Error == nil || *recovered.Error != "Run once was interrupted before its planning transaction committed" {
+					t.Fatalf("recovery did not pause the uncommitted Run once: %+v", recovered)
+				}
+			case "continuous":
+				if recovered.Mode != model.OperatingModeContinuous || recovered.Error != nil || recovered.NextCycleAt > time.Now().Unix() {
+					t.Fatalf("recovery did not leave Continuous due to plan again: %+v", recovered)
+				}
+			default:
+				if !reflect.DeepEqual(recovered, started) {
+					t.Fatalf("recovery changed the paused audit control: %+v", recovered)
+				}
+			}
+		})
+	}
+}
+
+// An execution preflight that graceful shutdown cuts short leaves control as
+// a crash would: the Run once batch still drains and Continuous stays due.
+func TestGracefulShutdownDuringPreflightLeavesControl(t *testing.T) {
+	for _, mode := range []string{"run once", "continuous"} {
+		t.Run(mode, func(t *testing.T) {
+			runOnce := mode == "run once"
+			fixture := newScriptedPlanningFixture(t)
+			hold := filepath.Join(fixture.root, "reconcile-hold")
+			if err := os.WriteFile(hold, []byte("1"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Remove(hold) })
+			app := fixture.pausedApp(t)
+			if runOnce {
+				if err := app.RunOnce(); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := app.Resume(); err != nil {
+				t.Fatal(err)
+			}
+			started, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := app.Tick(); err != nil {
+				t.Fatal(err)
+			}
+			waitForFixtureFile(t, filepath.Join(fixture.root, "reconcile-entered"), "planning preflight did not reach the deterministic barrier")
+			app.Shutdown()
+
+			control, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(control, started) {
+				t.Fatalf("shutdown settled control %+v; want it left as the preflight found it, %+v", control, started)
+			}
+			if runOnce && (control.Mode != model.OperatingModeRunOnce || control.Batch == nil || control.Batch.Phase != model.BatchPhaseDraining) {
+				t.Fatalf("shutdown dropped the Run once batch: %+v", control)
+			}
+			if events := allPlanningErrors(t, fixture.state); len(events) != 0 {
+				t.Fatalf("shutdown logged planning errors: %+v", events)
+			}
+			if cycles, err := store.List[model.Cycle](fixture.state, "cycle"); err != nil || len(cycles) != 0 {
+				t.Fatalf("cut-short preflight created a cycle: %d, %v", len(cycles), err)
+			}
+		})
+	}
+}
+
 // saveRediscoveryRequest saves a cancelled default-branch task whose operator
 // asked for a fresh assessment against current context.
 func saveRediscoveryRequest(t *testing.T, f *scriptedFixture) model.Task {
@@ -720,7 +887,7 @@ func TestRediscoveryNeedsExactlyOneFreshDecision(t *testing.T) {
 			_, cycle := runOncePlan(t, fixture)
 			want := fmt.Sprintf("Every rediscovery request needs exactly one fresh decision (request %s had %d)", request.ID, tc.references)
 			if cycle.Status != model.CycleFailed || cycle.Error == nil || *cycle.Error != want {
-				t.Fatalf("pass status=%s error=%v; want failed with %q", cycle.Status, cycle.Error, want)
+				t.Fatalf("pass status=%s error=%s; want failed with %q", cycle.Status, optionalText(cycle.Error), want)
 			}
 			for _, turn := range fixture.script.Turns(fixture.routes.ProposalReviewer) {
 				if !strings.Contains(turn.Prompt, `"id":"rediscover-`+request.ID+`"`) {
@@ -736,6 +903,37 @@ func TestRediscoveryNeedsExactlyOneFreshDecision(t *testing.T) {
 				t.Fatalf("a failed pass committed tasks: %d, %v", len(tasks), err)
 			}
 		})
+	}
+}
+
+// Archiving a task with a pending rediscovery request withdraws the request,
+// as archiving removes the task from scheduling: later execution passes no
+// longer seed it, so they neither assess it nor fail for leaving it undecided.
+func TestArchivingWithdrawsARediscoveryRequest(t *testing.T) {
+	fixture := newScriptedPlanningFixture(t)
+	request := saveRediscoveryRequest(t, fixture)
+	completePlan(t, fixture).queue(fixture)
+	app := fixture.pausedApp(t)
+	if err := app.TaskAction(context.Background(), request.ID, "archive"); err != nil {
+		t.Fatal(err)
+	}
+	if requests, err := fixture.state.RediscoveryRequests(fixture.cfg.GitHubRepo); err != nil || len(requests) != 0 {
+		t.Fatalf("archived request still pending: %+v, %v", requests, err)
+	}
+	if err := app.RunOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	cycle := waitOnlyCycle(t, fixture.state)
+	if cycle.Status != model.CycleCompleted {
+		t.Fatalf("pass status=%s error=%s; want the plan completed without the archived request", cycle.Status, optionalText(cycle.Error))
+	}
+	for _, turn := range fixture.planningTurns() {
+		if strings.Contains(turn.Prompt, "rediscover-"+request.ID) {
+			t.Fatalf("a planning role was asked about the archived request: %.300s", turn.Prompt)
+		}
 	}
 }
 
@@ -757,7 +955,7 @@ func TestRediscoveryDecisionResolvesTheRequest(t *testing.T) {
 				wantStatus = model.CycleCompleted
 			}
 			if cycle.Status != wantStatus {
-				t.Fatalf("pass status=%s error=%v; want %s", cycle.Status, cycle.Error, wantStatus)
+				t.Fatalf("pass status=%s error=%s; want %s", cycle.Status, optionalText(cycle.Error), wantStatus)
 			}
 			tasks, err := store.List[model.Task](fixture.state, "task")
 			if err != nil {
@@ -826,7 +1024,7 @@ func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
 			finished := 0
 			for _, cycle := range all {
 				if cycle.Status == model.CycleFailed {
-					t.Fatalf("%s: planning failed: %v", label, cycle.Error)
+					t.Fatalf("%s: planning failed: %s", label, optionalText(cycle.Error))
 				}
 				if cycle.Status != model.CycleRunning {
 					finished++
@@ -930,7 +1128,7 @@ func TestPlanningStagesReceiveTheGroundingSummaryText(t *testing.T) {
 			t.Fatal(err)
 		}
 		if cycle := waitCycle(t, fixture.state, cycleID); cycle.Status != model.CycleCompleted {
-			t.Fatalf("audit status=%s error=%v; want completed", cycle.Status, cycle.Error)
+			t.Fatalf("audit status=%s error=%s; want completed", cycle.Status, optionalText(cycle.Error))
 		}
 		const summary = "Grounding: Small fixture with a feature contract in README.md."
 		later := 0
@@ -1181,6 +1379,96 @@ func TestRemotePreflightDoesNotHoldControlLockAndRejectsChangedPolicy(t *testing
 	}
 }
 
+// Remote observation owns ContextFingerprint and IdleStreak and may bring
+// NextCycleAt forward, always under the gate, so an observation that lands
+// during a planning preflight leaves it valid: the audit or execution pass
+// starts and keeps the observed fields. An operator-owned change (cycle
+// number, recorded error) still rejects the preflight.
+func TestPlanningPreflightSurvivesObservationButNotOperatorChanges(t *testing.T) {
+	observe := func(control *model.Control) {
+		control.ContextFingerprint = "observed-during-preflight"
+		control.IdleStreak = 3
+		control.NextCycleAt = 12345
+	}
+	for _, test := range []struct {
+		name   string
+		audit  bool
+		change func(*model.Control)
+		starts bool
+	}{
+		{name: "audit after observation", audit: true, change: observe, starts: true},
+		{name: "continuous after observation", change: observe, starts: true},
+		{name: "audit after cycle number change", audit: true, change: func(control *model.Control) { control.CycleNumber++ }},
+		{name: "audit after recorded error", audit: true, change: func(control *model.Control) {
+			message := "operator-visible failure"
+			control.Error = &message
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			completePlan(t, fixture).queue(fixture)
+			hold := filepath.Join(fixture.root, "reconcile-hold")
+			if err := os.WriteFile(hold, []byte("1"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Remove(hold) })
+			app := fixture.pausedApp(t)
+			audit := make(chan error, 1)
+			if test.audit {
+				go func() {
+					_, err := app.StartAudit(context.Background())
+					audit <- err
+				}()
+			} else {
+				if err := app.Resume(); err != nil {
+					t.Fatal(err)
+				}
+				if err := app.Tick(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			waitForFixtureFile(t, filepath.Join(fixture.root, "reconcile-entered"), "planning preflight did not reach the deterministic barrier")
+			app.gate.Lock()
+			control, err := app.Control()
+			if err == nil {
+				test.change(&control)
+				err = fixture.state.SaveControl(control)
+			}
+			app.gate.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(hold); err != nil {
+				t.Fatal(err)
+			}
+			if test.audit {
+				err = <-audit
+			}
+			app.wg.Wait() // The preflight, and any pass it started.
+
+			cycles, listErr := store.List[model.Cycle](fixture.state, "cycle")
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if !test.starts {
+				if err == nil || err.Error() != "Control state changed during planning preflight" || !IsActionConflict(err) || len(cycles) != 0 {
+					t.Fatalf("preflight after an operator change = %v with %d cycles; want it refused", err, len(cycles))
+				}
+				if turns := fixture.planningTurns(); len(turns) != 0 {
+					t.Fatalf("refused preflight ran planning turns: %+v", turns)
+				}
+				return
+			}
+			if err != nil || len(cycles) != 1 || cycles[0].Status != model.CycleCompleted {
+				t.Fatalf("preflight after an observation = %v with cycles %+v; want one completed pass", err, cycles)
+			}
+			if live, err := app.Control(); err != nil || live.ContextFingerprint != "observed-during-preflight" || live.CycleNumber != 1 {
+				t.Fatalf("started pass dropped the observation: %+v, %v", live, err)
+			}
+		})
+	}
+}
+
 func TestPlanningAllowanceConsumedDuringPreflightUsesModeSemantics(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -1304,6 +1592,30 @@ func TestPausedGroundingClearsEarlierRefreshFailure(t *testing.T) {
 	}
 	if observation != nil {
 		t.Fatal("paused grounding gained dispatch authority")
+	}
+}
+
+// Grounding observes open PRs as a refresh does, and its failure names the
+// observation that failed, as a refresh failure does.
+func TestGroundingNamesTheFailedPullRequestObservation(t *testing.T) {
+	fixture := newScriptedPlanningFixture(t)
+	app := fixture.pausedApp(t)
+	cycle := groundingCycle(t, fixture, model.CycleModeAudit)
+	// The listing reports an open PR against another base repository, which
+	// the inventory refuses.
+	foreign := `[{"number": 9, "title": "Foreign", "body": "", "state": "open", "merged_at": null,
+		"head": {"ref": "feature", "sha": "abc", "repo": {"full_name": "external/project"}},
+		"base": {"ref": "main", "repo": {"full_name": "external/other"}},
+		"html_url": "https://github.com/external/other/pull/9", "additions": 1, "deletions": 0, "created_at": "2026-09-07T00:00:00Z"}]`
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte(foreign), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := app.captureGrounding(context.Background(), fixture.cfg, &cycle)
+	if err == nil || err.Error() != "Open pull request inventory failed: Open PR entry reports a different base repository" {
+		t.Fatalf("grounding with a refused PR inventory = %v; want the inventory failure named", err)
+	}
+	if cycle.Grounding != nil {
+		t.Fatalf("failed grounding was recorded: %+v", cycle.Grounding)
 	}
 }
 

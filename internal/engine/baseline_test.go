@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,18 +112,15 @@ func TestBaselineValidationAcceptsUnroutedModelsButRequiresRepositoryAndCommands
 // check record, clone directory or worker exists.
 func TestStartBaselineRejectsStaleRevisionBeforeWork(t *testing.T) {
 	app, cfg := baselineApp(t)
-	fingerprint, err := BaselineFingerprint(cfg)
+	fingerprint, err := cfg.Fingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
 	stale := strings.Repeat("0", len(fingerprint))
 	if _, err := app.StartBaseline(stale); err == nil {
 		t.Fatal("stale revision accepted")
-	} else {
-		var conflict *BaselineConflict
-		if !errors.As(err, &conflict) {
-			t.Fatalf("conflict kind: %v", err)
-		}
+	} else if !IsActionConflict(err) {
+		t.Fatalf("conflict kind: %v", err)
 	}
 	if running, err := app.Store.RunningBaselines(); err != nil || len(running) != 0 {
 		t.Fatalf("rejected start persisted work: %d %v", len(running), err)
@@ -139,22 +135,26 @@ func TestStartBaselineRejectsStaleRevisionBeforeWork(t *testing.T) {
 
 func TestBaselineFingerprintTracksTheCanonicalConfig(t *testing.T) {
 	_, cfg := baselineApp(t)
-	fingerprint, err := BaselineFingerprint(cfg)
+	fingerprint, err := cfg.Fingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(fingerprint) != 64 {
 		t.Fatalf("fingerprint length %d", len(fingerprint))
 	}
-	again, _ := BaselineFingerprint(cfg)
+	again, _ := cfg.Fingerprint()
 	if again != fingerprint {
 		t.Fatal("fingerprint is not stable")
 	}
 	changed := cfg.Clone()
 	changed.VerificationCommands = append(changed.VerificationCommands, "echo ok")
-	other, _ := BaselineFingerprint(changed)
+	other, _ := changed.Fingerprint()
 	if other == fingerprint {
 		t.Fatal("fingerprint must track configuration changes")
+	}
+	check := &model.BaselineCheck{ConfigFingerprint: fingerprint}
+	if !baselineConfigMatches(check, cfg) || baselineConfigMatches(check, changed) {
+		t.Fatal("a check must match exactly the configuration it recorded")
 	}
 }
 
@@ -313,7 +313,7 @@ func setObservation(app *App, observation *model.DefaultBranchObservation) {
 
 func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing.T) {
 	app, cfg := baselineApp(t)
-	fingerprint, err := BaselineFingerprint(cfg)
+	fingerprint, err := cfg.Fingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspaceDir, "artifact"), []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.CleanupBaseline(&check); err != nil {
+	if err := app.removeBaselineWorkspace(&check); err != nil {
 		t.Fatal(err)
 	}
 	if !check.WorkspaceRemoved || check.CleanupError != nil {
@@ -481,7 +481,7 @@ func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.CleanupBaseline(&bad); err != nil {
+	if err := app.removeBaselineWorkspace(&bad); err != nil {
 		t.Fatal(err)
 	}
 	if bad.WorkspaceRemoved || bad.CleanupError == nil {
@@ -493,7 +493,7 @@ func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
 	invalid := makeCheck(cfg, model.BaselineStatusFailed)
 	invalid.ID = "../etc"
 	invalid.CompletedAt = &completed
-	if err := app.CleanupBaseline(&invalid); err == nil {
+	if err := app.removeBaselineWorkspace(&invalid); err == nil {
 		t.Fatal("invalid identity must refuse cleanup")
 	}
 }

@@ -47,6 +47,37 @@ func TestSharedBranchPullRequestsEachConsumeCapacity(t *testing.T) {
 	}
 }
 
+// A queued new-PR task planned before its repository path was respelled in a
+// way settings accept as the same repository is admitted; a different branch
+// policy is still a different PR identity.
+func TestRespelledRepositoryPathKeepsThePrIdentity(t *testing.T) {
+	s := open(t, statePath(t))
+	queued := task()
+	queued.Config.Repository = "/srv/repo"
+	queued.Branch = queued.Config.BranchPrefix + "respelled"
+	live := saveConfig(t, s, func(c *config.Config) {
+		c.GitHubRepo = "fixture/project"
+		c.MaxOpenPRs = 1
+		c.Repository = "/srv//repo/"
+	})
+	identity := store.PrIdentityOf(queued.Config)
+	if !identity.Matches(live) {
+		t.Fatal("a respelled repository path changed the PR identity")
+	}
+	other := live.Clone()
+	other.BranchPrefix = "other/"
+	if identity.Matches(other) {
+		t.Fatal("a different branch prefix kept the PR identity")
+	}
+	must(t, s.Put("settings", "pr_inventory", inventory()))
+	must(t, s.Put("task", queued.ID, queued))
+	admitted, err := s.AdmitNewPrTask(&queued, inventory())
+	must(t, err)
+	if !admitted || queued.Status != model.StatusExecuting {
+		t.Fatalf("respelled repository path refused admission: admitted=%t status=%s", admitted, queued.Status)
+	}
+}
+
 // with no prior delivery record, a poll adopts the newest published output
 // for that PR rather than treating the observed remote head as delivered.
 func TestPrObservationFallsBackToTheLatestPublishedOutput(t *testing.T) {

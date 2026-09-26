@@ -385,6 +385,34 @@ func TestCleanlinessAndSnapshot(t *testing.T) {
 	}
 }
 
+// The snapshot commit is published with the branch, so its message is
+// scrubbed like PR metadata: token-shaped text and secret environment values
+// never reach Git history.
+func TestSnapshotScrubsCommitMessage(t *testing.T) {
+	c, _ := fixtureRoot(t)
+	ctx := context.Background()
+	base, err := git.Git(ctx, c, c.Repository, []string{"rev-parse", "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := git.CloneAt(ctx, c, workspace, base); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(workspace, "feature.txt"), "fixed\n")
+	commit, err := git.Snapshot(ctx, c, workspace, "Rotate ghp_fixtureToken0123456789 and "+envSecretValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := git.Git(ctx, c, workspace, []string{"log", "-1", "--format=%B", commit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(message) != "Rotate [redacted] and [redacted]" {
+		t.Fatalf("snapshot commit message = %q; want both secrets scrubbed", message)
+	}
+}
+
 // TestParseInventory exercises the paginated inventory contract: sorting,
 // identical duplicates tolerated, and hard failures for conflicting entries,
 // missing identity, foreign repositories, unknown states and empty replies.

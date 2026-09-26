@@ -122,7 +122,7 @@ func TestAuditGroundingOwnedPRAgeThresholds(t *testing.T) {
 			}
 			cycle := waitCycle(t, fixture.state, cycleID)
 			if cycle.Status != model.CycleCompleted || cycle.Grounding == nil {
-				t.Fatalf("audit did not record grounding: status=%s error=%v", cycle.Status, cycle.Error)
+				t.Fatalf("audit did not record grounding: status=%s error=%s", cycle.Status, optionalText(cycle.Error))
 			}
 			want := make([]string, 0, len(tc.want))
 			for _, name := range tc.want {

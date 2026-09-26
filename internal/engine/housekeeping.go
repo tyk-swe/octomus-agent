@@ -34,14 +34,42 @@ const (
 	// maxRetainDays is the configured retain_completed_days maximum; retention
 	// clamps to it so an unvalidated value cannot overflow the cutoff duration.
 	maxRetainDays = 36500
+	// cleanupReportInterval is how long retention stays quiet about a target
+	// whose cleanup keeps failing with the same message. Some refusals are
+	// permanent (a symlinked data directory, a workspace outside the task's
+	// owned directory); an event every pass would crowd real history out of
+	// the bounded event log.
+	cleanupReportInterval = 24 * time.Hour
 )
 
 type storageUsage struct {
-	MeasuredAt        string         `json:"measured_at"`
-	ApplicationBytes  uint64         `json:"application_bytes"`
-	TaskBytes         uint64         `json:"task_bytes"`
-	PlanningBytes     uint64         `json:"planning_bytes"`
-	RunnerTranscripts map[string]any `json:"runner_transcripts"`
+	MeasuredAt        string            `json:"measured_at"`
+	ApplicationBytes  uint64            `json:"application_bytes"`
+	TaskBytes         uint64            `json:"task_bytes"`
+	PlanningBytes     uint64            `json:"planning_bytes"`
+	RunnerTranscripts runnerTranscripts `json:"runner_transcripts"`
+}
+
+// runnerStorageMessage tells the operator that runner transcript storage is
+// informational: storage admission measures only the data directory.
+const runnerStorageMessage = "Runner storage reported separately. Application admission measures the data directory."
+
+// runnerTranscripts is the dashboard's runner transcript storage summary.
+// Bytes totals the measured runners and is null when none was measured.
+// Fields are declared in key order, so the saved JSON keeps the sorted key
+// order it has always had.
+type runnerTranscripts struct {
+	Bytes   *uint64                  `json:"bytes"`
+	Message string                   `json:"message"`
+	Runners map[string]runnerStorage `json:"runners"`
+	Status  string                   `json:"status"`
+}
+
+// runnerStorage is one runner's transcript storage: Bytes is set only when
+// Status is "measured".
+type runnerStorage struct {
+	Bytes  *uint64 `json:"bytes"`
+	Status string  `json:"status"`
 }
 
 // maybeStartHousekeeping may be called while gate is held. It only starts an
@@ -118,8 +146,8 @@ func (a *App) retention(cfg config.Config) error {
 		if a.ctx.Err() != nil {
 			return nil
 		}
-		// The gate covers only the eligibility re-read; CleanupBaseline claims
-		// the check and removes its clone without the scheduler gate.
+		// The gate covers only the eligibility re-read; removeBaselineWorkspace
+		// claims the check and removes its clone without the scheduler gate.
 		a.gate.Lock()
 		current, loadErr := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
 		terminal := current != nil && current.Status != model.BaselineStatusRunning
@@ -128,12 +156,12 @@ func (a *App) retention(cfg config.Config) error {
 		a.runtimeMu.Unlock()
 		a.gate.Unlock()
 		if loadErr == nil && terminal && !active {
-			loadErr = a.CleanupBaseline(current)
+			loadErr = a.removeBaselineWorkspace(current)
 		}
-		if loadErr != nil {
-			if eventErr := a.Store.Event(check.ID, "cleanup_error", store.ErrorMessage(loadErr)); eventErr != nil {
-				return eventErr
-			}
+		if loadErr == nil {
+			a.clearCleanupReport(cleanupBaseline, check.ID)
+		} else if eventErr := a.reportCleanupFailure(cleanupBaseline, check.ID, loadErr); eventErr != nil {
+			return eventErr
 		}
 	}
 	for _, kind := range []cleanupKind{cleanupTask, cleanupCycle} {
@@ -150,14 +178,57 @@ func (a *App) retention(cfg config.Config) error {
 			a.gate.Unlock()
 			// A conflict means another cleanup already owns this target —
 			// success in progress, not a cleanup failure to report.
-			if err != nil && !IsActionConflict(err) {
-				if eventErr := a.Store.Event(id, "cleanup_error", store.ErrorMessage(err)); eventErr != nil {
+			if err == nil {
+				a.clearCleanupReport(kind, id)
+			} else if !IsActionConflict(err) {
+				if eventErr := a.reportCleanupFailure(kind, id, err); eventErr != nil {
 					return eventErr
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// cleanupReport is the last cleanup failure retention reported for a target:
+// its redacted message and when the event was written.
+type cleanupReport struct {
+	message string
+	at      time.Time
+}
+
+// reportCleanupFailure writes a cleanup_error event for a retention target
+// unless the same message was reported for it within cleanupReportInterval.
+// A changed message is reported at once. The memory is per process, so a
+// restart reports a lasting failure once more.
+func (a *App) reportCleanupFailure(kind cleanupKind, id string, err error) error {
+	message := store.ErrorMessage(err)
+	key := cleanupKey{kind: kind, id: id}
+	now := time.Now()
+	a.runtimeMu.Lock()
+	last, reported := a.runtime.cleanupReports[key]
+	if reported && last.message == message && now.Sub(last.at) < cleanupReportInterval {
+		a.runtimeMu.Unlock()
+		return nil
+	}
+	a.runtime.cleanupReports[key] = cleanupReport{message: message, at: now}
+	a.runtimeMu.Unlock()
+	if eventErr := a.Store.Event(id, "cleanup_error", message); eventErr != nil {
+		// Nothing was recorded, so the next pass reports it again.
+		a.clearCleanupReport(kind, id)
+		return eventErr
+	}
+	return nil
+}
+
+// clearCleanupReport forgets a target's reported failure once a retention
+// pass meets it without one, so a later failure is reported at once, and once
+// any caller discards it, since retention never visits a discarded record
+// again.
+func (a *App) clearCleanupReport(kind cleanupKind, id string) {
+	a.runtimeMu.Lock()
+	delete(a.runtime.cleanupReports, cleanupKey{kind: kind, id: id})
+	a.runtimeMu.Unlock()
 }
 
 // retainCandidateLocked discards one task or cycle retention candidate if it
@@ -176,13 +247,13 @@ func (a *App) retainCandidateLocked(kind cleanupKind, id string) error {
 		if task.Status.Active() || running {
 			return nil
 		}
-		return a.DiscardTask(task)
+		return a.discardTask(task)
 	}
 	cycle, err := store.Get[model.Cycle](a.Store, "cycle", id)
 	if err != nil || cycle == nil || cycle.Lifecycle.DiscardedAt != nil || cycle.Status == model.CycleRunning {
 		return err
 	}
-	return a.DiscardCycle(cycle)
+	return a.discardCycle(cycle)
 }
 
 // cleanupKind names the durable entity kind a cleanup claim owns. Each kind
@@ -205,10 +276,11 @@ type cleanupKey struct {
 
 // claimCleanup takes exclusive cleanup ownership of (kind, id) and reports
 // whether it was free. Callers claim while the scheduler gate is held so
-// eligibility and ownership are one atomic admission — except CleanupBaseline,
-// which claims first because its callers already serialized eligibility:
-// retention re-reads the record under the gate and the finished check's worker
-// owns its record. The map itself sits under runtimeMu.
+// eligibility and ownership are one atomic admission — except
+// removeBaselineWorkspace, which claims first because its callers already
+// serialized eligibility: retention re-reads the record under the gate and the
+// finished check's worker owns its record. The map itself sits under
+// runtimeMu.
 func (a *App) claimCleanup(kind cleanupKind, id string) bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
@@ -239,15 +311,19 @@ func (a *App) releaseCleanup(kind cleanupKind, id string) {
 	a.runtimeMu.Unlock()
 }
 
-// DiscardTask removes only the task's owned direct-child directory and marks
+// discardTask removes only the task's owned direct-child directory and marks
 // the durable record after successful removal. Callers hold a.gate and get it
 // back held: eligibility and the cleanup claim are checked under the gate,
 // the recursive deletion runs with it released so unrelated controls stay
 // responsive, and finalization re-reads the durable record so only the
-// cleanup-owned field changes.
-func (a *App) DiscardTask(task *model.Task) error {
+// cleanup-owned field changes. A record already discarded conflicts, so its
+// discarded_at is written once.
+func (a *App) discardTask(task *model.Task) error {
 	if task.Status.Active() || task.Status == model.StatusQueued {
 		return errors.New("Active or queued workspaces cannot be discarded")
+	}
+	if task.Lifecycle.DiscardedAt != nil {
+		return conflictError("The task workspace was already discarded")
 	}
 	owner := ""
 	if task.Workspace != "" {
@@ -264,9 +340,8 @@ func (a *App) DiscardTask(task *model.Task) error {
 	// error, so a claim can never strand the record.
 	defer a.releaseCleanup(cleanupTask, task.ID)
 	if owner != "" {
-		a.gate.Unlock()
-		removeErr := a.removeDir(filepath.Join(a.DataDir, "tasks"), owner)
-		a.gate.Lock()
+		var removeErr error
+		a.withoutGate(func() { removeErr = a.removeDir(filepath.Join(a.DataDir, "tasks"), owner) })
 		if removeErr != nil {
 			return removeErr
 		}
@@ -289,15 +364,20 @@ func (a *App) DiscardTask(task *model.Task) error {
 		return err
 	}
 	task.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
+	a.clearCleanupReport(cleanupTask, task.ID)
 	return nil
 }
 
-// DiscardCycle removes a UUID-named planning directory and records disposal,
-// under the same gate contract as DiscardTask: callers hold a.gate and the
-// filesystem removal runs with it released.
-func (a *App) DiscardCycle(cycle *model.Cycle) error {
+// discardCycle removes a UUID-named planning directory and records disposal,
+// under the same gate contract as discardTask: callers hold a.gate and the
+// filesystem removal runs with it released. A record already discarded
+// conflicts, so its discarded_at is written once.
+func (a *App) discardCycle(cycle *model.Cycle) error {
 	if cycle.Status == model.CycleRunning {
 		return errors.New("Running planning work cannot be discarded")
+	}
+	if cycle.Lifecycle.DiscardedAt != nil {
+		return conflictError("The cycle workspaces were already discarded")
 	}
 	if _, err := uuid.Parse(cycle.ID); err != nil {
 		return errors.New("Invalid cycle workspace identity")
@@ -307,9 +387,8 @@ func (a *App) DiscardCycle(cycle *model.Cycle) error {
 	}
 	defer a.releaseCleanup(cleanupCycle, cycle.ID)
 	root := filepath.Join(a.DataDir, "cycles")
-	a.gate.Unlock()
-	removeErr := a.removeDir(root, filepath.Join(root, cycle.ID))
-	a.gate.Lock()
+	var removeErr error
+	a.withoutGate(func() { removeErr = a.removeDir(root, filepath.Join(root, cycle.ID)) })
 	if removeErr != nil {
 		return removeErr
 	}
@@ -329,6 +408,7 @@ func (a *App) DiscardCycle(cycle *model.Cycle) error {
 		return err
 	}
 	cycle.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
+	a.clearCleanupReport(cleanupCycle, cycle.ID)
 	return nil
 }
 
@@ -345,38 +425,36 @@ func (a *App) measureStorage(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	runners := map[string]any{}
+	backends := []config.Backend{config.BackendCodex, config.BackendOpencode}
+	runners := make(map[string]runnerStorage, len(backends))
 	var total uint64
 	measured := 0
-	for _, backend := range []string{"codex", "opencode"} {
-		path, configured := cfg.RunnerStoragePaths[backend]
-		entry := map[string]any{"bytes": nil, "status": "unconfigured"}
+	for _, backend := range backends {
+		name := backend.Slug()
+		path, configured := cfg.RunnerStoragePaths[name]
+		entry := runnerStorage{Status: "unconfigured"}
 		if configured {
 			info, statErr := os.Stat(path)
 			if statErr != nil || !info.IsDir() {
-				entry["status"] = "unavailable"
+				entry.Status = "unavailable"
+			} else if bytes, sizeErr := workspace.DirectorySize(path); sizeErr != nil {
+				entry.Status = "error"
 			} else {
-				bytes, sizeErr := workspace.DirectorySize(path)
-				if sizeErr != nil {
-					entry["status"] = "error"
-				} else {
-					entry["bytes"] = bytes
-					entry["status"] = "measured"
-					total += bytes
-					measured++
-				}
+				entry.Bytes = &bytes
+				entry.Status = "measured"
+				total += bytes
+				measured++
 			}
 		}
-		runners[backend] = entry
+		runners[name] = entry
 	}
-	status := "partial"
-	var runnerBytes any = total
+	transcripts := runnerTranscripts{Bytes: &total, Message: runnerStorageMessage, Runners: runners, Status: "partial"}
 	if measured == 0 {
-		status, runnerBytes = "unavailable", nil
-	} else if measured == 2 {
-		status = "measured"
+		transcripts.Bytes, transcripts.Status = nil, "unavailable"
+	} else if measured == len(backends) {
+		transcripts.Status = "measured"
 	}
-	usage := storageUsage{MeasuredAt: model.Now(), ApplicationBytes: application, TaskBytes: tasks, PlanningBytes: planning, RunnerTranscripts: map[string]any{"bytes": runnerBytes, "status": status, "runners": runners, "message": "Runner storage reported separately. Application admission measures the data directory."}}
+	usage := storageUsage{MeasuredAt: model.Now(), ApplicationBytes: application, TaskBytes: tasks, PlanningBytes: planning, RunnerTranscripts: transcripts}
 	return a.Store.Put("settings", "storage", usage)
 }
 
@@ -419,7 +497,7 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 					Number uint64 `json:"number"`
 				} `json:"pr"`
 			}
-			if json.Unmarshal(raw, &summary) != nil || !sameRepository(summary.Repository, cfg.GitHubRepo) {
+			if json.Unmarshal(raw, &summary) != nil || !config.EqualASCII(summary.Repository, cfg.GitHubRepo) {
 				continue
 			}
 			if _, present := open[summary.PR.Number]; !present {

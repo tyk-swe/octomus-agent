@@ -44,12 +44,25 @@ type groundingDocument struct {
 	Context string `json:"context"`
 }
 
+// interruptedPlanningMessage is the error of a cycle that a stop cut short,
+// whether shutdown recorded it or restart recovery found it still running.
+const interruptedPlanningMessage = "Discovery interrupted; incomplete proposals were not dispatched"
+
 func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycle) {
 	err := a.plan(ctx, cfg, &cycle)
+	// A pass that shutdown cut short did not fail on its merits. It is
+	// recorded as interrupted and control is left to restart recovery,
+	// exactly as after a crash: Recover pauses a Run once still planning,
+	// and Continuous plans again.
+	shuttingDown := err != nil && a.ctx.Err() != nil
 	if err != nil {
 		cycle.Status = model.CycleFailed
-		cycle.CompletedAt = stringPointer(model.Now())
 		cycle.Error = stringPointer(store.ErrorMessage(err))
+		if shuttingDown {
+			cycle.Status = model.CycleInterrupted
+			cycle.Error = stringPointer(interruptedPlanningMessage)
+		}
+		cycle.CompletedAt = stringPointer(model.Now())
 		_ = a.saveCycleMergedSessions(&cycle)
 	}
 
@@ -60,7 +73,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 	}
 	a.runtimeMu.Unlock()
 	control, loadErr := a.Control()
-	if loadErr == nil {
+	if loadErr == nil && !shuttingDown {
 		var message string
 		if err != nil {
 			message = store.ErrorMessage(err)
@@ -79,9 +92,8 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 			_ = a.Store.SaveControl(control)
 		}
 		// Every failed pass is logged after its control write, as a failed
-		// preflight is. A pass that shutdown cut short did not fail on its
-		// merits: it is logged only when it paused a Run once.
-		if err != nil && (failedRunOnce || a.ctx.Err() == nil) {
+		// preflight is.
+		if err != nil {
 			_ = a.Store.Event(cycle.ID, "planning_error", message)
 		}
 	}
@@ -98,9 +110,8 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if err != nil {
 		return err
 	}
-	requests := rediscoveryRequests(memory)
 	if cycle.Mode == model.CycleModeExecution {
-		if err := a.seedRediscoveries(cycle, requests); err != nil {
+		if err := a.seedRediscoveries(cycle, memory.requests); err != nil {
 			return err
 		}
 	}
@@ -113,7 +124,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 		return err
 	}
 	capacity := prCapacityFrom(cfg, inventory, reservations)
-	contextValue := map[string]any{"grounding": cycle.Grounding, "decision_memory": memory, "pr_capacity": capacity}
+	contextValue := map[string]any{"grounding": cycle.Grounding, "decision_memory": memory.promptEntries(), "pr_capacity": capacity}
 	contextBytes, err := wirejson.Marshal(contextValue)
 	if err != nil {
 		return err
@@ -146,7 +157,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 		return err
 	}
 	if cycle.Mode == model.CycleModeExecution {
-		if err := checkRediscoveryDecisions(requests, proposals); err != nil {
+		if err := checkRediscoveryDecisions(memory.requests, proposals); err != nil {
 			return err
 		}
 	}
@@ -165,9 +176,9 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 
 // seedRediscoveries adds each pending rediscovery request to an execution
 // pass as a candidate that reconsiders the cancelled task it came from.
-func (a *App) seedRediscoveries(cycle *model.Cycle, requests []map[string]any) error {
+func (a *App) seedRediscoveries(cycle *model.Cycle, requests []rediscoveryRequest) error {
 	for _, request := range requests {
-		id, _ := request["id"].(string)
+		id := request.ID
 		if id == "" {
 			return errors.New("Missing rediscovery identity")
 		}
@@ -202,9 +213,9 @@ func plannedStatus(proposals []model.Proposal) string {
 
 // checkRediscoveryDecisions requires every rediscovery request to be decided by
 // exactly one returned proposal.
-func checkRediscoveryDecisions(requests []map[string]any, proposals []model.Proposal) error {
+func checkRediscoveryDecisions(requests []rediscoveryRequest, proposals []model.Proposal) error {
 	for _, request := range requests {
-		id, _ := request["id"].(string)
+		id := request.ID
 		count := 0
 		for _, proposal := range proposals {
 			if slices.Contains(proposal.Reconsiders, id) {
@@ -246,22 +257,17 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if err := a.observeDefaultBranch(cfg, *revision, observedAt); err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	inventory, err := gitops.OpenPrInventory(ctx, cfg)
+	observed, err := a.observeOpenPRs(ctx, cfg)
 	if err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	owned, err := gitops.OwnedPrDetails(ctx, cfg, inventory)
-	if err != nil {
-		return model.OpenPrInventory{}, err
-	}
-	overlayOwnedDetails(&inventory, owned)
 	// Fetch only after reading the remote heads, so every commit observed above
 	// that fast-forwards its branch is local for the role clones and decision
 	// fingerprints that use it.
 	if err := gitops.Fetch(ctx, cfg); err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	external, coverage, err := ExternalContext(inventory)
+	external, coverage, err := ExternalContext(observed.inventory)
 	if err != nil {
 		return model.OpenPrInventory{}, err
 	}
@@ -272,7 +278,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	}
 	targets := []string{}
 	now := time.Now()
-	for _, pr := range owned {
+	for _, pr := range observed.owned {
 		if pr.OwnedOpen() && (pr.ChangedLines >= cfg.LargePRLines || prAgeReached(pr.CreatedAt, cfg.LongLivedPRDays, now)) {
 			targets = append(targets, pr.Branch)
 		}
@@ -280,16 +286,12 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	sort.Strings(targets)
 	grounding := model.Grounding{
 		Revision:           *revision,
-		PRs:                owned,
+		PRs:                observed.owned,
 		ExternalPRs:        external,
 		PRCoverage:         coverage,
 		History:            history.Items,
 		MaintenanceDue:     cycle.Number%cfg.MaintenanceEveryCycles == 0,
 		MaintenanceTargets: targets,
-	}
-	releasable, err := a.releasableReservations(ctx, cfg, inventory)
-	if err != nil {
-		return model.OpenPrInventory{}, err
 	}
 
 	// Remote work above is deliberately outside gate. Recheck the live policy
@@ -316,14 +318,14 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	// saved a newer inventory first. That refresh recorded its own PR
 	// observations and authority, so this older one leaves them alone; the
 	// grounding itself is as current as if it had persisted first.
-	if _, err := a.commitPrObservationLocked(cfg, inventory, owned, releasable); err != nil {
+	if _, err := a.commitPrObservationLocked(cfg, observed); err != nil {
 		return model.OpenPrInventory{}, err
 	}
 	cycle.Grounding = &grounding
 	if err := a.saveCycleMergedSessions(cycle); err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	return inventory, nil
+	return observed.inventory, nil
 }
 
 // prAgeReached compares whole elapsed days without converting an unbounded
@@ -392,18 +394,11 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 	if cycle.Mode == model.CycleModeExecution {
 		reconsiders = "Include a stable problem_key and relevant_paths as repository-relative files. Always return reconsiders=[]; seeded rediscovery candidates already carry them."
 	}
-	outcomes := make([]roleOutcome, cfg.DiscoveryAgents)
-	var wg sync.WaitGroup
-	for i := uint64(0); i < cfg.DiscoveryAgents; i++ {
-		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			prompt := fmt.Sprintf("Discover worthwhile project improvements, focusing on %s. Also cover the enabled categories as appropriate, and set each proposal's category to exactly one of %v. Inspect actual code and relevant open branch diffs; do not modify files. Return no proposals when benefit is weak. Return at most %d proposals. For each proposal include concrete file evidence, problem, benefit, scope, tier XS/S/M/L/XL, dependencies by proposal id, a self-contained refined prompt with constraints and verification, and target '%s' or a listed owned PR branch. Give IDs prefixed d%d-. "+reconsiders+" "+proposalLimits+" Reuse matching problem identities from decision memory and do not repeat unchanged rejected work or seeded rediscovery candidates. Set decision='candidate' and reason describing value. Do not duplicate history/open work. Maintenance due: %t; prioritize maintenance on main and %v when due; preserve useful capabilities. Grounding: %s. Recorded context: %s", discoveryScopes[i], cfg.Categories, perAgent, cfg.DefaultBranch, i, cycle.Grounding.MaintenanceDue, cycle.Grounding.MaintenanceTargets, ground, recorded)
-			outcomes[i] = a.role(ctx, cfg, cycleID, revision, fmt.Sprintf("discovery-%d", i), "discovery", prompt, schemas.ProposalSchema())
-		}()
-	}
-	wg.Wait()
+	// The agent count is bounded by discoveryScopes above.
+	outcomes := runRoles(int(cfg.DiscoveryAgents), func(i int) roleOutcome {
+		prompt := fmt.Sprintf("Discover worthwhile project improvements, focusing on %s. Also cover the enabled categories as appropriate, and set each proposal's category to exactly one of %v. Inspect actual code and relevant open branch diffs; do not modify files. Return no proposals when benefit is weak. Return at most %d proposals. For each proposal include concrete file evidence, problem, benefit, scope, tier XS/S/M/L/XL, dependencies by proposal id, a self-contained refined prompt with constraints and verification, and target '%s' or a listed owned PR branch. Give IDs prefixed d%d-. "+reconsiders+" "+proposalLimits+" Reuse matching problem identities from decision memory and do not repeat unchanged rejected work or seeded rediscovery candidates. Set decision='candidate' and reason describing value. Do not duplicate history/open work. Maintenance due: %t; prioritize maintenance on main and %v when due; preserve useful capabilities. Grounding: %s. Recorded context: %s", discoveryScopes[i], cfg.Categories, perAgent, cfg.DefaultBranch, i, cycle.Grounding.MaintenanceDue, cycle.Grounding.MaintenanceTargets, ground, recorded)
+		return a.role(ctx, cfg, cycleID, revision, fmt.Sprintf("discovery-%d", i), "discovery", prompt, schemas.ProposalSchema())
+	})
 	if err := a.attachOutcomes(cycle, outcomes); err != nil {
 		return err
 	}
@@ -453,27 +448,14 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 		prompts[i] = fmt.Sprintf("%s Candidates: %s. Grounding: %s. Context: %s", focus, candidates, ground, recorded)
 	}
 	cycleID, revision := cycle.ID, cycle.Grounding.Revision
-	outcomes := make([]roleOutcome, len(slots))
-	var wg sync.WaitGroup
-	for i := range slots {
-		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			outcomes[i] = a.role(ctx, cfg, cycleID, revision, slots[i], "proposal_reviewer", prompts[i], schema)
-		}()
-	}
-	wg.Wait()
+	outcomes := runRoles(len(slots), func(i int) roleOutcome {
+		return a.role(ctx, cfg, cycleID, revision, slots[i], "proposal_reviewer", prompts[i], schema)
+	})
 	if err := a.attachOutcomes(cycle, outcomes); err != nil {
 		return err
 	}
-	identities := map[string]struct{}{}
-	for _, proposal := range cycle.Proposals {
-		if _, duplicate := identities[proposal.ID]; duplicate {
-			return fmt.Errorf("Duplicate candidate proposal identity %s", proposal.ID)
-		}
-		identities[proposal.ID] = struct{}{}
-	}
+	// discover guarantees non-empty, unique candidate identities, and review
+	// leaves the candidates unchanged.
 	for i, outcome := range outcomes {
 		var document assessmentDocument
 		if err := json.Unmarshal([]byte(outcome.answer), &document); err != nil {
@@ -595,7 +577,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 	roleRoot := filepath.Join(a.DataDir, "cycles", cycleID, label)
 	roleWorkspace := filepath.Join(roleRoot, "workspace")
 	// Each planning role owns its client scope; the invocation closes it.
-	_, outcome.answer, outcome.err = a.invoke(ctx, a.runners(ctx, cfg, cycleID), invocation{
+	outcome.answer, outcome.err = a.invoke(ctx, a.runners(ctx, cfg, cycleID), invocation{
 		cycleID: cycleID, role: label, route: route, workspace: roleWorkspace,
 		prompt: prompt, schema: schema, ownsClients: true,
 		prepare: func() error {
@@ -620,10 +602,24 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 	return outcome
 }
 
-func (a *App) attachOutcomes(cycle *model.Cycle, outcomes []roleOutcome) error {
-	if err := a.refreshCycleSessions(cycle); err != nil {
-		return err
+// runRoles runs one planning role per index concurrently and returns their
+// outcomes in index order once every role has returned. It does no durable
+// I/O: each role appends its own session record, and attachOutcomes saves
+// the cycle.
+func runRoles(n int, run func(i int) roleOutcome) []roleOutcome {
+	outcomes := make([]roleOutcome, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() { outcomes[i] = run(i) })
 	}
+	wg.Wait()
+	return outcomes
+}
+
+// attachOutcomes returns the first role error in index order, leaving the
+// cycle's save to the failure path, or saves the cycle with the sessions its
+// roles recorded.
+func (a *App) attachOutcomes(cycle *model.Cycle, outcomes []roleOutcome) error {
 	var first error
 	for _, outcome := range outcomes {
 		if outcome.err != nil && first == nil {
@@ -647,6 +643,11 @@ func (a *App) refreshCycleSessions(cycle *model.Cycle) error {
 	return nil
 }
 
+// saveCycleMergedSessions saves cycle with the session records its roles
+// appended. Callers invoke it only while no role of the cycle is running
+// (before the first role or after runRoles returns): the refresh and the Put
+// are separate store-lock acquisitions, so a concurrent AppendCycleSession
+// would be overwritten.
 func (a *App) saveCycleMergedSessions(cycle *model.Cycle) error {
 	if err := a.refreshCycleSessions(cycle); err != nil {
 		return err
@@ -662,7 +663,7 @@ func ResolveTarget(cfg config.Config, prs []model.PullRequest, target string) (*
 	var found *model.PullRequest
 	for i := range prs {
 		pr := &prs[i]
-		if pr.Branch == target && pr.OwnedOpen() && pr.Base == cfg.DefaultBranch && sameRepository(pr.BaseRepository, cfg.GitHubRepo) {
+		if pr.Branch == target && pr.OwnedOpen() && pr.Base == cfg.DefaultBranch && config.EqualASCII(pr.BaseRepository, cfg.GitHubRepo) {
 			if found != nil {
 				return nil, errors.New("Target matches more than one owned open PR")
 			}
@@ -680,12 +681,13 @@ func ResolveTarget(cfg config.Config, prs []model.PullRequest, target string) (*
 // deterministically. Its errors name the offending proposal and, where there
 // is one, the conflicting proposal, task or value.
 func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding model.Grounding, history []model.Task) error {
+	// accepted looks up accepted proposals by identity; identities are unique
+	// across the whole plan, which the loop below checks first.
 	accepted := map[string]model.Proposal{}
 	// acceptedInOrder holds the accepted proposals in plan order, so the error
 	// reported for a plan with several faults does not vary between runs.
 	acceptedInOrder := []model.Proposal{}
 	allIDs := map[string]struct{}{}
-	acceptedCount := uint64(0)
 	for _, proposal := range proposals {
 		if strings.TrimSpace(proposal.ID) == "" {
 			return errors.New("Proposal identity is empty")
@@ -702,10 +704,6 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 		}
 		if proposal.Decision != model.DecisionAccepted {
 			continue
-		}
-		acceptedCount++
-		if _, duplicate := accepted[proposal.ID]; duplicate {
-			return fmt.Errorf("Duplicate accepted proposal identity %q", proposal.ID)
 		}
 		for _, other := range acceptedInOrder {
 			if other.SameWork(proposal) {
@@ -732,7 +730,7 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 			}
 		}
 	}
-	if acceptedCount > cfg.MaxTasksPerCycle {
+	if acceptedCount := uint64(len(acceptedInOrder)); acceptedCount > cfg.MaxTasksPerCycle {
 		return fmt.Errorf("Accepted task limit exceeded: %d accepted (limit %d)", acceptedCount, cfg.MaxTasksPerCycle)
 	}
 	for _, proposal := range acceptedInOrder {
@@ -758,7 +756,7 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 			stack = append(stack, dependency.Dependencies...)
 		}
 	}
-	return ValidateProposalBranchOrder(cfg, proposals)
+	return validateBranchOrder(cfg, acceptedInOrder)
 }
 
 // missingExecutionContext names the first empty field that an accepted
@@ -778,40 +776,33 @@ func missingExecutionContext(proposal model.Proposal) string {
 	return ""
 }
 
-func ValidateProposalBranchOrder(cfg config.Config, proposals []model.Proposal) error {
-	accepted := map[string]model.Proposal{}
-	acceptedInOrder := []model.Proposal{}
-	branches := map[string][]model.Proposal{}
-	for _, proposal := range proposals {
-		if proposal.Decision != model.DecisionAccepted {
+// validateBranchOrder requires the accepted proposals on each existing PR
+// branch, in plan order, to form one complete dependency order: exactly one
+// of a branch's remaining proposals is ready at every step. ValidateProposals
+// has already checked their identities, dependency eligibility and cycles.
+// Branches are checked in the order their first proposal appears, so the
+// branch a plan with several faults reports does not vary between runs.
+func validateBranchOrder(cfg config.Config, accepted []model.Proposal) error {
+	branches := []string{}
+	members := map[string][]model.Proposal{}
+	for _, proposal := range accepted {
+		if proposal.Target == cfg.DefaultBranch {
 			continue
 		}
-		if _, exists := accepted[proposal.ID]; exists {
-			return fmt.Errorf("Duplicate accepted proposal identity %q", proposal.ID)
+		if _, known := members[proposal.Target]; !known {
+			branches = append(branches, proposal.Target)
 		}
-		accepted[proposal.ID] = proposal
-		acceptedInOrder = append(acceptedInOrder, proposal)
-		if proposal.Target != cfg.DefaultBranch {
-			branches[proposal.Target] = append(branches[proposal.Target], proposal)
-		}
+		members[proposal.Target] = append(members[proposal.Target], proposal)
 	}
-	for _, proposal := range acceptedInOrder {
-		for _, dependency := range proposal.Dependencies {
-			other, ok := accepted[dependency]
-			if proposal.Target == cfg.DefaultBranch || !ok || other.Target != proposal.Target {
-				return fmt.Errorf("Dependencies must refer to accepted work on the same existing PR branch: proposal %q depends on %q", proposal.ID, dependency)
-			}
-		}
-	}
-	for branch, members := range branches {
+	for _, branch := range branches {
 		remaining := map[string]struct{}{}
-		for _, member := range members {
+		for _, member := range members[branch] {
 			remaining[member.ID] = struct{}{}
 		}
 		for len(remaining) > 0 {
 			ready := ""
 			count := 0
-			for _, member := range members {
+			for _, member := range members[branch] {
 				if _, present := remaining[member.ID]; !present {
 					continue
 				}
@@ -939,14 +930,7 @@ func newPlannedTask(cfg config.Config, cycle *model.Cycle, original, proposal mo
 		number, url = &n, &u
 	}
 	now := model.Now()
-	policy := model.AttemptPolicy{
-		MaxRepairRounds:       cfg.MaxRepairRounds,
-		MaxNoProgressRounds:   cfg.MaxNoProgressRounds,
-		MaxRetries:            cfg.MaxRetries,
-		TaskTimeoutSeconds:    cfg.TaskTimeoutSeconds,
-		SessionTimeoutSeconds: cfg.SessionTimeoutSeconds,
-		CommandTimeoutSeconds: cfg.CommandTimeoutSeconds,
-	}
+	policy := model.AttemptPolicyFromConfig(cfg)
 	return model.Task{
 		ID:              taskID,
 		CycleID:         cycle.ID,

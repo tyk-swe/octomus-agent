@@ -25,6 +25,8 @@ type PrReservation struct {
 
 // PrIdentity is the configuration a PR inventory was observed under. A task
 // admitted under a different identity cannot consume that inventory's capacity.
+// Repository paths compare as config.SameRemoteIdentity compares them, so a
+// respelling that settings accept as the same repository never strands work.
 type PrIdentity struct {
 	Repository    string
 	GitHubRepo    string
@@ -32,11 +34,13 @@ type PrIdentity struct {
 	BranchPrefix  string
 }
 
+// PrIdentityOf returns the identity c observes PR inventories under, with the
+// GitHub repository lowercased.
 func PrIdentityOf(c config.Config) PrIdentity {
 	return PrIdentity{Repository: c.Repository, GitHubRepo: strings.ToLower(c.GitHubRepo), DefaultBranch: c.DefaultBranch, BranchPrefix: c.BranchPrefix}
 }
 func (p PrIdentity) Matches(c config.Config) bool {
-	return p.Repository == c.Repository && config.EqualASCII(c.GitHubRepo, p.GitHubRepo) && p.DefaultBranch == c.DefaultBranch && p.BranchPrefix == c.BranchPrefix
+	return config.SamePath(p.Repository, c.Repository) && config.EqualASCII(c.GitHubRepo, p.GitHubRepo) && p.DefaultBranch == c.DefaultBranch && p.BranchPrefix == c.BranchPrefix
 }
 
 // errRollback aborts a transaction that ends without a caller-visible error.
@@ -119,6 +123,8 @@ func PrUnion(inventory model.OpenPrInventory, reservations []PrReservation, limi
 	return observed, unrepresented, remaining
 }
 
+// HasPrReservation reports whether the task holds an open-PR capacity
+// reservation.
 func (s *Store) HasPrReservation(taskID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -130,6 +136,8 @@ func (s *Store) HasPrReservation(taskID string) (bool, error) {
 	return err == nil, err
 }
 
+// PrReservations lists the open-PR capacity reservations held for the
+// repository, matched case-insensitively, in no particular order.
 func (s *Store) PrReservations(repository string) ([]PrReservation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -146,6 +154,8 @@ func (s *Store) PrReservationCandidates() ([]model.Task, error) {
                 )`, statusList(model.ActiveStatuses())))
 }
 
+// SeedPrReservation reserves open-PR capacity for the task's branch. It is
+// idempotent: a reservation the task already holds is kept unchanged.
 func (s *Store) SeedPrReservation(task model.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
