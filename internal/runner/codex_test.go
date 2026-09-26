@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // The app-server can emit notifications before a request response; the
@@ -344,6 +346,106 @@ func TestCodexRPCPerMessageBound(t *testing.T) {
 	}
 	if len(client.pending) != 5 {
 		t.Fatalf("pre-response notifications must be queued in order: %d", len(client.pending))
+	}
+}
+
+// backlogCodex is a pipedCodex whose protocol lines are all queued up front,
+// so no feeder outlives an early error, with a state for progress events.
+// Running out of lines reads as a disconnect.
+func backlogCodex(t *testing.T, lines ...string) *Codex {
+	t.Helper()
+	client, _ := pipedCodex(t, context.Background(), 10)
+	queued := make(chan lineResult, len(lines))
+	for _, line := range lines {
+		queued <- lineResult{line: []byte(line)}
+	}
+	close(queued)
+	client.lines = queued
+	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { state.Close() })
+	client.state = state
+	client.entity = "fixture"
+	return client
+}
+
+// notificationOf returns a compact notification line whose encoding is
+// exactly size bytes.
+func notificationOf(t *testing.T, size int) string {
+	t.Helper()
+	empty, err := marshal(map[string]any{"method": "n", "params": map[string]any{"p": ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := marshal(map[string]any{"method": "n", "params": map[string]any{"p": strings.Repeat("x", size-len(empty))}})
+	if err != nil || len(line) != size {
+		t.Fatalf("notification size %d: %v", len(line), err)
+	}
+	return line
+}
+
+// Notifications that arrive before an RPC response are queued in order up to
+// 10000 messages and 8 MiB of compact JSON; one message or byte more fails.
+func TestCodexBacklogBounds(t *testing.T) {
+	const response = `{"id":1,"result":{}}`
+	small := notificationOf(t, 64)
+	mebibyte := notificationOf(t, 1024*1024)
+	repeat := func(line string, n int) []string {
+		lines := make([]string, n)
+		for i := range lines {
+			lines[i] = line
+		}
+		return lines
+	}
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  string
+		bytes int
+	}{
+		{"count at the bound", repeat(small, 10_000), "", 10_000 * 64},
+		{"count over the bound", repeat(small, 10_001), "Codex notification backlog exceeded", 0},
+		{"bytes at the bound", repeat(mebibyte, 8), "", 8 * 1024 * 1024},
+		{"bytes over the bound", append(repeat(mebibyte, 8), small), "Codex notification backlog exceeds 8 MB", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := backlogCodex(t, append(tc.lines, response)...)
+			_, err := client.rpc("model/list", map[string]any{})
+			if tc.want != "" {
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("backlog error: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a backlog at the bound must be kept: %v", err)
+			}
+			if len(client.pending) != len(tc.lines) || client.pendingBytes != tc.bytes {
+				t.Fatalf("backlog: %d messages, %d bytes", len(client.pending), client.pendingBytes)
+			}
+		})
+	}
+}
+
+// A stale response queued before turn/start's result is skipped by the turn,
+// and the backlog drains to nothing.
+func TestCodexTurnSkipsQueuedStaleResponse(t *testing.T) {
+	const thread = "019a0000-0000-7000-8000-000000000001"
+	client := backlogCodex(t,
+		`{"id":99,"result":{}}`,
+		`{"id":1,"result":{"turn":{"id":"t1"}}}`,
+		`{"method":"item/completed","params":{"threadId":"`+thread+`","turnId":"t1","item":{"type":"agentMessage","phase":"final_answer","text":"ok","status":"completed"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"`+thread+`","turn":{"id":"t1","status":"completed"}}}`,
+	)
+	answer, err := client.turn(thread, codexRoute(), t.TempDir(), "prompt", nil)
+	if err != nil || answer != "ok" {
+		t.Fatalf("turn: %q %v", answer, err)
+	}
+	if len(client.pending) != 0 || client.pendingBytes != 0 {
+		t.Fatalf("the backlog must drain: %d messages, %d bytes", len(client.pending), client.pendingBytes)
 	}
 }
 
