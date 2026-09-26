@@ -5,9 +5,11 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func repoRoot(t *testing.T) string {
@@ -421,5 +424,56 @@ func TestRunnersErrorsKeepBlockedReason(t *testing.T) {
 		t.Fatal("turn on a missing session must fail")
 	} else if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonRunnerUnavailable {
 		t.Fatalf("turn blocked reason lost: %v (%v)", reason, err)
+	}
+}
+
+// Every runner wire boundary decodes through decodeJSON. Go's decoder would
+// turn a lone surrogate or an invalid byte into U+FFFD, so decodeJSON refuses
+// them first, keeps exact number literals and refuses trailing data. Its
+// errors stay plain: a marked *wirejson.Error would turn a runner protocol
+// failure into an internal API error.
+func TestDecodeJSONStrict(t *testing.T) {
+	for _, tc := range []struct{ raw, message string }{
+		{`"\ud800"`, "unpaired high surrogate"},
+		{`"\udc00"`, "unpaired low surrogate"},
+		{`"\ud800A"`, "unpaired high surrogate"},
+		{`"\ud800A"`, "unpaired high surrogate"},
+		{`{"k":["ok","\ud800"]}`, "unpaired high surrogate"},
+		{`"\u12"`, "invalid Unicode escape"},
+		{"\"\xff\"", "invalid UTF-8"},
+		{`{} {}`, "trailing JSON data"},
+		{`{"a":1} x`, "trailing JSON data"},
+	} {
+		value, err := decodeJSON([]byte(tc.raw))
+		if err == nil || err.Error() != tc.message {
+			t.Errorf("decodeJSON(%s) = %v, %v; want %q", tc.raw, value, err, tc.message)
+		}
+		var marked *wirejson.Error
+		if errors.As(err, &marked) {
+			t.Errorf("decodeJSON(%s) returned a marked *wirejson.Error", tc.raw)
+		}
+	}
+	// A truncated escape followed by more data and an unterminated string
+	// are refused too; their messages come from the parsers.
+	for _, raw := range []string{`["\u12", 1]`, `"abc\`, `{"a":`} {
+		if value, err := decodeJSON([]byte(raw)); err == nil {
+			t.Errorf("decodeJSON(%s) = %v; want an error", raw, value)
+		}
+	}
+	for _, tc := range []struct {
+		raw  string
+		want any
+	}{
+		{`"x😀"`, "x😀"},
+		{`"😀"`, "😀"},
+		{`"\\ud800"`, `\ud800`},
+		{`"A"`, "A"},
+		{`{"n":1.50,"big":12345678901234567890}`, map[string]any{"n": json.Number("1.50"), "big": json.Number("12345678901234567890")}},
+		{" [1, \"a\"] \n", []any{json.Number("1"), "a"}},
+	} {
+		value, err := decodeJSON([]byte(tc.raw))
+		if err != nil || !reflect.DeepEqual(value, tc.want) {
+			t.Errorf("decodeJSON(%s) = %#v, %v; want %#v", tc.raw, value, err, tc.want)
+		}
 	}
 }

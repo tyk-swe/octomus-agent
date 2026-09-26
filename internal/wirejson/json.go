@@ -65,7 +65,7 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 			if err != nil {
 				return err
 			}
-			if err := validStrings(data[start:dec.InputOffset()]); err != nil {
+			if err := ValidStrings(data[start:dec.InputOffset()]); err != nil {
 				return err
 			}
 			name := key.(string)
@@ -138,7 +138,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 			if err != nil {
 				return err
 			}
-			if err := validStrings(raw[start:dec.InputOffset()]); err != nil {
+			if err := ValidStrings(raw[start:dec.InputOffset()]); err != nil {
 				return err
 			}
 			name := key.(string)
@@ -173,7 +173,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 		v.Set(result)
 		return nil
 	case reflect.String:
-		if err := validStrings(raw); err != nil {
+		if err := ValidStrings(raw); err != nil {
 			return err
 		}
 		return json.Unmarshal(raw, v.Addr().Interface())
@@ -191,7 +191,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 		v.Set(result)
 		return nil
 	case reflect.Interface:
-		if err := validStrings(raw); err != nil {
+		if err := ValidStrings(raw); err != nil {
 			return err
 		}
 		dec := json.NewDecoder(bytes.NewReader(raw))
@@ -293,8 +293,11 @@ func clone(v reflect.Value) reflect.Value {
 	}
 }
 
-// Reject malformed Unicode rather than silently replacing it.
-func validStrings(data []byte) error {
+// ValidStrings rejects invalid UTF-8 and unpaired or truncated \u escapes,
+// which encoding/json would silently replace with U+FFFD. It scans raw JSON
+// text of any shape. Its errors are plain, not *Error, so each caller chooses
+// how a failure is classified: the runner's protocol boundaries rely on that.
+func ValidStrings(data []byte) error {
 	if !utf8.Valid(data) {
 		return fmt.Errorf("invalid UTF-8")
 	}
@@ -350,7 +353,7 @@ func UnmarshalEnum[T ~uint8](data []byte, names []string, dst *T) error {
 }
 
 func enumOf(data []byte, names []string) (uint8, error) {
-	if err := validStrings(data); err != nil {
+	if err := ValidStrings(data); err != nil {
 		return 0, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))

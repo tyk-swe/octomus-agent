@@ -11,10 +11,8 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -323,10 +321,12 @@ func strAt(m map[string]any, key string) (string, bool) {
 	return s, ok
 }
 
-// decodeJSON decodes one JSON value with strict UTF-8 and
-// string escapes, exact number literals preserved, and trailing data rejected.
+// decodeJSON decodes one JSON value with strict UTF-8 and string escapes
+// (wirejson.ValidStrings), exact number literals preserved, and trailing data
+// rejected. Its errors stay plain, never *wirejson.Error, which the API
+// classifies as an internal codec failure rather than a runner fault.
 func decodeJSON(data []byte) (any, error) {
-	if err := validJSONStrings(data); err != nil {
+	if err := wirejson.ValidStrings(data); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -339,54 +339,6 @@ func decodeJSON(data []byte) (any, error) {
 		return nil, fmt.Errorf("trailing JSON data")
 	}
 	return v, nil
-}
-
-// validJSONStrings checks malformed escapes at wire
-// boundaries: invalid UTF-8 and unpaired surrogate escapes are rejected where
-// Go's decoder would silently substitute U+FFFD.
-func validJSONStrings(data []byte) error {
-	if !utf8.Valid(data) {
-		return fmt.Errorf("invalid UTF-8")
-	}
-	inString := false
-	for i := 0; i < len(data); i++ {
-		if data[i] == '"' {
-			inString = !inString
-			continue
-		}
-		if !inString || data[i] != '\\' {
-			continue
-		}
-		i++
-		if i >= len(data) {
-			break
-		}
-		if data[i] != 'u' {
-			continue
-		}
-		if i+5 > len(data) {
-			return fmt.Errorf("invalid Unicode escape")
-		}
-		n, err := strconv.ParseUint(string(data[i+1:i+5]), 16, 16)
-		if err != nil {
-			return err
-		}
-		i += 4
-		if n >= 0xdc00 && n <= 0xdfff {
-			return fmt.Errorf("unpaired low surrogate")
-		}
-		if n >= 0xd800 && n <= 0xdbff {
-			if i+7 > len(data) || string(data[i+1:i+3]) != `\u` {
-				return fmt.Errorf("unpaired high surrogate")
-			}
-			low, err := strconv.ParseUint(string(data[i+3:i+7]), 16, 16)
-			if err != nil || low < 0xdc00 || low > 0xdfff {
-				return fmt.Errorf("unpaired high surrogate")
-			}
-			i += 6
-		}
-	}
-	return nil
 }
 
 // marshal compactly serializes a protocol value.

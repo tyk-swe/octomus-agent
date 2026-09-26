@@ -114,8 +114,15 @@ func TestValidStringsRefusesMalformedUnicode(t *testing.T) {
 		{`["\\", "\udc00"]`, "unpaired low surrogate"},
 		{`{"ok":"\\","\ud800x":1}`, "unpaired high surrogate"},
 	} {
-		if err := validStrings([]byte(tc.raw)); err == nil || err.Error() != tc.message {
-			t.Errorf("validStrings(%s) = %v; want %q", tc.raw, err, tc.message)
+		err := ValidStrings([]byte(tc.raw))
+		if err == nil || err.Error() != tc.message {
+			t.Errorf("ValidStrings(%s) = %v; want %q", tc.raw, err, tc.message)
+		}
+		// Plain errors: the runner reports these as protocol failures, and a
+		// marked *Error would be classified as an internal codec failure.
+		var marked *Error
+		if errors.As(err, &marked) {
+			t.Errorf("ValidStrings(%s) returned a marked *Error", tc.raw)
 		}
 	}
 	for _, raw := range []string{
@@ -129,8 +136,8 @@ func TestValidStringsRefusesMalformedUnicode(t *testing.T) {
 		`["\\\\", "\"", "\ud83d\ude00"]`,
 		`{"k":[1,true,null,"\ud83d\ude00"]}`,
 	} {
-		if err := validStrings([]byte(raw)); err != nil {
-			t.Errorf("validStrings(%s) = %v; want nil", raw, err)
+		if err := ValidStrings([]byte(raw)); err != nil {
+			t.Errorf("ValidStrings(%s) = %v; want nil", raw, err)
 		}
 	}
 }
