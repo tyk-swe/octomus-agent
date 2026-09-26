@@ -57,7 +57,8 @@ def main():
     deferred = {**proposal, 'id': 'synthetic-deferred', 'decision': 'deferred'}
     # Session summaries and review summaries stay private: the export carries routes
     # and summary presence only. Finding text is carried as model-authored text.
-    review_route = {'backend': 'opencode', 'model': 'synthetic/model', 'effort': 'high',
+    # A valid saved OpenCode route: provider and variant, never a Codex effort.
+    review_route = {'backend': 'opencode', 'model': 'synthetic-model', 'effort': '',
                     'provider': 'synthetic-provider', 'variant': 'synthetic-variant'}
     sessions = [
         {'id': 'synthetic-exec', 'role': 'executor', 'route': config['tiers']['S'],
