@@ -5,14 +5,15 @@ import (
 	"time"
 )
 
+// The pending-queue cap (1000 rows) lives in the schema's notify_* triggers.
 const (
-	NotificationQueueCap    int64 = 1000
 	NotificationMaxAttempts int64 = 5
 	NotificationExpiry      int64 = 24 * 60 * 60
 )
 
-// NotificationRetryDelays is indexed by the attempt number just made.
-var NotificationRetryDelays = [5]int64{30, 120, 600, 1800, 1800}
+// NotificationRetryDelays is indexed by the attempt number just made; its
+// length is tied to the attempt limit.
+var NotificationRetryDelays = [NotificationMaxAttempts]int64{30, 120, 600, 1800, 1800}
 
 // NotificationDelivery is one claimed outbox row: attention evidence references,
 // never task content.
