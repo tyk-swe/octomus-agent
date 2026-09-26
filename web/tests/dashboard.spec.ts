@@ -262,7 +262,8 @@ test('model routing across all roles, provider variants, draft catalogs and unav
   await navigate('Configuration');
   await page.getByLabel('OpenCode executable', { exact: true }).fill('/draft/opencode');
   await page.getByRole('button', { name: 'Load OpenCode models' }).click();
-  expect(drafts).toEqual([{ backend: 'opencode', binary: '/draft/opencode' }]);
+  // The route records the request asynchronously; the click can resolve first.
+  await expect.poll(() => drafts).toEqual([{ backend: 'opencode', binary: '/draft/opencode' }]);
   const names = [
     'Orchestrator',
     'Discovery agents',
