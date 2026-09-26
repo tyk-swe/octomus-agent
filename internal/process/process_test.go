@@ -390,6 +390,51 @@ func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	}
 }
 
+// TestChildEnvironmentDropsGitRepositoryLocation pins that a service started
+// from a Git hook or a shell with repository-locating variables exported still
+// runs every child git against its own working directory, while the operator's
+// deliberate GIT_CONFIG_* channel reaches children unchanged.
+func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
+	temp := t.TempDir()
+	located := []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_COMMON_DIR",
+		"GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+		"GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_NO_REPLACE_OBJECTS",
+		"GIT_REPLACE_REF_BASE",
+	}
+	for _, key := range located {
+		t.Setenv(key, filepath.Join(temp, "decoy", strings.ToLower(key)))
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "user.name")
+	t.Setenv("GIT_CONFIG_VALUE_0", "Kept Operator")
+	script := `for key in "$@"; do printf '%s=%s ' "$key" "${!key-unset}"; done`
+	out, err := process.Run(context.Background(), "bash",
+		append([]string{"-c", script, "env"}, append(located, "GIT_CONFIG_COUNT")...), temp, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want strings.Builder
+	for _, key := range located {
+		want.WriteString(key + "=unset ")
+	}
+	want.WriteString("GIT_CONFIG_COUNT=1")
+	if out != want.String() {
+		t.Fatalf("child environment = %q; want %q", out, want.String())
+	}
+	// A child git works on its own directory and still reads the config channel.
+	if _, err := process.RunMachine(context.Background(), "git", []string{"init", "--quiet"}, temp, 10); err != nil {
+		t.Fatalf("git init under exported GIT_DIR: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(temp, ".git", "HEAD")); err != nil {
+		t.Fatalf("git init did not create the repository in its working directory: %v", err)
+	}
+	name, err := process.RunMachine(context.Background(), "git", []string{"config", "user.name"}, temp, 10)
+	if err != nil || strings.TrimSpace(name) != "Kept Operator" {
+		t.Fatalf("git config user.name = %q, %v; want the GIT_CONFIG_* value", name, err)
+	}
+}
+
 // Large valid output parses, oversized or non-UTF-8 output fails explicitly,
 // and diagnostic capture truncates at the documented limit.
 func TestMachineCaptureNeverCorruptsSuccessfulJSON(t *testing.T) {

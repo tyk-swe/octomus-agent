@@ -29,8 +29,9 @@ import (
 const TokenEnv = "OCTOMUS_TOKEN"
 
 // Command builds an owned command: a new process group (pgid = child pid), the
-// service's secret environment removed, Git prompting disabled, and stdin on the
-// null device. Callers override Stdin/Stdout/Stderr before Start as needed.
+// service's secret environment and Git's repository-locating variables
+// removed, Git prompting disabled, and stdin on the null device. Callers
+// override Stdin/Stdout/Stderr before Start as needed.
 func Command(binary string, cwd string) *exec.Cmd {
 	cmd := exec.Command(binary)
 	cmd.Dir = cwd
@@ -40,6 +41,15 @@ func Command(binary string, cwd string) *exec.Cmd {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {
 		case TokenEnv, store.WebhookEnv, "GIT_TERMINAL_PROMPT":
+			continue
+		// Repository-locating Git variables (as exported into Git hooks) would
+		// redirect every child git away from cmd.Dir; Git itself clears them
+		// before entering another repository. The GIT_CONFIG* channels are the
+		// operator's deliberate configuration and pass through.
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_COMMON_DIR",
+			"GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+			"GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_NO_REPLACE_OBJECTS",
+			"GIT_REPLACE_REF_BASE":
 			continue
 		}
 		env = append(env, entry)
