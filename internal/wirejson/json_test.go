@@ -260,15 +260,8 @@ type strictItem struct {
 	N string `json:"n"`
 }
 
-func (v *strictItem) UnmarshalJSON(data []byte) error {
-	type plain strictItem
-	decoded := plain{}
-	if err := Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = strictItem(decoded)
-	return nil
-}
+// The receiver goes to the helper as is: Decode never calls it back.
+func (v *strictItem) UnmarshalJSON(data []byte) error { return DecodeStrict(data, v) }
 
 type outerRecord struct {
 	Item  strictItem   `json:"item"`
@@ -296,6 +289,62 @@ func TestNestedDecodersKeepTheirOwnStrictness(t *testing.T) {
 		if !errors.As(err, &typed) || err.Error() != tc.message {
 			t.Errorf("Decode(%s) = %v; want typed %q", tc.raw, err, tc.message)
 		}
+	}
+}
+
+// Record UnmarshalJSON methods pass their receiver, which may hold an earlier
+// value, so each helper starts from a zero value (or the given defaults):
+// nothing from dst may survive into the result, and a refusal leaves dst alone.
+func TestDecodeHelpersStartFreshAndChangeDstOnlyOnSuccess(t *testing.T) {
+	stale := "stale"
+	populated := func() decodeRecord {
+		return decodeRecord{S: "old", P: &stale, D: "old", L: []string{"old"}, M: map[string]int{"old": 1}, A: "old"}
+	}
+	fresh := decodeRecord{S: "x", L: []string{}, M: map[string]int{}}
+	for name, decode := range map[string]func([]byte, *decodeRecord) error{
+		"DecodeStrict": DecodeStrict[decodeRecord],
+		"DecodeRecord": DecodeRecord[decodeRecord],
+	} {
+		dst := populated()
+		if err := decode([]byte(`{"s":"x"}`), &dst); err != nil || !reflect.DeepEqual(dst, fresh) {
+			t.Fatalf("%s into a populated record = %#v, %v; want %#v", name, dst, err, fresh)
+		}
+		for _, raw := range []string{`{"p":"y"}`, `{"s":"y","s":"z"}`, `{"s":null}`, `[]`, `{"s":"y"} {}`} {
+			dst := populated()
+			err := decode([]byte(raw), &dst)
+			var typed *Error
+			if !errors.As(err, &typed) || !reflect.DeepEqual(dst, populated()) {
+				t.Fatalf("%s(%s) = %v and dst %#v; want a typed error and dst unchanged", name, raw, err, dst)
+			}
+		}
+	}
+	unknown := []byte(`{"s":"x","unknown":1}`)
+	dst := populated()
+	if err := DecodeStrict(unknown, &dst); err == nil || err.Error() != `unknown field "unknown"` || !reflect.DeepEqual(dst, populated()) {
+		t.Fatalf("DecodeStrict(unknown field) = %v and dst %#v; want refused and dst unchanged", err, dst)
+	}
+	if err := DecodeRecord(unknown, &dst); err != nil || !reflect.DeepEqual(dst, fresh) {
+		t.Fatalf("DecodeRecord(unknown field) = %#v, %v; want %#v", dst, err, fresh)
+	}
+
+	defaults := decodeRecord{S: "default", D: "default"}
+	dst = populated()
+	want := decodeRecord{S: "default", D: "set", L: []string{}, M: map[string]int{}}
+	if err := DecodeWithDefaults([]byte(`{"d":"set"}`), &dst, defaults); err != nil || !reflect.DeepEqual(dst, want) {
+		t.Fatalf("DecodeWithDefaults = %#v, %v; want %#v", dst, err, want)
+	}
+	if defaults.D != "default" {
+		t.Fatalf("DecodeWithDefaults changed the defaults to %#v", defaults)
+	}
+	dst = populated()
+	if err := DecodeWithDefaults(unknown, &dst, defaults); err == nil || err.Error() != `unknown field "unknown"` || !reflect.DeepEqual(dst, populated()) {
+		t.Fatalf("DecodeWithDefaults(unknown field) = %v and dst %#v; want refused and dst unchanged", err, dst)
+	}
+
+	// A method that hands its receiver to a helper is not called back.
+	var item strictItem
+	if err := json.Unmarshal([]byte(`{"n":"x"}`), &item); err != nil || item.N != "x" {
+		t.Fatalf("strictItem = %#v, %v", item, err)
 	}
 }
 

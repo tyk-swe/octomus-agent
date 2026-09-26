@@ -42,15 +42,7 @@ func NewAdmission(cycleID string, taskID *string, role string, route config.Rout
 	}
 	return Admission{ID: model.ID(), At: model.Now(), CycleID: cycleID, TaskID: task, Role: role, Route: route.Clone()}
 }
-func (v *Admission) UnmarshalJSON(data []byte) error {
-	type plain Admission
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, false, false); err != nil {
-		return err
-	}
-	*v = Admission(decoded)
-	return nil
-}
+func (v *Admission) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v Admission) MarshalJSON() ([]byte, error) {
 	type plain Admission
 	return wirejson.Record(plain(v))

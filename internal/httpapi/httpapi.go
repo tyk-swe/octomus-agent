@@ -491,15 +491,7 @@ type configUpdateBody struct {
 	Config           map[string]json.RawMessage `json:"config"`
 }
 
-func (v *configUpdateBody) UnmarshalJSON(data []byte) error {
-	type plain configUpdateBody
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = configUpdateBody(decoded)
-	return nil
-}
+func (v *configUpdateBody) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 
 func (a *api) saveConfig(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 	var body configUpdateBody
@@ -523,15 +515,7 @@ type baselineStartBody struct {
 	ExpectedRevision string `json:"expected_revision"`
 }
 
-func (v *baselineStartBody) UnmarshalJSON(data []byte) error {
-	type plain baselineStartBody
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = baselineStartBody(decoded)
-	return nil
-}
+func (v *baselineStartBody) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 
 func (a *api) baselineStart(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 	var body baselineStartBody
@@ -620,15 +604,7 @@ type catalogRequest struct {
 	Binary  string         `json:"binary"`
 }
 
-func (v *catalogRequest) UnmarshalJSON(data []byte) error {
-	type plain catalogRequest
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = catalogRequest(decoded)
-	return nil
-}
+func (v *catalogRequest) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 
 func (a *api) modelCatalog(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 	var request catalogRequest

@@ -42,6 +42,38 @@ func Decode(data []byte, dst any, strict, defaultAll bool) error {
 	return marked(decode(data, dst, strict, defaultAll))
 }
 
+// DecodeStrict decodes a request body or structured answer: unknown fields
+// fail, and every field that is not a pointer or tagged wire:"default" is
+// required. Decoding starts from a zero T, so absent optional fields are
+// zero rather than dst's old values, and dst is changed only on success.
+// T's own UnmarshalJSON is never called, so that method may pass its receiver.
+func DecodeStrict[T any](data []byte, dst *T) error {
+	var decoded T
+	return decodeInto(data, dst, decoded, true, false)
+}
+
+// DecodeRecord decodes a saved record like DecodeStrict, except that unknown
+// fields are ignored.
+func DecodeRecord[T any](data []byte, dst *T) error {
+	var decoded T
+	return decodeInto(data, dst, decoded, false, false)
+}
+
+// DecodeWithDefaults decodes an object whose fields may all be absent:
+// unknown fields fail, and absent fields take their values from defaults,
+// never from dst. dst is changed only on success.
+func DecodeWithDefaults[T any](data []byte, dst *T, defaults T) error {
+	return decodeInto(data, dst, defaults, true, true)
+}
+
+func decodeInto[T any](data []byte, dst *T, decoded T, strict, defaultAll bool) error {
+	if err := Decode(data, &decoded, strict, defaultAll); err != nil {
+		return err
+	}
+	*dst = decoded
+	return nil
+}
+
 func decode(data []byte, dst any, strict, defaultAll bool) error {
 	original := reflect.ValueOf(dst).Elem()
 	v := reflect.New(original.Type()).Elem()
