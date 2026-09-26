@@ -76,9 +76,10 @@ type Store struct {
 	path string
 }
 
-// dsn builds a SQLite URI for path with the connection settings every physical
-// connection needs. The driver applies `_pragma` values on each connect, so a
-// replaced connection can never run without the busy timeout, WAL or FULL sync.
+// dsn builds a SQLite URI for path. Only params apply on every connect (the
+// busy timeout); journal_mode=WAL persists in the file, and synchronous=FULL is
+// set once on the pinned connection after the schema check, which is why the
+// store never replaces its connection.
 func dsn(path string, params string) string {
 	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(path)
 	return "file:" + escaped + "?" + params
@@ -663,8 +664,6 @@ func queryStrings(c *sql.Conn, query string, args ...any) ([][]byte, error) {
 	return out, rows.Err()
 }
 
-// decodeJSON reads saved JSON with exact numbers; generic destinations receive
-// json.Number rather than float64 so re-encoding preserves the saved spelling.
 // RedactedValue serializes a typed export, decodes it as generic JSON (numbers
 // kept verbatim) and scrubs every string in place. Exports use it so redaction
 // happens after the facts are computed from the saved records.
@@ -681,6 +680,8 @@ func RedactedValue(value any) (map[string]any, error) {
 	return generic, nil
 }
 
+// decodeJSON reads saved JSON with exact numbers; generic destinations receive
+// json.Number rather than float64 so re-encoding preserves the saved spelling.
 func decodeJSON(data []byte, dst any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()

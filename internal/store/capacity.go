@@ -301,8 +301,8 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 	return err == nil, err
 }
 
-// sameJSON compares two records by their canonical serialization, the way the
-// Compare JSON values by content.
+// sameJSON reports whether two values have the same canonical wirejson
+// serialization. A value that cannot be serialized never matches.
 func sameJSON(a, b any) bool {
 	left, err := wirejson.Marshal(a)
 	if err != nil {
