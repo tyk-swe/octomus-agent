@@ -245,22 +245,17 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if err := a.observeDefaultBranch(cfg, *revision, observedAt); err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	inventory, err := gitops.OpenPrInventory(ctx, cfg)
+	observed, err := a.observeOpenPRs(ctx, cfg)
 	if err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	owned, err := gitops.OwnedPrDetails(ctx, cfg, inventory)
-	if err != nil {
-		return model.OpenPrInventory{}, err
-	}
-	overlayOwnedDetails(&inventory, owned)
 	// Fetch only after reading the remote heads, so every commit observed above
 	// that fast-forwards its branch is local for the role clones and decision
 	// fingerprints that use it.
 	if err := gitops.Fetch(ctx, cfg); err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	external, coverage, err := ExternalContext(inventory)
+	external, coverage, err := ExternalContext(observed.inventory)
 	if err != nil {
 		return model.OpenPrInventory{}, err
 	}
@@ -271,7 +266,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	}
 	targets := []string{}
 	now := time.Now()
-	for _, pr := range owned {
+	for _, pr := range observed.owned {
 		if pr.OwnedOpen() && (pr.ChangedLines >= cfg.LargePRLines || prAgeReached(pr.CreatedAt, cfg.LongLivedPRDays, now)) {
 			targets = append(targets, pr.Branch)
 		}
@@ -279,16 +274,12 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	sort.Strings(targets)
 	grounding := model.Grounding{
 		Revision:           *revision,
-		PRs:                owned,
+		PRs:                observed.owned,
 		ExternalPRs:        external,
 		PRCoverage:         coverage,
 		History:            history.Items,
 		MaintenanceDue:     cycle.Number%cfg.MaintenanceEveryCycles == 0,
 		MaintenanceTargets: targets,
-	}
-	releasable, err := a.releasableReservations(ctx, cfg, inventory)
-	if err != nil {
-		return model.OpenPrInventory{}, err
 	}
 
 	// Remote work above is deliberately outside gate. Recheck the live policy
@@ -315,14 +306,14 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	// saved a newer inventory first. That refresh recorded its own PR
 	// observations and authority, so this older one leaves them alone; the
 	// grounding itself is as current as if it had persisted first.
-	if _, err := a.commitPrObservationLocked(cfg, inventory, owned, releasable); err != nil {
+	if _, err := a.commitPrObservationLocked(cfg, observed); err != nil {
 		return model.OpenPrInventory{}, err
 	}
 	cycle.Grounding = &grounding
 	if err := a.saveCycleMergedSessions(cycle); err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	return inventory, nil
+	return observed.inventory, nil
 }
 
 // prAgeReached compares whole elapsed days without converting an unbounded

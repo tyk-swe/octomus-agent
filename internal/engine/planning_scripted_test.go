@@ -1307,6 +1307,30 @@ func TestPausedGroundingClearsEarlierRefreshFailure(t *testing.T) {
 	}
 }
 
+// Grounding observes open PRs as a refresh does, and its failure names the
+// observation that failed, as a refresh failure does.
+func TestGroundingNamesTheFailedPullRequestObservation(t *testing.T) {
+	fixture := newScriptedPlanningFixture(t)
+	app := fixture.pausedApp(t)
+	cycle := groundingCycle(t, fixture, model.CycleModeAudit)
+	// The listing reports an open PR against another base repository, which
+	// the inventory refuses.
+	foreign := `[{"number": 9, "title": "Foreign", "body": "", "state": "open", "merged_at": null,
+		"head": {"ref": "feature", "sha": "abc", "repo": {"full_name": "external/project"}},
+		"base": {"ref": "main", "repo": {"full_name": "external/other"}},
+		"html_url": "https://github.com/external/other/pull/9", "additions": 1, "deletions": 0, "created_at": "2026-09-07T00:00:00Z"}]`
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte(foreign), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := app.captureGrounding(context.Background(), fixture.cfg, &cycle)
+	if err == nil || err.Error() != "Open pull request inventory failed: Open PR entry reports a different base repository" {
+		t.Fatalf("grounding with a refused PR inventory = %v; want the inventory failure named", err)
+	}
+	if cycle.Grounding != nil {
+		t.Fatalf("failed grounding was recorded: %+v", cycle.Grounding)
+	}
+}
+
 // A concurrent refresh whose fetch started after grounding's can persist a
 // newer inventory first. Grounding's older inventory is then superseded, not a
 // failure: planning continues, and neither the newer saved inventory nor the
