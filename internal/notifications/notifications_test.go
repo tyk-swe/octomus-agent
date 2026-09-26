@@ -55,31 +55,59 @@ func putTask(t *testing.T, state *store.Store, id, status string, reason *model.
 	}
 }
 
-// receiver hands every request body to
-// the channel and delays the response like the scripted peer does.
+// receiver hands every request body to the channel and delays the first
+// response like the scripted peer does.
 type receiver struct {
 	url      string
 	requests chan []byte
 	server   *httptest.Server
-	once     sync.Once
-	delay    time.Duration
+	mu       sync.Mutex
+	delay    time.Duration // the next response's delay; only the first is held
+}
+
+// takeDelay returns the pending first-response delay and clears it. Handlers
+// run concurrently, so the delay is read and cleared under the lock.
+func (r *receiver) takeDelay() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delay := r.delay
+	r.delay = 0
+	return delay
 }
 
 func newReceiver(t *testing.T, status int, firstDelay time.Duration) *receiver {
 	t.Helper()
 	r := &receiver{requests: make(chan []byte, 32), delay: firstDelay}
+	// closed ends every held response when the test finishes: the delay is the
+	// most a response is held, not what cleanup must wait out, because
+	// httptest.Server.Close waits for running handlers.
+	closed := make(chan struct{})
 	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, err := io.ReadAll(req.Body)
 		if err == nil {
-			r.requests <- body
+			select {
+			case r.requests <- body:
+			case <-closed:
+				return
+			}
 		}
-		delay := r.delay
-		r.delay = 0
-		time.Sleep(delay)
+		if delay := r.takeDelay(); delay > 0 {
+			hold := time.NewTimer(delay)
+			defer hold.Stop()
+			// A client that gives up (its timeout or a stopped worker) closes
+			// the connection, which cancels the request context.
+			select {
+			case <-hold.C:
+			case <-req.Context().Done():
+			case <-closed:
+			}
+		}
 		w.WriteHeader(status)
 	}))
 	r.url = r.server.URL + "/hook"
+	// Cleanups run last-registered first: release held handlers, then close.
 	t.Cleanup(r.server.Close)
+	t.Cleanup(func() { close(closed) })
 	return r
 }
 
