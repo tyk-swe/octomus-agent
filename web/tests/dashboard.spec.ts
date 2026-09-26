@@ -92,11 +92,14 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await expect(
     page.getByRole('link', { name: /Explain the local development workflow/ })
   ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/12');
-  // An unowned request is reported as such, and older deliveries remain visible.
-  await expect(page.getByText('open · external head change')).toBeVisible();
-  await expect(
-    page.getByRole('link', { name: /Record the first delivered change/ })
-  ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/7');
+  // A head change is flagged only on a delivery whose head moved after Octomus delivered
+  // it; an external request, never delivered by Octomus, has no head to compare. Older
+  // deliveries remain visible.
+  const moved = page.getByRole('link', { name: /Record the first delivered change/ });
+  await expect(moved).toContainText('open · external head change');
+  await expect(moved).toHaveAttribute('href', 'https://github.com/fixture/project/pull/7');
+  for (const title of [/Explain the local development workflow/, /Adjust the retry backoff/])
+    await expect(page.getByRole('link', { name: title })).not.toContainText('head change');
   await navigate('Overview');
   await page.getByRole('button', { name: 'Inspect run' }).click();
   // Read-only overlap context: the repository an external branch came from is
