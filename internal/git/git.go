@@ -98,14 +98,9 @@ func field(p map[string]any, keys ...string) any {
 	return v
 }
 
-// jstr accepts only JSON strings.
-func jstr(v any) (string, bool) {
-	s, ok := v.(string)
-	return s, ok
-}
-
+// text returns the JSON string at keys, or "" for a miss or any other type.
 func text(p map[string]any, keys ...string) string {
-	s, _ := jstr(field(p, keys...))
+	s, _ := field(p, keys...).(string)
 	return s
 }
 
@@ -305,7 +300,7 @@ func ParseInventory(out string, c config.Config) (model.OpenPrInventory, error) 
 	err := ghPages(out, func(page []map[string]any) error {
 		pages++
 		for _, p := range page {
-			if state, _ := jstr(field(p, "state")); state != "open" && state != "closed" {
+			if state, _ := field(p, "state").(string); state != "open" && state != "closed" {
 				return errors.New("Open PR entry has an unrecognized state")
 			}
 			pr, err := parsePR(p, c)
@@ -410,10 +405,10 @@ func prComments(ctx context.Context, c config.Config, number uint64) ([]string, 
 	return bodies, err
 }
 
-// taskMarker reports whether the task's publication marker is attached to the
+// TaskMarker reports whether the task's publication marker is attached to the
 // pull request: in the description when this task originated the request, or
 // in an append-only comment when it delivered a follow-up.
-func taskMarker(ctx context.Context, c config.Config, taskID string, p model.PullRequest) (bool, error) {
+func TaskMarker(ctx context.Context, c config.Config, taskID string, p model.PullRequest) (bool, error) {
 	marker := "<!-- octomus:task:" + taskID + " -->"
 	if strings.Contains(p.Body, marker) {
 		return true, nil
@@ -430,12 +425,6 @@ func taskMarker(ctx context.Context, c config.Config, taskID string, p model.Pul
 	return false, nil
 }
 
-// TaskMarker reports whether a task's durable publication marker is present in
-// a pull request description or comment.
-func TaskMarker(ctx context.Context, c config.Config, taskID string, p model.PullRequest) (bool, error) {
-	return taskMarker(ctx, c, taskID, p)
-}
-
 func parsePR(p map[string]any, c config.Config) (model.PullRequest, error) {
 	number, ok := jnum(field(p, "number"))
 	if !ok {
@@ -449,8 +438,8 @@ func parsePR(p map[string]any, c config.Config) (model.PullRequest, error) {
 	}
 	additions, _ := jnum(field(p, "additions"))
 	deletions, _ := jnum(field(p, "deletions"))
-	headRepo, headRepoOk := jstr(field(p, "head", "repo", "full_name"))
-	baseRepo, baseRepoOk := jstr(field(p, "base", "repo", "full_name"))
+	headRepo, headRepoOk := field(p, "head", "repo", "full_name").(string)
+	baseRepo, baseRepoOk := field(p, "base", "repo", "full_name").(string)
 	owned := strings.HasPrefix(branch, c.BranchPrefix) &&
 		headRepoOk && config.EqualASCII(headRepo, c.GitHubRepo) &&
 		baseRepoOk && config.EqualASCII(baseRepo, c.GitHubRepo) &&
@@ -472,9 +461,10 @@ func parsePR(p map[string]any, c config.Config) (model.PullRequest, error) {
 	}, nil
 }
 
-// publicationPR finds the pull request associated with a branch, if any.
-// Multiple candidates are ambiguous and must be reconciled before publication.
-func publicationPR(ctx context.Context, c config.Config, branch string) (*model.PullRequest, error) {
+// PublicationPR finds the pull request associated with a branch, if any,
+// including closed and merged requests. Multiple candidates are ambiguous and
+// must be reconciled before publication.
+func PublicationPR(ctx context.Context, c config.Config, branch string) (*model.PullRequest, error) {
 	owner, _, _ := strings.Cut(c.GitHubRepo, "/")
 	out, err := gh(ctx, c, []string{
 		"api", "--paginate",
@@ -509,15 +499,9 @@ func publicationPR(ctx context.Context, c config.Config, branch string) (*model.
 	return &matches[0], nil
 }
 
-// PublicationPR finds the unique pull request associated with an admitted
-// branch, including closed and merged requests.
-func PublicationPR(ctx context.Context, c config.Config, branch string) (*model.PullRequest, error) {
-	return publicationPR(ctx, c, branch)
-}
-
 // ValidatePublication checks a delivered or reconciled pull request against the
 // task's recorded expectations. `marker` carries the caller's check of
-// taskMarker: the marker may live in the description or in a follow-up comment,
+// TaskMarker: the marker may live in the description or in a follow-up comment,
 // which this synchronous check cannot fetch for itself.
 func ValidatePublication(task model.Task, p model.PullRequest, marker bool, reconcile bool) error {
 	c := task.Config
@@ -689,7 +673,7 @@ func updatePR(ctx context.Context, c config.Config, task model.Task, p model.Pul
 		return model.PullRequest{}, blocked(model.BlockedReasonRemoteConflict,
 			"PR changed around publication; retry will reconcile the current remote state")
 	}
-	marker, err := taskMarker(ctx, c, task.ID, latest)
+	marker, err := TaskMarker(ctx, c, task.ID, latest)
 	if err != nil {
 		return model.PullRequest{}, err
 	}
@@ -815,14 +799,14 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		}
 		existing = &p
 	} else {
-		p, err := publicationPR(ctx, c, task.Branch)
+		p, err := PublicationPR(ctx, c, task.Branch)
 		if err != nil {
 			return fail(err)
 		}
 		existing = p
 	}
 	if existing != nil {
-		marker, err := taskMarker(ctx, c, task.ID, *existing)
+		marker, err := TaskMarker(ctx, c, task.ID, *existing)
 		if err != nil {
 			return fail(err)
 		}
