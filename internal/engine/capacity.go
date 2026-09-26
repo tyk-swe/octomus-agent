@@ -19,6 +19,9 @@ const (
 	prRefreshRetryDelay   = time.Minute
 )
 
+// prCapacityFullReason explains a full owned-PR capacity wherever it is reported.
+const prCapacityFullReason = "The configured owned open-PR limit is reached; new-PR work waits for an observed closure or merge"
+
 type freshPrObservation struct {
 	identity          store.PrIdentity
 	inventory         model.OpenPrInventory
@@ -127,7 +130,7 @@ func (a *App) PrCapacity() (model.PrCapacity, error) {
 		}
 	case remaining == 0:
 		status = "full"
-		reason = "The configured owned open-PR limit is reached; new-PR work waits for an observed closure or merge"
+		reason = prCapacityFullReason
 	default:
 		status = "ready"
 	}
@@ -139,6 +142,22 @@ func (a *App) PrCapacity() (model.PrCapacity, error) {
 		capacity.Reason = &reason
 	}
 	return capacity, nil
+}
+
+// prCapacityFrom reports the capacity that one complete inventory shows with
+// the current reservations. It is observed context for planning prompts,
+// never dispatch authority: only PrCapacity's fresh current-process
+// observation authorizes admission.
+func prCapacityFrom(cfg config.Config, inventory model.OpenPrInventory, reservations []store.PrReservation) model.PrCapacity {
+	owned, unrepresented, remaining := store.PrUnion(inventory, reservations, cfg.MaxOpenPRs)
+	observedAt := inventory.ObservedAt
+	capacity := model.PrCapacity{Limit: cfg.MaxOpenPRs, OwnedOpen: &owned, Reserved: unrepresented, Remaining: &remaining, ObservedAt: &observedAt, Status: "ready"}
+	if remaining == 0 {
+		reason := prCapacityFullReason
+		capacity.Status = "full"
+		capacity.Reason = &reason
+	}
+	return capacity
 }
 
 func (a *App) startPrRefresh(cfg config.Config) {

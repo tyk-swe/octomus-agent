@@ -87,7 +87,8 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 }
 
 func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) error {
-	if err := a.captureGrounding(ctx, cfg, cycle); err != nil {
+	inventory, err := a.captureGrounding(ctx, cfg, cycle)
+	if err != nil {
 		return err
 	}
 	memory, err := a.planningMemory(ctx, cfg, *cycle.Grounding)
@@ -117,10 +118,15 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 			cycle.Proposals = append(cycle.Proposals, proposal)
 		}
 	}
-	capacity, err := a.PrCapacity()
+	// Roles see the capacity of the inventory this grounding observed, whatever
+	// the dispatch authority: audits run paused, and a refresh may start or
+	// fail after grounding. Reservations are read after grounding persisted its
+	// inventory, which released the reservations its closed PRs settled.
+	reservations, err := a.Store.PrReservations(cfg.GitHubRepo)
 	if err != nil {
 		return err
 	}
+	capacity := prCapacityFrom(cfg, inventory, reservations)
 	contextValue := map[string]any{"grounding": cycle.Grounding, "decision_memory": memory, "pr_capacity": capacity}
 	contextBytes, err := wirejson.Marshal(contextValue)
 	if err != nil {
@@ -186,31 +192,33 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	return a.commitTasks(cfg, cycle)
 }
 
-func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle) error {
+// captureGrounding records the cycle's grounding and returns the complete
+// open-PR inventory it observed.
+func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle) (model.OpenPrInventory, error) {
 	if err := a.doctor(ctx, cfg, cycle.Mode == model.CycleModeAudit); err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	if err := gitops.Fetch(ctx, cfg); err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	observedAt := model.Now()
 	revision, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	if revision == nil || *revision == "" {
-		return errors.New("Default branch missing on remote")
+		return model.OpenPrInventory{}, errors.New("Default branch missing on remote")
 	}
 	if err := a.observeDefaultBranch(cfg, *revision, observedAt); err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	inventory, err := gitops.OpenPrInventory(ctx, cfg)
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	owned, err := gitops.OwnedPrDetails(ctx, cfg, inventory)
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	byNumber := map[uint64]model.PullRequest{}
 	for _, pr := range owned {
@@ -223,12 +231,12 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	}
 	external, coverage, err := ExternalContext(inventory)
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	limit := 100
 	history, err := a.Store.HistoryPage("task", store.HistoryQuery{Limit: &limit})
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	targets := []string{}
 	now := time.Now()
@@ -249,7 +257,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	}
 	releasable, err := a.releasableReservations(ctx, cfg, inventory)
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 
 	// Remote work above is deliberately outside gate. Recheck the live policy
@@ -258,22 +266,22 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	defer a.gate.Unlock()
 	live, err := a.Config()
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	liveFingerprint, err := live.Fingerprint()
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	snapshotFingerprint, err := cfg.Fingerprint()
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	if liveFingerprint != snapshotFingerprint {
-		return errors.New("Configuration changed during planning grounding")
+		return model.OpenPrInventory{}, errors.New("Configuration changed during planning grounding")
 	}
 	persisted, err := a.Store.PersistPrInventory(inventory, releasable)
 	if err != nil {
-		return err
+		return model.OpenPrInventory{}, err
 	}
 	// With the live policy confirmed above, a refused persist means only that
 	// a concurrent refresh (housekeeping or dispatch) whose fetch started later
@@ -283,12 +291,12 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if persisted {
 		for _, pr := range owned {
 			if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
-				return err
+				return model.OpenPrInventory{}, err
 			}
 		}
 		control, err := a.Control()
 		if err != nil {
-			return err
+			return model.OpenPrInventory{}, err
 		}
 		// As in refreshPRs: the persisted inventory clears an earlier refresh
 		// failure in any mode, and authorizes dispatch only when not paused.
@@ -300,7 +308,10 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		a.runtimeMu.Unlock()
 	}
 	cycle.Grounding = &grounding
-	return a.saveCycleMergedSessions(cycle)
+	if err := a.saveCycleMergedSessions(cycle); err != nil {
+		return model.OpenPrInventory{}, err
+	}
+	return inventory, nil
 }
 
 // prAgeReached compares whole elapsed days without converting an unbounded

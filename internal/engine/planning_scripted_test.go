@@ -9,6 +9,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -240,6 +241,82 @@ func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
 		t.Fatalf("audit disturbed or queued executable work: %+v, %v", tasks, err)
 	}
 	assertAdmissions(t, fixture.state, fixture.cfg.PlanningAdmissionsRequired(), "audit")
+}
+
+// consolidationPrCapacity decodes the pr_capacity of the recorded context that
+// closes the consolidation prompt.
+func consolidationPrCapacity(t *testing.T, f *scriptedFixture) map[string]any {
+	t.Helper()
+	for _, turn := range f.script.Turns(f.routes.Orchestrator) {
+		if !strings.HasPrefix(turn.Prompt, "Act as final orchestrator") {
+			continue
+		}
+		const marker = "Context: "
+		index := strings.LastIndex(turn.Prompt, marker)
+		if index < 0 {
+			t.Fatalf("consolidation prompt has no recorded context: %.200s", turn.Prompt)
+		}
+		var recorded struct {
+			PrCapacity map[string]any `json:"pr_capacity"`
+		}
+		if err := json.Unmarshal([]byte(turn.Prompt[index+len(marker):]), &recorded); err != nil {
+			t.Fatalf("consolidation context is not the recorded JSON: %v", err)
+		}
+		if recorded.PrCapacity == nil {
+			t.Fatal("consolidation context has no pr_capacity")
+		}
+		return recorded.PrCapacity
+	}
+	t.Fatal("no consolidation turn ran")
+	return nil
+}
+
+// An audit runs paused, so this process holds no PR dispatch authority. The
+// planning roles still receive the capacity of the complete inventory the
+// same pass grounded on, never "no inventory has been observed".
+func TestAuditPlanningContextReportsTheGroundedPrCapacity(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		limit     uint64
+		owned     []maintenancePRFixture
+		status    string
+		remaining float64
+		reason    any
+	}{
+		{name: "ready", limit: 5, status: "ready", remaining: 5, reason: nil},
+		{name: "full", limit: 1, owned: []maintenancePRFixture{{name: "open", ageDays: 1, changedLines: 1}}, status: "full", remaining: 0, reason: prCapacityFullReason},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			fixture.configure(t, func(cfg *config.Config) { cfg.MaxOpenPRs = tc.limit })
+			writeMaintenancePRFixture(t, fixture, tc.owned)
+			completePlan(t, fixture).queue(fixture)
+			app := fixture.pausedApp(t)
+			cycleID, err := app.StartAudit(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cycle := waitCycle(t, fixture.state, cycleID)
+			if cycle.Status != model.CycleCompleted || cycle.Grounding == nil || cycle.Grounding.PRCoverage.ObservedAt == nil {
+				t.Fatalf("audit did not complete with grounding: status=%s error=%v", cycle.Status, cycle.Error)
+			}
+			capacity := consolidationPrCapacity(t, fixture)
+			if capacity["status"] != tc.status || capacity["remaining"] != tc.remaining || capacity["reason"] != tc.reason {
+				t.Fatalf("planning context capacity = %v; want status %s, remaining %v, reason %v", capacity, tc.status, tc.remaining, tc.reason)
+			}
+			if capacity["limit"] != float64(tc.limit) || capacity["owned_open"] != float64(len(tc.owned)) || capacity["reserved"] != float64(0) {
+				t.Fatalf("planning context capacity counts = %v", capacity)
+			}
+			if capacity["observed_at"] != *cycle.Grounding.PRCoverage.ObservedAt {
+				t.Fatalf("capacity observed at %v; grounding observed at %s", capacity["observed_at"], *cycle.Grounding.PRCoverage.ObservedAt)
+			}
+			// The context is not dispatch authority: the paused service still has none.
+			authority, err := app.PrCapacity()
+			if err != nil || authority.Status != "unavailable" || authority.Remaining != nil {
+				t.Fatalf("paused audit gained PR dispatch authority: %+v, %v", authority, err)
+			}
+		})
+	}
 }
 
 func TestRunOnceCommitsCompletePlanningQueueAndPhase(t *testing.T) {
@@ -688,7 +765,7 @@ func TestPausedGroundingClearsEarlierRefreshFailure(t *testing.T) {
 	app.runtimeMu.Lock()
 	app.runtime.prRefreshError = "earlier fixture failure"
 	app.runtimeMu.Unlock()
-	if err := app.captureGrounding(context.Background(), fixture.cfg, &cycle); err != nil {
+	if _, err := app.captureGrounding(context.Background(), fixture.cfg, &cycle); err != nil {
 		t.Fatal(err)
 	}
 	if cycle.Grounding == nil {
@@ -724,11 +801,16 @@ func TestGroundingSupersededByANewerInventoryContinues(t *testing.T) {
 	app.runtime.prObservation = authority
 	app.runtimeMu.Unlock()
 	cycle := groundingCycle(t, fixture, model.CycleModeExecution)
-	if err := app.captureGrounding(context.Background(), fixture.cfg, &cycle); err != nil {
+	observed, err := app.captureGrounding(context.Background(), fixture.cfg, &cycle)
+	if err != nil {
 		t.Fatalf("superseded grounding failed planning: %v", err)
 	}
 	if cycle.Grounding == nil || cycle.Grounding.Revision == "" {
 		t.Fatalf("grounding was not recorded: %+v", cycle.Grounding)
+	}
+	// Planning context stays consistent with the grounding it was built from.
+	if cycle.Grounding.PRCoverage.ObservedAt == nil || observed.ObservedAt != *cycle.Grounding.PRCoverage.ObservedAt || observed.ObservedAt == newer.ObservedAt {
+		t.Fatalf("grounding returned inventory observed at %s; grounding coverage %v", observed.ObservedAt, cycle.Grounding.PRCoverage.ObservedAt)
 	}
 	saved, err := store.Get[model.Cycle](fixture.state, "cycle", cycle.ID)
 	if err != nil || saved == nil || saved.Grounding == nil || saved.Grounding.Revision != cycle.Grounding.Revision {
