@@ -925,6 +925,32 @@ func TestPublishRejectsStaleBase(t *testing.T) {
 	}
 }
 
+// TestPublishUncertainWrapsCauseOnce: an untyped publication failure is
+// reported as PublicationUncertain with the reason sentence stated once,
+// followed by the underlying cause.
+func TestPublishUncertainWrapsCauseOnce(t *testing.T) {
+	c, root := fixtureRoot(t)
+	c.VerificationCommands = []string{"make test"}
+	task, _ := publishableTask(t, c, root, "task-uncertain")
+	// The fixture still answers `remote get-url` and `gh auth status`, so the
+	// first failure is ls-remote in a checkout that is not a repository.
+	task.Config.Repository = t.TempDir()
+	_, err := git.Publish(context.Background(), task)
+	if err == nil {
+		t.Fatal("publication from a broken checkout must fail")
+	}
+	if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonPublicationUncertain {
+		t.Fatalf("reason = %v; want publication_uncertain", reason)
+	}
+	sentence := model.BlockedReasonPublicationUncertain.Error()
+	if count := strings.Count(err.Error(), sentence); count != 1 {
+		t.Fatalf("error states the reason %d times; want once: %q", count, err)
+	}
+	if !strings.HasPrefix(err.Error(), sentence+": ") || !strings.Contains(err.Error(), "exit status") {
+		t.Fatalf("error = %q; want the reason followed by the git failure", err)
+	}
+}
+
 // TestPublicationChecksEveryIdentityFieldAndClosedReconciliation ports the
 // count, and closed/merged states only pass explicit reconciliation.
 func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T) {

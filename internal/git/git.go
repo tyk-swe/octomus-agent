@@ -559,8 +559,7 @@ func Publish(ctx context.Context, task model.Task) (model.PullRequest, error) {
 		if model.BlockedReasonFromError(err) != model.BlockedReasonUnknown {
 			return pr, err
 		}
-		return pr, reasoned(model.BlockedReasonPublicationUncertain,
-			model.BlockedReasonPublicationUncertain.Error(), err)
+		return pr, fmt.Errorf("%w: %w", model.BlockedReasonPublicationUncertain, err)
 	}
 	return pr, nil
 }
