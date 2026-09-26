@@ -411,26 +411,11 @@ func (s *Store) HasUnresolvedTasks() (bool, error) {
 	return exists, err
 }
 
-// StartBatch opens a run-once batch over every queued task and saves the control.
-func (s *Store) StartBatch(control *model.Control) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.transaction(false, func(c *sql.Conn) error {
-		id := model.ID()
-		control.SetMode(model.OperatingModeRunOnce)
-		control.Batch = &model.RunBatch{ID: id, Phase: model.BatchPhaseDraining, CycleID: nil}
-		control.Error = nil
-		control.NextCycleAt = 0
-		if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
-			return err
-		}
-		return txPut(c, "settings", "control", *control)
-	})
-}
-
-// StartBatchIfAffordable starts a run-once batch only when the live
-// configuration can still fund a complete planning pass. The affordability
-// decision and every RunOnce side effect share one transaction.
+// StartBatchIfAffordable opens a run-once batch over every queued, unarchived
+// task and saves the control, only when the live control still equals
+// *control and the live configuration can still fund a complete planning
+// pass. The checks and every side effect share one transaction; *control is
+// updated only when the batch started.
 func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (model.PlanningCapacity, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -70,43 +70,33 @@ func TestAuditControlsConflictWhileAuditRuns(t *testing.T) {
 
 func TestResumePreservesAuditAndBaselineConflicts(t *testing.T) {
 	for _, active := range []string{"audit", "audit preflight", "baseline"} {
-		for _, action := range []string{"direct", "control action"} {
-			t.Run(active+"/"+action, func(t *testing.T) {
-				app, control := controlFixture(t, "idle")
-				control.NextCycleAt = 1234567890
-				message := "earlier planning failure"
-				control.Error = &message
-				if err := app.Store.SaveControl(control); err != nil {
-					t.Fatal(err)
-				}
-				app.runtimeMu.Lock()
-				switch active {
-				case "audit":
-					app.runtime.cycle = &cycleJob{id: "audit", mode: model.CycleModeAudit, cancel: func() {}}
-				case "audit preflight":
-					app.runtime.startPreflight(model.CycleModeAudit)
-				case "baseline":
-					app.runtime.baseline = &baselineJob{id: "baseline", cancel: func() {}}
-				}
-				app.runtimeMu.Unlock()
-				var err error
-				if action == "direct" {
-					err = app.Resume()
-				} else {
-					_, err = app.ControlAction("resume")
-					if err != nil && !IsActionConflict(err) {
-						t.Fatalf("control action should report a conflict: %v", err)
-					}
-				}
-				if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.Split(active, " ")[0]) {
-					t.Fatalf("resume during %s: %v", active, err)
-				}
-				saved, loadErr := app.Control()
-				if loadErr != nil || saved.Mode != model.OperatingModePaused || saved.NextCycleAt != control.NextCycleAt || saved.Error == nil || *saved.Error != message {
-					t.Fatalf("rejected resume changed control: %+v, %v", saved, loadErr)
-				}
-			})
-		}
+		t.Run(active, func(t *testing.T) {
+			app, control := controlFixture(t, "idle")
+			control.NextCycleAt = 1234567890
+			message := "earlier planning failure"
+			control.Error = &message
+			if err := app.Store.SaveControl(control); err != nil {
+				t.Fatal(err)
+			}
+			app.runtimeMu.Lock()
+			switch active {
+			case "audit":
+				app.runtime.cycle = &cycleJob{id: "audit", mode: model.CycleModeAudit, cancel: func() {}}
+			case "audit preflight":
+				app.runtime.startPreflight(model.CycleModeAudit)
+			case "baseline":
+				app.runtime.baseline = &baselineJob{id: "baseline", cancel: func() {}}
+			}
+			app.runtimeMu.Unlock()
+			_, err := app.ControlAction("resume")
+			if err == nil || !IsActionConflict(err) || !strings.Contains(strings.ToLower(err.Error()), strings.Split(active, " ")[0]) {
+				t.Fatalf("resume during %s = %v; want a conflict naming it", active, err)
+			}
+			saved, loadErr := app.Control()
+			if loadErr != nil || saved.Mode != model.OperatingModePaused || saved.NextCycleAt != control.NextCycleAt || saved.Error == nil || *saved.Error != message {
+				t.Fatalf("rejected resume changed control: %+v, %v", saved, loadErr)
+			}
+		})
 	}
 }
 
@@ -155,8 +145,9 @@ func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(
 // ControlAction checks paused, idle operation under the gate, then releases
 // it before StartAudit admits the audit. A launch or mode change landing in
 // that window is refused there as ErrBusy or ErrNotPaused, and those refusals
-// are the same conflict the gate-held check reports, not a bad request.
-// RunOnce refuses the same states with the same conflicts.
+// are the same conflict the gate-held check reports, not a bad request. Run
+// once never releases the gate, so its refusal of the same states is that
+// gate-held conflict.
 func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
 	for _, test := range []struct {
 		scenario string
@@ -173,12 +164,11 @@ func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
 				app.runtime.startPreflight(model.CycleModeAudit)
 				app.runtimeMu.Unlock()
 			}
-			_, auditErr := app.StartAudit(context.Background())
-			runErr := app.RunOnce()
-			for name, err := range map[string]error{"StartAudit": auditErr, "RunOnce": runErr} {
-				if !errors.Is(err, test.want) || !IsActionConflict(err) {
-					t.Fatalf("%s = %v; want the %q conflict", name, err, test.want)
-				}
+			if _, err := app.StartAudit(context.Background()); !errors.Is(err, test.want) || !IsActionConflict(err) {
+				t.Fatalf("StartAudit = %v; want the %q conflict", err, test.want)
+			}
+			if _, err := app.ControlAction("cycle"); err == nil || !IsActionConflict(err) || !strings.HasPrefix(err.Error(), "Run once requires paused operation with no active work") {
+				t.Fatalf("run once = %v; want the paused, idle conflict", err)
 			}
 			if saved, err := app.Control(); err != nil || saved.Mode != control.Mode || saved.Batch != nil {
 				t.Fatalf("refused launch changed control: %+v, %v", saved, err)

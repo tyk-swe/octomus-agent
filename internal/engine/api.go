@@ -118,24 +118,18 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 			a.gate.Unlock()
 			return nil, err
 		}
-		capacity, err := a.Store.PlanningCapacity()
-		if err != nil {
+		// Saves the batch's control itself, in the transaction that checks
+		// planning affordability.
+		if err := a.startRunOnceBatch(&control); err != nil {
 			a.gate.Unlock()
 			return nil, err
 		}
-		if err := capacity.EnsureAvailable(); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
-		if err := a.Store.StartBatch(&control); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
+		a.notify()
 	default:
 		a.gate.Unlock()
 		return nil, ErrUnknownControl
 	}
-	if action != "resume" {
+	if action == "pause" {
 		if err := a.Store.SaveControl(control); err != nil {
 			a.gate.Unlock()
 			return nil, err

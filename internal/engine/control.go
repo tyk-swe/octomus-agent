@@ -12,9 +12,9 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// ErrNotPaused and ErrBusy refuse an audit or run once that needs paused,
-// idle operation. They are conflicts (HTTP 409), like the same refusal
-// ControlAction reports before it releases the gate.
+// ErrNotPaused and ErrBusy refuse an audit that needs paused, idle operation.
+// They are conflicts (HTTP 409), like the same refusal ControlAction reports
+// before it releases the gate.
 var (
 	ErrNotPaused = conflictError("Octomus must be paused for this operation")
 	ErrBusy      = conflictError("Octomus has active work")
@@ -33,50 +33,8 @@ func (a *App) runtimeIdle() bool {
 	return a.runtime.idle()
 }
 
-// Pause durably prevents new work and invalidates process-local remote
-// observations. Already-running task workers retain their durable evidence.
-func (a *App) Pause() error {
-	a.gate.Lock()
-	defer a.gate.Unlock()
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	control.SetMode(model.OperatingModePaused)
-	if err := a.Store.SaveControl(control); err != nil {
-		return err
-	}
-	a.invalidatePrObservation()
-	return a.Store.Event("system", "operator", "Paused")
-}
-
-// Resume enters durable Continuous mode after validating all execution and
-// planning policy. An audit remains isolated from queue execution.
-func (a *App) Resume() error {
-	a.gate.Lock()
-	defer a.gate.Unlock()
-	a.runtimeMu.Lock()
-	busyAudit := a.runtime.auditActive()
-	busyBaseline := a.runtime.baseline != nil
-	a.runtimeMu.Unlock()
-	if busyAudit {
-		return errors.New("Cannot resume while an audit is running")
-	}
-	if busyBaseline {
-		return errors.New("Cannot resume while a baseline check is running")
-	}
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	if err := a.enterContinuous(&control); err != nil {
-		return err
-	}
-	return a.Store.Event("system", "operator", "Continuous mode started")
-}
-
-// enterContinuous is the durable Resume transition shared by direct controls
-// and the authenticated API. Callers hold gate and check runtime conflicts.
+// enterContinuous is ControlAction's durable resume transition. Callers hold
+// gate and check runtime conflicts.
 func (a *App) enterContinuous(control *model.Control) error {
 	cfg, err := a.Config()
 	if err != nil {
@@ -93,35 +51,6 @@ func (a *App) enterContinuous(control *model.Control) error {
 	}
 	a.notify()
 	return nil
-}
-
-// RunOnce creates a durable membership snapshot only if a complete planning
-// pass is affordable in the same database transaction.
-func (a *App) RunOnce() error {
-	a.gate.Lock()
-	defer a.gate.Unlock()
-	if !a.runtimeIdle() {
-		return ErrBusy
-	}
-	cfg, err := a.Config()
-	if err != nil {
-		return err
-	}
-	if err := cfg.Validate(true); err != nil {
-		return err
-	}
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	if control.Mode != model.OperatingModePaused {
-		return ErrNotPaused
-	}
-	if err := a.startRunOnceBatch(&control); err != nil {
-		return err
-	}
-	a.notify()
-	return a.Store.Event("system", "operator", "Run once started")
 }
 
 // startRunOnceBatch starts a run-once batch from the expected control record

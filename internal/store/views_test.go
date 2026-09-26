@@ -159,7 +159,11 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 
 	// Batches: starting one assigns queued unarchived tasks and counts members.
 	control := model.DefaultControl()
-	must(t, s.StartBatch(&control))
+	_, batchStarted, err := s.StartBatchIfAffordable(&control, time.Now())
+	must(t, err)
+	if !batchStarted {
+		t.Fatal("start batch refused an affordable batch under the saved control")
+	}
 	if control.Batch == nil || control.Mode != model.OperatingModeRunOnce || control.Batch.Phase != model.BatchPhaseDraining {
 		t.Fatalf("batch control: %+v", control)
 	}
