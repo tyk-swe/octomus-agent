@@ -40,6 +40,7 @@ type api struct {
 	tokenHash [32]byte
 	failures  *authFailures
 	assets    http.Handler
+	table     []apiRoute // built once; read-only afterwards
 }
 
 // authFailures implements bounded exponential delay: it starts
@@ -89,6 +90,7 @@ func Router(app *engine.App, token, assetsOverride, version string) http.Handler
 		failures:  &authFailures{},
 		assets:    assetHandler(assetsOverride),
 	}
+	s.table = s.buildRoutes()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setHeaders(w)
 		if r.URL.Path == "/healthz" {
@@ -112,17 +114,19 @@ func setHeaders(w http.ResponseWriter) {
 	h.Set("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 }
 
-func (a *api) routes() []apiRoute {
+// buildRoutes lists the API routes in match order: for a path, the first
+// route with the request's method wins.
+func (a *api) buildRoutes() []apiRoute {
 	return []apiRoute{
 		{"GET", segs("/state"), a.stateView},
-		{"GET", segs("/tasks"), a.taskHistory},
-		{"GET", segs("/cycles"), a.cycleHistory},
+		{"GET", segs("/tasks"), a.history("task")},
+		{"GET", segs("/cycles"), a.history("cycle")},
 		{"GET", segs("/cycles/{id}"), a.cycleDetail},
 		{"GET", segs("/cycles/{id}/evidence"), a.cycleEvidence},
 		{"POST", segs("/cycles/{id}/{action}"), a.cycleAction},
 		{"GET", segs("/proposals"), a.proposalHistory},
 		{"GET", segs("/proposals/{cycle}/{id}"), a.proposalDetail},
-		{"GET", segs("/prs"), a.prHistory},
+		{"GET", segs("/prs"), a.history("pr")},
 		{"GET", segs("/tasks/{id}"), a.taskDetail},
 		{"POST", segs("/tasks/{id}/{action}"), a.taskAction},
 		{"GET", segs("/config"), a.getConfig},
@@ -151,7 +155,7 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 	var allowed []string
 	var matched *apiRoute
 	params := map[string]string{}
-	for _, route := range a.routes() {
+	for _, route := range a.table {
 		if len(route.segs) != len(parts) {
 			continue
 		}
@@ -389,31 +393,16 @@ func first(values map[string][]string, key string) *string {
 	return &list[0]
 }
 
-func (a *api) taskHistory(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
-	query, err := historyQuery(r)
-	if err != nil {
-		return 0, nil, err
+// history pages one record kind's history under the dashboard's filter.
+func (a *api) history(kind string) handlerFunc {
+	return func(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+		query, err := historyQuery(r)
+		if err != nil {
+			return 0, nil, err
+		}
+		page, err := a.app.Store.HistoryPage(kind, query)
+		return http.StatusOK, page, err
 	}
-	page, err := a.app.Store.HistoryPage("task", query)
-	return http.StatusOK, page, err
-}
-
-func (a *api) cycleHistory(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
-	query, err := historyQuery(r)
-	if err != nil {
-		return 0, nil, err
-	}
-	page, err := a.app.Store.HistoryPage("cycle", query)
-	return http.StatusOK, page, err
-}
-
-func (a *api) prHistory(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
-	query, err := historyQuery(r)
-	if err != nil {
-		return 0, nil, err
-	}
-	page, err := a.app.Store.HistoryPage("pr", query)
-	return http.StatusOK, page, err
 }
 
 func (a *api) proposalHistory(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
