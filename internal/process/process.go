@@ -292,8 +292,8 @@ const terminateGrace = 2 * time.Second
 // Capture runs binary to completion, deadline expiry, or cancellation. The
 // leader is always reaped; owned descendants are killed when it finishes, on
 // timeout, or on cancellation, so an inheriting child cannot hold the pipes.
-// On timeout or cancellation a still-running group is sent SIGTERM and given
-// terminateGrace to clean up before it is killed.
+// On timeout or cancellation a still-running leader's group is sent SIGTERM
+// first; the group is killed once the leader exits or terminateGrace elapses.
 func Capture(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (*ProcessOutput, error) {
 	if ctx.Err() != nil {
 		return nil, ErrCancelled
@@ -460,10 +460,10 @@ func ensureSuccess(binary string, output *ProcessOutput) error {
 // failureText renders a failed command for operators: its exit status, then
 // scrubbed stdout and stderr. Output that fits the display bound is kept
 // whole, as `<stdout>\n<stderr>`. Longer output keeps both ends of each stream
-// around an explicit omission marker, in `<stdout>\n[stderr]\n<stderr>` form,
-// with stderr keeping up to stderrShare of the bound. Secrets are scrubbed
-// from complete text before anything is cut, so a partial secret can never
-// escape the scrubber.
+// around an explicit omission marker, in `<stdout>\n[stderr]\n<stderr>` form
+// (no section when stderr is empty); stderr may always use up to stderrShare
+// of the bound however long stdout is. Secrets are scrubbed from complete text
+// before anything is cut here, so a cut never exposes part of a secret.
 func failureText(binary string, output *ProcessOutput) string {
 	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
 	budget := failureTextLimit - utf8.RuneCountInString(prefix)
