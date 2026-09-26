@@ -459,19 +459,6 @@ func runeOffset(s string, n int) int {
 	return len(s)
 }
 
-// DiagnosticText renders human-readable evidence: bounded stdout, with bounded
-// stderr appended when present.
-func DiagnosticText(binary string, output *ProcessOutput) (string, error) {
-	if err := ensureSuccess(binary, output); err != nil {
-		return "", err
-	}
-	text := strings.TrimSpace(output.Stdout.Preview())
-	if stderr := strings.TrimSpace(output.Stderr.Preview()); stderr != "" {
-		text += "\n[stderr]\n" + stderr
-	}
-	return text, nil
-}
-
 // RunMachine executes a command whose stdout is machine output: fail closed on
 // any command failure, truncation past the machine ceiling, or invalid UTF-8.
 func RunMachine(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {

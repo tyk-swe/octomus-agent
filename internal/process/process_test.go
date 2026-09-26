@@ -517,29 +517,12 @@ func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 	}
 }
 
-// TestDiagnosticTextAndStatusFormat pins the human-readable evidence contract:
-// bounded stdout, an appended [stderr] section, and process exit-status wording.
-func TestDiagnosticTextAndStatusFormat(t *testing.T) {
+// A signal-terminated process reports its status by signal number and name,
+// the wording failure messages carry.
+func TestSignalStatusFormat(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
-	out, err := process.Capture(ctx, "bash",
-		[]string{"-c", "printf 'o'; printf 'e' >&2"}, tmp, 10, process.CaptureDiagnostic)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if text, err := process.DiagnosticText("bash", out); err != nil || text != "o\n[stderr]\ne" {
-		t.Fatalf("diagnostic text = %q, %v; want stdout plus a stderr section", text, err)
-	}
-	out, err = process.Capture(ctx, "bash",
-		[]string{"-c", "printf 'o'; printf 'e' >&2; exit 3"}, tmp, 10, process.CaptureDiagnostic)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := process.DiagnosticText("bash", out); err == nil ||
-		!strings.HasPrefix(err.Error(), "bash exited with exit status: 3: o") {
-		t.Fatalf("failure text = %v; want the process status wording", err)
-	}
-	out, err = process.Capture(ctx, "python3",
+	out, err := process.Capture(ctx, "python3",
 		[]string{"-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"},
 		tmp, 10, process.CaptureDiagnostic)
 	if err != nil {
