@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,14 +14,17 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
 )
 
 // realGit runs the host git binary directly: fixture setup must not flow
-// through the wrapped fixture command.
+// through the wrapped fixture command. It still gets the service's child
+// environment, so Git variables a hook exports to the test run (GIT_DIR,
+// GIT_INDEX_FILE) cannot redirect fixture setup into another repository.
 func realGit(t *testing.T, cwd string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("/usr/bin/git", args...)
-	cmd.Dir = cwd
+	cmd := process.Command("/usr/bin/git", cwd)
+	cmd.Args = append(cmd.Args, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v in %s: %v\n%s", args, cwd, err, out)
