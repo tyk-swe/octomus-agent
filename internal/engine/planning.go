@@ -108,7 +108,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 			old, err := store.Get[model.Task](a.Store, "task", id)
 			if err != nil || old == nil {
 				if err == nil {
-					err = errors.New("Missing rediscovery task")
+					err = fmt.Errorf("Missing rediscovery task %s", id)
 				}
 				return err
 			}
@@ -163,17 +163,8 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 		return err
 	}
 	if cycle.Mode == model.CycleModeExecution {
-		for _, request := range requests {
-			id, _ := request["id"].(string)
-			count := 0
-			for _, proposal := range proposals {
-				if slices.Contains(proposal.Reconsiders, id) {
-					count++
-				}
-			}
-			if count != 1 {
-				return errors.New("Every rediscovery request needs exactly one fresh decision")
-			}
+		if err := checkRediscoveryDecisions(requests, proposals); err != nil {
+			return err
 		}
 	}
 	cycle.Proposals = proposals
@@ -193,6 +184,24 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 		return a.commitPlan(*cycle, nil)
 	}
 	return a.commitTasks(cfg, cycle)
+}
+
+// checkRediscoveryDecisions requires every rediscovery request to be decided by
+// exactly one returned proposal.
+func checkRediscoveryDecisions(requests []map[string]any, proposals []model.Proposal) error {
+	for _, request := range requests {
+		id, _ := request["id"].(string)
+		count := 0
+		for _, proposal := range proposals {
+			if slices.Contains(proposal.Reconsiders, id) {
+				count++
+			}
+		}
+		if count != 1 {
+			return fmt.Errorf("Every rediscovery request needs exactly one fresh decision (request %s had %d)", id, count)
+		}
+	}
+	return nil
 }
 
 // commitPlan makes a finished plan durable under the scheduler gate. The
@@ -332,6 +341,10 @@ func (a *App) summarizeGrounding(ctx context.Context, cfg config.Config, cycle *
 // falls back to the title when problem_key is empty, whatever its decision.
 const proposalLimits = "Hard limits: title at most 200 bytes; always set problem_key to a short stable identifier of at most 200 bytes; at most 40 relevant_paths and 40 evidence items; prompt at most 32000 bytes."
 
+// maxPlanningProposals bounds the candidates of one pass: the seeded
+// rediscovery candidates plus every discovered proposal.
+const maxPlanningProposals = 100
+
 func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) error {
 	scopes := []string{"feature completion", "reproducible correctness bugs", "performance with evidence", "user and developer experience", "refactoring and architecture", "capability-preserving simplification", "test health and meaningful regression protection", "dependencies and required migrations", "documentation accuracy", "cross-cutting coherence"}
 	outcomes := make([]roleOutcome, cfg.DiscoveryAgents)
@@ -356,8 +369,8 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 		}
 		cycle.Proposals = append(cycle.Proposals, document.Proposals...)
 	}
-	if len(cycle.Proposals) > 100 {
-		return errors.New("Discovery returned too many proposals")
+	if len(cycle.Proposals) > maxPlanningProposals {
+		return fmt.Errorf("Discovery returned too many proposals: %d candidates (limit %d)", len(cycle.Proposals), maxPlanningProposals)
 	}
 	identities := make(map[string]struct{}, len(cycle.Proposals))
 	for _, proposal := range cycle.Proposals {
@@ -365,7 +378,7 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 			return errors.New("Discovery returned an empty proposal identity")
 		}
 		if _, duplicate := identities[proposal.ID]; duplicate {
-			return errors.New("Discovery returned a duplicate proposal identity")
+			return fmt.Errorf("Discovery returned a duplicate proposal identity %q", proposal.ID)
 		}
 		identities[proposal.ID] = struct{}{}
 	}
@@ -397,30 +410,20 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 	if err := a.attachOutcomes(cycle, outcomes); err != nil {
 		return err
 	}
-	want := map[string]struct{}{}
+	identities := map[string]struct{}{}
 	for _, proposal := range cycle.Proposals {
-		if _, duplicate := want[proposal.ID]; duplicate {
+		if _, duplicate := identities[proposal.ID]; duplicate {
 			return fmt.Errorf("Duplicate candidate proposal identity %s", proposal.ID)
 		}
-		want[proposal.ID] = struct{}{}
+		identities[proposal.ID] = struct{}{}
 	}
-	for _, outcome := range outcomes {
+	for i, outcome := range outcomes {
 		var document assessmentDocument
 		if err := json.Unmarshal([]byte(outcome.answer), &document); err != nil {
 			return err
 		}
-		seen := map[string]struct{}{}
-		for _, item := range document.Assessments {
-			if _, ok := want[item.ID]; !ok {
-				return errors.New("Adversarial reviewer invented a proposal")
-			}
-			if _, duplicate := seen[item.ID]; duplicate || !slices.Contains(model.Assessments(), item.Decision) || strings.TrimSpace(item.Reason) == "" {
-				return errors.New("Adversarial reviewer omitted a proposal or rationale")
-			}
-			seen[item.ID] = struct{}{}
-		}
-		if len(seen) != len(want) {
-			return errors.New("Adversarial reviewer omitted a proposal or rationale")
+		if err := checkAssessments(slots[i], cycle.Proposals, document.Assessments); err != nil {
+			return err
 		}
 		var generic any
 		if err := json.Unmarshal([]byte(outcome.answer), &generic); err != nil {
@@ -429,6 +432,38 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 		cycle.Assessments = append(cycle.Assessments, generic)
 	}
 	return a.saveCycleMergedSessions(cycle)
+}
+
+// checkAssessments requires a reviewer to assess every candidate exactly once
+// with a valid decision and a rationale, and to invent no proposal. Candidate
+// identities are unique.
+func checkAssessments(reviewer string, candidates []model.Proposal, assessments []assessment) error {
+	want := make(map[string]struct{}, len(candidates))
+	for _, proposal := range candidates {
+		want[proposal.ID] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(assessments))
+	for _, item := range assessments {
+		if _, ok := want[item.ID]; !ok {
+			return fmt.Errorf("Adversarial reviewer %s invented proposal %q", reviewer, item.ID)
+		}
+		if _, duplicate := seen[item.ID]; duplicate {
+			return fmt.Errorf("Adversarial reviewer %s assessed proposal %q more than once", reviewer, item.ID)
+		}
+		if !slices.Contains(model.Assessments(), item.Decision) {
+			return fmt.Errorf("Adversarial reviewer %s gave proposal %q an invalid decision %q", reviewer, item.ID, item.Decision)
+		}
+		if strings.TrimSpace(item.Reason) == "" {
+			return fmt.Errorf("Adversarial reviewer %s gave proposal %q no rationale", reviewer, item.ID)
+		}
+		seen[item.ID] = struct{}{}
+	}
+	for _, proposal := range candidates {
+		if _, ok := seen[proposal.ID]; !ok {
+			return fmt.Errorf("Adversarial reviewer %s omitted proposal %q", reviewer, proposal.ID)
+		}
+	}
+	return nil
 }
 
 func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) ([]model.Proposal, error) {
@@ -453,27 +488,38 @@ func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.C
 	if err := json.Unmarshal([]byte(outcome.answer), &document); err != nil {
 		return nil, err
 	}
-	want := map[string]struct{}{}
-	for _, proposal := range cycle.Proposals {
+	if err := checkConsolidation(cycle.Proposals, document.Proposals); err != nil {
+		return nil, err
+	}
+	return document.Proposals, nil
+}
+
+// checkConsolidation requires the orchestrator to return every original
+// candidate exactly once and to invent none.
+func checkConsolidation(candidates, returned []model.Proposal) error {
+	want := make(map[string]struct{}, len(candidates))
+	for _, proposal := range candidates {
 		if _, exists := want[proposal.ID]; exists {
-			return nil, errors.New("Discovery returned duplicate proposal IDs")
+			return fmt.Errorf("Discovery returned duplicate proposal IDs: %q", proposal.ID)
 		}
 		want[proposal.ID] = struct{}{}
 	}
-	seen := map[string]struct{}{}
-	for _, proposal := range document.Proposals {
+	seen := make(map[string]struct{}, len(returned))
+	for _, proposal := range returned {
 		if _, exists := want[proposal.ID]; !exists {
-			return nil, errors.New("Orchestrator omitted or invented proposal IDs")
+			return fmt.Errorf("Orchestrator omitted or invented proposal IDs: invented %q", proposal.ID)
 		}
 		if _, duplicate := seen[proposal.ID]; duplicate {
-			return nil, errors.New("Orchestrator omitted or invented proposal IDs")
+			return fmt.Errorf("Orchestrator omitted or invented proposal IDs: returned %q twice", proposal.ID)
 		}
 		seen[proposal.ID] = struct{}{}
 	}
-	if len(seen) != len(want) {
-		return nil, errors.New("Orchestrator omitted or invented proposal IDs")
+	for _, proposal := range candidates {
+		if _, ok := seen[proposal.ID]; !ok {
+			return fmt.Errorf("Orchestrator omitted or invented proposal IDs: omitted %q", proposal.ID)
+		}
 	}
-	return document.Proposals, nil
+	return nil
 }
 
 func (a *App) role(ctx context.Context, cfg config.Config, cycle model.Cycle, label, role, prompt string, schema schemas.Schema) roleOutcome {
@@ -570,9 +616,14 @@ func ResolveTarget(cfg config.Config, prs []model.PullRequest, target string) (*
 	return found, nil
 }
 
-// ValidateProposals rejects every plan that cannot be dispatched deterministically.
+// ValidateProposals rejects every plan that cannot be dispatched
+// deterministically. Its errors name the offending proposal and, where there
+// is one, the conflicting proposal, task or value.
 func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding model.Grounding, history []model.Task) error {
 	accepted := map[string]model.Proposal{}
+	// acceptedInOrder holds the accepted proposals in plan order, so the error
+	// reported for a plan with several faults does not vary between runs.
+	acceptedInOrder := []model.Proposal{}
 	allIDs := map[string]struct{}{}
 	acceptedCount := uint64(0)
 	for _, proposal := range proposals {
@@ -580,54 +631,58 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 			return errors.New("Proposal identity is empty")
 		}
 		if _, duplicate := allIDs[proposal.ID]; duplicate {
-			return errors.New("Duplicate proposal identity")
+			return fmt.Errorf("Duplicate proposal identity %q", proposal.ID)
 		}
 		allIDs[proposal.ID] = struct{}{}
-		if !slices.Contains(model.Assessments(), proposal.Decision) || strings.TrimSpace(proposal.Reason) == "" {
-			return errors.New("Every proposal needs a decision and rationale")
+		if !slices.Contains(model.Assessments(), proposal.Decision) {
+			return fmt.Errorf("Every proposal needs a decision and rationale: proposal %q has invalid decision %q", proposal.ID, proposal.Decision)
+		}
+		if strings.TrimSpace(proposal.Reason) == "" {
+			return fmt.Errorf("Every proposal needs a decision and rationale: proposal %q has no rationale", proposal.ID)
 		}
 		if proposal.Decision != model.DecisionAccepted {
 			continue
 		}
 		acceptedCount++
 		if _, duplicate := accepted[proposal.ID]; duplicate {
-			return errors.New("Duplicate accepted proposal identity")
+			return fmt.Errorf("Duplicate accepted proposal identity %q", proposal.ID)
 		}
-		for _, other := range accepted {
+		for _, other := range acceptedInOrder {
 			if other.SameWork(proposal) {
-				return errors.New("Duplicate accepted proposal")
+				return fmt.Errorf("Duplicate accepted proposal: %q repeats the work of %q", proposal.ID, other.ID)
 			}
 		}
 		accepted[proposal.ID] = proposal
+		acceptedInOrder = append(acceptedInOrder, proposal)
 		if len(proposal.Title) > 200 || len(proposal.Prompt) > 32000 || len(proposal.Evidence) > 40 {
-			return errors.New("Proposal exceeds task size limits")
+			return fmt.Errorf("Proposal %q exceeds task size limits: title %d bytes (limit 200), prompt %d bytes (limit 32000), %d evidence items (limit 40)", proposal.ID, len(proposal.Title), len(proposal.Prompt), len(proposal.Evidence))
 		}
-		if strings.TrimSpace(proposal.Title) == "" || strings.TrimSpace(proposal.Problem) == "" || strings.TrimSpace(proposal.Benefit) == "" || strings.TrimSpace(proposal.Scope) == "" || strings.TrimSpace(proposal.Prompt) == "" || len(proposal.Evidence) == 0 {
-			return errors.New("Accepted proposal is missing grounding or execution context")
+		if field := missingExecutionContext(proposal); field != "" {
+			return fmt.Errorf("Accepted proposal is missing grounding or execution context: proposal %q has no %s", proposal.ID, field)
 		}
 		if _, ok := cfg.Tiers[proposal.Tier]; !ok || !slices.Contains(cfg.Categories, proposal.Category) {
-			return errors.New("Unknown tier or disabled category")
+			return fmt.Errorf("Unknown tier or disabled category for proposal %q (tier %q, category %q)", proposal.ID, proposal.Tier, proposal.Category)
 		}
 		if _, err := ResolveTarget(cfg, grounding.PRs, proposal.Target); err != nil {
-			return err
+			return fmt.Errorf("Proposal %q target %q: %w", proposal.ID, proposal.Target, err)
 		}
 		for _, task := range history {
 			if task.Status != model.StatusCancelled && task.Proposal.SameWork(proposal) {
-				return errors.New("Proposal duplicates recorded work")
+				return fmt.Errorf("Proposal %q duplicates recorded work (task %s, %s)", proposal.ID, task.ID, task.Status)
 			}
 		}
 	}
 	if acceptedCount > cfg.MaxTasksPerCycle {
-		return errors.New("Accepted task limit exceeded")
+		return fmt.Errorf("Accepted task limit exceeded: %d accepted (limit %d)", acceptedCount, cfg.MaxTasksPerCycle)
 	}
-	for _, proposal := range accepted {
+	for _, proposal := range acceptedInOrder {
 		stack := append([]string(nil), proposal.Dependencies...)
 		seen := map[string]struct{}{}
 		for len(stack) > 0 {
 			id := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
 			if id == proposal.ID {
-				return errors.New("Task dependency cycle detected")
+				return fmt.Errorf("Task dependency cycle detected through proposal %q", proposal.ID)
 			}
 			if _, visited := seen[id]; visited {
 				continue
@@ -635,10 +690,10 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 			seen[id] = struct{}{}
 			dependency, ok := accepted[id]
 			if !ok {
-				return errors.New("Dependency must be an accepted proposal")
+				return fmt.Errorf("Dependency must be an accepted proposal: proposal %q depends on %q", proposal.ID, id)
 			}
 			if proposal.Target == cfg.DefaultBranch || dependency.Target != proposal.Target {
-				return errors.New("Code dependencies must be delivered on the same existing PR branch; consolidate or defer default-branch dependencies")
+				return fmt.Errorf("Code dependencies must be delivered on the same existing PR branch; consolidate or defer default-branch dependencies: proposal %q (target %q) depends on %q (target %q)", proposal.ID, proposal.Target, id, dependency.Target)
 			}
 			stack = append(stack, dependency.Dependencies...)
 		}
@@ -646,26 +701,45 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 	return ValidateProposalBranchOrder(cfg, proposals)
 }
 
+// missingExecutionContext names the first empty field that an accepted
+// proposal needs for execution, or returns "" when none is empty.
+func missingExecutionContext(proposal model.Proposal) string {
+	for _, field := range []struct{ name, value string }{
+		{"title", proposal.Title}, {"problem", proposal.Problem}, {"benefit", proposal.Benefit},
+		{"scope", proposal.Scope}, {"prompt", proposal.Prompt},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return field.name
+		}
+	}
+	if len(proposal.Evidence) == 0 {
+		return "evidence"
+	}
+	return ""
+}
+
 func ValidateProposalBranchOrder(cfg config.Config, proposals []model.Proposal) error {
 	accepted := map[string]model.Proposal{}
+	acceptedInOrder := []model.Proposal{}
 	branches := map[string][]model.Proposal{}
 	for _, proposal := range proposals {
 		if proposal.Decision != model.DecisionAccepted {
 			continue
 		}
 		if _, exists := accepted[proposal.ID]; exists {
-			return errors.New("Duplicate accepted proposal identity")
+			return fmt.Errorf("Duplicate accepted proposal identity %q", proposal.ID)
 		}
 		accepted[proposal.ID] = proposal
+		acceptedInOrder = append(acceptedInOrder, proposal)
 		if proposal.Target != cfg.DefaultBranch {
 			branches[proposal.Target] = append(branches[proposal.Target], proposal)
 		}
 	}
-	for _, proposal := range accepted {
+	for _, proposal := range acceptedInOrder {
 		for _, dependency := range proposal.Dependencies {
 			other, ok := accepted[dependency]
 			if proposal.Target == cfg.DefaultBranch || !ok || other.Target != proposal.Target {
-				return errors.New("Dependencies must refer to accepted work on the same existing PR branch")
+				return fmt.Errorf("Dependencies must refer to accepted work on the same existing PR branch: proposal %q depends on %q", proposal.ID, dependency)
 			}
 		}
 	}

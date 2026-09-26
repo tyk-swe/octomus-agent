@@ -596,8 +596,8 @@ func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
 		t.Fatal(err)
 	}
 	cycle := waitCycle(t, fixture.state, cycleID)
-	if cycle.Status != model.CycleFailed || cycle.Error == nil || !strings.Contains(*cycle.Error, "omitted or invented") {
-		t.Fatalf("incomplete consolidation was accepted: %+v", cycle)
+	if cycle.Status != model.CycleFailed || cycle.Error == nil || !strings.Contains(*cycle.Error, "omitted or invented") || !strings.Contains(*cycle.Error, `omitted "d0-feature"`) {
+		t.Fatalf("incomplete consolidation was accepted or its error does not name the omitted proposal: %+v", cycle)
 	}
 	tasks, err := store.List[model.Task](fixture.state, "task")
 	if err != nil || len(tasks) != 0 {

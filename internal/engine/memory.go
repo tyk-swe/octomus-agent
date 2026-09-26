@@ -242,8 +242,11 @@ func ValidateDecisionMemory(proposals []model.Proposal, memory []any) error {
 		}
 		for _, id := range proposal.Reconsiders {
 			target, ok := requests[id]
-			if !ok || target != proposal.Target {
-				return errors.New("Rediscovery identity or target does not match a pending request")
+			if !ok {
+				return fmt.Errorf("Rediscovery identity or target does not match a pending request: proposal %q reconsiders %q, which is not pending", proposal.ID, id)
+			}
+			if target != proposal.Target {
+				return fmt.Errorf("Rediscovery identity or target does not match a pending request: proposal %q targets %q but request %q targets %q", proposal.ID, proposal.Target, id, target)
 			}
 		}
 		if proposal.Decision != model.DecisionAccepted {
@@ -272,7 +275,8 @@ func ValidateDecisionMemory(proposals []model.Proposal, memory []any) error {
 				}
 			}
 			if !validRequest {
-				return errors.New("Accepted proposal repeats a current recorded decision without an explicit rediscovery request")
+				recorded, _ := entry["id"].(string)
+				return fmt.Errorf("Accepted proposal repeats a current recorded decision without an explicit rediscovery request (proposal %q, decision %q)", proposal.ID, recorded)
 			}
 		}
 	}
