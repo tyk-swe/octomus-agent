@@ -46,6 +46,25 @@ const (
 
 var blockedReasonNames = []string{"budget_exhausted", "storage_limit", "stale_base", "remote_conflict", "publication_uncertain", "runner_unavailable", "invalid_review", "verification_failed", "dependency_blocked", "invalid_plan", "workspace_invalid", "retry_limit", "timeout", "unknown"}
 
+// blockedReasonMessages is the operator guidance for each reason, index-aligned
+// with blockedReasonNames; the dashboard and notifications show it.
+var blockedReasonMessages = [...]string{
+	"Daily admission budget exhausted; adjust the current limit or wait until UTC midnight",
+	"Storage admission limit reached; resolve retained workspaces or adjust the limit",
+	"Source or default branch moved; supersede this task and rediscover against current context",
+	"Remote branch moved outside recorded task outputs; reconcile the preserved work",
+	"Publication result is uncertain; reconcile the preserved output commit",
+	"Runner request failed; inspect the saved route and runner diagnostics",
+	"Incomplete or invalid review cannot authorize publication",
+	"Verification or repairs remain unresolved; evidence is preserved",
+	"A dependency is unresolved; deliver it or rediscover dependent work",
+	"The saved dependency plan cannot execute; rediscover a valid task order",
+	"Workspace initialization or recorded evidence is inconsistent; preserve and inspect it",
+	"Attempt or repair limit exhausted; inspect evidence before adjusting attempt limits",
+	"Task time limit exceeded; inspect the preserved workspace",
+	"Unclassified task failure; inspect the recorded diagnostics",
+}
+
 func (v BlockedReason) String() string { return wirejson.EnumName(v, blockedReasonNames) }
 func (v BlockedReason) MarshalJSON() ([]byte, error) {
 	return wirejson.MarshalEnum(v, blockedReasonNames)

@@ -210,3 +210,25 @@ func TestEveryEnumRoundTripsItsWireNames(t *testing.T) {
 	enumRoundTrip[OperatingMode](t, []string{"paused", "run_once", "continuous"})
 	enumRoundTrip[BatchPhase](t, []string{"draining", "planning", "executing"})
 }
+
+// A reason added without guidance would otherwise read as unclassified.
+func TestEveryBlockedReasonHasItsOwnGuidance(t *testing.T) {
+	if len(blockedReasonMessages) != len(blockedReasonNames) {
+		t.Fatalf("%d blocked reason messages for %d names", len(blockedReasonMessages), len(blockedReasonNames))
+	}
+	seen := map[string]BlockedReason{}
+	for i := range blockedReasonNames {
+		reason := BlockedReason(i)
+		message := reason.Error()
+		if message == "" || message != blockedReasonMessages[i] {
+			t.Fatalf("%s.Error() = %q", reason, message)
+		}
+		if other, ok := seen[message]; ok {
+			t.Fatalf("%s and %s share guidance %q", other, reason, message)
+		}
+		seen[message] = reason
+	}
+	if got := BlockedReason(200).Error(); got != "Unclassified task failure; inspect the recorded diagnostics" {
+		t.Fatalf("out-of-range reason = %q", got)
+	}
+}
