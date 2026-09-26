@@ -243,11 +243,11 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 		if existing != nil && config.EqualASCII(existing.Repository, inventory.Repository) {
 			previous, err := time.Parse(time.RFC3339, existing.ObservedAt)
 			if err != nil {
-				return fmt.Errorf("Saved PR inventory timestamp is invalid: %s", chronoParseError(err))
+				return fmt.Errorf("Saved PR inventory timestamp is invalid: %s", invalidTimestamp)
 			}
 			candidate, err := time.Parse(time.RFC3339, inventory.ObservedAt)
 			if err != nil {
-				return fmt.Errorf("PR inventory timestamp is invalid: %s", chronoParseError(err))
+				return fmt.Errorf("PR inventory timestamp is invalid: %s", invalidTimestamp)
 			}
 			if candidate.Before(previous) {
 				return errRollback
@@ -316,11 +316,9 @@ func sameJSON(a, b any) bool {
 	return bytes.Equal(left, right)
 }
 
-// chronoParseError keeps the operator-facing wording of a timestamp failure
-// short and free of Go's parse-layout diagnostics.
-func chronoParseError(err error) string {
-	return "input contains invalid characters"
-}
+// invalidTimestamp is the operator-facing reason for an unparseable inventory
+// timestamp, kept short and free of Go's parse-layout diagnostics.
+const invalidTimestamp = "input contains invalid characters"
 
 func decodeTasks(raw [][]byte) ([]model.Task, error) {
 	tasks := make([]model.Task, 0, len(raw))

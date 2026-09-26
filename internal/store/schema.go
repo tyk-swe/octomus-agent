@@ -74,7 +74,7 @@ func userVersion(ctx context.Context, c *sql.Conn) (int64, error) {
 }
 
 func unsupportedSchema(version int64) error {
-	return fmt.Errorf("State database schema version %d is unsupported; this release requires a fresh version-7 data directory. Back up existing state before changing data directories", version)
+	return fmt.Errorf("State database schema version %d is unsupported; this release requires a fresh version-%d data directory. Back up existing state before changing data directories", version, SupportedSchemaVersion)
 }
 
 func createSchema(ctx context.Context, c *sql.Conn) (err error) {
@@ -95,7 +95,7 @@ func createSchema(ctx context.Context, c *sql.Conn) (err error) {
 			return err
 		}
 	}
-	if _, err = c.ExecContext(ctx, "PRAGMA user_version=7"); err != nil {
+	if _, err = c.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SupportedSchemaVersion)); err != nil {
 		return err
 	}
 	_, err = c.ExecContext(ctx, "COMMIT")
