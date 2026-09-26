@@ -179,7 +179,7 @@ export function revisionMatchLabel(matches: boolean | null): { label: string; to
     : { label: 'Not the recorded output commit', tone: 'blocked' };
 }
 
-/** Task statuses that end a task's work take their own tone; every other status is running. */
+/** Published, failed, blocked and cancelled tasks keep their own tone; others read as running. */
 const OUTCOME_TONES: Record<string, Tone> = {
   published: 'clean',
   failed: 'failed',
