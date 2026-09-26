@@ -78,27 +78,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		return nil, err
 	}
 	agent := "octomus-" + strings.ReplaceAll(agentID.String(), "-", "")
-	policy := map[string]any{
-		"share":         "disabled",
-		"autoshare":     false,
-		"autoupdate":    false,
-		"snapshot":      false,
-		"lsp":           false,
-		"formatter":     false,
-		"compaction":    map[string]any{"auto": false, "prune": false},
-		"default_agent": agent,
-		"agent": map[string]any{
-			agent: map[string]any{
-				"mode":       "primary",
-				"prompt":     WorkerInstructions,
-				"permission": map[string]any{"*": "allow", "question": "deny", "task": "deny"},
-			},
-			"title":      map[string]any{"disable": true},
-			"summary":    map[string]any{"disable": true},
-			"compaction": map[string]any{"disable": true},
-		},
-	}
-	policyJSON, err := marshal(policy)
+	policyJSON, err := marshal(workerPolicy(agent))
 	if err != nil {
 		return nil, err
 	}
@@ -164,16 +144,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	if err != nil {
 		return cleanup(err)
 	}
-	transport := &http.Transport{
-		Proxy:       nil,
-		DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-	}
-	client := &http.Client{
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	client := newLoopbackClient()
 	// Discard stdout without retaining raw logs, including after a malformed
 	// stream ends the line reader.
 	drainDone := discardStdout(lines, stdoutR)
@@ -198,7 +169,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		_ = server.Close()
 		return nil, tail.explain(err)
 	}
-	health, err := server.json("GET", "/global/health", cwd, nil, 60)
+	health, err := server.call("GET", "/global/health", cwd, nil, 60)
 	if err != nil {
 		return fail(err)
 	}
@@ -213,7 +184,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	server.version = version
 	// Managed host settings can override inline config; do not run with
 	// changed policy.
-	effective, err := server.json("GET", "/config", cwd, nil, 60)
+	effective, err := server.call("GET", "/config", cwd, nil, 60)
 	if err != nil {
 		return fail(err)
 	}
@@ -221,6 +192,49 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		return fail(fmt.Errorf("OpenCode did not apply Octomus unattended policy"))
 	}
 	return server, nil
+}
+
+// workerPolicy is the unattended inline config the owned server runs under:
+// sharing, updates, snapshots, LSP, formatting and compaction are off; agent
+// is the default primary agent with the worker instructions and every
+// permission except question and task; the helper agents are disabled.
+// appliedPolicy checks the server's effective config against it.
+func workerPolicy(agent string) map[string]any {
+	return map[string]any{
+		"share":         "disabled",
+		"autoshare":     false,
+		"autoupdate":    false,
+		"snapshot":      false,
+		"lsp":           false,
+		"formatter":     false,
+		"compaction":    map[string]any{"auto": false, "prune": false},
+		"default_agent": agent,
+		"agent": map[string]any{
+			agent: map[string]any{
+				"mode":       "primary",
+				"prompt":     WorkerInstructions,
+				"permission": map[string]any{"*": "allow", "question": "deny", "task": "deny"},
+			},
+			"title":      map[string]any{"disable": true},
+			"summary":    map[string]any{"disable": true},
+			"compaction": map[string]any{"disable": true},
+		},
+	}
+}
+
+// newLoopbackClient is the owned server's HTTP client: no proxy, a bounded
+// dial, and redirects returned as responses instead of followed.
+func newLoopbackClient() *http.Client {
+	transport := &http.Transport{
+		Proxy:       nil,
+		DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+	}
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // parseReadyURL accepts only a loopback root address: http scheme, literal
@@ -279,7 +293,7 @@ func appliedPolicy(effective any, agent string) bool {
 // ProtocolSchema is the version-specific schema for contract checks, fetched
 // from the owned server.
 func (o *OpenCode) ProtocolSchema(cwd string) (any, error) {
-	return o.json("GET", "/doc", cwd, nil, 60)
+	return o.call("GET", "/doc", cwd, nil, 60)
 }
 
 func (o *OpenCode) Version() string { return o.version }
@@ -356,7 +370,8 @@ func (o *OpenCode) postBestEffort(timeout time.Duration, path, cwd string, body 
 	response.Body.Close()
 }
 
-func (o *OpenCode) json(method, path, cwd string, body any, seconds uint64) (any, error) {
+// call is one bounded JSON round trip under the owner context.
+func (o *OpenCode) call(method, path, cwd string, body any, seconds uint64) (any, error) {
 	return process.Bounded(o.ctx, seconds, "OpenCode response timed out", func(wctx context.Context) (any, error) {
 		return o.roundTrip(wctx, method, path, cwd, body)
 	})
@@ -390,7 +405,7 @@ func readJSONBody(r io.Reader) (any, error) {
 }
 
 func (o *OpenCode) Models(cwd string) ([]Model, error) {
-	value, err := o.json("GET", "/provider", cwd, nil, 60)
+	value, err := o.call("GET", "/provider", cwd, nil, 60)
 	if err != nil {
 		return nil, err
 	}
@@ -412,7 +427,7 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 		if err != nil {
 			return "", err
 		}
-		session, err = o.json("GET", "/session/"+seg, cwd, nil, 60)
+		session, err = o.call("GET", "/session/"+seg, cwd, nil, 60)
 		if err != nil {
 			return "", err
 		}
@@ -422,7 +437,7 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 			modelID["variant"] = *route.Variant
 		}
 		var err error
-		session, err = o.json("POST", "/session", cwd, map[string]any{
+		session, err = o.call("POST", "/session", cwd, map[string]any{
 			"title":      fmt.Sprintf("Octomus %s", o.entity),
 			"agent":      o.agent,
 			"model":      modelID,
@@ -492,12 +507,9 @@ func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, 
 	return answer, nil
 }
 
-type postResult struct {
-	value any
-	err   error
-}
-
-type sseEvent struct {
+// valueResult carries one decoded value or the error that ended its
+// producer: the message POST's response or one SSE event.
+type valueResult struct {
 	value any
 	err   error
 }
@@ -524,8 +536,8 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 	if err != nil {
 		return "", err
 	}
-	events := make(chan sseEvent)
-	post := make(chan postResult, 1)
+	events := make(chan valueResult)
+	post := make(chan valueResult, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -550,7 +562,7 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 		defer wg.Done()
 		value, err := o.roundTrip(inner, "POST", path+"/message", cwd, body)
 		select {
-		case post <- postResult{value, err}:
+		case post <- valueResult{value, err}:
 		case <-inner.Done():
 		}
 	}()
@@ -570,6 +582,8 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 			value = result.value
 			done = true
 		case event, ok := <-events:
+			// sseLoop never closes events; if it ever did, this keeps the
+			// loop from spinning on zero values.
 			if !ok {
 				return "", fmt.Errorf("OpenCode event stream disconnected")
 			}
@@ -736,9 +750,10 @@ func errorName(value any) string {
 
 // sseLoop is the owned SSE reader: arbitrary HTTP and UTF-8 fragmentation,
 // CRLF, comments and other fields, multiple data lines, and each frame and
-// backlog capped at exactly MaxMessage.
-func sseLoop(ctx context.Context, body io.Reader, out chan<- sseEvent) {
-	emit := func(e sseEvent) bool {
+// backlog capped at exactly MaxMessage. It never closes out: it ends after
+// sending exactly one error value, or earlier once ctx is done.
+func sseLoop(ctx context.Context, body io.Reader, out chan<- valueResult) {
+	emit := func(e valueResult) bool {
 		select {
 		case out <- e:
 			return true
@@ -760,11 +775,11 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- sseEvent) {
 			buffer = buffer[end+1:]
 			frameBytes += len(line)
 			if frameBytes > MaxMessage {
-				emit(sseEvent{err: fmt.Errorf("OpenCode event exceeds 16 MB protocol limit")})
+				emit(valueResult{err: fmt.Errorf("OpenCode event exceeds 16 MB protocol limit")})
 				return
 			}
 			if !utf8.Valid(line) {
-				emit(sseEvent{err: fmt.Errorf("Invalid OpenCode event encoding")})
+				emit(valueResult{err: fmt.Errorf("Invalid OpenCode event encoding")})
 				return
 			}
 			text := strings.TrimRight(string(line), "\r\n")
@@ -774,10 +789,10 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- sseEvent) {
 					value, err := decodeJSON(data)
 					data = nil
 					if err != nil {
-						emit(sseEvent{err: fmt.Errorf("Invalid OpenCode event JSON: %w", err)})
+						emit(valueResult{err: fmt.Errorf("Invalid OpenCode event JSON: %w", err)})
 						return
 					}
-					if !emit(sseEvent{value: value}) {
+					if !emit(valueResult{value: value}) {
 						return
 					}
 				}
@@ -792,7 +807,7 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- sseEvent) {
 		// Every unconsumed byte belongs to the in-progress frame; complete
 		// lines are drained above before the bound applies.
 		if frameBytes+len(buffer) > MaxMessage {
-			emit(sseEvent{err: fmt.Errorf("OpenCode event backlog exceeds 16 MB")})
+			emit(valueResult{err: fmt.Errorf("OpenCode event backlog exceeds 16 MB")})
 			return
 		}
 		n, err := body.Read(chunk)
@@ -802,9 +817,9 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- sseEvent) {
 		}
 		if err != nil {
 			if err == io.EOF {
-				emit(sseEvent{err: fmt.Errorf("OpenCode event stream disconnected")})
+				emit(valueResult{err: fmt.Errorf("OpenCode event stream disconnected")})
 			} else {
-				emit(sseEvent{err: err})
+				emit(valueResult{err: err})
 			}
 			return
 		}

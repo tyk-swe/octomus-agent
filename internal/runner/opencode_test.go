@@ -437,6 +437,25 @@ func TestOpenCodeRedirectRefusal(t *testing.T) {
 	}
 }
 
+// The policy sent to the server is exactly what the effective-config check
+// accepts once it round-trips through JSON, and only for its own agent.
+func TestWorkerPolicyPassesAppliedPolicy(t *testing.T) {
+	encoded, err := marshal(workerPolicy("octomus-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective, err := decodeJSON([]byte(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !appliedPolicy(effective, "octomus-a") {
+		t.Fatalf("the worker policy must pass its own check: %s", encoded)
+	}
+	if appliedPolicy(effective, "octomus-b") {
+		t.Fatal("another agent's policy must not pass")
+	}
+}
+
 // Diagnostics report the server version against the protocol baseline.
 func TestOpenCodeDiagnostics(t *testing.T) {
 	f := opencodeFixture(t)
@@ -496,7 +515,7 @@ func TestProtocolMessageBound(t *testing.T) {
 	if len(payload)+2 != MaxMessage {
 		t.Fatalf("fixture math: %d", len(payload))
 	}
-	sse := make(chan sseEvent, 4)
+	sse := make(chan valueResult, 4)
 	go sseLoop(context.Background(), io.MultiReader(
 		bytes.NewReader([]byte(payload)), bytes.NewReader([]byte("\n\n"))), sse)
 	event := <-sse
@@ -504,13 +523,13 @@ func TestProtocolMessageBound(t *testing.T) {
 		t.Fatalf("exact bound frame: %v", event.err)
 	}
 	payloadOver := payload + " "
-	sse = make(chan sseEvent, 4)
+	sse = make(chan valueResult, 4)
 	go sseLoop(context.Background(), bytes.NewReader([]byte(payloadOver+"\n")), sse)
 	if event := <-sse; event.err == nil {
 		t.Fatal("a frame over the bound must fail")
 	}
 	// A backlog with no newline over the bound fails too.
-	sse = make(chan sseEvent, 4)
+	sse = make(chan valueResult, 4)
 	go sseLoop(context.Background(), bytes.NewReader(over), sse)
 	if event := <-sse; event.err == nil {
 		t.Fatal("a backlog over the bound must fail")
