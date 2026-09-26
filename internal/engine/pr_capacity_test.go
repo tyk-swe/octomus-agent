@@ -132,6 +132,33 @@ func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T)
 	}
 }
 
+// a refresh whose own context was cancelled (pause, configuration save,
+// shutdown) is obsolete: its interrupted remote capture reports "Operation
+// cancelled", which must not become the capacity failure reason.
+func TestCancelledRefreshIsNotRecordedAsFailure(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := app.refreshPRs(ctx, fixture.cfg); err == nil {
+		t.Fatal("a cancelled refresh unexpectedly completed")
+	}
+	app.runtimeMu.Lock()
+	refreshError := app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("cancelled refresh was recorded as a failure: %q", refreshError)
+	}
+	capacity, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capacity.Status != "unavailable" || capacity.Reason == nil || strings.Contains(strings.ToLower(*capacity.Reason), "cancelled") {
+		t.Fatalf("cancelled refresh changed the capacity reason: %+v", capacity)
+	}
+}
+
 // archiving an uncertain checkpoint ends at cancelled; the durable reservation
 // it left behind can only be resolved by remote inspection, so recovery must
 // not resurrect a released one. Published work is never reseeded either.

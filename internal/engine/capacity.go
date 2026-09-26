@@ -181,7 +181,11 @@ func (a *App) RefreshPRs(ctx context.Context) error {
 func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result error) {
 	startedAt := time.Now()
 	defer func() {
-		if result == nil || errors.Is(result, context.Canceled) {
+		// A refresh whose own context ended (invalidation by pause, config
+		// save or a failed run, or shutdown) is obsolete, not failed: remote
+		// captures report that as process.ErrCancelled, which does not wrap
+		// context.Canceled, and invalidation has already reset this state.
+		if result == nil || ctx.Err() != nil || errors.Is(result, context.Canceled) {
 			return
 		}
 		a.runtimeMu.Lock()
