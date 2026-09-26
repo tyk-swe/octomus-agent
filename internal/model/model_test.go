@@ -232,3 +232,16 @@ func TestEveryBlockedReasonHasItsOwnGuidance(t *testing.T) {
 		t.Fatalf("out-of-range reason = %q", got)
 	}
 }
+
+// A planning pass runs grounding, every discovery agent, one proposal review per
+// reviewer slot and consolidation; admission must fund all of them up front.
+func TestPlanningAdmissionsMatchPlanningRoles(t *testing.T) {
+	c := config.Default()
+	for _, agents := range []uint64{8, 9, 10} {
+		c.DiscoveryAgents = agents
+		want := 1 + agents + uint64(len(ReviewerSlots())) + 1
+		if got := c.PlanningAdmissionsRequired(); got != want {
+			t.Fatalf("PlanningAdmissionsRequired() with %d agents = %d; want %d", agents, got, want)
+		}
+	}
+}

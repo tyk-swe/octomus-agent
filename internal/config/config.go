@@ -139,6 +139,10 @@ func (c Config) RoutesFor(audit bool) []NamedRoute {
 	}
 	return append(result, NamedRoute{"repair", c.RepairRoute.Clone()})
 }
+
+// PlanningAdmissionsRequired counts the turns of one planning pass: 1 grounding
+// turn, DiscoveryAgents discovery turns, 2 proposal reviewers (model.ReviewerSlots)
+// and 1 consolidation turn. model tests keep this in step with ReviewerSlots.
 func (c Config) PlanningAdmissionsRequired() uint64 { return c.DiscoveryAgents + 4 }
 func EqualASCII(a, b string) bool {
 	if len(a) != len(b) {
