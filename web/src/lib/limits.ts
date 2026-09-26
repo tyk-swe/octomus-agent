@@ -1,12 +1,17 @@
 import type { Config } from './types';
 
+/** Configuration fields that hold a number. */
+type NumericConfigKey = {
+  [K in keyof Config]: Config[K] extends number ? K : never;
+}[keyof Config];
+
 /**
  * The numeric operating limits the configuration form exposes, with the range
  * each one accepts. The service validates these ranges again on save; the
  * bounds here exist so the form can say what it will accept before asking.
  */
 export const LIMITS: {
-  key: keyof Config;
+  key: NumericConfigKey;
   label: string;
   help: string;
   min: number;

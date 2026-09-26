@@ -609,6 +609,39 @@ test('saved PR maintenance thresholds of 0 are valid and never block saving othe
   expect(state.writes[0].config).toEqual({ default_branch: 'threshold-main' });
 });
 
+test('an emptied operating limit stays empty and blocks saving until it is filled', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const retries = page.getByRole('spinbutton', { name: /^Operator retries/ });
+  const agents = page.getByRole('spinbutton', { name: /^Discovery agents/ });
+  const invalid = (field: Locator) => field.evaluate((input) => input.matches(':invalid'));
+  await expect(retries).toHaveValue('2');
+  const savedAgents = await agents.inputValue();
+  // The service accepts 0 retries, so an emptied field must never read as 0.
+  await retries.fill('');
+  await expect(retries).toHaveValue('');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  expect(await invalid(retries)).toBe(true);
+  await retries.pressSequentially('3');
+  await expect(retries).toHaveValue('3');
+  expect(await invalid(retries)).toBe(false);
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  // Only the completed value was ever sent, as a number.
+  expect(state.writes.map((write) => write.config)).toEqual([{ max_retries: 3 }]);
+  await agents.fill('');
+  await expect(agents).toHaveValue('');
+  expect(await invalid(agents)).toBe(true);
+  await page.getByRole('button', { name: 'Discard changes' }).click();
+  await expect(agents).toHaveValue(savedAgents);
+  await expect(retries).toHaveValue('3');
+  expect(state.writes).toHaveLength(1);
+});
+
 test('display-transformed fields stay canonical: previews lock, unrelated saves omit them, replacement is explicit', async ({
   page,
   isMobile

@@ -224,9 +224,6 @@
       pending = '';
     }
   }
-  function numberValue(key: keyof Config, value: string) {
-    if (config) (config as unknown as Record<string, unknown>)[key] = Number(value);
-  }
   /** Checklist links move focus to the existing control; they never edit, save or start work. */
   function focusControl(target: string) {
     const element = document.getElementById(target);
@@ -505,8 +502,7 @@
                 min={limit.min}
                 max={limit.max}
                 step="1"
-                value={config[limit.key] as number}
-                oninput={(e) => numberValue(limit.key, e.currentTarget.value)}
+                bind:value={config[limit.key]}
                 required
               /><small>{limit.help}</small></label
             >{/each}
