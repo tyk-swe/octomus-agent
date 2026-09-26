@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -388,7 +389,9 @@ func historyQuery(r *http.Request) (store.HistoryQuery, error) {
 		if err != nil {
 			return query, &bodyError{http.StatusBadRequest, fmt.Sprintf("Invalid query string: %v", err)}
 		}
-		v := int(limit)
+		// Saturate instead of wrapping: an unsigned value above MaxInt would
+		// otherwise turn negative and page one item instead of the store's cap.
+		v := int(min(limit, math.MaxInt))
 		query.Limit = &v
 	}
 	query.Status = first(values, "status")
