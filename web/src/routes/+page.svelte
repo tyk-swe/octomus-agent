@@ -25,6 +25,9 @@
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
   import { DECISIONS, cycleLabel, decisionTone } from '$lib/evidence';
+  /** The running build's version; the sidebar shows its major.minor part. */
+  const version = __APP_VERSION__;
+  const shortVersion = version.split('.').slice(0, 2).join('.');
   let connected = $state(false),
     accessToken = $state(''),
     data = $state<Snapshot | null>(null),
@@ -639,7 +642,8 @@
           <p>Useful changes.<br />A fresh review. Every time.</p>
         </div>
         <button class="disconnect" onclick={disconnect}
-          ><Icon name="logout" size={17} /><span>Disconnect</span><span class="version">v0.1</span
+          ><Icon name="logout" size={17} /><span>Disconnect</span><span class="version"
+            >v{shortVersion}</span
           ></button
         >
       </div>
@@ -977,7 +981,7 @@
         {/if}
         <footer class="content-footer">
           <span><span class="footer-dot"></span> Thoughtful progress. No artificial churn.</span
-          ><span>Updated {lastUpdated || 'just now'} · v0.1.0</span>
+          ><span>Updated {lastUpdated || 'just now'} · v{version}</span>
         </footer>
       </main>
     </div>

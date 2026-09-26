@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { login, openNavigation } from './synthetic';
@@ -33,6 +34,17 @@ test.beforeEach(async ({ page }) => {
     const { backend } = route.request().postDataJSON();
     await route.fulfill({ json: backend === 'codex' ? codexModels : opencodeModels });
   });
+});
+
+test('the dashboard names the build version the service reports', async ({ page }) => {
+  // The binary embeds the root VERSION file and the dashboard build injects the same file.
+  const { version } = (await (await page.request.get('/healthz')).json()) as { version: string };
+  expect(version).toBe(readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim());
+  await login(page);
+  await expect(page.locator('.content-footer')).toContainText(`· v${version}`);
+  await expect(page.locator('.disconnect .version')).toHaveText(
+    `v${version.split('.').slice(0, 2).join('.')}`
+  );
 });
 
 test('private dashboard, navigation, task evidence, configuration, and mobile layout', async ({
