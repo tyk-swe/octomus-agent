@@ -82,6 +82,7 @@ func TestSkKeysMustStartAToken(t *testing.T) {
 		"Add disk-usage-reporting",
 		"pip install flask-sqlalchemy-utils",
 		"FIX TASK-SCHEDULING-RACE",
+		"[Ask-the-maintainers-first] before merging",
 	} {
 		if got := redact.Secrets(kept); got != kept {
 			t.Errorf("Secrets(%q) = %q; want it unchanged", kept, got)
@@ -101,10 +102,19 @@ func TestSkKeysMustStartAToken(t *testing.T) {
 		"https://api.example/?key=sk-abcdefghijklmnop": "https://api.example/?key=[redacted]",
 		// Escapes whose last character is a letter: JSON, percent-encoding
 		// and terminal colors.
-		`"line\nsk-abcdefghijklmnop"`:                  `"line\n[redacted]"`,
-		`"\u003esk-abcdefghijklmnop"`:                  `"\u003e[redacted]"`,
-		"?next=%3Fkey%3Dsk-abcdefghijklmnop":           "?next=%3Fkey%3D[redacted]",
-		"\x1b[32msk-abcdefghijklmnop\x1b[0m":           "\x1b[32m[redacted]\x1b[0m",
+		`"line\nsk-abcdefghijklmnop"`:        `"line\n[redacted]"`,
+		`"\u003esk-abcdefghijklmnop"`:        `"\u003e[redacted]"`,
+		"?next=%3Fkey%3Dsk-abcdefghijklmnop": "?next=%3Fkey%3D[redacted]",
+		"\x1b[32msk-abcdefghijklmnop\x1b[0m": "\x1b[32m[redacted]\x1b[0m",
+		// Hex escapes and terminal control sequences other than colors, raw
+		// or escaped: a progress line erased before the key is printed.
+		`b'\x0bsk-abcdefghijklmnop'`:                   `b'\x0b[redacted]'`,
+		"\r\x1b[2K\x1b[1Gsk-abcdefghijklmnop":          "\r\x1b[2K\x1b[1G[redacted]",
+		"\x1b[?25hsk-abcdefghijklmnop":                 "\x1b[?25h[redacted]",
+		`"\u001b[2Ksk-abcdefghijklmnop"`:               `"\u001b[2K[redacted]"`,
+		`"\x1b[2Ksk-abcdefghijklmnop"`:                 `"\x1b[2K[redacted]"`,
+		`printf '\e[2Ksk-abcdefghijklmnop'`:            `printf '\e[2K[redacted]'`,
+		`echo "\033[Ksk-abcdefghijklmnop"`:             `echo "\033[K[redacted]"`,
 		"task-ghp_abcdefghijklmnop":                    "task-[redacted]",
 		"xghp_abcdefghijklmnop":                        "x[redacted]",
 		"Fix task-scheduling with sk-abcdefghijklmnop": "Fix task-scheduling with [redacted]",

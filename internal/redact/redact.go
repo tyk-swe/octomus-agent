@@ -37,9 +37,10 @@ var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-
 // keyPattern matches sk- API keys; group 1 is the key itself. A key must start
 // a token, because ordinary words such as task-, risk- or disk- also end in
 // "sk-": it may follow anything but an ASCII letter, or an escape sequence
-// that ends in a letter in encoded text (\n or \u003e in JSON, %3D in a URL,
-// a terminal color code such as ESC[32m).
-var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|[A-Za-z])|%[0-9A-Fa-f]{2}|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
+// that ends in a letter in encoded text (\n, \x0b or \u003e in JSON and string
+// literals, %3D in a URL, a terminal color code such as ESC[32m, or any other
+// terminal control sequence such as ESC[2K, raw or escaped).
+var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|(?:\x1b|\\(?:u001b|x1b|e|033))\[[0-9:;<=>?]*[A-Za-z]|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
 
 var (
 	secretsOnce sync.Once
