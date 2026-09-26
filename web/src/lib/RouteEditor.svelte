@@ -56,8 +56,11 @@
     if (value === route.model) return;
     route.model = value;
     const model = models.find((model) => model.model === value);
-    if (!model?.efforts.includes(route.effort)) route.effort = '';
-    if (!model?.variants.includes(route.variant ?? '')) route.variant = undefined;
+    // Only a catalog entry for the new model proves a choice unsupported; an unknown
+    // or partially typed model keeps the current choice and `problem` flags it.
+    if (!model) return;
+    if (route.effort && !model.efforts.includes(route.effort)) route.effort = '';
+    if (route.variant && !model.variants.includes(route.variant)) route.variant = undefined;
   }
 </script>
 
@@ -124,7 +127,7 @@
         <select aria-label={name + ' reasoning effort'} {disabled} bind:value={route.effort}>
           <option value="">Select effort</option>
           {#if route.effort && !efforts.includes(route.effort)}<option value={route.effort}
-              >{route.effort} (saved)</option
+              >{route.effort} (current)</option
             >{/if}
           {#each efforts as effort}<option value={effort}>{effort}</option>{/each}
         </select>
@@ -142,7 +145,7 @@
         >
           <option value="">Provider default</option>
           {#if route.variant && !variants.includes(route.variant)}<option value={route.variant}
-              >{route.variant} (saved)</option
+              >{route.variant} (current)</option
             >{/if}
           {#each variants as variant}<option value={variant}>{variant}</option>{/each}
         </select>

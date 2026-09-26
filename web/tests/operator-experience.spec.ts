@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import type {
   BaselineView,
   Config,
@@ -384,6 +384,79 @@ test('configuration keeps drafts and catalogs across views, discards locally, an
   await expect(branch).toHaveValue('edited-during-refresh');
   await page.getByRole('button', { name: 'Discard changes' }).click();
   await expect(branch).toHaveValue('externally-saved-main');
+});
+
+test('typing a model ID keeps the chosen effort or variant unless a catalog entry lacks it', async ({
+  page,
+  isMobile
+}) => {
+  await configurationFixture(page);
+  await page.route('**/api/model-catalog', async (route) => {
+    const { backend } = route.request().postDataJSON() as { backend: 'codex' | 'opencode' };
+    const entry = (over: Partial<Model>): Model => ({
+      backend,
+      provider: null,
+      provider_name: null,
+      model: '',
+      display_name: '',
+      efforts: [],
+      variants: [],
+      available: true,
+      unavailable_reason: null,
+      ...over
+    });
+    await route.fulfill({
+      json:
+        backend === 'codex'
+          ? [
+              entry({ model: 'gpt-6-astra', display_name: 'Astra', efforts: ['medium', 'high'] }),
+              entry({ model: 'gpt-6-lite', display_name: 'Lite', efforts: ['medium'] })
+            ]
+          : [
+              entry({
+                provider: 'fixture',
+                provider_name: 'Fixture',
+                model: 'fixture-model',
+                display_name: 'Fixture model',
+                variants: ['low', 'high']
+              })
+            ]
+    });
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  // Keyboard editing passes through model IDs that no catalog lists.
+  const retype = async (field: Locator, last: string) => {
+    await field.click();
+    await field.press('End');
+    await field.press('Backspace');
+    await field.pressSequentially(last);
+  };
+  const model = page.getByLabel('Repair model', { exact: true });
+  const effort = page.getByLabel('Repair reasoning effort', { exact: true });
+  await expect(model).toHaveValue('gpt-6-astra');
+  // Without a catalog nothing proves the saved effort unsupported, and it stays selectable.
+  await retype(model, 'a');
+  await expect(model).toHaveValue('gpt-6-astra');
+  await expect(effort).toHaveValue('medium');
+  await page.getByRole('button', { name: 'Load Codex models' }).click();
+  await effort.selectOption('high');
+  await retype(model, 'a');
+  await expect(model).toHaveValue('gpt-6-astra');
+  await expect(effort).toHaveValue('high');
+  // A catalog entry for the new model that lacks the effort still clears it.
+  await model.fill('gpt-6-lite');
+  await expect(effort).toHaveValue('');
+
+  const xs = (field: string) => page.getByLabel(`XS execution ${field}`, { exact: true });
+  await xs('runner').selectOption('opencode');
+  await page.getByRole('button', { name: 'Load OpenCode models' }).click();
+  await xs('provider').selectOption('fixture');
+  await xs('model').fill('fixture-model');
+  await xs('variant').selectOption('high');
+  await retype(xs('model'), 'l');
+  await expect(xs('model')).toHaveValue('fixture-model');
+  await expect(xs('variant')).toHaveValue('high');
 });
 
 for (const check of [
