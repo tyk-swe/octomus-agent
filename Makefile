@@ -1,4 +1,8 @@
-.PHONY: dashboard build build-race check test package audit
+.PHONY: dashboard build build-race check test test-race-e2e package audit
+
+# Integration suites run the freshly built binary and stream their PASS lines
+# (Python block-buffers stdout when it is a pipe, as under make and CI).
+E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
 
 dashboard:
 	npm run build --prefix web
@@ -6,32 +10,54 @@ dashboard:
 build: dashboard
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/octomus-agent ./cmd/octomus-agent
 
-# Race-instrumented service build for subprocess-driven concurrency scenarios;
-# the release binary stays CGO_ENABLED=0.
+# Race-instrumented service build used by `make test-race-e2e`; the release
+# binary stays CGO_ENABLED=0.
 build-race: dashboard
 	CGO_ENABLED=1 go build -race -o bin/octomus-agent-race ./cmd/octomus-agent
 
+# gofmt comes from the module's toolchain, not PATH; parse errors fail too. The
+# documented private-payload gate (tests/helpers) lives outside web/ but keeps the
+# dashboard's Prettier style and checkJs typing.
 check: dashboard
-	test -z "$$(gofmt -l version.go cmd internal web/embed*.go)"
+	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal tests web/*.go) || exit 1; \
+	if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files" >&2; exit 1; fi
 	go vet ./...
 	npm run check --prefix web
 	npm run format:check --prefix web
+	cd web && node_modules/.bin/prettier --config .prettierrc.json --check ../tests/helpers
+	cd web && node_modules/.bin/tsc --noEmit --allowJs --checkJs --strict --target es2022 \
+	  --module nodenext --moduleResolution nodenext --types node ../tests/helpers/*.mjs
 
 test: build
 	go test ./...
 	CGO_ENABLED=1 go test -race ./...
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/binary_contract.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/evidence_snapshot.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e_baseline.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e_notifications.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e_runners.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e_hardening.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/distribution.py
+	$(E2E_ENV) python3 tests/binary_contract.py
+	$(E2E_ENV) python3 tests/evidence_snapshot.py
+	node --test tests/helpers/public_payload.test.mjs
+	$(E2E_ENV) python3 tests/e2e.py
+	$(E2E_ENV) python3 tests/e2e_baseline.py
+	$(E2E_ENV) python3 tests/e2e_notifications.py
+	$(E2E_ENV) python3 tests/e2e_runners.py
+	$(E2E_ENV) python3 tests/e2e_hardening.py
+	$(E2E_ENV) python3 tests/distribution.py
 	python3 tests/package_guards.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" npm test --prefix web
+	$(E2E_ENV) npm test --prefix web
 
+# Opt-in (about 7 minutes; needs a C compiler): the core integration suite
+# against the race-instrumented service, so real HTTP, scheduler and runner
+# subprocess interleavings reach the race detector. A detected race exits the
+# service with status 66, which fails the scenario (the harness checks it on
+# every stop, shutdown races included). Not part of `make test`: the race
+# runtime can perturb the timing assertions of the other suites.
+test-race-e2e: build-race
+	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent-race" GORACE=halt_on_error=1 PYTHONUNBUFFERED=1 python3 tests/e2e.py
+
+# `go run pkg@version` selects a toolchain from govulncheck's own go.mod, which
+# can be older than this module's and then cannot type-check it; pin the
+# toolchain this module resolves to (GOTOOLCHAIN auto-switching included).
 audit:
+	toolchain=$$(go env GOVERSION | cut -d' ' -f1); \
+	case $$toolchain in go1.*) export GOTOOLCHAIN=$$toolchain ;; esac; \
 	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 	npm audit --prefix web --audit-level=high
 

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Operational regressions using synthetic runners and a real temporary Git remote."""
+import functools
 import json
 from pathlib import Path
+import sys
 import tempfile
 import time
-import urllib.error
 from concurrent.futures import ThreadPoolExecutor
-from e2e import Service, setup, existing_pr, git, usage_report, TOKEN
+from e2e import Service, setup, existing_pr, git, process_gone, run_selected, usage_report, TOKEN
 
 
 def run(mode):
@@ -51,7 +52,9 @@ def run(mode):
                     (root / 'reconcile-entered').unlink(missing_ok=True)
                     (root / 'reconcile-hold').touch()
                     with ThreadPoolExecutor(max_workers=1) as pool:
-                        request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST')
+                        # The held request stays open across the controls below,
+                        # longer than the default 5 s socket timeout allows.
+                        request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST', timeout=30)
                         try:
                             service.wait(lambda: (root / 'reconcile-entered').exists(), 'held reconciliation', seconds=3)
                             start = time.monotonic()
@@ -60,11 +63,8 @@ def run(mode):
                             assert service.request('/state')['active_tasks'] == 1
                             assert service.request('/tasks/' + task['id'])['status'] == 'publishing'
                             for action in ['reconcile', 'cancel', 'archive', 'discard', 'retry']:
-                                try:
-                                    service.request('/tasks/' + task['id'] + '/' + action, 'POST')
-                                    raise AssertionError(f'{action} changed a reserved publication')
-                                except urllib.error.HTTPError as e:
-                                    assert e.code == 409
+                                code, body = service.expect('/tasks/' + task['id'] + '/' + action, 'POST')
+                                assert code == 409, (f'{action} changed a reserved publication', code, body)
                             service.request('/control/resume', 'POST')
 
                             def resumed():
@@ -201,11 +201,8 @@ def run(mode):
                     c['max_sessions_per_day'] = service.request('/state')['sessions_today']
                     service.save_config(c)
                     service.stop(); service.start()
-                    try:
-                        service.request('/control/cycle', 'POST')
-                        raise AssertionError('Unaffordable Run once was accepted')
-                    except urllib.error.HTTPError as error:
-                        assert error.code == 409
+                    code, body = service.expect('/control/cycle', 'POST')
+                    assert code == 409, ('Unaffordable Run once was accepted', code, body)
                     service.request('/control/resume', 'POST')
                     task = service.wait(service.terminal_task, 'live admission denied')
                     assert task['blocked_reason'] == 'budget_exhausted'
@@ -228,11 +225,8 @@ def run(mode):
                 task = service.wait(service.terminal_task, 'stale task blocked')
                 assert task['blocked_reason'] == 'stale_base' and 'retry' not in task['allowed_actions']
                 assert service.request('/state')['sessions_today'] == 13
-                try:
-                    service.request('/tasks/' + task['id'] + '/retry', 'POST')
-                    raise AssertionError('Stale task retry was accepted')
-                except urllib.error.HTTPError as e:
-                    assert e.code == 409
+                code, body = service.expect('/tasks/' + task['id'] + '/retry', 'POST')
+                assert code == 409, ('Stale task retry was accepted', code, body)
                 if mode == 'stale-retry':
                     return
                 service.wait(lambda: service.request('/state')['control']['paused'], 'stale drain paused')
@@ -359,6 +353,7 @@ def run(mode):
                 assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
             service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot completion')
             cycles = len(service.request('/state')['cycles'])
+            # Past one scheduler tick (schedulerInterval in internal/engine/engine.go).
             service.stop(); service.start(); time.sleep(1.2)
             assert service.request('/state')['control']['mode'] == 'paused'
             assert len(service.request('/state')['cycles']) == cycles
@@ -399,7 +394,9 @@ def reconciliation_deadline():
             (root / 'reconcile-delay').write_text('6')
             start = time.monotonic()
             with ThreadPoolExecutor(max_workers=1) as pool:
-                request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST')
+                # The client gives up after its 5 s socket timeout, before the
+                # 7 s wait below: reconciliation must outlive the disconnect.
+                request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST', timeout=5)
                 service.wait(lambda: (root / 'reconcile-processes.jsonl').exists(), 'slow reconciliation entered', seconds=3)
                 try:
                     request.result(timeout=7)
@@ -421,13 +418,7 @@ def reconciliation_deadline():
             assert len(calls) == 2 and calls[0]['args'][:2] == ['auth', 'status'] and calls[1]['args'][0] == 'api', calls
             for call in calls:
                 for pid in [call['pid'], call['child_pid']]:
-                    stat = Path(f'/proc/{pid}/stat')
-                    def stopped():
-                        try:
-                            return ') Z' in stat.read_text()
-                        except FileNotFoundError:
-                            return True
-                    service.wait(stopped, f'reconciliation process {pid} stopped', seconds=2)
+                    service.wait(lambda: process_gone(pid), f'reconciliation process {pid} stopped', seconds=2)
             (root / 'reconcile-delay').unlink()
             service.request('/tasks/' + task['id'] + '/retry', 'POST')
             service.request('/control/cycle', 'POST')
@@ -440,9 +431,18 @@ def reconciliation_deadline():
             service.log.close()
 
 
-if __name__ == '__main__':
-    for mode in ['reconcile-controls', 'archive-uncertain', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'dependency-rollback', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner', 'publication-body-edit', 'publication-secret', 'publication-secret-followup']:
-        run(mode)
-        print(f'PASS hardening {mode}', flush=True)
+def hardening(mode):
+    run(mode)
+    print(f'PASS hardening {mode}', flush=True)
+
+
+def hardening_reconciliation_deadline():
     reconciliation_deadline()
     print('PASS hardening reconciliation deadline and process cleanup', flush=True)
+
+
+if __name__ == '__main__':
+    run_selected('hardening', [
+        *[(mode, functools.partial(hardening, mode)) for mode in ['reconcile-controls', 'archive-uncertain', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'dependency-rollback', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner', 'publication-body-edit', 'publication-secret', 'publication-secret-followup']],
+        ('reconciliation-deadline', hardening_reconciliation_deadline),
+    ], sys.argv[1:])

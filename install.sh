@@ -1,5 +1,5 @@
 #!/bin/sh
-# Usage: sh install.sh [vVERSION]. INSTALL_DIR defaults to /usr/local/bin.
+# Usage: sh install.sh [vVERSION] (or OCTOMUS_VERSION=vVERSION). INSTALL_DIR defaults to /usr/local/bin.
 set -eu
 fail() { echo "octomus installer: $*" >&2; exit 1; }
 [ "$(uname -s)" = Linux ] || fail 'Linux is required'
@@ -8,11 +8,13 @@ case "$(uname -m)" in
   aarch64|arm64) target=aarch64-unknown-linux-gnu ;;
   *) fail 'Supported architectures: x86_64 and aarch64' ;;
 esac
-for tool in curl tar sha256sum mktemp install; do command -v "$tool" >/dev/null || fail "Install $tool first"; done
+for tool in curl tar sha256sum mktemp install awk; do command -v "$tool" >/dev/null || fail "Install $tool first"; done
 repo=https://github.com/tyk-swe/octomus-agent
-version=${1:-${VERSION:-}}
+version=${1:-${OCTOMUS_VERSION:-}}
 if [ -z "$version" ]; then
   latest=$(curl --proto '=https' --proto-redir '=https' -fsSL -o /dev/null -w '%{url_effective}' "$repo/releases/latest") || fail 'No downloadable release; check release availability'
+  # Without a stable release GitHub lands on the release list, not a tag.
+  case "$latest" in */releases/tag/v[0-9]*) ;; *) fail 'No published stable release found; pass a version such as v0.1.0';; esac
   version=${latest##*/}
 fi
 case "$version" in v[0-9]*) ;; *) fail 'Version must be a release tag such as v0.1.0';; esac
@@ -33,6 +35,9 @@ case "$hash" in *[!a-fA-F0-9]*) fail 'Invalid checksum';; esac
 # Extract only the expected executable into our private temporary directory.
 tar -xOzf "$stage/$asset" octomus-agent/octomus-agent > "$stage/octomus-agent" || fail 'Archive is missing the executable'
 [ -s "$stage/octomus-agent" ] || fail 'Empty executable'
+# Create a missing destination as the invoking user when its parent allows it,
+# so sudo never creates root-owned directories under a user-writable path.
+[ -d "$dest" ] || mkdir -p "$dest" 2>/dev/null || :
 if [ -d "$dest" ] && [ -w "$dest" ]; then
   install -m 755 "$stage/octomus-agent" "$dest/.octomus-agent.$$"
   mv -f "$dest/.octomus-agent.$$" "$dest/octomus-agent"
@@ -44,9 +49,11 @@ else
 fi
 printf '\nInstalled %s to %s/octomus-agent\n' "$version" "$dest"
 cat <<'NEXT'
-Next, as the service user on your dedicated VM (see the README for prerequisites):
+Next, as the service user on your dedicated VM (prerequisites and full steps:
+https://github.com/tyk-swe/octomus-agent/blob/main/docs/getting-started.md):
   codex login                 # or, for OpenCode routes: opencode auth login
   gh auth login && gh auth setup-git
-  OCTOMUS_TOKEN='<your saved random token>' octomus-agent
-Save the generated token in your password manager before starting; the README shows how.
+  export OCTOMUS_TOKEN="$(openssl rand -hex 32)"
+  printf '%s\n' "$OCTOMUS_TOKEN"  # save it in your password manager
+  octomus-agent --data-dir /var/lib/octomus/.octomus
 NEXT

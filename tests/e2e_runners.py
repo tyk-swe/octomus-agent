@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Mixed-runner behavior with synthetic peers, SQLite and real local Git only."""
+import functools
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
+import sys
 import tempfile
 
-from e2e import Service, base_config, setup, usage_report, git
+from e2e import Service, base_config, process_gone, run_selected, setup, usage_report, git
 
 
 def route(backend, planning=False, provider='fixture', variant='high'):
@@ -42,6 +44,15 @@ def stop_peers(root):
                 os.killpg(pid, signal.SIGKILL)
         except (FileNotFoundError, ProcessLookupError):
             pass
+
+
+def stop_service_and_peers(service, root):
+    """Scenario teardown: OpenCode peers are stopped even when the service stop fails."""
+    try:
+        service.stop()
+    finally:
+        stop_peers(root)
+        service.log.close()
 
 
 def successful_workflow(mode):
@@ -97,9 +108,7 @@ def successful_workflow(mode):
             assert report['tasks'][0]['repair_route'] == c['repair_route']
             print(f'PASS {mode}: exact routes, fresh reviews, persistent repairs and verified delivery')
         finally:
-            service.stop()
-            stop_peers(root)
-            service.log.close()
+            stop_service_and_peers(service, root)
 
 
 def failed_review(mode):
@@ -135,9 +144,7 @@ def failed_review(mode):
                 assert all(s['route']['backend'] == 'opencode' for s in task['sessions'])
             print(f'PASS OpenCode {mode}: failed review cannot authorize publication')
         finally:
-            service.stop()
-            stop_peers(root)
-            service.log.close()
+            stop_service_and_peers(service, root)
 
 
 def audit():
@@ -161,9 +168,7 @@ def audit():
             assert len(usage_report(root)['admissions']) == 13
             print('PASS OpenCode audit: unavailable execution runners do not block planning')
         finally:
-            service.stop()
-            stop_peers(root)
-            service.log.close()
+            stop_service_and_peers(service, root)
 
 
 def task_deadline():
@@ -182,21 +187,18 @@ def task_deadline():
             task = service.wait(service.terminal_task, 'task deadline cleanup', seconds=20)
             assert task['status'] == 'blocked' and task['error'] == 'Task time limit exceeded', task
             pid = int((root / 'opencode-child-pid').read_text())
-            stat = Path(f'/proc/{pid}/stat')
-            assert not stat.exists() or ') Z' in stat.read_text(), 'Detached shell survived the task deadline'
+            assert process_gone(pid), 'Detached shell survived the task deadline'
             assert (root / 'opencode-aborts.jsonl').exists()
             assert not (root / 'publications.jsonl').exists()
             print('PASS task deadline: abort finishes before server cleanup; no detached shell or publication')
         finally:
-            service.stop()
-            stop_peers(root)
-            service.log.close()
+            stop_service_and_peers(service, root)
 
 
 if __name__ == '__main__':
-    for mode in ['opencode', 'mixed', 'reverse-mixed', 'recovery']:
-        successful_workflow(mode)
-    for mode in ['wrong-model', 'wrong-variant', 'missing-structured', 'malformed-structured', 'incomplete', 'interactive']:
-        failed_review(mode)
-    audit()
-    task_deadline()
+    run_selected('runners', [
+        *[(mode, functools.partial(successful_workflow, mode)) for mode in ['opencode', 'mixed', 'reverse-mixed', 'recovery']],
+        *[(mode, functools.partial(failed_review, mode)) for mode in ['wrong-model', 'wrong-variant', 'missing-structured', 'malformed-structured', 'incomplete', 'interactive']],
+        ('audit', audit),
+        ('task-deadline', task_deadline),
+    ], sys.argv[1:])

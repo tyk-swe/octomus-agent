@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """Runs the actual service, scheduler, SQLite, and Git against deterministic external peers.
 No network writes, real Codex turns, credentials, or spending. Run after make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
+Every e2e suite accepts scenario names (`python3 tests/e2e.py normal audit-idle`) to run only those;
+an unknown name lists them all.
 """
 import contextlib
+import functools
+import http.server
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +24,10 @@ import urllib.request
 PROJECT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent')))
 TOKEN = 'fixture-operator-token-with-at-least-32-characters'
+# The Go race detector's default exit status (GORACE exitcode). Only a
+# race-instrumented build (make test-race-e2e) exits with it; the service
+# itself uses 0, 1 and 2.
+RACE_EXIT_STATUS = 66
 
 
 def git(*args, cwd):
@@ -44,6 +55,45 @@ def poll(predicate, seconds, interval=0.1, tick=None):
     return None
 
 
+def service_log(root, tail=None):
+    """Returns root/service.log for failure messages, only its last `tail` lines when given."""
+    try:
+        text = (root / 'service.log').read_text(errors='replace')
+    except OSError as error:
+        return f'<service.log unavailable: {error!r}>'
+    return text if tail is None else '\n'.join(text.splitlines()[-tail:])
+
+
+def run_selected(suite, scenarios, names):
+    """Runs `names`, or every scenario when it is empty, in registry order.
+
+    `scenarios` lists (name, zero-argument callable) pairs; unknown names are
+    refused before anything runs.
+    """
+    registry = dict(scenarios)
+    assert len(registry) == len(scenarios), f'duplicate {suite} scenario names'
+    unknown = [name for name in names if name not in registry]
+    if unknown:
+        raise SystemExit(f'unknown {suite} scenarios: {", ".join(unknown)}; available: {", ".join(registry)}')
+    for name, run in registry.items():
+        if not names or name in names:
+            print(f'RUN {suite} {name}', flush=True)
+            run()
+
+
+def process_gone(pid):
+    """Whether `pid` has exited: reaped, or a zombie its parent has not reaped yet.
+
+    The state is the first field after the last ')', because the command name
+    before it is arbitrary text and may itself contain ') Z'.
+    """
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text()
+    except (FileNotFoundError, ProcessLookupError):  # Reaped before or while reading.
+        return True
+    return stat.rpartition(')')[2].split()[0] in ['Z', 'X']
+
+
 def base_config(service, commands, **overrides):
     """Loads the saved display configuration every scenario starts from.
 
@@ -58,6 +108,7 @@ class Service:
     def __init__(self, root):
         self.root = root
         self.process = None
+        self.race_reported = False
         self.log = (root / 'service.log').open('a')
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
@@ -72,18 +123,35 @@ class Service:
     def stop(self, crash=False):
         if self.process and self.process.poll() is None:
             self.process.kill() if crash else self.process.terminate()
-            self.process.wait(timeout=15)
+            try:
+                self.process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                # Never leave the service running; the raised error chains any
+                # scenario failure already in flight.
+                self.process.kill()
+                self.process.wait(timeout=5)
+                raise AssertionError(f'service did not stop within 15s of {"SIGKILL" if crash else "SIGTERM"}; service.log tail:\n{service_log(self.root, tail=100)}')
+        # A race detected at any point, shutdown included, fails the scenario
+        # once, with the report from the log.
+        if self.process and self.process.returncode == RACE_EXIT_STATUS and not self.race_reported:
+            self.race_reported = True
+            raise AssertionError(f'service exited with status {RACE_EXIT_STATUS}: the race detector reported a data race; service.log tail:\n{service_log(self.root, tail=200)}')
 
-    def request(self, path, method='GET', value=None, api=True):
+    def _open(self, path, method, value, api, timeout):
+        """Sends one authenticated request; `timeout` bounds each socket operation,
+        so a response the service holds longer than that raises TimeoutError."""
         request = urllib.request.Request(f'http://127.0.0.1:{self.port}{"/api" if api else ""}{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
-        with urllib.request.urlopen(request, timeout=5) as response:
+        return urllib.request.urlopen(request, timeout=timeout)
+
+    def request(self, path, method='GET', value=None, api=True, timeout=5):
+        """One request that must succeed: returns the JSON body, raises HTTPError otherwise."""
+        with self._open(path, method, value, api, timeout) as response:
             return json.load(response)
 
-    def expect(self, path, method='GET', value=None):
+    def expect(self, path, method='GET', value=None, timeout=5):
         """One API request that may fail: returns (status, body) instead of raising."""
-        request = urllib.request.Request(f'http://127.0.0.1:{self.port}/api{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with self._open(path, method, value, True, timeout) as response:
                 return response.status, json.load(response)
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read() or b'{}')
@@ -101,14 +169,35 @@ class Service:
         return self.request('/config', 'PUT', {'expected_revision': revision, 'config': config})
 
     def wait(self, predicate, label, seconds=45):
+        last_error = None
+
+        def attempt():
+            # poll() retries these; remember the latest for the timeout report.
+            nonlocal last_error
+            try:
+                return predicate()
+            except urllib.error.HTTPError as error:
+                try:
+                    body = error.read()[:2000].decode(errors='replace')
+                except Exception as read_error:  # A cut-off body raises IncompleteRead, not OSError.
+                    body = f'<body unavailable: {read_error!r}>'
+                last_error = f'HTTP {error.code}: {body}'
+                raise
+            except (OSError, urllib.error.URLError) as error:
+                last_error = repr(error)
+                raise
+
         def exited():
             if self.process and self.process.poll() is not None:
-                raise AssertionError(f'{label}: service exited\n{(self.root / "service.log").read_text()}')
-        result = poll(predicate, seconds, tick=exited)
+                raise AssertionError(f'{label}: service exited\n{service_log(self.root)}')
+        result = poll(attempt, seconds, tick=exited)
         if result:
             return result
-        state = self.request('/state')
-        raise AssertionError(f'{label} timed out: {json.dumps(state, indent=2)}')
+        try:
+            state = json.dumps(self.request('/state'), indent=2)
+        except Exception as error:  # Any failure (even BadStatusLine) is reported, never raised.
+            state = f'<state unavailable: {error!r}>'
+        raise AssertionError(f'{label} timed out after {seconds}s; last error: {last_error}\nstate: {state}\nservice.log tail:\n{service_log(self.root, tail=100)}')
 
     def configure(self):
         commands = ['false'] if (self.root / 'failed-verification').exists() else ['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done']
@@ -181,7 +270,7 @@ def existing_pr(root):
 
 def usage_report(root):
     # Runs concurrently with the service lock, with no token or dashboard assets.
-    report = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--usage-report'], text=True))
+    report = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--usage-report'], text=True, timeout=30))
     assert sum(d['admissions'] for d in report['daily']) == len(report['admissions'])
     assert all(d['unattributed_admissions'] == 0 for d in report['daily'])
     return report
@@ -362,7 +451,7 @@ def scenario(mode):
             if mode == 'normal':
                 service.stop()
                 (root / 'version').write_text('0.0.0-fixture')
-                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor'], env=service.env, capture_output=True, text=True, check=True)
+                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor'], env=service.env, capture_output=True, text=True, check=True, timeout=60)
                 assert json.loads(diagnostic.stdout)['warnings']
                 assert 'mismatch' in diagnostic.stderr
             print(f'PASS {mode}: complete reviewed delivery with no duplicate PRs')
@@ -524,14 +613,10 @@ def audit_scenario(mode):
             assert diagnostic['mode'] == 'audit'
             assert diagnostic['checked_revision'] == service.request('/config')['revision']
             assert diagnostic['checked_config'] == service.request('/config')['config']
-            try:
-                service.request('/doctor', 'POST')
-                raise AssertionError('Execution doctor accepted missing verification')
-            except urllib.error.HTTPError as e:
-                assert e.code == 400
-                body = json.load(e)
-                assert body['checked_revision'] == service.request('/config')['revision']
-                assert body['checked_config'] == service.request('/config')['config']
+            code, body = service.expect('/doctor', 'POST')
+            assert code == 400, ('Execution doctor accepted missing verification', code, body)
+            assert body['checked_revision'] == service.request('/config')['revision']
+            assert body['checked_config'] == service.request('/config')['config']
             marker = {'idle': 'idle', 'malformed': 'audit-malformed', 'failed': 'failed-start'}.get(mode, 'audit-decisions')
             (root / marker).touch()
             if mode not in ['failed']:
@@ -540,13 +625,10 @@ def audit_scenario(mode):
             baseline_revision = git('rev-parse', 'main', cwd=root / 'remote.git')
             baseline_refs = git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git')
             if mode == 'budget':
-                try:
-                    service.request('/control/audit', 'POST')
-                    raise AssertionError('Unaffordable audit was accepted')
-                except urllib.error.HTTPError as e:
-                    assert e.code == 409
-                    message = json.load(e)['error']
-                    assert '13' in message and 'increase' in message, message
+                code, body = service.expect('/control/audit', 'POST')
+                assert code == 409, ('Unaffordable audit was accepted', code, body)
+                message = body['error']
+                assert '13' in message and 'increase' in message, message
                 state = service.request('/state')
                 capacity = state['planning_capacity']
                 assert capacity['status'] == 'limit_too_low', capacity
@@ -574,18 +656,15 @@ def audit_scenario(mode):
                 state = service.request('/state')
                 assert state['status'] == 'auditing' and state['control']['paused']
                 for action in ['audit', 'resume', 'cycle']:
-                    try:
-                        service.request('/control/' + action, 'POST')
-                        raise AssertionError('Conflicting control accepted')
-                    except urllib.error.HTTPError as e:
-                        assert e.code == 409
-                        message = json.load(e)['error']
-                        explanation = {
-                            'audit': 'Audits require paused operation with no active work',
-                            'cycle': 'Run once requires paused operation with no active work',
-                            'resume': 'Wait for the audit to finish before starting continuous operation',
-                        }[action]
-                        assert message.startswith(explanation), message
+                    code, body = service.expect('/control/' + action, 'POST')
+                    assert code == 409, ('Conflicting control accepted', action, code, body)
+                    message = body['error']
+                    explanation = {
+                        'audit': 'Audits require paused operation with no active work',
+                        'cycle': 'Run once requires paused operation with no active work',
+                        'resume': 'Wait for the audit to finish before starting continuous operation',
+                    }[action]
+                    assert message.startswith(explanation), message
                 if mode == 'interrupted':
                     service.stop(crash=True)
                 (root / 'audit-hold').unlink()
@@ -609,6 +688,8 @@ def audit_scenario(mode):
                 assert row['planning_admissions'] == 13
             service.stop()
             service.start()
+            # Negative checks sleep past a scheduler tick (schedulerInterval,
+            # 1 s, in internal/engine/engine.go) so a restart could act first.
             time.sleep(1.2)
             assert service.request('/state')['tasks'] == queued_before
             current_publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
@@ -617,7 +698,7 @@ def audit_scenario(mode):
             assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
             if mode == 'accepted':
                 service.stop()
-                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor', '--audit'], env=service.env, capture_output=True, text=True, check=True)
+                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor', '--audit'], env=service.env, capture_output=True, text=True, check=True, timeout=60)
                 assert json.loads(diagnostic.stdout)['mode'] == 'audit'
             print(f'PASS audit-{mode}: durable decisions, paused queue, no publication')
         finally:
@@ -625,13 +706,120 @@ def audit_scenario(mode):
             service.log.close()
 
 
+def harness_scenario():
+    """The harness itself, against a scripted HTTP peer and plain child
+    processes (no service binary).
+
+    Error responses, even ones whose body is cut short, are retried until the
+    predicate succeeds. A timeout raises one labelled report with the last
+    error, the /state outcome (even when unreadable) and the service.log tail.
+    Service.stop reports a race-detector exit status once. process_gone tells
+    a live process from a zombie or a reaped one. run_selected runs scenarios
+    by name.
+    """
+    calls = {}
+
+    class Peer(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls[self.path] = calls.get(self.path, 0) + 1
+            if self.path == '/api/state':
+                self.wfile.write(b'not an HTTP status line\r\n\r\n')
+            elif self.path == '/api/recovers' and calls[self.path] < 3:
+                # The body stops short of its Content-Length, so reading it raises IncompleteRead.
+                self.reply(500, b'{"error":', length=64)
+            elif self.path == '/api/recovers':
+                self.reply(200, b'{"ok":true}')
+            else:
+                self.reply(404, b'{"error":"Unknown API route"}')
+
+        def reply(self, status, body, length=None):
+            self.send_response(status)
+            self.send_header('Content-Length', str(length or len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with tempfile.TemporaryDirectory(prefix='octomus-harness-') as tmp:
+        root = Path(tmp)
+        (root / 'service.log').write_text('earlier line\nlast service line\n')
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Peer)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        service = Service(root)
+        service.port = server.server_address[1]
+        try:
+            assert service.wait(lambda: service.request('/recovers'), 'recovering request', seconds=10) == {'ok': True}
+            assert calls['/api/recovers'] == 3, calls
+            report = None
+            try:
+                service.wait(lambda: service.request('/missing'), 'missing route', seconds=1)
+            except AssertionError as error:
+                report = str(error)
+            assert report and report.startswith('missing route timed out after 1s; last error: HTTP 404: {"error":"Unknown API route"}\nstate: <state unavailable: BadStatusLine('), report
+            assert report.endswith('service.log tail:\nearlier line\nlast service line'), report
+
+            # A race-instrumented service exits with the race detector's status
+            # even from a graceful SIGTERM shutdown; stop() reports it once.
+            service.process = subprocess.Popen([sys.executable, '-c', 'import signal, sys, time\nsignal.signal(signal.SIGTERM, lambda *_: sys.exit(66))\nprint("ready", flush=True)\ntime.sleep(30)'], stdout=subprocess.PIPE, text=True)
+            with service.process.stdout:
+                assert service.process.stdout.readline() == 'ready\n'
+            report = None
+            try:
+                service.stop()
+            except AssertionError as error:
+                report = str(error)
+            assert report and report.startswith('service exited with status 66: the race detector reported a data race; service.log tail:\n'), report
+            service.stop()
+            # A clean exit, or a crash stop's SIGKILL, is not a race report.
+            service.race_reported = False
+            for command in ['pass', 'import time; time.sleep(30)']:
+                service.process = subprocess.Popen([sys.executable, '-c', command])
+                service.stop(crash=True)
+                assert service.process.returncode in [0, -9], service.process.returncode
+        finally:
+            server.shutdown()
+            server.server_close()
+            service.log.close()
+
+    # A live process whose command name mimics a zombie's stat line.
+    child = subprocess.Popen([sys.executable, '-c', "from pathlib import Path; import time; Path('/proc/self/comm').write_text('x) Z 0'); print('ready', flush=True); time.sleep(30)"], stdout=subprocess.PIPE, text=True)
+    try:
+        with child.stdout:
+            assert child.stdout.readline() == 'ready\n'
+        assert ') Z 0)' in Path(f'/proc/{child.pid}/stat').read_text()
+        assert not process_gone(child.pid)
+        child.kill()
+        assert poll(lambda: process_gone(child.pid), 5), 'killed child never became a zombie'
+        assert Path(f'/proc/{child.pid}').exists(), 'the zombie was reaped early'
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+    assert process_gone(child.pid)
+
+    # Selected scenarios run in registry order; an unknown name runs nothing.
+    ran = []
+    registry = [(name, functools.partial(ran.append, name)) for name in ['a', 'b', 'c']]
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        run_selected('selftest', registry, ['c', 'a'])
+        run_selected('selftest', registry, [])
+        try:
+            run_selected('selftest', registry, ['b', 'nope'])
+            raise AssertionError('an unknown scenario name was accepted')
+        except SystemExit as error:
+            refusal = str(error)
+    assert ran == ['a', 'c', 'a', 'b', 'c'], ran
+    assert output.getvalue() == ''.join(f'RUN selftest {name}\n' for name in ran), output.getvalue()
+    assert refusal == 'unknown selftest scenarios: nope; available: a, b, c', refusal
+    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field; scenarios run by name')
+
+
 if __name__ == '__main__':
-    settings_scenario()
-    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']:
-        scenario(mode)
-
-    for role in ['executor', 'repair']:
-        missing_session_scenario(role)
-
-    for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']:
-        audit_scenario(mode)
+    run_selected('e2e', [
+        ('harness', harness_scenario),
+        ('settings', settings_scenario),
+        *[(mode, functools.partial(scenario, mode)) for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']],
+        *[(f'missing-{role}', functools.partial(missing_session_scenario, role)) for role in ['executor', 'repair']],
+        *[(f'audit-{mode}', functools.partial(audit_scenario, mode)) for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']],
+    ], sys.argv[1:])
