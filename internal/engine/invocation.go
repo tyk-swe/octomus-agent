@@ -117,9 +117,15 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		if closeErr := closeClients(); turnErr == nil && closeErr != nil {
 			turnErr = closeErr
 		}
-		if turnErr == nil {
+		switch {
+		case turnErr == nil:
 			record.MarkCompleted(store.Redact(summary))
-		} else {
+		case a.ctx.Err() != nil:
+			// Shutdown cut the turn short; the runner did not fail it. The
+			// record says so, as restart recovery says of a crash.
+			record.MarkInterrupted()
+			answer = ""
+		default:
 			record.MarkFailed(store.ErrorMessage(turnErr))
 			answer = ""
 		}

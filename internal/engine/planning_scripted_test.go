@@ -711,6 +711,10 @@ func TestGracefulShutdownDuringPlanningRecordsInterruption(t *testing.T) {
 			if cycle.Status != model.CycleInterrupted || cycle.Error == nil || *cycle.Error != interruptedPlanningMessage || cycle.CompletedAt == nil {
 				t.Fatalf("shutdown recorded the cut-short pass as %+v; want it interrupted", cycle)
 			}
+			// The cut-short turn is interrupted too, not a runner failure.
+			if len(cycle.Sessions) != 1 || cycle.Sessions[0].Status != model.SessionInterrupted {
+				t.Fatalf("shutdown recorded the cut-short turn as %+v; want one interrupted session", cycle.Sessions)
+			}
 			control, err := app.Control()
 			if err != nil {
 				t.Fatal(err)
