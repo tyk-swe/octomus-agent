@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // relevant_paths come from model output. A path that looks like git pathspec
@@ -234,4 +235,65 @@ func TestPlanningMemoryReconsiderationRules(t *testing.T) {
 		"readme": true, "guide": false, "whole-tree": true, "expired": true,
 		"pr-readme": false, "merged-accepted": false, "merged-elsewhere": false,
 	})
+}
+
+// Planning roles receive decision memory as JSON: each current decision with
+// its kind and reconsideration_due, newest first, then each pending
+// rediscovery request. The bytes are part of the recorded prompt context, so
+// they stay stable.
+func TestPlanningMemoryPromptJSONIsStable(t *testing.T) {
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	ctx := context.Background()
+	const revision = "grounded-revision"
+	current, err := decisionFingerprint(ctx, cfg, revision, []string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := func(id, problem, verdict, cycleID, fingerprint string) {
+		t.Helper()
+		record := map[string]any{
+			"id": id, "mode": "execution", "repository": cfg.GitHubRepo, "target": cfg.DefaultBranch,
+			"problem_key": problem, "relevant_paths": []string{}, "decision": verdict,
+			"reason": "Recorded " + id, "source_revision": revision,
+			"context_fingerprint": fingerprint, "reconsider_after": "2999-01-01T00:00:00Z", "cycle_id": cycleID,
+		}
+		if err := state.Put("decision", id, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	decision("current", "current-problem", model.DecisionRejected, "cycle-1", current)
+	decision("changed", "changed-problem", model.DecisionDeferred, "cycle-1", "older-fingerprint")
+	decision("merged", "merged-problem", model.DecisionAccepted, "cycle-2", current)
+	decision("absorbed", "merged-problem", model.DecisionRejected, "cycle-2", current)
+	cancelled := queuedTask(cfg, "cancelled-task", cfg.DefaultBranch, "octomus/cancelled-task")
+	cancelled.Status = model.StatusCancelled
+	cancelled.RediscoveryRequested = true
+	if err := state.Put("task", cancelled.ID, cancelled); err != nil {
+		t.Fatal(err)
+	}
+
+	memory, err := app.planningMemory(ctx, cfg, model.Grounding{Revision: revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := wirejson.Marshal(memory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisionJSON := func(id, problem, verdict, cycleID, fingerprint string, due bool) string {
+		return fmt.Sprintf(`{"context_fingerprint":%q,"cycle_id":%q,"decision":%q,"id":%q,"kind":"decision","mode":"execution","problem_key":%q,"reason":"Recorded %s","reconsider_after":"2999-01-01T00:00:00Z","reconsideration_due":%t,"relevant_paths":[],"repository":"fixture/project","source_revision":"grounded-revision","target":"main"}`,
+			fingerprint, cycleID, verdict, id, problem, id, due)
+	}
+	want := "[" + strings.Join([]string{
+		decisionJSON("merged", "merged-problem", model.DecisionAccepted, "cycle-2", current, false),
+		decisionJSON("changed", "changed-problem", model.DecisionDeferred, "cycle-1", "older-fingerprint", true),
+		decisionJSON("current", "current-problem", model.DecisionRejected, "cycle-1", current, false),
+		`{"id":"cancelled-task","kind":"rediscovery","problem":"Missing behavior cancelled-task","scope":"one file","target":"main","title":"Concrete cancelled-task"}`,
+	}, ",") + "]"
+	if string(got) != want {
+		t.Fatalf("decision memory prompt JSON changed:\n got %s\nwant %s", got, want)
+	}
 }
