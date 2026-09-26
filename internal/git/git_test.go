@@ -1327,8 +1327,9 @@ func TestPublishUncertainWrapsCauseOnce(t *testing.T) {
 	}
 }
 
-// TestPublicationChecksEveryIdentityFieldAndClosedReconciliation ports the
-// count, and closed/merged states only pass explicit reconciliation.
+// TestPublicationChecksEveryIdentityFieldAndClosedReconciliation: every
+// identity field (repositories, ownership, branch, base, reviewed head, marker)
+// must match, and closed/merged states pass only explicit reconciliation.
 func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T) {
 	c := testConfig()
 	commit := strings.Repeat("a", 40)

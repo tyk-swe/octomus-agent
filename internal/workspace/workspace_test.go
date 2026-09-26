@@ -12,7 +12,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
-// TestRemoveOwnedDir ports the housekeeping cleanup contract: only plainly
+// TestRemoveOwnedDir pins the housekeeping cleanup contract: only plainly
 // named direct children of the owned root may be deleted, and no component —
 // including the target itself — may be a symlink.
 func TestRemoveOwnedDir(t *testing.T) {
@@ -169,7 +169,7 @@ func TestRemoveOwnedDirRejectsNoncanonicalPaths(t *testing.T) {
 	}
 }
 
-// TestDirectorySize ports housekeeping's accounting: regular file sizes sum,
+// TestDirectorySize pins housekeeping's accounting: regular file sizes sum,
 // symlinks contribute nothing, and a missing tree measures as zero.
 func TestDirectorySize(t *testing.T) {
 	root := t.TempDir()
@@ -204,7 +204,7 @@ func TestDirectorySize(t *testing.T) {
 	}
 }
 
-// TestInitialized ports the resumable-workspace predicate: a recorded session,
+// TestInitialized pins the resumable-workspace predicate: a recorded session,
 // a comparison base and a real checkout must all be present.
 func TestInitialized(t *testing.T) {
 	root := t.TempDir()

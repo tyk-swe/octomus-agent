@@ -60,9 +60,9 @@ func Command(binary string, cwd string) *exec.Cmd {
 }
 
 // GroupChild owns a started process and its recorded process group. Close kills
-// the group first and then the leader; the stored group id stays meaningful even
-// after Wait reaps the leader, so cleanup also terminates background descendants
-// after normal completion.
+// the group first and then the leader, so background descendants die even after
+// the leader completed normally. The group id stays reserved only while some
+// member is alive: once the whole group has exited, the kernel may reuse it.
 type GroupChild struct {
 	Cmd  *exec.Cmd
 	pgid int
@@ -117,9 +117,9 @@ func (c Captured) Preview() string {
 	return text
 }
 
-// Status is the end state of a direct child, matching std::process::ExitStatus:
-// an exit code when the leader exited normally, or the terminating signal when
-// it was killed. Code reports false for signal termination, never a placeholder.
+// Status is the end state of a direct child: an exit code when the leader
+// exited normally, or the terminating signal when it was killed. Code reports
+// false for signal termination, never a placeholder.
 type Status struct {
 	state *os.ProcessState
 }
@@ -539,9 +539,11 @@ func RunPredicate(ctx context.Context, binary string, args []string, cwd string,
 // the caller reports expiry.
 const deadlineGrace = 8 * time.Second
 
-// Deadline reports how fn finished relative to the limit: Done carries fn's
-// output, Expired reports whether ctx was already cancelled before the expiry
-// cancellation fired.
+// Deadline reports how fn finished relative to the limit. Output carries fn's
+// result when it returned within the limit. Expired reports that the limit
+// elapsed first (Output is then the zero value). AlreadyCancelled reports that
+// ctx was already cancelled when the limit elapsed, separating an operator
+// cancellation from a genuine deadline.
 type Deadline[T any] struct {
 	Output           T
 	Expired          bool

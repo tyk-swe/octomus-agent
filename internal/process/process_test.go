@@ -504,8 +504,9 @@ func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 	}
 }
 
-// TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses ports the
-// every other outcome — unexpected status, signal, spawn failure — is an error.
+// TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses: success is true,
+// a documented false status is false, and every other outcome — unexpected
+// status, signal, spawn failure — is an error.
 func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
@@ -705,8 +706,8 @@ func TestShellCheckRetainsBashPipefail(t *testing.T) {
 	}
 }
 
-// TestWithDeadline ports the deadline helper: expiry cancels the context and
-// distinguishes a genuine deadline from an already-cancelled session.
+// TestWithDeadline: expiry cancels the context and distinguishes a genuine
+// deadline from an already-cancelled session.
 func TestWithDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -720,10 +721,10 @@ func TestWithDeadline(t *testing.T) {
 	done := process.WithDeadline(context.Background(), context.CancelFunc(func() {}),
 		time.Minute, func() string { return "finished" })
 	if done.Expired || done.Output != "finished" {
-		t.Fatalf("completed work = %+v; want Done with the output", done)
+		t.Fatalf("completed work = %+v; want its output without expiry", done)
 	}
 	// When the context is already cancelled but the work still outlives the
-	// limit, expiry reports already_cancelled rather than a genuine deadline.
+	// limit, expiry reports AlreadyCancelled rather than a genuine deadline.
 	cancelledCtx, cancelCancelled := context.WithCancel(context.Background())
 	cancelCancelled()
 	cancelled := process.WithDeadline(cancelledCtx, cancelCancelled,
