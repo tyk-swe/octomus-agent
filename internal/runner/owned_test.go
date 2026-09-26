@@ -196,12 +196,13 @@ func TestStderrTailExplainsConnectFailures(t *testing.T) {
 		t.Fatalf("cut tail: %q", err)
 	}
 
-	// One long line, terminated or not, keeps only whole words after the cut.
+	// One long line, terminated or not, keeps only the whole words after its
+	// partial first word and the word after that.
 	for _, end := range []string{"", "\n"} {
 		tail = &stderrTail{}
 		fmt.Fprint(tail, "ghp_fixtureStartupSecret0001 "+strings.Repeat("word ", stderrTailLimit/5)+end)
 		err = tail.explain(cause)
-		if strings.Contains(err.Error(), "Secret") || !strings.HasSuffix(err.Error(), "; stderr: "+strings.TrimSpace(strings.Repeat("word ", (stderrTailLimit-2)/5))) {
+		if strings.Contains(err.Error(), "Secret") || !strings.HasSuffix(err.Error(), "; stderr: "+strings.TrimSpace(strings.Repeat("word ", (stderrTailLimit-2)/5-1))) {
 			t.Fatalf("long line: %q", err)
 		}
 	}
@@ -211,5 +212,32 @@ func TestStderrTailExplainsConnectFailures(t *testing.T) {
 	fmt.Fprint(tail, strings.Repeat("z", 3*stderrTailLimit))
 	if err := tail.explain(cause); err != cause {
 		t.Fatalf("an unbroken cut run must not be reported: %v", err)
+	}
+}
+
+// Wherever the cut falls in a bearer header on one long line, including
+// inside or just after "Bearer", no part of the token is reported.
+func TestStderrTailCutKeepsBearerTokensRedacted(t *testing.T) {
+	cause := errors.New("connect failed")
+	header := "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl"
+	for at := 1; at < len(header); at++ {
+		kept := header[at:]
+		filler := stderrTailLimit - len(kept)
+		kept += strings.Repeat(" word", filler/5) + strings.Repeat("s", filler%5)
+		tail := &stderrTail{}
+		fmt.Fprint(tail, header[:at]+kept)
+		if len(tail.data) != stderrTailLimit || string(tail.data) != kept {
+			t.Fatalf("fixture math at %d: %d", at, len(tail.data))
+		}
+		err := tail.explain(cause)
+		if !errors.Is(err, cause) {
+			t.Fatalf("cut at %d lost the cause: %v", at, err)
+		}
+		_, reported, _ := strings.Cut(err.Error(), "; stderr: ")
+		for _, word := range strings.Fields(reported) {
+			if word != "[redacted]" && !strings.HasPrefix(word, "word") {
+				t.Fatalf("cut at %d reported %q: %q", at, word, err)
+			}
+		}
 	}
 }

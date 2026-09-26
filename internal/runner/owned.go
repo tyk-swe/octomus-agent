@@ -55,23 +55,32 @@ func (t *stderrTail) explain(err error) error {
 	t.mu.Lock()
 	text, cut := string(t.data), t.cut
 	t.mu.Unlock()
-	text = strings.TrimRightFunc(text, unicode.IsSpace)
+	text = store.Redact(strings.ToValidUTF8(strings.TrimRightFunc(text, unicode.IsSpace), "\uFFFD"))
 	if cut {
-		// The cut can split a secret so that redaction no longer recognises
-		// it; report only whole lines, or the whole words of one long line.
+		// The cut can split a secret, or part a bearer token from its
+		// prefix, so that redaction no longer recognises what is left.
+		// Report only whole lines, or for one long line the words after its
+		// partial first word and the word after that.
 		if _, rest, found := strings.Cut(text, "\n"); found {
 			text = rest
-		} else if i := strings.IndexFunc(text, unicode.IsSpace); i >= 0 {
-			text = text[i:]
 		} else {
-			text = ""
+			text = afterWord(strings.TrimLeftFunc(afterWord(text), unicode.IsSpace))
 		}
 	}
-	text = strings.TrimSpace(strings.ToValidUTF8(text, "\uFFFD"))
+	text = strings.TrimSpace(text)
 	if text == "" {
 		return err
 	}
-	return fmt.Errorf("%w; stderr: %s", err, store.Redact(text))
+	return fmt.Errorf("%w; stderr: %s", err, text)
+}
+
+// afterWord drops text up to its first whitespace, or all of it when there is
+// none.
+func afterWord(text string) string {
+	if i := strings.IndexFunc(text, unicode.IsSpace); i >= 0 {
+		return text[i:]
+	}
+	return ""
 }
 
 // drained discards lines until the reader closes them and reports that.
