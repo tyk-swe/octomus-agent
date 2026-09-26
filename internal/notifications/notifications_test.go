@@ -378,6 +378,65 @@ func TestOversizedIdentitiesFailAsInvalidPayloadInsteadOfTruncating(t *testing.T
 	}
 }
 
+// An event the worker cannot encode within the payload bounds is a local
+// failure: it is never sent, and it fails terminally after one attempt
+// instead of retrying.
+func TestWorkerFailsOversizedEventsTerminally(t *testing.T) {
+	state, path := testStore(t)
+	server := newReceiver(t, 200, 0)
+	worker, err := Start(context.Background(), state, server.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	reason := model.BlockedReasonTimeout
+	putTask(t, state, strings.Repeat("x", 300), "blocked", &reason)
+	waitUntil(t, 10, func() bool {
+		health, err := state.NotificationHealth()
+		return err == nil && health.Failed == 1 && health.LastError != nil && *health.LastError == invalidPayload
+	}, "the oversized event to fail as invalid_payload")
+	select {
+	case body := <-server.requests:
+		t.Fatalf("an invalid payload was sent: %s", body)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if health, err := state.NotificationHealth(); err != nil || health.Pending != 0 || health.LastHTTPStatus != nil {
+		t.Fatalf("health: %+v %v", health, err)
+	}
+	var attempts int
+	if err := rawDB(t, path).QueryRow("SELECT attempts FROM notification_outbox").Scan(&attempts); err != nil || attempts != 1 {
+		t.Fatalf("attempts = %d, %v", attempts, err)
+	}
+}
+
+// A destination that refuses the connection is a transport failure: the row
+// stays pending for a later attempt with no HTTP status recorded.
+func TestWorkerRetriesTransportFailures(t *testing.T) {
+	state, path := testStore(t)
+	refused := httptest.NewServer(http.NotFoundHandler())
+	destination := refused.URL + "/hook"
+	refused.Close()
+	worker, err := Start(context.Background(), state, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	reason := model.BlockedReasonTimeout
+	putTask(t, state, "task-1", "blocked", &reason)
+	waitUntil(t, 10, func() bool {
+		health, err := state.NotificationHealth()
+		return err == nil && health.LastError != nil && *health.LastError == transportCategory
+	}, "the refused connection to be recorded as transport_error")
+	health, err := state.NotificationHealth()
+	if err != nil || health.Pending != 1 || health.Failed != 0 || health.LastHTTPStatus != nil {
+		t.Fatalf("health: %+v %v", health, err)
+	}
+	var attempts int
+	if err := rawDB(t, path).QueryRow("SELECT attempts FROM notification_outbox WHERE status='pending'").Scan(&attempts); err != nil || attempts != 1 {
+		t.Fatalf("attempts = %d, %v", attempts, err)
+	}
+}
+
 // rawDB exposes outbox fields that the health view aggregates away.
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
