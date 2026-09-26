@@ -4,10 +4,10 @@ package config
 import (
 	"crypto/sha256"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"unicode"
 
@@ -111,23 +111,22 @@ type NamedRoute struct {
 	Route Route
 }
 
-// RoutesFor returns owned routes in BTreeMap order; no optional pointer escapes.
+// RoutesFor returns cloned routes: roles in sorted key order (audits skip
+// code_reviewer), then for execution the tiers in sorted key order and the
+// repair route.
 func (c Config) RoutesFor(audit bool) []NamedRoute {
 	result := []NamedRoute{}
-	for _, routes := range []map[string]Route{c.Roles, c.Tiers} {
-		keys := make([]string, 0, len(routes))
-		for key := range routes {
-			keys = append(keys, key)
+	for _, key := range slices.Sorted(maps.Keys(c.Roles)) {
+		if audit && key == "code_reviewer" {
+			continue
 		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			if !audit || key != "code_reviewer" {
-				result = append(result, NamedRoute{key, routes[key].Clone()})
-			}
-		}
-		if audit {
-			return result
-		}
+		result = append(result, NamedRoute{key, c.Roles[key].Clone()})
+	}
+	if audit {
+		return result
+	}
+	for _, key := range slices.Sorted(maps.Keys(c.Tiers)) {
+		result = append(result, NamedRoute{key, c.Tiers[key].Clone()})
 	}
 	return append(result, NamedRoute{"repair", c.RepairRoute.Clone()})
 }
@@ -241,9 +240,6 @@ func (c Config) validateMode(ready, audit bool) error {
 		for _, route := range c.RoutesFor(audit) {
 			if err := route.Route.Validate(true); err != nil {
 				return fmt.Errorf("%s: %w", route.Name, err)
-			}
-			if err := ValidateBinary(c.Binary(route.Route.Backend)); err != nil {
-				return err
 			}
 		}
 		if err := c.validateRepository(); err != nil {

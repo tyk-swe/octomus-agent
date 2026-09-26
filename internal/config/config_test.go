@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,30 @@ func TestRoutesAreExactAndRolesExplicit(t *testing.T) {
 	}
 	if len(c.RoutesFor(true)) != 3 || len(c.RoutesFor(false)) != 10 || c.PlanningAdmissionsRequired() != 13 {
 		t.Fatal("route/admission counts")
+	}
+	names := func(routes []NamedRoute) []string {
+		result := []string{}
+		for _, route := range routes {
+			result = append(result, route.Name)
+		}
+		return result
+	}
+	if got, want := names(c.RoutesFor(true)), []string{"discovery", "orchestrator", "proposal_reviewer"}; !slices.Equal(got, want) {
+		t.Fatalf("audit routes = %v; want %v", got, want)
+	}
+	if got, want := names(c.RoutesFor(false)), []string{"code_reviewer", "discovery", "orchestrator", "proposal_reviewer", "L", "M", "S", "XL", "XS", "repair"}; !slices.Equal(got, want) {
+		t.Fatalf("execution routes = %v; want %v", got, want)
+	}
+	for _, route := range c.RoutesFor(false) {
+		want := c.RepairRoute
+		if role, ok := c.Roles[route.Name]; ok {
+			want = role
+		} else if tier, ok := c.Tiers[route.Name]; ok {
+			want = tier
+		}
+		if route.Route != want {
+			t.Fatalf("%s route = %+v; want %+v", route.Name, route.Route, want)
+		}
 	}
 }
 func TestReadinessAndBaseline(t *testing.T) {
