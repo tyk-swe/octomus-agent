@@ -713,7 +713,9 @@ def harness_scenario():
     Error responses, even ones whose body is cut short, are retried until the
     predicate succeeds. A timeout raises one labelled report with the last
     error, the /state outcome (even when unreadable) and the service.log tail.
-    process_gone tells a live process from a zombie or a reaped one.
+    Service.stop reports a race-detector exit status once. process_gone tells
+    a live process from a zombie or a reaped one. run_selected runs scenarios
+    by name.
     """
     calls = {}
 
