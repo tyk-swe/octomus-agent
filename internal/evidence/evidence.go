@@ -9,7 +9,9 @@ package evidence
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -277,7 +279,7 @@ func normalizeBatches(cycle model.Cycle) ([]batch, []string) {
 				id, _ := stringField(fields, "id")
 				id = strings.TrimSpace(id)
 				decision, _ := stringField(fields, "decision")
-				if id == "" || !contains(model.Assessments(), decision) {
+				if id == "" || !slices.Contains(model.Assessments(), decision) {
 					b.malformedEntries++
 					continue
 				}
@@ -556,15 +558,6 @@ func cloneString(s *string) *string {
 	return &copied
 }
 
-func contains(values []string, value string) bool {
-	for _, v := range values {
-		if v == value {
-			return true
-		}
-	}
-	return false
-}
-
 // ---------------------------------------------------------------------------
 // Assembly
 // ---------------------------------------------------------------------------
@@ -720,7 +713,7 @@ const cycleTasksQuery = "SELECT r.data FROM record_meta m INDEXED BY meta_cycle 
 func ReadSnapshot(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, error) {
 	var saved string
 	err := c.QueryRowContext(store.Background(), "SELECT data FROM records WHERE kind='cycle' AND id=?1", cycleID).Scan(&saved)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, nil
 	}
 	if err != nil {
@@ -750,17 +743,28 @@ func ReadSnapshot(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, erro
 	return &cycle, tasks, rows.Err()
 }
 
+// snapshotter runs fn inside one read transaction: the service store or a
+// read-only export connection.
+type snapshotter interface {
+	Snapshot(fn func(c *sql.Conn) error) error
+}
+
+// readRun reads one cycle and its tasks from a single snapshot. A missing
+// cycle is a nil cycle with no error.
+func readRun(s snapshotter, cycleID string) (cycle *model.Cycle, tasks []model.Task, err error) {
+	err = s.Snapshot(func(c *sql.Conn) error {
+		var readErr error
+		cycle, tasks, readErr = ReadSnapshot(c, cycleID)
+		return readErr
+	})
+	return cycle, tasks, err
+}
+
 // RunEvidence is the service-side export: recorded run evidence for one cycle
 // read inside one transaction on the store's connection, then assembled and
 // redacted without holding the database lock.
 func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
-	var cycle *model.Cycle
-	var tasks []model.Task
-	err := s.Snapshot(func(c *sql.Conn) error {
-		var err error
-		cycle, tasks, err = ReadSnapshot(c, cycleID)
-		return err
-	})
+	cycle, tasks, err := readRun(s, cycleID)
 	if err != nil || cycle == nil {
 		return nil, err
 	}
@@ -777,14 +781,8 @@ func ExportRun(stateDB, cycleID string) (map[string]any, error) {
 		return nil, err
 	}
 	defer r.Close()
-	var cycle *model.Cycle
-	var tasks []model.Task
 	// One consistent snapshot even while the service is running.
-	err = r.Snapshot(func(c *sql.Conn) error {
-		var err error
-		cycle, tasks, err = ReadSnapshot(c, cycleID)
-		return err
-	})
+	cycle, tasks, err := readRun(r, cycleID)
 	if err != nil {
 		return nil, err
 	}
