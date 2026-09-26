@@ -31,12 +31,14 @@ const (
 	maxIDBytes         = 128
 )
 
-// Delivery categories recorded in the outbox beside a failed attempt.
-// invalidPayload is ours and never retried; every other failure is a remote
-// condition.
+// Delivery categories recorded in the outbox beside a failed attempt and shown
+// as the dashboard's last notification error. invalidPayload is ours and never
+// retried; every other failure is a remote condition.
 const (
 	httpStatusCategory = "http_status"
 	invalidPayload     = "invalid_payload"
+	timeoutCategory    = "timeout"
+	transportCategory  = "transport_error"
 )
 
 // attentionEvent is the version-1 webhook payload.
@@ -76,14 +78,14 @@ func payload(delivery *store.NotificationDelivery) ([]byte, error) {
 		len(event.Action) > maxIDBytes {
 		return nil, errors.New(invalidPayload)
 	}
-	bytes, err := wirejson.Marshal(event)
+	encoded, err := wirejson.Marshal(event)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", invalidPayload, err)
 	}
-	if len(bytes) > maxPayloadBytes {
+	if len(encoded) > maxPayloadBytes {
 		return nil, errors.New(invalidPayload)
 	}
-	return bytes, nil
+	return encoded, nil
 }
 
 func deref(value *string) string {
@@ -144,21 +146,18 @@ func start(parent context.Context, db *store.Store, configuredURL string, warnin
 	raw := strings.TrimSpace(configuredURL)
 	var normalized, destinationID string
 	state := "disabled"
-	var errorText *string
+	var destination, errorText *string
 	if raw != "" {
-		url, id, err := model.NotificationDestination(raw)
+		destinationURL, id, err := model.NotificationDestination(raw)
 		if err != nil {
 			state = "invalid"
 			message := err.Error()
 			errorText = &message
 		} else {
-			normalized, destinationID = url, id
+			normalized, destinationID = destinationURL, id
 			state = "enabled"
+			destination = &destinationID
 		}
-	}
-	var destination *string
-	if normalized != "" {
-		destination = &destinationID
 	}
 	if err := db.ConfigureNotifications(destination, state, errorText); err != nil {
 		return nil, err
@@ -248,8 +247,8 @@ func (w *Worker) warn(err error) {
 }
 
 // deliver posts one event; the category return names a local failure kind
-// ("invalid_payload", "timeout", "transport_error") and otherwise the HTTP
-// status decides.
+// (invalidPayload, timeoutCategory or transportCategory) and otherwise the
+// HTTP status decides.
 func (w *Worker) deliver(delivery *store.NotificationDelivery) (uint16, string) {
 	body, err := payload(delivery)
 	if err != nil {
@@ -257,15 +256,15 @@ func (w *Worker) deliver(delivery *store.NotificationDelivery) (uint16, string) 
 	}
 	req, err := http.NewRequestWithContext(w.ctx, http.MethodPost, w.url, bytes.NewReader(body))
 	if err != nil {
-		return 0, "transport_error"
+		return 0, transportCategory
 	}
 	req.Header.Set("content-type", "application/json")
 	response, err := w.client.Do(req)
 	if err != nil {
 		if isTimeout(err) {
-			return 0, "timeout"
+			return 0, timeoutCategory
 		}
-		return 0, "transport_error"
+		return 0, transportCategory
 	}
 	defer response.Body.Close()
 	return uint16(response.StatusCode), ""
