@@ -31,6 +31,11 @@ export const TONES = ['clean', 'blocked', 'failed', 'running', 'cancelled'] as c
 export type Tone = (typeof TONES)[number] | '';
 export type Verdict = { label: string; tone: Tone; detail: string };
 
+/** A count with its noun, e.g. `1 finding`, `2 findings`; irregular plurals are passed in. */
+export function plural(count: number, noun: string, pluralNoun = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : pluralNoun}`;
+}
+
 /**
  * Reviewer slots are positional and fixed in `internal/evidence`; these labels explain the
  * role each slot argues, rather than repeating its internal identity.
@@ -154,8 +159,7 @@ export function reviewRoundBadge(round: {
   result: { completed: boolean; summary: string; findings: unknown[] };
 }): { label: string; tone: Tone } {
   const findings = round.result.findings.length;
-  if (findings)
-    return { label: `${findings} finding${findings === 1 ? '' : 's'}`, tone: 'blocked' };
+  if (findings) return { label: plural(findings, 'finding'), tone: 'blocked' };
   if (!round.result.completed) return { label: 'Incomplete', tone: 'running' };
   if (!round.result.summary.trim()) return { label: 'No summary recorded', tone: 'blocked' };
   return { label: 'Clean', tone: 'clean' };
@@ -223,7 +227,7 @@ export const UNKNOWN_VERDICT: Verdict = {
 export function reviewVerdict(evidence: TaskEvidence | null): Verdict {
   if (!evidence) return UNKNOWN_VERDICT;
   const review = evidence.latest_review;
-  const rounds = `${review.rounds_recorded} recorded round${review.rounds_recorded === 1 ? '' : 's'}`;
+  const rounds = plural(review.rounds_recorded, 'recorded round');
   if (review.rounds_recorded === 0 || !review.latest)
     return {
       label: 'No review recorded',
@@ -256,7 +260,7 @@ function latestRoundVerdict(latest: ReviewRoundEvidence): Verdict {
   const findings = latest.findings.length;
   if (findings)
     return {
-      label: `${findings} recorded finding${findings === 1 ? '' : 's'}`,
+      label: plural(findings, 'recorded finding'),
       tone: 'blocked',
       detail: 'The latest recorded review round reports findings.'
     };

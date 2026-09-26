@@ -29,6 +29,7 @@
     decisionTone,
     outcomeVerdict,
     planningVerdict,
+    plural,
     prVerdict,
     reviewVerdict,
     reviewerAgreement,
@@ -226,9 +227,8 @@
           <Badge label={planning.label} tone={planning.tone} />
         </div>
         <p>
-          {run.cycle.planning.proposal_count} proposal{run.cycle.planning.proposal_count === 1
-            ? ''
-            : 's'} recorded. {planning.detail} Delivered work, if any, is shown per proposal below.
+          {plural(run.cycle.planning.proposal_count, 'proposal')} recorded. {planning.detail} Delivered
+          work, if any, is shown per proposal below.
         </p>
         <ul class="outcome-counts" aria-label="Proposal decisions">
           {#each decisionCounts(run.cycle.planning.decisions) as entry (entry.decision)}<li>
@@ -258,7 +258,7 @@
               {:else}
                 {@const committed = proposals.reduce((n, p) => n + p.linked_tasks.length, 0)}
                 {committed > 0
-                  ? `Created — ${committed} task${committed === 1 ? '' : 's'} committed`
+                  ? `Created — ${plural(committed, 'task')} committed`
                   : run.cycle.planning.planning_finished
                     ? 'Execution-enabled run; no tasks were committed'
                     : 'Execution-enabled run; no tasks committed yet'}
@@ -321,10 +321,10 @@
             <EvidenceText label="Problem" value={focused.problem} />
             <details class="evidence-more">
               <summary
-                >Benefit, scope and grounding evidence ({focused.evidence.length} reference{focused
-                  .evidence.length === 1
-                  ? ''
-                  : 's'})</summary
+                >Benefit, scope and grounding evidence ({plural(
+                  focused.evidence.length,
+                  'reference'
+                )})</summary
               >
               <EvidenceText label="Benefit" value={focused.benefit} />
               <EvidenceText label="Scope" value={focused.scope} />
@@ -443,7 +443,7 @@
                     <span class="task-row-body"
                       ><strong>{task.id}</strong><span
                         ><code>{task.branch}</code><span class="dot-separator">·</span><span
-                          >{task.attempts} retries</span
+                          >{plural(task.attempts, 'retry', 'retries')}</span
                         ></span
                       ></span
                     >
@@ -555,7 +555,7 @@
                   <p>
                     {review.completed ? 'Completed' : 'Never completed'} · {review.summary_present
                       ? 'summary recorded'
-                      : 'no summary recorded'} · {review.findings.length} findings. Round {task
+                      : 'no summary recorded'} · {plural(review.findings.length, 'finding')}. Round {task
                       .latest_review.rounds_recorded} of {task.latest_review.rounds_recorded}.
                   </p>
                   <ReviewChangeSet
@@ -609,9 +609,10 @@
                       <Badge label={badge.label} tone={badge.tone} />
                       <p class="command-meta">
                         {commandExplanation(command, task.revisions.output)}
-                        {command.results_recorded} recorded result{command.results_recorded === 1
-                          ? ''
-                          : 's'}{command.latest_created_at
+                        {plural(
+                          command.results_recorded,
+                          'recorded result'
+                        )}{command.latest_created_at
                           ? ` · latest ${relative(command.latest_created_at)}`
                           : ''}.
                       </p>

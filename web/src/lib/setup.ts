@@ -1,5 +1,5 @@
 import { relative } from './api';
-import { baselineStatusLabel } from './evidence';
+import { baselineStatusLabel, plural } from './evidence';
 import type {
   Backend,
   BaselineSummary,
@@ -48,7 +48,6 @@ export type SetupStatus = {
 const REPOSITORY_FIELDS = ['repository', 'github_repo', 'default_branch', 'branch_prefix'] as const;
 const filled = (value: unknown) => typeof value === 'string' && value.trim() !== '';
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 
 export function repositoryStep(draft: Config, saved: Config | null): SetupStep {
   const pick = (config: Config) => REPOSITORY_FIELDS.map((field) => config[field]);

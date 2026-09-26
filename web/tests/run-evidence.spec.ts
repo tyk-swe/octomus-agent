@@ -399,6 +399,48 @@ test('an audit-only recorded output links no task by design', async ({ page }, t
   expect(writes).toEqual([]);
 });
 
+test('run evidence names a count of one in the singular', async ({ page }, testInfo) => {
+  await serveProposals(page, [proposalRow('singular-proposal', 'synthetic-cycle', 7)]);
+  const finding = {
+    title: 'Synthetic finding',
+    file: 'internal/example/example.go',
+    priority: 'P2',
+    detail: 'Synthetic finding detail for browser tests.'
+  };
+  await page.route('**/api/cycles/synthetic-cycle/evidence', (route: Route) =>
+    route.fulfill({
+      json: runEvidence({
+        proposals: [
+          proposalEvidence('singular-proposal', {
+            linked_tasks: [
+              taskEvidence('singular-task', {
+                attempts: 1,
+                latest_review: {
+                  rounds_recorded: 1,
+                  latest: reviewRound({ findings: [finding] }),
+                  clean: false,
+                  clean_at_output_revision: false
+                }
+              })
+            ]
+          })
+        ]
+      })
+    })
+  );
+  await login(page);
+  await openProposalEvidence(page, 0, testInfo);
+
+  await expect(page.getByText('1 proposal recorded.')).toBeVisible();
+  await expect(page.getByText('Created — 1 task committed', { exact: true })).toBeVisible();
+  await expect(page.getByText('Benefit, scope and grounding evidence (1 reference)')).toBeVisible();
+  await expect(page.getByText('1 retry', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('Completed · summary recorded · 1 finding. Round 1 of 1.')
+  ).toBeVisible();
+  await expect(page.getByText('1 recorded result · latest')).toBeVisible();
+});
+
 test('stale check evidence and an incomplete review are never reported as clean', async ({
   page
 }, testInfo) => {

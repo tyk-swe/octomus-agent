@@ -10,6 +10,7 @@ import {
   decisionCounts,
   outcomeVerdict,
   planningVerdict,
+  plural,
   prVerdict,
   reviewerAgreement,
   reviewerSlot,
@@ -335,9 +336,22 @@ test('a command explanation names the revisions it compared, recorded or not', (
   );
 });
 
+test('a count takes the singular noun for exactly one, and irregular plurals are spelled', () => {
+  expect(plural(0, 'finding')).toBe('0 findings');
+  expect(plural(1, 'finding')).toBe('1 finding');
+  expect(plural(2, 'recorded round')).toBe('2 recorded rounds');
+  expect(plural(1, 'retry', 'retries')).toBe('1 retry');
+  expect(plural(0, 'retry', 'retries')).toBe('0 retries');
+  expect(plural(3, 'retry', 'retries')).toBe('3 retries');
+});
+
 test('review rounds and revisions are judged separately, and a missing output commit is named', () => {
   const round = (result: { completed: boolean; summary: string; findings: unknown[] }) =>
     reviewRoundBadge({ result });
+  expect(round({ completed: true, summary: 'Done.', findings: [{}] })).toEqual({
+    label: '1 finding',
+    tone: 'blocked'
+  });
   expect(round({ completed: true, summary: 'Done.', findings: [{}, {}] })).toEqual({
     label: '2 findings',
     tone: 'blocked'
