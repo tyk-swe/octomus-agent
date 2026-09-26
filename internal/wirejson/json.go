@@ -31,9 +31,13 @@ func marked(err error) error {
 	return &Error{inner: err}
 }
 
-// Decode reads an owned object. dst is an alias without UnmarshalJSON methods;
-// defaultAll keeps defaults installed by the caller. A field tagged
-// wire:"default" may be absent. Failed reads leave dst alone.
+// Decode reads one JSON object into the struct dst points to. dst's own
+// UnmarshalJSON is never called, so dst may be the record type itself. Unknown
+// fields fail when strict. Fields tagged wire:"default" and pointer fields may
+// be absent, and every other field is required unless defaultAll. Absent
+// fields keep dst's current values (nil lists and maps become empty), so pass
+// a zero value unless those values are intended defaults. dst is changed only
+// on success.
 func Decode(data []byte, dst any, strict, defaultAll bool) error {
 	return marked(decode(data, dst, strict, defaultAll))
 }

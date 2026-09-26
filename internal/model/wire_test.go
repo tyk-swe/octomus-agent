@@ -60,3 +60,23 @@ func TestCycleLifecycleIsOmittedOnlyWhileEmpty(t *testing.T) {
 		}
 	}
 }
+
+// Records decode from a zero value, so a reused variable never keeps optional
+// fields the JSON leaves out.
+func TestDecodingIntoAReusedRecordResetsAbsentFields(t *testing.T) {
+	data, err := json.Marshal(Cycle{ID: "fresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"run_id"`) || strings.Contains(string(data), `"lifecycle"`) || strings.Contains(string(data), `"repository"`) {
+		t.Fatalf("optional cycle fields emitted: %s", data)
+	}
+	runID, archived := "stale-run", "stale-archive"
+	cycle := Cycle{ID: "stale", RunID: &runID, Repository: "stale/repository", DecisionMemory: []any{"stale"}, Lifecycle: WorkspaceLifecycle{ArchivedAt: &archived}}
+	if err := json.Unmarshal(data, &cycle); err != nil {
+		t.Fatal(err)
+	}
+	if cycle.ID != "fresh" || cycle.RunID != nil || cycle.Repository != "" || len(cycle.DecisionMemory) != 0 || cycle.Lifecycle != (WorkspaceLifecycle{}) {
+		t.Fatalf("reused cycle kept stale fields: %+v", cycle)
+	}
+}
