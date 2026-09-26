@@ -450,6 +450,46 @@ test('a refreshing PR inventory names its earlier failure, and runner storage na
   expect(writes).toEqual([]);
 });
 
+test('routes list in pipeline and size order whatever the saved key order, and categories keep their names', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  await login(page);
+  await navigate('Configuration');
+  const order = [
+    'Orchestrator',
+    'Discovery agents',
+    'Proposal reviewers',
+    'Code reviewer',
+    'XS execution',
+    'S execution',
+    'M execution',
+    'L execution',
+    'XL execution',
+    'Repair'
+  ];
+  const headings = page.locator('.model-route h3');
+  // The service sorts map keys (code_reviewer first; tiers L, M, S, XL, XS).
+  await expect(headings).toHaveText(order);
+  state.saved = JSON.parse(
+    JSON.stringify(state.saved, (_key, value) =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).reverse())
+        : value
+    )
+  );
+  await navigate('Overview');
+  const refresh = page.waitForResponse('**/api/config');
+  await navigate('Configuration');
+  await refresh;
+  await expect(headings).toHaveText(order);
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('UX & DX', { exact: true })).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
+
 test('configuration keeps drafts and catalogs across views, discards locally, and refreshes clean values', async ({
   page,
   isMobile

@@ -78,12 +78,21 @@
     'dependencies',
     'documentation'
   ];
+  const categoryLabel = (category: string) => (category === 'ux-dx' ? 'UX & DX' : category);
   const names: Record<string, string> = {
     orchestrator: 'Orchestrator',
     discovery: 'Discovery agents',
     proposal_reviewer: 'Proposal reviewers',
     code_reviewer: 'Code reviewer'
   };
+  // Routes render in pipeline and size order, mirroring config.Roles() and config.Tiers();
+  // the service's JSON sorts map keys. Any unexpected key follows in received order.
+  const ROLES = ['orchestrator', 'discovery', 'proposal_reviewer', 'code_reviewer'];
+  const TIERS = ['XS', 'S', 'M', 'L', 'XL'];
+  const ordered = (keys: string[], known: string[]) => [
+    ...known.filter((key) => keys.includes(key)),
+    ...keys.filter((key) => !known.includes(key))
+  ];
   const limits = LIMITS;
   async function load() {
     if (loading || busy || dirty) return;
@@ -419,9 +428,9 @@
           >
         </div>
         {@render previewNote('roles', 'role routes', true)}
-        {#each Object.keys(config.roles) as role}
+        {#each ordered(Object.keys(config.roles), ROLES) as role}
           <RouteEditor
-            name={names[role]}
+            name={names[role] ?? role}
             anchor={'route-' + role}
             bind:route={config.roles[role]}
             catalog={routeCatalog(config.roles[role])}
@@ -429,7 +438,7 @@
           />
         {/each}
         {@render previewNote('tiers', 'tier routes', true)}
-        {#each Object.keys(config.tiers) as tier}
+        {#each ordered(Object.keys(config.tiers), TIERS) as tier}
           <RouteEditor
             name={tier + ' execution'}
             bind:route={config.tiers[tier]}
@@ -465,7 +474,7 @@
                 value={category}
                 disabled={locked('categories')}
                 bind:group={config.categories}
-              /><span>{category.replace('-', ' & ')}</span></label
+              /><span>{categoryLabel(category)}</span></label
             >{/each}
         </div>
       </section>
