@@ -937,3 +937,124 @@ func TestPublishedWorkRemainsInDuplicateLookups(t *testing.T) {
 		}
 	}
 }
+
+// BeginCycleIfAffordable and StartBatchIfAffordable revalidate the live
+// configuration, control record and daily budget in the same transaction as
+// their writes. A stale or unaffordable request is refused without an error
+// and leaves the cycle, the control bytes and the queued task untouched.
+func TestAffordabilityChecksRefuseStaleControlWithoutWriting(t *testing.T) {
+	s := open(t, statePath(t))
+	cfg := saveConfig(t, s, func(*config.Config) {})
+	fingerprint, err := cfg.Fingerprint()
+	must(t, err)
+	live := model.DefaultControl()
+	must(t, s.SaveControl(live))
+	before, _, err := s.GetRaw("settings", "control")
+	must(t, err)
+	queued := task()
+	must(t, s.Put("task", queued.ID, queued))
+	now := time.Now()
+	nothingWritten := func(t *testing.T, cycleID string) {
+		t.Helper()
+		if saved, err := store.Get[model.Cycle](s, "cycle", cycleID); err != nil || saved != nil {
+			t.Fatalf("refused cycle was saved: %+v %v", saved, err)
+		}
+		after, _, err := s.GetRaw("settings", "control")
+		must(t, err)
+		if string(after) != string(before) {
+			t.Fatalf("refusal changed control: %s", after)
+		}
+		saved, err := store.Get[model.Task](s, "task", queued.ID)
+		must(t, err)
+		if saved == nil || saved.RunID != nil {
+			t.Fatalf("refusal changed the queued task: %+v", saved)
+		}
+	}
+	next := live.Clone()
+	next.CycleNumber = 1
+	stale := live.Clone()
+	stale.CycleNumber = 99
+
+	for _, refusal := range []struct {
+		name        string
+		expected    model.Control
+		fingerprint string
+	}{
+		{"stale control", stale, fingerprint},
+		{"changed configuration", live, "stale-fingerprint"},
+	} {
+		t.Run(refusal.name, func(t *testing.T) {
+			cycle := cycleFor(queued)
+			capacity, started, err := s.BeginCycleIfAffordable(cycle, next, refusal.expected, refusal.fingerprint, now)
+			must(t, err)
+			if started || !capacity.Available() {
+				t.Fatalf("started=%v capacity=%+v", started, capacity)
+			}
+			nothingWritten(t, cycle.ID)
+		})
+	}
+
+	t.Run("stale batch control", func(t *testing.T) {
+		caller := stale.Clone()
+		_, started, err := s.StartBatchIfAffordable(&caller, now)
+		must(t, err)
+		if started || caller.CycleNumber != 99 || caller.Batch != nil || caller.Mode != stale.Mode {
+			t.Fatalf("started=%v caller=%+v", started, caller)
+		}
+		nothingWritten(t, "")
+	})
+
+	t.Run("unaffordable", func(t *testing.T) {
+		low := saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = c.PlanningAdmissionsRequired() - 1 })
+		lowFingerprint, err := low.Fingerprint()
+		must(t, err)
+		cycle := cycleFor(queued)
+		capacity, started, err := s.BeginCycleIfAffordable(cycle, next, live, lowFingerprint, now)
+		must(t, err)
+		if started || capacity.Status != model.PlanningCapacityStatusLimitTooLow {
+			t.Fatalf("started=%v capacity=%+v", started, capacity)
+		}
+		nothingWritten(t, cycle.ID)
+		caller := live.Clone()
+		capacity, started, err = s.StartBatchIfAffordable(&caller, now)
+		must(t, err)
+		if started || capacity.Available() || !equalJSON(t, caller, live) {
+			t.Fatalf("started=%v capacity=%+v caller=%+v", started, capacity, caller)
+		}
+		nothingWritten(t, "")
+		saveConfig(t, s, func(*config.Config) {})
+	})
+
+	// Matching inputs commit the cycle with its control, then the batch
+	// claims the queued task in the same transaction as the control write.
+	cycle := cycleFor(queued)
+	_, started, err := s.BeginCycleIfAffordable(cycle, next, live, fingerprint, now)
+	must(t, err)
+	if !started {
+		t.Fatal("matching inputs were refused")
+	}
+	if saved, err := store.Get[model.Cycle](s, "cycle", cycle.ID); err != nil || saved == nil {
+		t.Fatalf("started cycle missing: %v", err)
+	}
+	saved, err := store.Get[model.Control](s, "settings", "control")
+	must(t, err)
+	if !equalJSON(t, *saved, next) {
+		t.Fatalf("control = %s, want %s", canonical(t, *saved), canonical(t, next))
+	}
+	caller := next.Clone()
+	_, started, err = s.StartBatchIfAffordable(&caller, now)
+	must(t, err)
+	if !started || caller.Batch == nil || caller.Mode != model.OperatingModeRunOnce {
+		t.Fatalf("started=%v caller=%+v", started, caller)
+	}
+	member, err := store.Get[model.Task](s, "task", queued.ID)
+	must(t, err)
+	if member.RunID == nil || *member.RunID != caller.Batch.ID {
+		t.Fatalf("queued task run_id = %v, want %s", member.RunID, caller.Batch.ID)
+	}
+	saved, err = store.Get[model.Control](s, "settings", "control")
+	must(t, err)
+	if !equalJSON(t, *saved, caller) {
+		t.Fatalf("control = %s, want %s", canonical(t, *saved), canonical(t, caller))
+	}
+}
