@@ -46,114 +46,101 @@ func genericMap(value any) (map[string]any, error) {
 	return result, nil
 }
 
-// ControlAction runs the conflict check under the scheduler gate, then the durable mode transition and its
-// operator event. The response is the serialized control record (plus
-// planning_capacity for resume), exactly as the dashboard reads it.
+// ControlAction runs the conflict check under the scheduler gate, then the
+// durable mode transition and its operator event. The response is the
+// serialized control record (plus planning_capacity for resume), exactly as
+// the dashboard reads it.
 func (a *App) ControlAction(action string) (map[string]any, error) {
 	a.gate.Lock()
+	defer a.gate.Unlock()
 	control, err := a.Control()
 	if err != nil {
-		a.gate.Unlock()
 		return nil, err
 	}
-	a.runtimeMu.Lock()
-	baselineActive := a.runtime.baseline != nil
-	idle := a.runtime.idle()
-	auditActive := a.runtime.auditActive()
-	a.runtimeMu.Unlock()
-	if ((action == "audit" || action == "cycle") && (!control.Paused || !idle)) ||
-		((action == "resume" || action == "cycle") && auditActive) ||
-		(action == "resume" && baselineActive) {
-		a.gate.Unlock()
-		var message string
-		if baselineActive {
-			message = "Wait for the baseline check to finish."
-		} else {
-			switch action {
-			case "audit":
-				message = "Audits require paused operation with no active work. Pause the service and wait for active work to finish."
-			case "cycle":
-				message = "Run once requires paused operation with no active work. Pause the service and wait for active work to finish."
-			default:
-				message = "Wait for the audit to finish before starting continuous operation."
-			}
-		}
-		return nil, conflictError(message)
+	if err := a.controlConflict(action, control); err != nil {
+		return nil, err
 	}
-	if action == "audit" {
+	switch action {
+	case "audit":
 		// Audit includes a remote preflight, so the gate drops for remote work
 		// and the launch itself revalidates paused and idle state. The launch
 		// records the operator event on the cycle it starts.
-		a.gate.Unlock()
-		if _, err := a.StartAudit(a.ctx); err != nil {
+		a.withoutGate(func() { _, err = a.StartAudit(a.ctx) })
+		if err != nil {
 			return nil, err
 		}
-		a.gate.Lock()
 		control, err = a.Control()
 		if err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
-		body, err := genericMap(control)
-		a.gate.Unlock()
-		return body, err
-	}
-	body := map[string]any{}
-	switch action {
+		return genericMap(control)
 	case "pause":
-		control.SetMode(model.OperatingModePaused)
-		a.invalidatePrObservation()
+		if err := a.pauseLocked(&control, nil); err != nil {
+			return nil, err
+		}
 	case "resume":
 		if err := a.enterContinuous(&control); err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 	case "cycle":
 		cfg, err := a.Config()
 		if err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 		if err := cfg.Validate(true); err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 		// Saves the batch's control itself, in the transaction that checks
 		// planning affordability.
 		if err := a.startRunOnceBatch(&control); err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 		a.notify()
 	default:
-		a.gate.Unlock()
 		return nil, ErrUnknownControl
 	}
-	if action == "pause" {
-		if err := a.Store.SaveControl(control); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
-	}
 	if err := a.Store.Event("system", "operator", action); err != nil {
-		a.gate.Unlock()
 		return nil, err
 	}
-	body, err = genericMap(control)
+	body, err := genericMap(control)
 	if err != nil {
-		a.gate.Unlock()
 		return nil, err
 	}
 	if action == "resume" {
 		capacity, err := a.Store.PlanningCapacity()
 		if err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 		body["planning_capacity"] = capacity
 	}
-	a.gate.Unlock()
 	return body, nil
+}
+
+// controlConflict returns the conflict that refuses action in the current
+// runtime and durable mode, or nil. Audit and run once need paused operation
+// with no active work, and neither run once nor resume may start beside an
+// audit; resume also waits for a baseline check. Callers hold the gate.
+func (a *App) controlConflict(action string, control model.Control) error {
+	a.runtimeMu.Lock()
+	baselineActive := a.runtime.baseline != nil
+	idle := a.runtime.idle()
+	auditActive := a.runtime.auditActive()
+	a.runtimeMu.Unlock()
+	refused := (action == "audit" || action == "cycle") && (!control.Paused || !idle) ||
+		(action == "resume" || action == "cycle") && auditActive ||
+		action == "resume" && baselineActive
+	switch {
+	case !refused:
+		return nil
+	case baselineActive:
+		return conflictError("Wait for the baseline check to finish.")
+	case action == "audit":
+		return conflictError("Audits require paused operation with no active work. Pause the service and wait for active work to finish.")
+	case action == "cycle":
+		return conflictError("Run once requires paused operation with no active work. Pause the service and wait for active work to finish.")
+	default:
+		return conflictError("Wait for the audit to finish before starting continuous operation.")
+	}
 }
 
 // CycleAction applies an operator action to a finished cycle: archive stamps

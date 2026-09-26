@@ -339,9 +339,8 @@ func (a *App) DiscardTask(task *model.Task) error {
 	// error, so a claim can never strand the record.
 	defer a.releaseCleanup(cleanupTask, task.ID)
 	if owner != "" {
-		a.gate.Unlock()
-		removeErr := a.removeDir(filepath.Join(a.DataDir, "tasks"), owner)
-		a.gate.Lock()
+		var removeErr error
+		a.withoutGate(func() { removeErr = a.removeDir(filepath.Join(a.DataDir, "tasks"), owner) })
 		if removeErr != nil {
 			return removeErr
 		}
@@ -387,9 +386,8 @@ func (a *App) DiscardCycle(cycle *model.Cycle) error {
 	}
 	defer a.releaseCleanup(cleanupCycle, cycle.ID)
 	root := filepath.Join(a.DataDir, "cycles")
-	a.gate.Unlock()
-	removeErr := a.removeDir(root, filepath.Join(root, cycle.ID))
-	a.gate.Lock()
+	var removeErr error
+	a.withoutGate(func() { removeErr = a.removeDir(root, filepath.Join(root, cycle.ID)) })
 	if removeErr != nil {
 		return removeErr
 	}

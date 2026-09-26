@@ -58,9 +58,9 @@ func (a *App) TaskAction(_ context.Context, id, action string) error {
 	// it. Ownership lasts through revalidation, durable writes and events.
 	a.wg.Add(1)
 	defer a.wg.Done()
+	defer a.gate.Unlock()
 	task, err := a.eligibleTask(id, action)
 	if err != nil {
-		a.gate.Unlock()
 		return err
 	}
 	if action == "reconcile" {
@@ -92,7 +92,6 @@ func (a *App) TaskAction(_ context.Context, id, action string) error {
 	if actionErr == nil {
 		actionErr = a.Store.Event(id, "operator", action)
 	}
-	a.gate.Unlock()
 	a.notify()
 	return actionErr
 }
@@ -124,6 +123,9 @@ func (a *App) cancelTask(id string) error {
 	return nil
 }
 
+// retryTask queues a new attempt of a retryable task. Callers hold the gate
+// and get it back held; the remote preflight of a task without a recorded
+// output runs with it released, so the task is revalidated afterwards.
 func (a *App) retryTask(task *model.Task) error {
 	if !task.Status.Retryable() {
 		return conflictError("Only failed or blocked tasks can be retried.")
@@ -139,9 +141,8 @@ func (a *App) retryTask(task *model.Task) error {
 	policy := model.AttemptPolicyFromConfig(cfg)
 	task.AttemptPolicy = &policy
 	if task.OutputCommit == nil {
-		a.gate.Unlock()
-		preflightErr := a.retryPreflight(a.ctx, task)
-		a.gate.Lock()
+		var preflightErr error
+		a.withoutGate(func() { preflightErr = a.retryPreflight(a.ctx, task) })
 		if err := a.revalidateTaskAction(&original, "retry"); err != nil {
 			return err
 		}
@@ -252,28 +253,24 @@ func recordTaskError(task *model.Task, err error) {
 
 // reconcileLocked runs the reconcile action. Without a recorded output it
 // rechecks the task's remote prerequisites and records the result; with one it
-// publishes that output under the task deadline. Callers hold a.gate on entry;
-// reconcileLocked releases it around remote work and before it returns, and
-// records the operator event itself so a disconnected caller cannot skip it.
+// publishes that output under the task deadline. Callers hold a.gate and get
+// it back held; reconcileLocked releases it around remote work, and records
+// the operator event itself so a disconnected caller cannot skip it.
 func (a *App) reconcileLocked(id string, task *model.Task) error {
 	a.runtimeMu.Lock()
 	baseline := a.runtime.baseline != nil
 	busy := len(a.runtime.tasks) > 0
 	a.runtimeMu.Unlock()
 	if baseline {
-		a.gate.Unlock()
 		return conflictError("Wait for the baseline check to finish")
 	}
 	if busy {
-		a.gate.Unlock()
 		return conflictError("Wait for active tasks before publication reconciliation")
 	}
 	if task.OutputCommit == nil {
-		a.gate.Unlock()
-		preflightErr := a.retryPreflight(a.ctx, task)
-		a.gate.Lock()
+		var preflightErr error
+		a.withoutGate(func() { preflightErr = a.retryPreflight(a.ctx, task) })
 		if err := a.revalidateTaskAction(task, "reconcile"); err != nil {
-			a.gate.Unlock()
 			return err
 		}
 		if preflightErr == nil {
@@ -284,26 +281,21 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 			recordTaskError(task, preflightErr)
 		}
 		if err := a.Store.ClearCancel(id); err != nil {
-			a.gate.Unlock()
 			return err
 		}
 		if err := a.saveTask(task); err != nil {
-			a.gate.Unlock()
 			return err
 		}
 		err := a.Store.Event(id, "operator", "reconcile")
-		a.gate.Unlock()
 		a.notify()
 		return err
 	}
 	// Reconciliation revives the task; the operator-cancel marker is spent.
 	if err := a.Store.ClearCancel(id); err != nil {
-		a.gate.Unlock()
 		return err
 	}
 	previousStatus := task.Status
 	if err := a.transition(task, model.StatusPublishing); err != nil {
-		a.gate.Unlock()
 		return err
 	}
 	workCtx, cancel := context.WithCancel(a.ctx)
@@ -312,31 +304,44 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	a.runtime.tasks[id] = taskJob{branch: task.Branch, cancel: cancel}
 	a.runtime.reconcilingPublication = true
 	a.runtimeMu.Unlock()
-	a.gate.Unlock()
+	// Runtime ownership ends under the gate that records the outcome, after
+	// the durable writes below, so no dispatch or retry sees the task free
+	// while it still reads as publishing.
+	defer func() {
+		a.runtimeMu.Lock()
+		delete(a.runtime.tasks, id)
+		a.runtime.reconcilingPublication = false
+		a.runtimeMu.Unlock()
+		a.notify()
+	}()
 
 	var published model.PullRequest
-	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
-	// Uses the normal task deadline cleanup, so a stalled publication stops its
-	// owned process groups before it is reported. The join keeps runtime
-	// ownership until Publish has returned, so no retry or dispatch can start
-	// a second publication beside one that outlived the cleanup grace.
-	result, publishErr := runJoined(workCtx, cancel, limit, "Publication reconciliation panicked", func() error {
-		p, err := gitops.Publish(workCtx, *task)
-		if err == nil {
-			published = p
+	var publishErr error
+	a.withoutGate(func() {
+		limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
+		// Uses the normal task deadline cleanup, so a stalled publication
+		// stops its owned process groups before it is reported. The join
+		// keeps runtime ownership until Publish has returned, so no retry or
+		// dispatch can start a second publication beside one that outlived
+		// the cleanup grace.
+		result, err := runJoined(workCtx, cancel, limit, "Publication reconciliation panicked", func() error {
+			p, err := gitops.Publish(workCtx, *task)
+			if err == nil {
+				published = p
+			}
+			return err
+		})
+		publishErr = err
+		// A publication that completed after the deadline fired is delivered.
+		if publishErr != nil && result.Expired {
+			if result.AlreadyCancelled {
+				publishErr = fmt.Errorf("Publication reconciliation was interrupted; reconcile again: %w", model.BlockedReasonPublicationUncertain)
+			} else {
+				publishErr = model.BlockedReasonTimeout
+			}
 		}
-		return err
 	})
-	// A publication that completed after the deadline fired is delivered.
-	if publishErr != nil && result.Expired {
-		if result.AlreadyCancelled {
-			publishErr = fmt.Errorf("Publication reconciliation was interrupted; reconcile again: %w", model.BlockedReasonPublicationUncertain)
-		} else {
-			publishErr = model.BlockedReasonTimeout
-		}
-	}
 
-	a.gate.Lock()
 	var actionErr error
 	if publishErr == nil {
 		actionErr = a.published(task, published)
@@ -353,11 +358,5 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	if loadErr == nil && current != nil && current.Status.Active() {
 		_ = a.setTaskError(current, errors.New("Task worker exited unexpectedly; inspect the preserved workspace"))
 	}
-	a.runtimeMu.Lock()
-	delete(a.runtime.tasks, id)
-	a.runtime.reconcilingPublication = false
-	a.runtimeMu.Unlock()
-	a.gate.Unlock()
-	a.notify()
 	return actionErr
 }

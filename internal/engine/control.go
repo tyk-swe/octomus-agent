@@ -74,47 +74,10 @@ func (a *App) startRunOnceBatch(control *model.Control) error {
 // StartAudit validates remote and route availability outside gate, then
 // atomically starts an audit only if paused state and policy are unchanged.
 func (a *App) StartAudit(ctx context.Context) (string, error) {
-	a.gate.Lock()
-	if err := a.ctx.Err(); err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	if !a.runtimeIdle() {
-		a.gate.Unlock()
-		return "", ErrBusy
-	}
-	cfg, err := a.Config()
+	cfg, control, err := a.admitAuditPreflight()
 	if err != nil {
-		a.gate.Unlock()
 		return "", err
 	}
-	if err := cfg.ValidateAudit(); err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	control, err := a.Control()
-	if err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	if control.Mode != model.OperatingModePaused {
-		a.gate.Unlock()
-		return "", ErrNotPaused
-	}
-	capacity, err := a.Store.PlanningCapacity()
-	if err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	if err := capacity.EnsureAvailable(); err != nil {
-		a.gate.Unlock()
-		return "", err
-	}
-	a.runtimeMu.Lock()
-	a.runtime.startPreflight(model.CycleModeAudit)
-	a.runtimeMu.Unlock()
-	a.wg.Add(1)
-	a.gate.Unlock()
 	defer a.wg.Done()
 	preflightCtx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(a.ctx, cancel)
@@ -141,6 +104,47 @@ func (a *App) StartAudit(ctx context.Context) (string, error) {
 	}
 	_ = a.Store.Event(id, "operator", "Audit started")
 	return id, nil
+}
+
+// admitAuditPreflight admits an audit's remote preflight under the gate: the
+// service is live, idle and paused, audit policy validates and a complete
+// planning pass is affordable. It then marks the audit preflight in flight and
+// registers it as service work, which the caller ends with a.wg.Done.
+func (a *App) admitAuditPreflight() (config.Config, model.Control, error) {
+	a.gate.Lock()
+	defer a.gate.Unlock()
+	if err := a.ctx.Err(); err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	if !a.runtimeIdle() {
+		return config.Config{}, model.Control{}, ErrBusy
+	}
+	cfg, err := a.Config()
+	if err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	if err := cfg.ValidateAudit(); err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	control, err := a.Control()
+	if err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	if control.Mode != model.OperatingModePaused {
+		return config.Config{}, model.Control{}, ErrNotPaused
+	}
+	capacity, err := a.Store.PlanningCapacity()
+	if err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	if err := capacity.EnsureAvailable(); err != nil {
+		return config.Config{}, model.Control{}, err
+	}
+	a.runtimeMu.Lock()
+	a.runtime.startPreflight(model.CycleModeAudit)
+	a.runtimeMu.Unlock()
+	a.wg.Add(1)
+	return cfg, control, nil
 }
 
 func (a *App) doctor(ctx context.Context, cfg config.Config, audit bool) error {

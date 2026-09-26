@@ -826,6 +826,60 @@ func TestDiscardRefusesAnUnownedPathWithoutMarking(t *testing.T) {
 	}
 }
 
+// A workspace removal that panics runs with the gate released; the operator
+// request that owns it is recovered per request by net/http. The gate must
+// come back balanced, so the request's own release neither deadlocks later
+// controls nor unlocks an unlocked gate, and the cleanup claim must be
+// released, so the next discard is not refused as already in progress.
+func TestWorkspaceRemovalPanicReleasesTheGateAndClaim(t *testing.T) {
+	state := testStore(t)
+	dataDir := t.TempDir()
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	task := discardableTask(t, cfg, dataDir, "panicking-removal")
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	var panicking atomic.Bool
+	panicking.Store(true)
+	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
+		if panicking.Load() {
+			panic("removal failed unexpectedly")
+		}
+		return workspace.RemoveOwnedDir(root, path)
+	}))
+	t.Cleanup(app.Shutdown)
+
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != "removal failed unexpectedly" {
+				t.Fatalf("discard recovered %v; want the removal panic", recovered)
+			}
+		}()
+		_ = app.TaskAction(context.Background(), task.ID, "discard")
+	}()
+	if err := completesDuring(t, "pause after a panicking removal", func() error {
+		_, err := app.ControlAction("pause")
+		return err
+	}); err != nil {
+		t.Fatalf("pause after a panicking removal: %v", err)
+	}
+	if app.cleanupClaimed(cleanupTask, task.ID) {
+		t.Fatal("a panicking removal leaked its claim")
+	}
+	if saved := loadTask(t, state, task.ID); saved.Lifecycle.DiscardedAt != nil {
+		t.Fatalf("a panicking removal marked the record discarded: %+v", saved.Lifecycle)
+	}
+
+	panicking.Store(false)
+	if err := app.TaskAction(context.Background(), task.ID, "discard"); err != nil {
+		t.Fatalf("discard after a panicking removal: %v", err)
+	}
+	if saved := loadTask(t, state, task.ID); saved.Lifecycle.DiscardedAt == nil {
+		t.Fatal("the repeated discard did not mark the record")
+	}
+}
+
 // A claim excludes every workspace user, not only a second cleanup: retry,
 // cancel and reconcile conflict on claimed records, and execution admission
 // leaves a claimed queued task queued until the claim is released.

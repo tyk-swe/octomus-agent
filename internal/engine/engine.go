@@ -157,10 +157,12 @@ func (r *runtimeState) startPreflight(mode model.CycleMode) { r.preflight = &mod
 //     under the gate after checking that ctx is live, because Shutdown cancels
 //     ctx under the gate before it waits; work registered that way is always
 //     either refused or waited for, never started after the wait.
-//   - retryTask, reconcileLocked, DiscardTask and DiscardCycle release the
-//     gate for remote or filesystem work and re-acquire it (reconcileLocked
-//     returns with it released). Their callers revalidate durable state
-//     afterwards instead of trusting what they read before.
+//   - retryTask, reconcileLocked, DiscardTask and DiscardCycle take the gate
+//     held and return it held, releasing it only inside withoutGate for
+//     remote or filesystem work. They and their callers revalidate durable
+//     state afterwards instead of trusting what they read before.
+//   - Operator entry points release the gate with defer, so a panic that
+//     net/http recovers from a handler never leaves the gate locked.
 type App struct {
 	Store   *store.Store
 	DataDir string
@@ -179,6 +181,16 @@ type App struct {
 	removeDir func(root, path string) error
 	// wg counts service-owned work; Add only under gate while ctx is live.
 	wg sync.WaitGroup
+}
+
+// withoutGate runs fn with the gate released and takes it back before
+// returning, even when fn panics, so a caller's deferred Unlock stays
+// balanced. Callers hold the gate. Anything may change while fn runs: callers
+// revalidate durable state afterwards.
+func (a *App) withoutGate(fn func()) {
+	a.gate.Unlock()
+	defer a.gate.Lock()
+	fn()
 }
 
 // runners owns the runner clients of one invocation scope (a task, a planning

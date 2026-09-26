@@ -140,10 +140,11 @@ func (a *App) Tick() error {
 	return nil
 }
 
-// pauseLocked is the scheduler's pause. It durably pauses control, recording
-// message as its error when set, and then invalidates the process-local PR
-// observations as Pause does, so a refresh in flight cannot authorize work
-// after a later resume. Callers hold the gate and write their event after it.
+// pauseLocked is every pause: the operator's and the scheduler's. It durably
+// pauses control, recording message as its error when set, and then
+// invalidates the process-local PR observations, so a refresh in flight
+// cannot authorize work after a later resume. Callers hold the gate and write
+// their event after it.
 func (a *App) pauseLocked(control *model.Control, message *string) error {
 	control.SetMode(model.OperatingModePaused)
 	if message != nil {

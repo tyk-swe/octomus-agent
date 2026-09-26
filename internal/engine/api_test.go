@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -172,6 +173,40 @@ func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
 			}
 			if saved, err := app.Control(); err != nil || saved.Mode != control.Mode || saved.Batch != nil {
 				t.Fatalf("refused launch changed control: %+v, %v", saved, err)
+			}
+		})
+	}
+}
+
+// An operator request that panics while it holds the gate is recovered per
+// request by net/http, so the process lives on: the request must still
+// release the gate, or every later tick, control and task action, and
+// Shutdown, blocks forever. A missing store panics on the request's first
+// durable read, under the gate.
+func TestOperatorPanicUnderTheGateReleasesIt(t *testing.T) {
+	for name, request := range map[string]func(*App){
+		"control action": func(app *App) { _, _ = app.ControlAction("pause") },
+		"task action":    func(app *App) { _ = app.TaskAction(context.Background(), "task", "archive") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := New(nil, t.TempDir())
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Fatal("the request did not panic")
+					}
+				}()
+				request(app)
+			}()
+			stopped := make(chan struct{})
+			go func() {
+				app.Shutdown()
+				close(stopped)
+			}()
+			select {
+			case <-stopped:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the gate stayed locked after the request panicked")
 			}
 		})
 	}
