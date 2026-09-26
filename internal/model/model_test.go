@@ -245,3 +245,69 @@ func TestPlanningAdmissionsMatchPlanningRoles(t *testing.T) {
 		}
 	}
 }
+
+// AllowedActions drives the dashboard buttons and action eligibility, so each
+// lifecycle, status and blocked-reason group is pinned to its exact list.
+func TestTaskAllowedActions(t *testing.T) {
+	at, commit := "2026-01-01T00:00:00+00:00", "abc123"
+	reason := func(r BlockedReason) *BlockedReason { return &r }
+	for _, tc := range []struct {
+		name string
+		task Task
+		want []string
+	}{
+		{"archived and discarded", Task{Status: StatusFailed, Lifecycle: WorkspaceLifecycle{ArchivedAt: &at, DiscardedAt: &at}}, []string{}},
+		{"archived", Task{Status: StatusPublished, Lifecycle: WorkspaceLifecycle{ArchivedAt: &at}}, []string{"discard"}},
+		{"archived failed with output", Task{Status: StatusFailed, OutputCommit: &commit, Lifecycle: WorkspaceLifecycle{ArchivedAt: &at}}, []string{"discard"}},
+		{"published", Task{Status: StatusPublished, OutputCommit: &commit}, []string{"archive"}},
+		{"cancelled", Task{Status: StatusCancelled}, []string{"archive", "supersede"}},
+		{"cancelled with output", Task{Status: StatusCancelled, OutputCommit: &commit}, []string{"archive"}},
+		{"cancelled rediscovery requested", Task{Status: StatusCancelled, RediscoveryRequested: true}, []string{"archive"}},
+		{"cancelled superseded", Task{Status: StatusCancelled, SupersededBy: []string{"next"}}, []string{"archive"}},
+		{"cancelled discarded", Task{Status: StatusCancelled, Lifecycle: WorkspaceLifecycle{DiscardedAt: &at}}, []string{"archive"}},
+		{"discarded failed", Task{Status: StatusFailed, Lifecycle: WorkspaceLifecycle{DiscardedAt: &at}}, []string{}},
+		{"publishing", Task{Status: StatusPublishing}, []string{}},
+		{"publishing with output", Task{Status: StatusPublishing, OutputCommit: &commit}, []string{}},
+		{"blocked with output", Task{Status: StatusBlocked, OutputCommit: &commit, BlockedReason: reason(BlockedReasonStaleBase)}, []string{"archive", "supersede"}},
+		{"failed with output", Task{Status: StatusFailed, OutputCommit: &commit, BlockedReason: reason(BlockedReasonRemoteConflict)}, []string{"archive", "reconcile"}},
+		{"failed without a reason", Task{Status: StatusFailed}, []string{"cancel", "archive", "retry"}},
+		{"blocked without a reason", Task{Status: StatusBlocked}, []string{"cancel", "archive", "retry"}},
+	} {
+		if got := tc.task.AllowedActions(); got == nil || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: AllowedActions() = %#v; want %#v", tc.name, got, tc.want)
+		}
+	}
+
+	for _, status := range []Status{StatusQueued, StatusExecuting, StatusReviewing, StatusRepairing, StatusVerifying} {
+		if got := (Task{Status: status}).AllowedActions(); !reflect.DeepEqual(got, []string{"cancel"}) {
+			t.Errorf("%s: AllowedActions() = %#v; want [cancel]", status, got)
+		}
+		if got := (Task{Status: status, OutputCommit: &commit}).AllowedActions(); got == nil || len(got) != 0 {
+			t.Errorf("%s with output: AllowedActions() = %#v; want []", status, got)
+		}
+	}
+
+	// Every reason not listed here offers a plain retry.
+	recovery := map[BlockedReason][]string{
+		BlockedReasonStaleBase:            {"supersede"},
+		BlockedReasonInvalidPlan:          {"supersede"},
+		BlockedReasonWorkspaceInvalid:     {"supersede"},
+		BlockedReasonRemoteConflict:       {"reconcile"},
+		BlockedReasonPublicationUncertain: {"reconcile"},
+		BlockedReasonDependencyBlocked:    {"retry", "supersede"},
+		BlockedReasonRunnerUnavailable:    {"retry", "supersede"},
+	}
+	for _, status := range []Status{StatusFailed, StatusBlocked} {
+		for i := range blockedReasonNames {
+			r := BlockedReason(i)
+			tail, ok := recovery[r]
+			if !ok {
+				tail = []string{"retry"}
+			}
+			want := append([]string{"cancel", "archive"}, tail...)
+			if got := (Task{Status: status, BlockedReason: &r}).AllowedActions(); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s %s: AllowedActions() = %#v; want %#v", status, r, got, want)
+			}
+		}
+	}
+}
