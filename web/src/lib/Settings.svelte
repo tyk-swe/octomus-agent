@@ -393,6 +393,7 @@
             >Codex executable<input
               bind:value={config.codex_binary}
               readonly={locked('codex_binary')}
+              required
             />{@render previewNote('codex_binary', 'value', false)}</label
           >
           <label
@@ -401,6 +402,7 @@
               aria-describedby="opencode-executable-help"
               bind:value={config.opencode_binary}
               readonly={locked('opencode_binary')}
+              required
             />{@render previewNote('opencode_binary', 'value', false)}<small
               id="opencode-executable-help"
               >Uses the service user's configured providers and login.</small

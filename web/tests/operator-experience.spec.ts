@@ -490,6 +490,36 @@ test('routes list in pipeline and size order whatever the saved key order, and c
   expect(state.writes).toEqual([]);
 });
 
+test('a blank runner executable is flagged on its own field before any save is sent', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const save = page.getByRole('button', { name: 'Save configuration' });
+  const invalid = (field: Locator) =>
+    field.evaluate((input) => (input as HTMLInputElement).matches(':invalid'));
+  // The service validates both executables on every save, whichever runner is used.
+  for (const name of ['OpenCode executable', 'Codex executable']) {
+    const field = page.getByLabel(name, { exact: true });
+    const saved = await field.inputValue();
+    expect(await invalid(field)).toBe(false);
+    await field.fill('');
+    await save.click();
+    expect(await invalid(field)).toBe(true);
+    await expect(field).toBeFocused();
+    expect(state.writes).toEqual([]);
+    await field.fill(saved);
+  }
+  await page.getByLabel('OpenCode executable', { exact: true }).fill('/fixture/opencode-next');
+  await save.click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes.map((write) => write.config)).toEqual([
+    { opencode_binary: '/fixture/opencode-next' }
+  ]);
+});
+
 test('configuration keeps drafts and catalogs across views, discards locally, and refreshes clean values', async ({
   page,
   isMobile
