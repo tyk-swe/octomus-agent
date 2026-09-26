@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Offline distribution tests: real executable/HTTP, local release and curl fixtures."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,10 +26,11 @@ def smoke(binary):
         executable = root / 'octomus-agent'
         shutil.copy(binary, executable)
         (root / 'empty-bin').mkdir()
-        env = {**os.environ, 'OCTOMUS_TOKEN': TOKEN, 'PATH': str(root / 'empty-bin')}
-        for name in ['OCTOMUS_ASSETS', 'OCTOMUS_DATA_DIR', 'OCTOMUS_LISTEN']:
-            env.pop(name, None)
-        subprocess.run([str(executable), '--version'], cwd=root, env=env, check=True)
+        # Like binary_contract.run: no ambient OCTOMUS_* setting (such as a real
+        # webhook URL) reaches the packaged service.
+        env = {k: v for k, v in os.environ.items() if not k.startswith('OCTOMUS_')}
+        env.update(OCTOMUS_TOKEN=TOKEN, PATH=str(root / 'empty-bin'))
+        subprocess.run([str(executable), '--version'], cwd=root, env=env, check=True, timeout=15)
         for listen in ['127.0.0.1', '0.0.0.0']:
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', 0))
@@ -50,22 +50,23 @@ def smoke(binary):
 
                     if not poll(healthy, 5, interval=0.05):
                         raise AssertionError('Embedded service did not start')
-                    with urllib.request.urlopen(base + '/') as response:
+                    with urllib.request.urlopen(base + '/', timeout=15) as response:
                         html = response.read().decode()
                         assert response.headers['Content-Type'].startswith('text/html')
                     js = re.search(r'_app/immutable/entry/[^"\s]+\.js', html)
                     assert js, 'SPA boot script missing'
-                    with urllib.request.urlopen(base + '/' + js.group()) as response:
+                    with urllib.request.urlopen(base + '/' + js.group(), timeout=15) as response:
                         assert 'javascript' in response.headers['Content-Type']
                         assert response.read()
-                    with urllib.request.urlopen(base + '/proposals') as response:
+                    with urllib.request.urlopen(base + '/proposals', timeout=15) as response:
                         assert response.read().decode() == html
                 finally:
                     process.terminate()
                     process.wait(timeout=15)
                 log.seek(0)
                 assert ('Non-loopback listener' in log.read()) == (listen == '0.0.0.0')
-        failure = subprocess.run([str(executable), '--assets', str(root / 'missing')], cwd=root, env=env, capture_output=True, text=True)
+        # A regressed override check would start serving instead of exiting.
+        failure = subprocess.run([str(executable), '--assets', str(root / 'missing')], cwd=root, env=env, capture_output=True, text=True, timeout=15)
         assert failure.returncode != 0 and 'Dashboard override missing' in failure.stderr
     print('PASS embedded binary: HTTP, JS, SPA, override validation and listener warnings')
 
@@ -87,7 +88,7 @@ root = pathlib.Path(os.environ['INSTALLER_FIXTURE'])
 mode = os.environ.get('INSTALLER_MODE', '')
 if mode == 'missing': sys.exit(22)
 if '%{url_effective}' in args:
-    print('https://github.com/tyk-swe/octomus-agent/releases/tag/v0.1.0', end='')
+    print('https://github.com/tyk-swe/octomus-agent/releases' + ('' if mode == 'nolatest' else '/tag/v0.1.0'), end='')
     sys.exit(0)
 url = next(a for a in args if a.startswith('https://'))
 output = pathlib.Path(args[args.index('-o') + 1])
@@ -101,27 +102,53 @@ else: output.write_bytes(archive)
         (peers / 'uname').write_text('''#!/bin/sh
 if [ "$1" = -s ]; then echo Linux; else echo "$INSTALLER_ARCH"; fi
 ''')
+        # Every destination here is user-writable, so sudo must never be needed.
+        (peers / 'sudo').write_text('''#!/bin/sh
+echo "$*" >> "$INSTALLER_FIXTURE/sudo-used"
+exit 1
+''')
         for peer in peers.iterdir():
             peer.chmod(0o755)
         dest = root / 'bin'
         dest.mkdir()
-        env = {**os.environ, 'PATH': f'{peers}:{os.environ["PATH"]}', 'INSTALL_DIR': str(dest), 'INSTALLER_FIXTURE': str(root)}
+        installed = dest / 'octomus-agent'
+        env = {k: v for k, v in os.environ.items() if not k.startswith('OCTOMUS_')}
+        env.update(PATH=f'{peers}:{os.environ["PATH"]}', INSTALL_DIR=str(dest), INSTALLER_FIXTURE=str(root))
+
+        def install(*args, mode='', **overrides):
+            installed.write_text('previous installation')
+            return subprocess.run(['sh', str(PROJECT / 'install.sh'), *args], env={**env, 'INSTALLER_MODE': mode, **overrides}, capture_output=True, text=True, timeout=60)
+
+        def installed_binary(result, path=installed):
+            assert result.returncode == 0, f'exit {result.returncode}: {result.stderr}'
+            assert path.read_bytes() == binary.read_bytes()
+            assert os.access(path, os.X_OK)
+
+        def refused(result, message=''):
+            assert result.returncode != 0, result.stdout
+            assert message in result.stderr, result.stderr
+            assert installed.read_text() == 'previous installation'
+
         for arch, target in [('x86_64', 'x86_64-unknown-linux-gnu'), ('aarch64', 'aarch64-unknown-linux-gnu')]:
             env.update(INSTALLER_ARCH=arch, INSTALLER_TARGET=target)
             for mode in ['', 'checksum', 'missing', 'unsupported']:
-                env['INSTALLER_MODE'] = mode
                 env['INSTALLER_ARCH'] = 'riscv64' if mode == 'unsupported' else arch
-                installed = dest / 'octomus-agent'
-                installed.write_text('previous installation')
-                result = subprocess.run(['sh', str(PROJECT / 'install.sh')] + ([] if not mode else ['v0.1.0']), env=env, capture_output=True, text=True)
+                result = install(*([] if not mode else ['v0.1.0']), mode=mode)
                 if mode:
-                    assert result.returncode != 0, result.stdout
-                    assert installed.read_text() == 'previous installation'
+                    refused(result)
                 else:
-                    assert result.returncode == 0, result.stderr
-                    assert installed.read_bytes() == binary.read_bytes()
-                    assert os.access(installed, os.X_OK)
-    print('PASS installer: architectures, latest/versioned release, checksum/missing/unsupported failures')
+                    installed_binary(result)
+        env.update(INSTALLER_ARCH='x86_64', INSTALLER_TARGET='x86_64-unknown-linux-gnu')
+        # Only OCTOMUS_VERSION selects a release; a generic VERSION belongs to other tools.
+        installed_binary(install(VERSION='1.4.2'))
+        refused(install(mode='nolatest'), 'No published stable release found')
+        installed_binary(install(mode='nolatest', OCTOMUS_VERSION='v0.1.0'))
+        # A missing destination under a writable parent is created without sudo.
+        fresh = root / 'fresh/bin'
+        result = install(INSTALL_DIR=str(fresh))
+        assert not (root / 'sudo-used').exists(), 'installer used sudo: ' + (root / 'sudo-used').read_text()
+        installed_binary(result, fresh / 'octomus-agent')
+    print('PASS installer: architectures, latest/versioned/OCTOMUS_VERSION release, no stable release, sudo-free new INSTALL_DIR, checksum/missing/unsupported failures')
 
 
 # The package archive must never carry operator state, credentials, runner
