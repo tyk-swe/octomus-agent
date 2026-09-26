@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -239,6 +240,47 @@ func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
 	if response.Body.String() != "override dashboard" {
 		t.Fatalf("override: %q", response.Body.String())
 	}
+	// Both asset sources share one boundary: the method is checked before the
+	// path, and an unsafe path is refused before any file is looked up.
+	for name, assets := range map[string]http.Handler{"embedded": router, "override": Router(app, token, override, "test")} {
+		for _, uri := range []string{"/", "/%2e%2e/go.mod"} {
+			response := request(t, assets, "POST", uri, "", false)
+			if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" || response.Body.Len() != 0 {
+				t.Fatalf("%s POST %s: %d allow %q body %q", name, uri, response.Code, response.Header().Get("Allow"), response.Body.String())
+			}
+		}
+		for _, method := range []string{"GET", "HEAD"} {
+			response := request(t, assets, method, "/%2e%2e/go.mod", "", false)
+			if response.Code != http.StatusBadRequest || response.Header().Get("Allow") != "" || response.Body.Len() != 0 {
+				t.Fatalf("%s %s traversal: %d allow %q body %q", name, method, response.Code, response.Header().Get("Allow"), response.Body.String())
+			}
+		}
+	}
+	// Index pages in an override are HTML under their resolved name, not the
+	// extensionless request path: nosniff would otherwise make browsers
+	// download them.
+	indexed := t.TempDir()
+	for name, body := range map[string]string{"200.html": "fallback", "index.html": "root index", "sub/index.html": "sub index"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(indexed, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(indexed, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	indexedRouter := Router(app, token, indexed, "test")
+	for _, check := range []struct{ uri, body string }{
+		{"/", "root index"},
+		{"/sub", "sub index"},
+		{"/sub/", "sub index"},
+		{"/missing", "fallback"},
+	} {
+		response := request(t, indexedRouter, "GET", check.uri, "", false)
+		if response.Code != http.StatusOK || response.Body.String() != check.body ||
+			response.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+			t.Fatalf("%s: %d %q %q", check.uri, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+		}
+	}
 }
 
 func TestValidAuthenticationBypassesPendingFailureDelay(t *testing.T) {
@@ -262,7 +304,7 @@ func TestValidAuthenticationBypassesPendingFailureDelay(t *testing.T) {
 	}
 }
 
-// TestControlPauseResumeCycleThroughHTTP covers the control surface at the
+// TestControlActionsThroughHTTP covers the control surface at the
 // wire layer: pause and run-once batch work under the default paused control
 // while a malformed action and a content-type miss keep their statuses.
 func TestControlActionsThroughHTTP(t *testing.T) {
@@ -374,8 +416,33 @@ func TestBaselineAPIAuthenticationRoutesAndMissingRecords(t *testing.T) {
 	if response := call(t, router, "POST", "/api/baseline-checks/no-such-check/cancel", "{}"); response.Code != http.StatusConflict {
 		t.Fatalf("missing cancel: %d", response.Code)
 	}
-	if response := call(t, router, "POST", "/api/baseline-checks/latest", "{}"); response.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("wrong method: %d", response.Code)
+	if response := call(t, router, "POST", "/api/baseline-checks/latest", "{}"); response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET" {
+		t.Fatalf("wrong method: %d allow %q", response.Code, response.Header().Get("Allow"))
+	}
+}
+
+// A 405 names every method the matched path answers, once each and in route
+// order, after authentication and the content-type rule have run.
+func TestMethodNotAllowedNamesThePathMethods(t *testing.T) {
+	app, _ := testApp(t)
+	router := Router(app, token, "", "test")
+	for _, check := range []struct{ method, path, allow string }{
+		{"DELETE", "/api/state", "GET"},
+		{"DELETE", "/api/config", "GET, PUT"},
+		{"PATCH", "/api/cycles/cycle-1/evidence", "GET, POST"},
+		{"GET", "/api/cycles/cycle-1/archive", "POST"},
+		{"DELETE", "/api/baseline-checks/latest", "GET"},
+		{"GET", "/api/doctor", "POST"},
+	} {
+		response := call(t, router, check.method, check.path, "{}")
+		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != check.allow || response.Body.Len() != 0 {
+			t.Fatalf("%s %s: %d allow %q body %q", check.method, check.path, response.Code, response.Header().Get("Allow"), response.Body.String())
+		}
+	}
+	// Unauthenticated requests learn nothing about the path's methods.
+	response := request(t, router, "DELETE", "/api/config", "{}", false)
+	if response.Code != http.StatusUnauthorized || response.Header().Get("Allow") != "" {
+		t.Fatalf("unauthenticated: %d allow %q", response.Code, response.Header().Get("Allow"))
 	}
 }
 
@@ -560,3 +627,133 @@ func queuedTask(cfg config.Config) model.Task {
 }
 
 func stringPointer(s string) *string { return &s }
+
+// Every JSON body route answers extraction failures once, as text: an
+// oversized body at 413, malformed JSON at 400 and a body of the wrong shape
+// at 422, before any handler work runs.
+func TestBodyRejectionsKeepTheirPlainTextForm(t *testing.T) {
+	app, state := testApp(t)
+	router := Router(app, token, "", "test")
+	oversized := `{"expected_revision":"` + strings.Repeat("a", bodyLimit) + `"}`
+	for _, route := range []struct{ method, path string }{
+		{"PUT", "/api/config"},
+		{"POST", "/api/baseline-checks"},
+		{"POST", "/api/model-catalog"},
+	} {
+		for _, check := range []struct {
+			body, prefix string
+			status       int
+		}{
+			{oversized, "Failed to buffer the request body: length limit exceeded", http.StatusRequestEntityTooLarge},
+			{"{bad", "Failed to parse the request body as JSON: ", http.StatusBadRequest},
+			{`{"bogus":1}`, `Failed to deserialize the JSON body into the target type: unknown field "bogus"`, http.StatusUnprocessableEntity},
+		} {
+			response := call(t, router, route.method, route.path, check.body)
+			text := response.Body.String()
+			if response.Code != check.status || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+				!strings.HasPrefix(text, check.prefix) || strings.Count(text, "Failed to") != 1 {
+				t.Fatalf("%s %s %d: %d %q %q", route.method, route.path, check.status, response.Code, response.Header().Get("Content-Type"), text)
+			}
+		}
+	}
+	if raw, found, err := state.GetRaw("settings", "config"); err != nil || found {
+		t.Fatalf("rejected saves wrote a configuration: %s %v", raw, err)
+	}
+	if latest, err := state.LatestBaseline(); err != nil || latest != nil {
+		t.Fatalf("rejected starts persisted a check: %v %v", latest, err)
+	}
+}
+
+// Responses keep integers exact through redaction, and a value that cannot be
+// encoded becomes a JSON 500 rather than a partial or empty body.
+func TestWriteJSONKeepsExactNumbersAndReportsEncodeFailures(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeJSON(recorder, http.StatusCreated, map[string]any{"count": uint64(1<<63 + 1), "note": "ok"})
+	if recorder.Code != http.StatusCreated || recorder.Header().Get("Content-Type") != "application/json" ||
+		recorder.Body.String() != `{"count":9223372036854775809,"note":"ok"}` {
+		t.Fatalf("encoded: %d %q %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	writeJSON(recorder, http.StatusOK, map[string]any{"ratio": math.Inf(1)})
+	if recorder.Code != http.StatusInternalServerError || recorder.Header().Get("Content-Type") != "application/json" ||
+		recorder.Body.String() != `{"error":"The response could not be encoded"}` {
+		t.Fatalf("unencodable: %d %q %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+	}
+}
+
+// The request boundary holds on every path: an oversized body is refused before
+// it can replace a saved configuration, malformed query values are plain-text
+// 400s, and every response, including rejections, carries the security headers.
+func TestHTTPBoundaryRejectionsAndSecurityHeaders(t *testing.T) {
+	app, state := testApp(t)
+	router := Router(app, token, "", "test")
+	cfg := config.Default()
+	cfg.GitHubRepo = "fixture/project"
+	if err := state.Put("settings", "config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := cfg.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, _, err := state.GetRaw("settings", "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized := `{"expected_revision":"` + revision + `","config":{"github_repo":"` + strings.Repeat("x", 300*1024) + `"}}`
+	response := call(t, router, "PUT", "/api/config", oversized)
+	if response.Code != http.StatusRequestEntityTooLarge || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		!strings.Contains(response.Body.String(), "length limit exceeded") {
+		t.Fatalf("oversized save: %d %q %.200q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+	if after, _, err := state.GetRaw("settings", "config"); err != nil || string(after) != string(saved) {
+		t.Fatalf("oversized save changed the configuration: %v", err)
+	}
+	if view := decode(t, call(t, router, "GET", "/api/config", "")); view["revision"] != revision {
+		t.Fatalf("revision after oversized save: %v", view["revision"])
+	}
+
+	type rejection struct{ method, path, body, want string }
+	var rejections []rejection
+	for _, history := range []string{"/api/tasks", "/api/cycles", "/api/prs", "/api/proposals"} {
+		rejections = append(rejections,
+			rejection{"GET", history + "?before=x", "", "Invalid query string: "},
+			rejection{"GET", history + "?limit=-1", "", "Invalid query string: "})
+	}
+	rejections = append(rejections, rejection{"POST", "/api/doctor?mode=bogus", "{}", "Invalid query string: invalid value for `mode`"})
+	for _, check := range rejections {
+		response := call(t, router, check.method, check.path, check.body)
+		if response.Code != http.StatusBadRequest || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+			!strings.HasPrefix(response.Body.String(), check.want) {
+			t.Fatalf("%s %s: %d %q %q", check.method, check.path, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+		}
+	}
+
+	for _, check := range []struct {
+		name     string
+		response *httptest.ResponseRecorder
+		status   int
+	}{
+		{"dashboard", request(t, router, "GET", "/", "", false), http.StatusOK},
+		{"asset miss", request(t, router, "GET", "/_app/missing.js", "", false), http.StatusNotFound},
+		{"health", request(t, router, "GET", "/healthz", "", false), http.StatusOK},
+		{"state", call(t, router, "GET", "/api/state", ""), http.StatusOK},
+		{"unauthenticated", request(t, router, "GET", "/api/state", "", false), http.StatusUnauthorized},
+		{"body rejection", call(t, router, "PUT", "/api/config", "{bad"), http.StatusBadRequest},
+		{"unknown route", call(t, router, "GET", "/api/missing", ""), http.StatusNotFound},
+	} {
+		h := check.response.Header()
+		csp := h.Get("content-security-policy")
+		if check.response.Code != check.status ||
+			h.Get("x-content-type-options") != "nosniff" ||
+			h.Get("x-frame-options") != "DENY" ||
+			h.Get("referrer-policy") != "no-referrer" ||
+			h.Get("cache-control") != "no-store" ||
+			!strings.HasPrefix(csp, "default-src 'self';") ||
+			!strings.Contains(csp, "frame-ancestors 'none'") ||
+			!strings.Contains(csp, "base-uri 'self'") ||
+			!strings.Contains(csp, "form-action 'self'") {
+			t.Fatalf("%s: %d headers %v", check.name, check.response.Code, h)
+		}
+	}
+}

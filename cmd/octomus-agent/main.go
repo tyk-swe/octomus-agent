@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/netip"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -27,13 +27,13 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/report"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
-	dashboard "github.com/tyk-swe/octomus-agent/web"
 )
 
 // stateDBName is the SQLite file inside the data directory.
 const stateDBName = "state.db"
 
-// printJSON writes two-space indented JSON with sorted object keys and a trailing newline.
+// printJSON writes two-space indented JSON with a trailing newline. Map keys
+// are sorted; struct fields keep their declaration order.
 func printJSON(stdout io.Writer, value any) error {
 	data, err := wirejson.Marshal(value)
 	if err != nil {
@@ -49,6 +49,7 @@ func printJSON(stdout io.Writer, value any) error {
 
 type arguments struct {
 	dataDir, listen                         string
+	listenAddr                              netip.AddrPort
 	assets, exportRun                       *string
 	printConfig, doctor, audit, usageReport bool
 }
@@ -95,11 +96,6 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		}
 		return 0
 	}
-	// Linking the real filesystem keeps all dashboard bytes in the executable.
-	if _, err := fs.Stat(dashboard.Files(), "200.html"); err != nil {
-		fmt.Fprintf(stderr, "Error: embedded dashboard: %v\n", err)
-		return 1
-	}
 	if err := service(parsed, env, stdout, stderr); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
@@ -142,15 +138,9 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		if parsed.audit {
 			mode = model.CycleModeAudit
 		}
-		cfg, err := app.Config()
-		if err != nil {
-			return err
-		}
-		result, err := app.DoctorFor(cfg, mode)
-		if err != nil {
-			return err
-		}
-		return printJSON(stdout, result)
+		sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
+		defer stopSignals()
+		return runDoctor(sigCtx, app, mode, stdout)
 	}
 	token, ok := env(httpapi.TokenEnv)
 	if !ok {
@@ -166,17 +156,13 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		}
 		assetsOverride = *parsed.assets
 	}
-	listen, err := netip.ParseAddrPort(parsed.listen)
-	if err != nil {
-		return fmt.Errorf("invalid value %q for '--listen': invalid socket address syntax", parsed.listen)
-	}
-	if !listen.Addr().IsLoopback() {
+	if !parsed.listenAddr.Addr().IsLoopback() {
 		fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
 	}
 	webhook, _ := env(store.WebhookEnv)
-	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stopSignals()
-	server := &http.Server{Handler: httpapi.Router(app, token, assetsOverride, octomus.Version)}
+	server := newHTTPServer(httpapi.Router(app, token, assetsOverride, octomus.Version))
 	components := serviceComponents{
 		scheduler: app,
 		http:      server,
@@ -190,6 +176,58 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	}
 	return components.run(sigCtx, parsed.listen, stderr)
 }
+
+// shutdownSignals are the signals that stop the service, or an interrupted
+// doctor, gracefully. A hangup (a closed terminal or dropped SSH session) joins
+// them so owned process groups are terminated instead of orphaned, unless the
+// hangup is already ignored, as under nohup: registering it would un-ignore it.
+func shutdownSignals() []os.Signal {
+	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) {
+		signals = append(signals, syscall.SIGHUP)
+	}
+	return signals
+}
+
+// newHTTPServer bounds only the connection phases no handler needs: headers
+// must arrive within ReadHeaderTimeout and an idle keep-alive connection
+// closes after IdleTimeout, so stalled or abandoned clients cannot pin
+// descriptors. Read and write stay unbounded because doctor and model catalog
+// requests legitimately run for about a minute.
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+}
+
+// runDoctor validates the saved configuration for mode and prints the result.
+// Cancelling ctx (one of the shutdownSignals) shuts the app down,
+// which terminates every owned process group the checks started, and fails
+// the command. The shutdown finishes before runDoctor returns, so the caller
+// may close the store.
+func runDoctor(ctx context.Context, app *engine.App, mode model.CycleMode, stdout io.Writer) error {
+	shutdownDone := make(chan struct{})
+	stopShutdown := context.AfterFunc(ctx, func() {
+		defer close(shutdownDone)
+		app.Shutdown()
+	})
+	defer func() {
+		if !stopShutdown() {
+			<-shutdownDone
+		}
+	}()
+	cfg, err := app.Config()
+	if err != nil {
+		return err
+	}
+	result, err := app.DoctorFor(cfg, mode)
+	if ctx.Err() != nil {
+		return errors.New("Doctor interrupted")
+	}
+	if err != nil {
+		return err
+	}
+	return printJSON(stdout, result)
+}
+
 func parse(args []string, env func(string) (string, bool)) (arguments, string, error) {
 	a := arguments{dataDir: ".octomus", listen: "127.0.0.1:4200"}
 	for key, dst := range map[string]*string{"OCTOMUS_DATA_DIR": &a.dataDir, "OCTOMUS_LISTEN": &a.listen} {
@@ -231,7 +269,7 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 				a.dataDir = value
 			case "--listen":
 				a.listen = value
-				if err := validateListen(value); err != nil {
+				if _, err := parseListen(value); err != nil {
 					return a, "", err
 				}
 			case "--assets":
@@ -264,9 +302,11 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	if a.dataDir == "" || (a.assets != nil && *a.assets == "") {
 		return a, "", fmt.Errorf("a nonempty path is required")
 	}
-	if err := validateListen(a.listen); err != nil {
+	listenAddr, err := parseListen(a.listen)
+	if err != nil {
 		return a, "", err
 	}
+	a.listenAddr = listenAddr
 	if a.audit && !a.doctor {
 		return a, "", fmt.Errorf("--audit requires --doctor")
 	}
@@ -279,16 +319,17 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	return a, "", nil
 }
 
-func validateListen(listen string) error {
+// parseListen parses a socket address for --listen or OCTOMUS_LISTEN.
+func parseListen(listen string) (netip.AddrPort, error) {
 	address, err := netip.ParseAddrPort(listen)
 	if err == nil && address.Addr().Zone() != "" {
 		// Scope IDs must be decimal 32-bit numbers, rather than interface names.
 		_, err = strconv.ParseUint(address.Addr().Zone(), 10, 32)
 	}
 	if err != nil {
-		return fmt.Errorf("invalid value %q for '--listen': invalid socket address syntax", listen)
+		return netip.AddrPort{}, fmt.Errorf("invalid value %q for '--listen': invalid socket address syntax", listen)
 	}
-	return nil
+	return address, nil
 }
 
 const help = `Continuous repository improvement through reviewed pull requests

@@ -328,3 +328,16 @@ func TestSignalShutdownWaitsForSchedulerDrain(t *testing.T) {
 		t.Fatalf("worker stop calls = %d, want one", workerStopped.Load())
 	}
 }
+
+// The service bounds how long a connection may take to send headers or sit
+// idle, but never the request or response itself: doctor and model catalog
+// requests legitimately take about a minute.
+func TestServiceHTTPServerBoundsHeadersAndIdleOnly(t *testing.T) {
+	server := newHTTPServer(http.NotFoundHandler())
+	if server.ReadHeaderTimeout != 10*time.Second || server.IdleTimeout != 2*time.Minute {
+		t.Fatalf("header %v idle %v", server.ReadHeaderTimeout, server.IdleTimeout)
+	}
+	if server.ReadTimeout != 0 || server.WriteTimeout != 0 {
+		t.Fatalf("read %v write %v", server.ReadTimeout, server.WriteTimeout)
+	}
+}

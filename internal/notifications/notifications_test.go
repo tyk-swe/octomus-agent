@@ -55,31 +55,59 @@ func putTask(t *testing.T, state *store.Store, id, status string, reason *model.
 	}
 }
 
-// receiver hands every request body to
-// the channel and delays the response like the scripted peer does.
+// receiver hands every request body to the channel and delays the first
+// response like the scripted peer does.
 type receiver struct {
 	url      string
 	requests chan []byte
 	server   *httptest.Server
-	once     sync.Once
-	delay    time.Duration
+	mu       sync.Mutex
+	delay    time.Duration // the next response's delay; only the first is held
+}
+
+// takeDelay returns the pending first-response delay and clears it. Handlers
+// run concurrently, so the delay is read and cleared under the lock.
+func (r *receiver) takeDelay() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delay := r.delay
+	r.delay = 0
+	return delay
 }
 
 func newReceiver(t *testing.T, status int, firstDelay time.Duration) *receiver {
 	t.Helper()
 	r := &receiver{requests: make(chan []byte, 32), delay: firstDelay}
+	// closed ends every held response when the test finishes: the delay is the
+	// most a response is held, not what cleanup must wait out, because
+	// httptest.Server.Close waits for running handlers.
+	closed := make(chan struct{})
 	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, err := io.ReadAll(req.Body)
 		if err == nil {
-			r.requests <- body
+			select {
+			case r.requests <- body:
+			case <-closed:
+				return
+			}
 		}
-		delay := r.delay
-		r.delay = 0
-		time.Sleep(delay)
+		if delay := r.takeDelay(); delay > 0 {
+			hold := time.NewTimer(delay)
+			defer hold.Stop()
+			// A client that gives up (its timeout or a stopped worker) closes
+			// the connection, which cancels the request context.
+			select {
+			case <-hold.C:
+			case <-req.Context().Done():
+			case <-closed:
+			}
+		}
 		w.WriteHeader(status)
 	}))
 	r.url = r.server.URL + "/hook"
+	// Cleanups run last-registered first: release held handlers, then close.
 	t.Cleanup(r.server.Close)
+	t.Cleanup(func() { close(closed) })
 	return r
 }
 
@@ -350,6 +378,65 @@ func TestOversizedIdentitiesFailAsInvalidPayloadInsteadOfTruncating(t *testing.T
 	}
 }
 
+// An event the worker cannot encode within the payload bounds is a local
+// failure: it is never sent, and it fails terminally after one attempt
+// instead of retrying.
+func TestWorkerFailsOversizedEventsTerminally(t *testing.T) {
+	state, path := testStore(t)
+	server := newReceiver(t, 200, 0)
+	worker, err := Start(context.Background(), state, server.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	reason := model.BlockedReasonTimeout
+	putTask(t, state, strings.Repeat("x", 300), "blocked", &reason)
+	waitUntil(t, 10, func() bool {
+		health, err := state.NotificationHealth()
+		return err == nil && health.Failed == 1 && health.LastError != nil && *health.LastError == invalidPayload
+	}, "the oversized event to fail as invalid_payload")
+	select {
+	case body := <-server.requests:
+		t.Fatalf("an invalid payload was sent: %s", body)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if health, err := state.NotificationHealth(); err != nil || health.Pending != 0 || health.LastHTTPStatus != nil {
+		t.Fatalf("health: %+v %v", health, err)
+	}
+	var attempts int
+	if err := rawDB(t, path).QueryRow("SELECT attempts FROM notification_outbox").Scan(&attempts); err != nil || attempts != 1 {
+		t.Fatalf("attempts = %d, %v", attempts, err)
+	}
+}
+
+// A destination that refuses the connection is a transport failure: the row
+// stays pending for a later attempt with no HTTP status recorded.
+func TestWorkerRetriesTransportFailures(t *testing.T) {
+	state, path := testStore(t)
+	refused := httptest.NewServer(http.NotFoundHandler())
+	destination := refused.URL + "/hook"
+	refused.Close()
+	worker, err := Start(context.Background(), state, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	reason := model.BlockedReasonTimeout
+	putTask(t, state, "task-1", "blocked", &reason)
+	waitUntil(t, 10, func() bool {
+		health, err := state.NotificationHealth()
+		return err == nil && health.LastError != nil && *health.LastError == transportCategory
+	}, "the refused connection to be recorded as transport_error")
+	health, err := state.NotificationHealth()
+	if err != nil || health.Pending != 1 || health.Failed != 0 || health.LastHTTPStatus != nil {
+		t.Fatalf("health: %+v %v", health, err)
+	}
+	var attempts int
+	if err := rawDB(t, path).QueryRow("SELECT attempts FROM notification_outbox WHERE status='pending'").Scan(&attempts); err != nil || attempts != 1 {
+		t.Fatalf("attempts = %d, %v", attempts, err)
+	}
+}
+
 // rawDB exposes outbox fields that the health view aggregates away.
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
@@ -405,4 +492,91 @@ func queryDestination(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return destination
+}
+
+// syncBuffer collects the warnings the worker's loop writes.
+type syncBuffer struct {
+	mu   sync.Mutex
+	text strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.String()
+}
+
+// Outbox failures the loop cannot record are reported on the warning stream
+// once per episode, never every tick, and never name the destination.
+func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
+	state, path := testStore(t)
+	server := newReceiver(t, 200, 0)
+	var warnings syncBuffer
+	worker, err := start(context.Background(), state, server.url, &warnings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	count := func() int { return strings.Count(warnings.String(), "WARN notifications: ") }
+	db := rawDB(t, path)
+	destination := queryDestination(t, path)
+	// An attempt count that is not an integer makes every claim fail to read
+	// the row.
+	corrupt := func(eventID string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO notification_outbox
+			(event_id,destination_id,created_at,repository,category,action,attempts,next_attempt_at)
+			VALUES (?1,?2,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'fixture/project','stale_base','inspect_task',1.5,0)`,
+			eventID, destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repair := func(eventID string) {
+		t.Helper()
+		if _, err := db.Exec("UPDATE notification_outbox SET attempts=0 WHERE event_id=?1", eventID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	corrupt("first")
+	waitUntil(t, 5, func() bool { return count() > 0 }, "the failing claim to be reported")
+	// The loop retries every second; repeated failed ticks still make one line.
+	time.Sleep(2200 * time.Millisecond)
+	if count() != 1 || !strings.HasSuffix(warnings.String(), "\n") {
+		t.Fatalf("repeated claim failure warnings: %q", warnings.String())
+	}
+	// A working claim ends the episode, so the same failure later is reported
+	// again.
+	repair("first")
+	server.next(t)
+	waitUntil(t, 5, func() bool {
+		var delivered int
+		err := db.QueryRow("SELECT count(*) FROM notification_outbox WHERE status='delivered'").Scan(&delivered)
+		return err == nil && delivered == 1
+	}, "the repaired row to be delivered")
+	corrupt("second")
+	waitUntil(t, 5, func() bool { return count() == 2 }, "the recurring claim failure to be reported")
+	if lines := strings.Split(strings.TrimSuffix(warnings.String(), "\n"), "\n"); lines[0] != lines[1] {
+		t.Fatalf("recurring failure: %q", lines)
+	}
+	// A delivery that cannot be recorded is reported too.
+	if _, err := db.Exec(`CREATE TRIGGER refuse_delivered BEFORE UPDATE OF status ON notification_outbox
+		WHEN NEW.status='delivered' BEGIN SELECT RAISE(ABORT,'synthetic finish failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	repair("second")
+	server.next(t)
+	waitUntil(t, 5, func() bool { return count() == 3 }, "the failed delivery record to be reported")
+	text := warnings.String()
+	if !strings.Contains(text, "synthetic finish failure") {
+		t.Fatalf("finish failure warning: %q", text)
+	}
+	if strings.Contains(text, server.url) || strings.Contains(text, server.server.Listener.Addr().String()) {
+		t.Fatalf("warnings name the destination: %q", text)
+	}
 }

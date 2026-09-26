@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -29,12 +31,14 @@ const (
 	maxIDBytes         = 128
 )
 
-// Delivery categories recorded in the outbox beside a failed attempt.
-// invalidPayload is ours and never retried; every other failure is a remote
-// condition.
+// Delivery categories recorded in the outbox beside a failed attempt and shown
+// as the dashboard's last notification error. invalidPayload is ours and never
+// retried; every other failure is a remote condition.
 const (
 	httpStatusCategory = "http_status"
 	invalidPayload     = "invalid_payload"
+	timeoutCategory    = "timeout"
+	transportCategory  = "transport_error"
 )
 
 // attentionEvent is the version-1 webhook payload.
@@ -74,14 +78,14 @@ func payload(delivery *store.NotificationDelivery) ([]byte, error) {
 		len(event.Action) > maxIDBytes {
 		return nil, errors.New(invalidPayload)
 	}
-	bytes, err := wirejson.Marshal(event)
+	encoded, err := wirejson.Marshal(event)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", invalidPayload, err)
 	}
-	if len(bytes) > maxPayloadBytes {
+	if len(encoded) > maxPayloadBytes {
 		return nil, errors.New(invalidPayload)
 	}
-	return bytes, nil
+	return encoded, nil
 }
 
 func deref(value *string) string {
@@ -107,10 +111,15 @@ type Worker struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 	shutdown sync.Once
+	// warnings receives one redacted line per store failure episode; only the
+	// run goroutine writes to it or reads and writes lastWarning.
+	warnings    io.Writer
+	lastWarning string
 }
 
-// webhookClient mirrors reqwest's operator-safe client: no redirects, no proxy,
-// a 10 second request bound and a 5 second connect bound.
+// webhookClient is the operator-safe delivery client: it follows no redirects
+// (a 3xx is recorded as the delivery's HTTP status), ignores proxy environment
+// variables, and bounds each request to 10 seconds and each connect to 5.
 func webhookClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
@@ -128,25 +137,27 @@ func webhookClient() *http.Client {
 // when a destination is enabled, launches the delivery loop under the parent's
 // shutdown scope. A nil worker is returned for disabled or invalid
 // configuration — the policy write still happens so the dashboard reflects it.
+// Store failures in the loop are reported on standard error.
 func Start(parent context.Context, db *store.Store, configuredURL string) (*Worker, error) {
+	return start(parent, db, configuredURL, os.Stderr)
+}
+
+func start(parent context.Context, db *store.Store, configuredURL string, warnings io.Writer) (*Worker, error) {
 	raw := strings.TrimSpace(configuredURL)
 	var normalized, destinationID string
 	state := "disabled"
-	var errorText *string
+	var destination, errorText *string
 	if raw != "" {
-		url, id, err := model.NotificationDestination(raw)
+		destinationURL, id, err := model.NotificationDestination(raw)
 		if err != nil {
 			state = "invalid"
 			message := err.Error()
 			errorText = &message
 		} else {
-			normalized, destinationID = url, id
+			normalized, destinationID = destinationURL, id
 			state = "enabled"
+			destination = &destinationID
 		}
-	}
-	var destination *string
-	if normalized != "" {
-		destination = &destinationID
 	}
 	if err := db.ConfigureNotifications(destination, state, errorText); err != nil {
 		return nil, err
@@ -156,13 +167,14 @@ func Start(parent context.Context, db *store.Store, configuredURL string) (*Work
 	}
 	ctx, cancel := context.WithCancel(parent)
 	worker := &Worker{
-		store:  db,
-		url:    normalized,
-		destID: destinationID,
-		client: webhookClient(),
-		ctx:    ctx,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		store:    db,
+		url:      normalized,
+		destID:   destinationID,
+		client:   webhookClient(),
+		ctx:      ctx,
+		cancel:   cancel,
+		done:     make(chan struct{}),
+		warnings: warnings,
 	}
 	go worker.run()
 	return worker, nil
@@ -195,8 +207,12 @@ func (w *Worker) run() {
 		}
 		delivery, err := w.store.ClaimNotification(w.destID, time.Now().UTC())
 		if err != nil {
+			w.warn(err)
 			continue
 		}
+		// A working claim ends a failure episode: the next failure is reported
+		// again even when its message repeats.
+		w.lastWarning = ""
 		if delivery == nil {
 			continue
 		}
@@ -206,18 +222,33 @@ func (w *Worker) run() {
 		}
 		switch {
 		case category != "":
-			_ = w.store.FinishNotificationFailure(delivery.Seq, category, nil, category != invalidPayload)
+			w.warn(w.store.FinishNotificationFailure(delivery.Seq, category, nil, category != invalidPayload))
 		case status >= 200 && status < 300:
-			_ = w.store.FinishNotificationDelivered(delivery.Seq, time.Now().UTC())
+			w.warn(w.store.FinishNotificationDelivered(delivery.Seq, time.Now().UTC()))
 		default:
-			_ = w.store.FinishNotificationFailure(delivery.Seq, httpStatusCategory, &status, retryable(status))
+			w.warn(w.store.FinishNotificationFailure(delivery.Seq, httpStatusCategory, &status, retryable(status)))
 		}
 	}
 }
 
+// warn reports a store failure once per episode: a loop stuck on the same
+// failure every second writes one line, not one per tick. The message is
+// redacted and never names the destination URL.
+func (w *Worker) warn(err error) {
+	if err == nil {
+		return
+	}
+	message := store.ErrorMessage(err)
+	if message == w.lastWarning {
+		return
+	}
+	w.lastWarning = message
+	fmt.Fprintf(w.warnings, "WARN notifications: %s\n", message)
+}
+
 // deliver posts one event; the category return names a local failure kind
-// ("invalid_payload", "timeout", "transport_error") and otherwise the HTTP
-// status decides.
+// (invalidPayload, timeoutCategory or transportCategory) and otherwise the
+// HTTP status decides.
 func (w *Worker) deliver(delivery *store.NotificationDelivery) (uint16, string) {
 	body, err := payload(delivery)
 	if err != nil {
@@ -225,22 +256,22 @@ func (w *Worker) deliver(delivery *store.NotificationDelivery) (uint16, string) 
 	}
 	req, err := http.NewRequestWithContext(w.ctx, http.MethodPost, w.url, bytes.NewReader(body))
 	if err != nil {
-		return 0, "transport_error"
+		return 0, transportCategory
 	}
 	req.Header.Set("content-type", "application/json")
 	response, err := w.client.Do(req)
 	if err != nil {
 		if isTimeout(err) {
-			return 0, "timeout"
+			return 0, timeoutCategory
 		}
-		return 0, "transport_error"
+		return 0, transportCategory
 	}
 	defer response.Body.Close()
 	return uint16(response.StatusCode), ""
 }
 
-// isTimeout mirrors reqwest's is_timeout: request-level deadline expiry and
-// transport timeouts both count, but a caller cancellation does not.
+// isTimeout reports whether a failed request timed out: request deadline
+// expiry and transport timeouts count, but a caller cancellation does not.
 func isTimeout(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true

@@ -58,6 +58,8 @@ type TierRow struct {
 	Admissions    uint64 `json:"admissions"`
 }
 
+// Report is the usage report. HasAdmissionLedger is always true on version-7
+// state; the field keeps the report shape stable.
 type Report struct {
 	SchemaVersion      uint32            `json:"schema_version"`
 	GeneratedAt        string            `json:"generated_at"`
@@ -70,8 +72,16 @@ type Report struct {
 	Admissions         []store.Admission `json:"admissions"`
 }
 
+// records decodes every saved record of one kind in id order.
 func records[T any](c *sql.Conn, kind string) ([]T, error) {
-	rows, err := c.QueryContext(store.Background(), "SELECT data FROM records WHERE kind=?1 ORDER BY id", kind)
+	return queryJSON[T](c, "SELECT data FROM records WHERE kind=?1 ORDER BY id", kind)
+}
+
+// queryJSON decodes each row's single JSON column. An empty result is a
+// non-nil empty slice, and an error that ends the scan early fails the whole
+// read instead of returning the rows before it.
+func queryJSON[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
+	rows, err := c.QueryContext(store.Background(), query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -113,33 +123,11 @@ func UsageReport(path string) (map[string]any, error) {
 }
 
 func assemble(c *sql.Conn) (Report, error) {
-	ctx := store.Background()
-	var hasLedger bool
-	if err := c.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='admissions')").Scan(&hasLedger); err != nil {
+	// Every version-7 database has the admission ledger; OpenReadOnly refuses
+	// any other schema.
+	admissions, err := queryJSON[store.Admission](c, "SELECT data FROM admissions ORDER BY at,id")
+	if err != nil {
 		return Report{}, err
-	}
-	admissions := []store.Admission{}
-	if hasLedger {
-		rows, err := c.QueryContext(ctx, "SELECT data FROM admissions ORDER BY at,id")
-		if err != nil {
-			return Report{}, err
-		}
-		for rows.Next() {
-			var data string
-			if err := rows.Scan(&data); err != nil {
-				rows.Close()
-				return Report{}, err
-			}
-			var admission store.Admission
-			if err := json.Unmarshal([]byte(data), &admission); err != nil {
-				rows.Close()
-				return Report{}, err
-			}
-			admissions = append(admissions, admission)
-		}
-		if err := rows.Close(); err != nil {
-			return Report{}, err
-		}
 	}
 	cycles, err := records[model.Cycle](c, "cycle")
 	if err != nil {
@@ -168,26 +156,8 @@ func assemble(c *sql.Conn) (Report, error) {
 		}
 		cycleCounts[admission.CycleID] = counts
 	}
-	daily := []Daily{}
-	rows, err := c.QueryContext(ctx, "SELECT day,sessions FROM usage ORDER BY day")
+	daily, err := dailyUsage(c, dailyCounts)
 	if err != nil {
-		return Report{}, err
-	}
-	for rows.Next() {
-		var day string
-		var total int64
-		if err := rows.Scan(&day, &total); err != nil {
-			rows.Close()
-			return Report{}, err
-		}
-		recorded := dailyCounts[day]
-		unattributed := uint64(0)
-		if uint64(total) > recorded {
-			unattributed = uint64(total) - recorded
-		}
-		daily = append(daily, Daily{Day: day, Admissions: uint64(total), AttributedAdmissions: recorded, UnattributedAdmissions: unattributed})
-	}
-	if err := rows.Close(); err != nil {
 		return Report{}, err
 	}
 	cycleRows := make([]CycleRow, 0, len(cycles))
@@ -242,8 +212,33 @@ func assemble(c *sql.Conn) (Report, error) {
 		tiers = append(tiers, row)
 	}
 	return Report{
-		SchemaVersion: 1, GeneratedAt: model.Now(), HasAdmissionLedger: hasLedger,
+		SchemaVersion: 1, GeneratedAt: model.Now(), HasAdmissionLedger: true,
 		Measurement: Measurement, Daily: daily, Cycles: cycleRows, Tasks: taskRows,
 		Tiers: tiers, Admissions: admissions,
 	}, nil
+}
+
+// dailyUsage reads each day's admission counter and splits it into the
+// admissions the ledger attributes to that UTC day and the unattributed rest.
+func dailyUsage(c *sql.Conn, attributed map[string]uint64) ([]Daily, error) {
+	rows, err := c.QueryContext(store.Background(), "SELECT day,sessions FROM usage ORDER BY day")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	daily := []Daily{}
+	for rows.Next() {
+		var day string
+		var total int64
+		if err := rows.Scan(&day, &total); err != nil {
+			return nil, err
+		}
+		recorded := attributed[day]
+		unattributed := uint64(0)
+		if uint64(total) > recorded {
+			unattributed = uint64(total) - recorded
+		}
+		daily = append(daily, Daily{Day: day, Admissions: uint64(total), AttributedAdmissions: recorded, UnattributedAdmissions: unattributed})
+	}
+	return daily, rows.Err()
 }

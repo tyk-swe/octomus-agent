@@ -34,6 +34,62 @@ func TestCurrentCLIContract(t *testing.T) {
 		t.Fatalf("unknown flag: code=%d stdout=%q stderr=%q", code, out.String(), err.String())
 	}
 }
+
+// The listen address is parsed once, from the flag or the environment, and
+// startup reuses that address to decide whether to warn about exposure.
+func TestListenAddressIsParsedOnceFromFlagOrEnvironment(t *testing.T) {
+	envWith := func(values map[string]string) func(string) (string, bool) {
+		return func(key string) (string, bool) {
+			value, ok := values[key]
+			return value, ok
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		env      map[string]string
+		listen   string
+		loopback bool
+		port     uint16
+	}{
+		{"default", nil, nil, "127.0.0.1:4200", true, 4200},
+		{"flag", []string{"--listen", "127.0.0.1:0"}, nil, "127.0.0.1:0", true, 0},
+		{"flag with numeric scope", []string{"--listen=[::1%1]:9"}, nil, "[::1%1]:9", true, 9},
+		{"environment", nil, map[string]string{"OCTOMUS_LISTEN": "0.0.0.0:4300"}, "0.0.0.0:4300", false, 4300},
+		// Only the final value is validated, so a flag replaces a bad environment value.
+		{"flag over environment", []string{"--listen", "[::1]:4400"}, map[string]string{"OCTOMUS_LISTEN": "not an address"}, "[::1]:4400", true, 4400},
+	} {
+		parsed, display, err := parse(tc.args, envWith(tc.env))
+		if err != nil || display != "" {
+			t.Fatalf("%s: display=%q err=%v", tc.name, display, err)
+		}
+		if parsed.listen != tc.listen || !parsed.listenAddr.IsValid() ||
+			parsed.listenAddr.Addr().IsLoopback() != tc.loopback || parsed.listenAddr.Port() != tc.port {
+			t.Fatalf("%s: listen=%q address=%v", tc.name, parsed.listen, parsed.listenAddr)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		env  map[string]string
+		want string
+	}{
+		{"interface scope", []string{"--listen", "[::1%eth0]:1"}, nil,
+			`invalid value "[::1%eth0]:1" for '--listen': invalid socket address syntax`},
+		{"missing port", []string{"--listen", "127.0.0.1"}, nil,
+			`invalid value "127.0.0.1" for '--listen': invalid socket address syntax`},
+		{"environment", nil, map[string]string{"OCTOMUS_LISTEN": "localhost:4200"},
+			`invalid value "localhost:4200" for '--listen': invalid socket address syntax`},
+		// A bad flag is reported where it appears, before later arguments.
+		{"flag before unknown argument", []string{"--listen", "", "--unknown"}, nil,
+			`invalid value "" for '--listen': invalid socket address syntax`},
+	} {
+		if _, _, err := parse(tc.args, envWith(tc.env)); err == nil || err.Error() != tc.want {
+			t.Fatalf("%s: err=%v", tc.name, err)
+		}
+	}
+}
+
 func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 	directory := t.TempDir() + "/service"
 	// Startup prepares the data directory and database before token validation.
