@@ -467,13 +467,8 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 	if err := a.attachOutcomes(cycle, outcomes); err != nil {
 		return err
 	}
-	identities := map[string]struct{}{}
-	for _, proposal := range cycle.Proposals {
-		if _, duplicate := identities[proposal.ID]; duplicate {
-			return fmt.Errorf("Duplicate candidate proposal identity %s", proposal.ID)
-		}
-		identities[proposal.ID] = struct{}{}
-	}
+	// discover guarantees non-empty, unique candidate identities, and review
+	// leaves the candidates unchanged.
 	for i, outcome := range outcomes {
 		var document assessmentDocument
 		if err := json.Unmarshal([]byte(outcome.answer), &document); err != nil {
