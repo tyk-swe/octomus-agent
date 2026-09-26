@@ -406,3 +406,86 @@ func queryDestination(t *testing.T, path string) string {
 	}
 	return destination
 }
+
+// syncBuffer collects the warnings the worker's loop writes.
+type syncBuffer struct {
+	mu   sync.Mutex
+	text strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.String()
+}
+
+// Outbox failures the loop cannot record are reported on the warning stream
+// once per episode, never every tick, and never name the destination.
+func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
+	state, path := testStore(t)
+	server := newReceiver(t, 200, 0)
+	var warnings syncBuffer
+	worker, err := start(context.Background(), state, server.url, &warnings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	count := func() int { return strings.Count(warnings.String(), "WARN notifications: ") }
+	db := rawDB(t, path)
+	destination := queryDestination(t, path)
+	// An attempt count that is not an integer makes every claim fail to read
+	// the row.
+	corrupt := func(eventID string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO notification_outbox
+			(event_id,destination_id,created_at,repository,category,action,attempts,next_attempt_at)
+			VALUES (?1,?2,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'fixture/project','stale_base','inspect_task',1.5,0)`,
+			eventID, destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repair := func(eventID string) {
+		t.Helper()
+		if _, err := db.Exec("UPDATE notification_outbox SET attempts=0 WHERE event_id=?1", eventID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	corrupt("first")
+	waitUntil(t, 5, func() bool { return count() > 0 }, "the failing claim to be reported")
+	// The loop retries every second; repeated failed ticks still make one line.
+	time.Sleep(2200 * time.Millisecond)
+	if count() != 1 || !strings.HasSuffix(warnings.String(), "\n") {
+		t.Fatalf("repeated claim failure warnings: %q", warnings.String())
+	}
+	// A working claim ends the episode, so the same failure later is reported
+	// again.
+	repair("first")
+	server.next(t)
+	waitUntil(t, 5, func() bool { return outboxCount(t, path, "delivered") == 1 }, "the repaired row to be delivered")
+	corrupt("second")
+	waitUntil(t, 5, func() bool { return count() == 2 }, "the recurring claim failure to be reported")
+	if lines := strings.Split(strings.TrimSuffix(warnings.String(), "\n"), "\n"); lines[0] != lines[1] {
+		t.Fatalf("recurring failure: %q", lines)
+	}
+	// A delivery that cannot be recorded is reported too.
+	if _, err := db.Exec(`CREATE TRIGGER refuse_delivered BEFORE UPDATE OF status ON notification_outbox
+		WHEN NEW.status='delivered' BEGIN SELECT RAISE(ABORT,'synthetic finish failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	repair("second")
+	server.next(t)
+	waitUntil(t, 5, func() bool { return count() == 3 }, "the failed delivery record to be reported")
+	text := warnings.String()
+	if !strings.Contains(text, "synthetic finish failure") {
+		t.Fatalf("finish failure warning: %q", text)
+	}
+	if strings.Contains(text, server.url) || strings.Contains(text, server.server.Listener.Addr().String()) {
+		t.Fatalf("warnings name the destination: %q", text)
+	}
+}

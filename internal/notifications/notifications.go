@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -107,6 +109,10 @@ type Worker struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 	shutdown sync.Once
+	// warnings receives one redacted line per store failure episode; only the
+	// run goroutine writes to it or reads and writes lastWarning.
+	warnings    io.Writer
+	lastWarning string
 }
 
 // webhookClient mirrors reqwest's operator-safe client: no redirects, no proxy,
@@ -128,7 +134,12 @@ func webhookClient() *http.Client {
 // when a destination is enabled, launches the delivery loop under the parent's
 // shutdown scope. A nil worker is returned for disabled or invalid
 // configuration — the policy write still happens so the dashboard reflects it.
+// Store failures in the loop are reported on standard error.
 func Start(parent context.Context, db *store.Store, configuredURL string) (*Worker, error) {
+	return start(parent, db, configuredURL, os.Stderr)
+}
+
+func start(parent context.Context, db *store.Store, configuredURL string, warnings io.Writer) (*Worker, error) {
 	raw := strings.TrimSpace(configuredURL)
 	var normalized, destinationID string
 	state := "disabled"
@@ -156,13 +167,14 @@ func Start(parent context.Context, db *store.Store, configuredURL string) (*Work
 	}
 	ctx, cancel := context.WithCancel(parent)
 	worker := &Worker{
-		store:  db,
-		url:    normalized,
-		destID: destinationID,
-		client: webhookClient(),
-		ctx:    ctx,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		store:    db,
+		url:      normalized,
+		destID:   destinationID,
+		client:   webhookClient(),
+		ctx:      ctx,
+		cancel:   cancel,
+		done:     make(chan struct{}),
+		warnings: warnings,
 	}
 	go worker.run()
 	return worker, nil
@@ -195,8 +207,12 @@ func (w *Worker) run() {
 		}
 		delivery, err := w.store.ClaimNotification(w.destID, time.Now().UTC())
 		if err != nil {
+			w.warn(err)
 			continue
 		}
+		// A working claim ends a failure episode: the next failure is reported
+		// again even when its message repeats.
+		w.lastWarning = ""
 		if delivery == nil {
 			continue
 		}
@@ -206,13 +222,28 @@ func (w *Worker) run() {
 		}
 		switch {
 		case category != "":
-			_ = w.store.FinishNotificationFailure(delivery.Seq, category, nil, category != invalidPayload)
+			w.warn(w.store.FinishNotificationFailure(delivery.Seq, category, nil, category != invalidPayload))
 		case status >= 200 && status < 300:
-			_ = w.store.FinishNotificationDelivered(delivery.Seq, time.Now().UTC())
+			w.warn(w.store.FinishNotificationDelivered(delivery.Seq, time.Now().UTC()))
 		default:
-			_ = w.store.FinishNotificationFailure(delivery.Seq, httpStatusCategory, &status, retryable(status))
+			w.warn(w.store.FinishNotificationFailure(delivery.Seq, httpStatusCategory, &status, retryable(status)))
 		}
 	}
+}
+
+// warn reports a store failure once per episode: a loop stuck on the same
+// failure every second writes one line, not one per tick. The message is
+// redacted and never names the destination URL.
+func (w *Worker) warn(err error) {
+	if err == nil {
+		return
+	}
+	message := store.ErrorMessage(err)
+	if message == w.lastWarning {
+		return
+	}
+	w.lastWarning = message
+	fmt.Fprintf(w.warnings, "WARN notifications: %s\n", message)
 }
 
 // deliver posts one event; the category return names a local failure kind
