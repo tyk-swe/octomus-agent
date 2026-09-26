@@ -434,6 +434,71 @@ func TestStateViewRetainsRuntimeAuditActivity(t *testing.T) {
 	}
 }
 
+// TestStateViewStatusPrecedence pins the dashboard status order: an audit
+// wins, then paused, then a recorded error, then active work, then idle.
+func TestStateViewStatusPrecedence(t *testing.T) {
+	for _, check := range []struct {
+		name       string
+		continuous bool
+		err        bool
+		// runtime is the in-memory work: "task", "audit preflight" or "".
+		runtime      string
+		storedCycle  bool
+		wantStatus   string
+		wantActive   int
+		wantCycleRun bool
+	}{
+		{name: "paused with error and a running task", err: true, runtime: "task", wantStatus: "paused", wantActive: 1},
+		{name: "paused audit preflight", runtime: "audit preflight", wantStatus: "auditing"},
+		{name: "continuous with error and a running task", continuous: true, err: true, runtime: "task", wantStatus: "unhealthy", wantActive: 1},
+		{name: "continuous with a running task", continuous: true, runtime: "task", wantStatus: "running", wantActive: 1},
+		{name: "continuous with a stored running cycle", continuous: true, storedCycle: true, wantStatus: "running", wantCycleRun: true},
+		{name: "continuous and idle", continuous: true, wantStatus: "idle"},
+		{name: "paused and idle", wantStatus: "paused"},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			app, control := controlFixture(t, "idle")
+			if check.continuous {
+				control.SetMode(model.OperatingModeContinuous)
+			}
+			if check.err {
+				control.Error = stringPointer("recorded planning failure")
+			}
+			if err := app.Store.SaveControl(control); err != nil {
+				t.Fatal(err)
+			}
+			app.runtimeMu.Lock()
+			switch check.runtime {
+			case "task":
+				app.runtime.tasks["synthetic-task"] = taskJob{branch: "octomus/x", cancel: func() {}}
+			case "audit preflight":
+				app.runtime.preflight = true
+				app.runtime.preflightMode = model.CycleModeAudit
+			}
+			app.runtimeMu.Unlock()
+			if check.storedCycle {
+				// A committed cycle is durable before its runtime slot exists.
+				cycle := model.Cycle{
+					Mode: model.CycleModeExecution, ID: "committed-cycle", Number: 1,
+					Status: model.CycleRunning, StartedAt: model.Now(),
+					Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
+				}
+				if err := app.Store.Put("cycle", cycle.ID, cycle); err != nil {
+					t.Fatal(err)
+				}
+			}
+			view, err := app.StateView()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view["status"] != check.wantStatus || view["active_tasks"] != check.wantActive || view["cycle_active"] != check.wantCycleRun {
+				t.Fatalf("status = %v, active_tasks = %v, cycle_active = %v; want %s, %d, %v",
+					view["status"], view["active_tasks"], view["cycle_active"], check.wantStatus, check.wantActive, check.wantCycleRun)
+			}
+		})
+	}
+}
+
 // Recovery and the worker guard both end interrupted episodes as blocked,
 // which the enabled outbox captures once per episode.
 func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {

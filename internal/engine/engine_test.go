@@ -97,23 +97,44 @@ func TestIdleDelayMatchesDurableBackoffContract(t *testing.T) {
 	}
 }
 
-func TestPausePreservesDurableErrorEvidence(t *testing.T) {
-	state := testStore(t)
-	cfg := testConfig(t.TempDir())
-	control := model.DefaultControl()
-	control.SetMode(model.OperatingModeContinuous)
-	message := "recorded planning failure"
-	control.Error = &message
-	saveSettings(t, state, cfg, control)
-	app := New(state, t.TempDir())
-	t.Cleanup(app.Shutdown)
+// controlEntry is one way an operator reaches a control: the direct method
+// or the ControlAction the HTTP API calls.
+type controlEntry struct {
+	name string
+	run  func(*App) error
+}
 
-	if err := app.Pause(); err != nil {
-		t.Fatal(err)
+func controlEntries(direct func(*App) error, action string) []controlEntry {
+	return []controlEntry{
+		{"direct", direct},
+		{"control action", func(a *App) error {
+			_, err := a.ControlAction(action)
+			return err
+		}},
 	}
-	paused, err := app.Control()
-	if err != nil || paused.Mode != model.OperatingModePaused || paused.Error == nil || *paused.Error != message {
-		t.Fatalf("pause did not preserve durable error evidence: %+v, %v", paused, err)
+}
+
+func TestPausePreservesDurableErrorEvidence(t *testing.T) {
+	for _, entry := range controlEntries((*App).Pause, "pause") {
+		t.Run(entry.name, func(t *testing.T) {
+			state := testStore(t)
+			cfg := testConfig(t.TempDir())
+			control := model.DefaultControl()
+			control.SetMode(model.OperatingModeContinuous)
+			message := "recorded planning failure"
+			control.Error = &message
+			saveSettings(t, state, cfg, control)
+			app := New(state, t.TempDir())
+			t.Cleanup(app.Shutdown)
+
+			if err := entry.run(app); err != nil {
+				t.Fatal(err)
+			}
+			paused, err := app.Control()
+			if err != nil || paused.Mode != model.OperatingModePaused || paused.Error == nil || *paused.Error != message {
+				t.Fatalf("pause did not preserve durable error evidence: %+v, %v", paused, err)
+			}
+		})
 	}
 }
 
@@ -210,64 +231,72 @@ func TestPlanningAdmissionBudgetIsAtomicUnderConcurrency(t *testing.T) {
 }
 
 func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
-	state := testStore(t)
-	cfg := testConfig(t.TempDir())
-	cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired() - 1
-	task := queuedTask(cfg, "original", cfg.DefaultBranch, "octomus/original")
-	if err := state.Put("task", task.ID, task); err != nil {
-		t.Fatal(err)
-	}
-	saveSettings(t, state, cfg, model.DefaultControl())
-	a := New(state, t.TempDir())
-	t.Cleanup(a.Shutdown)
-	if err := a.RunOnce(); err == nil {
-		t.Fatal("unaffordable run once succeeded")
-	}
-	control, err := a.Control()
-	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil {
-		t.Fatalf("unaffordable request changed control: %+v, %v", control, err)
-	}
-	unchanged := loadTask(t, state, task.ID)
-	if unchanged.RunID != nil {
-		t.Fatalf("unaffordable request tagged task with run %q", *unchanged.RunID)
-	}
+	for _, entry := range controlEntries((*App).RunOnce, "cycle") {
+		t.Run(entry.name, func(t *testing.T) {
+			state := testStore(t)
+			cfg := testConfig(t.TempDir())
+			cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired() - 1
+			task := queuedTask(cfg, "original", cfg.DefaultBranch, "octomus/original")
+			if err := state.Put("task", task.ID, task); err != nil {
+				t.Fatal(err)
+			}
+			saveSettings(t, state, cfg, model.DefaultControl())
+			a := New(state, t.TempDir())
+			t.Cleanup(a.Shutdown)
+			if err := entry.run(a); err == nil || !errors.Is(err, model.BlockedReasonBudgetExhausted) {
+				t.Fatalf("unaffordable run once = %v; want a budget refusal", err)
+			}
+			control, err := a.Control()
+			if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil {
+				t.Fatalf("unaffordable request changed control: %+v, %v", control, err)
+			}
+			system := "system"
+			if events, err := state.Events(&system); err != nil || len(events) != 0 {
+				t.Fatalf("unaffordable request recorded events: %+v, %v", events, err)
+			}
+			unchanged := loadTask(t, state, task.ID)
+			if unchanged.RunID != nil {
+				t.Fatalf("unaffordable request tagged task with run %q", *unchanged.RunID)
+			}
 
-	cfg.MaxSessionsPerDay++
-	if err := state.Put("settings", "config", cfg); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.RunOnce(); err != nil {
-		t.Fatalf("affordable run once failed: %v", err)
-	}
-	started, err := a.Control()
-	if err != nil || started.Batch == nil {
-		t.Fatalf("affordable run once did not persist a batch: %+v, %v", started, err)
-	}
-	member := loadTask(t, state, task.ID)
-	if member.RunID == nil || *member.RunID != started.Batch.ID {
-		t.Fatalf("original queued task is not a batch member: %+v", member.RunID)
-	}
-	later := queuedTask(cfg, "later", cfg.DefaultBranch, "octomus/later")
-	if err := state.Put("task", later.ID, later); err != nil {
-		t.Fatal(err)
-	}
-	laterSaved := loadTask(t, state, later.ID)
-	if laterSaved.RunID != nil {
-		t.Fatal("task queued after RunOnce start joined the batch")
-	}
+			cfg.MaxSessionsPerDay++
+			if err := state.Put("settings", "config", cfg); err != nil {
+				t.Fatal(err)
+			}
+			if err := entry.run(a); err != nil {
+				t.Fatalf("affordable run once failed: %v", err)
+			}
+			started, err := a.Control()
+			if err != nil || started.Batch == nil {
+				t.Fatalf("affordable run once did not persist a batch: %+v, %v", started, err)
+			}
+			member := loadTask(t, state, task.ID)
+			if member.RunID == nil || *member.RunID != started.Batch.ID {
+				t.Fatalf("original queued task is not a batch member: %+v", member.RunID)
+			}
+			later := queuedTask(cfg, "later", cfg.DefaultBranch, "octomus/later")
+			if err := state.Put("task", later.ID, later); err != nil {
+				t.Fatal(err)
+			}
+			laterSaved := loadTask(t, state, later.ID)
+			if laterSaved.RunID != nil {
+				t.Fatal("task queued after RunOnce start joined the batch")
+			}
 
-	member.Status = model.StatusBlocked
-	if err := state.Put("task", member.ID, member); err != nil {
-		t.Fatal(err)
-	}
-	member.Status = model.StatusQueued
-	member.RunID = nil
-	if err := state.Put("task", member.ID, member); err != nil {
-		t.Fatal(err)
-	}
-	pending, unresolved, err := state.BatchCounts(started.Batch.ID)
-	if err != nil || pending != 0 || unresolved != 1 {
-		t.Fatalf("late retry erased batch failure: pending=%d unresolved=%d, %v", pending, unresolved, err)
+			member.Status = model.StatusBlocked
+			if err := state.Put("task", member.ID, member); err != nil {
+				t.Fatal(err)
+			}
+			member.Status = model.StatusQueued
+			member.RunID = nil
+			if err := state.Put("task", member.ID, member); err != nil {
+				t.Fatal(err)
+			}
+			pending, unresolved, err := state.BatchCounts(started.Batch.ID)
+			if err != nil || pending != 0 || unresolved != 1 {
+				t.Fatalf("late retry erased batch failure: pending=%d unresolved=%d, %v", pending, unresolved, err)
+			}
+		})
 	}
 }
 
