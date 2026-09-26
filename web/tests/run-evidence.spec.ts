@@ -1097,6 +1097,10 @@ test('Escape closes run evidence after its focused retry control was replaced', 
   const inspect = page.getByRole('button', { name: 'Inspect run' });
   await inspect.click();
   const dialog = page.getByRole('dialog');
+  // The first request must have failed before the retry is allowed to succeed.
+  await expect(
+    dialog.getByRole('heading', { name: 'Recorded evidence could not be loaded' })
+  ).toBeVisible();
   fail = false;
   await dialog.getByRole('button', { name: 'Try again' }).click();
   await expect(dialog.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();

@@ -1362,10 +1362,15 @@ test('an action taken while a poll is in flight shows the state after the action
   await expect(start).toBeEnabled();
   // From here on, polls run only when the test advances the clock.
   await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
-  // One timer poll reads the paused snapshot and is held before it lands.
+  // One timer poll reads the paused snapshot and is held before it lands. A tick is
+  // skipped while an earlier poll is still landing, so advance until one is held.
   const gate = (hold = deferred());
-  await page.clock.runFor(4000);
-  await expect.poll(() => held).toBe(1);
+  await expect
+    .poll(async () => {
+      if (!held) await page.clock.runFor(4000);
+      return held;
+    })
+    .toBe(1);
   hold = null;
   const resumed = page.waitForResponse('**/api/control/resume');
   await start.click();
