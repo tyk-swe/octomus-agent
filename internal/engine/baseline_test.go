@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -387,8 +388,15 @@ func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing
 	}
 	observation.DefaultBranch = cfg.DefaultBranch
 	setObservation(app, observation)
-	if status, _ := app.BaselineView(nil); status["revision_status"] != "stale" {
-		t.Fatalf("same target stale: %v", status["revision_status"])
+	view, err = app.BaselineView(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view["revision_status"] != "stale" {
+		t.Fatalf("same target stale: %v", view["revision_status"])
+	}
+	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs == nil || obs.Revision != observation.Revision {
+		t.Fatalf("observation of the live target was not shown: %v", view["default_observation"])
 	}
 	changed := cfg.Clone()
 	changed.DefaultBranch = "moved"
@@ -401,6 +409,13 @@ func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing
 	}
 	if view["config_matches"] != false || view["revision_status"] != "unknown" {
 		t.Fatalf("changed config: %v %v", view["config_matches"], view["revision_status"])
+	}
+	// The last observation describes the old branch, not the live target.
+	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs != nil {
+		t.Fatalf("observation of another target was shown as the live one: %v", obs)
+	}
+	if encoded, err := json.Marshal(view["default_observation"]); err != nil || string(encoded) != "null" {
+		t.Fatalf("hidden observation must encode as null: %s, %v", encoded, err)
 	}
 	noCommands := changed.Clone()
 	noCommands.VerificationCommands = []string{}

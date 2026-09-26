@@ -338,6 +338,11 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 	a.runtimeMu.Lock()
 	observation := a.runtime.defaultObservation
 	a.runtimeMu.Unlock()
+	// An observation of another repository or branch (the configuration
+	// changed since it was made) says nothing about the live target.
+	if observation != nil && !observation.Describes(live) {
+		observation = nil
+	}
 	var reasonValue any
 	if reason != nil {
 		reasonValue = *reason
