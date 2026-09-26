@@ -1329,6 +1329,54 @@ test('a polled change to task actions keeps keyboard focus on the same action', 
   await expect(archive).toBeFocused();
 });
 
+test('an action taken while a poll is in flight shows the state after the action', async ({
+  page
+}) => {
+  await page.clock.install();
+  let paused = true;
+  let hold: ReturnType<typeof deferred> | null = null;
+  let held = 0;
+  await page.route('**/api/state', async (route) => {
+    const response = await route.fetch();
+    const snapshot: Snapshot = await response.json();
+    snapshot.configured = true;
+    snapshot.control.paused = paused;
+    snapshot.control.mode = paused ? 'paused' : 'continuous';
+    snapshot.active_tasks = 0;
+    snapshot.cycle_active = false;
+    snapshot.active_cycle_mode = null;
+    snapshot.baseline_active = false;
+    const gate = hold;
+    if (gate) {
+      held++;
+      await gate.promise;
+    }
+    await route.fulfill({ json: snapshot });
+  });
+  await page.route('**/api/control/resume', async (route) => {
+    paused = false;
+    await route.fulfill({ json: { paused: false } });
+  });
+  await login(page);
+  const start = page.getByRole('button', { name: 'Start continuous', exact: true });
+  await expect(start).toBeEnabled();
+  // From here on, polls run only when the test advances the clock.
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+  // One timer poll reads the paused snapshot and is held before it lands.
+  const gate = (hold = deferred());
+  await page.clock.runFor(4000);
+  await expect.poll(() => held).toBe(1);
+  hold = null;
+  const resumed = page.waitForResponse('**/api/control/resume');
+  await start.click();
+  await resumed;
+  // The action has finished while the stale poll is still outstanding.
+  await expect(start).toBeEnabled();
+  gate.resolve();
+  // No clock advance: the post-action snapshot must not wait for the next poll.
+  await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
+});
+
 test('header and empty discovery actions share eligibility and prevent duplicate pending controls', async ({
   page
 }) => {

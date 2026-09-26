@@ -32,7 +32,6 @@
     data = $state<Snapshot | null>(null),
     error = $state(''),
     connectionError = $state(''),
-    refreshing = false,
     busy = $state(false),
     pendingAction = $state(''),
     view = $state('overview'),
@@ -104,6 +103,9 @@
   let lastScope = '';
   let lastPage = '';
   let sessionGeneration = 0;
+  /** A refresh asked for while one is in flight runs once more after it, never alongside it. */
+  let refreshing = false;
+  let refreshQueued = false;
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
   /** Status totals behind the queue filter tabs; 'active' and 'attention' are status groups. */
@@ -318,7 +320,12 @@
     }
   }
   async function refresh() {
-    if (!connected || refreshing) return;
+    if (!connected) return;
+    if (refreshing) {
+      // The in-flight snapshot may predate an action that just finished.
+      refreshQueued = true;
+      return;
+    }
     const currentSession = sessionGeneration;
     refreshing = true;
     try {
@@ -330,7 +337,13 @@
     } catch (e) {
       if (connected && currentSession === sessionGeneration) connectionError = (e as Error).message;
     } finally {
-      if (currentSession === sessionGeneration) refreshing = false;
+      if (currentSession === sessionGeneration) {
+        refreshing = false;
+        if (refreshQueued) {
+          refreshQueued = false;
+          void refresh();
+        }
+      }
     }
   }
   async function login() {
@@ -357,7 +370,10 @@
       disconnect();
       error = 'Session expired. Connect again to inspect private records.';
     });
-    const timer = setInterval(refresh, 4000);
+    // Timer polls skip while one is in flight; only explicit refreshes queue a follow-up.
+    const timer = setInterval(() => {
+      if (!refreshing) void refresh();
+    }, 4000);
     return () => {
       clearInterval(timer);
       unsubscribe();
@@ -440,6 +456,7 @@
     listGeneration++;
     listRequest?.abort();
     refreshing = false;
+    refreshQueued = false;
     listLoading = false;
     listLoaded = false;
     listError = '';
