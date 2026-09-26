@@ -331,11 +331,15 @@ func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
 		command string
 		success bool
 		want    []string
+		absent  []string
 		suffix  string
 	}{
 		{name: "long failure", command: long + "echo FAIL'URE-DETAIL' >&2; exit 1", want: []string{"TAIL-OF-STDOUT", "\n[stderr]\nFAILURE-DETAIL", outputTruncatedMarker}, suffix: "\nexit status: 1"},
 		{name: "long success", command: long + "echo PASS'-WARNING' >&2", success: true, want: []string{"TAIL-OF-STDOUT", "\n[stderr]\nPASS-WARNING", outputTruncatedMarker}},
 		{name: "long stderr", command: "{ head -c 20000 /dev/zero | tr '\\0' e; echo; echo STDERR'-TAIL'; } >&2; echo STDOUT'-KEPT'; exit 3", want: []string{"STDOUT-KEPT\n[stderr]\n" + outputTruncatedMarker, "STDERR-TAIL"}, suffix: "\nexit status: 3"},
+		// stderr keeps the room short stdout leaves, so a compiler's first
+		// error survives when the whole report fits the bound.
+		{name: "stderr within the room stdout leaves", command: "{ echo STDERR'-HEAD'; head -c 12000 /dev/zero | tr '\\0' e; echo; echo STDERR'-TAIL'; } >&2; echo out; exit 1", want: []string{"out\n[stderr]\nSTDERR-HEAD", "STDERR-TAIL"}, absent: []string{outputTruncatedMarker}, suffix: "\nexit status: 1"},
 		{name: "short failure", command: "echo out; echo err >&2; exit 3", want: []string{"out\n[stderr]\nerr\nexit status: 3"}},
 		{name: "secret", command: "echo token=ghp_abcdefghij0123456789; exit 2", want: []string{"token=[redacted]"}},
 	} {
@@ -356,6 +360,11 @@ func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
 			for _, want := range test.want {
 				if !strings.Contains(record.Output, want) {
 					t.Fatalf("evidence lacks %q:\n%s", want, record.Output)
+				}
+			}
+			for _, absent := range test.absent {
+				if strings.Contains(record.Output, absent) {
+					t.Fatalf("evidence has %q:\n%s", absent, record.Output)
 				}
 			}
 			if !strings.HasSuffix(record.Output, test.suffix) || strings.Contains(record.Output, "ghp_") {

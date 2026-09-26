@@ -684,8 +684,9 @@ const (
 // prompt in at most limit bytes: stdout, then a [stderr] section, then the
 // exit status on failure. Secrets are scrubbed from each whole stream before
 // anything is cut. Each stream keeps its end, where test runners and compilers
-// report failures, and stderr may use half the bound however long stdout is,
-// since it usually states the cause.
+// report failures. stderr may use half the bound however long stdout is, since
+// it usually states the cause, and any room stdout leaves; stdout may use
+// whatever stderr leaves.
 func (o checkOutcome) evidenceText(limit int) string {
 	if o.capture != nil {
 		return boundedTail(redact.Secrets(o.capture.Error()), limit, false)
@@ -697,11 +698,19 @@ func (o checkOutcome) evidenceText(limit int) string {
 	if !o.captured.Status.Success() {
 		status = "\n" + o.captured.Status.String()
 	}
+	stdout := clean(o.captured.Stdout)
+	// stdoutWhole is what stdout needs uncut, with its capture marker.
+	stdoutWhole := len(stdout)
+	if o.captured.Stdout.Truncated {
+		stdoutWhole += len("\n" + outputTruncatedMarker)
+	}
 	stderr := ""
 	if text := clean(o.captured.Stderr); text != "" || o.captured.Stderr.Truncated {
-		stderr = "\n[stderr]\n" + boundedTail(text, limit/2, o.captured.Stderr.Truncated)
+		const separator = "\n[stderr]\n"
+		budget := max(limit/2, limit-len(separator)-stdoutWhole-len(status))
+		stderr = separator + boundedTail(text, budget, o.captured.Stderr.Truncated)
 	}
-	return boundedTail(clean(o.captured.Stdout), limit-len(stderr)-len(status), o.captured.Stdout.Truncated) + stderr + status
+	return boundedTail(stdout, limit-len(stderr)-len(status), o.captured.Stdout.Truncated) + stderr + status
 }
 
 // boundedTail keeps the end of text within limit bytes, cut on a rune
