@@ -178,12 +178,21 @@ func (c Config) validateMode(ready, audit bool) error {
 		{between(c.DiscoveryAgents, 8, 10), "Discovery requires 8–10 agents"},
 		{between(c.ExecutionConcurrency, 1, 8), "Execution concurrency must be 1–8"},
 		{between(c.MaxTasksPerCycle, 1, 20), "Tasks per cycle must be 1–20"},
-		{between(c.MaxRepairRounds, 1, 20) && c.MaxNoProgressRounds > 0, "Repair limits must be positive (at most 20 rounds)"},
+		{between(c.MaxRepairRounds, 1, 20), "Repair rounds must be 1–20"},
+		{c.MaxNoProgressRounds > 0, "No-progress rounds must be at least 1"},
 		{c.MaxRetries <= 10, "Retry limit must be at most 10"},
-		{between(c.CycleIntervalSeconds, 30, 604800) && between(c.MaintenanceEveryCycles, 1, 10000), "Cycle interval must be at least 30 seconds; maintenance cadence must be positive"},
-		{between(c.SessionTimeoutSeconds, 10, 604800) && between(c.CommandTimeoutSeconds, 1, 604800) && c.TaskTimeoutSeconds <= 604800 && c.TaskTimeoutSeconds >= c.SessionTimeoutSeconds, "Invalid time limits"},
-		{between(c.MaxSessionsPerDay, 1, 1000000) && between(c.MaxOpenPRs, 1, 1000) && between(c.MaxWorkspaceBytes, 1000000, 1000000000000000) && between(c.RetainCompletedDays, 1, 36500) && between(c.RetainEvents, 100, 100000), "Invalid resource or retention limits"},
-		{ValidBranch(c.DefaultBranch) && ValidBranch(c.BranchPrefix+"task") && strings.HasSuffix(c.BranchPrefix, "/"), "Invalid default branch or branch prefix"},
+		{between(c.CycleIntervalSeconds, 30, 604800), "Cycle interval must be 30–604800 seconds"},
+		{between(c.MaintenanceEveryCycles, 1, 10000), "Maintenance cadence must be 1–10000 cycles"},
+		{between(c.SessionTimeoutSeconds, 10, 604800), "Session timeout must be 10–604800 seconds"},
+		{between(c.CommandTimeoutSeconds, 1, 604800), "Command timeout must be 1–604800 seconds"},
+		{between(c.TaskTimeoutSeconds, c.SessionTimeoutSeconds, 604800), "Task timeout must be at least the session timeout and at most 604800 seconds"},
+		{between(c.MaxSessionsPerDay, 1, 1000000), "Daily session budget must be 1–1000000"},
+		{between(c.MaxOpenPRs, 1, 1000), "Open PR capacity must be 1–1000"},
+		{between(c.MaxWorkspaceBytes, 1000000, 1000000000000000), "Workspace budget must be 1000000–1000000000000000 bytes"},
+		{between(c.RetainCompletedDays, 1, 36500), "Workspace retention must be 1–36500 days"},
+		{between(c.RetainEvents, 100, 100000), "Retained activity events must be 100–100000"},
+		{ValidBranch(c.DefaultBranch), "Default branch must be a valid branch name"},
+		{ValidBranch(c.BranchPrefix+"task") && strings.HasSuffix(c.BranchPrefix, "/"), `Owned branch prefix must be a valid branch path ending in "/"`},
 		{!strings.HasPrefix(c.DefaultBranch, c.BranchPrefix), "Owned branch prefix must exclude the default branch"},
 	}
 	for _, check := range checks {
@@ -211,10 +220,10 @@ func (c Config) validateMode(ready, audit bool) error {
 		return true
 	}
 	if !exact(c.Roles, Roles()) {
-		return fmt.Errorf("Configure exactly the four planning and review roles")
+		return fmt.Errorf("Configure exactly the four planning and review roles (%s)", strings.Join(Roles(), ", "))
 	}
 	if !exact(c.Tiers, Tiers()) {
-		return fmt.Errorf("Configure all five execution tiers")
+		return fmt.Errorf("Configure exactly the five execution tiers (%s)", strings.Join(Tiers(), ", "))
 	}
 	for _, route := range c.RoutesFor(false) {
 		if err := route.Route.Validate(false); err != nil {
@@ -233,7 +242,7 @@ func (c Config) validateMode(ready, audit bool) error {
 	}
 	for _, command := range c.VerificationCommands {
 		if strings.TrimSpace(command) == "" || len(command) > 4096 {
-			return fmt.Errorf("Invalid executable or verification commands")
+			return fmt.Errorf("Each verification command must be non-empty and at most 4096 bytes")
 		}
 	}
 	if ready {

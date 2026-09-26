@@ -204,25 +204,37 @@ func TestValidationNumericBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		field     string
 		low, high uint64
+		message   string
 	}{
-		{"discovery_agents", 8, 10}, {"execution_concurrency", 1, 8}, {"max_tasks_per_cycle", 1, 20}, {"max_repair_rounds", 1, 20}, {"max_retries", 0, 10}, {"cycle_interval_seconds", 30, 604800}, {"maintenance_every_cycles", 1, 10000}, {"max_sessions_per_day", 1, 1000000}, {"max_open_prs", 1, 1000}, {"max_workspace_bytes", 1000000, 1000000000000000}, {"retain_completed_days", 1, 36500}, {"retain_events", 100, 100000},
+		{"discovery_agents", 8, 10, "Discovery requires 8–10 agents"},
+		{"execution_concurrency", 1, 8, "Execution concurrency must be 1–8"},
+		{"max_tasks_per_cycle", 1, 20, "Tasks per cycle must be 1–20"},
+		{"max_repair_rounds", 1, 20, "Repair rounds must be 1–20"},
+		{"max_retries", 0, 10, "Retry limit must be at most 10"},
+		{"cycle_interval_seconds", 30, 604800, "Cycle interval must be 30–604800 seconds"},
+		{"maintenance_every_cycles", 1, 10000, "Maintenance cadence must be 1–10000 cycles"},
+		{"command_timeout_seconds", 1, 604800, "Command timeout must be 1–604800 seconds"},
+		{"max_sessions_per_day", 1, 1000000, "Daily session budget must be 1–1000000"},
+		{"max_open_prs", 1, 1000, "Open PR capacity must be 1–1000"},
+		{"max_workspace_bytes", 1000000, 1000000000000000, "Workspace budget must be 1000000–1000000000000000 bytes"},
+		{"retain_completed_days", 1, 36500, "Workspace retention must be 1–36500 days"},
+		{"retain_events", 100, 100000, "Retained activity events must be 100–100000"},
 	} {
-		for _, n := range []uint64{test.low, test.high, test.high + 1} {
+		values := []uint64{test.low, test.high, test.high + 1}
+		if test.low > 0 {
+			values = append(values, test.low-1)
+		}
+		for _, n := range values {
 			data, _ := json.Marshal(map[string]uint64{test.field: n})
 			var c Config
 			if err := json.Unmarshal(data, &c); err != nil {
 				t.Fatal(err)
 			}
-			if (c.Validate(false) == nil) != (n <= test.high) {
-				t.Errorf("%s=%d", test.field, n)
-			}
-		}
-		if test.low > 0 {
-			data, _ := json.Marshal(map[string]uint64{test.field: test.low - 1})
-			var c Config
-			_ = json.Unmarshal(data, &c)
-			if c.Validate(false) == nil {
-				t.Errorf("below %s", test.field)
+			err := c.Validate(false)
+			if valid := n >= test.low && n <= test.high; valid != (err == nil) {
+				t.Errorf("%s=%d: %v", test.field, n, err)
+			} else if !valid && err.Error() != test.message {
+				t.Errorf("%s=%d: %q; want %q", test.field, n, err, test.message)
 			}
 		}
 	}
@@ -241,6 +253,43 @@ func TestValidationNumericBoundaries(t *testing.T) {
 	c.RepairRoute.Model = strings.Repeat("ü", 51)
 	if c.Validate(false) == nil {
 		t.Fatal("route length counted characters, not bytes")
+	}
+}
+
+// Each rejected setting names its field and, for ranges, what it accepts.
+func TestValidationNamesTheFailingSetting(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		mutate  func(*Config)
+		message string
+	}{
+		{"no-progress rounds", func(c *Config) { c.MaxNoProgressRounds = 0 }, "No-progress rounds must be at least 1"},
+		{"session below range", func(c *Config) { c.SessionTimeoutSeconds = 9 }, "Session timeout must be 10–604800 seconds"},
+		{"session above range", func(c *Config) { c.SessionTimeoutSeconds, c.TaskTimeoutSeconds = 604801, 604801 }, "Session timeout must be 10–604800 seconds"},
+		{"task below session", func(c *Config) { c.SessionTimeoutSeconds, c.TaskTimeoutSeconds = 1800, 900 }, "Task timeout must be at least the session timeout and at most 604800 seconds"},
+		{"task above range", func(c *Config) { c.TaskTimeoutSeconds = 604801 }, "Task timeout must be at least the session timeout and at most 604800 seconds"},
+		{"default branch", func(c *Config) { c.DefaultBranch = "main." }, "Default branch must be a valid branch name"},
+		{"prefix without slash", func(c *Config) { c.BranchPrefix = "octomus" }, `Owned branch prefix must be a valid branch path ending in "/"`},
+		{"invalid prefix", func(c *Config) { c.BranchPrefix = "bad..x/" }, `Owned branch prefix must be a valid branch path ending in "/"`},
+		{"prefix covers default", func(c *Config) { c.DefaultBranch = "octomus/main" }, "Owned branch prefix must exclude the default branch"},
+		{"extra tier", func(c *Config) { c.Tiers["XXL"] = NewRoute("", "") }, "Configure exactly the five execution tiers (XS, S, M, L, XL)"},
+		{"missing tier", func(c *Config) { delete(c.Tiers, "XL") }, "Configure exactly the five execution tiers (XS, S, M, L, XL)"},
+		{"missing role", func(c *Config) { delete(c.Roles, "code_reviewer") }, "Configure exactly the four planning and review roles (orchestrator, discovery, proposal_reviewer, code_reviewer)"},
+		{"blank command", func(c *Config) { c.VerificationCommands = []string{"go test ./...", " "} }, "Each verification command must be non-empty and at most 4096 bytes"},
+		{"long command", func(c *Config) { c.VerificationCommands = []string{strings.Repeat("x", 4097)} }, "Each verification command must be non-empty and at most 4096 bytes"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := Default()
+			test.mutate(&c)
+			if err := c.Validate(false); err == nil || err.Error() != test.message {
+				t.Fatalf("Validate(false) = %v; want %q", err, test.message)
+			}
+		})
+	}
+	c := Default()
+	c.VerificationCommands = []string{strings.Repeat("x", 4096)}
+	if err := c.Validate(false); err != nil {
+		t.Fatalf("a 4096-byte command: %v", err)
 	}
 }
 
