@@ -177,18 +177,24 @@ func Fetch(ctx context.Context, c config.Config) error {
 }
 
 // RemoteRevision returns origin's head for branch, or nil when it is absent.
+// Only the exact ref counts: ls-remote patterns also match the tail of longer
+// ref names, so `refs/heads/a/refs/heads/main` answers a query for `main` too.
 func RemoteRevision(ctx context.Context, c config.Config, branch string) (*string, error) {
 	if !config.ValidBranch(branch) {
 		return nil, errors.New("Invalid branch")
 	}
+	want := "refs/heads/" + branch
 	out, err := Git(ctx, c, c.Repository, []string{
-		"ls-remote", "--heads", "origin", "refs/heads/" + branch,
+		"ls-remote", "--heads", "origin", want,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if fields := strings.Fields(out); len(fields) > 0 {
-		return &fields[0], nil
+	// Each line is `<oid>\t<ref>`.
+	for _, line := range strings.Split(out, "\n") {
+		if sha, ref, ok := strings.Cut(line, "\t"); ok && ref == want {
+			return &sha, nil
+		}
 	}
 	return nil, nil
 }

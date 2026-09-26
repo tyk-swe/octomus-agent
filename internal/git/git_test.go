@@ -147,6 +147,14 @@ func TestMain(m *testing.M) {
 
 func strptr(s string) *string { return &s }
 
+// deref renders an optional revision for failure messages.
+func deref(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
+}
+
 // Real commits establish true/false ancestry; command failures must not
 // read as a false predicate.
 func TestGitAncestryIsAPredicateAndCommandErrorsFailClosed(t *testing.T) {
@@ -265,6 +273,32 @@ func TestRemoteValidationAndRevisionLookup(t *testing.T) {
 	}
 	if err := git.Fetch(ctx, c); err != nil {
 		t.Fatalf("fetch: %v", err)
+	}
+}
+
+// TestRemoteRevisionIgnoresTailMatchingRefs: ls-remote patterns also match the
+// tail of longer ref names, so a branch named `a/refs/heads/main` answers the
+// query for `refs/heads/main` too, and sorts first. Only the exact ref may
+// resolve: a decoy must neither replace the real head nor make an absent
+// branch look present.
+func TestRemoteRevisionIgnoresTailMatchingRefs(t *testing.T) {
+	c, root := fixtureRoot(t)
+	ctx := context.Background()
+	main := realGit(t, c.Repository, "rev-parse", "main")
+	realGit(t, c.Repository, "commit", "--allow-empty", "-m", "decoy")
+	decoy := realGit(t, c.Repository, "rev-parse", "HEAD")
+	remote := filepath.Join(root, "remote.git")
+	realGit(t, c.Repository, "push", remote, "HEAD:refs/heads/a/refs/heads/main")
+	realGit(t, c.Repository, "push", remote, "HEAD:refs/heads/z/refs/heads/octomus/missing")
+	got, err := git.RemoteRevision(ctx, c, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || *got != main {
+		t.Fatalf("remote main = %v; want %s, not the decoy %s", deref(got), main, decoy)
+	}
+	if missing, err := git.RemoteRevision(ctx, c, "octomus/missing"); err != nil || missing != nil {
+		t.Fatalf("missing branch = %v, %v; want no revision despite the tail-matching decoy", deref(missing), err)
 	}
 }
 
