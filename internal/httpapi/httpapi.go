@@ -199,12 +199,9 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 	status, body, err := matched.handle(w, r, params)
 	if err != nil {
 		var be *bodyError
-		switch {
-		case errors.Is(err, errHandled):
-			// decodeOr already wrote the rejection.
-		case errors.As(err, &be):
+		if errors.As(err, &be) {
 			writeBodyError(w, be)
-		default:
+		} else {
 			writeAPIError(w, apiStatus(err), store.ErrorMessage(err))
 		}
 		return
@@ -357,20 +354,6 @@ func writeBodyError(w http.ResponseWriter, err *bodyError) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(err.status)
 	_, _ = w.Write([]byte(err.message))
-}
-
-// runHandlers wraps one route handler so body rejections keep their text form.
-func decodeOr(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if err := decodeBody(w, r, dst); err != nil {
-		var be *bodyError
-		if errors.As(err, &be) {
-			writeBodyError(w, be)
-			return false
-		}
-		writeAPIError(w, apiStatus(err), store.ErrorMessage(err))
-		return false
-	}
-	return true
 }
 
 func (a *api) stateView(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
@@ -554,8 +537,8 @@ func (v *configUpdateBody) UnmarshalJSON(data []byte) error {
 
 func (a *api) saveConfig(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 	var body configUpdateBody
-	if !decodeOr(w, r, &body) {
-		return 0, nil, errHandled
+	if err := decodeBody(w, r, &body); err != nil {
+		return 0, nil, err
 	}
 	view, err := a.app.SaveConfig(body.ExpectedRevision, body.Config)
 	if err != nil {
@@ -567,9 +550,6 @@ func (a *api) saveConfig(w http.ResponseWriter, r *http.Request, _ map[string]st
 	}
 	return http.StatusOK, view, nil
 }
-
-// errHandled marks a rejection already written to the response.
-var errHandled = errors.New("response already written")
 
 // baselineStartBody rejects unknown fields; the request names the saved
 // canonical configuration revision rather than echoing displayed values.
@@ -589,8 +569,8 @@ func (v *baselineStartBody) UnmarshalJSON(data []byte) error {
 
 func (a *api) baselineStart(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 	var body baselineStartBody
-	if !decodeOr(w, r, &body) {
-		return 0, nil, errHandled
+	if err := decodeBody(w, r, &body); err != nil {
+		return 0, nil, err
 	}
 	check, err := a.app.StartBaseline(body.ExpectedRevision)
 	if err != nil {
@@ -692,8 +672,8 @@ func (v *catalogRequest) UnmarshalJSON(data []byte) error {
 
 func (a *api) modelCatalog(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 	var request catalogRequest
-	if !decodeOr(w, r, &request) {
-		return 0, nil, errHandled
+	if err := decodeBody(w, r, &request); err != nil {
+		return 0, nil, err
 	}
 	catalog, err := a.app.ModelCatalog(request.Backend, request.Binary)
 	return http.StatusOK, catalog, err

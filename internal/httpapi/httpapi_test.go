@@ -616,3 +616,39 @@ func queuedTask(cfg config.Config) model.Task {
 }
 
 func stringPointer(s string) *string { return &s }
+
+// Every JSON body route answers extraction failures once, as text: an
+// oversized body at 413, malformed JSON at 400 and a body of the wrong shape
+// at 422, before any handler work runs.
+func TestBodyRejectionsKeepTheirPlainTextForm(t *testing.T) {
+	app, state := testApp(t)
+	router := Router(app, token, "", "test")
+	oversized := `{"expected_revision":"` + strings.Repeat("a", bodyLimit) + `"}`
+	for _, route := range []struct{ method, path string }{
+		{"PUT", "/api/config"},
+		{"POST", "/api/baseline-checks"},
+		{"POST", "/api/model-catalog"},
+	} {
+		for _, check := range []struct {
+			body, prefix string
+			status       int
+		}{
+			{oversized, "Failed to buffer the request body: length limit exceeded", http.StatusRequestEntityTooLarge},
+			{"{bad", "Failed to parse the request body as JSON: ", http.StatusBadRequest},
+			{`{"bogus":1}`, `Failed to deserialize the JSON body into the target type: unknown field "bogus"`, http.StatusUnprocessableEntity},
+		} {
+			response := call(t, router, route.method, route.path, check.body)
+			text := response.Body.String()
+			if response.Code != check.status || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+				!strings.HasPrefix(text, check.prefix) || strings.Count(text, "Failed to") != 1 {
+				t.Fatalf("%s %s %d: %d %q %q", route.method, route.path, check.status, response.Code, response.Header().Get("Content-Type"), text)
+			}
+		}
+	}
+	if raw, found, err := state.GetRaw("settings", "config"); err != nil || found {
+		t.Fatalf("rejected saves wrote a configuration: %s %v", raw, err)
+	}
+	if latest, err := state.LatestBaseline(); err != nil || latest != nil {
+		t.Fatalf("rejected starts persisted a check: %v %v", latest, err)
+	}
+}
