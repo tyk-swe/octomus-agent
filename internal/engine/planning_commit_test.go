@@ -16,6 +16,10 @@ import (
 func TestCommitTasksQueuesEachAcceptedProposal(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
+	// Six distinct attempt-policy values, so a task whose policy swapped two
+	// of them cannot match the expected policy below.
+	cfg.MaxRepairRounds, cfg.MaxNoProgressRounds, cfg.MaxRetries = 4, 2, 3
+	cfg.TaskTimeoutSeconds, cfg.SessionTimeoutSeconds, cfg.CommandTimeoutSeconds = 14400, 1800, 600
 	saveSettings(t, state, cfg, model.DefaultControl())
 	app := New(state, t.TempDir())
 	t.Cleanup(app.Shutdown)

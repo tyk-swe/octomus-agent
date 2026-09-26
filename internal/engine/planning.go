@@ -925,14 +925,7 @@ func newPlannedTask(cfg config.Config, cycle *model.Cycle, original, proposal mo
 		number, url = &n, &u
 	}
 	now := model.Now()
-	policy := model.AttemptPolicy{
-		MaxRepairRounds:       cfg.MaxRepairRounds,
-		MaxNoProgressRounds:   cfg.MaxNoProgressRounds,
-		MaxRetries:            cfg.MaxRetries,
-		TaskTimeoutSeconds:    cfg.TaskTimeoutSeconds,
-		SessionTimeoutSeconds: cfg.SessionTimeoutSeconds,
-		CommandTimeoutSeconds: cfg.CommandTimeoutSeconds,
-	}
+	policy := model.AttemptPolicyFromConfig(cfg)
 	return model.Task{
 		ID:              taskID,
 		CycleID:         cycle.ID,
