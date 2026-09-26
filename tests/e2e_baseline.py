@@ -36,11 +36,23 @@ def latest(service):
 
 
 def wait_check(service, statuses, seconds=60, cleaned=False):
+    """Waits for the latest check to reach one of `statuses` and returns it.
+
+    With `cleaned`, it also waits for the clone's removal (or its recorded
+    failure) and for the baseline slot to be free: the worker saves the
+    cleaned record first and releases the slot as it exits, so a scenario
+    that saves settings or starts another check right after must wait for
+    baseline_active to clear.
+    """
     def done():
         check = latest(service)['check']
         if not check or check['status'] not in statuses:
             return None
-        return check if not cleaned or check['workspace_removed'] or check['cleanup_error'] else None
+        if cleaned and not (check['workspace_removed'] or check['cleanup_error']):
+            return None
+        if cleaned and service.request('/state')['baseline_active']:
+            return None
+        return check
     return service.wait(done, f'baseline reaching {statuses}', seconds)
 
 
