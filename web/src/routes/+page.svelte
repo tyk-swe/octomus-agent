@@ -685,27 +685,31 @@
           </div>
         {/if}
         {#if data.pr_capacity.status !== 'ready'}
-          <div class="notice" role="status" aria-live="polite">
+          <!-- Only the capacity message is live: the relative observation time changes every
+               minute and would otherwise re-announce the whole notice. -->
+          <div class="notice">
             <Icon name="alert" /><span
-              >{#if data.pr_capacity.status === 'full'}Open-PR capacity is full: {data.pr_capacity
-                  .owned_open} owned open PRs of {data.pr_capacity.limit}
-                allowed{data.pr_capacity.reserved > 0
-                  ? `, plus ${data.pr_capacity.reserved} reserved deliveries`
-                  : ''}. New-PR work waits for an observed closure or merge; maintenance on eligible
-                owned PRs continues.
-              {:else if data.pr_capacity.status === 'refreshing'}{data.pr_capacity.reason ??
-                  'Refreshing the open-PR inventory'}. New-PR work waits until the refresh
-                completes.
-              {:else}Open-PR capacity is unavailable: {data.pr_capacity.reason ??
-                  'no complete inventory observed'}. New-PR work waits; unknown capacity is never
-                treated as zero.{/if}
+              ><span role="status" aria-live="polite"
+                >{#if data.pr_capacity.status === 'full'}Open-PR capacity is full: {data.pr_capacity
+                    .owned_open} owned open PRs of {data.pr_capacity.limit}
+                  allowed{data.pr_capacity.reserved > 0
+                    ? `, plus ${data.pr_capacity.reserved} reserved deliveries`
+                    : ''}. New-PR work waits for an observed closure or merge; maintenance on
+                  eligible owned PRs continues.
+                {:else if data.pr_capacity.status === 'refreshing'}{data.pr_capacity.reason ??
+                    'Refreshing the open-PR inventory'}. New-PR work waits until the refresh
+                  completes.
+                {:else}Open-PR capacity is unavailable: {data.pr_capacity.reason ??
+                    'no complete inventory observed'}. New-PR work waits; unknown capacity is never
+                  treated as zero.{/if}</span
+              >
               {#if data.pr_capacity.observed_at}Observed {relative(
                   data.pr_capacity.observed_at
                 )}.{/if}</span
             >
           </div>
         {/if}
-        <div class="notice" aria-label="Operating mode" aria-live="polite">
+        <div class="notice" role="status" aria-label="Operating mode" aria-live="polite">
           <span
             >{data.control.mode === 'run_once'
               ? 'Run once'
@@ -1225,7 +1229,9 @@
                 <div>
                   <h3>{pr.title}<span class="pr-number">#{pr.number}</span></h3>
                   <p>
-                    <code>{pr.branch}</code><span>→</span><code>{pr.base}</code
+                    <code>{pr.branch}</code><span>→</span><code>{pr.base}</code><span
+                      class="pr-observed"
+                      >· {pr.owned ? 'owned by Octomus' : 'not owned by Octomus'}</span
                     >{#if observed.observed_at}<span class="pr-observed"
                         >· observed {relative(observed.observed_at)}</span
                       >{/if}

@@ -46,6 +46,28 @@
   let evidenceGeneration = 0;
   let evidenceRequest: AbortController | null = null;
   const feedback = createCopyFeedback();
+  const TABS = ['Overview', 'Sessions', 'Reviews', 'Verification', 'Activity'];
+  /**
+   * Tabs follow the ARIA tabs pattern: only the selected tab is in the Tab order, and the
+   * arrow, Home and End keys select and focus another tab.
+   */
+  function moveTab(event: KeyboardEvent, from: string) {
+    const index = TABS.indexOf(from);
+    const next =
+      event.key === 'ArrowRight'
+        ? (index + 1) % TABS.length
+        : event.key === 'ArrowLeft'
+          ? (index - 1 + TABS.length) % TABS.length
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? TABS.length - 1
+              : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    tab = TABS[next];
+    document.getElementById('task-tab-' + tab)?.focus();
+  }
   /**
    * Recorded evidence is fetched per (cycle, task, task revision) and skipped while that
    * key is unchanged. Awaiting it keeps slow evidence reads from being restarted on
@@ -189,16 +211,25 @@
       </p>
     </div>
     <div class="tabs" role="tablist" aria-label="Task information">
-      {#each ['Overview', 'Sessions', 'Reviews', 'Verification', 'Activity'] as name}<button
+      {#each TABS as name}<button
           role="tab"
+          id={'task-tab-' + name}
           aria-selected={tab === name}
+          aria-controls="task-tabpanel"
+          tabindex={tab === name ? 0 : -1}
           class:active={tab === name}
           onclick={() => (tab = name)}
+          onkeydown={(event) => moveTab(event, name)}
           >{name}{#if name === 'Reviews'}
             <span>{task.reviews.length}</span>{/if}</button
         >{/each}
     </div>
-    <div class="detail-content" role="tabpanel" aria-label={tab}>
+    <div
+      class="detail-content"
+      role="tabpanel"
+      id="task-tabpanel"
+      aria-labelledby={'task-tab-' + tab}
+    >
       <section class="result-summary" aria-labelledby="result-heading">
         <div class="row-between">
           <h3 id="result-heading">Recorded result</h3>

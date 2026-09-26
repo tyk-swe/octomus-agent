@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { login, openNavigation } from './synthetic';
 const token = 'browser-test-operator-token-32-characters';
 
 const codexModels = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
@@ -128,6 +129,86 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await navigate('Overview');
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test('ownership and status are written out, and task tabs follow the arrow-key tabs pattern', async ({
+  page,
+  isMobile
+}) => {
+  const observedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+  await page.route('**/api/state', async (route) => {
+    const state = await (await route.fetch()).json();
+    state.pr_capacity = {
+      limit: 2,
+      owned_open: 2,
+      reserved: 0,
+      remaining: 0,
+      observed_at: observedAt,
+      status: 'full',
+      reason: 'Capacity full'
+    };
+    await route.fulfill({ json: state });
+  });
+  await login(page);
+  // The operating mode is a named status region, not an ignored label on a generic element.
+  await expect(page.getByRole('status', { name: 'Operating mode' })).toContainText('active tasks');
+  // The capacity message is live; its minute-by-minute observation time is not.
+  const capacity = page.getByRole('status').filter({ hasText: 'Open-PR capacity is full' });
+  await expect(capacity).toHaveCount(1);
+  await expect(capacity).not.toContainText('Observed');
+  await expect(
+    page.locator('.notice').filter({ hasText: 'Open-PR capacity is full' })
+  ).toContainText(/Observed \d+m ago\./);
+
+  // Ownership is stated in words, not only by the badge colour.
+  await openNavigation(page, 'Pull requests', isMobile);
+  const external = page.getByRole('link', { name: /Adjust the retry backoff/ });
+  await expect(external).toContainText('· not owned by Octomus');
+  const owned = page.getByRole('link', { name: /Explain the local development workflow/ });
+  await expect(owned).toContainText('· owned by Octomus');
+  await expect(owned).not.toContainText('not owned');
+
+  await openNavigation(page, 'Task queue', isMobile);
+  await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+  const dialog = page.getByRole('dialog');
+  const tab = (name: string | RegExp) => dialog.getByRole('tab', { name });
+  await expect(tab('Overview')).toHaveAttribute('aria-selected', 'true');
+  // Only the selected tab is in the Tab order.
+  await expect(dialog.locator('[role="tab"][tabindex="0"]')).toHaveCount(1);
+  await tab('Overview').focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(tab('Sessions')).toBeFocused();
+  await expect(tab('Sessions')).toHaveAttribute('aria-selected', 'true');
+  await expect(tab('Sessions')).toHaveAttribute('tabindex', '0');
+  await expect(tab('Overview')).toHaveAttribute('aria-selected', 'false');
+  await expect(tab('Overview')).toHaveAttribute('tabindex', '-1');
+  // The panel is named by the tab that controls it.
+  await expect(dialog.getByRole('tabpanel', { name: 'Sessions' })).toBeVisible();
+  await page.keyboard.press('End');
+  await expect(tab('Activity')).toBeFocused();
+  await expect(tab('Activity')).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('ArrowRight');
+  await expect(tab('Overview')).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(tab('Activity')).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(tab('Overview')).toBeFocused();
+  await expect(dialog.getByRole('tabpanel', { name: 'Overview' })).toBeVisible();
+  await page.keyboard.press('ArrowLeft');
+  await expect(tab(/Reviews/)).not.toBeFocused();
+  await expect(tab('Activity')).toBeFocused();
+  // Clicking still selects a tab.
+  await tab(/Reviews/).click();
+  await expect(tab(/Reviews/)).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('tabpanel', { name: /Reviews/ })).toBeVisible();
+  const accessibility = await new AxeBuilder({ page })
+    .include('.task-dialog')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(
+    accessibility.violations.map((v) => ({ rule: v.id, elements: v.nodes.map((n) => n.target) }))
+  ).toEqual([]);
+  await page.getByRole('button', { name: 'Close task details' }).click();
 });
 
 test('one-shot audit progress, decisions and paused controls', async ({ page }, testInfo) => {
