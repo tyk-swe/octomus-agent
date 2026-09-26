@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -238,7 +239,7 @@ func (w *Worker) warn(err error) {
 	if err == nil {
 		return
 	}
-	message := store.ErrorMessage(err)
+	message := redact.Error(err)
 	if message == w.lastWarning {
 		return
 	}

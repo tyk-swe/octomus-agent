@@ -24,6 +24,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/evidence"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	"modernc.org/sqlite"
@@ -205,7 +206,7 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 		if errors.As(err, &be) {
 			writeBodyError(w, be)
 		} else {
-			writeAPIError(w, apiStatus(err), store.ErrorMessage(err))
+			writeAPIError(w, apiStatus(err), redact.Error(err))
 		}
 		return
 	}
@@ -270,14 +271,14 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 			// lose the association between a redacted preview and its config field.
 			transforms, hasTransforms := object["transformed_fields"]
 			delete(object, "transformed_fields")
-			// Keep the redacted value RedactJSON returns rather than relying on
+			// Keep the redacted value redact.JSON returns rather than relying on
 			// it scrubbing the map in place.
-			generic = store.RedactJSON(object)
+			generic = redact.JSON(object)
 			if redacted, ok := generic.(map[string]any); ok && hasTransforms {
 				redacted["transformed_fields"] = transforms
 			}
 		} else {
-			generic = store.RedactJSON(generic)
+			generic = redact.JSON(generic)
 		}
 		out, err = wirejson.Marshal(generic)
 	}
@@ -579,7 +580,7 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	var body map[string]any
 	if err != nil {
 		status = apiStatus(err)
-		body = map[string]any{"error": store.ErrorMessage(err)}
+		body = map[string]any{"error": redact.Error(err)}
 	} else {
 		body = result
 	}

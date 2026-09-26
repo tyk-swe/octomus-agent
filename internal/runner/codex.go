@@ -16,6 +16,7 @@ import (
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -318,7 +319,7 @@ func (c *Codex) rpc(method string, params map[string]any) (any, error) {
 		if idMatches(v["id"], id) {
 			if e, hasErr := v["error"]; hasErr {
 				encoded, _ := marshal(e)
-				return nil, fmt.Errorf("Codex %s: %s", method, store.Redact(encoded))
+				return nil, fmt.Errorf("Codex %s: %s", method, redact.Text(encoded))
 			}
 			result, ok := v["result"]
 			if !ok {
@@ -553,7 +554,7 @@ func (c *Codex) awaitTurn(thread, turn string, deadline time.Time) (string, erro
 			}
 			if s, _ := strAt(completed, "status"); s != "completed" {
 				encoded, _ := marshal(completed["error"])
-				return "", fmt.Errorf("Codex turn did not complete successfully: %s", store.Redact(encoded))
+				return "", fmt.Errorf("Codex turn did not complete successfully: %s", redact.Text(encoded))
 			}
 			if strings.TrimSpace(answer) == "" {
 				return "", fmt.Errorf("Codex returned no final result")

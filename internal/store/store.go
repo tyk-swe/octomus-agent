@@ -21,6 +21,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	_ "modernc.org/sqlite"
 )
@@ -433,7 +434,7 @@ func (s *Store) Event(entity, kind, message string) error {
 // txEvent appends a redacted event on a caller-owned connection or
 // transaction, so every event path applies the same redaction.
 func txEvent(c *sql.Conn, entity, kind, message string) error {
-	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, Redact(message))
+	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, redact.Text(message))
 	return err
 }
 

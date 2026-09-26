@@ -20,6 +20,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -280,7 +281,7 @@ func statusError(prefix string, response *http.Response, stop context.CancelFunc
 	timer := time.AfterFunc(statusBodyWait, stop)
 	body, err := io.ReadAll(io.LimitReader(response.Body, statusReadLimit+1))
 	timer.Stop()
-	text := store.RedactSecrets(strings.ToValidUTF8(string(body), "\uFFFD"))
+	text := redact.Secrets(strings.ToValidUTF8(string(body), "\uFFFD"))
 	if err != nil || len(body) > statusReadLimit {
 		// The read stopped inside the body, so its last word may be the start
 		// of a secret that redaction cannot recognise.

@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
 // cleanupBudget bounds how long an owner waits for its killed child and the
@@ -55,7 +55,7 @@ func (t *stderrTail) explain(err error) error {
 	t.mu.Lock()
 	text, cut := string(t.data), t.cut
 	t.mu.Unlock()
-	text = store.Redact(strings.ToValidUTF8(strings.TrimRightFunc(text, unicode.IsSpace), "\uFFFD"))
+	text = redact.Text(strings.ToValidUTF8(strings.TrimRightFunc(text, unicode.IsSpace), "\uFFFD"))
 	if cut {
 		// The cut can split a secret, or part a bearer token from its
 		// prefix, so that redaction no longer recognises what is left.

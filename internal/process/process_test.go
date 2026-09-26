@@ -17,7 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/process"
-	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
 // waitUntil polls ready every 10 ms until it holds or timeout elapses.
@@ -616,7 +616,7 @@ exit 1`
 	if n := utf8.RuneCountInString(text); n > failureTextLimit {
 		t.Fatalf("failure text has %d characters; want at most %d", n, failureTextLimit)
 	}
-	if store.ErrorMessage(err) != text {
+	if redact.Error(err) != text {
 		t.Fatal("recording the failure text must not shorten it further")
 	}
 	// Callers wrap failures in context before recording them; the recorded
@@ -626,7 +626,7 @@ exit 1`
 		fmt.Errorf("Repository remote preflight failed: %w",
 			fmt.Errorf("%w: %w", errors.New("Publication result is uncertain; reconcile the preserved output commit"), err)),
 	} {
-		if recorded := store.ErrorMessage(wrapped); !strings.HasSuffix(recorded, "[stderr]\ngh: API rate limit exceeded (HTTP 403)\n") {
+		if recorded := redact.Error(wrapped); !strings.HasSuffix(recorded, "[stderr]\ngh: API rate limit exceeded (HTTP 403)\n") {
 			t.Fatalf("recorded wrapped failure lost the stderr cause: ...%q", recorded[max(len(recorded)-120, 0):])
 		}
 	}
