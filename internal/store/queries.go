@@ -411,6 +411,44 @@ func (s *Store) HasUnresolvedTasks() (bool, error) {
 	return exists, err
 }
 
+// StartBatch opens a run-once batch over every queued, unarchived task and
+// saves the control, without StartBatchIfAffordable's checks of the live
+// control and planning affordability. *control is updated only when the
+// transaction commits.
+func (s *Store) StartBatch(control *model.Control) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var next model.Control
+	err := s.transaction(false, func(c *sql.Conn) error {
+		var err error
+		next, err = txStartBatch(c, *control)
+		return err
+	})
+	if err == nil {
+		*control = next
+	}
+	return err
+}
+
+// txStartBatch opens a run-once batch from control inside the caller's
+// transaction: it tags every queued, unarchived task with the new batch and
+// saves the resulting control, which it returns.
+func txStartBatch(c *sql.Conn, control model.Control) (model.Control, error) {
+	id := model.ID()
+	next := control.Clone()
+	next.SetMode(model.OperatingModeRunOnce)
+	next.Batch = &model.RunBatch{ID: id, Phase: model.BatchPhaseDraining, CycleID: nil}
+	next.Error = nil
+	next.NextCycleAt = 0
+	if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
+		return model.Control{}, err
+	}
+	if err := txPut(c, "settings", "control", next); err != nil {
+		return model.Control{}, err
+	}
+	return next, nil
+}
+
 // StartBatchIfAffordable opens a run-once batch over every queued, unarchived
 // task and saves the control, only when the live control still equals
 // *control and the live configuration can still fund a complete planning
@@ -438,16 +476,7 @@ func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (mo
 		if !sameJSON(live, *control) || !capacity.Available() {
 			return errRollback
 		}
-		id := model.ID()
-		next = control.Clone()
-		next.SetMode(model.OperatingModeRunOnce)
-		next.Batch = &model.RunBatch{ID: id, Phase: model.BatchPhaseDraining, CycleID: nil}
-		next.Error = nil
-		next.NextCycleAt = 0
-		if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
-			return err
-		}
-		if err := txPut(c, "settings", "control", next); err != nil {
+		if next, err = txStartBatch(c, *control); err != nil {
 			return err
 		}
 		started = true
