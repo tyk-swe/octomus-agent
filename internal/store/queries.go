@@ -242,6 +242,7 @@ func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	return decodeAll[model.Task](raw)
 }
 
+// RunningCycles lists every cycle recorded as running, in no particular order.
 func (s *Store) RunningCycles() ([]model.Cycle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,6 +253,8 @@ func (s *Store) RunningCycles() ([]model.Cycle, error) {
 	return decodeAll[model.Cycle](raw)
 }
 
+// RunningBaselines lists every baseline check recorded as running, in no
+// particular order.
 func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -262,6 +265,8 @@ func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
 	return decodeAll[model.BaselineCheck](raw)
 }
 
+// BaselineCleanupCandidates lists up to 100 finished baseline checks whose
+// clone is not recorded as removed, oldest saved first.
 func (s *Store) BaselineCleanupCandidates() ([]model.BaselineCheck, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -272,6 +277,8 @@ func (s *Store) BaselineCleanupCandidates() ([]model.BaselineCheck, error) {
 	return decodeAll[model.BaselineCheck](raw)
 }
 
+// LatestBaseline returns the most recently started baseline check, or nil
+// when there is none.
 func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
 	var id string
 	found, err := s.Get("settings", "baseline_latest", &id)
@@ -281,6 +288,8 @@ func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
 	return Get[model.BaselineCheck](s, "baseline", id)
 }
 
+// TasksForCycle lists every task the cycle created, archived ones included,
+// oldest first.
 func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -539,6 +548,11 @@ type Dashboard struct {
 	SessionsToday  int64             `json:"sessions_today"`
 }
 
+// Dashboard reads the polled dashboard summary in one transaction: task
+// counts by status, up to 300 task summaries (the newest 100 active and 100
+// queued first, then the newest others), the newest 20 cycles and 100 PR
+// records, the newest 200 events, today's sessions, the merged-PR count and
+// the newest 5 tasks that need attention.
 func (s *Store) Dashboard() (Dashboard, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -670,6 +684,8 @@ func (s *Store) CleanupCandidates(kind, cutoff string) ([]string, error) {
 	return ids, nil
 }
 
+// LatestPrOutput returns the output commit of the most recently updated
+// published task for the repository's PR number, or nil when there is none.
 func (s *Store) LatestPrOutput(repository string, number uint64) (*string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

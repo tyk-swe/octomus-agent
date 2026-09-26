@@ -34,6 +34,8 @@ type PrIdentity struct {
 	BranchPrefix  string
 }
 
+// PrIdentityOf returns the identity c observes PR inventories under, with the
+// GitHub repository lowercased.
 func PrIdentityOf(c config.Config) PrIdentity {
 	return PrIdentity{Repository: c.Repository, GitHubRepo: strings.ToLower(c.GitHubRepo), DefaultBranch: c.DefaultBranch, BranchPrefix: c.BranchPrefix}
 }
@@ -121,6 +123,8 @@ func PrUnion(inventory model.OpenPrInventory, reservations []PrReservation, limi
 	return observed, unrepresented, remaining
 }
 
+// HasPrReservation reports whether the task holds an open-PR capacity
+// reservation.
 func (s *Store) HasPrReservation(taskID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -132,6 +136,8 @@ func (s *Store) HasPrReservation(taskID string) (bool, error) {
 	return err == nil, err
 }
 
+// PrReservations lists the open-PR capacity reservations held for the
+// repository, matched case-insensitively, in no particular order.
 func (s *Store) PrReservations(repository string) ([]PrReservation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -154,6 +160,8 @@ func (s *Store) PrReservationCandidates() ([]model.Task, error) {
 	return decodeAll[model.Task](raw)
 }
 
+// SeedPrReservation reserves open-PR capacity for the task's branch. It is
+// idempotent: a reservation the task already holds is kept unchanged.
 func (s *Store) SeedPrReservation(task model.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

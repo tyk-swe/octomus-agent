@@ -318,6 +318,10 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix {
+		// HasUnresolvedTasks counts every unarchived task not yet published
+		// or cancelled: queued and active work too, unlike
+		// model.UnresolvedStatuses. All of it still depends on the old
+		// repository identity and branch policy.
 		unresolved, err := a.Store.HasUnresolvedTasks()
 		if err != nil {
 			return nil, err
