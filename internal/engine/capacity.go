@@ -9,6 +9,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -228,7 +229,7 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		observation := a.runtime.prObservation
 		if observation == nil || (observation.identity.Matches(snapshot) && !observation.fetchedAt.After(startedAt)) {
 			a.runtime.prObservation = nil
-			a.runtime.prRefreshError = store.ErrorMessage(result)
+			a.runtime.prRefreshError = redact.Error(result)
 		}
 		a.runtimeMu.Unlock()
 	}()

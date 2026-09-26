@@ -223,13 +223,6 @@ func (o *OpenCode) Diagnose(cwd string) (Diagnostics, error) {
 	}, nil
 }
 
-// Diagnostics is Diagnose as a generic map.
-//
-// Deprecated: see Adapter.Diagnostics.
-func (o *OpenCode) Diagnostics(cwd string) (map[string]any, error) {
-	return diagnosticsMap(o.Diagnose(cwd))
-}
-
 func (o *OpenCode) endpoint(path, cwd string) string {
 	return o.base + path + "?directory=" + url.QueryEscape(cwd)
 }

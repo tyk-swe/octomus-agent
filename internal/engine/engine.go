@@ -13,6 +13,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
@@ -347,9 +348,9 @@ func (a *App) Drained() bool {
 func (a *App) fail(err error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
-	message := store.ErrorMessage(err)
+	message := redact.Error(err)
 	if control, loadErr := a.Control(); loadErr == nil {
-		redacted := store.Redact(message)
+		redacted := redact.Text(message)
 		_ = a.pauseLocked(&control, &redacted)
 	}
 	_ = a.Store.Event("system", "error", message)

@@ -16,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func testStore(t *testing.T) *store.Store {
@@ -266,7 +267,7 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	if err != nil || started.Mode != model.OperatingModeRunOnce || started.Batch == nil || started.Batch.Phase != model.BatchPhaseDraining {
 		t.Fatalf("affordable run once did not persist a batch: %+v, %v", started, err)
 	}
-	if saved, err := genericMap(started); err != nil || !reflect.DeepEqual(body, saved) {
+	if saved, err := wirejson.GenericMap(started); err != nil || !reflect.DeepEqual(body, saved) {
 		t.Fatalf("run once answered %v; want the saved control %v (%v)", body, saved, err)
 	}
 	if events, err := state.Events(&system); err != nil || len(events) != 1 || events[0].Kind != "operator" || events[0].Message != "cycle" {

@@ -571,7 +571,8 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	if err != nil {
 		return 0, nil, err
 	}
-	result, err := a.app.DoctorFor(cfg, mode)
+	// The result carries any warnings; the service log does not.
+	result, _, err := a.app.DoctorFor(cfg, mode)
 	status := http.StatusOK
 	var body map[string]any
 	if err != nil {

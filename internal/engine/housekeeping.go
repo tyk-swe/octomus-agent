@@ -16,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
@@ -110,7 +111,7 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 		// cancellation is not a housekeeping failure.
 		report := func(err error) {
 			if err != nil && a.ctx.Err() == nil {
-				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
+				_ = a.Store.Event("system", "housekeeping_error", redact.Error(err))
 			}
 		}
 		if cleanup {
@@ -202,7 +203,7 @@ type cleanupReport struct {
 // A changed message is reported at once. The memory is per process, so a
 // restart reports a lasting failure once more.
 func (a *App) reportCleanupFailure(kind cleanupKind, id string, err error) error {
-	message := store.ErrorMessage(err)
+	message := redact.Error(err)
 	key := cleanupKey{kind: kind, id: id}
 	now := time.Now()
 	a.runtimeMu.Lock()

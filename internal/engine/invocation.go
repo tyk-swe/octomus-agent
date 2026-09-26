@@ -15,6 +15,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -120,14 +121,14 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		}
 		switch {
 		case turnErr == nil:
-			record.MarkCompleted(store.Redact(summary))
+			record.MarkCompleted(redact.Text(summary))
 		case a.ctx.Err() != nil:
 			// Shutdown cut the turn short; the runner did not fail it. The
 			// record says so, as restart recovery says of a crash.
 			record.MarkInterrupted()
 			answer = ""
 		default:
-			record.MarkFailed(store.ErrorMessage(turnErr))
+			record.MarkFailed(redact.Error(turnErr))
 			answer = ""
 		}
 		if err := a.Store.AppendCycleSession(inv.cycleID, record); err != nil {
@@ -160,7 +161,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	if err != nil {
 		return "", err
 	}
-	record.MarkCompleted(store.Redact(summary))
+	record.MarkCompleted(redact.Text(summary))
 	return answer, a.saveTask(task)
 }
 
@@ -179,7 +180,7 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 		if err != nil {
 			return "", "", err
 		}
-		record.Summary = store.Redact(answer)
+		record.Summary = redact.Text(answer)
 		if err := a.saveTask(inv.task); err != nil {
 			return "", "", err
 		}

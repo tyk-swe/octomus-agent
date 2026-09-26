@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -224,7 +223,7 @@ func TestGatedTurnsBlockUntilReleasedOrCancelled(t *testing.T) {
 }
 
 // Scripted diagnostics report the backend with scripted versions and no
-// warning, in both the typed and the generic form, and record one call each.
+// warning, and record one call.
 func TestScriptedDiagnostics(t *testing.T) {
 	script := runnertest.New(runnertest.CatalogFor(worker)...)
 	client, err := script.Connector()(context.Background(), config.BackendOpencode, config.Default(), t.TempDir())
@@ -237,18 +236,13 @@ func TestScriptedDiagnostics(t *testing.T) {
 	if err != nil || diagnostics != want {
 		t.Fatalf("diagnostics = %+v, %v; want %+v", diagnostics, err, want)
 	}
-	generic, err := client.Diagnostics("cwd")
-	wantGeneric := map[string]any{"backend": "opencode", "version": "scripted", "protocol_version": "scripted", "warning": nil}
-	if err != nil || !reflect.DeepEqual(generic, wantGeneric) {
-		t.Fatalf("generic diagnostics = %#v, %v; want %#v", generic, err, wantGeneric)
-	}
 	recorded := 0
 	for _, call := range script.Calls() {
 		if call.Kind == runnertest.CallDiagnostics {
 			recorded++
 		}
 	}
-	if recorded != 2 {
-		t.Fatalf("recorded %d diagnostics calls; want 2", recorded)
+	if recorded != 1 {
+		t.Fatalf("recorded %d diagnostics calls; want 1", recorded)
 	}
 }

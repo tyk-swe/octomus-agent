@@ -16,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -57,7 +58,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 	shuttingDown := err != nil && a.ctx.Err() != nil
 	if err != nil {
 		cycle.Status = model.CycleFailed
-		cycle.Error = stringPointer(store.ErrorMessage(err))
+		cycle.Error = stringPointer(redact.Error(err))
 		if shuttingDown {
 			cycle.Status = model.CycleInterrupted
 			cycle.Error = stringPointer(interruptedPlanningMessage)
@@ -76,7 +77,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 	if loadErr == nil && !shuttingDown {
 		var message string
 		if err != nil {
-			message = store.ErrorMessage(err)
+			message = redact.Error(err)
 			control.Error = &message
 		} else {
 			control.Error = nil
@@ -596,7 +597,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 	})
 	if outcome.err == nil {
 		if err := a.removeDir(roleRoot, roleWorkspace); err != nil {
-			_ = a.Store.Event(cycleID, "cleanup_error", fmt.Sprintf("%s: %s", label, store.ErrorMessage(err)))
+			_ = a.Store.Event(cycleID, "cleanup_error", fmt.Sprintf("%s: %s", label, redact.Error(err)))
 		}
 	}
 	return outcome

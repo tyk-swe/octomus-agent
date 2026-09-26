@@ -4,18 +4,16 @@
 package engine
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"maps"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -30,22 +28,6 @@ var (
 	ErrBaselineNotFound   = errors.New("Baseline check not found")
 	ErrProposalNotFound   = errors.New("Proposal not found")
 )
-
-// genericMap re-encodes a typed record as generic JSON with exact numbers so
-// response assembly preserves the store's saved spelling.
-func genericMap(value any) (map[string]any, error) {
-	data, err := wirejson.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var result map[string]any
-	if err := decoder.Decode(&result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
 
 // ControlAction runs the conflict check under the scheduler gate, then the
 // durable mode transition and its operator event. The response is the
@@ -74,7 +56,7 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return genericMap(control)
+		return wirejson.GenericMap(control)
 	case "pause":
 		if err := a.pauseLocked(&control, nil); err != nil {
 			return nil, err
@@ -103,7 +85,7 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	if err := a.Store.Event("system", "operator", action); err != nil {
 		return nil, err
 	}
-	body, err := genericMap(control)
+	body, err := wirejson.GenericMap(control)
 	if err != nil {
 		return nil, err
 	}
@@ -204,9 +186,9 @@ func (a *App) CycleAction(id, action string) error {
 // display transformation changed. The revision identifies canonical executable
 // state; the displayed values are previews and are never written back.
 type SettingsView struct {
-	Config            map[string]any           `json:"config"`
-	Revision          string                   `json:"revision"`
-	TransformedFields []store.DisplayTransform `json:"transformed_fields"`
+	Config            map[string]any            `json:"config"`
+	Revision          string                    `json:"revision"`
+	TransformedFields []redact.DisplayTransform `json:"transformed_fields"`
 }
 
 // NewSettingsView builds the display view of one canonical configuration: the
@@ -217,11 +199,11 @@ func NewSettingsView(c config.Config) (*SettingsView, error) {
 	if err != nil {
 		return nil, err
 	}
-	generic, err := genericMap(c)
+	generic, err := wirejson.GenericMap(c)
 	if err != nil {
 		return nil, err
 	}
-	display, fields := store.DisplayJSON(generic)
+	display, fields := redact.DisplayJSON(generic)
 	return &SettingsView{Config: display, Revision: revision, TransformedFields: fields}, nil
 }
 
@@ -245,7 +227,7 @@ func (e *ConfigPatchError) Error() string { return e.inner.Error() }
 // decodes through the strict typed boundary exactly like a complete request:
 // unknown fields, duplicate keys and invalid values are all rejected there.
 func mergeConfigPatch(live config.Config, patch map[string]json.RawMessage) (config.Config, error) {
-	generic, err := genericMap(live)
+	generic, err := wirejson.GenericMap(live)
 	if err != nil {
 		return config.Config{}, err
 	}
@@ -325,19 +307,21 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 // backend the mode's routes use and validates every route against that
 // backend's discovered catalog, reporting every route and backend failure
 // together. The result names which Codex version was observed when the codex
-// backend answered.
-func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any, error) {
+// backend answered. Version-mismatch warnings are also returned on their own,
+// even when a check fails, so the command-line doctor can print them for its
+// operator; the service never writes them to its own output.
+func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
 	if mode == model.CycleModeAudit {
 		if err := cfg.ValidateAudit(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else {
 		if err := cfg.Validate(true); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if err := gitops.ValidateRemote(a.ctx, cfg); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	routes := cfg.RoutesFor(mode == model.CycleModeAudit)
 	seen := map[config.Backend]bool{}
@@ -349,7 +333,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 		}
 	}
 	sort.Slice(backends, func(i, j int) bool { return backends[i] < backends[j] })
-	diagnostics := []map[string]any{}
+	diagnostics := []runner.Diagnostics{}
 	models := []runner.Model{}
 	warnings := []string{}
 	errs := []string{}
@@ -360,7 +344,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 				return err
 			}
 			defer client.Close()
-			diagnostic, err := client.Diagnostics(a.DataDir)
+			diagnostic, err := client.Diagnose(a.DataDir)
 			if err != nil {
 				return err
 			}
@@ -376,9 +360,8 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 					errs = append(errs, named.Name+": "+err.Error())
 				}
 			}
-			if warning, ok := diagnostic["warning"].(string); ok && warning != "" {
-				fmt.Fprintf(os.Stderr, "WARN %s\n", warning)
-				warnings = append(warnings, warning)
+			if diagnostic.Warning != nil && *diagnostic.Warning != "" {
+				warnings = append(warnings, *diagnostic.Warning)
 			}
 			models = append(models, catalog...)
 			diagnostics = append(diagnostics, diagnostic)
@@ -389,7 +372,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 		}
 	}
 	if len(errs) > 0 {
-		return nil, errors.New(strings.Join(errs, "; "))
+		return nil, warnings, errors.New(strings.Join(errs, "; "))
 	}
 	modeName := "all"
 	if mode == model.CycleModeAudit {
@@ -404,13 +387,13 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 		"warnings": warnings, "message": message,
 	}
 	for _, diagnostic := range diagnostics {
-		if diagnostic["backend"] == "codex" {
-			result["codex_version"] = diagnostic["version"]
+		if diagnostic.Backend == config.BackendCodex {
+			result["codex_version"] = diagnostic.Version
 			result["tested_codex_version"] = runner.CodexTestedVersion
 			break
 		}
 	}
-	return result, nil
+	return result, warnings, nil
 }
 
 // ModelCatalog lists the models a backend reports when run from binary. The
@@ -519,11 +502,11 @@ func (a *App) StateView() (map[string]any, error) {
 	case cycleActive || activeTasks > 0:
 		status = "running"
 	}
-	view, err := genericMap(snapshot)
+	view, err := wirejson.GenericMap(snapshot)
 	if err != nil {
 		return nil, err
 	}
-	controlJSON, err := genericMap(control)
+	controlJSON, err := wirejson.GenericMap(control)
 	if err != nil {
 		return nil, err
 	}

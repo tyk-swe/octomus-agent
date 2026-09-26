@@ -13,6 +13,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -224,7 +225,7 @@ func TestBaselineCommandOutputPreservesRealCaptureTruncation(t *testing.T) {
 	if !success || diagnosticTruncated {
 		t.Fatalf("success=%v diagnostic=%v", success, diagnosticTruncated)
 	}
-	if output, truncated := boundedOutput(store.Redact(text), 16*1024, diagnosticTruncated); !truncated || len(output) > 16*1024 {
+	if output, truncated := boundedOutput(redact.Text(text), 16*1024, diagnosticTruncated); !truncated || len(output) > 16*1024 {
 		t.Fatalf("multibyte bound: %d %v", len(output), truncated)
 	}
 	captured, captureErr = process.Capture(ctx, "bash", []string{"-c", "yes 'x' | head -c 300000; exit 3"}, dir, 10, process.CaptureDiagnostic)
@@ -232,7 +233,7 @@ func TestBaselineCommandOutputPreservesRealCaptureTruncation(t *testing.T) {
 	if success || !diagnosticTruncated || !strings.Contains(text, "exit status: 3") {
 		t.Fatalf("failed capture: %v %v %.60s", success, diagnosticTruncated, text)
 	}
-	if output, truncated := boundedOutput(store.Redact(text), 16*1024, diagnosticTruncated); !truncated || len(output) > 16*1024 {
+	if output, truncated := boundedOutput(redact.Text(text), 16*1024, diagnosticTruncated); !truncated || len(output) > 16*1024 {
 		t.Fatalf("failure bound: %d %v", len(output), truncated)
 	}
 	captured, captureErr = process.Capture(ctx, "bash", []string{"-c", "echo out; echo err >&2; exit 1"}, dir, 10, process.CaptureDiagnostic)
@@ -262,7 +263,7 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 	}
 	// The exact composition executeBaseline applies per command: the 16 KiB
 	// per-command bound inside the 1 MiB aggregate budget.
-	output, truncated := boundedOutput(store.RedactSecrets(text), 16*1024, diagnosticTruncated)
+	output, truncated := boundedOutput(redact.Secrets(text), 16*1024, diagnosticTruncated)
 	if !truncated {
 		t.Fatal("shortened output must be flagged")
 	}
@@ -270,7 +271,7 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 		t.Fatalf("bounded: %d %q", len(output), output[len(output)-30:])
 	}
 	// Secret scrubbing still applies within the kept bytes.
-	redacted, _ := boundedOutput(store.RedactSecrets("token ghp_abcdefghijklmnop"), 16*1024, false)
+	redacted, _ := boundedOutput(redact.Secrets("token ghp_abcdefghijklmnop"), 16*1024, false)
 	if !strings.Contains(redacted, "[redacted]") || strings.Contains(redacted, "ghp_") {
 		t.Fatalf("redaction: %q", redacted)
 	}

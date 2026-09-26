@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -287,17 +286,9 @@ func TestCodexDiagnosticsAndAccount(t *testing.T) {
 		*diagnostics.Warning != *CodexVersionWarning("codex-cli 0.0.0-fixture") {
 		t.Fatalf("mismatched diagnostics: %+v", diagnostics)
 	}
-	// The generic form the engine doctor still reads carries the same facts.
-	generic, err := client.Diagnostics(f.workspace)
-	if err != nil || !reflect.DeepEqual(generic, diagnostics.Map()) {
-		t.Fatalf("generic diagnostics = %v, %v; want %v", generic, err, diagnostics.Map())
-	}
 	f.mode("codex", "no-auth")
 	if _, err := client.Diagnose(f.workspace); err == nil || !strings.Contains(err.Error(), "authentication") {
 		t.Fatalf("a missing account must fail diagnostics: %v", err)
-	}
-	if generic, err := client.Diagnostics(f.workspace); err == nil || generic != nil {
-		t.Fatalf("a missing account must fail generic diagnostics: %v, %v", generic, err)
 	}
 }
 

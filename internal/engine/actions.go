@@ -13,6 +13,7 @@ import (
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -247,7 +248,7 @@ func sameRecordJSON(a, b *model.Task) bool {
 func recordTaskError(task *model.Task, err error) {
 	reason := model.BlockedReasonFromError(err)
 	task.BlockedReason = &reason
-	message := store.ErrorMessage(err)
+	message := redact.Error(err)
 	task.Error = &message
 }
 

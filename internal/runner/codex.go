@@ -95,7 +95,7 @@ type Codex struct {
 	done     chan struct{}
 	once     sync.Once
 	closeErr error
-	// binary and commandTimeout bound the Diagnostics version check.
+	// binary and commandTimeout bound the Diagnose version check.
 	binary         string
 	commandTimeout uint64
 }
@@ -188,13 +188,6 @@ func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
 		Version:         version,
 		Warning:         CodexVersionWarning(version),
 	}, nil
-}
-
-// Diagnostics is Diagnose as a generic map.
-//
-// Deprecated: see Adapter.Diagnostics.
-func (c *Codex) Diagnostics(cwd string) (map[string]any, error) {
-	return diagnosticsMap(c.Diagnose(cwd))
 }
 
 // framed marshals a protocol message and applies the exact outbound bound to

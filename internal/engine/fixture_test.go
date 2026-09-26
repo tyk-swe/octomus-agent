@@ -17,6 +17,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -102,15 +103,15 @@ func newFixture(t *testing.T, root string, configure func(*config.Config)) *plan
 	command(t, repo, "/usr/bin/git", "remote", "add", "origin", remote)
 	command(t, repo, "/usr/bin/git", "push", "-u", "origin", "main")
 
-	previousWebhook, hadWebhook := os.LookupEnv(store.WebhookEnv)
-	if err := os.Unsetenv(store.WebhookEnv); err != nil {
+	previousWebhook, hadWebhook := os.LookupEnv(redact.WebhookEnv)
+	if err := os.Unsetenv(redact.WebhookEnv); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		if hadWebhook {
-			_ = os.Setenv(store.WebhookEnv, previousWebhook)
+			_ = os.Setenv(redact.WebhookEnv, previousWebhook)
 		} else {
-			_ = os.Unsetenv(store.WebhookEnv)
+			_ = os.Unsetenv(redact.WebhookEnv)
 		}
 	})
 	t.Setenv("OCTOMUS_FIXTURE", root)
