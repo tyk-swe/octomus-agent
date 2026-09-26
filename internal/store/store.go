@@ -187,15 +187,7 @@ func (r *ReadOnly) Close() error {
 // Snapshot runs fn inside one deferred read transaction so every query observes
 // the same committed state, including pages still in the WAL.
 func (r *ReadOnly) Snapshot(fn func(c *sql.Conn) error) error {
-	if _, err := r.Conn.ExecContext(background, "BEGIN"); err != nil {
-		return err
-	}
-	if err := fn(r.Conn); err != nil {
-		_, _ = r.Conn.ExecContext(background, "ROLLBACK")
-		return err
-	}
-	_, err := r.Conn.ExecContext(background, "COMMIT")
-	return err
+	return runTx(r.Conn, "BEGIN", fn)
 }
 
 // transaction runs fn between BEGIN [IMMEDIATE] and COMMIT on the pinned
@@ -205,17 +197,31 @@ func (s *Store) transaction(immediate bool, fn func(c *sql.Conn) error) error {
 	if immediate {
 		begin = "BEGIN IMMEDIATE"
 	}
-	if _, err := s.conn.ExecContext(background, begin); err != nil {
+	return runTx(s.conn, begin, fn)
+}
+
+// runTx runs fn between begin and COMMIT on c. An error from fn, a failed
+// COMMIT or a panic rolls the transaction back, so the connection never stays
+// inside an open transaction that later autocommit writes would silently join.
+// On a panic the rollback runs while it unwinds, before the caller's deferred
+// unlock.
+func runTx(c *sql.Conn, begin string, fn func(c *sql.Conn) error) error {
+	if _, err := c.ExecContext(background, begin); err != nil {
 		return err
 	}
-	if err := fn(s.conn); err != nil {
-		_, _ = s.conn.ExecContext(background, "ROLLBACK")
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = c.ExecContext(background, "ROLLBACK")
+		}
+	}()
+	if err := fn(c); err != nil {
 		return err
 	}
-	if _, err := s.conn.ExecContext(background, "COMMIT"); err != nil {
-		_, _ = s.conn.ExecContext(background, "ROLLBACK")
+	if _, err := c.ExecContext(background, "COMMIT"); err != nil {
 		return err
 	}
+	committed = true
 	return nil
 }
 
