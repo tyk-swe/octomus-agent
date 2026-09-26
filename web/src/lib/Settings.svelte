@@ -43,7 +43,7 @@
     loading = $state(false),
     loadError = $state(''),
     error = $state(''),
-    /** The last save was refused with 409, such as a revision another tab saved first. */
+    /** The last save was refused because another save changed the revision first. */
     conflict = $state(false),
     message = $state(''),
     pending = $state(''),
@@ -162,8 +162,8 @@
     message = 'Changes discarded. Saved configuration restored.';
   }
   /**
-   * The service answers a stale save with 409 and asks for a reload. This is the explicit
-   * way to follow that in place: drop the draft, then load the saved configuration.
+   * The service answers a stale save with 409 and asks to reload settings. This is the
+   * explicit way to follow that in place: drop the draft, then load the saved configuration.
    */
   async function reload() {
     if (busy || loading) return;
@@ -203,7 +203,9 @@
       onsaved();
     } catch (e) {
       error = (e as Error).message;
-      conflict = e instanceof ApiError && e.status === 409;
+      // The service also answers 409 when it is no longer paused or when tasks must be
+      // resolved first; a reload fixes neither. Only the stale-revision conflict asks for one.
+      conflict = e instanceof ApiError && e.status === 409 && /\breload\b/i.test(error);
     } finally {
       pending = '';
     }

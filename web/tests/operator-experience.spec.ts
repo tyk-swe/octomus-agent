@@ -107,8 +107,17 @@ async function configurationFixture(
       };
       state.writes.push(body);
       await state.saveGate?.promise;
-      if (state.failSave || body.expected_revision !== state.revision()) {
+      // `failSave` stands for the service's other conflicts (no longer paused, tasks to
+      // resolve first), which a reload does not fix; only a stale revision asks for one.
+      if (state.failSave) {
         await route.fulfill({ status: 409, json: { error: 'Synthetic save conflict' } });
+        return;
+      }
+      if (body.expected_revision !== state.revision()) {
+        await route.fulfill({
+          status: 409,
+          json: { error: 'Synthetic save conflict; reload settings and check the current values.' }
+        });
         return;
       }
       // Each supplied top-level field replaces its canonical value; omitted
@@ -629,6 +638,18 @@ test('a revision conflict offers to discard the draft and reload the saved confi
   await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
   expect(state.writes.at(-1)!.config).toEqual({ default_branch: 'current-main' });
   expect(state.saved!.default_branch).toBe('current-main');
+
+  // A conflict a reload cannot resolve, such as a service that is no longer paused, keeps
+  // the draft and offers no reload.
+  state.failSave = true;
+  await branch.fill('paused-main');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(alert).toHaveText('Synthetic save conflict');
+  await expect(reload).toHaveCount(0);
+  await expect(branch).toHaveValue('paused-main');
+  expect(state.writes).toHaveLength(5);
+  expect(state.reads).toBe(reads + 2);
+  state.failSave = false;
 
   // Other failures are not offered a reload.
   await page.route('**/api/model-catalog', (route) =>
