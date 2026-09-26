@@ -904,3 +904,59 @@ func TestRetentionSkipsRecordsDiscardedDuringThePass(t *testing.T) {
 		})
 	}
 }
+
+// waitHousekeeping waits for the running housekeeping pass to finish.
+func waitHousekeeping(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		app.runtimeMu.Lock()
+		running := app.runtime.housekeeping
+		app.runtimeMu.Unlock()
+		if !running {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("housekeeping pass did not finish")
+}
+
+// Retention, the storage walk and the remote observation are independent
+// housekeeping steps: a failed retention is reported, and the storage
+// measurement and the observation due in the same pass still run.
+func TestHousekeepingContinuesPastAFailedRetention(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	// A finished baseline record that is not a valid check fails retention's
+	// candidate read on every pass.
+	if err := fixture.state.Put("baseline", "unreadable", map[string]any{"status": "failed", "workspace_removed": false}); err != nil {
+		t.Fatal(err)
+	}
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	// Retention and observation are both due on the first tick.
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	waitHousekeeping(t, app)
+	system := "system"
+	events, err := fixture.state.Events(&system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := 0
+	for _, event := range events {
+		if event.Kind == "housekeeping_error" {
+			failures++
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("housekeeping reported %d failures; want the retention failure only: %+v", failures, events)
+	}
+	if _, found, err := fixture.state.GetValue("settings", "storage"); err != nil || !found {
+		t.Fatalf("storage was not measured after the retention failure: %t, %v", found, err)
+	}
+	control, err := app.Control()
+	if err != nil || control.ContextFingerprint == "" {
+		t.Fatalf("remote observation did not run after the retention failure: %+v, %v", control, err)
+	}
+}

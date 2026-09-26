@@ -72,8 +72,10 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 			a.runtime.housekeeping = false
 			a.runtimeMu.Unlock()
 		}()
-		// Once the service is stopping, the remaining steps are obsolete: the
-		// pass ends at the next step boundary, and an interrupted step's
+		// Retention, the storage walk and the remote observation are
+		// independent: a failed step is reported and the later steps still
+		// run. Once the service is stopping, the remaining steps are obsolete:
+		// the pass ends at the next step boundary, and an interrupted step's
 		// cancellation is not a housekeeping failure.
 		report := func(err error) {
 			if err != nil && a.ctx.Err() == nil {
@@ -81,17 +83,11 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 			}
 		}
 		if cleanup {
-			if err := a.retention(cfg); err != nil {
-				report(err)
-				return
-			}
+			report(a.retention(cfg))
 			if a.ctx.Err() != nil {
 				return
 			}
-			if err := a.measureStorage(cfg); err != nil {
-				report(err)
-				return
-			}
+			report(a.measureStorage(cfg))
 		}
 		if a.ctx.Err() != nil {
 			return
