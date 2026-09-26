@@ -533,33 +533,14 @@ func (c *Codex) turn(thread string, route config.Route, cwd, prompt string, sche
 
 // Close kills the process group, closes the pipes, and joins both the line
 // reader and the child wait with a bounded cleanup. Closing done makes the
-// reader abandon pending sends so it always terminates. Idempotent; each
-// channel is consumed exactly once and nilled after it is observed.
+// reader abandon pending sends so it always terminates. Idempotent.
 func (c *Codex) Close() error {
 	c.once.Do(func() {
 		close(c.done)
 		c.child.Close()
 		c.stdin.Close()
 		c.stdout.Close()
-		lines, waitCh := c.lines, c.waitCh
-		timer := time.NewTimer(30 * time.Second)
-		defer timer.Stop()
-		for lines != nil || waitCh != nil {
-			select {
-			case _, ok := <-lines:
-				if !ok {
-					lines = nil
-				}
-			case err := <-waitCh:
-				if err != nil && !strings.Contains(err.Error(), "signal: killed") {
-					c.closeErr = errors.Join(c.closeErr, err)
-				}
-				waitCh = nil
-			case <-timer.C:
-				c.closeErr = errors.Join(c.closeErr, errors.New("Codex app-server did not exit during cleanup"))
-				return
-			}
-		}
+		c.closeErr = joinOwned(c.waitCh, drained(c.lines), "Codex app-server did not exit during cleanup")
 	})
 	return c.closeErr
 }

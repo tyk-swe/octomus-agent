@@ -38,7 +38,7 @@ func contract(t *testing.T, backend config.Backend, binary string) {
 		owned.Close()
 		select {
 		case err := <-providerWait:
-			if err != nil && !strings.Contains(err.Error(), "signal: killed") {
+			if err != nil && !killed(err) {
 				t.Errorf("the synthetic provider exited abnormally: %v", err)
 			}
 		case <-time.After(5 * time.Second):

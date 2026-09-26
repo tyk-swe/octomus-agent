@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -59,7 +58,7 @@ type OpenCode struct {
 	entity    string
 	waitCh    chan error
 	done      chan struct{}
-	drainDone chan struct{}
+	drainDone <-chan struct{}
 	once      sync.Once
 	closeErr  error
 }
@@ -137,21 +136,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		close(done)
 		child.Close()
 		stdoutR.Close()
-		reader, waiting := lines, waitCh
-		timer := time.NewTimer(30 * time.Second)
-		defer timer.Stop()
-		for reader != nil || waiting != nil {
-			select {
-			case _, ok := <-reader:
-				if !ok {
-					reader = nil
-				}
-			case <-waiting:
-				waiting = nil
-			case <-timer.C:
-				return nil, err
-			}
-		}
+		_ = joinOwned(waitCh, drained(lines), "OpenCode server did not exit during cleanup")
 		return nil, err
 	}
 	base, err := process.Bounded(ctx, min(cfg.CommandTimeoutSeconds, 60), "OpenCode startup timed out", func(wctx context.Context) (string, error) {
@@ -186,14 +171,9 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 			return http.ErrUseLastResponse
 		},
 	}
-	drainDone := make(chan struct{})
-	go func() {
-		defer close(drainDone)
-		// Discard stdout without retaining raw logs. A malformed stream ends
-		// the drain.
-		for range lines {
-		}
-	}()
+	// Discard stdout without retaining raw logs. A malformed stream ends
+	// the drain.
+	drainDone := drained(lines)
 	server := &OpenCode{
 		cfg:       cfg.Clone(),
 		child:     child,
@@ -1002,32 +982,14 @@ func Catalog(value any) ([]Model, error) {
 }
 
 // Close kills the process group, closes the pipe, joins the drain and child
-// wait with a bounded cleanup, and is idempotent. Each channel is consumed
-// exactly once: a closed channel can fire repeatedly, so each is nilled after
-// it is observed.
+// wait with a bounded cleanup, and is idempotent.
 func (o *OpenCode) Close() error {
 	o.once.Do(func() {
 		close(o.done)
 		o.child.Close()
 		o.stdout.Close()
 		o.client.CloseIdleConnections()
-		waitCh, drainDone := o.waitCh, o.drainDone
-		timer := time.NewTimer(30 * time.Second)
-		defer timer.Stop()
-		for waitCh != nil || drainDone != nil {
-			select {
-			case err := <-waitCh:
-				if err != nil && !strings.Contains(err.Error(), "signal: killed") {
-					o.closeErr = errors.Join(o.closeErr, err)
-				}
-				waitCh = nil
-			case <-drainDone:
-				drainDone = nil
-			case <-timer.C:
-				o.closeErr = errors.Join(o.closeErr, errors.New("OpenCode server did not exit during cleanup"))
-				return
-			}
-		}
+		o.closeErr = joinOwned(o.waitCh, o.drainDone, "OpenCode server did not exit during cleanup")
 	})
 	return o.closeErr
 }
