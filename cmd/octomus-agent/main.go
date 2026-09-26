@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -170,7 +171,7 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	webhook, _ := env(store.WebhookEnv)
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	server := &http.Server{Handler: httpapi.Router(app, token, assetsOverride, octomus.Version)}
+	server := newHTTPServer(httpapi.Router(app, token, assetsOverride, octomus.Version))
 	components := serviceComponents{
 		scheduler: app,
 		http:      server,
@@ -183,6 +184,15 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		},
 	}
 	return components.run(sigCtx, parsed.listen, stderr)
+}
+
+// newHTTPServer bounds only the connection phases no handler needs: headers
+// must arrive within ReadHeaderTimeout and an idle keep-alive connection
+// closes after IdleTimeout, so stalled or abandoned clients cannot pin
+// descriptors. Read and write stay unbounded because doctor and model catalog
+// requests legitimately run for about a minute.
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 }
 
 // runDoctor validates the saved configuration for mode and prints the result.
