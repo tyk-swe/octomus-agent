@@ -106,7 +106,9 @@ func ValidateRoute(route config.Route, models []Model) error {
 	return nil
 }
 
-// Adapter is one owned runner client. Each invocation owns its clients.
+// Adapter is one owned runner client. Each invocation owns its clients, and
+// an Adapter is used from one goroutine: its calls must not overlap. Close
+// must stay safe after a call that ended at its own deadline.
 type Adapter interface {
 	Models(cwd string) ([]Model, error)
 	Start(route config.Route, cwd string, resume *string) (string, error)
@@ -170,7 +172,9 @@ func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 }
 
 // Runners owns the clients for one task or planning invocation. No shared
-// mutable runner configuration.
+// mutable runner configuration. Runners is used from one goroutine: its
+// methods and the adapters it returns must not be called concurrently, and
+// separate invocations own separate Runners.
 type Runners struct {
 	cfg      config.Config
 	ctx      context.Context

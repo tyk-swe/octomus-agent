@@ -182,7 +182,8 @@ type outcome struct {
 	err    error
 }
 
-// turnIn runs a turn on its own goroutine to exercise concurrent client calls.
+// turnIn runs one turn off the test goroutine so the test can cancel it or
+// bound its duration.
 func turnIn(client Adapter, session string, route config.Route, cwd, prompt string, schema schemas.Schema) chan outcome {
 	ch := make(chan outcome, 1)
 	go func() {
