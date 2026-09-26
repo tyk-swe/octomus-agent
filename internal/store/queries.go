@@ -195,11 +195,23 @@ func (s *Store) ProposalDetail(cycle, id string) (json.RawMessage, error) {
 
 // SchedulingTasks lists every active task plus a bounded queued window for the run.
 func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
-	// Every active writer must be visible, regardless of the queued history size or batch.
-	return listRecords[model.Task](s, fmt.Sprintf(`WITH candidates AS (
+	return listRecords[model.Task](s, schedulingTasksSQL(), runID)
+}
+
+// schedulingTasksSQL selects every active task, then up to 500 queued tasks
+// that target a non-default branch or hold a PR reservation, and up to 500
+// that target the default branch without one. Every active writer must be
+// visible, regardless of the queued history size or batch.
+//
+// The three branches are disjoint (active statuses versus 'queued', and
+// complementary target predicates), so UNION ALL loses nothing. Plain UNION
+// would walk every task's metadata to merge them, and driving the final join
+// from the candidate list keeps each call's cost independent of task history.
+func schedulingTasksSQL() string {
+	return fmt.Sprintf(`WITH candidates AS (
                 SELECT id,seq FROM record_meta WHERE kind='task' AND archived IS NULL
                     AND status IN (%s)
-                UNION
+                UNION ALL
                 SELECT id,seq FROM (
                     SELECT m.id,m.seq FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
                         WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued'
@@ -208,7 +220,7 @@ func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
                                 OR EXISTS(SELECT 1 FROM pr_reservations p WHERE p.task_id=m.id))
                         ORDER BY m.seq ASC LIMIT 500
                 )
-                UNION
+                UNION ALL
                 SELECT id,seq FROM (
                     SELECT m.id,m.seq FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
                         WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued'
@@ -218,8 +230,8 @@ func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
                         ORDER BY m.seq ASC LIMIT 500
                 )
             )
-            SELECT r.data FROM candidates m JOIN records r ON r.kind='task' AND r.id=m.id
-            ORDER BY m.seq ASC`, statusList(model.ActiveStatuses())), runID)
+            SELECT r.data FROM candidates CROSS JOIN records r ON r.kind='task' AND r.id=candidates.id
+            ORDER BY candidates.seq ASC`, statusList(model.ActiveStatuses()))
 }
 
 // TasksWithStatus lists up to 500 unarchived tasks in the given statuses, oldest first.

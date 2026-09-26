@@ -94,3 +94,39 @@ func TestDecodeJSONRefusesTrailingData(t *testing.T) {
 		t.Fatalf("decodeJSON(number) = %#v, %v; want the exact json.Number", value, err)
 	}
 }
+
+// The scheduler reads its view twice per tick under the store mutex, so the
+// plan must reach tasks only through keyed index searches: walking every task
+// entry of an index keyed by kind alone, or building an automatic index on
+// each call, would make every tick cost grow with the whole task history.
+// Only the bounded candidate list and its bounded windows may be scanned.
+func TestSchedulingPlanNeverWalksTaskHistory(t *testing.T) {
+	s := fullOpen(t)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, runID := range []any{nil, "run"} {
+		rows, err := s.conn.QueryContext(background, "EXPLAIN QUERY PLAN "+schedulingTasksSQL(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var steps []string
+		for rows.Next() {
+			var id, parent, unused int64
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			steps = append(steps, detail)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range steps {
+			scan, bounded := strings.CutPrefix(step, "SCAN ")
+			bounded = !bounded || scan == "candidates" || strings.HasPrefix(scan, "(subquery-")
+			if strings.HasSuffix(step, "(kind=?)") || strings.Contains(step, "AUTOMATIC") || !bounded {
+				t.Fatalf("scheduling plan step %q walks task history; plan:\n%s", step, strings.Join(steps, "\n"))
+			}
+		}
+	}
+}
