@@ -5,7 +5,8 @@
  * rehearsal report, and no test asserts a live model identity or a fresh GitHub
  * observation, because the feature does not claim either.
  */
-import { test, expect, type Page, type Route } from '@playwright/test';
+import { test, expect, type Locator, type Page, type Route } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 import {
   A,
   B,
@@ -14,6 +15,7 @@ import {
   command,
   login,
   now,
+  openNavigation,
   openProposalEvidence,
   proposalEvidence,
   proposalRow,
@@ -245,6 +247,62 @@ test('accepted, rejected, deferred and missing reviewer assessments each render 
   ).toBeVisible();
 
   expect(writes).toEqual([]);
+});
+
+test('a decision word keeps one badge style on proposal cards, counts and the final decision', async ({
+  page
+}, testInfo) => {
+  const decisions = ['accepted', 'rejected', 'deferred', 'candidate'];
+  await serveProposals(
+    page,
+    decisions.map((decision) =>
+      proposalRow(`${decision}-proposal`, 'synthetic-cycle', 7, { decision })
+    )
+  );
+  await page.route('**/api/cycles/synthetic-cycle/evidence', async (route: Route) => {
+    await route.fulfill({
+      json: runEvidence({
+        proposals: decisions.map((decision) =>
+          proposalEvidence(`${decision}-proposal`, { final_decision: decision })
+        )
+      })
+    });
+  });
+  const look = (badge: Locator) =>
+    badge.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return `${style.color} on ${style.backgroundColor}, border ${style.borderColor}`;
+    });
+  await login(page);
+  await openNavigation(page, 'Proposals', testInfo.project.name === 'mobile');
+  const counts = page.getByRole('group', { name: 'Decision counts' });
+  for (const decision of decisions) {
+    const card = page.locator('.proposal-card').filter({ hasText: `${decision}-proposal` });
+    const badge = card.locator('.proposal-meta .badge');
+    await expect(badge).toHaveText(decision);
+    expect(await look(badge), decision).toBe(
+      await look(counts.getByText(`${decision}: 1`, { exact: true }))
+    );
+  }
+  // Every decision badge in the list, the candidate's included, stays legible.
+  const scan = await new AxeBuilder({ page })
+    .include('.proposal-controls')
+    .include('.proposal-list')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(scan.violations.map((violation) => violation.id)).toEqual([]);
+  // The recorded final decision in run evidence reads the same as the list.
+  await page
+    .locator('.proposal-card')
+    .filter({ hasText: 'candidate-proposal' })
+    .getByRole('button', { name: 'Inspect decision evidence' })
+    .click();
+  const final = page
+    .getByRole('dialog')
+    .locator('section', { has: page.getByRole('heading', { name: 'Final decision' }) })
+    .locator('.row-between .badge');
+  await expect(final).toHaveText('candidate');
+  expect(await look(final)).toBe(await look(counts.getByText('candidate: 1', { exact: true })));
 });
 
 test('equal proposal identities in different cycles resolve to their own recorded evidence', async ({

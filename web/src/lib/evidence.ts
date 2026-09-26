@@ -7,6 +7,7 @@
  * evidence panel and the task detail summary cannot describe the same record
  * differently.
  */
+import type { IconName } from './Icon.svelte';
 import { ACTIVE_STATUSES } from './types';
 import type {
   BaselineStatus,
@@ -450,14 +451,14 @@ export function taskOutcomeCounts(
   }).filter((group) => group.count > 0);
 }
 
-const TASK_ICONS: Record<string, string> = {
+const TASK_ICONS: Record<string, IconName> = {
   published: 'check',
   blocked: 'alert',
   failed: 'alert',
   queued: 'clock'
 };
 /** The icon a task row shows for its status: any active status shows activity. */
-export function taskIcon(status: string): string {
+export function taskIcon(status: string): IconName {
   return TASK_ICONS[status] ?? (ACTIVE_STATUSES.includes(status) ? 'activity' : 'code');
 }
 

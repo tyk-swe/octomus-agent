@@ -381,9 +381,7 @@
           <section class="evidence-section" aria-labelledby="decision-heading">
             <div class="row-between">
               <h3 id="decision-heading">Final decision</h3>
-              <span class={'badge ' + decisionTone(focused.final_decision)}
-                >{focused.final_decision}</span
-              >
+              <Badge label={focused.final_decision} tone={decisionTone(focused.final_decision)} />
             </div>
             <dl class="fact-row">
               <div>

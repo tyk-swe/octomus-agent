@@ -12,7 +12,7 @@
     ProposalDetail
   } from '$lib/types';
   import Badge from '$lib/Badge.svelte';
-  import Icon from '$lib/Icon.svelte';
+  import Icon, { type IconName } from '$lib/Icon.svelte';
   import LoginScreen from '$lib/LoginScreen.svelte';
   import Settings from '$lib/Settings.svelte';
   import type { SetupStatus } from '$lib/setup';
@@ -79,7 +79,7 @@
   const navigation: {
     id: string;
     label: string;
-    icon: string;
+    icon: IconName;
     heading: string;
     lede: string;
     noun?: string;
@@ -124,6 +124,13 @@
     }
   ];
   const current = $derived(navigation.find((item) => item.id === view));
+  /** The overview's picture of one cycle, from discovery to a delivered PR. */
+  const pipeline: { name: string; icon: IconName; detail: string }[] = [
+    { name: 'Ground & discover', icon: 'proposals', detail: 'Understand what matters' },
+    { name: 'Challenge & refine', icon: 'shield', detail: 'Keep the worthwhile work' },
+    { name: 'Build & verify', icon: 'code', detail: 'Make the complete change' },
+    { name: 'Review & deliver', icon: 'prs', detail: 'Fresh eyes before every PR' }
+  ];
   /** The operating mode as the header status names it; any other mode reads as paused. */
   const OPERATING_MODE_LABELS: Record<string, string> = {
     run_once: 'Run once',
@@ -917,9 +924,7 @@
                 </div>{/if}
             {/if}
             <div class="pipeline">
-              {#each [{ name: 'Ground & discover', icon: 'proposals', detail: 'Understand what matters' }, { name: 'Challenge & refine', icon: 'shield', detail: 'Keep the worthwhile work' }, { name: 'Build & verify', icon: 'code', detail: 'Make the complete change' }, { name: 'Review & deliver', icon: 'prs', detail: 'Fresh eyes before every PR' }] as step, i}<div
-                  class="pipeline-step"
-                >
+              {#each pipeline as step, i}<div class="pipeline-step">
                   <div class:highlight={data?.cycle_active && i === 0} class="pipeline-icon">
                     <Icon name={step.icon} size={22} />
                   </div>
@@ -1149,9 +1154,10 @@
             </div>
             <div class="decision-counts" role="group" aria-label="Decision counts">
               {#each DECISIONS as decision}
-                <span class={'badge ' + decisionTone(decision)}
-                  >{decision}: {decisionCounts[decision] ?? 0}</span
-                >
+                <Badge
+                  label={`${decision}: ${decisionCounts[decision] ?? 0}`}
+                  tone={decisionTone(decision)}
+                />
               {/each}
             </div>
           </div>
@@ -1172,7 +1178,7 @@
                 >
                   <div class="row-between">
                     <div class="proposal-meta">
-                      <span class={'badge ' + p.decision}>{p.decision}</span><span
+                      <Badge label={p.decision} tone={decisionTone(p.decision)} /><span
                         >{cycleLabel({ mode: p.mode, number: p.cycle })}</span
                       ><span class="tier">{p.tier}</span>
                     </div>
