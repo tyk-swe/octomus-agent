@@ -6,7 +6,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from harness import TOKEN, existing_pr, fixture_service, git, process_gone, run_selected, usage_report
+from harness import TOKEN, existing_pr, fixture_service, git, process_gone, run_selected, update_prs, usage_report
 
 
 def run(mode):
@@ -42,9 +42,7 @@ def run(mode):
             # then restore it and reconcile the already delivered commit.
             for succeeds in [False, True]:
                 if succeeds:
-                    prs = json.loads((root / 'prs.json').read_text())
-                    prs[0]['body'] = f'<!-- octomus:task:{task["id"]} -->'
-                    (root / 'prs.json').write_text(json.dumps(prs))
+                    update_prs(root, lambda prs: prs[0].update(body=f'<!-- octomus:task:{task["id"]} -->'))
                 (root / 'reconcile-entered').unlink(missing_ok=True)
                 (root / 'reconcile-hold').touch()
                 with ThreadPoolExecutor(max_workers=1) as pool:
@@ -93,9 +91,7 @@ def run(mode):
             # inspection must release the reservation rather than stranding
             # the slot on an archived task. The follow-up cycle discovers no
             # new work so the released count cannot race a fresh admission.
-            prs = json.loads((root / 'prs.json').read_text())
-            prs[0]['state'] = 'closed'
-            (root / 'prs.json').write_text(json.dumps(prs))
+            update_prs(root, lambda prs: prs[0].update(state='closed'))
             (root / 'idle').touch()
             service.request('/control/cycle', 'POST')
             service.wait(lambda: service.request('/state')['pr_capacity']['reserved'] == 0, 'archived checkpoint reservation released')
@@ -257,9 +253,7 @@ def run(mode):
             service.wait(lambda: service.request('/state')['control']['context_fingerprint'] != fingerprint, 'changed context observed')
             assert service.request('/state')['control']['next_cycle_at'] == deadline, 'Observations must preserve ordinary cadence'
             service.stop()
-            prs = json.loads((root / 'prs.json').read_text())
-            prs[0].update(state='closed', merged_at='2026-09-10T00:00:00Z')
-            (root / 'prs.json').write_text(json.dumps(prs))
+            update_prs(root, lambda prs: prs[0].update(state='closed', merged_at='2026-09-10T00:00:00Z'))
             service.start()
             service.wait(lambda: service.request('/state')['merged_prs'] == 1, 'merge outcome reconciled from old open record')
             assert service.request('/tasks/' + task['id'])['status'] == 'published'
@@ -377,9 +371,7 @@ def reconciliation_deadline():
         service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'publication retry paused')
         config.update(session_timeout_seconds=30, task_timeout_seconds=120)
         service.save_config(config)
-        prs = json.loads((root / 'prs.json').read_text())
-        prs[0]['body'] = f'<!-- octomus:task:{task["id"]} -->'
-        (root / 'prs.json').write_text(json.dumps(prs))
+        update_prs(root, lambda prs: prs[0].update(body=f'<!-- octomus:task:{task["id"]} -->'))
         # Each command fits its 10-second limit; their total exceeds the task's.
         (root / 'reconcile-delay').write_text('6')
         start = time.monotonic()

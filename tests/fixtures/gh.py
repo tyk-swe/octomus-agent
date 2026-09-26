@@ -17,6 +17,12 @@ args = sys.argv[1:]
 def arg(name):
     return args[args.index(name) + 1]
 
+def save():
+    """Replaces prs.json whole, so a reader never sees it truncated."""
+    temporary = root / 'prs.json.tmp'
+    temporary.write_text(json.dumps(prs))
+    os.replace(temporary, file)
+
 def refresh(pr):
     pr['base'].setdefault('repo', {'full_name': 'fixture/project'})
     owned_source = (pr['head'].get('repo') or {}).get('full_name') == 'fixture/project'
@@ -54,7 +60,7 @@ elif args[:2] == ['pr', 'create']:
     number = len(prs) + 1
     pr = {'number': number, 'title': arg('--title'), 'body': Path(arg('--body-file')).read_text(), 'head': {'ref': branch, 'sha': '', 'repo': {'full_name': 'fixture/project'}}, 'base': {'ref': arg('--base'), 'repo': {'full_name': 'fixture/project'}}, 'html_url': f'https://github.com/fixture/project/pull/{number}', 'state': 'open', 'merged_at': None, 'additions': 1, 'deletions': 0, 'created_at': '2026-09-07T00:00:00Z'}
     prs.append(refresh(pr))
-    file.write_text(json.dumps(prs))
+    save()
     with (root / 'publications.jsonl').open('a') as log:
         log.write(json.dumps({'action': 'create', 'number': number}) + '\n')
     if (root / 'interrupt-publication').exists():
@@ -74,7 +80,7 @@ elif args[:2] == ['pr', 'create']:
                 pr['base']['ref'] = 'other'
             else:
                 pr['head']['repo']['full_name'] = 'external/project'
-            file.write_text(json.dumps(prs))
+            save()
     print(pr['html_url'])
 elif args[:2] == ['pr', 'comment']:
     number = int(args[2])
@@ -89,7 +95,7 @@ elif args[:2] == ['pr', 'comment']:
         pr['body'] = 'Maintainer edit during follow-up.\n\n' + pr['body']
     if (root / 'dependency-rollback').exists():
         (root / 'first-comment-done').touch()
-    file.write_text(json.dumps(prs))
+    save()
     print(pr['html_url'])
 else:
     raise AssertionError(args)

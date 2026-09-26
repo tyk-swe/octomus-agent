@@ -5,6 +5,7 @@ No network writes, real Codex turns, credentials, or spending. Run the suites af
 make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
 """
 import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -291,6 +292,24 @@ def existing_pr(root):
     git('checkout', 'main', cwd=checkout)
     (root / 'target').write_text('octomus/existing')
     (root / 'prs.json').write_text(json.dumps([{'number': 42, 'title': 'An existing improvement', 'body': 'Existing context.\n<!-- octomus:task:earlier -->', 'head': {'ref': 'octomus/existing', 'sha': head, 'repo': {'full_name': 'fixture/project'}}, 'base': {'ref': 'main'}, 'html_url': 'https://github.com/fixture/project/pull/42', 'state': 'open', 'merged_at': None, 'additions': 2000, 'deletions': 0, 'created_at': '2026-08-01T00:00:00Z'}]))
+
+
+def update_prs(root, change):
+    """Lets `change(prs)` edit the gh fixture's saved PR list.
+
+    It holds the fixture's github.lock, as every gh invocation does, and
+    replaces prs.json whole, so a background gh read never sees a truncated
+    file. Never call it while root/reconcile-hold exists: a held `gh auth
+    status` keeps the lock until the hold is released.
+    """
+    with (root / 'github.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = root / 'prs.json'
+        prs = json.loads(path.read_text())
+        change(prs)
+        temporary = root / 'prs.json.tmp'
+        temporary.write_text(json.dumps(prs))
+        os.replace(temporary, path)
 
 
 def usage_report(root):

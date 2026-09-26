@@ -15,8 +15,9 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
-from harness import BINARY, CODEX_ROUTE, TOKEN, Service, base_config, existing_pr, fixture_service, git, poll, process_gone, run_selected, usage_report, use_codex_routes
+from harness import BINARY, CODEX_ROUTE, TOKEN, Service, base_config, existing_pr, fixture_service, git, poll, process_gone, run_selected, update_prs, usage_report, use_codex_routes
 
 
 def scenario(mode):
@@ -73,9 +74,7 @@ def scenario(mode):
             service.wait(lambda: (root / 'publication-created').exists(), 'publication side effect')
             service.stop(crash=True)
             if mode == 'closed-after-publication':
-                prs = json.loads((root / 'prs.json').read_text())
-                prs[0]['state'] = 'closed'
-                (root / 'prs.json').write_text(json.dumps(prs))
+                update_prs(root, lambda prs: prs[0].update(state='closed'))
             service.start()
             # The durable publishing checkpoint is recovered autonomously.
             # No Codex turn or operator retry should be needed.
@@ -425,6 +424,7 @@ def harness_scenario():
     Service.stop reports a race-detector exit status once. process_gone tells
     a live process from a zombie or a reaped one. fixture_service passes a
     scenario failure through after releasing holds before the service stops.
+    update_prs waits for the gh fixture's lock and replaces prs.json whole.
     run_selected runs scenarios by name.
     """
     calls = {}
@@ -525,6 +525,32 @@ def harness_scenario():
     assert service.process.returncode == 0, f'the hold outlived the service stop: {service.process.returncode}'
     assert service.log.closed and not root.exists()
 
+    # update_prs edits prs.json only under the gh fixture's lock, and replaces
+    # the file rather than rewriting it in place.
+    with tempfile.TemporaryDirectory(prefix='octomus-harness-prs-') as tmp:
+        root = Path(tmp)
+        (root / 'prs.json').write_text(json.dumps([{'number': 1, 'state': 'open'}]))
+        inode = (root / 'prs.json').stat().st_ino
+        holder = subprocess.Popen([sys.executable, '-c', 'import fcntl, sys\nlock = open(sys.argv[1], "a")\nfcntl.flock(lock, fcntl.LOCK_EX)\nprint("locked", flush=True)\nsys.stdin.read()', str(root / 'github.lock')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            with holder.stdout:
+                assert holder.stdout.readline() == 'locked\n'
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                try:
+                    update = pool.submit(update_prs, root, lambda prs: prs[0].update(state='closed'))
+                    time.sleep(0.5)
+                    waited = not update.done() and json.loads((root / 'prs.json').read_text())[0]['state'] == 'open'
+                finally:
+                    holder.stdin.close()  # The holder exits and releases the lock.
+                assert waited, 'update_prs edited prs.json while gh held the lock'
+                update.result(timeout=10)
+        finally:
+            holder.kill()
+            holder.wait(timeout=5)
+        assert json.loads((root / 'prs.json').read_text()) == [{'number': 1, 'state': 'closed'}]
+        assert (root / 'prs.json').stat().st_ino != inode, 'prs.json was rewritten in place'
+        assert sorted(p.name for p in root.iterdir()) == ['github.lock', 'prs.json']
+
     # Selected scenarios run in registry order; an unknown name runs nothing.
     ran = []
     registry = [(name, functools.partial(ran.append, name)) for name in ['a', 'b', 'c']]
@@ -540,7 +566,7 @@ def harness_scenario():
     assert ran == ['a', 'c', 'a', 'b', 'c'], ran
     assert output.getvalue() == ''.join(f'RUN selftest {name}\n' for name in ran), output.getvalue()
     assert refusal == 'unknown selftest scenarios: nope; available: a, b, c', refusal
-    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field; fixture teardown releases holds first; scenarios run by name')
+    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field; fixture teardown releases holds first; update_prs takes the gh lock; scenarios run by name')
 
 
 if __name__ == '__main__':
