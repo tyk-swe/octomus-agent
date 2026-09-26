@@ -31,9 +31,13 @@ func marked(err error) error {
 	return &Error{inner: err}
 }
 
-// Decode reads an owned object. dst is an alias without UnmarshalJSON methods;
-// defaultAll keeps defaults installed by the caller. A field tagged
-// wire:"default" may be absent. Failed reads leave dst alone.
+// Decode reads one JSON object into the struct dst points to. dst's own
+// UnmarshalJSON is never called, so dst may be the record type itself. Unknown
+// fields fail when strict. Fields tagged wire:"default" and pointer fields may
+// be absent, and every other field is required unless defaultAll. Absent
+// fields keep dst's current values (nil lists and maps become empty), so pass
+// a zero value unless those values are intended defaults. dst is changed only
+// on success.
 func Decode(data []byte, dst any, strict, defaultAll bool) error {
 	return marked(decode(data, dst, strict, defaultAll))
 }
@@ -335,9 +339,14 @@ func validStrings(data []byte) error {
 	return nil
 }
 
-func Enum(data []byte, names []string) (uint8, error) {
+// UnmarshalEnum decodes one JSON string naming a value in names and stores its
+// index in dst. dst is changed only on success.
+func UnmarshalEnum[T ~uint8](data []byte, names []string, dst *T) error {
 	value, err := enumOf(data, names)
-	return value, marked(err)
+	if err == nil {
+		*dst = T(value)
+	}
+	return marked(err)
 }
 
 func enumOf(data []byte, names []string) (uint8, error) {
@@ -361,16 +370,19 @@ func enumOf(data []byte, names []string) (uint8, error) {
 			return uint8(i), nil
 		}
 	}
-	return 0, fmt.Errorf("invalid enum value %q", name)
+	return 0, fmt.Errorf("invalid enum value %q (expected one of: %s)", name, strings.Join(names, ", "))
 }
 
-func EnumName(value uint8, names []string) string {
+// EnumName returns the wire name of value, or "" when it is out of range.
+func EnumName[T ~uint8](value T, names []string) string {
 	if int(value) >= len(names) {
 		return ""
 	}
 	return names[value]
 }
-func MarshalEnum(value uint8, names []string) ([]byte, error) {
+
+// MarshalEnum encodes value as its wire name and refuses out-of-range values.
+func MarshalEnum[T ~uint8](value T, names []string) ([]byte, error) {
 	name := EnumName(value, names)
 	if name == "" {
 		return nil, &Error{inner: fmt.Errorf("invalid enum value %d", value)}

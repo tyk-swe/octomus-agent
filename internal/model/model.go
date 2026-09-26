@@ -55,27 +55,13 @@ func (p Proposal) ProblemIdentity() string { return ProblemIdentity(p.Title, p.P
 func (p Proposal) SameWork(other Proposal) bool {
 	return p.Target == other.Target && (config.EqualASCII(strings.TrimSpace(p.Title), strings.TrimSpace(other.Title)) || p.ProblemIdentity() == other.ProblemIdentity())
 }
+
+// Error returns the operator guidance for b; out-of-range values read as unknown.
 func (b BlockedReason) Error() string {
-	messages := []string{
-		"Daily admission budget exhausted; adjust the current limit or wait until UTC midnight",
-		"Storage admission limit reached; resolve retained workspaces or adjust the limit",
-		"Source or default branch moved; supersede this task and rediscover against current context",
-		"Remote branch moved outside recorded task outputs; reconcile the preserved work",
-		"Publication result is uncertain; reconcile the preserved output commit",
-		"Runner request failed; inspect the saved route and runner diagnostics",
-		"Incomplete or invalid review cannot authorize publication",
-		"Verification or repairs remain unresolved; evidence is preserved",
-		"A dependency is unresolved; deliver it or rediscover dependent work",
-		"The saved dependency plan cannot execute; rediscover a valid task order",
-		"Workspace initialization or recorded evidence is inconsistent; preserve and inspect it",
-		"Attempt or repair limit exhausted; inspect evidence before adjusting attempt limits",
-		"Task time limit exceeded; inspect the preserved workspace",
-		"Unclassified task failure; inspect the recorded diagnostics",
+	if int(b) >= len(blockedReasonMessages) {
+		return blockedReasonMessages[BlockedReasonUnknown]
 	}
-	if int(b) >= len(messages) {
-		return messages[BlockedReasonUnknown]
-	}
-	return messages[b]
+	return blockedReasonMessages[b]
 }
 
 // BlockedReasonFromError walks wrapped and multi-cause errors so the deepest
@@ -130,10 +116,8 @@ func (p AttemptPolicy) Apply(c *config.Config) {
 	c.SessionTimeoutSeconds = p.SessionTimeoutSeconds
 	c.CommandTimeoutSeconds = p.CommandTimeoutSeconds
 }
-func (w WorkspaceLifecycle) IsEmpty() bool { return w.ArchivedAt == nil && w.DiscardedAt == nil }
-func (w WorkspaceLifecycle) IsZero() bool  { return w.IsEmpty() }
-func (r Review) Valid() bool               { return r.Completed && strings.TrimSpace(r.Summary) != "" }
-func (r Review) Clean() bool               { return r.Valid() && len(r.Findings) == 0 }
+func (r Review) Valid() bool { return r.Completed && strings.TrimSpace(r.Summary) != "" }
+func (r Review) Clean() bool { return r.Valid() && len(r.Findings) == 0 }
 func (o DefaultBranchObservation) Describes(c config.Config) bool {
 	return config.EqualASCII(o.Repository, c.GitHubRepo) && o.DefaultBranch == c.DefaultBranch
 }
