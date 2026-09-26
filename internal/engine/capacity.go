@@ -286,9 +286,9 @@ func overlayOwnedDetails(inventory *model.OpenPrInventory, details []model.PullR
 // service is paused, makes it this process's fresh admission observation. A
 // persisted inventory clears an earlier refresh failure in any mode. Callers
 // hold the gate and have revalidated the live configuration that observed
-// describes. false, with nothing written, means a refresh whose fetch started
-// later already saved a newer inventory, which recorded its own observations
-// and authority.
+// describes. A false result without an error means nothing was written: a
+// refresh whose fetch started later already saved a newer inventory and
+// recorded its own observations and authority.
 func (a *App) commitPrObservationLocked(observed config.Config, inventory model.OpenPrInventory, owned []model.PullRequest, released []string) (bool, error) {
 	control, err := a.Control()
 	if err != nil {
