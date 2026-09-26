@@ -316,9 +316,11 @@ func TestRepositoryIdentity(t *testing.T) {
 	}
 }
 
-// SamePath is the lexical path identity settings use: repeated separators,
-// a trailing slash and interior '.' segments do not matter, '..' stays
-// literal, and a relative path never names an absolute one.
+// SamePath is the lexical path identity settings, task workspaces and runner
+// session directories use: repeated separators, a trailing slash and interior
+// '.' segments do not matter, '..' stays literal, a leading relative '.' is
+// kept, an empty path is not the root, and a relative path never names an
+// absolute one.
 func TestSamePath(t *testing.T) {
 	for _, tc := range []struct {
 		a, b string
@@ -331,6 +333,11 @@ func TestSamePath(t *testing.T) {
 		{"/srv/repo/../x", "/srv/x", false},
 		{"/srv/repo", "/srv/other", false},
 		{"srv/repo", "/srv/repo", false},
+		{"/", "//", true},
+		{"./srv", "srv", false},
+		{"./srv/./repo", "./srv/repo", true},
+		{"", "/", false},
+		{"", "", true},
 	} {
 		if got := SamePath(tc.a, tc.b); got != tc.want {
 			t.Errorf("SamePath(%q, %q) = %t; want %t", tc.a, tc.b, got, tc.want)

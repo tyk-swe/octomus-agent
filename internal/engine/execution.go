@@ -327,7 +327,7 @@ func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 // inspection, never reused.
 func (a *App) validateRecordedWorkspace(ctx context.Context, task *model.Task) error {
 	ws := a.taskWorkspace(task.ID)
-	if !samePath(task.Workspace, ws) || task.ComparisonBase == "" {
+	if !config.SamePath(task.Workspace, ws) || task.ComparisonBase == "" {
 		return model.BlockedReasonWorkspaceInvalid
 	}
 	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
@@ -751,30 +751,6 @@ func sourcePtrEqual(a, b *string) bool {
 		return a == b
 	}
 	return *a == *b
-}
-
-// samePath compares workspace paths by component: separators and interior "."
-// are normalized; ".." stays literal.
-func samePath(a, b string) bool {
-	if a == b {
-		return true
-	}
-	return strings.Join(pathIdentityComponents(a), "/") == strings.Join(pathIdentityComponents(b), "/")
-}
-
-func pathIdentityComponents(path string) []string {
-	parts := []string{}
-	for i, part := range strings.Split(filepath.ToSlash(path), "/") {
-		if i == 0 && part == "" {
-			parts = append(parts, "/")
-			continue
-		}
-		if part == "" || part == "." {
-			continue
-		}
-		parts = append(parts, part)
-	}
-	return parts
 }
 
 // debugOption, debugList and debugString render prompt values in Rust's Debug
