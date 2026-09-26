@@ -8,8 +8,6 @@ package evidence
 
 import (
 	"database/sql"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -710,37 +708,17 @@ const cycleTasksQuery = "SELECT r.data FROM record_meta m INDEXED BY meta_cycle 
 // ReadSnapshot reads the selected cycle and every task naming it from one
 // caller-owned transaction, so the cycle and its task evidence always describe
 // the same database state. This never consults the dashboard's recent task window.
+// A missing cycle is a nil cycle with no error.
 func ReadSnapshot(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, error) {
-	var saved string
-	err := c.QueryRowContext(store.Background(), "SELECT data FROM records WHERE kind='cycle' AND id=?1", cycleID).Scan(&saved)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, nil
+	cycle, err := store.RecordAt[model.Cycle](c, "cycle", cycleID)
+	if err != nil || cycle == nil {
+		return nil, nil, err
 	}
+	tasks, err := store.QueryRecords[model.Task](c, cycleTasksQuery, cycleID)
 	if err != nil {
 		return nil, nil, err
 	}
-	var cycle model.Cycle
-	if err := json.Unmarshal([]byte(saved), &cycle); err != nil {
-		return nil, nil, err
-	}
-	rows, err := c.QueryContext(store.Background(), cycleTasksQuery, cycleID)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rows.Close()
-	tasks := []model.Task{}
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, nil, err
-		}
-		var task model.Task
-		if err := json.Unmarshal([]byte(data), &task); err != nil {
-			return nil, nil, err
-		}
-		tasks = append(tasks, task)
-	}
-	return &cycle, tasks, rows.Err()
+	return cycle, tasks, nil
 }
 
 // snapshotter runs fn inside one read transaction: the service store or a

@@ -149,7 +149,7 @@ func (s *Store) PrReservationCandidates() ([]model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeTasks(raw)
+	return decodeAll[model.Task](raw)
 }
 
 func (s *Store) SeedPrReservation(task model.Task) error {
@@ -319,15 +319,3 @@ func sameJSON(a, b any) bool {
 // invalidTimestamp is the operator-facing reason for an unparseable inventory
 // timestamp, kept short and free of Go's parse-layout diagnostics.
 const invalidTimestamp = "input contains invalid characters"
-
-func decodeTasks(raw [][]byte) ([]model.Task, error) {
-	tasks := make([]model.Task, 0, len(raw))
-	for _, data := range raw {
-		var task model.Task
-		if err := decodeJSON(data, &task); err != nil {
-			return nil, err
-		}
-		tasks = append(tasks, task)
-	}
-	return tasks, nil
-}

@@ -224,7 +224,7 @@ func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeTasks(raw)
+	return decodeAll[model.Task](raw)
 }
 
 // TasksWithStatus lists up to 500 unarchived tasks in the given statuses, oldest first.
@@ -239,7 +239,7 @@ func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeTasks(raw)
+	return decodeAll[model.Task](raw)
 }
 
 func (s *Store) RunningCycles() ([]model.Cycle, error) {
@@ -288,7 +288,7 @@ func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeTasks(raw)
+	return decodeAll[model.Task](raw)
 }
 
 // Snapshot runs fn inside one deferred transaction on the service connection.
@@ -740,7 +740,7 @@ func (s *Store) DecisionMemory(repository string) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeValues(raw)
+	return decodeAll[any](raw)
 }
 
 // RediscoveryRequests lists cancelled tasks awaiting rediscovery for a repository.
@@ -751,7 +751,7 @@ func (s *Store) RediscoveryRequests(repository string) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeValues(raw)
+	return decodeAll[any](raw)
 }
 
 func latestPrOutputAt(c *sql.Conn, repository string, number uint64) (*string, error) {
@@ -777,30 +777,6 @@ func prObservationAt(c *sql.Conn, repository string, number uint64) (string, *mo
 		return "", nil, err
 	}
 	return id, &observation, nil
-}
-
-func decodeAll[T any](raw [][]byte) ([]T, error) {
-	values := make([]T, 0, len(raw))
-	for _, data := range raw {
-		var value T
-		if err := decodeJSON(data, &value); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, nil
-}
-
-func decodeValues(raw [][]byte) ([]any, error) {
-	values := make([]any, 0, len(raw))
-	for _, data := range raw {
-		var value any
-		if err := decodeJSON(data, &value); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, nil
 }
 
 // MarshalJSON renders a page with compact canonical formatting.
