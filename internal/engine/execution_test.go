@@ -265,7 +265,11 @@ func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 // A command that leaves the workspace state check unable to run is recorded
 // as failed evidence naming the check's failure, and stops the run.
 func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
-	app, task, revision := verificationFixture(t, []string{"rm -rf .git", "true"})
+	// Replace the repository with a dangling gitdir link rather than only
+	// removing it: git would otherwise walk up and inspect any repository that
+	// happens to contain the test's temporary directory.
+	breaking := "rm -rf .git && printf 'gitdir: /nonexistent\\n' > .git"
+	app, task, revision := verificationFixture(t, []string{breaking, "true"})
 	_, err := app.verifyRevision(context.Background(), &task, revision)
 	if err == nil || !strings.Contains(err.Error(), "Workspace state check failed during verification") {
 		t.Fatalf("err = %v; want the state check failure", err)
@@ -278,7 +282,7 @@ func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
 		t.Fatalf("verification = %+v; want one record and no further commands", saved.Verification)
 	}
 	record := saved.Verification[0]
-	if record.Command != "rm -rf .git" || record.Success || record.Revision != revision || !strings.Contains(record.Output, "not a git repository") {
+	if record.Command != breaking || record.Success || record.Revision != revision || !strings.Contains(record.Output, "not a git repository") {
 		t.Fatalf("state check failure evidence = %+v", record)
 	}
 }
