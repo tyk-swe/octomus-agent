@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Runs the actual service, scheduler, SQLite, and Git against deterministic external peers.
 No network writes, real Codex turns, credentials, or spending. Run after make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
+Every e2e suite accepts scenario names (`python3 tests/e2e.py normal audit-idle`) to run only those;
+an unknown name lists them all.
 """
+import contextlib
+import functools
 import http.server
+import io
 import json
 import os
 from pathlib import Path
@@ -57,6 +62,23 @@ def service_log(root, tail=None):
     except OSError as error:
         return f'<service.log unavailable: {error!r}>'
     return text if tail is None else '\n'.join(text.splitlines()[-tail:])
+
+
+def run_selected(suite, scenarios, names):
+    """Runs `names`, or every scenario when it is empty, in registry order.
+
+    `scenarios` lists (name, zero-argument callable) pairs; unknown names are
+    refused before anything runs.
+    """
+    registry = dict(scenarios)
+    assert len(registry) == len(scenarios), f'duplicate {suite} scenario names'
+    unknown = [name for name in names if name not in registry]
+    if unknown:
+        raise SystemExit(f'unknown {suite} scenarios: {", ".join(unknown)}; available: {", ".join(registry)}')
+    for name, run in registry.items():
+        if not names or name in names:
+            print(f'RUN {suite} {name}', flush=True)
+            run()
 
 
 def process_gone(pid):
@@ -772,17 +794,30 @@ def harness_scenario():
         child.kill()
         child.wait(timeout=5)
     assert process_gone(child.pid)
-    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field')
+
+    # Selected scenarios run in registry order; an unknown name runs nothing.
+    ran = []
+    registry = [(name, functools.partial(ran.append, name)) for name in ['a', 'b', 'c']]
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        run_selected('selftest', registry, ['c', 'a'])
+        run_selected('selftest', registry, [])
+        try:
+            run_selected('selftest', registry, ['b', 'nope'])
+            raise AssertionError('an unknown scenario name was accepted')
+        except SystemExit as error:
+            refusal = str(error)
+    assert ran == ['a', 'c', 'a', 'b', 'c'], ran
+    assert output.getvalue() == ''.join(f'RUN selftest {name}\n' for name in ran), output.getvalue()
+    assert refusal == 'unknown selftest scenarios: nope; available: a, b, c', refusal
+    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field; scenarios run by name')
 
 
 if __name__ == '__main__':
-    harness_scenario()
-    settings_scenario()
-    for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']:
-        scenario(mode)
-
-    for role in ['executor', 'repair']:
-        missing_session_scenario(role)
-
-    for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']:
-        audit_scenario(mode)
+    run_selected('e2e', [
+        ('harness', harness_scenario),
+        ('settings', settings_scenario),
+        *[(mode, functools.partial(scenario, mode)) for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']],
+        *[(f'missing-{role}', functools.partial(missing_session_scenario, role)) for role in ['executor', 'repair']],
+        *[(f'audit-{mode}', functools.partial(audit_scenario, mode)) for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']],
+    ], sys.argv[1:])

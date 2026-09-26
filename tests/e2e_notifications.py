@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
+import functools
 import http.server
 import json
 from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 
-from e2e import BINARY, Service, base_config, poll, setup
+from e2e import BINARY, Service, base_config, poll, run_selected, setup
 from e2e_runners import configuration, stop_service_and_peers
 
 ENV = 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'
@@ -170,6 +172,6 @@ def scenario(mode):
 
 
 if __name__ == '__main__':
-    for mode in ['deliver', 'restart', 'service-error', 'env-strip', 'env-strip-opencode']:
-        scenario(mode)
-    print('All notification scenarios passed')
+    run_selected('notifications', [(mode, functools.partial(scenario, mode)) for mode in ['deliver', 'restart', 'service-error', 'env-strip', 'env-strip-opencode']], sys.argv[1:])
+    if not sys.argv[1:]:
+        print('All notification scenarios passed')

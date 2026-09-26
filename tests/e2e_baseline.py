@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import functools
 import http.client
 import json
 import os
@@ -7,11 +8,12 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from e2e import TOKEN, Service, base_config, poll, setup, usage_report
+from e2e import TOKEN, Service, base_config, poll, run_selected, setup, usage_report
 
 
 def save_config(service, empty_models=False, **overrides):
@@ -368,6 +370,6 @@ def scenario(mode):
 
 
 if __name__ == '__main__':
-    for mode in ['audit-exclusion', 'gates', 'pass', 'failure', 'mutation', 'timeout', 'timeout-overall', 'restart', 'cancel-restart', 'shutdown', 'symlink', 'disconnect', 'storage', 'truncation']:
-        scenario(mode)
-    print('All baseline scenarios passed')
+    run_selected('baseline', [(mode, functools.partial(scenario, mode)) for mode in ['audit-exclusion', 'gates', 'pass', 'failure', 'mutation', 'timeout', 'timeout-overall', 'restart', 'cancel-restart', 'shutdown', 'symlink', 'disconnect', 'storage', 'truncation']], sys.argv[1:])
+    if not sys.argv[1:]:
+        print('All baseline scenarios passed')

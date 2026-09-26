@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Mixed-runner behavior with synthetic peers, SQLite and real local Git only."""
+import functools
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
+import sys
 import tempfile
 
-from e2e import Service, base_config, process_gone, setup, usage_report, git
+from e2e import Service, base_config, process_gone, run_selected, setup, usage_report, git
 
 
 def route(backend, planning=False, provider='fixture', variant='high'):
@@ -194,9 +196,9 @@ def task_deadline():
 
 
 if __name__ == '__main__':
-    for mode in ['opencode', 'mixed', 'reverse-mixed', 'recovery']:
-        successful_workflow(mode)
-    for mode in ['wrong-model', 'wrong-variant', 'missing-structured', 'malformed-structured', 'incomplete', 'interactive']:
-        failed_review(mode)
-    audit()
-    task_deadline()
+    run_selected('runners', [
+        *[(mode, functools.partial(successful_workflow, mode)) for mode in ['opencode', 'mixed', 'reverse-mixed', 'recovery']],
+        *[(mode, functools.partial(failed_review, mode)) for mode in ['wrong-model', 'wrong-variant', 'missing-structured', 'malformed-structured', 'incomplete', 'interactive']],
+        ('audit', audit),
+        ('task-deadline', task_deadline),
+    ], sys.argv[1:])

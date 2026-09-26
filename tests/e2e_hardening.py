@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Operational regressions using synthetic runners and a real temporary Git remote."""
+import functools
 import json
 from pathlib import Path
+import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from e2e import Service, setup, existing_pr, git, process_gone, usage_report, TOKEN
+from e2e import Service, setup, existing_pr, git, process_gone, run_selected, usage_report, TOKEN
 
 
 def run(mode):
@@ -429,9 +431,18 @@ def reconciliation_deadline():
             service.log.close()
 
 
-if __name__ == '__main__':
-    for mode in ['reconcile-controls', 'archive-uncertain', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'dependency-rollback', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner', 'publication-body-edit', 'publication-secret', 'publication-secret-followup']:
-        run(mode)
-        print(f'PASS hardening {mode}', flush=True)
+def hardening(mode):
+    run(mode)
+    print(f'PASS hardening {mode}', flush=True)
+
+
+def hardening_reconciliation_deadline():
     reconciliation_deadline()
     print('PASS hardening reconciliation deadline and process cleanup', flush=True)
+
+
+if __name__ == '__main__':
+    run_selected('hardening', [
+        *[(mode, functools.partial(hardening, mode)) for mode in ['reconcile-controls', 'archive-uncertain', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'dependency-rollback', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner', 'publication-body-edit', 'publication-secret', 'publication-secret-followup']],
+        ('reconciliation-deadline', hardening_reconciliation_deadline),
+    ], sys.argv[1:])
