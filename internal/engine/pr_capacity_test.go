@@ -197,6 +197,37 @@ func TestPausedRefreshClearsEarlierFailureWithoutAuthorizingDispatch(t *testing.
 	}
 }
 
+// a housekeeping observation whose refresh was superseded by a concurrent one
+// that saved a newer complete inventory first is not a failure: the older
+// inventory is refused, no refresh failure is recorded, and the observation
+// finishes with the newer saved inventory.
+func TestObservationContinuesWithASupersedingInventory(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	newer := model.OpenPrInventory{Repository: fixture.cfg.GitHubRepo, ObservedAt: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), PRs: []model.PullRequest{}}
+	if persisted, err := fixture.state.PersistPrInventory(newer, nil); err != nil || !persisted {
+		t.Fatalf("persist newer inventory: %t, %v", persisted, err)
+	}
+	if err := app.observeRemote(context.Background(), fixture.cfg); err != nil {
+		t.Fatalf("superseded refresh failed the observation: %v", err)
+	}
+	control, err := app.Control()
+	if err != nil || control.ContextFingerprint == "" {
+		t.Fatalf("observation did not record the context fingerprint: %+v, %v", control, err)
+	}
+	app.runtimeMu.Lock()
+	refreshError := app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("superseded refresh was recorded as a failure: %q", refreshError)
+	}
+	stored, err := fixture.state.OpenPrInventory()
+	if err != nil || stored == nil || stored.ObservedAt != newer.ObservedAt {
+		t.Fatalf("older refresh replaced the newer inventory: %+v, %v", stored, err)
+	}
+}
+
 // archiving an uncertain checkpoint ends at cancelled; the durable reservation
 // it left behind can only be resolved by remote inspection, so recovery must
 // not resurrect a released one. Published work is never reseeded either.

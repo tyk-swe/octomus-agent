@@ -22,6 +22,11 @@ const (
 // prCapacityFullReason explains a full owned-PR capacity wherever it is reported.
 const prCapacityFullReason = "The configured owned open-PR limit is reached; new-PR work waits for an observed closure or merge"
 
+// errPrInventorySuperseded reports a refresh whose inventory was not saved
+// because a refresh whose fetch started later already saved a newer complete
+// one. The older result is obsolete, not a failure.
+var errPrInventorySuperseded = errors.New("Pull request inventory became stale before persistence")
+
 type freshPrObservation struct {
 	identity          store.PrIdentity
 	inventory         model.OpenPrInventory
@@ -203,8 +208,10 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		// A refresh whose own context ended (invalidation by pause, config
 		// save or a failed run, or shutdown) is obsolete, not failed: remote
 		// captures report that as process.ErrCancelled, which does not wrap
-		// context.Canceled, and invalidation has already reset this state.
-		if result == nil || ctx.Err() != nil || errors.Is(result, context.Canceled) {
+		// context.Canceled, and invalidation has already reset this state. A
+		// superseded refresh is obsolete too: the newer one that persisted
+		// first already settled this state.
+		if result == nil || ctx.Err() != nil || errors.Is(result, context.Canceled) || errors.Is(result, errPrInventorySuperseded) {
 			return
 		}
 		a.runtimeMu.Lock()
@@ -258,7 +265,9 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		return err
 	}
 	if !persisted {
-		return errors.New("Pull request inventory became stale before persistence")
+		// The live PR identity was confirmed above, so a refused persist can
+		// only mean a newer saved inventory.
+		return errPrInventorySuperseded
 	}
 	for _, detail := range details {
 		if err := a.Store.RecordPrObservation(live.GitHubRepo, detail, false); err != nil {

@@ -379,7 +379,9 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if err := gitops.ValidateRemote(ctx, cfg); err != nil {
 		return err
 	}
-	if err := a.refreshPRs(ctx, cfg); err != nil {
+	// A superseded refresh means a concurrent one saved a newer complete
+	// inventory first; the observation continues with that saved inventory.
+	if err := a.refreshPRs(ctx, cfg); err != nil && !errors.Is(err, errPrInventorySuperseded) {
 		return err
 	}
 	inventory, err := a.Store.OpenPrInventory()
