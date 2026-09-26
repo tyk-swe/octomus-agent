@@ -116,10 +116,8 @@ func (p AttemptPolicy) Apply(c *config.Config) {
 	c.SessionTimeoutSeconds = p.SessionTimeoutSeconds
 	c.CommandTimeoutSeconds = p.CommandTimeoutSeconds
 }
-func (w WorkspaceLifecycle) IsEmpty() bool { return w.ArchivedAt == nil && w.DiscardedAt == nil }
-func (w WorkspaceLifecycle) IsZero() bool  { return w.IsEmpty() }
-func (r Review) Valid() bool               { return r.Completed && strings.TrimSpace(r.Summary) != "" }
-func (r Review) Clean() bool               { return r.Valid() && len(r.Findings) == 0 }
+func (r Review) Valid() bool { return r.Completed && strings.TrimSpace(r.Summary) != "" }
+func (r Review) Clean() bool { return r.Valid() && len(r.Findings) == 0 }
 func (o DefaultBranchObservation) Describes(c config.Config) bool {
 	return config.EqualASCII(o.Repository, c.GitHubRepo) && o.DefaultBranch == c.DefaultBranch
 }

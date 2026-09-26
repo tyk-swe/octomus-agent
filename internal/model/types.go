@@ -63,7 +63,6 @@ func (v PlanningCapacity) MarshalJSON() ([]byte, error) {
 	type plain PlanningCapacity
 	return wirejson.Record(plain(v))
 }
-func (v PlanningCapacity) Clone() PlanningCapacity { return wirejson.Clone(v) }
 
 type AttemptPolicy struct {
 	MaxRepairRounds       uint64 `json:"max_repair_rounds"`
@@ -87,7 +86,6 @@ func (v AttemptPolicy) MarshalJSON() ([]byte, error) {
 	type plain AttemptPolicy
 	return wirejson.Record(plain(v))
 }
-func (v AttemptPolicy) Clone() AttemptPolicy { return wirejson.Clone(v) }
 
 type WorkspaceLifecycle struct {
 	ArchivedAt  *string `json:"archived_at"`
@@ -107,7 +105,6 @@ func (v WorkspaceLifecycle) MarshalJSON() ([]byte, error) {
 	type plain WorkspaceLifecycle
 	return wirejson.Record(plain(v))
 }
-func (v WorkspaceLifecycle) Clone() WorkspaceLifecycle { return wirejson.Clone(v) }
 
 type Finding struct {
 	Title    string `json:"title"`
@@ -129,7 +126,6 @@ func (v Finding) MarshalJSON() ([]byte, error) {
 	type plain Finding
 	return wirejson.Record(plain(v))
 }
-func (v Finding) Clone() Finding { return wirejson.Clone(v) }
 
 type Review struct {
 	Completed bool      `json:"completed"`
@@ -147,7 +143,6 @@ func (v *Review) UnmarshalJSON(data []byte) error {
 	return nil
 }
 func (v Review) MarshalJSON() ([]byte, error) { type plain Review; return wirejson.Record(plain(v)) }
-func (v Review) Clone() Review                { return wirejson.Clone(v) }
 
 type ReviewRound struct {
 	SessionID      string `json:"session_id"`
@@ -170,7 +165,6 @@ func (v ReviewRound) MarshalJSON() ([]byte, error) {
 	type plain ReviewRound
 	return wirejson.Record(plain(v))
 }
-func (v ReviewRound) Clone() ReviewRound { return wirejson.Clone(v) }
 
 type Verification struct {
 	Command   string `json:"command"`
@@ -193,7 +187,6 @@ func (v Verification) MarshalJSON() ([]byte, error) {
 	type plain Verification
 	return wirejson.Record(plain(v))
 }
-func (v Verification) Clone() Verification { return wirejson.Clone(v) }
 
 type BaselineCommand struct {
 	Command         string `json:"command"`
@@ -216,7 +209,6 @@ func (v BaselineCommand) MarshalJSON() ([]byte, error) {
 	type plain BaselineCommand
 	return wirejson.Record(plain(v))
 }
-func (v BaselineCommand) Clone() BaselineCommand { return wirejson.Clone(v) }
 
 type BaselineCheck struct {
 	ID                string            `json:"id"`
@@ -245,7 +237,6 @@ func (v BaselineCheck) MarshalJSON() ([]byte, error) {
 	type plain BaselineCheck
 	return wirejson.Record(plain(v))
 }
-func (v BaselineCheck) Clone() BaselineCheck { return wirejson.Clone(v) }
 
 type DefaultBranchObservation struct {
 	Repository    string `json:"repository"`
@@ -267,7 +258,6 @@ func (v DefaultBranchObservation) MarshalJSON() ([]byte, error) {
 	type plain DefaultBranchObservation
 	return wirejson.Record(plain(v))
 }
-func (v DefaultBranchObservation) Clone() DefaultBranchObservation { return wirejson.Clone(v) }
 
 type Session struct {
 	ID        string       `json:"id"`
@@ -392,7 +382,6 @@ func (v PrObservation) MarshalJSON() ([]byte, error) {
 	type plain PrObservation
 	return wirejson.Record(plain(v))
 }
-func (v PrObservation) Clone() PrObservation { return wirejson.Clone(v) }
 
 type Grounding struct {
 	Revision           string              `json:"revision"`
@@ -417,7 +406,6 @@ func (v Grounding) MarshalJSON() ([]byte, error) {
 	type plain Grounding
 	return wirejson.Record(plain(v))
 }
-func (v Grounding) Clone() Grounding { return wirejson.Clone(v) }
 
 type ExternalPrContext struct {
 	Number         uint64 `json:"number"`
@@ -446,7 +434,6 @@ func (v ExternalPrContext) MarshalJSON() ([]byte, error) {
 	type plain ExternalPrContext
 	return wirejson.Record(plain(v))
 }
-func (v ExternalPrContext) Clone() ExternalPrContext { return wirejson.Clone(v) }
 
 type PrCoverage struct {
 	ObservedAt       *string `json:"observed_at"`
@@ -474,7 +461,6 @@ func (v PrCoverage) MarshalJSON() ([]byte, error) {
 	type plain PrCoverage
 	return wirejson.Record(plain(v))
 }
-func (v PrCoverage) Clone() PrCoverage { return wirejson.Clone(v) }
 
 type OpenPrInventory struct {
 	Repository string        `json:"repository"`
@@ -520,7 +506,6 @@ func (v PrCapacity) MarshalJSON() ([]byte, error) {
 	type plain PrCapacity
 	return wirejson.Record(plain(v))
 }
-func (v PrCapacity) Clone() PrCapacity { return wirejson.Clone(v) }
 
 type Cycle struct {
 	Mode           CycleMode          `json:"mode"`
@@ -537,7 +522,7 @@ type Cycle struct {
 	Repository     string             `json:"repository,omitempty" wire:"default"`
 	DecisionMemory []any              `json:"decision_memory,omitempty" wire:"default"`
 	RunID          *string            `json:"run_id,omitempty" wire:"default"`
-	Lifecycle      WorkspaceLifecycle `json:"lifecycle,omitzero" wire:"default"`
+	Lifecycle      WorkspaceLifecycle `json:"lifecycle,omitzero" wire:"default"` // omitted while both timestamps are nil
 }
 
 func (v *Cycle) UnmarshalJSON(data []byte) error {
@@ -602,4 +587,3 @@ func (v *Event) UnmarshalJSON(data []byte) error {
 	return nil
 }
 func (v Event) MarshalJSON() ([]byte, error) { type plain Event; return wirejson.Record(plain(v)) }
-func (v Event) Clone() Event                 { return wirejson.Clone(v) }
