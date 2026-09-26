@@ -217,7 +217,8 @@
     return entry?.binary === config?.[`${backend}_binary`] ? entry : undefined;
   }
   async function catalog(backend: Backend) {
-    if (!config || !editable || busy || loading) return;
+    // A previewed executable is display text, not a path: it is never sent back.
+    if (!config || !editable || busy || loading || locked(`${backend}_binary`)) return;
     const binary = config[`${backend}_binary`];
     pending = `catalog-${backend}`;
     error = '';
@@ -443,18 +444,28 @@
         <div class="catalog-actions">
           {#each BACKENDS as backend}
             {@const label = backendLabel(backend)}
+            {@const preview = locked(`${backend}_binary`)}
             <button
               id={`load-${backend}-models`}
               type="button"
               class="button small"
               onclick={() => catalog(backend)}
-              disabled={loading}
+              disabled={loading || preview}
+              aria-describedby={preview ? `catalog-preview-${backend}` : undefined}
               >{pending === `catalog-${backend}`
                 ? `Loading ${label} models…`
                 : `Load ${label} models`}</button
             >
           {/each}
         </div>
+        {#each BACKENDS as backend}
+          {#if locked(`${backend}_binary`)}<p
+              class="muted catalog-note"
+              id={`catalog-preview-${backend}`}
+            >
+              Replace the {backendLabel(backend)} executable preview to load its catalog.
+            </p>{/if}
+        {/each}
         {@render previewNote('roles', 'role routes', true)}
         {#each ordered(Object.keys(config.roles), ROLES) as role}
           <RouteEditor
@@ -675,6 +686,10 @@
   }
   .catalog-actions button {
     scroll-margin-block: 100px;
+  }
+  .catalog-note {
+    margin: -8px 24px 16px;
+    font-size: 12px;
   }
   /* A narrow save bar moves the reload control below the message instead of squeezing it. */
   .settings-feedback > span {
