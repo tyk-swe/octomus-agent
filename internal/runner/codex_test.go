@@ -50,6 +50,40 @@ func TestCodexModelsAndPreResponseEvents(t *testing.T) {
 	}
 }
 
+// model/list pagination follows cursors across pages and accepts an empty
+// final page, while a catalog whose empty pages keep a cursor fails instead of
+// paging forever.
+func TestCodexModelsPagination(t *testing.T) {
+	f := codexFixture(t)
+	client, err := f.connectCodex(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+	f.mode("codex", "paged")
+	models, err := client.Models(f.workspace)
+	if err != nil {
+		t.Fatalf("paged models: %v", err)
+	}
+	if len(models) != 2 || models[0].Model != "gpt-6-astra" || models[1].Model != "gpt-5.6-luna" {
+		t.Fatalf("paged catalog: %+v", models)
+	}
+	f.mode("codex", "empty-pages")
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Models(f.workspace)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "Invalid model pagination") {
+			t.Fatalf("an endless empty catalog must fail: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("model/list pagination was not bounded")
+	}
+}
+
 // A held turn exceeds the session limit, interrupts the turn, and the
 // unawaited interrupt response must not satisfy the next RPC.
 func TestCodexTimeoutInterruptsTurn(t *testing.T) {

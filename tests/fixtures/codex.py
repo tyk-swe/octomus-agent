@@ -46,6 +46,14 @@ for line in sys.stdin:
         continue
     if method == 'account/read':
         result = {'account': None, 'requiresOpenaiAuth': True} if mode() == 'no-auth' else {'account': {'type': 'apiKey'}, 'requiresOpenaiAuth': True}
+    elif method == 'model/list' and mode() == 'paged':
+        # One model per page, then an empty final page with a null cursor.
+        pages = {None: (['gpt-6-astra'], '1'), '1': (['gpt-5.6-luna'], '2'), '2': ([], None)}
+        names, following = pages[params.get('cursor')]
+        result = {'data': [{'model': m, 'displayName': m, 'supportedReasoningEfforts': [{'reasoningEffort': 'medium'}]} for m in names], 'nextCursor': following}
+    elif method == 'model/list' and mode() == 'empty-pages':
+        # A misbehaving catalog: empty pages whose cursor never ends.
+        result = {'data': [], 'nextCursor': 'x'}
     elif method == 'model/list':
         result = {'data': [{'model': m, 'displayName': m, 'supportedReasoningEfforts': [{'reasoningEffort': e} for e in ['low', 'medium', 'high', 'xhigh', 'max']]} for m in ['gpt-6-astra', 'gpt-5.6-luna']], 'nextCursor': None}
     elif method in ['thread/start', 'thread/resume']:

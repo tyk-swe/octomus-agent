@@ -346,7 +346,9 @@ func (c *Codex) Models(cwd string) ([]Model, error) {
 		if cursor == nil {
 			break
 		}
-		if len(out) >= 10000 {
+		// A continuing page must make progress: an empty page with a cursor,
+		// or a catalog past the model bound, would page forever.
+		if len(data) == 0 || len(out) >= 10000 {
 			return nil, fmt.Errorf("Invalid model pagination")
 		}
 	}
