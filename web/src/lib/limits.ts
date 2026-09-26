@@ -7,8 +7,11 @@ type NumericConfigKey = {
 
 /**
  * The numeric operating limits the configuration form exposes, with the range
- * each one accepts. The service validates these ranges again on save; the
- * bounds here exist so the form can say what it will accept before asking.
+ * each one accepts. The bounds mirror what the service accepts (internal/config),
+ * and it checks them again on save, together with one cross-field rule: the task
+ * timeout must be at least the session timeout. A limit without a maximum has none
+ * in the service either. The bounds here let the form say what it will accept
+ * before asking.
  */
 export const LIMITS: {
   key: NumericConfigKey;
@@ -34,8 +37,9 @@ export const LIMITS: {
   {
     key: 'cycle_interval_seconds',
     label: 'Cycle interval (seconds)',
-    help: 'Time to wait between completed cycles',
-    min: 30
+    help: 'Time to wait between completed cycles · 30–604,800',
+    min: 30,
+    max: 604800
   },
   {
     key: 'max_tasks_per_cycle',
@@ -47,8 +51,9 @@ export const LIMITS: {
   {
     key: 'maintenance_every_cycles',
     label: 'Maintenance cadence',
-    help: 'Prioritize maintenance every N cycles',
-    min: 1
+    help: 'Prioritize maintenance every N cycles · 1–10,000',
+    min: 1,
+    max: 10000
   },
   {
     key: 'large_pr_lines',
@@ -65,7 +70,7 @@ export const LIMITS: {
   {
     key: 'max_repair_rounds',
     label: 'Repair rounds',
-    help: 'Unresolved work is blocked at this limit',
+    help: 'Unresolved work is blocked at this limit · 1–20',
     min: 1,
     max: 20
   },
@@ -78,33 +83,37 @@ export const LIMITS: {
   {
     key: 'max_retries',
     label: 'Operator retries',
-    help: 'Maximum retries for each blocked task',
+    help: 'Maximum retries for each blocked task · 0–10',
     min: 0,
     max: 10
   },
   {
     key: 'session_timeout_seconds',
     label: 'Session timeout (seconds)',
-    help: 'Maximum duration of an agent turn',
-    min: 10
+    help: 'Maximum duration of an agent turn · 10–604,800',
+    min: 10,
+    max: 604800
   },
   {
     key: 'task_timeout_seconds',
     label: 'Task timeout (seconds)',
-    help: 'Total limit for execution, review and delivery',
-    min: 10
+    help: 'Total limit for execution, review and delivery · up to 604,800, at least the session timeout',
+    min: 10,
+    max: 604800
   },
   {
     key: 'command_timeout_seconds',
     label: 'Command timeout (seconds)',
-    help: 'Maximum time for Git and verification commands',
-    min: 1
+    help: 'Maximum time for Git and verification commands · 1–604,800',
+    min: 1,
+    max: 604800
   },
   {
     key: 'max_sessions_per_day',
     label: 'Daily session budget',
-    help: 'Hard admission limit, resets at UTC midnight',
-    min: 1
+    help: 'Hard admission limit, resets at UTC midnight · 1–1,000,000',
+    min: 1,
+    max: 1000000
   },
   {
     key: 'max_open_prs',
@@ -116,14 +125,16 @@ export const LIMITS: {
   {
     key: 'max_workspace_bytes',
     label: 'Workspace budget (bytes)',
-    help: 'Block new sessions when storage reaches this limit',
-    min: 1000000
+    help: 'Block new sessions when storage reaches this limit · 1,000,000–1,000,000,000,000,000',
+    min: 1000000,
+    max: 1000000000000000
   },
   {
     key: 'retain_completed_days',
     label: 'Workspace retention (days)',
-    help: 'Published work only; unresolved work is preserved',
-    min: 1
+    help: 'Published work only; unresolved work is preserved · 1–36,500',
+    min: 1,
+    max: 36500
   },
   {
     key: 'retain_events',

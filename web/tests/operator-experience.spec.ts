@@ -642,6 +642,48 @@ test('an emptied operating limit stays empty and blocks saving until it is fille
   expect(state.writes).toHaveLength(1);
 });
 
+test('operating limits refuse values above the service maxima before saving', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const validity = (field: Locator) =>
+    field.evaluate((input: HTMLInputElement) => ({
+      valid: input.validity.valid,
+      overflow: input.validity.rangeOverflow
+    }));
+  // Upper bounds internal/config enforces on save.
+  const maxima: [RegExp, number][] = [
+    [/^Cycle interval/, 604800],
+    [/^Maintenance cadence/, 10000],
+    [/^Session timeout/, 604800],
+    [/^Task timeout/, 604800],
+    [/^Command timeout/, 604800],
+    [/^Daily session budget/, 1000000],
+    [/^Workspace budget/, 1e15],
+    [/^Workspace retention/, 36500]
+  ];
+  for (const [name, max] of maxima) {
+    const field = page.getByRole('spinbutton', { name });
+    const saved = await field.inputValue();
+    await field.fill(String(max + 1));
+    expect(await validity(field)).toEqual({ valid: false, overflow: true });
+    await field.fill(String(max));
+    expect(await validity(field)).toEqual({ valid: true, overflow: false });
+    await field.fill(saved);
+  }
+  const interval = page.getByRole('spinbutton', { name: /^Cycle interval/ });
+  await interval.fill('1209600');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  expect(await validity(interval)).toEqual({ valid: false, overflow: true });
+  await interval.fill('604800');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes.map((write) => write.config)).toEqual([{ cycle_interval_seconds: 604800 }]);
+});
+
 test('display-transformed fields stay canonical: previews lock, unrelated saves omit them, replacement is explicit', async ({
   page,
   isMobile
