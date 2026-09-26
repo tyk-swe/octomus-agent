@@ -123,6 +123,10 @@ exit 1
             assert result.returncode == 0, f'exit {result.returncode}: {result.stderr}'
             assert path.read_bytes() == binary.read_bytes()
             assert os.access(path, os.X_OK)
+            # The next steps print literally (quoted heredoc) and name the documented
+            # data directory, so state never lands in the shell's current directory.
+            assert 'OCTOMUS_TOKEN="$(openssl rand -hex 32)"' in result.stdout, result.stdout
+            assert 'octomus-agent --data-dir /var/lib/octomus/.octomus\n' in result.stdout, result.stdout
 
         def refused(result, message=''):
             assert result.returncode != 0, result.stdout
