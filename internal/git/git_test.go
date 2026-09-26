@@ -1017,6 +1017,55 @@ func TestPublishGatesOnTheLatestVerificationPerCommand(t *testing.T) {
 	}
 }
 
+// TestFixturePublishNeverRecursesIntoSubmodules: publication pushes only the
+// owned branch even when the operator's global Git configuration enables
+// submodule recursion and the reviewed commit moves a submodule to a commit
+// its own remote has never seen.
+func TestFixturePublishNeverRecursesIntoSubmodules(t *testing.T) {
+	c, root := fixtureRoot(t)
+	c.VerificationCommands = []string{"make test"}
+	ctx := context.Background()
+	// A submodule remote with one commit on main, added to the fixture's main.
+	sub := filepath.Join(root, "sub.git")
+	realGit(t, root, "init", "--bare", "-b", "main", sub)
+	seed := filepath.Join(root, "sub-seed")
+	realGit(t, root, "init", "-b", "main", seed)
+	writeFile(t, filepath.Join(seed, "lib.txt"), "library\n")
+	realGit(t, seed, "add", ".")
+	realGit(t, seed, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "-m", "Library")
+	realGit(t, seed, "push", sub, "main")
+	realGit(t, c.Repository, "-c", "protocol.file.allow=always", "submodule", "add", sub, "sub")
+	realGit(t, c.Repository, "commit", "-m", "Add submodule")
+	realGit(t, c.Repository, "push", "origin", "main")
+	task, _ := publishableTask(t, c, root, "task-submodule")
+	// The reviewed change also moves the submodule to a local, unpushed commit.
+	realGit(t, task.Workspace, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+	writeFile(t, filepath.Join(task.Workspace, "sub", "lib.txt"), "changed locally\n")
+	realGit(t, filepath.Join(task.Workspace, "sub"), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com",
+		"commit", "-am", "Unpushed library change")
+	commit, err := git.Snapshot(ctx, c, task.Workspace, "Move the submodule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.OutputCommit = strptr(commit)
+	task.Reviews[0].Revision = commit
+	task.Verification[0].Revision = commit
+	// Ambient operator configuration that would otherwise recurse on push.
+	global := filepath.Join(root, "global.gitconfig")
+	writeFile(t, global, "[submodule]\n\trecurse = true\n[push]\n\trecurseSubmodules = on-demand\n[protocol \"file\"]\n\tallow = always\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	if _, err := git.Publish(ctx, task); err != nil {
+		t.Fatalf("publication with ambient submodule recursion: %v", err)
+	}
+	if remoteHead := realGit(t, root, "--git-dir", filepath.Join(root, "remote.git"),
+		"rev-parse", "refs/heads/octomus/work"); remoteHead != commit {
+		t.Fatalf("remote branch = %s; want the reviewed commit %s", remoteHead, commit)
+	}
+	if refs := realGit(t, root, "--git-dir", sub, "for-each-ref", "--format=%(refname) %(objectname)"); refs != "refs/heads/main "+realGit(t, seed, "rev-parse", "HEAD") {
+		t.Fatalf("submodule remote refs = %q; publication must not push to it", refs)
+	}
+}
+
 // TestPublishUncertainWrapsCauseOnce: an untyped publication failure is
 // reported as PublicationUncertain with the reason sentence stated once,
 // followed by the underlying cause.

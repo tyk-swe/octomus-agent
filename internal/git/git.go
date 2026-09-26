@@ -904,10 +904,13 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		if remote != nil {
 			expected = *remote
 		}
+		// Hooks, tag following and submodule recursion are pinned off so ambient
+		// operator configuration can never push anything but the owned branch.
 		if _, err := Git(ctx, c, path, []string{
 			"-c", "core.hooksPath=/dev/null",
 			"-c", "push.followTags=false",
 			"push",
+			"--recurse-submodules=no",
 			fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", task.Branch, expected),
 			trustedRemote,
 			fmt.Sprintf("%s:refs/heads/%s", commit, task.Branch),
