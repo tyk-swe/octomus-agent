@@ -57,4 +57,8 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
         process.wait()
     except KeyboardInterrupt:
         process.terminate()
-        process.wait()
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
