@@ -29,8 +29,8 @@ select {
     border-color var(--t-fast) var(--ease),
     box-shadow var(--t-fast) var(--ease);
 }
-input:hover:not(:disabled),
-textarea:hover:not(:disabled),
+input:hover:not(:disabled):not([readonly]),
+textarea:hover:not(:disabled):not([readonly]),
 select:hover:not(:disabled) {
   border-color: #c9d4b8;
 }
@@ -53,9 +53,14 @@ select {
   background-position: right 11px center;
   padding-right: 34px;
 }
+/* A field that cannot be edited, whether disabled or a read-only preview, never looks
+   editable. The select keeps its chevron, so only the colour is set. */
 input:disabled,
-textarea:disabled {
-  background: #fafbf7;
+textarea:disabled,
+input[readonly],
+textarea[readonly],
+select:disabled {
+  background-color: #fafbf7;
 }
 .inline-note {
   display: flex;

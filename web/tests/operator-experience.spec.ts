@@ -1113,6 +1113,64 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
   await expect(page.locator('#preview-verification_commands')).toHaveCount(0);
 });
 
+test('locked previews look as non-editable as disabled fields until they are replaced', async ({
+  page,
+  isMobile
+}) => {
+  await configurationFixture(page, {
+    transformed: {
+      overrides: {
+        repository: '/srv/[redacted]',
+        repair_route: { backend: 'codex', model: 'gpt-6-astra-shortened…', effort: 'medium' }
+      },
+      fields: [
+        { field: 'repository', kinds: ['redacted'], paths: [['repository']] },
+        { field: 'repair_route', kinds: ['shortened'], paths: [['repair_route', 'model']] }
+      ]
+    }
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const well = 'rgb(250, 251, 247)';
+  const white = 'rgb(255, 255, 255)';
+  const repository = page.locator('#repository-path');
+  const branch = page.getByLabel('Default branch', { exact: true });
+  await expect(repository).toHaveJSProperty('readOnly', true);
+  await expect(repository).toHaveCSS('background-color', well);
+  await expect(branch).toHaveCSS('background-color', white);
+  // A locked route disables its selects; they share the disabled model field's fill and
+  // keep their chevron.
+  const runner = page.getByLabel('Repair runner', { exact: true });
+  await expect(runner).toBeDisabled();
+  await expect(runner).toHaveCSS('background-color', well);
+  await expect(runner).toHaveCSS('background-image', /^url\(/);
+  await expect(page.getByLabel('Repair model', { exact: true })).toHaveCSS(
+    'background-color',
+    well
+  );
+  if (!isMobile) {
+    // Hovering an editable field highlights its border; a read-only preview's stays put.
+    await branch.hover();
+    await expect(branch).toHaveCSS('border-top-color', 'rgb(201, 212, 184)');
+    await repository.hover();
+    await expect(repository).toHaveCSS('border-top-color', 'rgb(223, 231, 213)');
+  }
+  const accessibility = await new AxeBuilder({ page })
+    .include('#main-content')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(
+    accessibility.violations.map((v) => ({ rule: v.id, elements: v.nodes.map((n) => n.target) }))
+  ).toEqual([]);
+
+  await page.locator('#replace-repository').click();
+  await expect(repository).toHaveJSProperty('readOnly', false);
+  await expect(repository).toHaveCSS('background-color', white);
+  await page.locator('#replace-repair_route').click();
+  await expect(runner).toBeEnabled();
+  await expect(runner).toHaveCSS('background-color', white);
+});
+
 test('setup checklist distinguishes entered, saved, checked, stale and failed states without starting work', async ({
   page,
   isMobile
