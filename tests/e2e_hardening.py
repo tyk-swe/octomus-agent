@@ -338,6 +338,11 @@ def run(mode):
                 assert f'<!-- octomus:task:{task["id"]} -->' in sent, sent
                 assert f'Reviewed commit: `{task["output_commit"]}`' in sent, sent
                 assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
+                # The pushed branch is public too: its generated commit
+                # message is the scrubbed title.
+                messages = git('log', '--format=%B', task['branch'], cwd=root / 'remote.git')
+                assert TOKEN not in messages and 'ghp_fixturePublicationSecret0001' not in messages, messages
+                assert 'Complete the fixture feature [redacted]' in messages, messages
                 if mode == 'publication-secret':
                     service.stop()
                     import sqlite3
