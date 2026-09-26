@@ -96,6 +96,22 @@ func TestProposalValidationNamesTheOffendingProposal(t *testing.T) {
 	assertErrorNames(t, first, `proposal "x" depends on "gone"`)
 }
 
+// A plan with unordered writers on several existing PR branches names the
+// branch whose first proposal appears first in the plan, on every run.
+func TestBranchOrderFaultNamesTheFirstBranchInPlanOrder(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+	zeta, alpha := ownedPR("octomus/zeta"), ownedPR("octomus/alpha")
+	alpha.Number = 8
+	grounding := model.Grounding{Revision: "source", PRs: []model.PullRequest{zeta, alpha}}
+	plan := []model.Proposal{
+		proposal("z1", "octomus/zeta"), proposal("a1", "octomus/alpha"),
+		proposal("z2", "octomus/zeta"), proposal("a2", "octomus/alpha"),
+	}
+	for i := 0; i < 20; i++ {
+		assertErrorNames(t, ValidateProposals(cfg, plan, grounding, nil), "Accepted tasks on octomus/zeta need a complete dependency order")
+	}
+}
+
 func TestReviewerAssessmentsNameTheOffendingProposal(t *testing.T) {
 	candidates := []model.Proposal{{ID: "a"}, {ID: "b"}}
 	assessed := func(id, decision, reason string) assessment {

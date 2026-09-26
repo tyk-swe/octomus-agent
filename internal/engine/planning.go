@@ -680,12 +680,13 @@ func ResolveTarget(cfg config.Config, prs []model.PullRequest, target string) (*
 // deterministically. Its errors name the offending proposal and, where there
 // is one, the conflicting proposal, task or value.
 func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding model.Grounding, history []model.Task) error {
+	// accepted looks up accepted proposals by identity; identities are unique
+	// across the whole plan, which the loop below checks first.
 	accepted := map[string]model.Proposal{}
 	// acceptedInOrder holds the accepted proposals in plan order, so the error
 	// reported for a plan with several faults does not vary between runs.
 	acceptedInOrder := []model.Proposal{}
 	allIDs := map[string]struct{}{}
-	acceptedCount := uint64(0)
 	for _, proposal := range proposals {
 		if strings.TrimSpace(proposal.ID) == "" {
 			return errors.New("Proposal identity is empty")
@@ -702,10 +703,6 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 		}
 		if proposal.Decision != model.DecisionAccepted {
 			continue
-		}
-		acceptedCount++
-		if _, duplicate := accepted[proposal.ID]; duplicate {
-			return fmt.Errorf("Duplicate accepted proposal identity %q", proposal.ID)
 		}
 		for _, other := range acceptedInOrder {
 			if other.SameWork(proposal) {
@@ -732,7 +729,7 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 			}
 		}
 	}
-	if acceptedCount > cfg.MaxTasksPerCycle {
+	if acceptedCount := uint64(len(acceptedInOrder)); acceptedCount > cfg.MaxTasksPerCycle {
 		return fmt.Errorf("Accepted task limit exceeded: %d accepted (limit %d)", acceptedCount, cfg.MaxTasksPerCycle)
 	}
 	for _, proposal := range acceptedInOrder {
@@ -758,7 +755,7 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 			stack = append(stack, dependency.Dependencies...)
 		}
 	}
-	return ValidateProposalBranchOrder(cfg, proposals)
+	return validateBranchOrder(cfg, acceptedInOrder)
 }
 
 // missingExecutionContext names the first empty field that an accepted
@@ -778,40 +775,33 @@ func missingExecutionContext(proposal model.Proposal) string {
 	return ""
 }
 
-func ValidateProposalBranchOrder(cfg config.Config, proposals []model.Proposal) error {
-	accepted := map[string]model.Proposal{}
-	acceptedInOrder := []model.Proposal{}
-	branches := map[string][]model.Proposal{}
-	for _, proposal := range proposals {
-		if proposal.Decision != model.DecisionAccepted {
+// validateBranchOrder requires the accepted proposals on each existing PR
+// branch, in plan order, to form one complete dependency order: exactly one
+// of a branch's remaining proposals is ready at every step. ValidateProposals
+// has already checked their identities, dependency eligibility and cycles.
+// Branches are checked in the order their first proposal appears, so the
+// branch a plan with several faults reports does not vary between runs.
+func validateBranchOrder(cfg config.Config, accepted []model.Proposal) error {
+	branches := []string{}
+	members := map[string][]model.Proposal{}
+	for _, proposal := range accepted {
+		if proposal.Target == cfg.DefaultBranch {
 			continue
 		}
-		if _, exists := accepted[proposal.ID]; exists {
-			return fmt.Errorf("Duplicate accepted proposal identity %q", proposal.ID)
+		if _, known := members[proposal.Target]; !known {
+			branches = append(branches, proposal.Target)
 		}
-		accepted[proposal.ID] = proposal
-		acceptedInOrder = append(acceptedInOrder, proposal)
-		if proposal.Target != cfg.DefaultBranch {
-			branches[proposal.Target] = append(branches[proposal.Target], proposal)
-		}
+		members[proposal.Target] = append(members[proposal.Target], proposal)
 	}
-	for _, proposal := range acceptedInOrder {
-		for _, dependency := range proposal.Dependencies {
-			other, ok := accepted[dependency]
-			if proposal.Target == cfg.DefaultBranch || !ok || other.Target != proposal.Target {
-				return fmt.Errorf("Dependencies must refer to accepted work on the same existing PR branch: proposal %q depends on %q", proposal.ID, dependency)
-			}
-		}
-	}
-	for branch, members := range branches {
+	for _, branch := range branches {
 		remaining := map[string]struct{}{}
-		for _, member := range members {
+		for _, member := range members[branch] {
 			remaining[member.ID] = struct{}{}
 		}
 		for len(remaining) > 0 {
 			ready := ""
 			count := 0
-			for _, member := range members {
+			for _, member := range members[branch] {
 				if _, present := remaining[member.ID]; !present {
 					continue
 				}
