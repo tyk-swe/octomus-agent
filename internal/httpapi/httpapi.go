@@ -257,52 +257,44 @@ func writeAPIError(w http.ResponseWriter, status int, message string) {
 // server-generated settings transform metadata, then writes compact JSON.
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	_, settingsView := value.(*engine.SettingsView)
-	data, err := wirejson.Marshal(value)
-	if err != nil {
-		data, err = json.Marshal(value)
-	}
-	if err != nil {
-		writeRawJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "Response exceeded the dashboard size limit or could not be encoded",
-		})
-		return
-	}
 	var generic any
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := decoder.Decode(&generic); err != nil {
-		writeRawJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "Response exceeded the dashboard size limit or could not be encoded",
-		})
-		return
-	}
-	if settingsView {
-		// transformed_fields is server-generated structural metadata: running
-		// secret scrubbing over its field names and paths can make the dashboard
-		// lose the association between a redacted preview and its config field.
-		if object, ok := generic.(map[string]any); ok {
+	err := genericJSON(value, &generic)
+	var out []byte
+	if err == nil {
+		if object, ok := generic.(map[string]any); ok && settingsView {
+			// transformed_fields is server-generated structural metadata: running
+			// secret scrubbing over its field names and paths can make the dashboard
+			// lose the association between a redacted preview and its config field.
 			transforms, hasTransforms := object["transformed_fields"]
 			delete(object, "transformed_fields")
-			generic = store.RedactJSON(object)
+			store.RedactJSON(object)
 			if hasTransforms {
-				generic.(map[string]any)["transformed_fields"] = transforms
+				object["transformed_fields"] = transforms
 			}
 		} else {
 			generic = store.RedactJSON(generic)
 		}
-	} else {
-		generic = store.RedactJSON(generic)
+		out, err = wirejson.Marshal(generic)
 	}
-	out, err := wirejson.Marshal(generic)
 	if err != nil {
-		writeRawJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "Response exceeded the dashboard size limit or could not be encoded",
-		})
+		writeRawJSON(w, http.StatusInternalServerError, map[string]any{"error": "The response could not be encoded"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(out)
+}
+
+// genericJSON re-encodes value into dst as generic JSON (maps, slices and
+// json.Number), so numbers keep their exact encoded form.
+func genericJSON(value, dst any) error {
+	data, err := wirejson.Marshal(value)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	return decoder.Decode(dst)
 }
 
 // writeRawJSON answers without redaction: healthz and assets never carry
@@ -481,14 +473,8 @@ func (a *api) taskDetail(_ http.ResponseWriter, _ *http.Request, params map[stri
 	if task == nil {
 		return 0, nil, engine.ErrTaskNotFound
 	}
-	data, err := wirejson.Marshal(*task)
-	if err != nil {
-		return 0, nil, err
-	}
 	var value map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := decoder.Decode(&value); err != nil {
+	if err := genericJSON(*task, &value); err != nil {
 		return 0, nil, err
 	}
 	value["allowed_actions"] = task.AllowedActions()
@@ -633,14 +619,8 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	} else {
 		body = result
 	}
-	data, err := wirejson.Marshal(cfg)
-	if err != nil {
-		return 0, nil, err
-	}
 	var checked any
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := decoder.Decode(&checked); err != nil {
+	if err := genericJSON(cfg, &checked); err != nil {
 		return 0, nil, err
 	}
 	body["checked_config"] = checked

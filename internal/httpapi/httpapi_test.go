@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -650,5 +651,22 @@ func TestBodyRejectionsKeepTheirPlainTextForm(t *testing.T) {
 	}
 	if latest, err := state.LatestBaseline(); err != nil || latest != nil {
 		t.Fatalf("rejected starts persisted a check: %v %v", latest, err)
+	}
+}
+
+// Responses keep integers exact through redaction, and a value that cannot be
+// encoded becomes a JSON 500 rather than a partial or empty body.
+func TestWriteJSONKeepsExactNumbersAndReportsEncodeFailures(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeJSON(recorder, http.StatusCreated, map[string]any{"count": uint64(1<<63 + 1), "note": "ok"})
+	if recorder.Code != http.StatusCreated || recorder.Header().Get("Content-Type") != "application/json" ||
+		recorder.Body.String() != `{"count":9223372036854775809,"note":"ok"}` {
+		t.Fatalf("encoded: %d %q %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	writeJSON(recorder, http.StatusOK, map[string]any{"ratio": math.Inf(1)})
+	if recorder.Code != http.StatusInternalServerError || recorder.Header().Get("Content-Type") != "application/json" ||
+		recorder.Body.String() != `{"error":"The response could not be encoded"}` {
+		t.Fatalf("unencodable: %d %q %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
 	}
 }
