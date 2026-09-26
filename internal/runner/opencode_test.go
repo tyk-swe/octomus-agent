@@ -184,6 +184,11 @@ func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 				if err.Error() != "OpenCode turn failed: StructuredOutputError" {
 					t.Fatalf("%s error must name the runner failure: %v", mode, err)
 				}
+			case "malformed-structured":
+				// The same wording as Codex for the same schema violation.
+				if !strings.HasPrefix(err.Error(), "Runner returned an invalid structured result: ") {
+					t.Fatalf("%s error: %v", mode, err)
+				}
 			case "event-404":
 				// The operator can tell a protocol change from auth drift.
 				if err.Error() != `OpenCode event subscription failed with HTTP 404 Not Found: {"error": "no events"}` {

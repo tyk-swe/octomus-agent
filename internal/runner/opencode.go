@@ -474,8 +474,14 @@ func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, 
 		return "", err
 	}
 	path := "/session/" + seg
+	// The structured-result check runs inside the bound so that a
+	// schema-invalid result aborts the session like every other failure.
 	answer, err := process.Bounded(o.ctx, o.timeout, "OpenCode session time limit exceeded", func(wctx context.Context) (string, error) {
-		return o.turnInner(wctx, session, path, route, cwd, prompt, schema)
+		answer, err := o.turnInner(wctx, session, path, route, cwd, prompt, schema)
+		if err != nil {
+			return "", err
+		}
+		return FinishTurn(answer, schema)
 	})
 	if err != nil {
 		// Independent of the cancelled owner context. Cleanup is bounded;
@@ -483,7 +489,7 @@ func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, 
 		o.postBestEffort(5*time.Second, path+"/abort", cwd, nil)
 		return "", err
 	}
-	return FinishTurn(answer, schema)
+	return answer, nil
 }
 
 type postResult struct {
@@ -684,14 +690,8 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 		if !ok || output == nil {
 			return "", fmt.Errorf("OpenCode returned no structured result")
 		}
-		if err := schemas.Validate(output, schema); err != nil {
-			return "", fmt.Errorf("Invalid OpenCode structured result: %w", err)
-		}
-		encoded, err := marshal(output)
-		if err != nil {
-			return "", err
-		}
-		return encoded, nil
+		// Turn validates the encoded result against the schema.
+		return marshal(output)
 	}
 	parts, ok := asArray(doc["parts"])
 	if !ok {
