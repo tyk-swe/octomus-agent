@@ -3,7 +3,9 @@
 // all pass through invoke, which owns storage measurement and the daily
 // admission, session start or resume, the session record lifecycle, the turn
 // itself and redaction. Callers build prompts and interpret answers; they
-// never reserve admissions, resume threads or mark session records.
+// never resume threads or mark session records. Only executor initialization
+// reserves an admission itself, for the first executor turn, which it then
+// invokes as reserved.
 package engine
 
 import (

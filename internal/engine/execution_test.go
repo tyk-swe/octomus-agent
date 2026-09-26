@@ -319,6 +319,40 @@ func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
 	}
 }
 
+// TestVerificationArtifactMustBeGitIgnored: worktree cleanliness includes new
+// untracked files, so a command that leaves an artifact behind fails
+// verification as a workspace mutation unless Git ignores the artifact.
+func TestVerificationArtifactMustBeGitIgnored(t *testing.T) {
+	commands := []string{"printf report > coverage.out", "true"}
+	app, task, revision := verificationFixture(t, commands)
+	_, err := app.verifyRevision(context.Background(), &task, revision)
+	if err == nil || model.BlockedReasonFromError(err) != model.BlockedReasonWorkspaceInvalid {
+		t.Fatalf("untracked artifact err = %v; want workspace_invalid", err)
+	}
+	saved := loadTask(t, app.Store, task.ID)
+	if len(saved.Verification) != 1 || saved.Verification[0].Success ||
+		!strings.Contains(saved.Verification[0].Output, "changed during this verification command") {
+		t.Fatalf("untracked artifact evidence = %+v; want one failed mutation record", saved.Verification)
+	}
+
+	app, task, revision = verificationFixture(t, commands)
+	exclude := filepath.Join(task.Workspace, ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exclude, []byte("coverage.out\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	failures, err := app.verifyRevision(context.Background(), &task, revision)
+	if err != nil || len(failures) != 0 {
+		t.Fatalf("ignored artifact failed verification: %v, %v", failures, err)
+	}
+	saved = loadTask(t, app.Store, task.ID)
+	if len(saved.Verification) != 2 || !saved.Verification[0].Success || !saved.Verification[1].Success {
+		t.Fatalf("ignored artifact evidence = %+v; want two passing records", saved.Verification)
+	}
+}
+
 func waitForFile(t *testing.T, path string, label string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)

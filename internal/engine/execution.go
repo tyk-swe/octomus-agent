@@ -520,7 +520,8 @@ func reviewPrompt(task *model.Task, revision string) string {
 
 // verifyRevision runs every configured verification command against exactly
 // `revision`. Worktree and HEAD are checked before the first command and after
-// each one, so a command that changes tracked state, or leaves the check
+// each one, so a command that leaves the worktree unclean (including a new
+// untracked file that is not git-ignored) or moves HEAD, or leaves the check
 // itself unable to run, is recorded as failed evidence and stops the run
 // instead of lending its success to the reviewed revision.
 func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision string) ([]string, error) {
