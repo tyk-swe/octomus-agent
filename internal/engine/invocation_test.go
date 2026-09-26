@@ -142,6 +142,37 @@ func TestInvocationRejectsReservedResume(t *testing.T) {
 	assertAdmissions(t, state, 0, "a refused turn admits nothing")
 }
 
+// TestInvocationSkipsCancelledOwner: a turn whose owner is already cancelled
+// is refused before it measures storage, reserves a daily admission, prepares
+// a workspace or reaches the runner, and an owned client scope still closes.
+func TestInvocationSkipsCancelledOwner(t *testing.T) {
+	state := testStore(t)
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	script := runnertest.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clients := runner.New(ctx, config.Default(), script.Connector())
+	prepared := false
+
+	_, answer, err := app.invoke(ctx, clients, invocation{
+		cycleID: "cycle", role: "discovery-0", route: config.NewRoute("scripted-discovery", "medium"),
+		workspace: t.TempDir(), prompt: "unused", ownsClients: true,
+		prepare: func() error { prepared = true; return nil },
+	})
+	if err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "Operation cancelled") {
+		t.Fatalf("cancelled owner error = %v", err)
+	}
+	if answer != "" || prepared {
+		t.Fatalf("a cancelled turn answered %q or prepared its workspace (%v)", answer, prepared)
+	}
+	if calls := script.Calls(); len(calls) != 0 {
+		t.Fatalf("a cancelled turn reached the runner: %+v", calls)
+	}
+	assertAdmissions(t, state, 0, "a cancelled owner admits nothing")
+	assertNoOpenClients(t, script)
+}
+
 // secretToken is secret-shaped: the store's redaction replaces it.
 const secretToken = "ghp_invocationSecret0123456789"
 

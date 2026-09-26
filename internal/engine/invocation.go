@@ -75,6 +75,11 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		return clients.Close()
 	}
 	defer func() { _ = closeClients() }()
+	// A turn whose owner is already cancelled could only fail at session
+	// start; refuse it before it measures storage or spends an admission.
+	if err := ctx.Err(); err != nil {
+		return "", "", fmt.Errorf("Operation cancelled: %w", err)
+	}
 
 	var resume *string
 	if inv.resume != nil {
