@@ -375,25 +375,6 @@ func (s *Store) HasUnresolvedTasks() (bool, error) {
 	return exists, err
 }
 
-// StartBatch opens a run-once batch over every queued, unarchived task and
-// saves the control, without StartBatchIfAffordable's checks of the live
-// control and planning affordability. *control is updated only when the
-// transaction commits.
-func (s *Store) StartBatch(control *model.Control) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var next model.Control
-	err := s.transaction(false, func(c *sql.Conn) error {
-		var err error
-		next, err = txStartBatch(c, *control)
-		return err
-	})
-	if err == nil {
-		*control = next
-	}
-	return err
-}
-
 // txStartBatch opens a run-once batch from control inside the caller's
 // transaction: it tags every queued, unarchived task with the new batch and
 // saves the resulting control, which it returns.

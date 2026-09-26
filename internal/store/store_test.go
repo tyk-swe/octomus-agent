@@ -31,6 +31,20 @@ func saveConfig(t *testing.T, s *store.Store, edit func(*config.Config)) config.
 	return c
 }
 
+// startBatch opens a run-once batch from the default control, as the Run once
+// control does on a service that has not saved a control yet, and returns the
+// control the batch saved.
+func startBatch(t *testing.T, s *store.Store) model.Control {
+	t.Helper()
+	control := model.DefaultControl()
+	capacity, started, err := s.StartBatchIfAffordable(&control, time.Now())
+	must(t, err)
+	if !started {
+		t.Fatalf("batch did not start: capacity %+v", capacity)
+	}
+	return control
+}
+
 func TestDurableAndBudgetAtomic(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)

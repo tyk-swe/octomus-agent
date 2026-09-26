@@ -159,8 +159,7 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	}
 
 	// Batches: starting one assigns queued unarchived tasks and counts members.
-	control := model.DefaultControl()
-	must(t, s.StartBatch(&control))
+	control := startBatch(t, s)
 	if control.Batch == nil || control.Mode != model.OperatingModeRunOnce || control.Batch.Phase != model.BatchPhaseDraining {
 		t.Fatalf("batch control: %+v", control)
 	}
@@ -256,8 +255,7 @@ func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
 
 	// A batch takes the queued tasks present when it starts; later queued
 	// work waits for the next run, but active work is always listed.
-	control := model.DefaultControl()
-	must(t, s.StartBatch(&control))
+	control := startBatch(t, s)
 	put("after-batch", queued)
 	put("publishing", status(model.StatusPublishing))
 	want = []string{"default", "default-reserved", "other-target", "executing", "publishing"}

@@ -148,8 +148,7 @@ func TestPanicInsideTransactionRollsBack(t *testing.T) {
 	s := open(t, path)
 	panics(s.Snapshot, "INSERT INTO records VALUES ('x','inside','1')")
 	must(t, s.Put("x", "after", 1))
-	control := model.DefaultControl()
-	must(t, s.StartBatch(&control))
+	startBatch(t, s)
 
 	r, err := store.OpenReadOnly(path, "probe")
 	must(t, err)
