@@ -454,6 +454,13 @@ var baselineStatusDebug = map[model.BaselineStatus]string{
 // baselineWorker runs the check under its overall deadline, resolves the final
 // status under the gate and always clears the runtime slot via the guard. The
 // guard also abandons a still-running record if the worker exits unexpectedly.
+//
+// A check stays active until its owned clone is gone: the worker records the
+// terminal status, then the cleanup outcome, and releases the slot last, as it
+// exits. Until then eligibility reports "A baseline check is already running"
+// even though the durable record already reads as finished and cleaned up;
+// that window ends when the worker exits, and its notify follows the release.
+// Observers that need the slot free wait for baseline_active to clear.
 func (a *App) baselineWorker(id string, ctx context.Context) {
 	defer func() {
 		if check, err := store.Get[model.BaselineCheck](a.Store, "baseline", id); err == nil && check != nil && check.Status == model.BaselineStatusRunning {
