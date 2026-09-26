@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -269,5 +271,146 @@ func TestCancelledCheckpointsAreNeverReseeded(t *testing.T) {
 		if has, err := state.HasPrReservation(id); err != nil || has {
 			t.Fatalf("recovery reseeded a reservation for %s: %t, %v", id, has, err)
 		}
+	}
+}
+
+func TestPauseCancelsHeldCapacityRefreshAndRejectsItsResult(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	delay := filepath.Join(fixture.root, "reconcile-delay")
+	if err := os.WriteFile(delay, []byte("60"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(delay) })
+	queued := queuedTask(fixture.cfg, "waiting-for-refresh", fixture.cfg.DefaultBranch, fixture.cfg.BranchPrefix+"waiting")
+	if err := fixture.state.Put("task", queued.ID, queued); err != nil {
+		t.Fatal(err)
+	}
+	app := New(fixture.state, fixture.dataDir, WithTaskRunner(TaskRunnerFunc(func(context.Context, model.Task) error { return nil })))
+	t.Cleanup(app.Shutdown)
+	app.runtime.lastRetention = time.Now()
+	app.runtime.lastObserve = time.Now()
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	waitForFixtureFile(t, filepath.Join(fixture.root, "reconcile-processes.jsonl"), "capacity refresh did not reach the deterministic barrier")
+	if err := app.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	app.wg.Wait()
+	// The pause made the held refresh obsolete; its cancellation is not a
+	// remote inventory failure to report for the rest of the pause.
+	app.runtimeMu.Lock()
+	refreshError := app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("cancelled refresh was recorded as a failure: %q", refreshError)
+	}
+	if err := os.Remove(delay); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	capacity, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capacity.Status != "unavailable" || capacity.Remaining != nil {
+		t.Fatalf("cancelled refresh authorized resumed work: %+v", capacity)
+	}
+	saved, err := store.Get[model.Task](fixture.state, "task", queued.ID)
+	if err != nil || saved.Status != model.StatusQueued {
+		t.Fatalf("held refresh changed queued work: %+v, %v", saved, err)
+	}
+}
+
+func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	queued := queuedTask(fixture.cfg, "waiting-for-capacity", fixture.cfg.DefaultBranch, fixture.cfg.BranchPrefix+"waiting")
+	if err := fixture.state.Put("task", queued.ID, queued); err != nil {
+		t.Fatal(err)
+	}
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshLive(app); err != nil {
+		t.Fatal(err)
+	}
+	before, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Status != "ready" {
+		t.Fatalf("capacity after complete refresh = %s: %v", before.Status, before.Reason)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshLive(app); err == nil {
+		t.Fatal("malformed remote inventory unexpectedly refreshed")
+	}
+	after, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != "unavailable" || after.Reason == nil {
+		t.Fatalf("capacity survived failed refresh: %+v", after)
+	}
+	control, err := app.Control()
+	if err != nil || control.Mode != model.OperatingModeContinuous || control.Error != nil {
+		t.Fatalf("refresh failure failed Continuous operation: %+v, %v", control, err)
+	}
+	saved, err := store.Get[model.Task](fixture.state, "task", queued.ID)
+	if err != nil || saved.Status != model.StatusQueued {
+		t.Fatalf("refresh failure changed queued work: %+v, %v", saved, err)
+	}
+	// A later complete observation clears the failure and restores ready
+	// capacity — capacity_reports_refresh_state_and_clears_error_after_observation.
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshLive(app); err != nil {
+		t.Fatalf("restored inventory did not refresh: %v", err)
+	}
+	recovered, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != "ready" || recovered.Reason != nil || recovered.Remaining == nil || *recovered.Remaining != fixture.cfg.MaxOpenPRs {
+		t.Fatalf("successful refresh did not clear the failure: %+v", recovered)
+	}
+}
+
+func TestRefreshReleasesOnlyRemotelySettledCheckpointReservation(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	checkpoint := queuedTask(fixture.cfg, "cancelled-checkpoint", fixture.cfg.DefaultBranch, fixture.cfg.BranchPrefix+"checkpoint")
+	checkpoint.Status = model.StatusCancelled
+	commit := "checkpoint-output"
+	checkpoint.OutputCommit = &commit
+	if err := fixture.state.Put("task", checkpoint.ID, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.state.SeedPrReservation(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	if err := app.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshLive(app); err != nil {
+		t.Fatal(err)
+	}
+	reservations, err := fixture.state.PrReservations(fixture.cfg.GitHubRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reservations) != 0 {
+		t.Fatalf("remote proved publication absent but reservation remained: %+v", reservations)
 	}
 }

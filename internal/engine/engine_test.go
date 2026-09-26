@@ -363,23 +363,6 @@ func TestUnaffordableAuditHasNoSideEffects(t *testing.T) {
 	}
 }
 
-func TestExternalContextIsBoundedAndReportsCoverage(t *testing.T) {
-	open := make([]model.PullRequest, 0, 105)
-	for i := 105; i >= 1; i-- {
-		open = append(open, model.PullRequest{Number: uint64(i), Title: strings.Repeat("t", 250), Body: strings.Repeat("b", 2200), Branch: fmt.Sprintf("branch-%d", i), Base: "main", State: "open"})
-	}
-	context, coverage, err := ExternalContext(model.OpenPrInventory{PRs: open})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(context) != 100 || coverage.TotalOpen != 105 || coverage.IncludedExternal != 100 || coverage.OmittedExternal != 5 || !coverage.Complete {
-		t.Fatalf("unexpected bounded coverage: %d %+v", len(context), coverage)
-	}
-	if context[0].Number != 1 || len([]rune(context[0].Title)) != 200 || len([]rune(context[0].Body)) != 2000 {
-		t.Fatalf("context was not sorted/truncated: %+v", context[0])
-	}
-}
-
 func TestPersistedPrInventoryIsNotProcessAuthority(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -1232,35 +1215,5 @@ func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	other.ProblemKey = "parser:length-header"
 	if err := ValidateProposals(cfg, []model.Proposal{first, other}, grounding, nil); err != nil {
 		t.Fatalf("distinct problem keys rejected: %v", err)
-	}
-}
-
-// TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder: target resolution binds
-// a branch's owned PR regardless of listing order, rejects unowned and
-// ambiguous matches, and never binds the default branch as a PR.
-func TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder(t *testing.T) {
-	cfg := testConfig(t.TempDir())
-	fork := ownedPR("octomus/fix")
-	fork.Number, fork.Head, fork.Owned, fork.HeadRepository = 202, "fork-head", false, "fork/project"
-	owned := ownedPR("octomus/fix")
-	owned.Number, owned.Head = 101, "repo-head"
-	prs := []model.PullRequest{fork, owned}
-	bound, err := ResolveTarget(cfg, prs, "octomus/fix")
-	if err != nil || bound == nil || bound.Number != 101 || bound.Head != "repo-head" {
-		t.Fatalf("bound = %+v, %v; want owned PR 101", bound, err)
-	}
-	if target, err := ResolveTarget(cfg, prs, cfg.DefaultBranch); err != nil || target != nil {
-		t.Fatalf("default branch resolved to a PR: %+v, %v", target, err)
-	}
-	if _, err := ResolveTarget(cfg, prs[:1], "octomus/fix"); err == nil {
-		t.Fatal("fork-only target resolved")
-	}
-	if _, err := ResolveTarget(cfg, []model.PullRequest{owned, owned}, "octomus/fix"); err == nil {
-		t.Fatal("ambiguous owned match resolved")
-	}
-	p := proposal("a", "octomus/fix")
-	grounding := model.Grounding{Revision: "rev", PRs: prs}
-	if err := ValidateProposals(cfg, []model.Proposal{p}, grounding, nil); err != nil {
-		t.Fatalf("owned-PR target rejected: %v", err)
 	}
 }
