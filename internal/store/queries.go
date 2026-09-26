@@ -258,13 +258,7 @@ func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
 // BaselineCleanupCandidates lists up to 100 finished baseline checks whose
 // clone is not recorded as removed, oldest saved first.
 func (s *Store) BaselineCleanupCandidates() ([]model.BaselineCheck, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid LIMIT 100")
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[model.BaselineCheck](raw)
+	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid LIMIT 100")
 }
 
 // LatestBaseline returns the most recently started baseline check, or nil
@@ -674,13 +668,7 @@ func (s *Store) DecisionMemory(repository string) ([]any, error) {
 // repository. Archiving a task withdraws its pending request, as it removes
 // the task from scheduling.
 func (s *Store) RediscoveryRequests(repository string) ([]any, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[any](raw)
+	return listRecords[any](s, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
 }
 
 func latestPrOutputAt(c *sql.Conn, repository string, number uint64) (*string, error) {
