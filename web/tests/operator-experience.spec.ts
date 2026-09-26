@@ -40,6 +40,23 @@ function canonical(value: unknown): string {
 }
 const revisionOf = (config: Config | null) =>
   createHash('sha256').update(canonical(config)).digest('hex');
+// The service may serialize the same configuration with its keys in any order; this copy
+// reverses or sorts every object's keys, nested routes included.
+function reorderKeys<T>(value: T, order: 'reverse' | 'sort'): T {
+  return JSON.parse(
+    JSON.stringify(value, (_key, member) =>
+      member && typeof member === 'object' && !Array.isArray(member)
+        ? Object.fromEntries(
+            order === 'sort'
+              ? Object.entries(member).sort(([a], [b]) => a.localeCompare(b))
+              : Object.entries(member).reverse()
+          )
+        : member
+    )
+  );
+}
+const navigatorFor = (page: Page, isMobile: boolean) => (name: string) =>
+  openNavigation(page, name, isMobile);
 
 // All writes terminate in browser fixtures; neither runner nor GitHub is contacted.
 async function configurationFixture(
@@ -259,7 +276,7 @@ test('baseline refresh preserves server staleness and rejects obsolete responses
   isMobile
 }) => {
   const state = await configurationFixture(page);
-  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const navigate = navigatorFor(page, !!isMobile);
   await login(page);
   await navigate('Configuration');
   await expect(page.locator('#check-baseline')).toBeEnabled();
@@ -393,7 +410,7 @@ test('the baseline panel never denies a recorded check while its status loads or
   isMobile
 }) => {
   const state = await configurationFixture(page);
-  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const navigate = navigatorFor(page, !!isMobile);
   await login(page);
   await navigate('Configuration');
   const panel = page.getByRole('region', { name: 'Clean baseline' });
@@ -544,7 +561,7 @@ test('routes list in pipeline and size order whatever the saved key order, and c
   isMobile
 }) => {
   const state = await configurationFixture(page);
-  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const navigate = navigatorFor(page, !!isMobile);
   await login(page);
   await navigate('Configuration');
   const order = [
@@ -562,13 +579,7 @@ test('routes list in pipeline and size order whatever the saved key order, and c
   const headings = page.locator('.model-route h3');
   // The service sorts map keys (code_reviewer first; tiers L, M, S, XL, XS).
   await expect(headings).toHaveText(order);
-  state.saved = JSON.parse(
-    JSON.stringify(state.saved, (_key, value) =>
-      value && typeof value === 'object' && !Array.isArray(value)
-        ? Object.fromEntries(Object.entries(value).reverse())
-        : value
-    )
-  );
+  state.saved = reorderKeys(state.saved, 'reverse');
   await navigate('Overview');
   const refresh = page.waitForResponse('**/api/config');
   await navigate('Configuration');
@@ -699,7 +710,7 @@ test('configuration keeps drafts and catalogs across views, discards locally, an
   isMobile
 }) => {
   const state = await configurationFixture(page);
-  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const navigate = navigatorFor(page, !!isMobile);
   await login(page);
   await navigate('Configuration');
   const branch = page.getByLabel('Default branch', { exact: true });
@@ -859,7 +870,7 @@ for (const check of [
     isMobile
   }) => {
     const state = await configurationFixture(page);
-    const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+    const navigate = navigatorFor(page, !!isMobile);
     await login(page);
     await navigate('Configuration');
     const field = page.getByLabel(check.field);
@@ -883,13 +894,7 @@ for (const check of [
       const result = await badge.innerText();
 
       // Reordering object keys, including nested routes, keeps the diagnostic result.
-      state.saved = JSON.parse(
-        JSON.stringify(state.saved, (_key, value) =>
-          value && typeof value === 'object' && !Array.isArray(value)
-            ? Object.fromEntries(Object.entries(value).reverse())
-            : value
-        )
-      );
+      state.saved = reorderKeys(state.saved, 'reverse');
       await navigate('Overview');
       const refresh = page.waitForResponse('**/api/config');
       await navigate('Configuration');
@@ -961,7 +966,7 @@ test('a successful save clears an earlier failed configuration refresh', async (
   isMobile
 }) => {
   const state = await configurationFixture(page);
-  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const navigate = navigatorFor(page, !!isMobile);
   await login(page);
   await navigate('Configuration');
   const branch = page.getByLabel('Default branch', { exact: true });
@@ -1098,7 +1103,7 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
       ]
     }
   });
-  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const navigate = navigatorFor(page, !!isMobile);
   await login(page);
   await navigate('Configuration');
   const commands = page.getByRole('textbox', { name: /^Verification commands/ });
@@ -1223,7 +1228,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
     }
   });
   const writes = trackWrites(page);
-  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const navigate = navigatorFor(page, !!isMobile);
   const step = (id: string) => page.locator(`[data-step="${id}"]`);
   const badge = (id: string) => step(id).locator('.badge');
   await login(page);
@@ -1318,13 +1323,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   // The API sorts keys; revisiting after a saved change must preserve this exact check.
   const checked = structuredClone(state.saved!);
   const result = await badge('preflight').innerText();
-  state.saved = JSON.parse(
-    JSON.stringify(state.saved, (_key, value) =>
-      value && typeof value === 'object' && !Array.isArray(value)
-        ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
-        : value
-    )
-  );
+  state.saved = reorderKeys(state.saved, 'sort');
   expect(state.saved).toEqual(checked);
   expect(JSON.stringify(state.saved)).not.toBe(JSON.stringify(checked));
   await navigate('Overview');
@@ -1398,7 +1397,7 @@ for (const mode of ['execution', 'audit'] as const) {
     isMobile
   }) => {
     const state = await configurationFixture(page);
-    const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+    const navigate = navigatorFor(page, !!isMobile);
     await login(page);
     await navigate('Configuration');
     const branch = page.getByLabel('Default branch', { exact: true });
@@ -1438,13 +1437,7 @@ for (const mode of ['execution', 'audit'] as const) {
     await navigate('Configuration');
     await expect(branch).toHaveValue('external-main');
     // Serialization order is not a configuration change, including nested routes.
-    state.saved = JSON.parse(
-      JSON.stringify(state.saved, (_key, value) =>
-        value && typeof value === 'object' && !Array.isArray(value)
-          ? Object.fromEntries(Object.entries(value).reverse())
-          : value
-      )
-    );
+    state.saved = reorderKeys(state.saved, 'reverse');
     await check.click();
     await expect(badge).toHaveText(new RegExp(`^Passed · ${mode} · `));
 
@@ -1493,7 +1486,7 @@ test('setup checklist links focus existing controls, hands off to the Overview a
     }
   });
   const writes = trackWrites(page);
-  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  const navigate = navigatorFor(page, !!isMobile);
   const step = (id: string) => page.locator(`[data-step="${id}"]`);
   const badge = (id: string) => step(id).locator('.badge');
   await login(page);
