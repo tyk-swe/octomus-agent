@@ -725,28 +725,9 @@ func createPR(ctx context.Context, c config.Config, task model.Task, title strin
 	if err != nil {
 		return model.PullRequest{}, err
 	}
-	trimmed := strings.TrimSpace(created)
-	url, err := whatwg.Parse(trimmed)
+	number, err := parseCreatedPRURL(created, c.GitHubRepo)
 	if err != nil {
-		return model.PullRequest{}, reasoned(model.BlockedReasonRemoteConflict,
-			"PR creation returned no unambiguous URL; reconcile before retrying", err)
-	}
-	// Query and fragment components make a creation URL ambiguous.
-	if url.Scheme() != "https" || url.Hostname() != "github.com" ||
-		strings.ContainsAny(trimmed, "?#") {
-		return model.PullRequest{}, blocked(model.BlockedReasonRemoteConflict,
-			"Invalid PR creation URL")
-	}
-	parts := strings.Split(strings.TrimPrefix(url.Pathname(), "/"), "/")
-	if !(len(parts) == 4 && parts[2] == "pull" &&
-		config.EqualASCII(parts[0]+"/"+parts[1], c.GitHubRepo)) {
-		return model.PullRequest{}, blocked(model.BlockedReasonRemoteConflict,
-			"Created PR belongs to a different repository")
-	}
-	number, err := strconv.ParseUint(parts[3], 10, 64)
-	if err != nil {
-		return model.PullRequest{}, reasoned(model.BlockedReasonRemoteConflict,
-			"Missing created PR number", err)
+		return model.PullRequest{}, err
 	}
 	published, err := PR(ctx, c, number)
 	if err != nil {
@@ -758,6 +739,37 @@ func createPR(ctx context.Context, c config.Config, task model.Task, title strin
 		return model.PullRequest{}, err
 	}
 	return published, nil
+}
+
+// parseCreatedPRURL reads the pull request number from the URL `gh pr create`
+// printed. Only an https github.com URL naming repo's pull path, with no query
+// or fragment, is accepted; anything else is a RemoteConflict, because the
+// request may exist somewhere this task does not know about.
+func parseCreatedPRURL(created string, repo string) (uint64, error) {
+	trimmed := strings.TrimSpace(created)
+	url, err := whatwg.Parse(trimmed)
+	if err != nil {
+		return 0, reasoned(model.BlockedReasonRemoteConflict,
+			"PR creation returned no unambiguous URL; reconcile before retrying", err)
+	}
+	// Query and fragment components make a creation URL ambiguous.
+	if url.Scheme() != "https" || url.Hostname() != "github.com" ||
+		strings.ContainsAny(trimmed, "?#") {
+		return 0, blocked(model.BlockedReasonRemoteConflict,
+			"Invalid PR creation URL")
+	}
+	parts := strings.Split(strings.TrimPrefix(url.Pathname(), "/"), "/")
+	if !(len(parts) == 4 && parts[2] == "pull" &&
+		config.EqualASCII(parts[0]+"/"+parts[1], repo)) {
+		return 0, blocked(model.BlockedReasonRemoteConflict,
+			"Created PR belongs to a different repository")
+	}
+	number, err := strconv.ParseUint(parts[3], 10, 64)
+	if err != nil {
+		return 0, reasoned(model.BlockedReasonRemoteConflict,
+			"Missing created PR number", err)
+	}
+	return number, nil
 }
 
 func publishInner(ctx context.Context, task model.Task) (model.PullRequest, error) {

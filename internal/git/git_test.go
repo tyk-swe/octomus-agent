@@ -1019,6 +1019,179 @@ func TestPublishGatesOnTheLatestVerificationPerCommand(t *testing.T) {
 	}
 }
 
+// TestPublishGatesRefuseBeforeAnyWrite: each safety gate in front of the push
+// refuses on its own, with its typed reason, and leaves the remote exactly as it
+// was: no ref moved, no pull request created, no comment posted. Unreviewed,
+// moved or foreign work must never reach the remote. The verification gate has
+// its own table in TestPublishGatesOnTheLatestVerificationPerCommand.
+func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
+	// seedPRs writes pull requests the gh peer serves for the task's branch.
+	seedPRs := func(t *testing.T, root string, prs ...map[string]any) {
+		t.Helper()
+		data, err := json.Marshal(prs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(root, "prs.json"), string(data))
+	}
+	pullRequest := func(number int, headRepo, body string) map[string]any {
+		return map[string]any{
+			"number": number, "title": "Earlier work", "body": body,
+			"head":     map[string]any{"ref": "octomus/work", "sha": "", "repo": map[string]any{"full_name": headRepo}},
+			"base":     map[string]any{"ref": "main", "repo": map[string]any{"full_name": "fixture/project"}},
+			"html_url": fmt.Sprintf("https://github.com/fixture/project/pull/%d", number),
+			"state":    "open", "merged_at": nil, "additions": 1, "deletions": 0,
+			"created_at": "2026-09-07T00:00:00Z",
+		}
+	}
+	cases := []struct {
+		name   string
+		adjust func(t *testing.T, root string, task *model.Task, commit string)
+		reason model.BlockedReason
+		want   string
+	}{
+		{
+			name:   "no reviewed commit",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) { task.OutputCommit = nil },
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "No reviewed commit",
+		},
+		{
+			name:   "no review",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) { task.Reviews = nil },
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Publication requires a clean review at the output revision",
+		},
+		{
+			// An earlier clean review of the output does not cover a later
+			// round that reviewed something else.
+			name: "latest review at another revision",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				later := task.Reviews[0]
+				later.Revision = strings.Repeat("0", 40)
+				task.Reviews = append(task.Reviews, later)
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Publication requires a clean review at the output revision",
+		},
+		{
+			name: "latest review incomplete",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				task.Reviews[0].Result = model.Review{Completed: false, Summary: "interrupted"}
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Publication requires a clean review at the output revision",
+		},
+		{
+			name: "latest review has findings",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				task.Reviews[0].Result.Findings = []model.Finding{{Title: "Bug", File: "feature.txt", Detail: "wrong", Priority: "high"}}
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Publication requires a clean review at the output revision",
+		},
+		{
+			name:   "branch outside the owned prefix",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) { task.Branch = "feature/x" },
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Cannot publish outside the owned branch namespace",
+		},
+		{
+			// Even a prefix that admits every branch never admits the default
+			// branch itself.
+			name: "default branch",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				task.Config.BranchPrefix = ""
+				task.Branch = task.Config.DefaultBranch
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Cannot publish outside the owned branch namespace",
+		},
+		{
+			name: "workspace changed after review",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				writeFile(t, filepath.Join(task.Workspace, "late.txt"), "unreviewed\n")
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Workspace changed after review",
+		},
+		{
+			name: "workspace HEAD changed after review",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				realGit(t, task.Workspace, "commit", "--allow-empty", "-m", "late")
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Workspace HEAD changed after review",
+		},
+		{
+			// Two pull requests from the branch cannot be told apart; the
+			// foreign head repository keeps the peer from resolving their heads.
+			name: "ambiguous PR association",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				seedPRs(t, root,
+					pullRequest(1, "external/project", "First"),
+					pullRequest(2, "external/project", "Second"))
+			},
+			reason: model.BlockedReasonRemoteConflict,
+			want:   "Ambiguous PR association; reconcile before publication",
+		},
+		{
+			// An owned, open pull request on the branch carries another task's
+			// marker: this task must not publish over it.
+			name: "branch owned by another task",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				realGit(t, root, "--git-dir", filepath.Join(root, "remote.git"),
+					"update-ref", "refs/heads/octomus/work", task.SourceRevision)
+				seedPRs(t, root, pullRequest(1, "fixture/project", "Earlier work.\n<!-- octomus:task:other-task -->"))
+			},
+			reason: model.BlockedReasonRemoteConflict,
+			want:   "Branch is already associated with another task",
+		},
+		{
+			// The reviewed output descends from the default head but not from
+			// the recorded source revision.
+			name: "output does not contain the recorded source",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				realGit(t, task.Workspace, "checkout", "--detach", task.SourceRevision)
+				realGit(t, task.Workspace, "commit", "--allow-empty", "-m", "side")
+				task.SourceRevision = realGit(t, task.Workspace, "rev-parse", "HEAD")
+				realGit(t, task.Workspace, "checkout", "--detach", commit)
+			},
+			reason: model.BlockedReasonRemoteConflict,
+			want:   "Reviewed output does not contain the recorded source; reconcile the branch",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, root := fixtureRoot(t)
+			c.VerificationCommands = []string{"make test"}
+			ctx := context.Background()
+			task, commit := publishableTask(t, c, root, "task-gated")
+			tc.adjust(t, root, &task, commit)
+			remote := filepath.Join(root, "remote.git")
+			refs := realGit(t, root, "--git-dir", remote, "for-each-ref")
+			_, err := git.Publish(ctx, task)
+			if err == nil {
+				t.Fatal("publication past a failed gate must be refused")
+			}
+			if reason := model.BlockedReasonFromError(err); reason != tc.reason {
+				t.Fatalf("reason = %v; want %v (%q)", reason, tc.reason, err)
+			}
+			if !strings.HasPrefix(err.Error(), tc.want+": ") {
+				t.Fatalf("refusal = %q; want %q", err, tc.want)
+			}
+			// Nothing reached the remote: no ref moved, no PR, no comment.
+			if after := realGit(t, root, "--git-dir", remote, "for-each-ref"); after != refs {
+				t.Fatalf("remote refs = %q; want them unchanged from %q", after, refs)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "publications.jsonl")); err == nil &&
+				strings.Contains(string(data), `"action"`) {
+				t.Fatalf("publications = %s; want no writes", data)
+			}
+		})
+	}
+}
+
 // TestFixturePublishNeverRecursesIntoSubmodules: publication pushes only the
 // owned branch even when the operator's global Git configuration enables
 // submodule recursion and the reviewed commit moves a submodule to a commit
