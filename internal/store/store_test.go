@@ -759,9 +759,10 @@ func TestCycleSummariesCountCandidateDecisions(t *testing.T) {
 
 func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	s := open(t, statePath(t))
-	// A control batch in the planning phase makes commit_plan write settings
-	// mid-transaction, so a surviving "executing" phase would prove a partial commit.
-	// A non-zero idle streak shows both control changes land in the same write.
+	// A control batch in the planning phase makes CommitPlan change settings in
+	// the same transaction, so a surviving "executing" phase would prove a
+	// partial commit. A non-zero idle streak shows both control changes land in
+	// the same write.
 	control := map[string]any{
 		"paused": false, "mode": "run_once", "cycle_number": 1, "next_cycle_at": 0,
 		"error": nil, "idle_streak": 3, "context_fingerprint": "",
@@ -769,7 +770,7 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	}
 	must(t, s.Put("settings", "control", control))
 	// A reconsiders entry naming a task that was never saved fails the lineage
-	// lookup after the cycle, task, control and decision writes already ran.
+	// lookup after the cycle, task and decision writes already ran.
 	queued := reviewTask()
 	queued.CycleID = "cycle-1"
 	plan := cycleFor(queued)
