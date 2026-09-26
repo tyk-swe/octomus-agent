@@ -45,14 +45,15 @@ func contract(t *testing.T, backend config.Backend, binary string) {
 			t.Error("the synthetic provider was not reaped")
 		}
 	})
-	if !waitUntil(5*time.Second, func() bool { return fileExists(filepath.Join(root, "provider-port")) }) {
+	var port string
+	if !waitUntil(5*time.Second, func() bool {
+		var ok bool
+		port, ok = published(filepath.Join(root, "provider-port"))
+		return ok
+	}) {
 		t.Fatal("the synthetic provider never published its port")
 	}
-	port, err := os.ReadFile(filepath.Join(root, "provider-port"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := fmt.Sprintf("http://127.0.0.1:%s/v1", strings.TrimSpace(string(port)))
+	base := fmt.Sprintf("http://127.0.0.1:%s/v1", port)
 	providerConfig := filepath.Join(root, "provider.json")
 	policy, err := json.Marshal(map[string]any{
 		"enabled_providers": []string{"contract"},

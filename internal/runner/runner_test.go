@@ -142,6 +142,14 @@ func (f *fixture) codexInterrupt() map[string]any {
 	return entry
 }
 
+// published reads a value a fixture writes to a file. Writers create the file
+// before they write to it, so an existing but blank file is not yet published.
+func published(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	value := strings.TrimSpace(string(data))
+	return value, err == nil && value != ""
+}
+
 func waitUntil(limit time.Duration, condition func() bool) bool {
 	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {

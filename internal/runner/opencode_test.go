@@ -221,7 +221,12 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	}
 	f.mode("opencode", "detached-hold")
 	turn := turnIn(client, session, route(), f.workspace, "Fixture prompt", nil)
-	if !waitUntil(5*time.Second, func() bool { return f.exists("opencode-child-pid") }) {
+	var childPidText string
+	if !waitUntil(5*time.Second, func() bool {
+		var ok bool
+		childPidText, ok = published(f.path("opencode-child-pid"))
+		return ok
+	}) {
 		t.Fatal("the fixture never started its detached child")
 	}
 	cancel()
@@ -232,12 +237,8 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	if result.err == nil || !strings.Contains(result.err.Error(), "cancelled") {
 		t.Fatalf("cancelled turn must fail: %v", result.err)
 	}
-	data, err := os.ReadFile(f.path("opencode-child-pid"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var childPid int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &childPid); err != nil {
+	if _, err := fmt.Sscanf(childPidText, "%d", &childPid); err != nil {
 		t.Fatal(err)
 	}
 	serverData, err := os.ReadFile(f.path("opencode-pids.jsonl"))
