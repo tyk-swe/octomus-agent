@@ -571,7 +571,8 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	if err != nil {
 		return 0, nil, err
 	}
-	// The result carries any warnings; the service log does not.
+	// A passing result lists any version warnings in its body; a failing one
+	// answers with the error alone. The service log never receives them.
 	result, _, err := a.app.DoctorFor(cfg, mode)
 	status := http.StatusOK
 	var body map[string]any
