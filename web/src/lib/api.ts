@@ -40,14 +40,30 @@ export async function api<T>(
     ...(method !== 'GET' ? { body: JSON.stringify(body ?? {}) } : {}),
     signal: requestSignal
   });
-  const result = await response
-    .json()
-    .catch(() => ({ error: `Service returned ${response.status}` }));
-  // Includes JSON parsing: an old session's response cannot populate a new session.
+  let result: unknown;
+  let parsed = true;
+  try {
+    result = JSON.parse(await response.text());
+  } catch {
+    // An unreadable body, such as a proxy's HTML page; it is never returned as data.
+    parsed = false;
+  }
+  // Includes the body read: an old session's response cannot populate a new session.
   requestSignal.throwIfAborted();
   if (response.status === 401) unauthorized?.();
-  if (!response.ok)
-    throw new ApiError(result.error ?? 'Request failed', response.status, result.checked_revision);
+  if (!response.ok) {
+    const failure = result as { error?: string; checked_revision?: string } | null | undefined;
+    throw new ApiError(
+      failure?.error ?? (parsed ? 'Request failed' : `Service returned ${response.status}`),
+      response.status,
+      failure?.checked_revision
+    );
+  }
+  if (!parsed)
+    throw new ApiError(
+      `Service returned an unreadable response (${response.status})`,
+      response.status
+    );
   return result as T;
 }
 export function relative(value: string) {

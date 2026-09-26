@@ -326,6 +326,32 @@ test('model routing across all roles, provider variants, draft catalogs and unav
   });
 });
 
+test('a successful status without a readable JSON body is reported as a lost connection', async ({
+  page
+}) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+  const indicator = page.locator('.live-indicator');
+  await expect(indicator).toHaveText('Connected');
+  // An access proxy whose session expired answers with its sign-in page, not the service.
+  await page.route('**/api/state', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: '<html>Sign in</html>' })
+  );
+  await expect(indicator).toHaveText('Reconnecting', { timeout: 10000 });
+  const notice = page.getByRole('alert').filter({ hasText: 'Connection interrupted' });
+  await expect(notice).toContainText('Service returned an unreadable response (200)');
+  // The last received state stays on screen.
+  await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+  await page.unroute('**/api/state');
+  await expect(indicator).toHaveText('Connected', { timeout: 10000 });
+  await expect(notice).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('task detail polling does not overlap or apply a response after close', async ({
   page
 }, testInfo) => {
