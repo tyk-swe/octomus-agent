@@ -392,7 +392,7 @@ func (a *App) Recover() error {
 		model.InterruptRunning(cycle.Sessions)
 		cycle.Status = model.CycleInterrupted
 		cycle.CompletedAt = stringPointer(model.Now())
-		cycle.Error = stringPointer("Discovery interrupted; incomplete proposals were not dispatched")
+		cycle.Error = stringPointer(interruptedPlanningMessage)
 		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
 			return err
 		}

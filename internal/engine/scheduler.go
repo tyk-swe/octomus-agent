@@ -207,6 +207,11 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 			return
 		}
 		a.endPreflight()
+		// A preflight that shutdown cut short did not fail on its merits:
+		// control is left to restart recovery, exactly as after a crash.
+		if a.ctx.Err() != nil {
+			return
+		}
 		// A failed preflight settles only the control it was started from.
 		live, loadErr := a.Control()
 		if loadErr != nil || !controlsEqual(live, expected) {

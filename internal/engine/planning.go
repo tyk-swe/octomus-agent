@@ -44,12 +44,25 @@ type groundingDocument struct {
 	Context string `json:"context"`
 }
 
+// interruptedPlanningMessage is the error of a cycle that a stop cut short,
+// whether shutdown recorded it or restart recovery found it still running.
+const interruptedPlanningMessage = "Discovery interrupted; incomplete proposals were not dispatched"
+
 func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycle) {
 	err := a.plan(ctx, cfg, &cycle)
+	// A pass that shutdown cut short did not fail on its merits. It is
+	// recorded as interrupted and control is left to restart recovery,
+	// exactly as after a crash: Recover pauses a Run once still planning,
+	// and Continuous plans again.
+	shuttingDown := err != nil && a.ctx.Err() != nil
 	if err != nil {
 		cycle.Status = model.CycleFailed
-		cycle.CompletedAt = stringPointer(model.Now())
 		cycle.Error = stringPointer(store.ErrorMessage(err))
+		if shuttingDown {
+			cycle.Status = model.CycleInterrupted
+			cycle.Error = stringPointer(interruptedPlanningMessage)
+		}
+		cycle.CompletedAt = stringPointer(model.Now())
 		_ = a.saveCycleMergedSessions(&cycle)
 	}
 
@@ -60,7 +73,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 	}
 	a.runtimeMu.Unlock()
 	control, loadErr := a.Control()
-	if loadErr == nil {
+	if loadErr == nil && !shuttingDown {
 		var message string
 		if err != nil {
 			message = store.ErrorMessage(err)
@@ -79,9 +92,8 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 			_ = a.Store.SaveControl(control)
 		}
 		// Every failed pass is logged after its control write, as a failed
-		// preflight is. A pass that shutdown cut short did not fail on its
-		// merits: it is logged only when it paused a Run once.
-		if err != nil && (failedRunOnce || a.ctx.Err() == nil) {
+		// preflight is.
+		if err != nil {
 			_ = a.Store.Event(cycle.ID, "planning_error", message)
 		}
 	}

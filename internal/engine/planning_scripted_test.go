@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -638,6 +639,168 @@ func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 				t.Fatalf("failed pass logged %+v; want one planning_error with the cycle error", events)
 			}
 			assertNoOpenClients(t, fixture.script)
+		})
+	}
+}
+
+// allPlanningErrors returns every planning_error event, whatever its entity.
+func allPlanningErrors(t *testing.T, state *store.Store) []model.Event {
+	t.Helper()
+	events, err := state.Events(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := []model.Event{}
+	for _, event := range events {
+		if event.Kind == "planning_error" {
+			found = append(found, event)
+		}
+	}
+	return found
+}
+
+// A pass that graceful shutdown cuts short is recorded as restart recovery
+// records one a crash cut short: the cycle is interrupted, not failed, and
+// control is left for recovery with no error and no planning_error event.
+// Recovery then pauses a Run once whose plan never committed, and Continuous
+// plans again at once.
+func TestGracefulShutdownDuringPlanningRecordsInterruption(t *testing.T) {
+	for _, mode := range []string{"audit", "run once", "continuous"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			plan := completePlan(t, fixture)
+			grounding := runnertest.NewGate()
+			plan.grounding.Gate = grounding
+			plan.queue(fixture)
+			app := fixture.pausedApp(t)
+			switch mode {
+			case "audit":
+				if _, err := app.StartAudit(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			case "run once":
+				if err := app.RunOnce(); err != nil {
+					t.Fatal(err)
+				}
+			case "continuous":
+				if err := app.Resume(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode != "audit" {
+				if err := app.Tick(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-grounding.Entered():
+			case <-time.After(30 * time.Second):
+				t.Fatal("planning did not reach grounding")
+			}
+			started, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			app.Shutdown()
+
+			cycles, err := store.List[model.Cycle](fixture.state, "cycle")
+			if err != nil || len(cycles) != 1 {
+				t.Fatalf("cycles: %d, %v", len(cycles), err)
+			}
+			cycle := cycles[0]
+			if cycle.Status != model.CycleInterrupted || cycle.Error == nil || *cycle.Error != interruptedPlanningMessage || cycle.CompletedAt == nil {
+				t.Fatalf("shutdown recorded the cut-short pass as %+v; want it interrupted", cycle)
+			}
+			control, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(control, started) {
+				t.Fatalf("shutdown settled control %+v; want it left as the pass started it, %+v", control, started)
+			}
+			if control.Error != nil {
+				t.Fatalf("shutdown recorded a control error: %s", *control.Error)
+			}
+			if events := allPlanningErrors(t, fixture.state); len(events) != 0 {
+				t.Fatalf("shutdown logged planning errors: %+v", events)
+			}
+			if tasks, err := store.List[model.Task](fixture.state, "task"); err != nil || len(tasks) != 0 {
+				t.Fatalf("cut-short pass queued tasks: %+v, %v", tasks, err)
+			}
+
+			restarted := New(fixture.state, fixture.dataDir)
+			t.Cleanup(restarted.Shutdown)
+			if err := restarted.Recover(); err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := restarted.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "run once":
+				if recovered.Mode != model.OperatingModePaused || recovered.Batch != nil || recovered.Error == nil || *recovered.Error != "Run once was interrupted before its planning transaction committed" {
+					t.Fatalf("recovery did not pause the uncommitted Run once: %+v", recovered)
+				}
+			case "continuous":
+				if recovered.Mode != model.OperatingModeContinuous || recovered.Error != nil || recovered.NextCycleAt > time.Now().Unix() {
+					t.Fatalf("recovery did not leave Continuous due to plan again: %+v", recovered)
+				}
+			default:
+				if !reflect.DeepEqual(recovered, started) {
+					t.Fatalf("recovery changed the paused audit control: %+v", recovered)
+				}
+			}
+		})
+	}
+}
+
+// An execution preflight that graceful shutdown cuts short leaves control as
+// a crash would: the Run once batch still drains and Continuous stays due.
+func TestGracefulShutdownDuringPreflightLeavesControl(t *testing.T) {
+	for _, mode := range []string{"run once", "continuous"} {
+		t.Run(mode, func(t *testing.T) {
+			runOnce := mode == "run once"
+			fixture := newScriptedPlanningFixture(t)
+			hold := filepath.Join(fixture.root, "reconcile-hold")
+			if err := os.WriteFile(hold, []byte("1"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Remove(hold) })
+			app := fixture.pausedApp(t)
+			if runOnce {
+				if err := app.RunOnce(); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := app.Resume(); err != nil {
+				t.Fatal(err)
+			}
+			started, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := app.Tick(); err != nil {
+				t.Fatal(err)
+			}
+			waitForFixtureFile(t, filepath.Join(fixture.root, "reconcile-entered"), "planning preflight did not reach the deterministic barrier")
+			app.Shutdown()
+
+			control, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(control, started) {
+				t.Fatalf("shutdown settled control %+v; want it left as the preflight found it, %+v", control, started)
+			}
+			if runOnce && (control.Mode != model.OperatingModeRunOnce || control.Batch == nil || control.Batch.Phase != model.BatchPhaseDraining) {
+				t.Fatalf("shutdown dropped the Run once batch: %+v", control)
+			}
+			if events := allPlanningErrors(t, fixture.state); len(events) != 0 {
+				t.Fatalf("shutdown logged planning errors: %+v", events)
+			}
+			if cycles, err := store.List[model.Cycle](fixture.state, "cycle"); err != nil || len(cycles) != 0 {
+				t.Fatalf("cut-short preflight created a cycle: %d, %v", len(cycles), err)
+			}
 		})
 	}
 }
