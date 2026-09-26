@@ -146,6 +146,9 @@ func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
 	if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
 		t.Fatalf("failed verification outcome = %+v", saved)
 	}
+	if saved.Error == nil || !strings.Contains(*saved.Error, "Repair budget exhausted (max_repair_rounds 2)") {
+		t.Fatalf("the block must name the exhausted repair budget: %q", optionalText(saved.Error))
+	}
 	if len(saved.Reviews) != 3 || len(saved.Verification) != 3 {
 		t.Fatalf("evidence: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
 	}
@@ -200,6 +203,9 @@ func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
 	if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
 		t.Fatalf("no-progress outcome = %+v", saved)
 	}
+	if saved.Error == nil || !strings.Contains(*saved.Error, "Repairs made no progress") {
+		t.Fatalf("the block must name the no-progress limit: %q", optionalText(saved.Error))
+	}
 	if len(saved.Reviews) != 3 {
 		t.Fatalf("reviews = %+v; want 3 rounds ending on the repeated revision", saved.Reviews)
 	}
@@ -212,6 +218,54 @@ func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
 	assertUnpublished(t, fixture, saved)
 	assertAdmissions(t, fixture.state, 6, "executor + 3 reviewers + 2 repairs")
 	assertNoOpenClients(t, script)
+}
+
+// TestExecutionWithoutChangesBlocksBeforeReview: an executor that leaves no
+// change against the source revision, whether it commits nothing or only
+// commits that cancel out, blocks as verification_failed with an error that
+// says so, and no reviewer or repair turn is spent on it.
+func TestExecutionWithoutChangesBlocksBeforeReview(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		effect func(cwd string) error
+		want   string
+	}{
+		{"no commit", nil, "No changes were committed on top of the source revision"},
+		{"net-empty commit", func(cwd string) error {
+			command := exec.Command("git", "-c", "user.name=Executor", "-c", "user.email=executor@example.test",
+				"commit", "--allow-empty", "-m", "Nothing changed")
+			command.Dir = cwd
+			if output, err := command.CombinedOutput(); err != nil {
+				return fmt.Errorf("empty commit: %v: %s", err, output)
+			}
+			return nil
+		}, "The change set is empty against the source revision"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newScriptedFixture(t)
+			routes, script := fixture.routes, fixture.script
+			script.Queue(routes.Executor, runnertest.Reply{Answer: "Nothing needed changing", Effect: test.effect})
+			task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+			saveExecutionTask(t, fixture.planningFixture, task)
+
+			saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+			if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
+				t.Fatalf("unchanged outcome = %+v", saved)
+			}
+			if saved.Error == nil || !strings.Contains(*saved.Error, test.want) {
+				t.Fatalf("unchanged error = %q; want it to contain %q", optionalText(saved.Error), test.want)
+			}
+			if executors := sessionByRole(saved, "executor"); len(executors) != 1 || executors[0].Status != model.SessionCompleted {
+				t.Fatalf("executor session = %+v", executors)
+			}
+			if len(saved.Reviews) != 0 || len(script.Turns(routes.Reviewer)) != 0 || len(script.Turns(routes.Repair)) != 0 {
+				t.Fatalf("an unchanged task reached review or repair: %+v", saved.Reviews)
+			}
+			assertUnpublished(t, fixture, saved)
+			assertAdmissions(t, fixture.state, 1, "the executor turn only")
+			assertNoOpenClients(t, script)
+		})
+	}
 }
 
 // TestExecutionCancellationDuringTurn: the operator cancel reaches a running

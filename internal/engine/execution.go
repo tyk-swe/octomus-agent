@@ -179,14 +179,14 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if revision == task.SourceRevision {
-			return model.BlockedReasonVerificationFailed
+			return fmt.Errorf("No changes were committed on top of the source revision: %w", model.BlockedReasonVerificationFailed)
 		}
 		names, err := gitops.Git(ctx, cfg, ws, []string{"diff", "--name-only", task.SourceRevision, revision})
 		if err != nil {
 			return err
 		}
 		if names == "" {
-			return model.BlockedReasonVerificationFailed
+			return fmt.Errorf("The change set is empty against the source revision: %w", model.BlockedReasonVerificationFailed)
 		}
 		if task.AttemptReviews() >= cfg.MaxRepairRounds+1 {
 			return model.BlockedReasonRetryLimit
@@ -217,7 +217,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			}
 		}
 		if task.AttemptReviews() > cfg.MaxRepairRounds {
-			return model.BlockedReasonVerificationFailed
+			return fmt.Errorf("Repair budget exhausted (max_repair_rounds %d): %w", cfg.MaxRepairRounds, model.BlockedReasonVerificationFailed)
 		}
 		if previous == revision {
 			noProgress++
@@ -226,7 +226,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			previous = revision
 		}
 		if noProgress >= cfg.MaxNoProgressRounds {
-			return model.BlockedReasonVerificationFailed
+			return fmt.Errorf("Repairs made no progress on the reviewed revision (max_no_progress_rounds %d): %w", cfg.MaxNoProgressRounds, model.BlockedReasonVerificationFailed)
 		}
 		if err := a.repair(ctx, task, client, review, verificationErrors); err != nil {
 			return err
