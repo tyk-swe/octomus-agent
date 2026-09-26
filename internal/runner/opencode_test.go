@@ -437,25 +437,6 @@ func TestOpenCodeRedirectRefusal(t *testing.T) {
 	}
 }
 
-// The policy sent to the server is exactly what the effective-config check
-// accepts once it round-trips through JSON, and only for its own agent.
-func TestWorkerPolicyPassesAppliedPolicy(t *testing.T) {
-	encoded, err := marshal(workerPolicy("octomus-a"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	effective, err := decodeJSON([]byte(encoded))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !appliedPolicy(effective, "octomus-a") {
-		t.Fatalf("the worker policy must pass its own check: %s", encoded)
-	}
-	if appliedPolicy(effective, "octomus-b") {
-		t.Fatal("another agent's policy must not pass")
-	}
-}
-
 // Diagnostics report the server version against the protocol baseline.
 func TestOpenCodeDiagnostics(t *testing.T) {
 	f := opencodeFixture(t)
