@@ -383,7 +383,7 @@
           </article>{:else}<div class="empty">
             <Icon name="code" size={32} />
             <h3>No sessions yet</h3>
-            <p>A separate Codex session starts when this task runs.</p>
+            <p>A separate runner session starts when this task runs.</p>
           </div>{/each}
       {:else if tab === 'Reviews'}
         <p class="muted">

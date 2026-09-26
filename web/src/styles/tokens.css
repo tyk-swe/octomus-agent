@@ -1,4 +1,4 @@
-/* Palette, type scale and element defaults. Every colour the dashboard uses is declared here or derived from these values. */
+/* Palette, type scale and element defaults. Shared palette and semantic tones live here; prefer these tokens over new colour literals. */
 :root {
   font-family:
     Inter,
