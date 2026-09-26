@@ -480,9 +480,9 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 
 // verifyRevision runs every configured verification command against exactly
 // `revision`. Worktree and HEAD are checked before the first command and after
-// each one, so a command that changes tracked state is recorded as failed
-// evidence and stops the run instead of lending its success to the reviewed
-// revision.
+// each one, so a command that changes tracked state, or leaves the check
+// itself unable to run, is recorded as failed evidence and stops the run
+// instead of lending its success to the reviewed revision.
 func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision string) ([]string, error) {
 	cfg := task.ExecutionConfig()
 	ws := task.Workspace
@@ -500,18 +500,23 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		}
 		failed := outcome.failed()
 		output := outcome.outputText()
-		intact, err := outcome.intactResult()
-		if err != nil {
-			return nil, err
-		}
-		if !intact {
+		intact, intactErr := outcome.intactResult()
+		switch {
+		case intactErr != nil:
+			// The state check itself failed, for example because the command
+			// removed the repository: still evidence against this command.
+			output += "\n" + intactErr.Error()
+		case !intact:
 			output += "\nWorkspace or HEAD changed during this verification command"
 		}
 		task.Verification = append(task.Verification, model.Verification{
-			Command: command, Success: intact && !failed, Output: store.Redact(output), Revision: revision, CreatedAt: model.Now(),
+			Command: command, Success: intactErr == nil && intact && !failed, Output: store.Redact(output), Revision: revision, CreatedAt: model.Now(),
 		})
 		if err := a.saveTask(task); err != nil {
 			return nil, err
+		}
+		if intactErr != nil {
+			return nil, fmt.Errorf("Workspace state check failed during verification: %w", intactErr)
 		}
 		if !intact {
 			return nil, model.BlockedReasonWorkspaceInvalid

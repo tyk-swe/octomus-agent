@@ -262,6 +262,27 @@ func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 	}
 }
 
+// A command that leaves the workspace state check unable to run is recorded
+// as failed evidence naming the check's failure, and stops the run.
+func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
+	app, task, revision := verificationFixture(t, []string{"rm -rf .git", "true"})
+	_, err := app.verifyRevision(context.Background(), &task, revision)
+	if err == nil || !strings.Contains(err.Error(), "Workspace state check failed during verification") {
+		t.Fatalf("err = %v; want the state check failure", err)
+	}
+	saved, getErr := store.Get[model.Task](app.Store, "task", task.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if len(saved.Verification) != 1 {
+		t.Fatalf("verification = %+v; want one record and no further commands", saved.Verification)
+	}
+	record := saved.Verification[0]
+	if record.Command != "rm -rf .git" || record.Success || record.Revision != revision || !strings.Contains(record.Output, "not a git repository") {
+		t.Fatalf("state check failure evidence = %+v", record)
+	}
+}
+
 // F1: worktree mutation evidence names the mutation; F6: successful commands
 // keep both output streams.
 func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
