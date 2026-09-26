@@ -13,7 +13,6 @@ import (
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 func TestShutdownOwnsRetryPreflight(t *testing.T) {
@@ -37,7 +36,7 @@ func TestShutdownOwnsRetryPreflight(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	app.Shutdown()
-	saved := durableTask(t, fixture, task.ID)
+	saved := loadTask(t, fixture.state, task.ID)
 	if saved.Status != model.StatusBlocked || saved.Error == nil || saved.Attempts != task.Attempts {
 		t.Fatalf("shutdown returned before retry recorded cancellation: %+v", saved)
 	}
@@ -77,7 +76,7 @@ func TestShutdownWaitsForPublicationReconciliation(t *testing.T) {
 	app.Shutdown()
 	// These assertions deliberately precede waiting for TaskAction: shutdown
 	// must itself guarantee durable completion and removal of runtime ownership.
-	saved := durableTask(t, fixture, task.ID)
+	saved := loadTask(t, fixture.state, task.ID)
 	if saved.Status != model.StatusBlocked || saved.Error == nil || saved.OutputCommit == nil || *saved.OutputCommit != *task.OutputCommit {
 		t.Errorf("shutdown returned before reconciliation recorded its outcome: %+v", saved)
 	}
@@ -111,7 +110,7 @@ func TestShutdownWaitsForPublicationReconciliation(t *testing.T) {
 	if err := app.TaskAction(context.Background(), task.ID, "reconcile"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("reconciliation after shutdown = %v; want cancellation", err)
 	}
-	if current := durableTask(t, fixture, task.ID); !sameRecordJSON(&saved, &current) {
+	if current := loadTask(t, fixture.state, task.ID); !sameRecordJSON(&saved, &current) {
 		t.Fatal("reconciliation after shutdown changed the durable task")
 	}
 }
@@ -130,15 +129,6 @@ func heldPreflightFixture(t *testing.T) (*planningFixture, *App, model.Task) {
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
 	return fixture, app, task
-}
-
-func durableTask(t *testing.T, fixture *planningFixture, id string) model.Task {
-	t.Helper()
-	task, err := store.Get[model.Task](fixture.state, "task", id)
-	if err != nil || task == nil {
-		t.Fatalf("durable task %s: %v", id, err)
-	}
-	return *task
 }
 
 // TestConcurrentRetriesQueueOnlyOneAttempt ports
@@ -163,7 +153,7 @@ func TestConcurrentRetriesQueueOnlyOneAttempt(t *testing.T) {
 	if succeeded != 1 || conflicted != 1 {
 		t.Fatalf("concurrent retries = %v; want one success and one conflict", outcomes)
 	}
-	saved := durableTask(t, fixture, task.ID)
+	saved := loadTask(t, fixture.state, task.ID)
 	if saved.Status != model.StatusQueued || saved.Attempts != 1 {
 		t.Fatalf("retried task = %+v; want queued with one attempt", saved)
 	}
@@ -190,7 +180,7 @@ func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
 	releasePreflight(t, fixture)
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if saved := durableTask(t, fixture, task.ID); saved.Status == model.StatusQueued {
+		if saved := loadTask(t, fixture.state, task.ID); saved.Status == model.StatusQueued {
 			if saved.Attempts != 1 || saved.ReviewBaseline != 2 {
 				t.Fatalf("retried task = %+v; want attempt 1 with review baseline 2", saved)
 			}
@@ -201,7 +191,7 @@ func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("retry did not queue: %+v", durableTask(t, fixture, task.ID))
+	t.Fatalf("retry did not queue: %+v", loadTask(t, fixture.state, task.ID))
 }
 
 // TestRetryRechecksPolicyAfterRemoteChecks ports
@@ -225,7 +215,7 @@ func TestRetryRechecksPolicyAfterRemoteChecks(t *testing.T) {
 	if err := <-done; err == nil || !IsActionConflict(err) {
 		t.Fatalf("retry under changed policy = %v; want conflict", err)
 	}
-	saved := durableTask(t, fixture, task.ID)
+	saved := loadTask(t, fixture.state, task.ID)
 	if !sameRecordJSON(&saved, &task) {
 		t.Fatalf("conflicted retry rewrote the durable task: %+v", saved)
 	}
@@ -298,7 +288,7 @@ func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *test
 				if err != nil || !control.Paused {
 					t.Fatalf("control = %+v, %v", control, err)
 				}
-				changed := durableTask(t, fixture, task.ID)
+				changed := loadTask(t, fixture.state, task.ID)
 				if scenario.remoteFails {
 					writeFixtureMode(t, fixture, "fail")
 				}
@@ -306,7 +296,7 @@ func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *test
 				if err := <-done; err == nil || !IsActionConflict(err) {
 					t.Fatalf("stale %s = %v; want conflict", action, err)
 				}
-				saved := durableTask(t, fixture, task.ID)
+				saved := loadTask(t, fixture.state, task.ID)
 				if !sameRecordJSON(&saved, &changed) {
 					t.Fatalf("stale %s overwrote %s: %+v", action, scenario.mutation, saved)
 				}
@@ -345,7 +335,7 @@ func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 	if err == nil || IsActionConflict(err) {
 		t.Fatalf("retry under the live 1s timeout = %v; want the remote error", err)
 	}
-	if saved := durableTask(t, fixture, task.ID); saved.Attempts != 0 {
+	if saved := loadTask(t, fixture.state, task.ID); saved.Attempts != 0 {
 		t.Fatalf("failed preflight consumed an attempt: %+v", saved)
 	}
 	cfg.CommandTimeoutSeconds = 5
@@ -355,7 +345,7 @@ func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 	if err := app.TaskAction(context.Background(), task.ID, "retry"); err != nil {
 		t.Fatalf("retry under the relaxed timeout failed: %v", err)
 	}
-	saved := durableTask(t, fixture, task.ID)
+	saved := loadTask(t, fixture.state, task.ID)
 	if saved.Status != model.StatusQueued || saved.Attempts != 1 {
 		t.Fatalf("relaxed retry = %+v; want queued attempt 1", saved)
 	}
@@ -384,7 +374,7 @@ func TestTaskActionSupersedeArchiveDiscard(t *testing.T) {
 	if err := app.TaskAction(ctx, stale.ID, "supersede"); err != nil {
 		t.Fatal(err)
 	}
-	saved := durableTask(t, fixture, stale.ID)
+	saved := loadTask(t, fixture.state, stale.ID)
 	if saved.Status != model.StatusCancelled || !saved.RediscoveryRequested || saved.RediscoveryResult != nil {
 		t.Fatalf("superseded task = %+v", saved)
 	}
@@ -400,21 +390,21 @@ func TestTaskActionSupersedeArchiveDiscard(t *testing.T) {
 	if err := app.TaskAction(ctx, done.ID, "archive"); err != nil {
 		t.Fatal(err)
 	}
-	saved = durableTask(t, fixture, done.ID)
+	saved = loadTask(t, fixture.state, done.ID)
 	if saved.Lifecycle.ArchivedAt == nil {
 		t.Fatalf("archived task = %+v", saved)
 	}
 	if err := app.TaskAction(ctx, done.ID, "discard"); err != nil {
 		t.Fatal(err)
 	}
-	saved = durableTask(t, fixture, done.ID)
+	saved = loadTask(t, fixture.state, done.ID)
 	if saved.Lifecycle.DiscardedAt == nil {
 		t.Fatalf("discarded task = %+v", saved)
 	}
 	if _, err := os.Stat(done.Workspace); !os.IsNotExist(err) {
 		t.Fatalf("discarded workspace still present: %v", err)
 	}
-	for _, action := range durableTask(t, fixture, done.ID).AllowedActions() {
+	for _, action := range loadTask(t, fixture.state, done.ID).AllowedActions() {
 		t.Fatalf("discarded task still offers %s", action)
 	}
 }
@@ -436,7 +426,7 @@ func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
 	if err == nil || model.BlockedReasonFromError(err) != model.BlockedReasonStaleBase {
 		t.Fatalf("stale retry = %v; want the recorded stale-base failure", err)
 	}
-	saved := durableTask(t, fixture, task.ID)
+	saved := loadTask(t, fixture.state, task.ID)
 	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonStaleBase {
 		t.Fatalf("stale retry outcome = %+v", saved)
 	}

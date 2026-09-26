@@ -227,7 +227,7 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil {
 		t.Fatalf("unaffordable request changed control: %+v, %v", control, err)
 	}
-	unchanged, _ := store.Get[model.Task](state, "task", task.ID)
+	unchanged := loadTask(t, state, task.ID)
 	if unchanged.RunID != nil {
 		t.Fatalf("unaffordable request tagged task with run %q", *unchanged.RunID)
 	}
@@ -243,7 +243,7 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	if err != nil || started.Batch == nil {
 		t.Fatalf("affordable run once did not persist a batch: %+v, %v", started, err)
 	}
-	member, _ := store.Get[model.Task](state, "task", task.ID)
+	member := loadTask(t, state, task.ID)
 	if member.RunID == nil || *member.RunID != started.Batch.ID {
 		t.Fatalf("original queued task is not a batch member: %+v", member.RunID)
 	}
@@ -251,18 +251,18 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	if err := state.Put("task", later.ID, later); err != nil {
 		t.Fatal(err)
 	}
-	laterSaved, _ := store.Get[model.Task](state, "task", later.ID)
+	laterSaved := loadTask(t, state, later.ID)
 	if laterSaved.RunID != nil {
 		t.Fatal("task queued after RunOnce start joined the batch")
 	}
 
 	member.Status = model.StatusBlocked
-	if err := state.Put("task", member.ID, *member); err != nil {
+	if err := state.Put("task", member.ID, member); err != nil {
 		t.Fatal(err)
 	}
 	member.Status = model.StatusQueued
 	member.RunID = nil
-	if err := state.Put("task", member.ID, *member); err != nil {
+	if err := state.Put("task", member.ID, member); err != nil {
 		t.Fatal(err)
 	}
 	pending, unresolved, err := state.BatchCounts(started.Batch.ID)
@@ -311,8 +311,8 @@ func TestRunOnceStaleControlIsAConflict(t *testing.T) {
 	if stored, err := a.Control(); err != nil || !controlsEqual(stored, live) {
 		t.Fatalf("refused start changed the live control: %+v, %v", stored, err)
 	}
-	if unchanged, err := store.Get[model.Task](state, "task", task.ID); err != nil || unchanged.RunID != nil {
-		t.Fatalf("refused start tagged queued work: %+v, %v", unchanged, err)
+	if unchanged := loadTask(t, state, task.ID); unchanged.RunID != nil {
+		t.Fatalf("refused start tagged queued work: %+v", unchanged)
 	}
 }
 
@@ -505,9 +505,9 @@ func TestRecoverySeedsOnlyResumableAndCheckpointedPrReservations(t *testing.T) {
 	if !got[initialized.ID] || !got[unresolvedCheckpoint.ID] || !got[resumableCheckpoint.ID] || got[invalidQueued.ID] || got[doomedActive.ID] || got[cancelledCheckpoint.ID] {
 		t.Fatalf("unexpected recovery reservations: %+v", got)
 	}
-	recovered, err := store.Get[model.Task](state, "task", resumableCheckpoint.ID)
-	if err != nil || recovered == nil || recovered.Status != model.StatusQueued || recovered.Attempts != 1 || recovered.Sessions[0].Status != model.SessionInterrupted {
-		t.Fatalf("checkpoint recovery lost resumable evidence: %+v, %v", recovered, err)
+	recovered := loadTask(t, state, resumableCheckpoint.ID)
+	if recovered.Status != model.StatusQueued || recovered.Attempts != 1 || recovered.Sessions[0].Status != model.SessionInterrupted {
+		t.Fatalf("checkpoint recovery lost resumable evidence: %+v", recovered)
 	}
 }
 
@@ -678,11 +678,7 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 	if err := a.RunOnce(); err != nil {
 		t.Fatal(err)
 	}
-	saved, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || saved == nil {
-		t.Fatal(err)
-	}
-	task = *saved
+	task = loadTask(t, state, task.ID)
 	task.Proposal.Dependencies = []string{"missing"}
 	if err := state.Put("task", task.ID, task); err != nil {
 		t.Fatal(err)
@@ -714,9 +710,8 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 	if err != nil || len(cycles) != 0 {
 		t.Fatalf("failed drain created a planning cycle: %+v, %v", cycles, err)
 	}
-	blocked, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || blocked == nil || blocked.Status != model.StatusBlocked {
-		t.Fatalf("invalid draining task was not durably blocked: %+v, %v", blocked, err)
+	if blocked := loadTask(t, state, task.ID); blocked.Status != model.StatusBlocked {
+		t.Fatalf("invalid draining task was not durably blocked: %+v", blocked)
 	}
 }
 
@@ -934,10 +929,7 @@ func TestRunnerExitBlocksStillActiveTask(t *testing.T) {
 	a.runTask(task)
 	a.wg.Wait()
 
-	saved, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || saved == nil {
-		t.Fatalf("reload task: %+v, %v", saved, err)
-	}
+	saved := loadTask(t, state, task.ID)
 	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonUnknown {
 		t.Fatalf("runner exit did not block active task: %+v", saved)
 	}
@@ -990,9 +982,8 @@ func TestSchedulerWaitsForExecutionSlotBeforeRefreshingCapacity(t *testing.T) {
 	if refreshing || called {
 		t.Fatalf("capacity refresh or execution started without a free slot: refreshing=%t called=%t", refreshing, called)
 	}
-	saved, err := store.Get[model.Task](state, "task", queued.ID)
-	if err != nil || saved.Status != model.StatusQueued {
-		t.Fatalf("queued work changed while execution was full: %+v, %v", saved, err)
+	if saved := loadTask(t, state, queued.ID); saved.Status != model.StatusQueued {
+		t.Fatalf("queued work changed while execution was full: %+v", saved)
 	}
 }
 
@@ -1185,9 +1176,8 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 	if data, err := os.ReadFile(filepath.Join(external, "evidence.txt")); err != nil || string(data) != "outside" {
 		t.Fatalf("symlink cleanup escaped owned root: %q, %v", data, err)
 	}
-	saved, err := store.Get[model.Task](state, "task", published.ID)
-	if err != nil || saved == nil || saved.Lifecycle.DiscardedAt != nil {
-		t.Fatalf("rejected cleanup was recorded as successful: %+v, %v", saved, err)
+	if saved := loadTask(t, state, published.ID); saved.Lifecycle.DiscardedAt != nil {
+		t.Fatalf("rejected cleanup was recorded as successful: %+v", saved)
 	}
 }
 

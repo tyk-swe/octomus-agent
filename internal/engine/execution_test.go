@@ -622,7 +622,7 @@ func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
 	waitForPreflights(t, fixture, 1)
 
 	app.Shutdown()
-	stopped := durableTask(t, fixture, task.ID)
+	stopped := loadTask(t, fixture.state, task.ID)
 	if stopped.Status != model.StatusPublishing || stopped.OutputCommit == nil || *stopped.OutputCommit != *task.OutputCommit ||
 		stopped.Error != nil || stopped.BlockedReason != nil {
 		t.Fatalf("graceful stop recorded a publication outcome: %+v", stopped)
@@ -639,7 +639,7 @@ func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
 	if err := restarted.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	if recovered := durableTask(t, fixture, task.ID); recovered.Status != model.StatusQueued || recovered.Attempts != 1 {
+	if recovered := loadTask(t, fixture.state, task.ID); recovered.Status != model.StatusQueued || recovered.Attempts != 1 {
 		t.Fatalf("interrupted publication recovery = %+v", recovered)
 	}
 	if err := restarted.Resume(); err != nil {
