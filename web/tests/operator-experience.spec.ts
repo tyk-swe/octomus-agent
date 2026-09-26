@@ -293,6 +293,72 @@ test('baseline refresh preserves server staleness and rejects obsolete responses
   expect(state.baselines).toHaveLength(0);
 });
 
+test('the baseline panel never denies a recorded check while its status loads or is unavailable', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
+  await login(page);
+  await navigate('Configuration');
+  const panel = page.getByRole('region', { name: 'Clean baseline' });
+  const never = panel.getByText('No baseline check has been run.', { exact: true });
+  await expect(never).toBeVisible();
+  state.baselineView = {
+    ...state.baselineView,
+    check: {
+      id: 'failed-baseline',
+      status: 'failed',
+      config: structuredClone(state.saved!),
+      config_fingerprint: state.revision(),
+      revision: 'a'.repeat(40),
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      commands: [],
+      error: 'Synthetic baseline failure',
+      workspace_removed: true,
+      cleanup_error: null
+    }
+  };
+  await navigate('Overview');
+  const gate = deferred();
+  let fail = true;
+  await page.route('**/api/baseline-checks/latest', async (route) => {
+    await gate.promise;
+    await route
+      .fulfill(
+        fail
+          ? { status: 503, json: { error: 'Synthetic baseline status outage' } }
+          : { json: state.baselineView }
+      )
+      .catch(() => {});
+  });
+  await navigate('Configuration');
+  await expect(panel.getByText('Loading baseline status…', { exact: true })).toBeVisible();
+  await expect(never).toHaveCount(0);
+  gate.resolve();
+  await expect(panel.getByRole('alert')).toHaveText('Synthetic baseline status outage');
+  await expect(panel.getByText('Baseline status unavailable.', { exact: true })).toBeVisible();
+  await expect(never).toHaveCount(0);
+  fail = false;
+  await expect(panel.getByText('Synthetic baseline failure', { exact: true })).toBeVisible({
+    timeout: 10000
+  });
+  await expect(panel.getByText('Baseline status unavailable.', { exact: true })).toHaveCount(0);
+  await expect(never).toHaveCount(0);
+
+  // An unsaved edit is the reason the check is unavailable, and the panel says so.
+  const unsaved = panel.getByText('Save or discard edits before checking the baseline.');
+  await expect(unsaved).toHaveCount(0);
+  await page.getByLabel('Default branch', { exact: true }).fill('unsaved-main');
+  await expect(unsaved).toBeVisible();
+  await expect(page.locator('#check-baseline')).toBeDisabled();
+  await page.getByRole('button', { name: 'Discard changes' }).click();
+  await expect(unsaved).toHaveCount(0);
+  await expect(page.locator('#check-baseline')).toBeEnabled();
+  expect(state.baselines).toHaveLength(0);
+});
+
 test('notification health and PR limits remain read-only observations', async ({
   page,
   isMobile

@@ -215,10 +215,17 @@
         {/each}
       </ul>
     {/if}
-  {:else}
+  {:else if view}
     <p class="muted">No baseline check has been run.</p>
+  {:else if error}
+    <p class="muted">Baseline status unavailable.</p>
+  {:else}
+    <p class="muted">Loading baseline status…</p>
   {/if}
   {#if view && !view.eligible && !running && view.reason}<p class="muted">{view.reason}</p>{/if}
+  {#if dirty && !running}<p class="muted">
+      Save or discard edits before checking the baseline.
+    </p>{/if}
   {#if confirming}
     <div class="notice" role="alertdialog" aria-label="Confirm baseline check">
       <p>
