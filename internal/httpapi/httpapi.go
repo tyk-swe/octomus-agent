@@ -271,9 +271,11 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 			// lose the association between a redacted preview and its config field.
 			transforms, hasTransforms := object["transformed_fields"]
 			delete(object, "transformed_fields")
-			store.RedactJSON(object)
-			if hasTransforms {
-				object["transformed_fields"] = transforms
+			// Keep the redacted value RedactJSON returns rather than relying on
+			// it scrubbing the map in place.
+			generic = store.RedactJSON(object)
+			if redacted, ok := generic.(map[string]any); ok && hasTransforms {
+				redacted["transformed_fields"] = transforms
 			}
 		} else {
 			generic = store.RedactJSON(generic)
