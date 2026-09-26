@@ -30,7 +30,6 @@ the first release contains.
 - Refreshed dashboard and login styling, clearer setup-state explanations, and audit-first
   guidance for installations without a recorded cycle. The public dashboard screenshot
   reflects the current interface using synthetic data.
-- Documentation tools and navigation sidebars have distinct labels for screen readers.
 - Verification runs on the reviewed revision, and a command that changes tracked state
   is recorded as failed evidence rather than passing silently.
 - Repair rounds are budgeted per attempt: an explicit retry starts a fresh budget and
@@ -45,6 +44,19 @@ the first release contains.
 - The dashboard build precedes the Go build; `--assets` is an explicit override.
 - Fresh state uses SQLite schema version 7; earlier databases are refused before
   schema or journal changes.
+- A graceful stop (SIGINT, SIGTERM or a terminal hangup) leaves initialized in-flight
+  tasks to the same bounded restart recovery as a crash, and records a planning pass it
+  cuts short as interrupted rather than failed.
+- Verification evidence keeps the end of each command's stdout and stderr and its exit
+  status, secret-scrubbed within 16 KiB, and marks every cut.
+- Configuration errors name the failing setting and its accepted range, and the
+  dashboard's operating-limit help shows each range.
+- Runner connection failures include a redacted tail of the runner's stderr.
+- The dashboard shows the service's plain-text rejections, marks archived and discarded
+  cycles in the cycle picker, offers only the workspace action still open, counts in
+  the singular where one item is meant, and shows the version from the `VERSION` file.
+- `POST /api/doctor` returns version warnings in its response without writing them to
+  the service log, and `405` responses name the allowed methods.
 
 ### Removed
 
@@ -54,3 +66,23 @@ the first release contains.
   lives in `docs/` and the dashboard stays embedded in the service binary.
 - The Codex-only `GET /api/models` endpoint, superseded by `POST /api/model-catalog`,
   which reports both runners.
+
+### Fixed
+
+- An interrupted publication whose retry budget is exhausted is blocked as
+  `publication_uncertain`, so **Reconcile publication** can finish it without a model
+  turn, and a publication recorded just before the task deadline is kept.
+- Existing-PR work checks default-branch freshness before recording its output, and a
+  Run once request against a stale control record answers a conflict instead of doing
+  nothing.
+- Archiving a superseded task withdraws its pending rediscovery request. Archiving or
+  discarding a cycle a second time is a conflict, so a repeated archive no longer
+  restarts its retention clock.
+- Publication pushes to the exact validated origin URL without recursing into
+  submodules, and the commit message Octomus generates is secret-scrubbed like PR text.
+- Redaction replaces overlapping secrets whole, keeps catching `sk-` keys after terminal
+  control sequences, and leaves ordinary words such as `task-` readable.
+- An interrupted `--doctor` stops the runner processes it started and exits with
+  status 1, and the HTTP server bounds header reads and idle connections.
+- An unchanged cleanup failure is logged at most once a day instead of on every
+  housekeeping pass.
