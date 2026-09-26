@@ -216,6 +216,98 @@ func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
 	}
 }
 
+// TestStoppedGroupsCanCleanUp: cancellation and deadline expiry signal a
+// running command's group with SIGTERM before killing it, so tools such as
+// Git can run their own cleanup (removing index and ref lock files) first.
+func TestStoppedGroupsCanCleanUp(t *testing.T) {
+	script := "trap 'touch cleaned; exit 1' TERM; touch started; sleep 30 & wait"
+	for _, tc := range []struct {
+		name    string
+		seconds uint64
+		cancel  bool
+		want    string
+	}{
+		{name: "cancellation", seconds: 30, cancel: true, want: "Operation cancelled"},
+		// The limit leaves bash ample time to install its trap under load.
+		{name: "deadline", seconds: 3, want: "Command timed out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			temp := t.TempDir()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := process.Capture(ctx, "bash", []string{"-c", script}, temp, tc.seconds, process.CaptureDiagnostic)
+				done <- err
+			}()
+			if !waitUntil(5*time.Second, func() bool {
+				_, err := os.Stat(filepath.Join(temp, "started"))
+				return err == nil
+			}) {
+				t.Fatal("the command did not start")
+			}
+			if tc.cancel {
+				cancel()
+			}
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("capture error = %v; want %s", err, tc.want)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("capture did not return")
+			}
+			if _, err := os.Stat(filepath.Join(temp, "cleaned")); err != nil {
+				t.Fatalf("the command's TERM cleanup never ran: %v", err)
+			}
+		})
+	}
+}
+
+// TestTermIgnoringGroupIsStillKilled: a group that ignores SIGTERM is killed
+// once the short cleanup grace ends, so a stopped command always returns
+// promptly and leaves nothing running.
+func TestTermIgnoringGroupIsStillKilled(t *testing.T) {
+	temp := t.TempDir()
+	cleanupGroup(t, filepath.Join(temp, "leader.pid"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := process.Capture(ctx, "bash", []string{"-c",
+			"trap '' TERM; echo $$ > leader.pid; sleep 30 & echo $! > child.pid; wait"},
+			temp, 30, process.CaptureDiagnostic)
+		done <- err
+	}()
+	var leader, child string
+	if !waitUntil(5*time.Second, func() bool {
+		l, lerr := os.ReadFile(filepath.Join(temp, "leader.pid"))
+		c, cerr := os.ReadFile(filepath.Join(temp, "child.pid"))
+		leader, child = strings.TrimSpace(string(l)), strings.TrimSpace(string(c))
+		return lerr == nil && cerr == nil && leader != "" && child != ""
+	}) {
+		t.Fatal("the command did not start")
+	}
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, process.ErrCancelled) {
+			t.Fatalf("capture error = %v; want Operation cancelled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a TERM-ignoring group must still be killed after the grace")
+	}
+	if elapsed := time.Since(started); elapsed > 8*time.Second {
+		t.Fatalf("cancellation took %v; want the short grace then a kill", elapsed)
+	}
+	for _, pid := range []string{leader, child} {
+		if !waitUntil(time.Second, func() bool { return processGone(pid) }) {
+			t.Fatalf("process %s survived cancellation", pid)
+		}
+	}
+}
+
 // TestCleanupLeavesUnrelatedProcessesUntouched pins acceptance criterion 8:
 // terminating one owned group must not signal processes outside it.
 func TestCleanupLeavesUnrelatedProcessesUntouched(t *testing.T) {

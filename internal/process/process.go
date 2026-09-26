@@ -285,9 +285,15 @@ type readResult struct {
 // the read ends both finish promptly, so readers always join within it.
 const cleanupGrace = 30 * time.Second
 
+// terminateGrace bounds how long a signalled leader may run its own cleanup
+// before its group is killed.
+const terminateGrace = 2 * time.Second
+
 // Capture runs binary to completion, deadline expiry, or cancellation. The
 // leader is always reaped; owned descendants are killed when it finishes, on
 // timeout, or on cancellation, so an inheriting child cannot hold the pipes.
+// On timeout or cancellation a still-running group is sent SIGTERM and given
+// terminateGrace to clean up before it is killed.
 func Capture(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (*ProcessOutput, error) {
 	if ctx.Err() != nil {
 		return nil, ErrCancelled
@@ -352,6 +358,28 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 	// are buffered, the deferred closes are idempotent, and the goroutines
 	// unwind on their own and orphaned processes are reaped.
 	terminate := func() {
+		// A still-running leader's group first gets SIGTERM so Git and similar
+		// tools can remove their lock files; whatever remains is killed after
+		// terminateGrace. A reaped leader's group gets no SIGTERM: Close already
+		// killed it, and its id may since have been reused.
+		if !haveWait {
+			_ = syscall.Kill(-child.pgid, syscall.SIGTERM)
+			grace := time.NewTimer(terminateGrace)
+		term:
+			for !haveWait {
+				select {
+				case <-waitCh:
+					haveWait = true
+				case <-outCh:
+					haveOut = true
+				case <-errCh:
+					haveErr = true
+				case <-grace.C:
+					break term
+				}
+			}
+			grace.Stop()
+		}
 		child.Close()
 		deadline := time.NewTimer(cleanupGrace)
 		defer deadline.Stop()
