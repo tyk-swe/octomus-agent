@@ -70,10 +70,11 @@ type Store struct {
 	path string
 }
 
-// dsn builds a SQLite URI for path. Only params apply on every connect (the
-// busy timeout); journal_mode=WAL persists in the file, and synchronous=FULL is
-// set once on the pinned connection after the schema check, which is why the
-// store never replaces its connection.
+// dsn builds a SQLite URI for path. Only params (the busy timeout, and the
+// read-only mode for reporting) apply on every connect; journal_mode=WAL
+// persists in the file, and synchronous=FULL is set once on the pinned
+// connection after the schema check, which is why the store never replaces
+// its connection.
 func dsn(path string, params string) string {
 	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(path)
 	return "file:" + escaped + "?" + params
