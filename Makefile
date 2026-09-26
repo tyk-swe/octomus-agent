@@ -15,19 +15,25 @@ build: dashboard
 build-race: dashboard
 	CGO_ENABLED=1 go build -race -o bin/octomus-agent-race ./cmd/octomus-agent
 
-# gofmt comes from the module's toolchain, not PATH; parse errors fail too.
+# gofmt comes from the module's toolchain, not PATH; parse errors fail too. The
+# documented private-payload gate (tests/helpers) lives outside web/ but keeps the
+# dashboard's Prettier style and checkJs typing.
 check: dashboard
 	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal tests web/*.go) || exit 1; \
 	if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files" >&2; exit 1; fi
 	go vet ./...
 	npm run check --prefix web
 	npm run format:check --prefix web
+	cd web && node_modules/.bin/prettier --config .prettierrc.json --check ../tests/helpers
+	cd web && node_modules/.bin/tsc --noEmit --allowJs --checkJs --strict --target es2022 \
+	  --module nodenext --moduleResolution nodenext --types node ../tests/helpers/*.mjs
 
 test: build
 	go test ./...
 	CGO_ENABLED=1 go test -race ./...
 	$(E2E_ENV) python3 tests/binary_contract.py
 	$(E2E_ENV) python3 tests/evidence_snapshot.py
+	node --test tests/helpers/public_payload.test.mjs
 	$(E2E_ENV) python3 tests/e2e.py
 	$(E2E_ENV) python3 tests/e2e_baseline.py
 	$(E2E_ENV) python3 tests/e2e_notifications.py

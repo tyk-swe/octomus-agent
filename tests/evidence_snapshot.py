@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic-only backup/export/private-review examples; accepts no operator input."""
 from contextlib import closing
+import copy
 import hashlib
 import json
 import os
@@ -54,6 +55,21 @@ def main():
         'problem_key': '', 'relevant_paths': [], 'reconsiders': [],
     }
     deferred = {**proposal, 'id': 'synthetic-deferred', 'decision': 'deferred'}
+    # Session summaries and review summaries stay private: the export carries routes
+    # and summary presence only. Finding text is carried as model-authored text.
+    review_route = {'backend': 'opencode', 'model': 'synthetic/model', 'effort': 'high',
+                    'provider': 'synthetic-provider', 'variant': 'synthetic-variant'}
+    sessions = [
+        {'id': 'synthetic-exec', 'role': 'executor', 'route': config['tiers']['S'],
+         'status': 'completed', 'started_at': timestamp,
+         'summary': 'SYNTHETIC-PRIVATE-SESSION-SUMMARY'},
+        {'id': 'synthetic-review', 'role': 'reviewer', 'route': review_route,
+         'status': 'completed', 'started_at': timestamp,
+         'summary': 'SYNTHETIC-PRIVATE-REVIEWER-SUMMARY'},
+    ]
+    finding = {'title': 'Synthetic finding', 'file': 'README.md', 'priority': 'P2',
+               'detail': 'Synthetic finding detail'}
+    pr_url = 'https://github.com/synthetic/fixture/pull/7'
     cycle = {
         'id': 'synthetic-cycle', 'number': 1, 'mode': 'execution', 'status': 'completed',
         'started_at': timestamp, 'completed_at': timestamp, 'grounding': None,
@@ -67,13 +83,19 @@ def main():
         'source_revision': 'a' * 40, 'comparison_base': 'a' * 40,
         'default_revision': 'a' * 40, 'output_commit': 'b' * 40,
         'branch': 'tyk/synthetic-wal', 'workspace': '/synthetic-private-workspace',
-        'execution_session': None, 'repair_session': None, 'sessions': [], 'reviews': [],
+        'execution_session': 'synthetic-exec', 'repair_session': None, 'sessions': sessions,
+        'reviews': [{
+            'session_id': 'synthetic-review', 'revision': 'b' * 40, 'comparison_base': 'a' * 40,
+            'created_at': timestamp,
+            'result': {'completed': True, 'summary': 'SYNTHETIC-PRIVATE-REVIEW-SUMMARY',
+                       'findings': [finding]},
+        }],
         'verification': [{
             'command': 'synthetic required check', 'success': False,
             'output': 'SYNTHETIC-PRIVATE-OUTPUT', 'revision': 'b' * 40,
             'created_at': timestamp,
         }],
-        'pr_number': None, 'pr_url': None, 'attempts': 1, 'review_baseline': 0,
+        'pr_number': 7, 'pr_url': pr_url, 'attempts': 1, 'review_baseline': 0,
         'superseded_by': [], 'supersedes': [], 'rediscovery_requested': False,
         'lifecycle': {'archived_at': None, 'discarded_at': None},
         'error': 'SYNTHETIC-PRIVATE-ERROR', 'created_at': timestamp, 'updated_at': timestamp,
@@ -142,7 +164,17 @@ def main():
         linked = accepted['linked_tasks'][0]
         assert linked['id'] == 'synthetic-task' and linked['status'] == 'blocked'
         assert linked['error_recorded'] and linked['blocked_reason'] == 'verification_failed'
-        assert linked['pull_request'] is None and linked['latest_review']['latest'] is None
+        assert linked['pull_request'] == {'number': 7, 'url': pr_url, 'source': 'recorded_task_reference'}
+        assert [(s['id'], s['role'], s['status'], s['started_at']) for s in linked['sessions']] == [
+            (x['id'], x['role'], x['status'], x['started_at']) for x in sessions]
+        assert [s['requested_route'] for s in linked['sessions']] == [config['tiers']['S'], review_route]
+        review = linked['latest_review']
+        assert review['rounds_recorded'] == 1 and not review['clean']
+        assert not review['clean_at_output_revision']
+        latest = review['latest']
+        assert latest['session_id'] == 'synthetic-review' and latest['revision'] == 'b' * 40
+        assert latest['completed'] and latest['summary_present'] and latest['matches_output_revision']
+        assert latest['findings'] == [finding]
         assert linked['required_commands']['commands'][0]['state'] == 'failed'
         assert not linked['required_commands']['all_passed_at_output_revision']
         assert evidence['gaps'] and linked['gaps']
@@ -161,13 +193,49 @@ def main():
         assert candidate.read_bytes() == candidate_bytes
         assert candidate.stat().st_mode & 0o077 == 0
 
+        # The gate fails closed on a real candidate: an unallowlisted member anywhere,
+        # a different mode, a removed limitation or contradictory recorded facts.
+        def linked_task(p):
+            return p['evidence']['proposals'][0]['linked_tasks'][0]
+
+        def commands(p):
+            return linked_task(p)['required_commands']['commands']
+
+        task_path = 'payload.evidence.proposals[0].linked_tasks[0]'
+        for reason, change in [
+            (f'{task_path}.sessions[0]: unallowlisted field',
+             lambda p: linked_task(p)['sessions'][0].update(transcript='SYNTHETIC-PRIVATE-TRANSCRIPT')),
+            (f'{task_path}.sessions[1].requested_route: unallowlisted field',
+             lambda p: linked_task(p)['sessions'][1]['requested_route'].update(api_key='SYNTHETIC-PRIVATE-KEY')),
+            (f'{task_path}.latest_review.latest.findings[0]: unallowlisted field',
+             lambda p: linked_task(p)['latest_review']['latest']['findings'][0].update(raw='SYNTHETIC-PRIVATE-RAW')),
+            (f'{task_path}.pull_request: unallowlisted field',
+             lambda p: linked_task(p)['pull_request'].update(head='SYNTHETIC-PRIVATE-HEAD')),
+            (f'{task_path}: unallowlisted field',
+             lambda p: linked_task(p).update(workspace='/synthetic-private-workspace')),
+            ('payload.mode', lambda p: p.update(mode='fixture')),
+            ('original limitations must remain', lambda p: p['evidence']['limitations'].pop(0)),
+            ('decision counts', lambda p: p['evidence']['cycle']['planning']['decisions'].update(accepted=2)),
+            ('task join identity', lambda p: linked_task(p).update(cycle_id='other-cycle')),
+            ('review cleanliness', lambda p: linked_task(p)['latest_review'].update(clean=True)),
+            ('check state', lambda p: commands(p)[0].update(state='passed')),
+        ]:
+            altered = copy.deepcopy(payload)
+            change(altered)
+            candidate.write_text(json.dumps(altered, indent=2) + '\n')
+            result = run(['node', '--input-type=module', '-', str(candidate)], validate)
+            assert result.returncode != 0, result.stdout
+            assert f'Unsupported or inconsistent candidate: {reason}\n' in result.stderr, result.stderr
+            assert 'Candidate SHA-256:' not in result.stdout
+
         # The private check reuses the candidate gate's rejection of overwritten private members.
         candidate.write_text('{"evidence":{"transcript":"SYNTHETIC-PRIVATE-TRANSCRIPT"},'
                              + candidate_bytes.decode()[1:])
         result = run(['node', '--input-type=module', '-', str(candidate)], validate)
         assert result.returncode != 0 and 'Duplicate JSON object key' in result.stderr
         assert 'Candidate SHA-256:' not in result.stdout
-    print('Synthetic snapshot examples passed: WAL backup, private CLI export, adverse evidence, hash check; no approval.')
+    print('Synthetic snapshot examples passed: WAL backup, private CLI export with sessions, review '
+          'findings and PR reference, adverse evidence, gate rejections, hash check; no approval.')
 
 
 if __name__ == '__main__':
