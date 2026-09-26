@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
@@ -314,8 +315,90 @@ func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
 			t.Fatalf("verification record not bound to the reviewed revision: %+v", v)
 		}
 	}
-	if !strings.Contains(saved.Verification[0].Output, "out") || !strings.Contains(saved.Verification[0].Output, "warn") {
+	if saved.Verification[0].Output != "out\n[stderr]\nwarn" {
 		t.Fatalf("verification lost an output stream: %q", saved.Verification[0].Output)
+	}
+}
+
+// Verification evidence is bounded and says so: each stream keeps its end,
+// where runners report the failure, stderr survives however long stdout is,
+// a failure ends with its exit status, and a state-check note is never cut.
+// The repair prompt receives the same text.
+func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
+	long := "head -c 20000 /dev/zero | tr '\\0' a; echo; echo TAIL-OF'-STDOUT'; "
+	for _, test := range []struct {
+		name    string
+		command string
+		success bool
+		want    []string
+		suffix  string
+	}{
+		{name: "long failure", command: long + "echo FAIL'URE-DETAIL' >&2; exit 1", want: []string{"TAIL-OF-STDOUT", "\n[stderr]\nFAILURE-DETAIL", outputTruncatedMarker}, suffix: "\nexit status: 1"},
+		{name: "long success", command: long + "echo PASS'-WARNING' >&2", success: true, want: []string{"TAIL-OF-STDOUT", "\n[stderr]\nPASS-WARNING", outputTruncatedMarker}},
+		{name: "long stderr", command: "{ head -c 20000 /dev/zero | tr '\\0' e; echo; echo STDERR'-TAIL'; } >&2; echo STDOUT'-KEPT'; exit 3", want: []string{"STDOUT-KEPT\n[stderr]\n" + outputTruncatedMarker, "STDERR-TAIL"}, suffix: "\nexit status: 3"},
+		{name: "short failure", command: "echo out; echo err >&2; exit 3", want: []string{"out\n[stderr]\nerr\nexit status: 3"}},
+		{name: "secret", command: "echo token=ghp_abcdefghij0123456789; exit 2", want: []string{"token=[redacted]"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, task, revision := verificationFixture(t, []string{test.command})
+			failures, err := app.verifyRevision(context.Background(), &task, revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := loadTask(t, app.Store, task.ID)
+			if len(saved.Verification) != 1 {
+				t.Fatalf("verification = %+v; want one record", saved.Verification)
+			}
+			record := saved.Verification[0]
+			if record.Success != test.success || len(record.Output) > verificationOutputLimit || !utf8.ValidString(record.Output) {
+				t.Fatalf("record success=%t, %d bytes; want success=%t within %d bytes", record.Success, len(record.Output), test.success, verificationOutputLimit)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(record.Output, want) {
+					t.Fatalf("evidence lacks %q:\n%s", want, record.Output)
+				}
+			}
+			if !strings.HasSuffix(record.Output, test.suffix) || strings.Contains(record.Output, "ghp_") {
+				t.Fatalf("evidence does not end with %q or kept a secret:\n%s", test.suffix, record.Output)
+			}
+			if test.success != (len(failures) == 0) || !test.success && failures[0] != test.command+": "+record.Output {
+				t.Fatalf("repair prompt failures = %q; want the saved evidence", failures)
+			}
+		})
+	}
+
+	mutating := "head -c 20000 /dev/zero | tr '\\0' a; printf 1 > impl.txt"
+	app, task, revision := verificationFixture(t, []string{mutating})
+	if _, err := app.verifyRevision(context.Background(), &task, revision); model.BlockedReasonFromError(err) != model.BlockedReasonWorkspaceInvalid {
+		t.Fatalf("mutation err = %v; want workspace_invalid", err)
+	}
+	record := loadTask(t, app.Store, task.ID).Verification[0]
+	if len(record.Output) > verificationOutputLimit || !strings.HasPrefix(record.Output, outputTruncatedMarker+"\n") || !strings.HasSuffix(record.Output, "\nWorkspace or HEAD changed during this verification command") {
+		t.Fatalf("long mutation evidence (%d bytes) lost its marker or note:\n%s", len(record.Output), record.Output)
+	}
+}
+
+func TestBoundedTailKeepsTheEndWithinTheLimit(t *testing.T) {
+	marker := outputTruncatedMarker
+	for _, test := range []struct {
+		name             string
+		text             string
+		limit            int
+		captureTruncated bool
+		want             string
+	}{
+		{name: "fits exactly", text: strings.Repeat("x", 32), limit: 32, want: strings.Repeat("x", 32)},
+		{name: "over the limit", text: "head-" + strings.Repeat("x", 40) + "-tail", limit: 32, want: marker + "\n" + strings.Repeat("x", 8) + "-tail"},
+		{name: "capture truncated", text: "short", limit: 64, captureTruncated: true, want: "short\n" + marker},
+		{name: "both markers", text: strings.Repeat("x", 60) + "-tail", limit: 48, captureTruncated: true, want: marker + "\n" + strings.Repeat("x", 5) + "-tail\n" + marker},
+		{name: "rune boundary", text: strings.Repeat("é", 20), limit: 24, want: marker + "\n" + strings.Repeat("é", 2)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := boundedTail(test.text, test.limit, test.captureTruncated)
+			if got != test.want || len(got) > test.limit || !utf8.ValidString(got) {
+				t.Fatalf("boundedTail = %q (%d bytes); want %q within %d", got, len(got), test.want, test.limit)
+			}
+		})
 	}
 }
 

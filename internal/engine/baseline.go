@@ -48,7 +48,7 @@ func boundedOutput(text string, limit int, diagnosticTruncated bool) (string, bo
 	if limit == 0 {
 		return "", diagnosticTruncated || text != ""
 	}
-	const marker = "\n[output truncated]"
+	const marker = "\n" + outputTruncatedMarker
 	if !diagnosticTruncated && len(text) <= limit {
 		return text, false
 	}
