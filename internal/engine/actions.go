@@ -20,8 +20,9 @@ import (
 // ErrTaskNotFound reports a control addressed at an unknown durable task.
 var ErrTaskNotFound = errors.New("Task not found")
 
-// actionConflict is the operator-visible 409 returned when an
-// action is ineligible or durable state changed during remote checks.
+// actionConflict is the one operator-visible 409 the engine returns: a task,
+// cycle, control, configuration or baseline action is ineligible in the
+// current state, or durable state changed during remote checks.
 type actionConflict struct{ msg string }
 
 func (e *actionConflict) Error() string { return e.msg }
@@ -29,7 +30,8 @@ func (e *actionConflict) Error() string { return e.msg }
 func conflictError(message string) error { return &actionConflict{message} }
 
 // IsActionConflict reports whether err is an eligibility/concurrency conflict —
-// errors mapped to HTTP 409.
+// errors mapped to HTTP 409 — including every baseline start and cancel
+// refusal.
 func IsActionConflict(err error) bool {
 	var c *actionConflict
 	return errors.As(err, &c) || model.BlockedReasonFromError(err) != model.BlockedReasonUnknown

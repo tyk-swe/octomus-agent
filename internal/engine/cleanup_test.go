@@ -506,9 +506,8 @@ func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *tes
 	}); err != nil {
 		t.Fatalf("duplicate baseline cleanup = %v; want deduped success", err)
 	}
-	var conflict *BaselineConflict
-	if err := app.CancelBaseline(check.ID); err == nil || !errors.As(err, &conflict) {
-		t.Fatalf("cancel on a terminal claimed check = %v; want baseline conflict", err)
+	if err := app.CancelBaseline(check.ID); err == nil || !IsActionConflict(err) {
+		t.Fatalf("cancel on a terminal claimed check = %v; want a conflict", err)
 	}
 	// A write landing mid-removal — e.g. the worker's last evidence — must
 	// survive finalization.

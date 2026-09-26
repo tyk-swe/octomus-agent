@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,11 +119,8 @@ func TestStartBaselineRejectsStaleRevisionBeforeWork(t *testing.T) {
 	stale := strings.Repeat("0", len(fingerprint))
 	if _, err := app.StartBaseline(stale); err == nil {
 		t.Fatal("stale revision accepted")
-	} else {
-		var conflict *BaselineConflict
-		if !errors.As(err, &conflict) {
-			t.Fatalf("conflict kind: %v", err)
-		}
+	} else if !IsActionConflict(err) {
+		t.Fatalf("conflict kind: %v", err)
 	}
 	if running, err := app.Store.RunningBaselines(); err != nil || len(running) != 0 {
 		t.Fatalf("rejected start persisted work: %d %v", len(running), err)

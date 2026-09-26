@@ -23,14 +23,6 @@ const (
 	baselineAggregateOutputLimit = 1024 * 1024
 )
 
-// BaselineConflict is an operator-visible HTTP 409 conflict:
-// ineligible starts, stale expected configurations and invalid cancellations.
-type BaselineConflict struct{ message string }
-
-func (e *BaselineConflict) Error() string { return e.message }
-
-func baselineConflict(message string) error { return &BaselineConflict{message} }
-
 // baselineJob is the live check's cancellation handle and identity; clearing it
 // is the worker's last act (the guard in baselineWorker).
 type baselineJob struct {
@@ -201,14 +193,14 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 		return nil, err
 	}
 	if fingerprint != expectedRevision {
-		return nil, baselineConflict("The saved configuration changed; reload settings and check the current values")
+		return nil, conflictError("The saved configuration changed; reload settings and check the current values")
 	}
 	reason, err := a.baselineRuntimeIneligibility()
 	if err != nil {
 		return nil, err
 	}
 	if reason != nil {
-		return nil, baselineConflict(*reason)
+		return nil, conflictError(*reason)
 	}
 	if err := live.ValidateBaseline(); err != nil {
 		return nil, err
@@ -249,10 +241,10 @@ func (a *App) CancelBaseline(id string) error {
 		return err
 	}
 	if check == nil {
-		return baselineConflict("Baseline check not found")
+		return conflictError("Baseline check not found")
 	}
 	if check.Status != model.BaselineStatusRunning {
-		return baselineConflict("The baseline check already finished")
+		return conflictError("The baseline check already finished")
 	}
 	a.runtimeMu.Lock()
 	var cancel context.CancelFunc
@@ -261,7 +253,7 @@ func (a *App) CancelBaseline(id string) error {
 	}
 	a.runtimeMu.Unlock()
 	if cancel == nil {
-		return baselineConflict("The baseline check is no longer running")
+		return conflictError("The baseline check is no longer running")
 	}
 	if err := a.Store.Put("baseline_cancel", id, model.Now()); err != nil {
 		return err
