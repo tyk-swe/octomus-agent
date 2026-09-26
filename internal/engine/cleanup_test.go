@@ -960,3 +960,111 @@ func TestHousekeepingContinuesPastAFailedRetention(t *testing.T) {
 		t.Fatalf("remote observation did not run after the retention failure: %+v, %v", control, err)
 	}
 }
+
+// housekeepingTimers reads when retention and observation last started.
+func housekeepingTimers(app *App) (retention, observe time.Time) {
+	app.runtimeMu.Lock()
+	defer app.runtimeMu.Unlock()
+	return app.runtime.lastRetention, app.runtime.lastObserve
+}
+
+// Retention (with the storage walk) runs every 15 minutes and the remote
+// observation every 5, each only when due: a pass started for one step leaves
+// the other step, and its timer, alone.
+func TestHousekeepingRunsOnlyTheDueSteps(t *testing.T) {
+	for _, due := range []string{"observation", "retention"} {
+		t.Run(due, func(t *testing.T) {
+			fixture := newPlanningFixture(t)
+			cycle := discardableCycle(t, fixture.dataDir)
+			if err := fixture.state.Put("cycle", cycle.ID, cycle); err != nil {
+				t.Fatal(err)
+			}
+			app := New(fixture.state, fixture.dataDir)
+			t.Cleanup(app.Shutdown)
+			// The step that is not due ran moments ago.
+			recent := time.Now().Add(-time.Minute)
+			app.runtimeMu.Lock()
+			if due == "observation" {
+				app.runtime.lastRetention = recent
+			} else {
+				app.runtime.lastObserve = recent
+			}
+			app.runtimeMu.Unlock()
+			started := time.Now()
+			if err := app.Tick(); err != nil {
+				t.Fatal(err)
+			}
+			waitHousekeeping(t, app)
+
+			retention, observe := housekeepingTimers(app)
+			saved, err := store.Get[model.Cycle](fixture.state, "cycle", cycle.ID)
+			if err != nil || saved == nil {
+				t.Fatalf("reload cycle: %+v, %v", saved, err)
+			}
+			_, measured, err := fixture.state.GetValue("settings", "storage")
+			if err != nil {
+				t.Fatal(err)
+			}
+			control, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			observed := control.ContextFingerprint != ""
+			retained := saved.Lifecycle.DiscardedAt != nil
+			if due == "observation" {
+				if !observed || retained || measured || !retention.Equal(recent) || observe.Before(started) {
+					t.Fatalf("observation-only pass: observed=%t retained=%t measured=%t retention=%v observe=%v", observed, retained, measured, retention, observe)
+				}
+			} else if observed || !retained || !measured || !observe.Equal(recent) || retention.Before(started) {
+				t.Fatalf("retention-only pass: observed=%t retained=%t measured=%t retention=%v observe=%v", observed, retained, measured, retention, observe)
+			}
+			if events := cleanupEvents(t, fixture.state, cycle.ID); len(events) != 0 {
+				t.Fatalf("housekeeping reported a cleanup failure: %+v", events)
+			}
+		})
+	}
+}
+
+// Only one housekeeping pass runs at a time: while a pass is still working,
+// a Tick for which both steps are due again starts nothing and leaves their
+// timers alone. The next Tick after the pass ends starts the next one.
+func TestHousekeepingRunsOneJobAtATime(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	cycle := discardableCycle(t, fixture.dataDir)
+	if err := fixture.state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	barrier := newRemovalBarrier(t, filepath.Join(fixture.dataDir, "cycles", cycle.ID))
+	app := New(fixture.state, fixture.dataDir, WithWorkspaceRemoval(barrier.remove))
+	// Shutdown waits for the held pass, so a failure before the release below
+	// must release it first rather than hang.
+	t.Cleanup(func() {
+		barrier.Release()
+		app.Shutdown()
+	})
+	// Retention and observation are both due on the first tick; retention then
+	// holds the pass inside the cycle's removal.
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	barrier.wait(t)
+	app.runtimeMu.Lock()
+	app.runtime.lastRetention, app.runtime.lastObserve = time.Time{}, time.Time{}
+	app.runtimeMu.Unlock()
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if retention, observe := housekeepingTimers(app); !retention.IsZero() || !observe.IsZero() {
+		t.Fatalf("a second housekeeping pass started while one was running: retention=%v observe=%v", retention, observe)
+	}
+
+	barrier.Release()
+	waitHousekeeping(t, app)
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if retention, observe := housekeepingTimers(app); retention.IsZero() || observe.IsZero() {
+		t.Fatalf("no housekeeping pass started after the previous one ended: retention=%v observe=%v", retention, observe)
+	}
+	waitHousekeeping(t, app)
+}
