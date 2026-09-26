@@ -304,7 +304,7 @@ func TestValidAuthenticationBypassesPendingFailureDelay(t *testing.T) {
 	}
 }
 
-// TestControlPauseResumeCycleThroughHTTP covers the control surface at the
+// TestControlActionsThroughHTTP covers the control surface at the
 // wire layer: pause and run-once batch work under the default paused control
 // while a malformed action and a content-type miss keep their statuses.
 func TestControlActionsThroughHTTP(t *testing.T) {

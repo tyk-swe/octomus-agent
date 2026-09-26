@@ -32,7 +32,8 @@ import (
 // stateDBName is the SQLite file inside the data directory.
 const stateDBName = "state.db"
 
-// printJSON writes two-space indented JSON with sorted object keys and a trailing newline.
+// printJSON writes two-space indented JSON with a trailing newline. Map keys
+// are sorted; struct fields keep their declaration order.
 func printJSON(stdout io.Writer, value any) error {
 	data, err := wirejson.Marshal(value)
 	if err != nil {

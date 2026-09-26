@@ -30,9 +30,9 @@ func assetHandler(override string) http.Handler {
 	return &embeddedAssets{files: dashboard.Files()}
 }
 
-// decodedPath percent-decodes paths and rejects traversal.
-// net/http already decodes r.URL.Path once. UTF-8, segment and character
-// checks reject unsafe decoded paths.
+// decodedPath validates r.URL.Path, which net/http has already decoded once:
+// it rejects invalid UTF-8, . and .. segments, backslashes and NUL, and strips
+// leading slashes. It decodes nothing itself.
 func decodedPath(urlPath string) (string, bool) {
 	if !utf8.ValidString(urlPath) {
 		return "", false
@@ -74,7 +74,7 @@ func hasExtension(name string) bool {
 	return i > 0
 }
 
-// serve writes one file with the expected response shape: GET gets the
+// serveFile writes one file with the expected response shape: GET gets the
 // bytes, HEAD only the headers, and both get content type and length.
 func serveFile(w http.ResponseWriter, r *http.Request, name string, contents []byte) {
 	w.Header().Set("Content-Type", contentType(name))
