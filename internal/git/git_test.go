@@ -15,6 +15,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // realGit runs the host git binary directly: fixture setup must not flow
@@ -36,28 +37,6 @@ func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func processGone(pid string) bool {
-	stat, err := os.ReadFile("/proc/" + pid + "/stat")
-	if err != nil {
-		return errors.Is(err, os.ErrNotExist)
-	}
-	fields := strings.Fields(string(stat))
-	return len(fields) > 2 && fields[2] == "Z"
-}
-
-func waitUntil(timeout time.Duration, ready func() bool) bool {
-	deadline := time.Now().Add(timeout)
-	for {
-		if ready() {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -84,7 +63,7 @@ func testConfig() config.Config {
 	return c
 }
 
-// fixtureRoot replicates tests/e2e.py setup(): fixture bin wrappers on PATH, a
+// fixtureRoot replicates tests/harness.py setup(): fixture bin wrappers on PATH, a
 // real checkout whose origin is the local bare remote, and OCTOMUS_FIXTURE.
 func fixtureRoot(t *testing.T) (config.Config, string) {
 	t.Helper()
@@ -1393,7 +1372,7 @@ func TestFixtureGhChildCleanup(t *testing.T) {
 		ChildPid int `json:"child_pid"`
 	}
 	// The file appears before its line lands, so wait for a decodable record.
-	if !waitUntil(5*time.Second, func() bool {
+	if !testutil.WaitUntil(5*time.Second, func() bool {
 		data, err := os.ReadFile(logPath)
 		if err != nil {
 			return false
@@ -1413,11 +1392,11 @@ func TestFixtureGhChildCleanup(t *testing.T) {
 		t.Fatal("the fixture peer call did not return after cancellation")
 	}
 	child := fmt.Sprint(entry.ChildPid)
-	if !waitUntil(5*time.Second, func() bool { return processGone(child) }) {
+	if !testutil.WaitUntil(5*time.Second, func() bool { return testutil.ProcessGone(child) }) {
 		t.Fatal("the fixture peer's descendant survived cancellation")
 	}
 	// The peer's leader was waited for: its proc entry is gone entirely.
-	if !waitUntil(5*time.Second, func() bool {
+	if !testutil.WaitUntil(5*time.Second, func() bool {
 		_, err := os.Stat("/proc/" + fmt.Sprint(entry.Pid))
 		return errors.Is(err, os.ErrNotExist)
 	}) {

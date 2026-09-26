@@ -19,6 +19,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -128,7 +129,7 @@ func (f *fixture) connectCodex(ctx context.Context) (*Codex, error) {
 func (f *fixture) codexInterrupt() map[string]any {
 	f.t.Helper()
 	log := f.path("codex-interrupts.jsonl")
-	if !waitUntil(5*time.Second, func() bool {
+	if !testutil.WaitUntil(5*time.Second, func() bool {
 		data, err := os.ReadFile(log)
 		return err == nil && strings.HasSuffix(string(data), "\n")
 	}) {
@@ -153,21 +154,8 @@ func published(path string) (string, bool) {
 	return value, err == nil && value != ""
 }
 
-func waitUntil(limit time.Duration, condition func() bool) bool {
-	deadline := time.Now().Add(limit)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return true
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return condition()
-}
-
-func alive(pid int) bool {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	return err == nil && !strings.Contains(string(stat), ") Z")
-}
+// alive reports whether pid still runs: neither reaped nor a zombie.
+func alive(pid int) bool { return !testutil.ProcessGone(strconv.Itoa(pid)) }
 
 func route() config.Route {
 	return config.Route{
@@ -409,7 +397,7 @@ func TestRunnersCloseOwnsClients(t *testing.T) {
 	if _, err := clients.Client(config.BackendOpencode, f.workspace); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if !waitUntil(5*time.Second, func() bool { return f.exists("opencode-pids.jsonl") }) {
+	if !testutil.WaitUntil(5*time.Second, func() bool { return f.exists("opencode-pids.jsonl") }) {
 		t.Fatal("the fixture never recorded its pid")
 	}
 	data, err := os.ReadFile(f.path("opencode-pids.jsonl"))
@@ -425,7 +413,7 @@ func TestRunnersCloseOwnsClients(t *testing.T) {
 	if err := clients.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	if !waitUntil(3*time.Second, func() bool { return !alive(record.Pid) }) {
+	if !testutil.WaitUntil(3*time.Second, func() bool { return !alive(record.Pid) }) {
 		t.Fatal("Close left the owned server alive")
 	}
 	if err := clients.Close(); err != nil {

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { login, openNavigation } from './synthetic';
@@ -33,6 +34,17 @@ test.beforeEach(async ({ page }) => {
     const { backend } = route.request().postDataJSON();
     await route.fulfill({ json: backend === 'codex' ? codexModels : opencodeModels });
   });
+});
+
+test('the dashboard names the build version the service reports', async ({ page }) => {
+  // The binary embeds the root VERSION file and the dashboard build injects the same file.
+  const { version } = (await (await page.request.get('/healthz')).json()) as { version: string };
+  expect(version).toBe(readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim());
+  await login(page);
+  await expect(page.locator('.content-footer')).toContainText(`· v${version}`);
+  await expect(page.locator('.disconnect .version')).toHaveText(
+    `v${version.split('.').slice(0, 2).join('.')}`
+  );
 });
 
 test('private dashboard, navigation, task evidence, configuration, and mobile layout', async ({
@@ -656,6 +668,7 @@ test('loaded older cycles and their actions survive background refresh', async (
 }, testInfo) => {
   let newest = 102;
   let archived = false;
+  let discarded = false;
   await page.route('**/api/cycles?*', async (route) => {
     const before = Number(new URL(route.request().url()).searchParams.get('before') ?? newest + 1);
     const cycles = Array.from({ length: newest }, (_, i) => ({
@@ -668,7 +681,16 @@ test('loaded older cycles and their actions survive background refresh', async (
       error: null,
       session_count: 0,
       decisions: {},
-      lifecycle: newest - i === 1 && archived ? { archived_at: '2026-09-10T00:00:00Z' } : {}
+      // Retention cleanup discarded history-2's workspaces without it being archived.
+      lifecycle:
+        newest - i === 1 && archived
+          ? {
+              archived_at: '2026-09-10T00:00:00Z',
+              ...(discarded ? { discarded_at: '2026-09-10T00:02:00Z' } : {})
+            }
+          : newest - i === 2
+            ? { discarded_at: '2026-09-10T00:03:00Z' }
+            : {}
     })).filter((cycle) => cycle.number < before);
     const items = cycles.slice(0, 100);
     await route.fulfill({
@@ -679,8 +701,12 @@ test('loaded older cycles and their actions survive background refresh', async (
       }
     });
   });
-  await page.route('**/api/cycles/history-1/archive', async (route) => {
-    archived = true;
+  const actions: string[] = [];
+  await page.route('**/api/cycles/history-1/*', async (route) => {
+    const action = new URL(route.request().url()).pathname.split('/').at(-1)!;
+    actions.push(action);
+    if (action === 'archive') archived = true;
+    if (action === 'discard') discarded = true;
     await route.fulfill({ json: { ok: true } });
   });
   await page.goto('/');
@@ -702,9 +728,36 @@ test('loaded older cycles and their actions survive background refresh', async (
   await expect(picker.locator('option')).toHaveCount(104);
   await expect(picker).toHaveValue('history-1');
   await expect(page.getByRole('button', { name: 'Load older cycles' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Archive cycle', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Discard cycle workspaces' })).toBeVisible();
+  const archive = page.getByRole('button', { name: 'Archive cycle', exact: true });
+  const discard = page.getByRole('button', { name: 'Discard cycle workspaces' });
+  await expect(discard).toHaveCount(0);
+  await expect(archive).toBeVisible();
+  // A cycle whose workspaces are already discarded has no lifecycle action left, even
+  // when retention cleanup discarded them without an archive.
+  await expect(picker.locator('option[value="history-2"]')).toHaveText(
+    'Execution cycle #002 · completed · workspaces discarded'
+  );
+  await picker.selectOption('history-2');
+  await expect(archive).toHaveCount(0);
+  await expect(discard).toHaveCount(0);
+  await picker.selectOption('history-1');
+  await archive.click();
+  await expect(discard).toBeVisible();
   await expect(picker).toHaveValue('history-1');
+  // Archiving again would only restart the cycle's retention clock, so it is not offered.
+  await expect(archive).toHaveCount(0);
+  await expect(picker.locator('option[value="history-1"]')).toHaveText(
+    'Execution cycle #001 · completed · archived'
+  );
+  await discard.click();
+  // Discarded workspaces leave no lifecycle action for this cycle.
+  await expect(picker.locator('option[value="history-1"]')).toHaveText(
+    'Execution cycle #001 · completed · workspaces discarded'
+  );
+  await expect(archive).toHaveCount(0);
+  await expect(discard).toHaveCount(0);
+  await expect(picker).toHaveValue('history-1');
+  expect(actions).toEqual(['archive', 'discard']);
 });
 
 test('a failed request for older cycles is reported and the control stays usable', async ({

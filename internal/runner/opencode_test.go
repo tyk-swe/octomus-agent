@@ -17,6 +17,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // The catalog allowlists provider output and checks capabilities, provider
@@ -278,7 +279,7 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	f.mode("opencode", "detached-hold")
 	turn := turnIn(client, session, route(), f.workspace, "Fixture prompt", nil)
 	var childPidText string
-	if !waitUntil(5*time.Second, func() bool {
+	if !testutil.WaitUntil(5*time.Second, func() bool {
 		var ok bool
 		childPidText, ok = published(f.path("opencode-child-pid"))
 		return ok
@@ -310,7 +311,7 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	if err := client.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	stopped := waitUntil(5*time.Second, func() bool { return !alive(childPid) && !alive(record.Pid) })
+	stopped := testutil.WaitUntil(5*time.Second, func() bool { return !alive(childPid) && !alive(record.Pid) })
 	if alive(childPid) {
 		// Clean up the fixture's own detached group even when this regression
 		// fails.

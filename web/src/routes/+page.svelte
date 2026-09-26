@@ -25,6 +25,9 @@
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
   import { DECISIONS, cycleLabel, decisionTone } from '$lib/evidence';
+  /** The running build's version; the sidebar shows its major.minor part. */
+  const version = __APP_VERSION__;
+  const shortVersion = version.split('.').slice(0, 2).join('.');
   let connected = $state(false),
     accessToken = $state(''),
     data = $state<Snapshot | null>(null),
@@ -163,6 +166,15 @@
   const prKey = (observed: PrObservation) =>
     `${observed.repository.toLowerCase()}#${observed.pr.number}`;
   let cycleRows = $state<CycleSummary[]>([]);
+  /**
+   * The picked cycle's loaded summary. Its lifecycle decides which workspace action is
+   * still open: archiving again would restart the retention clock, and a discarded
+   * cycle has nothing left to discard or to archive, including one that retention
+   * cleanup discarded without an archive.
+   */
+  let selectedCycle = $derived(
+    proposalCycle === 'all' ? undefined : cycleRows.find((c) => c.id === proposalCycle)
+  );
   let cycleCursor = $state<number | null>(null);
   let cyclesLoading = $state(false);
   let decisionCounts = $state<Record<string, number>>({});
@@ -190,7 +202,7 @@
   /** Status totals behind the queue filter tabs; 'active' and 'attention' are status groups. */
   let queueTabCounts = $derived.by(() => {
     const counts = data?.counts ?? {};
-    const sum = (keys: string[]) => keys.reduce((n, k) => n + (counts[k] ?? 0), 0);
+    const sum = (keys: readonly string[]) => keys.reduce((n, k) => n + (counts[k] ?? 0), 0);
     return {
       all: sum(Object.keys(counts)),
       active: sum(ACTIVE_STATUSES),
@@ -631,7 +643,8 @@
           <p>Useful changes.<br />A fresh review. Every time.</p>
         </div>
         <button class="disconnect" onclick={disconnect}
-          ><Icon name="logout" size={17} /><span>Disconnect</span><span class="version">v0.1</span
+          ><Icon name="logout" size={17} /><span>Disconnect</span><span class="version"
+            >v{shortVersion}</span
           ></button
         >
       </div>
@@ -813,11 +826,13 @@
                 disabled={cyclesLoading}
                 onclick={loadOlderCycles}>Load older cycles</button
               >{/if}
-            {#if proposalCycle !== 'all' && cycleRows.find((c) => c.id === proposalCycle)?.status !== 'running'}
-              <button class="button" disabled={busy} onclick={() => cycleAction('archive')}
-                >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
-              >
-              {#if cycleRows.find((c) => c.id === proposalCycle)?.lifecycle.archived_at}<button
+            {#if selectedCycle && selectedCycle.status !== 'running' && !selectedCycle.lifecycle.discarded_at}
+              {#if !selectedCycle.lifecycle.archived_at}<button
+                  class="button"
+                  disabled={busy}
+                  onclick={() => cycleAction('archive')}
+                  >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
+                >{:else if !selectedCycle.lifecycle.discarded_at}<button
                   class="button danger"
                   disabled={busy}
                   onclick={() => cycleAction('discard')}
@@ -833,7 +848,11 @@
               <select id="proposal-cycle" bind:value={proposalCycle}>
                 <option value="all">All cycles</option>
                 {#each cycleRows as cycle}<option value={cycle.id}
-                    >{cycleLabel(cycle)} · {cycle.status}</option
+                    >{cycleLabel(cycle)} · {cycle.status}{cycle.lifecycle.discarded_at
+                      ? ' · workspaces discarded'
+                      : cycle.lifecycle.archived_at
+                        ? ' · archived'
+                        : ''}</option
                   >{/each}
               </select>
             </div>
@@ -963,7 +982,7 @@
         {/if}
         <footer class="content-footer">
           <span><span class="footer-dot"></span> Thoughtful progress. No artificial churn.</span
-          ><span>Updated {lastUpdated || 'just now'} · v0.1.0</span>
+          ><span>Updated {lastUpdated || 'just now'} · v{version}</span>
         </footer>
       </main>
     </div>

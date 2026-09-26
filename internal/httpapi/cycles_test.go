@@ -99,11 +99,7 @@ func TestCycleDetailStaysReadableAfterArchivePersistsLifecycle(t *testing.T) {
 // the pre-fix gate-holding deadlock rather than measuring timing.
 func TestCycleDiscardOverHTTPLeavesControlsResponsive(t *testing.T) {
 	dir := t.TempDir()
-	state, err := store.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = state.Close() })
+	state := openStore(t, dir)
 	id := model.ID()
 	cycleDir := filepath.Join(dir, "cycles", id)
 	entered := make(chan struct{})

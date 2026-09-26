@@ -4,6 +4,7 @@
   import type {
     Backend,
     Config,
+    CycleMode,
     Model,
     ModelCatalog,
     Route,
@@ -16,7 +17,8 @@
   import BaselineCheck from './BaselineCheck.svelte';
   import { parseCommands, type Preflight, type SetupStatus } from './setup';
   import Icon from './Icon.svelte';
-  import { LIMITS } from './limits';
+  import { LIMITS, limitHelp } from './limits';
+  import { plural } from './evidence';
   let {
     active,
     editable,
@@ -71,6 +73,8 @@
   $effect(() => {
     if (dirty) message = '';
   });
+  // Offered in config.Categories() order. TestDashboardVocabulariesMatchConfig
+  // (internal/config) checks this list and ROLES and TIERS below.
   const categories = [
     'features',
     'correctness',
@@ -206,6 +210,8 @@
       error = (e as Error).message;
       // The service also answers 409 when it is no longer paused or when tasks must be
       // resolved first; a reload fixes neither. Only the stale-revision conflict asks for one.
+      // TestConfigConflictsAskForReloadOnlyWhenStale (internal/httpapi) holds the service's
+      // 409 texts to this pattern.
       conflict = e instanceof ApiError && e.status === 409 && /\breload\b/i.test(error);
     } finally {
       pending = '';
@@ -217,7 +223,8 @@
     return entry?.binary === config?.[`${backend}_binary`] ? entry : undefined;
   }
   async function catalog(backend: Backend) {
-    if (!config || !editable || busy || loading) return;
+    // A previewed executable is display text, not a path: it is never sent back.
+    if (!config || !editable || busy || loading || locked(`${backend}_binary`)) return;
     const binary = config[`${backend}_binary`];
     pending = `catalog-${backend}`;
     error = '';
@@ -226,7 +233,8 @@
     try {
       const models = await api<Model[]>('/model-catalog', 'POST', { backend, binary });
       catalogs[backend] = { binary, models, loaded: true };
-      message = `${models.filter((model) => model.available).length} ${backendLabel(backend)} models available. Routes are never silently substituted.`;
+      const available = models.filter((model) => model.available).length;
+      message = `${plural(available, `${backendLabel(backend)} model`)} available. Routes are never silently substituted.`;
     } catch (e) {
       error = (e as Error).message;
       catalogs[backend] = { binary, models: [], loaded: false, error };
@@ -234,7 +242,7 @@
       pending = '';
     }
   }
-  async function doctor(mode: 'execution' | 'audit') {
+  async function doctor(mode: CycleMode) {
     if (!config || dirty || busy || loading) return;
     pending = mode;
     error = '';
@@ -443,18 +451,28 @@
         <div class="catalog-actions">
           {#each BACKENDS as backend}
             {@const label = backendLabel(backend)}
+            {@const preview = locked(`${backend}_binary`)}
             <button
               id={`load-${backend}-models`}
               type="button"
               class="button small"
               onclick={() => catalog(backend)}
-              disabled={loading}
+              disabled={loading || preview}
+              aria-describedby={preview ? `catalog-preview-${backend}` : undefined}
               >{pending === `catalog-${backend}`
                 ? `Loading ${label} models…`
                 : `Load ${label} models`}</button
             >
           {/each}
         </div>
+        {#each BACKENDS as backend}
+          {#if locked(`${backend}_binary`)}<p
+              class="muted catalog-note"
+              id={`catalog-preview-${backend}`}
+            >
+              Replace the {backendLabel(backend)} executable preview to load its catalog.
+            </p>{/if}
+        {/each}
         {@render previewNote('roles', 'role routes', true)}
         {#each ordered(Object.keys(config.roles), ROLES) as role}
           <RouteEditor
@@ -543,7 +561,7 @@
                 step="1"
                 bind:value={config[limit.key]}
                 required
-              /><small>{limit.help}</small></label
+              /><small>{limitHelp(limit)}</small></label
             >{/each}
         </div>
       </section>
@@ -675,6 +693,10 @@
   }
   .catalog-actions button {
     scroll-margin-block: 100px;
+  }
+  .catalog-note {
+    margin: -8px 24px 16px;
+    font-size: 12px;
   }
   /* A narrow save bar moves the reload control below the message instead of squeezing it. */
   .settings-feedback > span {

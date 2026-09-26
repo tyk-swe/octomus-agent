@@ -3,6 +3,7 @@
  * These rules decide how saved records are named on every surface, so each case pins
  * one rule rather than one screen.
  */
+import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import {
   checksVerdict,
@@ -10,6 +11,7 @@ import {
   decisionCounts,
   outcomeVerdict,
   planningVerdict,
+  plural,
   prVerdict,
   reviewerAgreement,
   reviewerSlot,
@@ -18,6 +20,7 @@ import {
   revisionMatchLabel,
   roundRevisionLabel,
   taskIcon,
+  TONES,
   UNKNOWN_VERDICT,
   verdictBadge
 } from '../src/lib/evidence';
@@ -335,9 +338,22 @@ test('a command explanation names the revisions it compared, recorded or not', (
   );
 });
 
+test('a count takes the singular noun for exactly one, and irregular plurals are spelled', () => {
+  expect(plural(0, 'finding')).toBe('0 findings');
+  expect(plural(1, 'finding')).toBe('1 finding');
+  expect(plural(2, 'recorded round')).toBe('2 recorded rounds');
+  expect(plural(1, 'retry', 'retries')).toBe('1 retry');
+  expect(plural(0, 'retry', 'retries')).toBe('0 retries');
+  expect(plural(3, 'retry', 'retries')).toBe('3 retries');
+});
+
 test('review rounds and revisions are judged separately, and a missing output commit is named', () => {
   const round = (result: { completed: boolean; summary: string; findings: unknown[] }) =>
     reviewRoundBadge({ result });
+  expect(round({ completed: true, summary: 'Done.', findings: [{}] })).toEqual({
+    label: '1 finding',
+    tone: 'blocked'
+  });
   expect(round({ completed: true, summary: 'Done.', findings: [{}, {}] })).toEqual({
     label: '2 findings',
     tone: 'blocked'
@@ -379,4 +395,23 @@ test('a recorded PR reference is delivery, and its absence is named', () => {
       })
     )
   ).toMatchObject({ label: 'Recorded PR · number unavailable', tone: 'clean' });
+});
+
+/** A stylesheet's own text followed by every file it imports, in cascade order. */
+function wholeSheet(entry: URL): string {
+  const text = readFileSync(entry, 'utf8');
+  const imports = [...text.matchAll(/@import\s+'([^']+)'/g)];
+  return [text, ...imports.map(([, target]) => wholeSheet(new URL(target, entry)))].join('\n');
+}
+
+test('the dashboard stylesheet styles every badge tone and the evidence text classes', () => {
+  // A tone without a rule falls back to the neutral badge, so adverse evidence such as
+  // "no verdict recorded" would look like any other fact.
+  const css = wholeSheet(new URL('../src/app.css', import.meta.url));
+  const selector = (name: string) => new RegExp(`${name.replaceAll('.', '\\.')}(?![\\w-])`);
+  for (const tone of TONES)
+    expect(css, `app.css is missing .badge.${tone}`).toMatch(selector(`.badge.${tone}`));
+  // EvidenceText.svelte renders these without styles of its own.
+  for (const shared of ['.muted', '.expandable', '.preview'])
+    expect(css, `app.css is missing ${shared}`).toMatch(selector(shared));
 });

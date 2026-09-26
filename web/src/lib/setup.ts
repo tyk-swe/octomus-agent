@@ -1,12 +1,14 @@
 import { relative } from './api';
-import { baselineStatusLabel } from './evidence';
+import { baselineStatusLabel, plural } from './evidence';
 import type {
   Backend,
   BaselineSummary,
   Config,
+  CycleMode,
   CycleSummary,
   ModelCatalog,
   NotificationHealth,
+  OperatingMode,
   Route
 } from './types';
 
@@ -23,7 +25,7 @@ import type {
 export type SetupTone = 'missing' | 'draft' | 'saved' | 'checked' | 'failed' | 'ran';
 export type SetupStep = { tone: SetupTone; label: string; detail: string };
 export type Preflight = {
-  mode: 'execution' | 'audit';
+  mode: CycleMode;
   ok: boolean;
   detail: string;
   /** Canonical configuration revision the server checked; any other revision is stale. */
@@ -34,13 +36,13 @@ export type SetupStatus = {
   configured: boolean;
   audit_configured: boolean;
   paused: boolean;
-  mode: 'paused' | 'run_once' | 'continuous';
+  mode: OperatingMode;
   active_tasks: number;
   cycle_active: boolean;
   baseline_active: boolean;
   baseline: BaselineSummary | null;
   notifications: NotificationHealth;
-  active_cycle_mode: 'execution' | 'audit' | null;
+  active_cycle_mode: CycleMode | null;
   queued: number;
   latest: CycleSummary | null;
 };
@@ -48,7 +50,6 @@ export type SetupStatus = {
 const REPOSITORY_FIELDS = ['repository', 'github_repo', 'default_branch', 'branch_prefix'] as const;
 const filled = (value: unknown) => typeof value === 'string' && value.trim() !== '';
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 
 export function repositoryStep(draft: Config, saved: Config | null): SetupStep {
   const pick = (config: Config) => REPOSITORY_FIELDS.map((field) => config[field]);

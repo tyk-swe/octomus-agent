@@ -14,7 +14,7 @@ import tempfile
 import urllib.error
 import urllib.request
 
-from e2e import poll
+from harness import poll
 
 PROJECT = Path(__file__).resolve().parents[1]
 TOKEN = 'distribution-fixture-token-at-least-32-characters'

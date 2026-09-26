@@ -18,6 +18,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // The app-server can emit notifications before a request response; the
@@ -160,7 +161,7 @@ func TestCodexCancellationStopsTurn(t *testing.T) {
 	}
 	f.mode("codex", "hold")
 	turn := turnIn(client, session, codexRoute(), f.workspace, "Fixture prompt", nil)
-	if !waitUntil(5*time.Second, func() bool { return f.exists("codex-entered") }) {
+	if !testutil.WaitUntil(5*time.Second, func() bool { return f.exists("codex-entered") }) {
 		t.Fatal("the fixture never entered the codex turn")
 	}
 	cancel()

@@ -1057,6 +1057,14 @@ test('operating limits refuse values above the service maxima before saving', as
       valid: input.validity.valid,
       overflow: input.validity.rangeOverflow
     }));
+  // Each help text ends with the range its input enforces; an unbounded limit names none.
+  for (const help of [
+    'Owned open PRs allowed before new-PR work waits · 1–1,000',
+    'Block new sessions when storage reaches this limit · 1,000,000–1,000,000,000,000,000',
+    'Total limit for execution, review and delivery, at least the session timeout · 10–604,800',
+    'Changed lines that trigger maintenance focus · 0 marks every owned open PR'
+  ])
+    await expect(page.getByText(help, { exact: true })).toBeVisible();
   // Upper bounds internal/config enforces on save.
   const maxima: [RegExp, number][] = [
     [/^Cycle interval/, 604800],
@@ -1216,6 +1224,41 @@ test('locked previews look as non-editable as disabled fields until they are rep
   await page.locator('#replace-repair_route').click();
   await expect(runner).toBeEnabled();
   await expect(runner).toHaveCSS('background-color', white);
+});
+
+test('a previewed runner executable is never sent for a model catalog until it is replaced', async ({
+  page,
+  isMobile
+}) => {
+  // The saved path is served redacted; posting the preview would run a path that
+  // does not exist, so its catalog waits until the operator enters a real one.
+  const state = await configurationFixture(page, {
+    transformed: {
+      overrides: { codex_binary: '/opt/ta[redacted]/bin/codex' },
+      fields: [{ field: 'codex_binary', kinds: ['redacted'], paths: [['codex_binary']] }]
+    }
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const executable = page.getByRole('textbox', { name: /^Codex executable/ });
+  const load = page.getByRole('button', { name: 'Load Codex models' });
+  await expect(executable).toHaveValue('/opt/ta[redacted]/bin/codex');
+  await expect(load).toBeDisabled();
+  await expect(load).toHaveAccessibleDescription(
+    'Replace the Codex executable preview to load its catalog.'
+  );
+  // The other runner's saved path is not a preview, so its catalog stays available.
+  await expect(page.getByRole('button', { name: 'Load OpenCode models' })).toBeEnabled();
+  await load.click({ force: true });
+  expect(state.catalogs).toEqual([]);
+
+  await page.locator('#replace-codex_binary').click();
+  await expect(executable).toHaveValue('');
+  await expect(page.locator('#catalog-preview-codex')).toHaveCount(0);
+  await executable.fill('/draft/codex');
+  await load.click();
+  await expect(page.getByText('1 Codex model available.')).toBeVisible();
+  expect(state.catalogs).toEqual([{ backend: 'codex', binary: '/draft/codex' }]);
 });
 
 test('setup checklist distinguishes entered, saved, checked, stale and failed states without starting work', async ({
