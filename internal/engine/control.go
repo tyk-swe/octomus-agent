@@ -56,7 +56,7 @@ func (a *App) Resume() error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	a.runtimeMu.Lock()
-	busyAudit := a.runtime.cycle != nil && a.runtime.cycle.mode == model.CycleModeAudit || a.runtime.preflight && a.runtime.preflightMode == model.CycleModeAudit
+	busyAudit := a.runtime.auditActive()
 	busyBaseline := a.runtime.baseline != nil
 	a.runtimeMu.Unlock()
 	if busyAudit {
@@ -182,8 +182,7 @@ func (a *App) StartAudit(ctx context.Context) (string, error) {
 		return "", err
 	}
 	a.runtimeMu.Lock()
-	a.runtime.preflight = true
-	a.runtime.preflightMode = model.CycleModeAudit
+	a.runtime.startPreflight(model.CycleModeAudit)
 	a.runtimeMu.Unlock()
 	a.wg.Add(1)
 	a.gate.Unlock()
@@ -230,10 +229,11 @@ func (a *App) doctor(ctx context.Context, cfg config.Config, audit bool) error {
 	return nil
 }
 
+// endPreflight clears a preflight that will not start its cycle and wakes the
+// scheduler.
 func (a *App) endPreflight() {
 	a.runtimeMu.Lock()
-	a.runtime.preflight = false
-	a.runtime.preflightMode = model.CycleModeExecution
+	a.runtime.preflight = nil
 	a.runtimeMu.Unlock()
 	a.notify()
 }
@@ -319,8 +319,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 	}
 	cycleCtx, cancel := context.WithCancel(a.ctx)
 	a.runtimeMu.Lock()
-	a.runtime.preflight = false
-	a.runtime.preflightMode = model.CycleModeExecution
+	a.runtime.preflight = nil
 	a.runtime.cycle = &cycleJob{id: id, mode: mode, cancel: cancel}
 	a.runtimeMu.Unlock()
 	a.wg.Add(1)

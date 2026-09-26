@@ -136,7 +136,7 @@ func (a *App) baselineRuntimeIneligibility() (*string, error) {
 	a.runtimeMu.Lock()
 	baseline := a.runtime.baseline != nil
 	tasks := len(a.runtime.tasks)
-	planning := a.runtime.cycle != nil || a.runtime.preflight
+	planning := a.runtime.planning()
 	reconciling := a.runtime.reconcilingPublication
 	a.runtimeMu.Unlock()
 	text := func(s string) *string { return &s }

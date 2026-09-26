@@ -77,11 +77,11 @@ type taskJob struct {
 type runtimeState struct {
 	// cycle is the running planning cycle (execution or audit) and its cancel.
 	cycle *cycleJob
-	// preflight marks a planning launch whose remote and route checks are in
-	// flight before a cycle exists; preflightMode says which kind of cycle it
-	// will start. beginCycle clears it when it assigns cycle.
-	preflight     bool
-	preflightMode model.CycleMode
+	// preflight is the kind of cycle a planning launch will start while its
+	// remote and route checks are in flight, before the cycle exists, and nil
+	// when no launch is. startPreflight sets it; endPreflight, and beginCycle
+	// when it assigns cycle, clear it.
+	preflight *model.CycleMode
 	// tasks holds every in-flight owner of a task's work, keyed by task ID:
 	// scheduler workers (runTask) and the publication reconcile owner
 	// (reconcileLocked). An entry reserves its branch for dispatch, and its
@@ -123,9 +123,24 @@ type runtimeState struct {
 	cleanupReports map[cleanupKey]cleanupReport
 }
 
+// The runtimeState predicates and setters below require App.runtimeMu.
+
+// idle reports that no planning, task or baseline work is in flight.
 func (r *runtimeState) idle() bool {
-	return r.cycle == nil && !r.preflight && len(r.tasks) == 0 && r.baseline == nil
+	return !r.planning() && len(r.tasks) == 0 && r.baseline == nil
 }
+
+// planning reports a running cycle or a planning preflight in flight.
+func (r *runtimeState) planning() bool { return r.cycle != nil || r.preflight != nil }
+
+// auditActive reports a running audit or an audit preflight in flight.
+func (r *runtimeState) auditActive() bool {
+	return r.cycle != nil && r.cycle.mode == model.CycleModeAudit ||
+		r.preflight != nil && *r.preflight == model.CycleModeAudit
+}
+
+// startPreflight marks a planning launch of mode as in flight.
+func (r *runtimeState) startPreflight(mode model.CycleMode) { r.preflight = &mode }
 
 // App is the engine: the scheduler, planning and task execution, and the
 // operator controls, over one durable store and managed data directory.
@@ -303,7 +318,7 @@ func (a *App) Drained() bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	r := &a.runtime
-	return len(r.tasks) == 0 && r.cycle == nil && !r.preflight && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
+	return len(r.tasks) == 0 && !r.planning() && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
 }
 
 func (a *App) fail(err error) {

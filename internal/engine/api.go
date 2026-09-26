@@ -59,8 +59,7 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	a.runtimeMu.Lock()
 	baselineActive := a.runtime.baseline != nil
 	idle := a.runtime.idle()
-	auditActive := a.runtime.cycle != nil && a.runtime.cycle.mode == model.CycleModeAudit ||
-		a.runtime.preflight && a.runtime.preflightMode == model.CycleModeAudit
+	auditActive := a.runtime.auditActive()
 	a.runtimeMu.Unlock()
 	if ((action == "audit" || action == "cycle") && (!control.Paused || !idle)) ||
 		((action == "resume" || action == "cycle") && auditActive) ||
@@ -496,8 +495,8 @@ func (a *App) StateView() (map[string]any, error) {
 	if a.runtime.cycle != nil {
 		mode := a.runtime.cycle.mode
 		cycleMode = &mode
-	} else if a.runtime.preflight {
-		mode := a.runtime.preflightMode
+	} else if a.runtime.preflight != nil {
+		mode := *a.runtime.preflight
 		cycleMode = &mode
 	}
 	activeTasks := len(a.runtime.tasks)

@@ -74,7 +74,7 @@ func (a *App) Tick() error {
 		return err
 	}
 	a.runtimeMu.Lock()
-	planning := a.runtime.cycle != nil || a.runtime.preflight
+	planning := a.runtime.planning()
 	a.runtimeMu.Unlock()
 	if planning {
 		return nil
@@ -188,8 +188,7 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 		return a.handlePlanningCapacity(control, capacity)
 	}
 	a.runtimeMu.Lock()
-	a.runtime.preflight = true
-	a.runtime.preflightMode = model.CycleModeExecution
+	a.runtime.startPreflight(model.CycleModeExecution)
 	a.runtimeMu.Unlock()
 	snapshot := cfg.Clone()
 	expected := control.Clone()

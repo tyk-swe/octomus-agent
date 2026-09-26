@@ -84,8 +84,7 @@ func TestResumePreservesAuditAndBaselineConflicts(t *testing.T) {
 				case "audit":
 					app.runtime.cycle = &cycleJob{id: "audit", mode: model.CycleModeAudit, cancel: func() {}}
 				case "audit preflight":
-					app.runtime.preflight = true
-					app.runtime.preflightMode = model.CycleModeAudit
+					app.runtime.startPreflight(model.CycleModeAudit)
 				case "baseline":
 					app.runtime.baseline = &baselineJob{id: "baseline", cancel: func() {}}
 				}
@@ -171,8 +170,7 @@ func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
 			app, control := controlFixture(t, test.scenario)
 			if test.scenario == "audit preflight" {
 				app.runtimeMu.Lock()
-				app.runtime.preflight = true
-				app.runtime.preflightMode = model.CycleModeAudit
+				app.runtime.startPreflight(model.CycleModeAudit)
 				app.runtimeMu.Unlock()
 			}
 			_, auditErr := app.StartAudit(context.Background())
@@ -456,8 +454,7 @@ func TestStateViewRetainsRuntimeAuditActivity(t *testing.T) {
 			app, _ := controlFixture(t, "idle")
 			app.runtimeMu.Lock()
 			if check.preflight {
-				app.runtime.preflight = true
-				app.runtime.preflightMode = model.CycleModeAudit
+				app.runtime.startPreflight(model.CycleModeAudit)
 			} else {
 				app.runtime.cycle = &cycleJob{id: "audit", mode: model.CycleModeAudit}
 			}
@@ -512,8 +509,7 @@ func TestStateViewStatusPrecedence(t *testing.T) {
 			case "task":
 				app.runtime.tasks["synthetic-task"] = taskJob{branch: "octomus/x", cancel: func() {}}
 			case "audit preflight":
-				app.runtime.preflight = true
-				app.runtime.preflightMode = model.CycleModeAudit
+				app.runtime.startPreflight(model.CycleModeAudit)
 			}
 			app.runtimeMu.Unlock()
 			if check.storedCycle {
