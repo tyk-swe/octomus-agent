@@ -1323,3 +1323,79 @@ func TestHousekeepingRunsOneJobAtATime(t *testing.T) {
 	}
 	waitHousekeeping(t, app)
 }
+
+// Housekeeping's storage pass reports each runner transcript directory as
+// measured, unavailable (missing or not a directory) or unconfigured, and the
+// total as measured only when every runner was, partial when some were, and
+// unavailable when none was: an empty directory is measured, not missing.
+func TestRunnerStorageDistinguishesUnavailableFromEmpty(t *testing.T) {
+	state := testStore(t)
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	cfg := testConfig(t.TempDir())
+	empty := t.TempDir()
+	populated := t.TempDir()
+	file := filepath.Join(populated, "transcript")
+	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing-mount")
+	type measurement struct {
+		Bytes   *uint64                `json:"bytes"`
+		Status  string                 `json:"status"`
+		Runners map[string]measurement `json:"runners"`
+	}
+	type usage struct {
+		RunnerTranscripts measurement `json:"runner_transcripts"`
+		TaskBytes         uint64      `json:"task_bytes"`
+		PlanningBytes     uint64      `json:"planning_bytes"`
+	}
+	// The dashboard reads the saved summary under exactly these keys.
+	const message = `"message":"Runner storage reported separately. Application admission measures the data directory."`
+	for _, test := range []struct {
+		name       string
+		paths      map[string]string
+		codexState string
+		state      string
+		bytes      uint64
+		saved      string
+	}{
+		{name: "unconfigured", paths: map[string]string{}, codexState: "unconfigured", state: "unavailable",
+			saved: `"runner_transcripts":{"bytes":null,` + message + `,"runners":{"codex":{"bytes":null,"status":"unconfigured"},"opencode":{"bytes":null,"status":"unconfigured"}},"status":"unavailable"}`},
+		{name: "missing directory", paths: map[string]string{"codex": missing}, codexState: "unavailable", state: "unavailable"},
+		{name: "not a directory", paths: map[string]string{"codex": file}, codexState: "unavailable", state: "unavailable"},
+		{name: "empty directory", paths: map[string]string{"codex": empty}, codexState: "measured", state: "partial",
+			saved: `"runner_transcripts":{"bytes":0,` + message + `,"runners":{"codex":{"bytes":0,"status":"measured"},"opencode":{"bytes":null,"status":"unconfigured"}},"status":"partial"}`},
+		{name: "one missing runner", paths: map[string]string{"codex": missing, "opencode": populated}, codexState: "unavailable", state: "partial", bytes: 5,
+			saved: `"runner_transcripts":{"bytes":5,` + message + `,"runners":{"codex":{"bytes":null,"status":"unavailable"},"opencode":{"bytes":5,"status":"measured"}},"status":"partial"}`},
+		{name: "both measured", paths: map[string]string{"codex": populated, "opencode": empty}, codexState: "measured", state: "measured", bytes: 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg.RunnerStoragePaths = test.paths
+			if err := app.measureStorage(cfg); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := store.Get[usage](state, "settings", "storage")
+			if err != nil || saved == nil {
+				t.Fatalf("storage measurement: %+v, %v", saved, err)
+			}
+			runners := saved.RunnerTranscripts
+			codex := runners.Runners["codex"]
+			if codex.Status != test.codexState || (codex.Bytes != nil) != (test.codexState == "measured") {
+				t.Fatalf("runner measurement = %+v; want %s", codex, test.codexState)
+			}
+			if runners.Status != test.state || (runners.Bytes != nil) != (test.state != "unavailable") || runners.Bytes != nil && *runners.Bytes != test.bytes {
+				t.Fatalf("aggregate measurement = %+v; want %s, %d bytes", runners, test.state, test.bytes)
+			}
+			if saved.TaskBytes != 0 || saved.PlanningBytes != 0 {
+				t.Fatalf("absent application workspaces should measure zero: %+v", saved)
+			}
+			if test.saved != "" {
+				raw, found, err := state.GetRaw("settings", "storage")
+				if err != nil || !found || !strings.Contains(string(raw), test.saved) {
+					t.Fatalf("saved storage = %s, %t, %v; want %s", raw, found, err, test.saved)
+				}
+			}
+		})
+	}
+}

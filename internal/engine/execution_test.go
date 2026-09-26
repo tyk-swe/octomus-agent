@@ -121,13 +121,7 @@ func TestExecutionDeliversFullLifecycle(t *testing.T) {
 	fixture.cfg = cfg
 	task := executionTask(t, fixture, cfg.DefaultBranch)
 	saveExecutionTask(t, fixture, task)
-	app := New(fixture.state, fixture.dataDir)
-	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
-	if err := app.Resume(); err != nil {
-		t.Fatal(err)
-	}
+	app := newExecutionApp(t, fixture)
 	saved := driveTask(t, fixture, app, task.ID)
 	if saved.Status != model.StatusPublished {
 		t.Fatalf("task did not publish: %+v", saved)
@@ -183,14 +177,7 @@ func TestExecutionDeliversFullLifecycle(t *testing.T) {
 	if remote != *saved.OutputCommit {
 		t.Fatalf("remote branch = %s, want output %s", remote, *saved.OutputCommit)
 	}
-	data, err := os.ReadFile(filepath.Join(fixture.root, "prs.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var prs []map[string]any
-	if err := json.Unmarshal(data, &prs); err != nil {
-		t.Fatal(err)
-	}
+	prs := prsJSON(t, fixture)
 	if len(prs) != 1 {
 		t.Fatalf("expected exactly one PR, got %d", len(prs))
 	}
@@ -242,8 +229,9 @@ func verificationFixture(t *testing.T, commands []string) (*App, model.Task, str
 	return app, task, revision
 }
 
-// F1: a verification command that mutates tracked state is recorded as failed
-// evidence and stops the remaining commands.
+// F1: a verification command that changes a tracked file or moves HEAD is the
+// run's single recorded failure, naming the command and the mutation; later
+// commands, including one that would restore the file, never run.
 func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 	for _, commands := range [][]string{
 		{"printf 1 > impl.txt", "test \"$(cat impl.txt)\" = 1", "git checkout -- impl.txt"},
@@ -260,6 +248,9 @@ func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 		}
 		if len(saved.Verification) != 1 || saved.Verification[0].Success {
 			t.Fatalf("commands %v: verification = %+v, want one failed record", commands, saved.Verification)
+		}
+		if record := saved.Verification[0]; record.Command != commands[0] || !strings.Contains(record.Output, "changed during this verification command") {
+			t.Fatalf("commands %v: record = %+v; want the mutating command with mutation evidence", commands, record)
 		}
 	}
 }
@@ -481,18 +472,6 @@ func TestVerificationArtifactMustBeGitIgnored(t *testing.T) {
 	}
 }
 
-func waitForFile(t *testing.T, path string, label string) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("%s did not appear", label)
-}
-
 // writeFixtureMode arms a deterministic fixture-peer mode file.
 func writeFixtureMode(t *testing.T, fixture *planningFixture, name string) {
 	t.Helper()
@@ -656,6 +635,28 @@ func checkpointedTask(t *testing.T, fixture *planningFixture, target string) mod
 	return task
 }
 
+// seedFixturePR records a checkpointed task's delivery on the fixture remote:
+// its output commit pushed to the task branch and PR 1 for that branch, marked
+// with the task, in the given state.
+func seedFixturePR(t *testing.T, fixture *planningFixture, task model.Task, state string) {
+	t.Helper()
+	command(t, task.Workspace, "/usr/bin/git", "push", filepath.Join(fixture.root, "remote.git"), *task.OutputCommit+":refs/heads/"+task.Branch)
+	pr := []map[string]any{{
+		"number": 1, "title": "x", "body": "<!-- octomus:task:" + task.ID + " -->",
+		"head":     map[string]any{"ref": task.Branch, "sha": "", "repo": map[string]any{"full_name": "fixture/project"}},
+		"base":     map[string]any{"ref": "main"},
+		"html_url": "https://github.com/fixture/project/pull/1", "state": state,
+		"merged_at": nil, "additions": 1, "deletions": 0, "created_at": "2026-09-07T00:00:00Z",
+	}}
+	data, err := json.Marshal(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestExecutionRestartReconcilesPublicationCheckpoint: a durable publishing
 // checkpoint plus an intact workspace is requeued and delivered without
 // duplicating remote writes — covering both the lost-acknowledgement and the
@@ -696,21 +697,7 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 		task.Status = model.StatusPublishing
 		// The remote already has the pushed branch and the created PR; only the
 		// client's acknowledgement was lost.
-		command(t, task.Workspace, "/usr/bin/git", "push", filepath.Join(fixture.root, "remote.git"), *task.OutputCommit+":refs/heads/"+task.Branch)
-		pr := []map[string]any{{
-			"number": 1, "title": "x", "body": "<!-- octomus:task:" + task.ID + " -->",
-			"head":     map[string]any{"ref": task.Branch, "sha": "", "repo": map[string]any{"full_name": "fixture/project"}},
-			"base":     map[string]any{"ref": "main"},
-			"html_url": "https://github.com/fixture/project/pull/1", "state": "open",
-			"merged_at": nil, "additions": 1, "deletions": 0, "created_at": "2026-09-07T00:00:00Z",
-		}}
-		data, err := json.Marshal(pr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		seedFixturePR(t, fixture, task, "open")
 		saveExecutionTask(t, fixture, task)
 		app := New(fixture.state, fixture.dataDir)
 		t.Cleanup(app.Shutdown)
@@ -732,23 +719,9 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 		fixture := newExecutionFixture(t)
 		task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
 		task.Status = model.StatusPublishing
-		command(t, task.Workspace, "/usr/bin/git", "push", filepath.Join(fixture.root, "remote.git"), *task.OutputCommit+":refs/heads/"+task.Branch)
 		// The delivered PR was closed before the checkpoint reconciled: the
 		// closed match is explicit reconcile evidence, not a new write.
-		pr := []map[string]any{{
-			"number": 1, "title": "x", "body": "<!-- octomus:task:" + task.ID + " -->",
-			"head":     map[string]any{"ref": task.Branch, "sha": "", "repo": map[string]any{"full_name": "fixture/project"}},
-			"base":     map[string]any{"ref": "main"},
-			"html_url": "https://github.com/fixture/project/pull/1", "state": "closed",
-			"merged_at": nil, "additions": 1, "deletions": 0, "created_at": "2026-09-07T00:00:00Z",
-		}}
-		data, err := json.Marshal(pr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		seedFixturePR(t, fixture, task, "closed")
 		saveExecutionTask(t, fixture, task)
 		app := New(fixture.state, fixture.dataDir)
 		t.Cleanup(app.Shutdown)
@@ -1173,8 +1146,8 @@ func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
 
 // TestExecutionDeliversFullLifecycleViaOpenCode runs the same
 // executor → fresh reviews → persistent repair → verification → publication
-// lifecycle through the OpenCode HTTP/SSE fixture peer
-// requires the lifecycle on both runners.
+// lifecycle through the OpenCode HTTP/SSE fixture peer, so both runners are
+// held to the whole lifecycle.
 func TestExecutionDeliversFullLifecycleViaOpenCode(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	opencode := filepath.Join(fixture.root, "opencode")
