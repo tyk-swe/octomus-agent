@@ -708,6 +708,12 @@ func Value(cycle model.Cycle, tasks []model.Task) (map[string]any, error) {
 // Snapshot reads
 // ---------------------------------------------------------------------------
 
+// cycleTasksQuery selects every task naming one cycle, in task id order,
+// through the record_meta projection (cycle_id is the task's saved cycle_id).
+// Without INDEXED BY the planner prefers walking every saved task in id order
+// to satisfy ORDER BY, and RunEvidence runs this read under the store mutex.
+const cycleTasksQuery = "SELECT r.data FROM record_meta m INDEXED BY meta_cycle JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY r.id"
+
 // ReadSnapshot reads the selected cycle and every task naming it from one
 // caller-owned transaction, so the cycle and its task evidence always describe
 // the same database state. This never consults the dashboard's recent task window.
@@ -724,7 +730,7 @@ func ReadSnapshot(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, erro
 	if err := json.Unmarshal([]byte(saved), &cycle); err != nil {
 		return nil, nil, err
 	}
-	rows, err := c.QueryContext(store.Background(), "SELECT data FROM records WHERE kind='task' AND json_extract(data,'$.cycle_id')=?1 ORDER BY id", cycleID)
+	rows, err := c.QueryContext(store.Background(), cycleTasksQuery, cycleID)
 	if err != nil {
 		return nil, nil, err
 	}
