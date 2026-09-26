@@ -15,7 +15,8 @@ test('decision counts list only decisions that occurred, in a fixed order', () =
   ]);
   expect(decisionCounts({ accepted: 0, rejected: 0, deferred: 0, candidate: 0 })).toEqual([]);
   expect(decisionCounts({})).toEqual([]);
-  // Known decisions keep their order; unknown words follow, sorted, and are never dropped.
+  // Known decisions keep their order; unknown words that occurred follow, sorted. Being
+  // unknown never drops a word; only a 0 count does.
   expect(
     decisionCounts({ zeta: 1, candidate: 2, deferred: 1, unknown: 0, rejected: 4, alpha: 5 })
   ).toEqual([
