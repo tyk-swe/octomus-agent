@@ -17,6 +17,9 @@ func (v *Route) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(
 func (v Route) MarshalJSON() ([]byte, error)     { type plain Route; return wirejson.Record(plain(v)) }
 func (v Route) Clone() Route                     { return wirejson.Clone(v) }
 
+// Config is the saved operator policy. Its JSON field names are the operator
+// contract; validateMode enforces every field's accepted range and units, and
+// docs/configuration.md describes each field.
 type Config struct {
 	Repository             string            `json:"repository"`
 	GitHubRepo             string            `json:"github_repo"`

@@ -132,6 +132,7 @@ func (a *App) controlConflict(action string, control model.Control) error {
 // than rewriting the recorded lifecycle time. Any other action name is
 // ErrUnknownCycleAction before any state is read. A running cycle or an
 // in-flight cleanup conflicts.
+//
 // Discard removes the managed directory with the gate released; the call is
 // registered service work from admission so Shutdown waits out an in-flight
 // removal instead of abandoning it mid-delete.
