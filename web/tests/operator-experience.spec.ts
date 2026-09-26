@@ -1407,6 +1407,38 @@ for (const list of [
   });
 }
 
+for (const rejection of [
+  {
+    title: "a plain-text 422 rejection is shown in the service's words",
+    status: 422,
+    contentType: 'text/plain; charset=utf-8',
+    body: '  Failed to deserialize the query into the target type\n',
+    shown: 'Could not load tasks. Failed to deserialize the query into the target type'
+  },
+  {
+    title: 'an HTML 502 page is reported by its status only',
+    status: 502,
+    contentType: 'text/html',
+    body: '<html><body>Synthetic proxy page</body></html>',
+    shown: 'Could not load tasks. Service returned 502'
+  }
+]) {
+  test(rejection.title, async ({ page, isMobile }) => {
+    await page.route('**/api/tasks?*', (route) =>
+      route.fulfill({
+        status: rejection.status,
+        contentType: rejection.contentType,
+        body: rejection.body
+      })
+    );
+    await login(page);
+    await openNavigation(page, 'Task queue', !!isMobile);
+    const alert = page.getByRole('alert');
+    await expect(alert.locator('span')).toHaveText(rejection.shown);
+    await expect(alert).not.toContainText('Synthetic proxy page');
+  });
+}
+
 test('empty PR outcomes keep delivery history stationary during refresh and retry', async ({
   page,
   isMobile
