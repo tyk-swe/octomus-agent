@@ -115,10 +115,10 @@ func TestShutdownWaitsForPublicationReconciliation(t *testing.T) {
 	}
 }
 
-// heldPreflightFixture uses a blocked
-// durable task whose remote preflights hold behind a controlled upload-pack.
-// The app is created but not resumed — controls run against durable state
-// through the same action path as the HTTP router.
+// heldPreflightFixture saves a blocked durable task whose remote preflights
+// hold behind a controlled upload-pack. The app is created but not resumed:
+// controls run against durable state through the same action path as the
+// HTTP router.
 func heldPreflightFixture(t *testing.T) (*planningFixture, *App, model.Task) {
 	t.Helper()
 	fixture := newExecutionFixture(t)

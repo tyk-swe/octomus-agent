@@ -9,8 +9,10 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// TestVerificationCommandThatMutatesTheWorktreeIsFailedEvidenceAndStopsTheRun
-// single recorded failure names the mutating command and the mutation.
+// TestVerificationCommandThatMutatesTheWorktreeIsFailedEvidenceAndStopsTheRun:
+// a command that changes a tracked file is the run's single recorded failure,
+// naming the command and the mutation; later commands, including one that
+// would restore the file, never run.
 func TestVerificationCommandThatMutatesTheWorktreeIsFailedEvidenceAndStopsTheRun(t *testing.T) {
 	app, task, revision := verificationFixture(t, []string{
 		"printf 1 > impl.txt",
