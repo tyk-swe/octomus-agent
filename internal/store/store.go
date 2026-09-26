@@ -418,7 +418,13 @@ func List[T any](s *Store, kind string) ([]T, error) {
 func (s *Store) Event(entity, kind, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.conn.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, Redact(message))
+	return txEvent(s.conn, entity, kind, message)
+}
+
+// txEvent appends a redacted event on a caller-owned connection or
+// transaction, so every event path applies the same redaction.
+func txEvent(c *sql.Conn, entity, kind, message string) error {
+	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, Redact(message))
 	return err
 }
 
@@ -426,7 +432,13 @@ func (s *Store) Event(entity, kind, message string) error {
 func (s *Store) Events(entity *string) ([]model.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.conn.QueryContext(background, "SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1) ORDER BY id DESC LIMIT 200", entity)
+	return queryEvents(s.conn, "SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1) ORDER BY id DESC LIMIT 200", entity)
+}
+
+// queryEvents scans id, at, entity_id, kind and message rows. The result is
+// never nil, so an empty list still serializes as [].
+func queryEvents(c *sql.Conn, query string, args ...any) ([]model.Event, error) {
+	rows, err := c.QueryContext(background, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -502,15 +514,22 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 func (s *Store) SessionsToday() (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var sessions int64
-	err := s.conn.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", model.Today()).Scan(&sessions)
-	if err == sql.ErrNoRows {
-		return 0, nil
-	}
+	sessions, err := sessionsOn(s.conn, model.Today())
 	if err != nil {
 		return 0, err
 	}
 	return uint64(sessions), nil
+}
+
+// sessionsOn reads the admission counter for one UTC day; a day without a
+// usage row has admitted nothing.
+func sessionsOn(c *sql.Conn, day string) (int64, error) {
+	var sessions int64
+	err := c.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", day).Scan(&sessions)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return sessions, err
 }
 
 // PlanningCapacity reports whether today's remaining budget funds a planning cycle.
@@ -534,12 +553,7 @@ func planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCapacity, erro
 	if err != nil {
 		return model.PlanningCapacity{}, err
 	}
-	var used int64
-	err = c.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", day).Scan(&used)
-	if err == sql.ErrNoRows {
-		used = 0
-		err = nil
-	}
+	used, err := sessionsOn(c, day)
 	if err != nil {
 		return model.PlanningCapacity{}, err
 	}

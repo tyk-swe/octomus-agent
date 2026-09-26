@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -207,7 +208,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now()); err != nil {
 			return err
 		}
-		if _, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,'status',?3)", model.Now(), next.ID, "Executing"); err != nil {
+		if err := txEvent(c, next.ID, "status", "Executing"); err != nil {
 			return err
 		}
 		admitted = true
@@ -266,7 +267,7 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 			return err
 		}
 		for _, reservation := range reservations {
-			if contains(released, reservation.TaskID) {
+			if slices.Contains(released, reservation.TaskID) {
 				var task model.Task
 				found, err := txGet(c, "task", reservation.TaskID, &task)
 				if err != nil {
@@ -319,15 +320,6 @@ func sameJSON(a, b any) bool {
 // short and free of Go's parse-layout diagnostics.
 func chronoParseError(err error) string {
 	return "input contains invalid characters"
-}
-
-func contains(values []string, value string) bool {
-	for _, v := range values {
-		if v == value {
-			return true
-		}
-	}
-	return false
 }
 
 func decodeTasks(raw [][]byte) ([]model.Task, error) {

@@ -627,24 +627,10 @@ func (s *Store) Dashboard() (Dashboard, error) {
 			return err
 		}
 		result.PRs = prs.Items
-		events, err := c.QueryContext(background, "SELECT id,at,entity_id,kind,substr(message,1,512) FROM events ORDER BY id DESC LIMIT 200")
-		if err != nil {
+		if result.Events, err = queryEvents(c, "SELECT id,at,entity_id,kind,substr(message,1,512) FROM events ORDER BY id DESC LIMIT 200"); err != nil {
 			return err
 		}
-		result.Events = []model.Event{}
-		for events.Next() {
-			var e model.Event
-			if err := events.Scan(&e.ID, &e.At, &e.EntityID, &e.Kind, &e.Message); err != nil {
-				events.Close()
-				return err
-			}
-			result.Events = append(result.Events, e)
-		}
-		if err := events.Close(); err != nil {
-			return err
-		}
-		err = c.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", model.Today()).Scan(&result.SessionsToday)
-		if err != nil && err != sql.ErrNoRows {
+		if result.SessionsToday, err = sessionsOn(c, model.Today()); err != nil {
 			return err
 		}
 		if err := c.QueryRowContext(background, "SELECT COALESCE(sum(count),0) FROM record_counts WHERE kind='pr' AND status='merged'").Scan(&result.MergedPRs); err != nil {
