@@ -35,8 +35,8 @@ func VersionWarning(backend config.Backend, installed, expected string) string {
 }
 
 // Diagnostics is the document every backend reports to the doctor; the
-// dashboard and CLI read one shape. Fields stay in key order, so the doctor's
-// JSON lists them alphabetically.
+// dashboard and CLI read one shape. The fields are declared in the
+// alphabetical key order the doctor's JSON has always had.
 type Diagnostics struct {
 	Backend         config.Backend `json:"backend"`
 	ProtocolVersion string         `json:"protocol_version"`
