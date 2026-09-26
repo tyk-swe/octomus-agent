@@ -419,7 +419,7 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 					Number uint64 `json:"number"`
 				} `json:"pr"`
 			}
-			if json.Unmarshal(raw, &summary) != nil || !sameRepository(summary.Repository, cfg.GitHubRepo) {
+			if json.Unmarshal(raw, &summary) != nil || !config.EqualASCII(summary.Repository, cfg.GitHubRepo) {
 				continue
 			}
 			if _, present := open[summary.PR.Number]; !present {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -92,7 +91,7 @@ func (a *App) PrCapacity() (model.PrCapacity, error) {
 	if err != nil {
 		return model.PrCapacity{}, err
 	}
-	if stored != nil && !sameRepository(stored.Repository, cfg.GitHubRepo) {
+	if stored != nil && !config.EqualASCII(stored.Repository, cfg.GitHubRepo) {
 		stored = nil
 	}
 	var ownedOpen *uint64
@@ -358,8 +357,8 @@ func (a *App) releasableReservations(ctx context.Context, cfg config.Config, inv
 			continue
 		}
 		settled := (detail.State == "closed" || detail.State == "merged") &&
-			sameRepository(detail.HeadRepository, cfg.GitHubRepo) &&
-			sameRepository(detail.BaseRepository, cfg.GitHubRepo) && detail.Branch == reservation.Branch
+			config.EqualASCII(detail.HeadRepository, cfg.GitHubRepo) &&
+			config.EqualASCII(detail.BaseRepository, cfg.GitHubRepo) && detail.Branch == reservation.Branch
 		if !settled {
 			continue
 		}
@@ -373,8 +372,4 @@ func (a *App) releasableReservations(ctx context.Context, cfg config.Config, inv
 		}
 	}
 	return released, nil
-}
-
-func sameRepository(a, b string) bool {
-	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }

@@ -662,7 +662,7 @@ func ResolveTarget(cfg config.Config, prs []model.PullRequest, target string) (*
 	var found *model.PullRequest
 	for i := range prs {
 		pr := &prs[i]
-		if pr.Branch == target && pr.OwnedOpen() && pr.Base == cfg.DefaultBranch && sameRepository(pr.BaseRepository, cfg.GitHubRepo) {
+		if pr.Branch == target && pr.OwnedOpen() && pr.Base == cfg.DefaultBranch && config.EqualASCII(pr.BaseRepository, cfg.GitHubRepo) {
 			if found != nil {
 				return nil, errors.New("Target matches more than one owned open PR")
 			}
