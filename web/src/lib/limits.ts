@@ -8,10 +8,13 @@ type NumericConfigKey = {
 /**
  * The numeric operating limits the configuration form exposes, with the range
  * each one accepts. The bounds mirror what the service accepts (internal/config),
- * and it checks them again on save, together with one cross-field rule: the task
- * timeout must be at least the session timeout. A limit without a maximum has none
- * in the service either. The bounds here let the form say what it will accept
- * before asking.
+ * which checks every bounded limit again on save, together with one cross-field
+ * rule: the task timeout must be at least the session timeout. A limit without a
+ * maximum has none in the service either. The PR maintenance thresholds
+ * (large_pr_lines, long_lived_pr_days) have no range in the service at all: any
+ * count is accepted and 0 marks every owned open PR, so their minimum of 0 only
+ * says a count is never negative. The bounds here let the form say what it will
+ * accept before asking.
  */
 export const LIMITS: {
   key: NumericConfigKey;
