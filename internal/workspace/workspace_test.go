@@ -12,7 +12,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
-// TestRemoveOwnedDir ports the housekeeping cleanup contract: only plainly
+// TestRemoveOwnedDir pins the housekeeping cleanup contract: only plainly
 // named direct children of the owned root may be deleted, and no component —
 // including the target itself — may be a symlink.
 func TestRemoveOwnedDir(t *testing.T) {
@@ -93,6 +93,56 @@ func TestRemoveOwnedDir(t *testing.T) {
 	}
 }
 
+// TestRemoveOwnedDirRemovesReadOnlyTrees pins that toolchain output such as a
+// Go module cache inside a workspace — directories without write, read or
+// search permission — never makes housekeeping fail on every pass. Root ignores
+// those modes, so the test needs an unprivileged user.
+func TestRemoveOwnedDirRemovesReadOnlyTrees(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	root := filepath.Join(t.TempDir(), "tasks")
+	tree := filepath.Join(root, "task-1")
+	for _, dir := range []string{filepath.Join(tree, "mod", "pkg"), filepath.Join(tree, "locked", "inner")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tree, "mod", "pkg", "f.go"), []byte("package pkg\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "locked", "inner", "f.go"), []byte("package inner\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	// Children before parents, so every mode can be applied.
+	modes := []struct {
+		path string
+		mode fs.FileMode
+	}{
+		{filepath.Join(tree, "mod", "pkg"), 0o555},
+		{filepath.Join(tree, "mod"), 0o555},
+		{filepath.Join(tree, "locked", "inner"), 0o555},
+		{filepath.Join(tree, "locked"), 0o000},
+		{tree, 0o555},
+	}
+	for _, m := range modes {
+		if err := os.Chmod(m.path, m.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for i := len(modes) - 1; i >= 0; i-- {
+			_ = os.Chmod(modes[i].path, 0o755)
+		}
+	})
+	if err := workspace.RemoveOwnedDir(root, tree); err != nil {
+		t.Fatalf("read-only owned tree cleanup = %v; want removal", err)
+	}
+	if _, err := os.Lstat(tree); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("read-only owned tree still present: %v", err)
+	}
+}
+
 func TestRemoveOwnedDirRejectsNoncanonicalPaths(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -119,7 +169,7 @@ func TestRemoveOwnedDirRejectsNoncanonicalPaths(t *testing.T) {
 	}
 }
 
-// TestDirectorySize ports housekeeping's accounting: regular file sizes sum,
+// TestDirectorySize pins housekeeping's accounting: regular file sizes sum,
 // symlinks contribute nothing, and a missing tree measures as zero.
 func TestDirectorySize(t *testing.T) {
 	root := t.TempDir()
@@ -154,7 +204,7 @@ func TestDirectorySize(t *testing.T) {
 	}
 }
 
-// TestInitialized ports the resumable-workspace predicate: a recorded session,
+// TestInitialized pins the resumable-workspace predicate: a recorded session,
 // a comparison base and a real checkout must all be present.
 func TestInitialized(t *testing.T) {
 	root := t.TempDir()

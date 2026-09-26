@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"golang.org/x/sys/unix"
 )
 
 // TokenEnv is the operator-token variable removed from every child environment;
@@ -29,8 +30,9 @@ import (
 const TokenEnv = "OCTOMUS_TOKEN"
 
 // Command builds an owned command: a new process group (pgid = child pid), the
-// service's secret environment removed, Git prompting disabled, and stdin on the
-// null device. Callers override Stdin/Stdout/Stderr before Start as needed.
+// service's secret environment and Git's repository-locating variables
+// removed, Git prompting disabled, and stdin on the null device. Callers
+// override Stdin/Stdout/Stderr before Start as needed.
 func Command(binary string, cwd string) *exec.Cmd {
 	cmd := exec.Command(binary)
 	cmd.Dir = cwd
@@ -41,6 +43,15 @@ func Command(binary string, cwd string) *exec.Cmd {
 		switch key {
 		case TokenEnv, store.WebhookEnv, "GIT_TERMINAL_PROMPT":
 			continue
+		// Repository-locating Git variables (as exported into Git hooks) would
+		// redirect every child git away from cmd.Dir; Git itself clears them
+		// before entering another repository. The GIT_CONFIG* channels are the
+		// operator's deliberate configuration and pass through.
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_COMMON_DIR",
+			"GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+			"GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_NO_REPLACE_OBJECTS",
+			"GIT_REPLACE_REF_BASE":
+			continue
 		}
 		env = append(env, entry)
 	}
@@ -49,9 +60,9 @@ func Command(binary string, cwd string) *exec.Cmd {
 }
 
 // GroupChild owns a started process and its recorded process group. Close kills
-// the group first and then the leader; the stored group id stays meaningful even
-// after Wait reaps the leader, so cleanup also terminates background descendants
-// after normal completion.
+// the group first and then the leader, so background descendants die even after
+// the leader completed normally. The group id stays reserved only while some
+// member is alive: once the whole group has exited, the kernel may reuse it.
 type GroupChild struct {
 	Cmd  *exec.Cmd
 	pgid int
@@ -106,9 +117,9 @@ func (c Captured) Preview() string {
 	return text
 }
 
-// Status is the end state of a direct child, matching std::process::ExitStatus:
-// an exit code when the leader exited normally, or the terminating signal when
-// it was killed. Code reports false for signal termination, never a placeholder.
+// Status is the end state of a direct child: an exit code when the leader
+// exited normally, or the terminating signal when it was killed. Code reports
+// false for signal termination, never a placeholder.
 type Status struct {
 	state *os.ProcessState
 }
@@ -125,72 +136,11 @@ func (s Status) Code() (int, bool) {
 	return code, code >= 0
 }
 
-// signalString returns a searchable Linux signal name in
-// parentheses for known signals, nothing for unrecognized ones.
+// signalString returns the searchable signal name in parentheses for known
+// signals, nothing for unrecognized ones.
 func signalString(signal int) string {
-	switch syscall.Signal(signal) {
-	case syscall.SIGHUP:
-		return " (SIGHUP)"
-	case syscall.SIGINT:
-		return " (SIGINT)"
-	case syscall.SIGQUIT:
-		return " (SIGQUIT)"
-	case syscall.SIGILL:
-		return " (SIGILL)"
-	case syscall.SIGTRAP:
-		return " (SIGTRAP)"
-	case syscall.SIGABRT:
-		return " (SIGABRT)"
-	case syscall.SIGBUS:
-		return " (SIGBUS)"
-	case syscall.SIGFPE:
-		return " (SIGFPE)"
-	case syscall.SIGKILL:
-		return " (SIGKILL)"
-	case syscall.SIGUSR1:
-		return " (SIGUSR1)"
-	case syscall.SIGSEGV:
-		return " (SIGSEGV)"
-	case syscall.SIGUSR2:
-		return " (SIGUSR2)"
-	case syscall.SIGPIPE:
-		return " (SIGPIPE)"
-	case syscall.SIGALRM:
-		return " (SIGALRM)"
-	case syscall.SIGTERM:
-		return " (SIGTERM)"
-	case syscall.SIGSTKFLT:
-		return " (SIGSTKFLT)"
-	case syscall.SIGCHLD:
-		return " (SIGCHLD)"
-	case syscall.SIGCONT:
-		return " (SIGCONT)"
-	case syscall.SIGSTOP:
-		return " (SIGSTOP)"
-	case syscall.SIGTSTP:
-		return " (SIGTSTP)"
-	case syscall.SIGTTIN:
-		return " (SIGTTIN)"
-	case syscall.SIGTTOU:
-		return " (SIGTTOU)"
-	case syscall.SIGURG:
-		return " (SIGURG)"
-	case syscall.SIGXCPU:
-		return " (SIGXCPU)"
-	case syscall.SIGXFSZ:
-		return " (SIGXFSZ)"
-	case syscall.SIGVTALRM:
-		return " (SIGVTALRM)"
-	case syscall.SIGPROF:
-		return " (SIGPROF)"
-	case syscall.SIGWINCH:
-		return " (SIGWINCH)"
-	case syscall.SIGIO:
-		return " (SIGIO)"
-	case syscall.SIGPWR:
-		return " (SIGPWR)"
-	case syscall.SIGSYS:
-		return " (SIGSYS)"
+	if name := unix.SignalName(syscall.Signal(signal)); name != "" {
+		return " (" + name + ")"
 	}
 	return ""
 }
@@ -285,9 +235,15 @@ type readResult struct {
 // the read ends both finish promptly, so readers always join within it.
 const cleanupGrace = 30 * time.Second
 
+// terminateGrace bounds how long a signalled leader may run its own cleanup
+// before its group is killed.
+const terminateGrace = 2 * time.Second
+
 // Capture runs binary to completion, deadline expiry, or cancellation. The
 // leader is always reaped; owned descendants are killed when it finishes, on
 // timeout, or on cancellation, so an inheriting child cannot hold the pipes.
+// On timeout or cancellation a still-running leader's group is sent SIGTERM
+// first; the group is killed once the leader exits or terminateGrace elapses.
 func Capture(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (*ProcessOutput, error) {
 	if ctx.Err() != nil {
 		return nil, ErrCancelled
@@ -352,6 +308,28 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 	// are buffered, the deferred closes are idempotent, and the goroutines
 	// unwind on their own and orphaned processes are reaped.
 	terminate := func() {
+		// A still-running leader's group first gets SIGTERM so Git and similar
+		// tools can remove their lock files; whatever remains is killed after
+		// terminateGrace. A reaped leader's group gets no SIGTERM: Close already
+		// killed it, and its id may since have been reused.
+		if !haveWait {
+			_ = syscall.Kill(-child.pgid, syscall.SIGTERM)
+			grace := time.NewTimer(terminateGrace)
+		term:
+			for !haveWait {
+				select {
+				case <-waitCh:
+					haveWait = true
+				case <-outCh:
+					haveOut = true
+				case <-errCh:
+					haveErr = true
+				case <-grace.C:
+					break term
+				}
+			}
+			grace.Stop()
+		}
 		child.Close()
 		deadline := time.NewTimer(cleanupGrace)
 		defer deadline.Stop()
@@ -408,12 +386,81 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 	}, nil
 }
 
+const (
+	// failureTextLimit bounds a failure message, in characters. The store cuts
+	// recorded messages at 16,384 characters, and callers usually wrap a
+	// failure in context first ("Open pull request inventory failed: ", a
+	// blocked reason), so the message leaves room for that context: recording
+	// a wrapped failure then never cuts the stderr tail that states the cause.
+	failureTextLimit = 16384 - 1024
+	// stderrShare is the part of an over-long failure message stderr may always
+	// claim, however much stdout there was: stderr usually carries the cause
+	// (an HTTP error, a "fatal:" line) while stdout carries bulk output.
+	stderrShare = 4096
+	// elisionReserve is room for elideMiddle's marker at any omitted count a
+	// capture can produce.
+	elisionReserve = 48
+)
+
 func ensureSuccess(binary string, output *ProcessOutput) error {
-	if !output.Status.Success() {
-		return fmt.Errorf("%s exited with %s: %s", binary, output.Status,
-			store.Redact(output.Stdout.Preview()+"\n"+output.Stderr.Preview()))
+	if output.Status.Success() {
+		return nil
 	}
-	return nil
+	return errors.New(failureText(binary, output))
+}
+
+// failureText renders a failed command for operators: its exit status, then
+// scrubbed stdout and stderr. Output that fits failureTextLimit is kept
+// whole, as `<stdout>\n<stderr>`. Longer output keeps both ends of each stream
+// around an explicit omission marker, in `<stdout>\n[stderr]\n<stderr>` form
+// (no section when stderr is empty); stderr may always use up to stderrShare
+// of the bound however long stdout is. Secrets are scrubbed from complete text
+// before anything is cut here, so a cut never exposes part of a secret.
+func failureText(binary string, output *ProcessOutput) string {
+	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
+	budget := failureTextLimit - utf8.RuneCountInString(prefix)
+	stdout, stderr := output.Stdout.Preview(), output.Stderr.Preview()
+	if joined := store.RedactSecrets(stdout + "\n" + stderr); utf8.RuneCountInString(joined) <= budget {
+		return prefix + joined
+	}
+	stdout, stderr = store.RedactSecrets(stdout), store.RedactSecrets(stderr)
+	if stderr == "" {
+		return prefix + elideMiddle(stdout, budget)
+	}
+	const separator = "\n[stderr]\n"
+	budget -= utf8.RuneCountInString(separator)
+	stderrRunes := utf8.RuneCountInString(stderr)
+	stderr = elideMiddle(stderr, min(stderrRunes, max(stderrShare, budget-utf8.RuneCountInString(stdout))))
+	stdout = elideMiddle(stdout, budget-utf8.RuneCountInString(stderr))
+	return prefix + stdout + separator + stderr
+}
+
+// elideMiddle shortens text to at most limit characters, keeping its beginning
+// and end around a marker that states how many characters were omitted. limit
+// must leave room for the marker (elisionReserve).
+func elideMiddle(text string, limit int) string {
+	total := utf8.RuneCountInString(text)
+	if total <= limit {
+		return text
+	}
+	keep := max(limit-elisionReserve, 0)
+	head := keep / 2
+	tail := keep - head
+	return text[:runeOffset(text, head)] +
+		fmt.Sprintf("\n[... %d characters omitted ...]\n", total-keep) +
+		text[runeOffset(text, total-tail):]
+}
+
+// runeOffset returns the byte offset at which the nth character of s starts,
+// or len(s) when s has no more than n characters.
+func runeOffset(s string, n int) int {
+	for i := range s {
+		if n == 0 {
+			return i
+		}
+		n--
+	}
+	return len(s)
 }
 
 // DiagnosticText renders human-readable evidence: bounded stdout, with bounded
@@ -472,9 +519,10 @@ func ShellCheck(ctx context.Context, command string, cwd string, seconds uint64)
 // RunPredicate executes a command whose exit status is itself the answer.
 // Success means true, falseCodes are the documented "predicate is false"
 // statuses, and every other failure — spawn, timeout, signal, an unexpected
-// code — still fails closed rather than reading as a false predicate.
+// code — still fails closed rather than reading as a false predicate. Output
+// is kept only as diagnostic evidence for such a failure.
 func RunPredicate(ctx context.Context, binary string, args []string, cwd string, seconds uint64, falseCodes []int) (bool, error) {
-	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureMachine)
+	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureDiagnostic)
 	if err != nil {
 		return false, err
 	}
@@ -484,19 +532,18 @@ func RunPredicate(ctx context.Context, binary string, args []string, cwd string,
 	if code, ok := output.Status.Code(); ok && slices.Contains(falseCodes, code) {
 		return false, nil
 	}
-	if err := ensureSuccess(binary, output); err != nil {
-		return false, err
-	}
-	return false, nil
+	return false, ensureSuccess(binary, output)
 }
 
 // deadlineGrace is the bounded window for a cancelled future to unwind before
 // the caller reports expiry.
 const deadlineGrace = 8 * time.Second
 
-// Deadline reports how fn finished relative to the limit: Done carries fn's
-// output, Expired reports whether ctx was already cancelled before the expiry
-// cancellation fired.
+// Deadline reports how fn finished relative to the limit. Output carries fn's
+// result when it returned within the limit. Expired reports that the limit
+// elapsed first (Output is then the zero value). AlreadyCancelled reports that
+// ctx was already cancelled when the limit elapsed, separating an operator
+// cancellation from a genuine deadline.
 type Deadline[T any] struct {
 	Output           T
 	Expired          bool

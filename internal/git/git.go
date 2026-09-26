@@ -26,39 +26,16 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// reasonContext displays its message before the typed reason and inner cause.
-// Rendering joins the chain with ": ".
-type reasonContext struct {
-	msg    string
-	reason model.BlockedReason
-	err    error
-	inner  bool // whether reason sits between msg and err rather than being err
-}
-
-func (e *reasonContext) Error() string {
-	if e.inner {
-		return e.msg + ": " + e.reason.Error() + ": " + e.err.Error()
-	}
-	return e.msg + ": " + e.err.Error()
-}
-
-func (e *reasonContext) Unwrap() []error {
-	if e.inner {
-		return []error{e.reason, e.err}
-	}
-	return []error{e.err}
-}
-
-// blocked attaches a typed reason as the innermost cause while keeping the
-// detailed message outermost, so model.BlockedReasonFromError picks the reason.
+// blocked attaches a typed reason beneath a detailed message ("message:
+// reason"), so model.BlockedReasonFromError picks the reason.
 func blocked(reason model.BlockedReason, message string) error {
-	return &reasonContext{msg: message, err: reason}
+	return fmt.Errorf("%s: %w", message, reason)
 }
 
-// reasoned mirrors err.context(reason).context(message): the reason is a chain
-// node above the original error.
+// reasoned places a typed reason between a detailed message and its cause
+// ("message: reason: cause"); both the reason and the cause stay in the chain.
 func reasoned(reason model.BlockedReason, message string, err error) error {
-	return &reasonContext{msg: message, reason: reason, err: err, inner: true}
+	return fmt.Errorf("%s: %w: %w", message, reason, err)
 }
 
 // Git runs one git invocation as a machine capture; output is trimmed.
@@ -121,14 +98,9 @@ func field(p map[string]any, keys ...string) any {
 	return v
 }
 
-// jstr accepts only JSON strings.
-func jstr(v any) (string, bool) {
-	s, ok := v.(string)
-	return s, ok
-}
-
+// text returns the JSON string at keys, or "" for a miss or any other type.
 func text(p map[string]any, keys ...string) string {
-	s, _ := jstr(field(p, keys...))
+	s, _ := field(p, keys...).(string)
 	return s
 }
 
@@ -146,9 +118,17 @@ func jnum(v any) (uint64, bool) {
 // configured GitHub repository over SSH or credential-free HTTPS, and gh to be
 // authenticated against github.com.
 func ValidateRemote(ctx context.Context, c config.Config) error {
+	_, err := validatedOrigin(ctx, c)
+	return err
+}
+
+// validatedOrigin performs ValidateRemote's checks and returns the exact origin
+// URL they accepted, so publication pushes to the URL that was validated
+// rather than one read again afterwards.
+func validatedOrigin(ctx context.Context, c config.Config) (string, error) {
 	remote, err := originURL(ctx, c, c.Repository)
 	if err != nil {
-		return err
+		return "", err
 	}
 	repo, ok := strings.CutPrefix(remote, "git@github.com:")
 	if !ok {
@@ -158,16 +138,18 @@ func ValidateRemote(ctx context.Context, c config.Config) error {
 		repo, ok = strings.CutPrefix(remote, "ssh://git@github.com/")
 	}
 	if !ok {
-		return errors.New("Origin must use github.com via SSH or credential-free HTTPS")
+		return "", errors.New("Origin must use github.com via SSH or credential-free HTTPS")
 	}
 	for strings.HasSuffix(repo, ".git") {
 		repo = strings.TrimSuffix(repo, ".git")
 	}
 	if !config.EqualASCII(repo, c.GitHubRepo) {
-		return errors.New("Origin does not match configured GitHub repository")
+		return "", errors.New("Origin does not match configured GitHub repository")
 	}
-	_, err = gh(ctx, c, []string{"auth", "status", "--hostname", "github.com"})
-	return err
+	if _, err := gh(ctx, c, []string{"auth", "status", "--hostname", "github.com"}); err != nil {
+		return "", err
+	}
+	return remote, nil
 }
 
 // Fetch refreshes the configured checkout's view of origin.
@@ -177,18 +159,24 @@ func Fetch(ctx context.Context, c config.Config) error {
 }
 
 // RemoteRevision returns origin's head for branch, or nil when it is absent.
+// Only the exact ref counts: ls-remote patterns also match the tail of longer
+// ref names, so `refs/heads/a/refs/heads/main` answers a query for `main` too.
 func RemoteRevision(ctx context.Context, c config.Config, branch string) (*string, error) {
 	if !config.ValidBranch(branch) {
 		return nil, errors.New("Invalid branch")
 	}
+	want := "refs/heads/" + branch
 	out, err := Git(ctx, c, c.Repository, []string{
-		"ls-remote", "--heads", "origin", "refs/heads/" + branch,
+		"ls-remote", "--heads", "origin", want,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if fields := strings.Fields(out); len(fields) > 0 {
-		return &fields[0], nil
+	// Each line is `<oid>\t<ref>`.
+	for _, line := range strings.Split(out, "\n") {
+		if sha, ref, ok := strings.Cut(line, "\t"); ok && ref == want {
+			return &sha, nil
+		}
 	}
 	return nil, nil
 }
@@ -312,7 +300,7 @@ func ParseInventory(out string, c config.Config) (model.OpenPrInventory, error) 
 	err := ghPages(out, func(page []map[string]any) error {
 		pages++
 		for _, p := range page {
-			if state, _ := jstr(field(p, "state")); state != "open" && state != "closed" {
+			if state, _ := field(p, "state").(string); state != "open" && state != "closed" {
 				return errors.New("Open PR entry has an unrecognized state")
 			}
 			pr, err := parsePR(p, c)
@@ -417,11 +405,21 @@ func prComments(ctx context.Context, c config.Config, number uint64) ([]string, 
 	return bodies, err
 }
 
-// taskMarker reports whether the task's publication marker is attached to the
+// taskMarkerPrefix opens every task's publication marker: ownership needs any
+// task's marker, delivery identity the exact one from taskMarkerFor.
+const taskMarkerPrefix = "<!-- octomus:task:"
+
+// taskMarkerFor returns the exact publication marker for one task; delivery
+// identity, ownership and idempotency all depend on these bytes.
+func taskMarkerFor(taskID string) string {
+	return taskMarkerPrefix + taskID + " -->"
+}
+
+// TaskMarker reports whether the task's publication marker is attached to the
 // pull request: in the description when this task originated the request, or
 // in an append-only comment when it delivered a follow-up.
-func taskMarker(ctx context.Context, c config.Config, taskID string, p model.PullRequest) (bool, error) {
-	marker := "<!-- octomus:task:" + taskID + " -->"
+func TaskMarker(ctx context.Context, c config.Config, taskID string, p model.PullRequest) (bool, error) {
+	marker := taskMarkerFor(taskID)
 	if strings.Contains(p.Body, marker) {
 		return true, nil
 	}
@@ -437,12 +435,6 @@ func taskMarker(ctx context.Context, c config.Config, taskID string, p model.Pul
 	return false, nil
 }
 
-// TaskMarker reports whether a task's durable publication marker is present in
-// a pull request description or comment.
-func TaskMarker(ctx context.Context, c config.Config, taskID string, p model.PullRequest) (bool, error) {
-	return taskMarker(ctx, c, taskID, p)
-}
-
 func parsePR(p map[string]any, c config.Config) (model.PullRequest, error) {
 	number, ok := jnum(field(p, "number"))
 	if !ok {
@@ -456,12 +448,12 @@ func parsePR(p map[string]any, c config.Config) (model.PullRequest, error) {
 	}
 	additions, _ := jnum(field(p, "additions"))
 	deletions, _ := jnum(field(p, "deletions"))
-	headRepo, headRepoOk := jstr(field(p, "head", "repo", "full_name"))
-	baseRepo, baseRepoOk := jstr(field(p, "base", "repo", "full_name"))
+	headRepo, headRepoOk := field(p, "head", "repo", "full_name").(string)
+	baseRepo, baseRepoOk := field(p, "base", "repo", "full_name").(string)
 	owned := strings.HasPrefix(branch, c.BranchPrefix) &&
 		headRepoOk && config.EqualASCII(headRepo, c.GitHubRepo) &&
 		baseRepoOk && config.EqualASCII(baseRepo, c.GitHubRepo) &&
-		strings.Contains(body, "<!-- octomus:task:")
+		strings.Contains(body, taskMarkerPrefix)
 	return model.PullRequest{
 		Number:         number,
 		Title:          text(p, "title"),
@@ -479,9 +471,10 @@ func parsePR(p map[string]any, c config.Config) (model.PullRequest, error) {
 	}, nil
 }
 
-// publicationPR finds the pull request associated with a branch, if any.
-// Multiple candidates are ambiguous and must be reconciled before publication.
-func publicationPR(ctx context.Context, c config.Config, branch string) (*model.PullRequest, error) {
+// PublicationPR finds the pull request associated with a branch, if any,
+// including closed and merged requests. Multiple candidates are ambiguous and
+// must be reconciled before publication.
+func PublicationPR(ctx context.Context, c config.Config, branch string) (*model.PullRequest, error) {
 	owner, _, _ := strings.Cut(c.GitHubRepo, "/")
 	out, err := gh(ctx, c, []string{
 		"api", "--paginate",
@@ -516,15 +509,9 @@ func publicationPR(ctx context.Context, c config.Config, branch string) (*model.
 	return &matches[0], nil
 }
 
-// PublicationPR finds the unique pull request associated with an admitted
-// branch, including closed and merged requests.
-func PublicationPR(ctx context.Context, c config.Config, branch string) (*model.PullRequest, error) {
-	return publicationPR(ctx, c, branch)
-}
-
 // ValidatePublication checks a delivered or reconciled pull request against the
 // task's recorded expectations. `marker` carries the caller's check of
-// taskMarker: the marker may live in the description or in a follow-up comment,
+// TaskMarker: the marker may live in the description or in a follow-up comment,
 // which this synchronous check cannot fetch for itself.
 func ValidatePublication(task model.Task, p model.PullRequest, marker bool, reconcile bool) error {
 	c := task.Config
@@ -543,31 +530,48 @@ func ValidatePublication(task model.Task, p model.PullRequest, marker bool, reco
 }
 
 // Publish delivers a reviewed commit. Failures that already carry a typed
-// reason — deterministic refusals whose remedy is supersede, not reconcile —
-// surface with their own message. Untyped failures, where the remote state is
-// genuinely unknown, are reported as PublicationUncertain so reconciliation
-// preserves the output.
+// reason surface unchanged, with their own message; each reason's remedy is
+// defined by model.Task.AllowedActions. Untyped failures, where the remote
+// state is genuinely unknown, are reported as PublicationUncertain so
+// reconciliation preserves the output.
 func Publish(ctx context.Context, task model.Task) (model.PullRequest, error) {
 	pr, err := publishInner(ctx, task)
 	if err != nil {
 		if model.BlockedReasonFromError(err) != model.BlockedReasonUnknown {
 			return pr, err
 		}
-		return pr, reasoned(model.BlockedReasonPublicationUncertain,
-			model.BlockedReasonPublicationUncertain.Error(), err)
+		return pr, fmt.Errorf("%w: %w", model.BlockedReasonPublicationUncertain, err)
 	}
 	return pr, nil
+}
+
+// latestVerification returns the most recent recorded result for command: the
+// only one that gates or describes publication.
+func latestVerification(task model.Task, command string) *model.Verification {
+	for i := len(task.Verification) - 1; i >= 0; i-- {
+		if task.Verification[i].Command == command {
+			return &task.Verification[i]
+		}
+	}
+	return nil
 }
 
 // prBody builds the pull request text for a reviewed commit. A task that
 // already owns a pull request posts a follow-up comment rather than rewriting
 // the description, so earlier delivery notes and any maintainer conversation
 // are never replaced. The task marker makes that append idempotent: a
-// republication of the same task adds nothing.
+// republication of the same task adds nothing. Verification lists one line per
+// configured command, from its latest result at the reviewed commit, so a
+// superseded run never contradicts the result that gated publication.
 func prBody(task model.Task, existing *model.PullRequest, commit string) string {
 	var verification []string
-	for _, v := range task.Verification {
-		if v.Revision != commit {
+	commands := task.ExecutionConfig().VerificationCommands
+	for i, command := range commands {
+		if slices.Contains(commands[:i], command) {
+			continue
+		}
+		v := latestVerification(task, command)
+		if v == nil || v.Revision != commit {
 			continue
 		}
 		result := "failed"
@@ -576,7 +580,7 @@ func prBody(task model.Task, existing *model.PullRequest, commit string) string 
 		}
 		verification = append(verification, fmt.Sprintf("- `%s`: %s", v.Command, result))
 	}
-	marker := fmt.Sprintf("<!-- octomus:task:%s -->", task.ID)
+	marker := taskMarkerFor(task.ID)
 	summary := ""
 	for i := len(task.Sessions) - 1; i >= 0; i-- {
 		if role := task.Sessions[i].Role; role == "executor" || role == "repair" {
@@ -651,7 +655,7 @@ func preparePublication(task model.Task, existing *model.PullRequest, commit str
 	if utf8.RuneCountInString(body) > maxPublicationBodyChars {
 		return refuse("Publication body exceeds the remote size limit")
 	}
-	marker := fmt.Sprintf("<!-- octomus:task:%s -->", task.ID)
+	marker := taskMarkerFor(task.ID)
 	if !strings.Contains(body, marker) {
 		return refuse("Publication metadata cannot carry the task's delivery marker")
 	}
@@ -679,7 +683,7 @@ func updatePR(ctx context.Context, c config.Config, task model.Task, p model.Pul
 		return model.PullRequest{}, blocked(model.BlockedReasonRemoteConflict,
 			"PR changed around publication; retry will reconcile the current remote state")
 	}
-	marker, err := taskMarker(ctx, c, task.ID, latest)
+	marker, err := TaskMarker(ctx, c, task.ID, latest)
 	if err != nil {
 		return model.PullRequest{}, err
 	}
@@ -721,34 +725,15 @@ func createPR(ctx context.Context, c config.Config, task model.Task, title strin
 	if err != nil {
 		return model.PullRequest{}, err
 	}
-	trimmed := strings.TrimSpace(created)
-	url, err := whatwg.Parse(trimmed)
+	number, err := parseCreatedPRURL(created, c.GitHubRepo)
 	if err != nil {
-		return model.PullRequest{}, reasoned(model.BlockedReasonRemoteConflict,
-			"PR creation returned no unambiguous URL; reconcile before retrying", err)
-	}
-	// Query and fragment components make a creation URL ambiguous.
-	if url.Scheme() != "https" || url.Hostname() != "github.com" ||
-		strings.ContainsAny(trimmed, "?#") {
-		return model.PullRequest{}, blocked(model.BlockedReasonRemoteConflict,
-			"Invalid PR creation URL")
-	}
-	parts := strings.Split(strings.TrimPrefix(url.Pathname(), "/"), "/")
-	if !(len(parts) == 4 && parts[2] == "pull" &&
-		config.EqualASCII(parts[0]+"/"+parts[1], c.GitHubRepo)) {
-		return model.PullRequest{}, blocked(model.BlockedReasonRemoteConflict,
-			"Created PR belongs to a different repository")
-	}
-	number, err := strconv.ParseUint(parts[3], 10, 64)
-	if err != nil {
-		return model.PullRequest{}, reasoned(model.BlockedReasonRemoteConflict,
-			"Missing created PR number", err)
+		return model.PullRequest{}, err
 	}
 	published, err := PR(ctx, c, number)
 	if err != nil {
 		return model.PullRequest{}, err
 	}
-	marker := fmt.Sprintf("<!-- octomus:task:%s -->", task.ID)
+	marker := taskMarkerFor(task.ID)
 	if err := ValidatePublication(task, published,
 		strings.Contains(published.Body, marker), false); err != nil {
 		return model.PullRequest{}, err
@@ -756,15 +741,43 @@ func createPR(ctx context.Context, c config.Config, task model.Task, title strin
 	return published, nil
 }
 
+// parseCreatedPRURL reads the pull request number from the URL `gh pr create`
+// printed. Only an https github.com URL naming repo's pull path, with no query
+// or fragment, is accepted; anything else is a RemoteConflict, because the
+// request may exist somewhere this task does not know about.
+func parseCreatedPRURL(created string, repo string) (uint64, error) {
+	trimmed := strings.TrimSpace(created)
+	url, err := whatwg.Parse(trimmed)
+	if err != nil {
+		return 0, reasoned(model.BlockedReasonRemoteConflict,
+			"PR creation returned no unambiguous URL; reconcile before retrying", err)
+	}
+	// Query and fragment components make a creation URL ambiguous.
+	if url.Scheme() != "https" || url.Hostname() != "github.com" ||
+		strings.ContainsAny(trimmed, "?#") {
+		return 0, blocked(model.BlockedReasonRemoteConflict,
+			"Invalid PR creation URL")
+	}
+	parts := strings.Split(strings.TrimPrefix(url.Pathname(), "/"), "/")
+	if !(len(parts) == 4 && parts[2] == "pull" &&
+		config.EqualASCII(parts[0]+"/"+parts[1], repo)) {
+		return 0, blocked(model.BlockedReasonRemoteConflict,
+			"Created PR belongs to a different repository")
+	}
+	number, err := strconv.ParseUint(parts[3], 10, 64)
+	if err != nil {
+		return 0, reasoned(model.BlockedReasonRemoteConflict,
+			"Missing created PR number", err)
+	}
+	return number, nil
+}
+
 func publishInner(ctx context.Context, task model.Task) (model.PullRequest, error) {
 	c := task.ExecutionConfig()
 	fail := func(err error) (model.PullRequest, error) {
 		return model.PullRequest{}, err
 	}
-	if err := ValidateRemote(ctx, c); err != nil {
-		return fail(err)
-	}
-	trustedRemote, err := originURL(ctx, c, c.Repository)
+	trustedRemote, err := validatedOrigin(ctx, c)
 	if err != nil {
 		return fail(err)
 	}
@@ -778,23 +791,11 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		return fail(blocked(model.BlockedReasonWorkspaceInvalid,
 			"Publication requires a clean review at the output revision"))
 	}
-	verified := true
-	for _, cmd := range c.VerificationCommands {
-		found := false
-		for i := len(task.Verification) - 1; i >= 0; i-- {
-			if v := task.Verification[i]; v.Command == cmd {
-				found = v.Success && v.Revision == commit
-				break
-			}
+	for _, command := range c.VerificationCommands {
+		if v := latestVerification(task, command); v == nil || !v.Success || v.Revision != commit {
+			return fail(blocked(model.BlockedReasonWorkspaceInvalid,
+				"Publication requires successful verification at the reviewed revision"))
 		}
-		if !found {
-			verified = false
-			break
-		}
-	}
-	if !verified {
-		return fail(blocked(model.BlockedReasonWorkspaceInvalid,
-			"Publication requires successful verification at the reviewed revision"))
 	}
 	if !strings.HasPrefix(task.Branch, c.BranchPrefix) || task.Branch == c.DefaultBranch {
 		return fail(blocked(model.BlockedReasonWorkspaceInvalid,
@@ -820,14 +821,14 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		}
 		existing = &p
 	} else {
-		p, err := publicationPR(ctx, c, task.Branch)
+		p, err := PublicationPR(ctx, c, task.Branch)
 		if err != nil {
 			return fail(err)
 		}
 		existing = p
 	}
 	if existing != nil {
-		marker, err := taskMarker(ctx, c, task.ID, *existing)
+		marker, err := TaskMarker(ctx, c, task.ID, *existing)
 		if err != nil {
 			return fail(err)
 		}
@@ -886,10 +887,13 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		if remote != nil {
 			expected = *remote
 		}
+		// Hooks, tag following and submodule recursion are pinned off so ambient
+		// operator configuration can never push anything but the owned branch.
 		if _, err := Git(ctx, c, path, []string{
 			"-c", "core.hooksPath=/dev/null",
 			"-c", "push.followTags=false",
 			"push",
+			"--recurse-submodules=no",
 			fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", task.Branch, expected),
 			trustedRemote,
 			fmt.Sprintf("%s:refs/heads/%s", commit, task.Branch),

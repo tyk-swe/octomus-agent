@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,14 +14,17 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
 )
 
 // realGit runs the host git binary directly: fixture setup must not flow
-// through the wrapped fixture command.
+// through the wrapped fixture command. It still gets the service's child
+// environment, so Git variables a hook exports to the test run (GIT_DIR,
+// GIT_INDEX_FILE) cannot redirect fixture setup into another repository.
 func realGit(t *testing.T, cwd string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("/usr/bin/git", args...)
-	cmd.Dir = cwd
+	cmd := process.Command("/usr/bin/git", cwd)
+	cmd.Args = append(cmd.Args, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v in %s: %v\n%s", args, cwd, err, out)
@@ -147,6 +149,14 @@ func TestMain(m *testing.M) {
 
 func strptr(s string) *string { return &s }
 
+// deref renders an optional revision for failure messages.
+func deref(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
+}
+
 // Real commits establish true/false ancestry; command failures must not
 // read as a false predicate.
 func TestGitAncestryIsAPredicateAndCommandErrorsFailClosed(t *testing.T) {
@@ -265,6 +275,92 @@ func TestRemoteValidationAndRevisionLookup(t *testing.T) {
 	}
 	if err := git.Fetch(ctx, c); err != nil {
 		t.Fatalf("fetch: %v", err)
+	}
+}
+
+// TestValidateRemoteForms pins which origin URLs name the configured GitHub
+// repository. Task clones copy the origin into their own configuration and
+// publication pushes to it, so a URL carrying credentials, another host or
+// transport, or another path must never pass. It runs real Git with no global
+// or system configuration, so no url.insteadOf rewrite changes what origin
+// reports, and a stub gh that answers only the auth check.
+func TestValidateRemoteForms(t *testing.T) {
+	repo := initRepo(t)
+	bin := t.TempDir()
+	writeFile(t, filepath.Join(bin, "gh"),
+		"#!/bin/sh\n[ \"$*\" = \"auth status --hostname github.com\" ] || exit 1\n[ -e \"$0.unauthenticated\" ] && exit 1\nexit 0\n")
+	if err := os.Chmod(filepath.Join(bin, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	c := testConfig()
+	c.Repository = repo
+	ctx := context.Background()
+	realGit(t, repo, "remote", "add", "origin", "https://github.com/fixture/project.git")
+	const (
+		transport = "Origin must use github.com via SSH or credential-free HTTPS"
+		mismatch  = "Origin does not match configured GitHub repository"
+	)
+	for _, tc := range []struct {
+		origin string
+		want   string // "" accepts
+	}{
+		{"https://github.com/fixture/project.git", ""},
+		{"git@github.com:fixture/project.git", ""},
+		{"ssh://git@github.com/fixture/project.git", ""},
+		{"https://github.com/fixture/project", ""},
+		{"https://github.com/Fixture/Project.git", ""},
+		{"https://user:token@github.com/fixture/project.git", transport},
+		{"https://x-access-token:ghp_abc@github.com/fixture/project.git", transport},
+		{"http://github.com/fixture/project.git", transport},
+		{"https://gitlab.com/fixture/project.git", transport},
+		{"ssh://git@github.com:22/fixture/project.git", transport},
+		{"https://github.com/other/project.git", mismatch},
+		{"https://github.com/fixture/project/extra.git", mismatch},
+		{"git@github.com:fixture/project.git/", mismatch},
+	} {
+		realGit(t, repo, "remote", "set-url", "origin", tc.origin)
+		err := git.ValidateRemote(ctx, c)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("origin %q rejected: %v", tc.origin, err)
+		case tc.want != "" && (err == nil || err.Error() != tc.want):
+			t.Errorf("origin %q = %v; want %q", tc.origin, err, tc.want)
+		}
+	}
+	// A valid origin still needs gh authenticated against github.com.
+	realGit(t, repo, "remote", "set-url", "origin", "https://github.com/fixture/project.git")
+	writeFile(t, filepath.Join(bin, "gh.unauthenticated"), "")
+	if err := git.ValidateRemote(ctx, c); err == nil {
+		t.Fatal("an unauthenticated gh must fail remote validation")
+	}
+}
+
+// TestRemoteRevisionIgnoresTailMatchingRefs: ls-remote patterns also match the
+// tail of longer ref names, so a branch named `a/refs/heads/main` answers the
+// query for `refs/heads/main` too, and sorts first. Only the exact ref may
+// resolve: a decoy must neither replace the real head nor make an absent
+// branch look present.
+func TestRemoteRevisionIgnoresTailMatchingRefs(t *testing.T) {
+	c, root := fixtureRoot(t)
+	ctx := context.Background()
+	main := realGit(t, c.Repository, "rev-parse", "main")
+	realGit(t, c.Repository, "commit", "--allow-empty", "-m", "decoy")
+	decoy := realGit(t, c.Repository, "rev-parse", "HEAD")
+	remote := filepath.Join(root, "remote.git")
+	realGit(t, c.Repository, "push", remote, "HEAD:refs/heads/a/refs/heads/main")
+	realGit(t, c.Repository, "push", remote, "HEAD:refs/heads/z/refs/heads/octomus/missing")
+	got, err := git.RemoteRevision(ctx, c, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || *got != main {
+		t.Fatalf("remote main = %v; want %s, not the decoy %s", deref(got), main, decoy)
+	}
+	if missing, err := git.RemoteRevision(ctx, c, "octomus/missing"); err != nil || missing != nil {
+		t.Fatalf("missing branch = %v, %v; want no revision despite the tail-matching decoy", deref(missing), err)
 	}
 }
 
@@ -891,8 +987,349 @@ func TestPublishRejectsStaleBase(t *testing.T) {
 	}
 }
 
-// TestPublicationChecksEveryIdentityFieldAndClosedReconciliation ports the
-// count, and closed/merged states only pass explicit reconciliation.
+// TestFixturePublishListsLatestVerificationOnly: a command that failed and was
+// later re-run successfully at the same reviewed commit is described by its
+// latest result only — the one that gated publication — so the public text
+// never shows both outcomes for one command.
+func TestFixturePublishListsLatestVerificationOnly(t *testing.T) {
+	c, root := fixtureRoot(t)
+	c.VerificationCommands = []string{"make test", "make lint"}
+	task, commit := publishableTask(t, c, root, "task-latest")
+	task.Verification = []model.Verification{
+		{Command: "make test", Success: false, Revision: commit, CreatedAt: model.Now()},
+		{Command: "make lint", Success: true, Revision: commit, CreatedAt: model.Now()},
+		{Command: "make test", Success: true, Revision: commit, CreatedAt: model.Now()},
+	}
+	if _, err := git.Publish(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "prs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prs []map[string]any
+	if err := json.Unmarshal(data, &prs); err != nil || len(prs) != 1 {
+		t.Fatalf("prs.json = %s, %v; want one PR", data, err)
+	}
+	body, _ := prs[0]["body"].(string)
+	if !strings.Contains(body, "Verification\n- `make test`: passed\n- `make lint`: passed\n") {
+		t.Fatalf("outbound body = %q; want one latest line per configured command", body)
+	}
+	if strings.Contains(body, "failed") {
+		t.Fatalf("outbound body = %q; a superseded failure must not be listed", body)
+	}
+}
+
+// TestPublishGatesOnTheLatestVerificationPerCommand: only the most recent
+// record of each configured command gates publication, and it must be a
+// success at the reviewed commit.
+func TestPublishGatesOnTheLatestVerificationPerCommand(t *testing.T) {
+	cases := []struct {
+		name   string
+		record func(commit string) []model.Verification
+	}{
+		{
+			name: "latest failed after an earlier pass",
+			record: func(commit string) []model.Verification {
+				return []model.Verification{
+					{Command: "make test", Success: true, Revision: commit},
+					{Command: "make lint", Success: true, Revision: commit},
+					{Command: "make test", Success: false, Revision: commit},
+				}
+			},
+		},
+		{
+			name: "latest passed at another revision",
+			record: func(commit string) []model.Verification {
+				return []model.Verification{
+					{Command: "make test", Success: true, Revision: commit},
+					{Command: "make lint", Success: true, Revision: commit},
+					{Command: "make lint", Success: true, Revision: strings.Repeat("0", 40)},
+				}
+			},
+		},
+		{
+			name: "configured command never recorded",
+			record: func(commit string) []model.Verification {
+				return []model.Verification{{Command: "make test", Success: true, Revision: commit}}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, root := fixtureRoot(t)
+			c.VerificationCommands = []string{"make test", "make lint"}
+			ctx := context.Background()
+			task, commit := publishableTask(t, c, root, "task-gate")
+			task.Verification = tc.record(commit)
+			_, err := git.Publish(ctx, task)
+			if err == nil {
+				t.Fatal("publication without a latest passing verification must be refused")
+			}
+			if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonWorkspaceInvalid {
+				t.Fatalf("reason = %v; want workspace_invalid", reason)
+			}
+			if !strings.Contains(err.Error(), "Publication requires successful verification at the reviewed revision") {
+				t.Fatalf("refusal = %q; want the verification gate", err)
+			}
+			if rev, err := git.RemoteRevision(ctx, c, task.Branch); err != nil || rev != nil {
+				t.Fatalf("remote branch = %v, %v; want nothing pushed", deref(rev), err)
+			}
+		})
+	}
+}
+
+// TestPublishGatesRefuseBeforeAnyWrite: each safety gate in front of the push
+// refuses on its own, with its typed reason, and leaves the remote exactly as it
+// was: no ref moved, no pull request created, no comment posted. Unreviewed,
+// moved or foreign work must never reach the remote. The verification gate has
+// its own table in TestPublishGatesOnTheLatestVerificationPerCommand.
+func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
+	// seedPRs writes pull requests the gh peer serves for the task's branch.
+	seedPRs := func(t *testing.T, root string, prs ...map[string]any) {
+		t.Helper()
+		data, err := json.Marshal(prs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(root, "prs.json"), string(data))
+	}
+	pullRequest := func(number int, headRepo, body string) map[string]any {
+		return map[string]any{
+			"number": number, "title": "Earlier work", "body": body,
+			"head":     map[string]any{"ref": "octomus/work", "sha": "", "repo": map[string]any{"full_name": headRepo}},
+			"base":     map[string]any{"ref": "main", "repo": map[string]any{"full_name": "fixture/project"}},
+			"html_url": fmt.Sprintf("https://github.com/fixture/project/pull/%d", number),
+			"state":    "open", "merged_at": nil, "additions": 1, "deletions": 0,
+			"created_at": "2026-09-07T00:00:00Z",
+		}
+	}
+	cases := []struct {
+		name   string
+		adjust func(t *testing.T, root string, task *model.Task, commit string)
+		reason model.BlockedReason
+		want   string
+	}{
+		{
+			name:   "no reviewed commit",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) { task.OutputCommit = nil },
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "No reviewed commit",
+		},
+		{
+			name:   "no review",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) { task.Reviews = nil },
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Publication requires a clean review at the output revision",
+		},
+		{
+			// An earlier clean review of the output does not cover a later
+			// round that reviewed something else.
+			name: "latest review at another revision",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				later := task.Reviews[0]
+				later.Revision = strings.Repeat("0", 40)
+				task.Reviews = append(task.Reviews, later)
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Publication requires a clean review at the output revision",
+		},
+		{
+			name: "latest review incomplete",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				task.Reviews[0].Result = model.Review{Completed: false, Summary: "interrupted"}
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Publication requires a clean review at the output revision",
+		},
+		{
+			name: "latest review has findings",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				task.Reviews[0].Result.Findings = []model.Finding{{Title: "Bug", File: "feature.txt", Detail: "wrong", Priority: "high"}}
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Publication requires a clean review at the output revision",
+		},
+		{
+			name:   "branch outside the owned prefix",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) { task.Branch = "feature/x" },
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Cannot publish outside the owned branch namespace",
+		},
+		{
+			// Even a prefix that admits every branch never admits the default
+			// branch itself.
+			name: "default branch",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				task.Config.BranchPrefix = ""
+				task.Branch = task.Config.DefaultBranch
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Cannot publish outside the owned branch namespace",
+		},
+		{
+			name: "workspace changed after review",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				writeFile(t, filepath.Join(task.Workspace, "late.txt"), "unreviewed\n")
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Workspace changed after review",
+		},
+		{
+			name: "workspace HEAD changed after review",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				realGit(t, task.Workspace, "commit", "--allow-empty", "-m", "late")
+			},
+			reason: model.BlockedReasonWorkspaceInvalid,
+			want:   "Workspace HEAD changed after review",
+		},
+		{
+			// Two pull requests from the branch cannot be told apart; the
+			// foreign head repository keeps the peer from resolving their heads.
+			name: "ambiguous PR association",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				seedPRs(t, root,
+					pullRequest(1, "external/project", "First"),
+					pullRequest(2, "external/project", "Second"))
+			},
+			reason: model.BlockedReasonRemoteConflict,
+			want:   "Ambiguous PR association; reconcile before publication",
+		},
+		{
+			// An owned, open pull request on the branch carries another task's
+			// marker: this task must not publish over it.
+			name: "branch owned by another task",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				realGit(t, root, "--git-dir", filepath.Join(root, "remote.git"),
+					"update-ref", "refs/heads/octomus/work", task.SourceRevision)
+				seedPRs(t, root, pullRequest(1, "fixture/project", "Earlier work.\n<!-- octomus:task:other-task -->"))
+			},
+			reason: model.BlockedReasonRemoteConflict,
+			want:   "Branch is already associated with another task",
+		},
+		{
+			// The reviewed output descends from the default head but not from
+			// the recorded source revision.
+			name: "output does not contain the recorded source",
+			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
+				realGit(t, task.Workspace, "checkout", "--detach", task.SourceRevision)
+				realGit(t, task.Workspace, "commit", "--allow-empty", "-m", "side")
+				task.SourceRevision = realGit(t, task.Workspace, "rev-parse", "HEAD")
+				realGit(t, task.Workspace, "checkout", "--detach", commit)
+			},
+			reason: model.BlockedReasonRemoteConflict,
+			want:   "Reviewed output does not contain the recorded source; reconcile the branch",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, root := fixtureRoot(t)
+			c.VerificationCommands = []string{"make test"}
+			ctx := context.Background()
+			task, commit := publishableTask(t, c, root, "task-gated")
+			tc.adjust(t, root, &task, commit)
+			remote := filepath.Join(root, "remote.git")
+			refs := realGit(t, root, "--git-dir", remote, "for-each-ref")
+			_, err := git.Publish(ctx, task)
+			if err == nil {
+				t.Fatal("publication past a failed gate must be refused")
+			}
+			if reason := model.BlockedReasonFromError(err); reason != tc.reason {
+				t.Fatalf("reason = %v; want %v (%q)", reason, tc.reason, err)
+			}
+			if !strings.HasPrefix(err.Error(), tc.want+": ") {
+				t.Fatalf("refusal = %q; want %q", err, tc.want)
+			}
+			// Nothing reached the remote: no ref moved, no PR, no comment.
+			if after := realGit(t, root, "--git-dir", remote, "for-each-ref"); after != refs {
+				t.Fatalf("remote refs = %q; want them unchanged from %q", after, refs)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "publications.jsonl")); err == nil &&
+				strings.Contains(string(data), `"action"`) {
+				t.Fatalf("publications = %s; want no writes", data)
+			}
+		})
+	}
+}
+
+// TestFixturePublishNeverRecursesIntoSubmodules: publication pushes only the
+// owned branch even when the operator's global Git configuration enables
+// submodule recursion and the reviewed commit moves a submodule to a commit
+// its own remote has never seen.
+func TestFixturePublishNeverRecursesIntoSubmodules(t *testing.T) {
+	c, root := fixtureRoot(t)
+	c.VerificationCommands = []string{"make test"}
+	ctx := context.Background()
+	// A submodule remote with one commit on main, added to the fixture's main.
+	sub := filepath.Join(root, "sub.git")
+	realGit(t, root, "init", "--bare", "-b", "main", sub)
+	seed := filepath.Join(root, "sub-seed")
+	realGit(t, root, "init", "-b", "main", seed)
+	writeFile(t, filepath.Join(seed, "lib.txt"), "library\n")
+	realGit(t, seed, "add", ".")
+	realGit(t, seed, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "-m", "Library")
+	realGit(t, seed, "push", sub, "main")
+	realGit(t, c.Repository, "-c", "protocol.file.allow=always", "submodule", "add", sub, "sub")
+	realGit(t, c.Repository, "commit", "-m", "Add submodule")
+	realGit(t, c.Repository, "push", "origin", "main")
+	task, _ := publishableTask(t, c, root, "task-submodule")
+	// The reviewed change also moves the submodule to a local, unpushed commit.
+	realGit(t, task.Workspace, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+	writeFile(t, filepath.Join(task.Workspace, "sub", "lib.txt"), "changed locally\n")
+	realGit(t, filepath.Join(task.Workspace, "sub"), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com",
+		"commit", "-am", "Unpushed library change")
+	commit, err := git.Snapshot(ctx, c, task.Workspace, "Move the submodule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.OutputCommit = strptr(commit)
+	task.Reviews[0].Revision = commit
+	task.Verification[0].Revision = commit
+	// Ambient operator configuration that would otherwise recurse on push.
+	global := filepath.Join(root, "global.gitconfig")
+	writeFile(t, global, "[submodule]\n\trecurse = true\n[push]\n\trecurseSubmodules = on-demand\n[protocol \"file\"]\n\tallow = always\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	if _, err := git.Publish(ctx, task); err != nil {
+		t.Fatalf("publication with ambient submodule recursion: %v", err)
+	}
+	if remoteHead := realGit(t, root, "--git-dir", filepath.Join(root, "remote.git"),
+		"rev-parse", "refs/heads/octomus/work"); remoteHead != commit {
+		t.Fatalf("remote branch = %s; want the reviewed commit %s", remoteHead, commit)
+	}
+	if refs := realGit(t, root, "--git-dir", sub, "for-each-ref", "--format=%(refname) %(objectname)"); refs != "refs/heads/main "+realGit(t, seed, "rev-parse", "HEAD") {
+		t.Fatalf("submodule remote refs = %q; publication must not push to it", refs)
+	}
+}
+
+// TestPublishUncertainWrapsCauseOnce: an untyped publication failure is
+// reported as PublicationUncertain with the reason sentence stated once,
+// followed by the underlying cause.
+func TestPublishUncertainWrapsCauseOnce(t *testing.T) {
+	c, root := fixtureRoot(t)
+	c.VerificationCommands = []string{"make test"}
+	task, _ := publishableTask(t, c, root, "task-uncertain")
+	// The fixture still answers `remote get-url` and `gh auth status`, so the
+	// first failure is ls-remote in a checkout that is not a repository.
+	task.Config.Repository = t.TempDir()
+	_, err := git.Publish(context.Background(), task)
+	if err == nil {
+		t.Fatal("publication from a broken checkout must fail")
+	}
+	if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonPublicationUncertain {
+		t.Fatalf("reason = %v; want publication_uncertain", reason)
+	}
+	sentence := model.BlockedReasonPublicationUncertain.Error()
+	if count := strings.Count(err.Error(), sentence); count != 1 {
+		t.Fatalf("error states the reason %d times; want once: %q", count, err)
+	}
+	if !strings.HasPrefix(err.Error(), sentence+": ") || !strings.Contains(err.Error(), "exit status") {
+		t.Fatalf("error = %q; want the reason followed by the git failure", err)
+	}
+}
+
+// TestPublicationChecksEveryIdentityFieldAndClosedReconciliation: every
+// identity field (repositories, ownership, branch, base, reviewed head, marker)
+// must match, and closed/merged states pass only explicit reconciliation.
 func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T) {
 	c := testConfig()
 	commit := strings.Repeat("a", 40)
