@@ -214,13 +214,13 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 		return nil, err
 	}
 	check := model.BaselineCheck{
-		ID:        model.ID(),
-		Status:    model.BaselineStatusRunning,
-		Config:    live.Clone(),
-		StartedAt: model.Now(),
-		Commands:  []model.BaselineCommand{},
+		ID:                model.ID(),
+		Status:            model.BaselineStatusRunning,
+		Config:            live.Clone(),
+		ConfigFingerprint: fingerprint,
+		StartedAt:         model.Now(),
+		Commands:          []model.BaselineCommand{},
 	}
-	check.ConfigFingerprint = fingerprint
 	if err := a.Store.Put("baseline", check.ID, check); err != nil {
 		return nil, err
 	}
@@ -235,7 +235,7 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 	go func() {
 		defer a.wg.Done()
 		defer cancel()
-		a.baselineWorker(check.ID, ctx)
+		a.baselineWorker(ctx, check.ID)
 	}()
 	return &check, nil
 }
@@ -461,7 +461,7 @@ var baselineStatusDebug = map[model.BaselineStatus]string{
 // even though the durable record already reads as finished and cleaned up;
 // that window ends when the worker exits, and its notify follows the release.
 // Observers that need the slot free wait for baseline_active to clear.
-func (a *App) baselineWorker(id string, ctx context.Context) {
+func (a *App) baselineWorker(ctx context.Context, id string) {
 	defer func() {
 		if check, err := store.Get[model.BaselineCheck](a.Store, "baseline", id); err == nil && check != nil && check.Status == model.BaselineStatusRunning {
 			_ = a.abandonBaseline(check,
@@ -482,6 +482,7 @@ func (a *App) baselineWorker(id string, ctx context.Context) {
 	c := check.Config
 	limit := time.Duration(c.TaskTimeoutSeconds) * time.Second
 	workCtx, workCancel := context.WithCancel(ctx)
+	defer workCancel()
 	executionDone := make(chan struct{})
 	result := process.WithDeadline(ctx, workCancel, limit, func() model.BaselineStatus {
 		defer close(executionDone)

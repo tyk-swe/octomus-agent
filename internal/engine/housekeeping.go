@@ -212,9 +212,6 @@ type cleanupKey struct {
 func (a *App) claimCleanup(kind cleanupKind, id string) bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
-	if a.runtime.cleanups == nil {
-		a.runtime.cleanups = map[cleanupKey]struct{}{}
-	}
 	key := cleanupKey{kind: kind, id: id}
 	if _, owned := a.runtime.cleanups[key]; owned {
 		return false
