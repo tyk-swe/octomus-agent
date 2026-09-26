@@ -112,22 +112,37 @@ func RemoveOwnedDir(root, path string) error {
 // name below root, each before its entries are read, so a directory that could
 // not be listed or searched becomes reachable. Symlinks are never followed or
 // changed, and every access goes through an os.Root, so a directory swapped for
-// a symlink cannot redirect a change outside root. Failures are ignored: the
-// caller's retry reports whatever still cannot be removed.
+// a symlink cannot redirect a change outside root. The walk uses the Root
+// itself rather than its io/fs view, whose path rules stop at names Linux
+// allows, such as bytes that are not UTF-8. Failures are ignored: the caller's
+// retry reports whatever still cannot be removed.
 func makeDirsWritable(root, name string) {
 	owned, err := os.OpenRoot(root)
 	if err != nil {
 		return
 	}
 	defer owned.Close()
-	_ = fs.WalkDir(owned.FS(), name, func(entry string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return nil
+	var visit func(dir string)
+	visit = func(dir string) {
+		info, err := owned.Lstat(dir)
+		if err != nil || !info.IsDir() {
+			return
 		}
-		info, err := owned.Lstat(entry)
-		if err == nil && info.IsDir() && info.Mode().Perm()&0o700 != 0o700 {
-			_ = owned.Chmod(entry, info.Mode().Perm()|0o700)
+		if info.Mode().Perm()&0o700 != 0o700 {
+			_ = owned.Chmod(dir, info.Mode().Perm()|0o700)
 		}
-		return nil
-	})
+		f, err := owned.Open(dir)
+		if err != nil {
+			return
+		}
+		// ReadDir returns the entries it read before any error.
+		entries, _ := f.ReadDir(-1)
+		f.Close()
+		for _, entry := range entries {
+			if entry.IsDir() {
+				visit(filepath.Join(dir, entry.Name()))
+			}
+		}
+	}
+	visit(name)
 }

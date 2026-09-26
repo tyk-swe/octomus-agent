@@ -102,3 +102,44 @@ func TestMakeDirsWritableSkipsSymlinkTargets(t *testing.T) {
 		}
 	}
 }
+
+// TestMakeDirsWritableReachesAnyDirectoryName pins that the repair reaches
+// directories below names that are legal on Linux but not valid io/fs paths —
+// bytes that are not UTF-8, backslashes, colons — so a read-only tree under
+// such a name cannot keep blocking cleanup.
+func TestMakeDirsWritableReachesAnyDirectoryName(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "tasks")
+	tree := filepath.Join(root, "task-1")
+	var locked []string
+	for _, name := range []string{"latin-\xe9", `back\slash`, "co:lon"} {
+		parent := filepath.Join(tree, name)
+		child := filepath.Join(parent, "deep")
+		if err := os.MkdirAll(child, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Children before parents, so every mode can be applied.
+		locked = append(locked, child, parent)
+	}
+	for _, dir := range locked {
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for i := len(locked) - 1; i >= 0; i-- {
+			_ = os.Chmod(locked[i], 0o755)
+		}
+	})
+
+	makeDirsWritable(root, "task-1")
+
+	for _, dir := range locked {
+		info, err := os.Lstat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o700 != 0o700 {
+			t.Fatalf("%q mode = %v; want owner rwx", dir, info.Mode().Perm())
+		}
+	}
+}
