@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -242,6 +243,8 @@ func (o *OpenCode) request(ctx context.Context, method, path, cwd string, body a
 
 // roundTrip sends one JSON request and reads a bounded JSON response.
 func (o *OpenCode) roundTrip(ctx context.Context, method, path, cwd string, body any) (any, error) {
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 	req, err := o.request(ctx, method, path, cwd, body)
 	if err != nil {
 		return nil, err
@@ -252,17 +255,46 @@ func (o *OpenCode) roundTrip(ctx context.Context, method, path, cwd string, body
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, statusError("OpenCode request failed", response)
+		return nil, statusError("OpenCode request failed", response, stop)
 	}
 	return readJSONBody(response.Body)
 }
 
+// statusSnippetLimit bounds the body bytes a failed response reports.
+const statusSnippetLimit = 4096
+
+// statusReadLimit bounds how much of a failed response's body is read. The
+// read goes past the snippet so that a secret straddling the snippet's end is
+// redacted whole before the snippet is cut.
+const statusReadLimit = 4 * statusSnippetLimit
+
+// statusBodyWait bounds how long a failed response's body is read, so a body
+// that stalls cannot hold the caller until its own, possibly session-long,
+// deadline.
+const statusBodyWait = 2 * time.Second
+
 // statusError reports a non-2xx OpenCode response with its status and a
-// bounded, redacted body snippet.
-func statusError(prefix string, response *http.Response) error {
-	snippet, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-	return fmt.Errorf("%s with HTTP %s: %s", prefix, response.Status,
-		store.Redact(strings.ToValidUTF8(string(snippet), "�")))
+// bounded, redacted body snippet. stop cancels the request's context; it ends
+// a body read still running after statusBodyWait.
+func statusError(prefix string, response *http.Response, stop context.CancelFunc) error {
+	timer := time.AfterFunc(statusBodyWait, stop)
+	body, err := io.ReadAll(io.LimitReader(response.Body, statusReadLimit+1))
+	timer.Stop()
+	text := store.RedactSecrets(strings.ToValidUTF8(string(body), "\uFFFD"))
+	if err != nil || len(body) > statusReadLimit {
+		// The read stopped inside the body, so its last word may be the start
+		// of a secret that redaction cannot recognise.
+		text = beforeLastWord(text)
+	}
+	if len(text) > statusSnippetLimit {
+		// Redaction already ran, so this cut cannot expose part of a secret.
+		cut := statusSnippetLimit
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		text = text[:cut]
+	}
+	return fmt.Errorf("%s with HTTP %s: %s", prefix, response.Status, text)
 }
 
 // postBestEffort sends a cleanup request bounded by its own timeout,
@@ -440,7 +472,7 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", statusError("OpenCode event subscription failed", response)
+		return "", statusError("OpenCode event subscription failed", response, cancel)
 	}
 	// Resolve the message identity before any goroutine starts so entropy
 	// failure unwinds with only the body-close and cancel defers.

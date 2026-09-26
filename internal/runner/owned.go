@@ -83,6 +83,15 @@ func afterWord(text string) string {
 	return ""
 }
 
+// beforeLastWord drops text from its last whitespace on, or all of it when
+// there is none.
+func beforeLastWord(text string) string {
+	if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
+		return text[:i]
+	}
+	return ""
+}
+
 // drained discards lines until the reader closes them and reports that.
 func drained(lines <-chan lineResult) <-chan struct{} {
 	done := make(chan struct{})

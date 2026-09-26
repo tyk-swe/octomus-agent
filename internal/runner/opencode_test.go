@@ -566,3 +566,97 @@ func TestProtocolMessageBoundOverHTTP(t *testing.T) {
 		t.Fatal("an oversized HTTP body must fail")
 	}
 }
+
+// failedResponse is a non-2xx response carrying body.
+func failedResponse(body string) *http.Response {
+	return &http.Response{Status: "500 Internal Server Error", StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader(body))}
+}
+
+// A failed response's body is redacted before the reported snippet is cut, so
+// a secret straddling the snippet's end is never reported in part, wherever
+// the cut falls. When the read itself stops inside the body, the last word
+// read is dropped because redaction cannot recognise a partial secret.
+func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
+	never := func() {}
+	for _, secret := range []string{"ghp_Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9", "Bearer eyJhbGciOiJIUzI1NiJ9.c2lnbmF0dXJl"} {
+		for at := 1; at < len(secret); at++ {
+			prefix := strings.Repeat("a", statusSnippetLimit-at-1) + " "
+			body := prefix + secret + " " + strings.Repeat("tail ", 400)
+			err := statusError("OpenCode request failed", failedResponse(body), never)
+			text := err.Error()
+			for _, part := range []string{"ghp_", "Zq9", "eyJ", "c2ln"} {
+				if strings.Contains(text, part) {
+					t.Fatalf("cut %d of %q reported %q", at, secret, part)
+				}
+			}
+			snippet := strings.TrimPrefix(text, "OpenCode request failed with HTTP 500 Internal Server Error: ")
+			if len(snippet) > statusSnippetLimit || !strings.HasPrefix(snippet, prefix) {
+				t.Fatalf("cut %d of %q: snippet of %d bytes: %.40q", at, secret, len(snippet), snippet)
+			}
+		}
+	}
+	// Redaction can shrink the read below the snippet limit, so the end of
+	// the read is reported too: a token cut there too short to recognise is
+	// dropped with its word.
+	token := "ghp_" + strings.Repeat("Zq9", 67)
+	whole := strings.Repeat(token+" ", 79)
+	for kept := 1; kept <= 20; kept++ {
+		pad := statusReadLimit + 1 - kept - len(whole)
+		body := whole + strings.Repeat("b", pad-1) + " " + token + " never read"
+		err := statusError("OpenCode request failed", failedResponse(body), never)
+		want := "OpenCode request failed with HTTP 500 Internal Server Error: " + strings.Repeat("[redacted] ", 79) + strings.Repeat("b", pad-1)
+		if err.Error() != want {
+			t.Fatalf("%d bytes of the last token read: %q", kept, err)
+		}
+	}
+	// A body that fits is reported whole, secrets redacted.
+	err := statusError("OpenCode request failed", failedResponse("denied for token ghp_Zq9Zq9Zq9Zq9Zq9Zq9\n"), never)
+	if err.Error() != "OpenCode request failed with HTTP 500 Internal Server Error: denied for token [redacted]\n" {
+		t.Fatalf("whole body: %q", err)
+	}
+}
+
+// A failed response whose body stalls ends the call after statusBodyWait,
+// for a JSON round trip and for the turn's event subscription, instead of
+// holding it until the call's own deadline. The partial last word is dropped.
+func TestStalledErrorBodyEndsPromptly(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/abort") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "upstream down; token ghp_Zq9")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	client := &OpenCode{client: newLoopbackClient(), base: server.URL, password: "fixture", ctx: context.Background(), timeout: 30}
+	for _, tc := range []struct {
+		name, want string
+		call       func() error
+	}{
+		{"round trip", "OpenCode request failed", func() error {
+			_, err := client.Models("/workspace")
+			return err
+		}},
+		{"event subscription", "OpenCode event subscription failed", func() error {
+			_, err := client.Turn("ses_a", route(), "/workspace", "prompt", nil)
+			return err
+		}},
+	} {
+		started := time.Now()
+		err := tc.call()
+		if elapsed := time.Since(started); elapsed > statusBodyWait+10*time.Second {
+			t.Fatalf("%s took %v", tc.name, elapsed)
+		}
+		if err == nil || err.Error() != tc.want+" with HTTP 503 Service Unavailable: upstream down; token" {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+	}
+}
