@@ -124,6 +124,49 @@ func TestReadOnlySnapshotIsConsistentAndIncludesWAL(t *testing.T) {
 	}
 }
 
+// A panic inside a transaction callback (recovered by net/http or a task
+// worker) rolls the transaction back before it unwinds. Otherwise the pinned
+// connection would stay inside the open transaction: later autocommit writes
+// would be acknowledged without ever committing, and every later transaction
+// would fail to begin.
+func TestPanicInsideTransactionRollsBack(t *testing.T) {
+	panics := func(snapshot func(func(*sql.Conn) error) error, statement string) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the callback's panic did not propagate")
+			}
+		}()
+		_ = snapshot(func(c *sql.Conn) error {
+			if _, err := c.ExecContext(store.Background(), statement); err != nil {
+				t.Fatalf("%s: %v", statement, err)
+			}
+			panic("callback failure")
+		})
+	}
+	path := statePath(t)
+	s := open(t, path)
+	panics(s.Snapshot, "INSERT INTO records VALUES ('x','inside','1')")
+	must(t, s.Put("x", "after", 1))
+	control := model.DefaultControl()
+	must(t, s.StartBatch(&control))
+
+	r, err := store.OpenReadOnly(path, "probe")
+	must(t, err)
+	defer r.Close()
+	panics(r.Snapshot, "SELECT count(*) FROM records")
+	must(t, r.Snapshot(func(*sql.Conn) error { return nil }))
+
+	must(t, s.Close())
+	s = open(t, path)
+	if _, found, err := s.GetRaw("x", "after"); err != nil || !found {
+		t.Fatalf("write after the panic = found %v, %v; want it committed", found, err)
+	}
+	if _, found, err := s.GetRaw("x", "inside"); err != nil || found {
+		t.Fatalf("write inside the panicking transaction = found %v, %v; want it rolled back", found, err)
+	}
+}
+
 // --usage-report and --export-run rely on OpenReadOnly being a real
 // SQLITE_OPEN_READONLY handle. URI metacharacters in the data directory must
 // not strip mode=ro or send the open to a different path.

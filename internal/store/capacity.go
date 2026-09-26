@@ -138,18 +138,12 @@ func (s *Store) PrReservations(repository string) ([]PrReservation, error) {
 
 // PrReservationCandidates lists tasks that may still hold or need a reservation.
 func (s *Store) PrReservationCandidates() ([]model.Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, fmt.Sprintf(`SELECT r.data FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
+	return listRecords[model.Task](s, fmt.Sprintf(`SELECT r.data FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
                 WHERE m.kind='task' AND (
                     m.status IN (%s)
                     OR (m.status='queued' AND json_extract(r.data,'$.execution_session') IS NOT NULL)
                     OR (m.status!='published' AND json_extract(r.data,'$.output_commit') IS NOT NULL)
                 )`, statusList(model.ActiveStatuses())))
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[model.Task](raw)
 }
 
 func (s *Store) SeedPrReservation(task model.Task) error {

@@ -77,27 +77,18 @@ func unsupportedSchema(version int64) error {
 	return fmt.Errorf("State database schema version %d is unsupported; this release requires a fresh version-%d data directory. Back up existing state before changing data directories", version, SupportedSchemaVersion)
 }
 
-func createSchema(ctx context.Context, c *sql.Conn) (err error) {
-	if _, err = c.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_, _ = c.ExecContext(context.Background(), "ROLLBACK")
-		}
-	}()
-	if _, err = c.ExecContext(ctx, schemaSQL); err != nil {
-		return err
-	}
-	for _, name := range []string{"insert", "update"} {
-		ddl := fmt.Sprintf("CREATE TRIGGER project_record_%s AFTER %s ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN %s END;", name, strings.ToUpper(name), projection())
-		if _, err = c.ExecContext(ctx, ddl); err != nil {
+func createSchema(ctx context.Context, c *sql.Conn) error {
+	return runTx(c, "BEGIN IMMEDIATE", func(c *sql.Conn) error {
+		if _, err := c.ExecContext(ctx, schemaSQL); err != nil {
 			return err
 		}
-	}
-	if _, err = c.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SupportedSchemaVersion)); err != nil {
+		for _, name := range []string{"insert", "update"} {
+			ddl := fmt.Sprintf("CREATE TRIGGER project_record_%s AFTER %s ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN %s END;", name, strings.ToUpper(name), projection())
+			if _, err := c.ExecContext(ctx, ddl); err != nil {
+				return err
+			}
+		}
+		_, err := c.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SupportedSchemaVersion))
 		return err
-	}
-	_, err = c.ExecContext(ctx, "COMMIT")
-	return err
+	})
 }

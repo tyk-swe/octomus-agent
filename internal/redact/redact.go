@@ -5,6 +5,7 @@
 package redact
 
 import (
+	"cmp"
 	"os"
 	"regexp"
 	"slices"
@@ -30,7 +31,16 @@ func Error(err error) string { return Text(err.Error()) }
 // Go's \s is ASCII-only, so use the equivalent class in every whitespace match.
 const tokenWhitespace = `\p{Z}\x{0009}-\x{000D}\x{0085}`
 
-var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-Za-z0-9._~+/=-]+|(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]{10,}|[a-z]+://[^` + tokenWhitespace + `/@]+:[^` + tokenWhitespace + `/@]+@`)
+// tokenPattern matches bearer credentials, GitHub tokens and URL userinfo.
+var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-Za-z0-9._~+/=-]+|(?:gh[pousr]_|github_pat_)[A-Za-z0-9_-]{10,}|[a-z]+://[^` + tokenWhitespace + `/@]+:[^` + tokenWhitespace + `/@]+@`)
+
+// keyPattern matches sk- API keys; group 1 is the key itself. A key must start
+// a token, because ordinary words such as task-, risk- or disk- also end in
+// "sk-": it may follow anything but an ASCII letter, or an escape sequence
+// that ends in a letter in encoded text (\n, \x0b or \u003e in JSON and string
+// literals, %3D in a URL, a terminal color code such as ESC[32m, or any other
+// terminal control sequence such as ESC[2K, raw or escaped).
+var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|(?:\x1b|\\(?:u001b|x1b|e|033))\[[0-9:;<=>?]*[A-Za-z]|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
 
 var (
 	secretsOnce sync.Once
@@ -55,12 +65,57 @@ func environmentSecrets() []string {
 // Secrets scrubs tokens and secret-bearing environment values without any
 // length limit. Persisted results must be bounded by the caller so shortening
 // is always flagged.
-func Secrets(input string) string {
-	s := tokenPattern.ReplaceAllString(input, "[redacted]")
-	for _, value := range environmentSecrets() {
-		s = strings.ReplaceAll(s, value, "[redacted]")
+func Secrets(input string) string { return scrub(input, environmentSecrets()) }
+
+// scrub replaces every token match and every occurrence of each secret value
+// in input with "[redacted]". All spans are found in the original text and
+// overlapping spans are replaced as one, so replacing one secret never splits
+// another and leaves the rest of it visible. Adjacent spans stay separate.
+func scrub(input string, values []string) string {
+	var spans [][2]int
+	for _, match := range tokenPattern.FindAllStringIndex(input, -1) {
+		spans = append(spans, [2]int{match[0], match[1]})
 	}
-	return s
+	for _, match := range keyPattern.FindAllStringSubmatchIndex(input, -1) {
+		spans = append(spans, [2]int{match[2], match[3]})
+	}
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		first := len(spans)
+		for from := 0; ; {
+			i := strings.Index(input[from:], value)
+			if i < 0 {
+				break
+			}
+			start, end := from+i, from+i+len(value)
+			if last := len(spans) - 1; last >= first && start < spans[last][1] {
+				// An overlapping occurrence of the same value extends the last one.
+				spans[last][1] = end
+			} else {
+				spans = append(spans, [2]int{start, end})
+			}
+			from = start + 1
+		}
+	}
+	if len(spans) == 0 {
+		return input
+	}
+	slices.SortFunc(spans, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
+	var out strings.Builder
+	last := 0
+	for i := 0; i < len(spans); {
+		start, end := spans[i][0], spans[i][1]
+		for i++; i < len(spans) && spans[i][0] < end; i++ {
+			end = max(end, spans[i][1])
+		}
+		out.WriteString(input[last:start])
+		out.WriteString("[redacted]")
+		last = end
+	}
+	out.WriteString(input[last:])
+	return out.String()
 }
 
 // displayTextLimit bounds every string a dashboard display value can carry,

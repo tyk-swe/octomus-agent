@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -203,6 +204,69 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	must(t, err)
 	if len(all) != 1 {
 		t.Fatalf("pruned events: %+v", all)
+	}
+}
+
+// The scheduling view lists every unarchived active task, whatever its batch,
+// plus the run's unarchived queued tasks from both windows: those targeting
+// another branch or already holding a PR reservation, and those targeting the
+// default branch without one. Each task appears once, oldest first.
+func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
+	s := open(t, statePath(t))
+	put := func(id string, edit func(*model.Task)) model.Task {
+		t.Helper()
+		tk := task()
+		tk.ID = id
+		edit(&tk)
+		must(t, s.Put("task", id, tk))
+		return tk
+	}
+	queued := func(*model.Task) {}
+	status := func(status model.Status) func(*model.Task) {
+		return func(tk *model.Task) { tk.Status = status }
+	}
+	archived := func(edit func(*model.Task)) func(*model.Task) {
+		return func(tk *model.Task) {
+			edit(tk)
+			tk.Lifecycle.ArchivedAt = str("2030-01-01T00:00:00Z")
+		}
+	}
+	put("default", queued)
+	must(t, s.SeedPrReservation(put("default-reserved", queued)))
+	put("other-target", func(tk *model.Task) { tk.Proposal.Target = "topic/other" })
+	put("executing", status(model.StatusExecuting))
+	put("archived-queued", archived(queued))
+	put("archived-executing", archived(status(model.StatusExecuting)))
+	put("blocked", status(model.StatusBlocked))
+	put("published", status(model.StatusPublished))
+	scheduled := func(runID *string) []string {
+		t.Helper()
+		tasks, err := s.SchedulingTasks(runID)
+		must(t, err)
+		ids := []string{}
+		for _, tk := range tasks {
+			ids = append(ids, tk.ID)
+		}
+		return ids
+	}
+	want := []string{"default", "default-reserved", "other-target", "executing"}
+	if got := scheduled(nil); !slices.Equal(got, want) {
+		t.Fatalf("scheduling = %v; want %v", got, want)
+	}
+
+	// A batch takes the queued tasks present when it starts; later queued
+	// work waits for the next run, but active work is always listed.
+	control := model.DefaultControl()
+	must(t, s.StartBatch(&control))
+	put("after-batch", queued)
+	put("publishing", status(model.StatusPublishing))
+	want = []string{"default", "default-reserved", "other-target", "executing", "publishing"}
+	if got := scheduled(&control.Batch.ID); !slices.Equal(got, want) {
+		t.Fatalf("run-scoped scheduling = %v; want %v", got, want)
+	}
+	want = []string{"default", "default-reserved", "other-target", "executing", "after-batch", "publishing"}
+	if got := scheduled(nil); !slices.Equal(got, want) {
+		t.Fatalf("scheduling = %v; want %v", got, want)
 	}
 }
 

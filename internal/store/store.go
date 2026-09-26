@@ -187,15 +187,7 @@ func (r *ReadOnly) Close() error {
 // Snapshot runs fn inside one deferred read transaction so every query observes
 // the same committed state, including pages still in the WAL.
 func (r *ReadOnly) Snapshot(fn func(c *sql.Conn) error) error {
-	if _, err := r.Conn.ExecContext(background, "BEGIN"); err != nil {
-		return err
-	}
-	if err := fn(r.Conn); err != nil {
-		_, _ = r.Conn.ExecContext(background, "ROLLBACK")
-		return err
-	}
-	_, err := r.Conn.ExecContext(background, "COMMIT")
-	return err
+	return runTx(r.Conn, "BEGIN", fn)
 }
 
 // transaction runs fn between BEGIN [IMMEDIATE] and COMMIT on the pinned
@@ -205,17 +197,31 @@ func (s *Store) transaction(immediate bool, fn func(c *sql.Conn) error) error {
 	if immediate {
 		begin = "BEGIN IMMEDIATE"
 	}
-	if _, err := s.conn.ExecContext(background, begin); err != nil {
+	return runTx(s.conn, begin, fn)
+}
+
+// runTx runs fn between begin and COMMIT on c. An error from fn, a failed
+// COMMIT or a panic rolls the transaction back, so the connection never stays
+// inside an open transaction that later autocommit writes would silently join.
+// On a panic the rollback runs while it unwinds, before the caller's deferred
+// unlock.
+func runTx(c *sql.Conn, begin string, fn func(c *sql.Conn) error) error {
+	if _, err := c.ExecContext(background, begin); err != nil {
 		return err
 	}
-	if err := fn(s.conn); err != nil {
-		_, _ = s.conn.ExecContext(background, "ROLLBACK")
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = c.ExecContext(background, "ROLLBACK")
+		}
+	}()
+	if err := fn(c); err != nil {
 		return err
 	}
-	if _, err := s.conn.ExecContext(background, "COMMIT"); err != nil {
-		_, _ = s.conn.ExecContext(background, "ROLLBACK")
+	if _, err := c.ExecContext(background, "COMMIT"); err != nil {
 		return err
 	}
+	committed = true
 	return nil
 }
 
@@ -424,6 +430,13 @@ func QueryRecords[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
 	return decodeAll[T](raw)
 }
 
+// listRecords is QueryRecords on the service connection under the store mutex.
+func listRecords[T any](s *Store, query string, args ...any) ([]T, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return QueryRecords[T](s.conn, query, args...)
+}
+
 // Event appends a redacted operator-visible event.
 func (s *Store) Event(entity, kind, message string) error {
 	s.mu.Lock()
@@ -628,13 +641,17 @@ func txGetRaw(c *sql.Conn, kind, id string) ([]byte, bool, error) {
 }
 
 // txGet reads one record inside a caller-owned transaction. dst is left alone
-// when the record is absent.
+// when the record is absent; a record that no longer decodes is found and
+// named in the error.
 func txGet(c *sql.Conn, kind, id string, dst any) (bool, error) {
 	data, found, err := txGetRaw(c, kind, id)
 	if err != nil || !found {
 		return false, err
 	}
-	return true, decodeJSON(data, dst)
+	if err := decodeJSON(data, dst); err != nil {
+		return true, fmt.Errorf("Saved %s %s is unreadable: %w", kind, id, err)
+	}
+	return true, nil
 }
 
 // txPut upserts one record inside a caller-owned transaction.
@@ -699,17 +716,30 @@ func decodeJSON(data []byte, dst any) error {
 	return nil
 }
 
-// decodeAll decodes each saved value as a T. The result is never nil.
+// decodeAll decodes each saved value as a T. The result is never nil. A value
+// that no longer decodes fails the whole read, named by its id.
 func decodeAll[T any](raw [][]byte) ([]T, error) {
 	values := make([]T, 0, len(raw))
 	for _, data := range raw {
 		var value T
 		if err := decodeJSON(data, &value); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Saved record %s is unreadable: %w", savedRecordID(data), err)
 		}
 		values = append(values, value)
 	}
 	return values, nil
+}
+
+// savedRecordID reads the "id" member of an unreadable saved value so an
+// operator can find its row; every listed record kind carries one.
+func savedRecordID(data []byte) string {
+	var probe struct {
+		ID string `json:"id"`
+	}
+	if json.NewDecoder(bytes.NewReader(data)).Decode(&probe) != nil || probe.ID == "" {
+		return "(unknown id)"
+	}
+	return probe.ID
 }
 
 // StorageLimitError is the refusal an admission gets when the workspace already
