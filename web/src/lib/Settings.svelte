@@ -43,6 +43,8 @@
     loading = $state(false),
     loadError = $state(''),
     error = $state(''),
+    /** The last save was refused with 409, such as a revision another tab saved first. */
+    conflict = $state(false),
     message = $state(''),
     pending = $state(''),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
@@ -111,6 +113,7 @@
   function acceptSaved(view: SettingsView) {
     if (!baseline || view.revision !== revision) {
       error = '';
+      conflict = false;
       message = '';
       // A connection check only ever covers the exact saved revision it ran against.
       preflight = null;
@@ -155,12 +158,31 @@
     commands = baselineCommands;
     replaced = {};
     error = '';
+    conflict = false;
     message = 'Changes discarded. Saved configuration restored.';
+  }
+  /**
+   * The service answers a stale save with 409 and asks for a reload. This is the explicit
+   * way to follow that in place: drop the draft, then load the saved configuration.
+   */
+  async function reload() {
+    if (busy || loading) return;
+    if (config) {
+      config = JSON.parse(baseline);
+      commands = baselineCommands;
+      replaced = {};
+    }
+    error = '';
+    conflict = false;
+    message = '';
+    await load();
+    if (!loadError) message = 'Edits discarded. Saved configuration reloaded.';
   }
   async function save() {
     if (!config || !editable || busy || loading || !dirty) return;
     pending = 'save';
     error = '';
+    conflict = false;
     message = '';
     try {
       const draft: Config = { ...config, verification_commands: parseCommands(commands) };
@@ -180,6 +202,7 @@
       onsaved();
     } catch (e) {
       error = (e as Error).message;
+      conflict = e instanceof ApiError && e.status === 409;
     } finally {
       pending = '';
     }
@@ -194,6 +217,7 @@
     const binary = config[`${backend}_binary`];
     pending = `catalog-${backend}`;
     error = '';
+    conflict = false;
     message = '';
     try {
       const models = await api<Model[]>('/model-catalog', 'POST', { backend, binary });
@@ -210,6 +234,7 @@
     if (!config || dirty || busy || loading) return;
     pending = mode;
     error = '';
+    conflict = false;
     message = '';
     const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     try {
@@ -543,7 +568,14 @@
           /></button
         >
       </div>
-      {#if error}<div class="notice error settings-feedback" role="alert">{error}</div>{/if}
+      {#if error}<div class="notice error settings-feedback" role="alert">
+          <span>{error}</span>{#if conflict}<button
+              type="button"
+              class="button small"
+              onclick={reload}
+              disabled={busy || loading}>Discard edits and reload</button
+            >{/if}
+        </div>{/if}
       {#if message}<div class="notice success settings-feedback" role="status">{message}</div>{/if}
     </div>
   </form>

@@ -520,6 +520,65 @@ test('a blank runner executable is flagged on its own field before any save is s
   ]);
 });
 
+test('a revision conflict offers to discard the draft and reload the saved configuration in place', async ({
+  page,
+  isMobile
+}) => {
+  const state = await configurationFixture(page);
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const branch = page.getByLabel('Default branch', { exact: true });
+  await expect(branch).toHaveValue('fixture-main');
+  const reads = state.reads;
+  const alert = page.getByRole('alert').and(page.locator('.settings-feedback'));
+  const reload = page.getByRole('button', { name: 'Discard edits and reload' });
+
+  // Another tab saves first, so this tab's save pins a superseded revision.
+  state.saved!.default_branch = 'external-main';
+  await branch.fill('stale-main');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(alert).toContainText('Synthetic save conflict');
+  await expect(branch).toHaveValue('stale-main');
+  expect(state.reads).toBe(reads);
+  // Plain Discard keeps the stale revision and offers nothing more.
+  await page.getByRole('button', { name: 'Discard changes' }).click();
+  await expect(alert).toHaveCount(0);
+  await expect(branch).toHaveValue('fixture-main');
+  await branch.fill('stale-main');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(alert).toContainText('Synthetic save conflict');
+  await expect(reload).toBeVisible();
+  expect(state.writes).toHaveLength(2);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+  // The reload is explicit, drops the draft and reads the saved configuration once.
+  await reload.click();
+  await expect(branch).toHaveValue('external-main');
+  await expect(page.getByRole('status').and(page.locator('.settings-feedback'))).toHaveText(
+    'Edits discarded. Saved configuration reloaded.'
+  );
+  await expect(alert).toHaveCount(0);
+  await expect(reload).toHaveCount(0);
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
+  expect(state.reads).toBe(reads + 1);
+  expect(state.writes).toHaveLength(2);
+
+  // The next save pins the reloaded revision and is accepted.
+  await branch.fill('current-main');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)!.config).toEqual({ default_branch: 'current-main' });
+  expect(state.saved!.default_branch).toBe('current-main');
+
+  // Other failures are not offered a reload.
+  await page.route('**/api/model-catalog', (route) =>
+    route.fulfill({ status: 503, json: { error: 'Synthetic catalog outage' } })
+  );
+  await page.getByRole('button', { name: 'Load Codex models' }).click();
+  await expect(alert).toContainText('Synthetic catalog outage');
+  await expect(reload).toHaveCount(0);
+});
+
 test('configuration keeps drafts and catalogs across views, discards locally, and refreshes clean values', async ({
   page,
   isMobile
