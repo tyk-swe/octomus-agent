@@ -43,8 +43,7 @@ func TestSchedulerPausesInvalidatePrObservations(t *testing.T) {
 			}
 			app := New(state, t.TempDir())
 			t.Cleanup(app.Shutdown)
-			app.runtime.lastRetention = time.Now()
-			app.runtime.lastObserve = time.Now()
+			deferHousekeeping(app)
 			cancelled := false
 			app.runtimeMu.Lock()
 			app.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now()}

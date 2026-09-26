@@ -139,8 +139,7 @@ func TestRunOnceAcceptsPreviouslyPublishedDependency(t *testing.T) {
 				return state.Put("task", task.ID, task)
 			})))
 			t.Cleanup(app.Shutdown)
-			app.runtime.lastRetention = time.Now()
-			app.runtime.lastObserve = time.Now()
+			deferHousekeeping(app)
 			if err := app.RunOnce(); err != nil {
 				t.Fatal(err)
 			}
@@ -165,8 +164,7 @@ func TestPlanningPreflightRejectsMissingAuthenticationBeforeSideEffects(t *testi
 			}
 			app := New(fixture.state, fixture.dataDir)
 			t.Cleanup(app.Shutdown)
-			app.runtime.lastRetention = time.Now()
-			app.runtime.lastObserve = time.Now()
+			deferHousekeeping(app)
 			if mode == "audit" {
 				id, err := app.StartAudit(context.Background())
 				if err == nil || !strings.Contains(err.Error(), "authentication") || id != "" {

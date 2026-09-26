@@ -517,8 +517,7 @@ func newExecutionApp(t *testing.T, fixture *planningFixture) *App {
 	t.Helper()
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -769,8 +768,7 @@ func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
 
 	restarted := New(fixture.state, fixture.dataDir)
 	t.Cleanup(restarted.Shutdown)
-	restarted.runtime.lastRetention = time.Now()
-	restarted.runtime.lastObserve = time.Now()
+	deferHousekeeping(restarted)
 	if err := restarted.Recover(); err != nil {
 		t.Fatal(err)
 	}
@@ -984,8 +982,7 @@ func TestExecutionWorkerPanicBlocks(t *testing.T) {
 		panic("worker exploded")
 	})))
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}

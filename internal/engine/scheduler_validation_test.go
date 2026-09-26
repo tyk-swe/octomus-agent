@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -38,8 +37,7 @@ func TestTickBlocksInvalidQueuedPlan(t *testing.T) {
 		return nil
 	})))
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 
 	if err := app.Tick(); err != nil {
 		t.Fatal(err)

@@ -86,6 +86,13 @@ func ownedPR(branch string) model.PullRequest {
 	}
 }
 
+// deferHousekeeping marks retention and observation as just run, so a test's
+// ticks start no housekeeping pass until those intervals elapse.
+func deferHousekeeping(app *App) {
+	app.runtime.lastRetention = time.Now()
+	app.runtime.lastObserve = time.Now()
+}
+
 func TestIdleDelayMatchesDurableBackoffContract(t *testing.T) {
 	for _, test := range []struct {
 		base   uint64
@@ -688,8 +695,7 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 	if err := state.Put("task", task.ID, task); err != nil {
 		t.Fatal(err)
 	}
-	a.runtime.lastRetention = time.Now()
-	a.runtime.lastObserve = time.Now()
+	deferHousekeeping(a)
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -815,8 +821,7 @@ func TestSchedulerSerializesWritersOnOneBranch(t *testing.T) {
 	})
 	a := New(state, t.TempDir(), WithTaskRunner(runner))
 	t.Cleanup(a.Shutdown)
-	a.runtime.lastRetention = time.Now()
-	a.runtime.lastObserve = time.Now()
+	deferHousekeeping(a)
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -888,8 +893,7 @@ func TestSchedulerCountsRunnerAfterTaskBecomesTerminal(t *testing.T) {
 	})
 	a := New(state, t.TempDir(), WithTaskRunner(runner))
 	t.Cleanup(a.Shutdown)
-	a.runtime.lastRetention = time.Now()
-	a.runtime.lastObserve = time.Now()
+	deferHousekeeping(a)
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -981,8 +985,7 @@ func TestSchedulerWaitsForExecutionSlotBeforeRefreshingCapacity(t *testing.T) {
 		return nil
 	})))
 	t.Cleanup(a.Shutdown)
-	a.runtime.lastRetention = time.Now()
-	a.runtime.lastObserve = time.Now()
+	deferHousekeeping(a)
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}

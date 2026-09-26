@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,20 @@ func (b *removalBarrier) remove(root, path string) error {
 		<-b.release
 	}
 	return workspace.RemoveOwnedDir(root, path)
+}
+
+// failOnceRemoval is a WithWorkspaceRemoval seam whose next removal of target
+// fails with message; every other removal goes through the real
+// managed-directory checks. Storing true in the returned flag re-arms it.
+func failOnceRemoval(target, message string) (Option, *atomic.Bool) {
+	fail := &atomic.Bool{}
+	fail.Store(true)
+	return WithWorkspaceRemoval(func(root, path string) error {
+		if path == target && fail.Swap(false) {
+			return errors.New(message)
+		}
+		return workspace.RemoveOwnedDir(root, path)
+	}), fail
 }
 
 // wait confirms removal of the blocked path was admitted and is in flight.
@@ -557,14 +572,8 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := filepath.Join(dataDir, "baselines", check.ID)
-	var fail atomic.Bool
-	fail.Store(true)
-	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
-		if path == target && fail.Swap(false) {
-			return errors.New("removal failed after reading bearer fixturesecrettoken123")
-		}
-		return workspace.RemoveOwnedDir(root, path)
-	}))
+	removal, _ := failOnceRemoval(target, "removal failed after reading bearer fixturesecrettoken123")
+	app := New(state, dataDir, removal)
 	t.Cleanup(app.Shutdown)
 
 	if err := app.removeBaselineWorkspace(&check); err != nil {
@@ -587,11 +596,7 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	remaining := false
-	for _, candidate := range candidates {
-		remaining = remaining || candidate.ID == check.ID
-	}
-	if !remaining {
+	if !slices.ContainsFunc(candidates, func(candidate model.BaselineCheck) bool { return candidate.ID == check.ID }) {
 		t.Fatal("failed cleanup left the candidate list")
 	}
 
@@ -624,14 +629,8 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := filepath.Join(dataDir, "tasks", task.ID)
-	var fail atomic.Bool
-	fail.Store(true)
-	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
-		if path == target && fail.Swap(false) {
-			return errors.New("removal failed after reading bearer fixturesecrettoken123")
-		}
-		return workspace.RemoveOwnedDir(root, path)
-	}))
+	removal, fail := failOnceRemoval(target, "removal failed after reading bearer fixturesecrettoken123")
+	app := New(state, dataDir, removal)
 	t.Cleanup(app.Shutdown)
 
 	err := app.TaskAction(context.Background(), task.ID, "discard")
@@ -667,11 +666,7 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	remaining := false
-	for _, id := range ids {
-		remaining = remaining || id == task.ID
-	}
-	if !remaining {
+	if !slices.Contains(ids, task.ID) {
 		t.Fatal("failed cleanup left the candidate list")
 	}
 
@@ -910,8 +905,7 @@ func TestCleanupClaimConflictsTaskActionsAndExecutionAdmission(t *testing.T) {
 		return ctx.Err()
 	})))
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 
 	app.gate.Lock()
 	claimed := app.claimCleanup(cleanupTask, blocked.ID) &&

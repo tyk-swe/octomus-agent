@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -115,8 +114,7 @@ func (f *scriptedFixture) pausedApp(t *testing.T, options ...Option) *App {
 	t.Helper()
 	app := New(f.state, f.dataDir, append([]Option{WithRunnerConnector(f.script.Connector())}, options...)...)
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 	return app
 }
 

@@ -288,8 +288,7 @@ func TestPauseCancelsHeldCapacityRefreshAndRejectsItsResult(t *testing.T) {
 	}
 	app := New(fixture.state, fixture.dataDir, WithTaskRunner(TaskRunnerFunc(func(context.Context, model.Task) error { return nil })))
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -436,8 +435,7 @@ func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
 		return fixture.state.Put("task", task.ID, task)
 	})))
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -528,8 +526,7 @@ func TestRefusedAdmissionPacesInventoryRefreshes(t *testing.T) {
 				return fixture.state.Put("task", task.ID, task)
 			})))
 			t.Cleanup(app.Shutdown)
-			app.runtime.lastRetention = time.Now()
-			app.runtime.lastObserve = time.Now()
+			deferHousekeeping(app)
 			if err := app.Resume(); err != nil {
 				t.Fatal(err)
 			}

@@ -665,8 +665,7 @@ func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
 
 	app := New(fixture.state, fixture.dataDir, WithRunnerConnector(script.Connector()))
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 	if err := app.Recover(); err != nil {
 		t.Fatal(err)
 	}
@@ -903,8 +902,7 @@ func TestExecutionShutdownLeavesInitializedTaskForRecovery(t *testing.T) {
 	script.Answer(routes.Reviewer, cleanReview("Complete"))
 	restarted := New(fixture.state, fixture.dataDir, WithRunnerConnector(script.Connector()))
 	t.Cleanup(restarted.Shutdown)
-	restarted.runtime.lastRetention = time.Now()
-	restarted.runtime.lastObserve = time.Now()
+	deferHousekeeping(restarted)
 	if err := restarted.Recover(); err != nil {
 		t.Fatal(err)
 	}
