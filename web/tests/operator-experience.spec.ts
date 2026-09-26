@@ -1855,6 +1855,72 @@ test('empty PR outcomes keep delivery history stationary during refresh and retr
   }
 });
 
+test('the attention link opens the attention queue, and the list search answers to its keys and clear button', async ({
+  page
+}) => {
+  const queries: { status: string | null; q: string | null }[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/tasks')
+      queries.push({ status: url.searchParams.get('status'), q: url.searchParams.get('q') });
+  });
+  await login(page);
+  const blocked = 'Handle interrupted verification commands';
+  const attention = page.getByRole('region', { name: /^Needs attention/ });
+  await expect(attention.getByRole('button', { name: new RegExp(blocked) })).toBeVisible();
+  // The link opens the queue first; the queue's reset must not undo the attention filter.
+  await attention.getByRole('button', { name: 'View all unresolved work' }).click();
+  await expect(page.getByRole('heading', { name: 'From idea to improvement.' })).toBeVisible();
+  const filters = page.getByRole('group', { name: 'Task filters' });
+  await expect(filters.getByRole('button', { name: 'attention', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+  const rows = page.locator('.task-row');
+  const setup = rows.filter({ hasText: 'Complete the repository setup flow' });
+  await expect(rows.filter({ hasText: blocked })).toHaveCount(1);
+  await expect(setup).toHaveCount(0);
+  await expect.poll(() => queries.at(-1)).toEqual({ status: 'attention', q: '' });
+
+  await filters.getByRole('button', { name: 'all', exact: true }).click();
+  await expect(setup).toHaveCount(1);
+  const search = page.getByLabel('Search work');
+  // "/" moves focus into the search from outside a field without typing the slash.
+  await page.keyboard.press('/');
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue('');
+  await page.keyboard.type('documentation');
+  await expect(setup).toHaveCount(0);
+  await expect(rows.filter({ hasText: 'Explain the local development workflow' })).toHaveCount(1);
+  await expect.poll(() => queries.at(-1)).toEqual({ status: 'all', q: 'documentation' });
+
+  // Escape is spent clearing a query; with nothing left to clear it reaches the page.
+  await page.evaluate(() => {
+    const counter = window as unknown as { escapes: number };
+    counter.escapes = 0;
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') counter.escapes++;
+    });
+  });
+  const escapes = () => page.evaluate(() => (window as unknown as { escapes: number }).escapes);
+  await page.keyboard.press('Escape');
+  await expect(search).toHaveValue('');
+  await expect(setup).toHaveCount(1);
+  await expect.poll(() => queries.at(-1)).toEqual({ status: 'all', q: '' });
+  expect(await escapes()).toBe(0);
+  await page.keyboard.press('Escape');
+  expect(await escapes()).toBe(1);
+
+  await search.fill('documentation');
+  await expect(setup).toHaveCount(0);
+  const clear = page.getByRole('button', { name: 'Clear search', exact: true });
+  await clear.click();
+  await expect(search).toHaveValue('');
+  await expect(clear).toHaveCount(0);
+  await expect(setup).toHaveCount(1);
+  await expect.poll(() => queries.at(-1)).toEqual({ status: 'all', q: '' });
+});
+
 test('polling keeps the second task under the same mouse position', async ({ page, isMobile }) => {
   let gate: ReturnType<typeof deferred> | null = null;
   await page.route('**/api/tasks?*', async (route) => {
