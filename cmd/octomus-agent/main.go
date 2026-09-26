@@ -143,7 +143,7 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		if parsed.audit {
 			mode = model.CycleModeAudit
 		}
-		sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
 		defer stopSignals()
 		return runDoctor(sigCtx, app, mode, stdout)
 	}
@@ -169,7 +169,7 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
 	}
 	webhook, _ := env(store.WebhookEnv)
-	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stopSignals()
 	server := newHTTPServer(httpapi.Router(app, token, assetsOverride, octomus.Version))
 	components := serviceComponents{
@@ -186,6 +186,18 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	return components.run(sigCtx, parsed.listen, stderr)
 }
 
+// shutdownSignals are the signals that stop the service, or an interrupted
+// doctor, gracefully. A hangup (a closed terminal or dropped SSH session) joins
+// them so owned process groups are terminated instead of orphaned, unless the
+// hangup is already ignored, as under nohup: registering it would un-ignore it.
+func shutdownSignals() []os.Signal {
+	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) {
+		signals = append(signals, syscall.SIGHUP)
+	}
+	return signals
+}
+
 // newHTTPServer bounds only the connection phases no handler needs: headers
 // must arrive within ReadHeaderTimeout and an idle keep-alive connection
 // closes after IdleTimeout, so stalled or abandoned clients cannot pin
@@ -196,7 +208,7 @@ func newHTTPServer(handler http.Handler) *http.Server {
 }
 
 // runDoctor validates the saved configuration for mode and prints the result.
-// Cancelling ctx (an interrupt or termination signal) shuts the app down,
+// Cancelling ctx (one of the shutdownSignals) shuts the app down,
 // which terminates every owned process group the checks started, and fails
 // the command. The shutdown finishes before runDoctor returns, so the caller
 // may close the store.
