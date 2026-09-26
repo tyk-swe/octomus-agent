@@ -345,11 +345,12 @@ test('opening Configuration reads the baseline status once, and a new saved revi
   await expect.poll(() => reads).toBe(1);
   await page.waitForTimeout(1000);
   expect(reads).toBe(1);
-  gate.resolve();
-  await expect(page.locator('#check-baseline')).toBeEnabled();
-
-  // The next poll's read is held; saving a change must not wait for it.
+  // Later reads wait on a fresh gate, set before this one opens, so the next poll's read
+  // is held however soon it starts; saving a change must not wait for it.
+  const first = gate;
   gate = deferred();
+  first.resolve();
+  await expect(page.locator('#check-baseline')).toBeEnabled();
   await expect.poll(() => reads, { timeout: 10000 }).toBe(2);
   await page.getByLabel('Default branch', { exact: true }).fill('baseline-main');
   await page.getByRole('button', { name: 'Save configuration' }).click();
@@ -1196,6 +1197,9 @@ test('locked previews look as non-editable as disabled fields until they are rep
     await branch.hover();
     await expect(branch).toHaveCSS('border-top-color', 'rgb(201, 212, 184)');
     await repository.hover();
+    // The border colour transitions, so wait until the field just left has settled: a
+    // highlight on the read-only field would have finished by then too.
+    await expect(branch).toHaveCSS('border-top-color', 'rgb(223, 231, 213)');
     await expect(repository).toHaveCSS('border-top-color', 'rgb(223, 231, 213)');
   }
   const accessibility = await new AxeBuilder({ page })
