@@ -333,19 +333,19 @@ func (a *App) Drained() bool {
 	return len(r.tasks) == 0 && !r.planning() && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
 }
 
+// fail pauses the service after a failed scheduling pass through the
+// scheduler's pause, recording the error on the control, and then records it
+// as an event. The event is written even when the control cannot be loaded or
+// saved.
 func (a *App) fail(err error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	message := store.ErrorMessage(err)
-	_ = a.Store.Event("system", "error", message)
-	control, loadErr := a.Control()
-	if loadErr != nil {
-		return
+	if control, loadErr := a.Control(); loadErr == nil {
+		redacted := store.Redact(message)
+		_ = a.pauseLocked(&control, &redacted)
 	}
-	redacted := store.Redact(message)
-	control.Error = &redacted
-	control.SetMode(model.OperatingModePaused)
-	_ = a.Store.SaveControl(control)
+	_ = a.Store.Event("system", "error", message)
 }
 
 // Recover turns interrupted in-memory work into explicit durable state and

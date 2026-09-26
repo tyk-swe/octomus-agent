@@ -8,27 +8,34 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// Every scheduler pause follows the Pause contract: the process-local PR
-// observation stops authorizing or reporting capacity, and a refresh in flight
-// is cancelled, so its result cannot authorize new-PR work after a resume.
+// Every scheduler pause follows the operator pause's contract: the
+// process-local PR observation stops authorizing or reporting capacity, and a
+// refresh in flight is cancelled, so its result cannot authorize new-PR work
+// after a resume.
 func TestSchedulerPausesInvalidatePrObservations(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		phase model.BatchPhase
-		event string
+		// failure is the error the pass fails with, which Run hands to fail.
+		failure string
+		event   string
 	}{
 		// An executing batch with no pending members finishes the run.
 		{name: "run once completes", phase: model.BatchPhaseExecuting, event: "run_complete"},
 		// A draining batch plans next; its preflight fails on the fixture
 		// checkout, which has no origin.
 		{name: "run once preflight fails", phase: model.BatchPhaseDraining, event: "planning_error"},
+		// A run once without its durable batch fails the pass itself.
+		{name: "scheduling pass fails", failure: "Run once is missing its durable batch", event: "error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := testStore(t)
 			cfg := testConfig(t.TempDir())
 			control := model.DefaultControl()
 			control.SetMode(model.OperatingModeRunOnce)
-			control.Batch = &model.RunBatch{ID: model.ID(), Phase: tc.phase}
+			if tc.failure == "" {
+				control.Batch = &model.RunBatch{ID: model.ID(), Phase: tc.phase}
+			}
 			saveSettings(t, state, cfg, control)
 			inventory := model.OpenPrInventory{Repository: cfg.GitHubRepo, ObservedAt: model.Now(), PRs: []model.PullRequest{}}
 			if persisted, err := state.PersistPrInventory(inventory, nil); err != nil || !persisted {
@@ -47,7 +54,14 @@ func TestSchedulerPausesInvalidatePrObservations(t *testing.T) {
 				t.Fatalf("capacity before the pause: %+v, %v", capacity, err)
 			}
 
-			if err := app.Tick(); err != nil {
+			err := app.Tick()
+			switch {
+			case tc.failure != "":
+				if err == nil || err.Error() != tc.failure {
+					t.Fatalf("pass error = %v; want %q", err, tc.failure)
+				}
+				app.fail(err) // As Run does with a failed pass.
+			case err != nil:
 				t.Fatal(err)
 			}
 			app.wg.Wait() // The preflight pauses from its own goroutine.
@@ -55,6 +69,9 @@ func TestSchedulerPausesInvalidatePrObservations(t *testing.T) {
 			paused, err := app.Control()
 			if err != nil || paused.Mode != model.OperatingModePaused || !paused.Paused || paused.Batch != nil {
 				t.Fatalf("run once did not pause: %+v, %v", paused, err)
+			}
+			if tc.failure != "" && (paused.Error == nil || *paused.Error != tc.failure) {
+				t.Fatalf("failed pass recorded error %v; want %q", paused.Error, tc.failure)
 			}
 			app.runtimeMu.Lock()
 			observation, refresh := app.runtime.prObservation, app.runtime.prRefresh
