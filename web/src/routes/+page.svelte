@@ -172,8 +172,9 @@
   let listLoading = $state(false);
   let listLoaded = $state(false);
   let listError = $state('');
-  // Non-reactive bookkeeping, never rendered: the list effect reads and writes it without
-  // subscribing to it, so these are plain variables rather than $state.
+  // Non-reactive bookkeeping, never rendered: request chains and generations, the list
+  // effect's last scope and page, and the refresh guard. The list effect and the request
+  // handlers read and write these without subscribing to them, so they are not $state.
   let cycleRequest = Promise.resolve();
   let listGeneration = 0;
   let listRequest: AbortController | null = null;
