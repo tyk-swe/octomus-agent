@@ -315,3 +315,48 @@ func TestRepositoryIdentity(t *testing.T) {
 		})
 	}
 }
+
+// Route errors name the route and the component that failed.
+func TestRouteErrorsNameTheRouteAndComponent(t *testing.T) {
+	text := func(s string) *string { return &s }
+	for _, test := range []struct {
+		name    string
+		mutate  func(*Config)
+		message string
+	}{
+		{"model spacing", func(c *Config) { c.Tiers["L"] = NewRoute("gpt-5 ", "low") },
+			"L route: Model must be at most 100 bytes with no surrounding spaces or control characters"},
+		{"codex model length", func(c *Config) { c.Roles["discovery"] = NewRoute(strings.Repeat("m", 101), "low") },
+			"discovery route: Model must be at most 100 bytes with no surrounding spaces or control characters"},
+		{"opencode model length", func(c *Config) {
+			c.Roles["orchestrator"] = Route{Backend: BackendOpencode, Model: strings.Repeat("m", 513), Provider: text("provider")}
+		}, "orchestrator route: Model must be at most 512 bytes with no surrounding spaces or control characters"},
+		{"effort length", func(c *Config) { c.Tiers["XS"] = NewRoute("model", strings.Repeat("e", 21)) },
+			"XS route: Effort must be at most 20 bytes with no surrounding spaces or control characters"},
+		{"provider spacing", func(c *Config) {
+			c.Roles["code_reviewer"] = Route{Backend: BackendOpencode, Model: "model", Provider: text(" x")}
+		}, "code_reviewer route: Provider must be at most 100 bytes with no surrounding spaces or control characters"},
+		{"empty variant", func(c *Config) {
+			c.RepairRoute = Route{Backend: BackendOpencode, Model: "model", Provider: text("provider"), Variant: text("")}
+		}, "repair route: Variant must be a non-empty name of at most 100 bytes with no surrounding spaces or control characters"},
+		{"codex variant", func(c *Config) {
+			c.RepairRoute = Route{Backend: BackendCodex, Model: "model", Effort: "low", Variant: text("high")}
+		}, "repair route: Codex routes use reasoning effort, not an OpenCode provider or variant"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := Default()
+			test.mutate(&c)
+			if err := c.Validate(false); err == nil || err.Error() != test.message {
+				t.Fatalf("Validate(false) = %v; want %q", err, test.message)
+			}
+		})
+	}
+	c := Default()
+	c.Roles["orchestrator"] = Route{Backend: BackendOpencode, Model: strings.Repeat("m", 512), Provider: text("provider"), Variant: text("high")}
+	if err := c.Validate(false); err != nil {
+		t.Fatalf("a 512-byte OpenCode model: %v", err)
+	}
+	if err := Default().ValidateAudit(); err == nil || err.Error() != "discovery route: Set the Codex model and effort for every required route" {
+		t.Fatalf("ValidateAudit() = %v; want the first unset planning route named", err)
+	}
+}

@@ -76,8 +76,17 @@ func (r Route) Validate(ready bool) error {
 	if r.Backend == BackendOpencode {
 		max = 512
 	}
-	if !valid(r.Model, max) || !valid(r.Effort, 20) || (r.Provider != nil && !valid(*r.Provider, 100)) || (r.Variant != nil && (*r.Variant == "" || !valid(*r.Variant, 100))) {
-		return fmt.Errorf("Invalid model route")
+	if !valid(r.Model, max) {
+		return fmt.Errorf("Model must be at most %d bytes with no surrounding spaces or control characters", max)
+	}
+	if !valid(r.Effort, 20) {
+		return fmt.Errorf("Effort must be at most 20 bytes with no surrounding spaces or control characters")
+	}
+	if r.Provider != nil && !valid(*r.Provider, 100) {
+		return fmt.Errorf("Provider must be at most 100 bytes with no surrounding spaces or control characters")
+	}
+	if r.Variant != nil && (*r.Variant == "" || !valid(*r.Variant, 100)) {
+		return fmt.Errorf("Variant must be a non-empty name of at most 100 bytes with no surrounding spaces or control characters")
 	}
 	switch r.Backend {
 	case BackendCodex:
@@ -227,7 +236,7 @@ func (c Config) validateMode(ready, audit bool) error {
 	}
 	for _, route := range c.RoutesFor(false) {
 		if err := route.Route.Validate(false); err != nil {
-			return err
+			return fmt.Errorf("%s route: %w", route.Name, err)
 		}
 	}
 	for backend, path := range c.RunnerStoragePaths {
@@ -248,7 +257,7 @@ func (c Config) validateMode(ready, audit bool) error {
 	if ready {
 		for _, route := range c.RoutesFor(audit) {
 			if err := route.Route.Validate(true); err != nil {
-				return fmt.Errorf("%s: %w", route.Name, err)
+				return fmt.Errorf("%s route: %w", route.Name, err)
 			}
 		}
 		if err := c.validateRepository(); err != nil {
