@@ -346,8 +346,8 @@
         </dl>
         <h3>Scope & evidence</h3>
         <p>{task.proposal.scope}</p>
-        {#each task.proposal.evidence as evidence}<p class="evidence">
-            <Icon name="code" size={16} />{evidence}
+        {#each task.proposal.evidence as item}<p class="evidence">
+            <Icon name="code" size={16} />{item}
           </p>{/each}
         <details class="raw-detail">
           <summary>Execution prompt</summary>

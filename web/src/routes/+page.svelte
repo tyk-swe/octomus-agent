@@ -42,30 +42,30 @@
     proposalFilter = $state('all'),
     proposalCycle = $state('all'),
     selected = $state<string | null>(null),
-    evidence = $state<{ cycle: string; proposal: string | null } | null>(null),
+    runPanel = $state<{ cycle: string; proposal: string | null } | null>(null),
     mobileOpen = $state(false),
     lastUpdated = $state('');
   /** The control that opened the first panel; keyboard focus returns there on close. */
   let panelOpener: HTMLElement | null = null;
   function rememberOpener() {
-    if (selected || evidence) return;
+    if (selected || runPanel) return;
     panelOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   }
   /** Only one panel is ever open: run evidence hands deep inspection to TaskDetail. */
   function inspectRun(cycle: string, proposal: string | null) {
     rememberOpener();
     selected = null;
-    evidence = { cycle, proposal };
+    runPanel = { cycle, proposal };
   }
   function inspectTask(id: string) {
     rememberOpener();
-    evidence = null;
+    runPanel = null;
     selected = id;
   }
   async function closePanels() {
-    if (!selected && !evidence) return;
+    if (!selected && !runPanel) return;
     selected = null;
-    evidence = null;
+    runPanel = null;
     const opener = panelOpener;
     panelOpener = null;
     await tick();
@@ -156,7 +156,6 @@
   };
   let cycleRows = $state<CycleSummary[]>([]);
   let cycleCursor = $state<number | null>(null);
-  let cycleRequest = Promise.resolve();
   let cyclesLoading = $state(false);
   let decisionCounts = $state<Record<string, number>>({});
   let listBefore = $state<number | null>(null);
@@ -166,6 +165,9 @@
   let listLoading = $state(false);
   let listLoaded = $state(false);
   let listError = $state('');
+  // Non-reactive bookkeeping, never rendered: the list effect reads and writes it without
+  // subscribing to it, so these are plain variables rather than $state.
+  let cycleRequest = Promise.resolve();
   let listGeneration = 0;
   let listRequest: AbortController | null = null;
   let lastScope = '';
@@ -537,7 +539,7 @@
     data = null;
     setToken('');
     selected = null;
-    evidence = null;
+    runPanel = null;
     panelOpener = null;
     listGeneration++;
     listRequest?.abort();
@@ -1190,8 +1192,8 @@
                     <summary>Scope, evidence & execution prompt</summary>
                     <p>{p.detail?.benefit ?? p.benefit}</p>
                     <p>{p.detail?.scope ?? p.scope}</p>
-                    {#each p.detail?.evidence ?? p.evidence as evidence}<p class="evidence">
-                        {evidence}
+                    {#each p.detail?.evidence ?? p.evidence as item}<p class="evidence">
+                        {item}
                       </p>{/each}
                     <pre class="prompt">{p.detail?.prompt ?? p.prompt}</pre>
                     <small
@@ -1339,9 +1341,9 @@
         onclose={closePanels}
         onaction={refresh}
       />{/key}{/if}
-  {#if evidence}<RunEvidence
-      cycleId={evidence.cycle}
-      proposalId={evidence.proposal}
+  {#if runPanel}<RunEvidence
+      cycleId={runPanel.cycle}
+      proposalId={runPanel.proposal}
       onopentask={inspectTask}
       onclose={closePanels}
     />{/if}
