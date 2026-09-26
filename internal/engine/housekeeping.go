@@ -20,6 +20,12 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
+const (
+	// retentionInterval and observeInterval pace the housekeeping passes.
+	retentionInterval = 15 * time.Minute
+	observeInterval   = 5 * time.Minute
+)
+
 type storageUsage struct {
 	MeasuredAt        string         `json:"measured_at"`
 	ApplicationBytes  uint64         `json:"application_bytes"`
@@ -37,8 +43,8 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 		a.runtimeMu.Unlock()
 		return
 	}
-	cleanup := a.runtime.lastRetention.IsZero() || now.Sub(a.runtime.lastRetention) >= 15*time.Minute
-	observe := a.runtime.lastObserve.IsZero() || now.Sub(a.runtime.lastObserve) >= 5*time.Minute
+	cleanup := a.runtime.lastRetention.IsZero() || now.Sub(a.runtime.lastRetention) >= retentionInterval
+	observe := a.runtime.lastObserve.IsZero() || now.Sub(a.runtime.lastObserve) >= observeInterval
 	if !cleanup && !observe {
 		a.runtimeMu.Unlock()
 		return
@@ -59,20 +65,32 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 			a.runtime.housekeeping = false
 			a.runtimeMu.Unlock()
 		}()
+		// Once the service is stopping, the remaining steps are obsolete: the
+		// pass ends at the next step boundary, and an interrupted step's
+		// cancellation is not a housekeeping failure.
+		report := func(err error) {
+			if err != nil && a.ctx.Err() == nil {
+				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
+			}
+		}
 		if cleanup {
 			if err := a.retention(cfg); err != nil {
-				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
+				report(err)
+				return
+			}
+			if a.ctx.Err() != nil {
 				return
 			}
 			if err := a.measureStorage(cfg); err != nil {
-				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
+				report(err)
 				return
 			}
 		}
+		if a.ctx.Err() != nil {
+			return
+		}
 		if stat, err := os.Stat(cfg.Repository); observe && cfg.GitHubRepo != "" && err == nil && stat.IsDir() {
-			if err := a.observeRemote(a.ctx, cfg); err != nil {
-				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
-			}
+			report(a.observeRemote(a.ctx, cfg))
 		}
 	}()
 }

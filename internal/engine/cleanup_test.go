@@ -772,3 +772,53 @@ func TestInterruptedCleanupLeavesNoClaimAndRetriesAfterRestart(t *testing.T) {
 		t.Fatalf("retried cleanup recorded a failure: %+v", events)
 	}
 }
+
+// A housekeeping pass still running at shutdown stops at its next step
+// boundary: the storage walk and remote observation that remain are obsolete,
+// and their cancellation is not a housekeeping failure for the event log. The
+// removal barrier holds retention until Shutdown has cancelled the service,
+// so the order is deterministic.
+func TestHousekeepingShutdownRecordsNoCancellationError(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	cycle := discardableCycle(t, fixture.dataDir)
+	if err := fixture.state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	barrier := newRemovalBarrier(t, filepath.Join(fixture.dataDir, "cycles", cycle.ID))
+	app := New(fixture.state, fixture.dataDir, WithWorkspaceRemoval(barrier.remove))
+	// Retention and observation are both due on the first tick.
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	barrier.wait(t)
+	stopped := make(chan struct{})
+	go func() {
+		app.Shutdown()
+		close(stopped)
+	}()
+	<-app.Context().Done()
+	barrier.Release()
+	select {
+	case <-stopped:
+	case <-time.After(30 * time.Second):
+		t.Fatal("shutdown did not finish after the held removal released")
+	}
+	system := "system"
+	events, err := fixture.state.Events(&system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "housekeeping_error" {
+			t.Fatalf("shutdown recorded a housekeeping failure: %+v", event)
+		}
+	}
+	// The removal already in flight still finalizes its record.
+	saved, err := store.Get[model.Cycle](fixture.state, "cycle", cycle.ID)
+	if err != nil || saved == nil || saved.Lifecycle.DiscardedAt == nil {
+		t.Fatalf("held retention cleanup did not finalize: %+v, %v", saved, err)
+	}
+	if _, found, err := fixture.state.GetValue("settings", "storage"); err != nil || found {
+		t.Fatalf("storage was walked after shutdown: %t, %v", found, err)
+	}
+}
