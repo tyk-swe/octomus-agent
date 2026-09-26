@@ -237,15 +237,7 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 	if err != nil {
 		return fmt.Errorf("Owned pull request refresh failed: %w", err)
 	}
-	detailByNumber := map[uint64]model.PullRequest{}
-	for _, detail := range details {
-		detailByNumber[detail.Number] = detail
-	}
-	for i, observed := range inventory.PRs {
-		if detail, ok := detailByNumber[observed.Number]; ok {
-			inventory.PRs[i] = detail
-		}
-	}
+	overlayOwnedDetails(&inventory, details)
 	released, err := a.releasableReservations(ctx, snapshot, inventory)
 	if err != nil {
 		return err
@@ -263,11 +255,7 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 	if !store.PrIdentityOf(snapshot).Matches(live) {
 		return errors.New("Pull request policy changed during refresh")
 	}
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	persisted, err := a.Store.PersistPrInventory(inventory, released)
+	persisted, err := a.commitPrObservationLocked(live, inventory, details, released)
 	if err != nil {
 		return err
 	}
@@ -276,20 +264,52 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		// only mean a newer saved inventory.
 		return errPrInventorySuperseded
 	}
+	return nil
+}
+
+// overlayOwnedDetails replaces each inventory entry that has an authoritative
+// owned-PR detail with that detail, matched by PR number.
+func overlayOwnedDetails(inventory *model.OpenPrInventory, details []model.PullRequest) {
+	byNumber := make(map[uint64]model.PullRequest, len(details))
 	for _, detail := range details {
-		if err := a.Store.RecordPrObservation(live.GitHubRepo, detail, false); err != nil {
-			return err
+		byNumber[detail.Number] = detail
+	}
+	for i, observed := range inventory.PRs {
+		if detail, ok := byNumber[observed.Number]; ok {
+			inventory.PRs[i] = detail
 		}
 	}
-	// A persisted complete inventory supersedes any earlier refresh failure,
-	// even while paused; only an unpaused service gains dispatch authority.
+}
+
+// commitPrObservationLocked persists one complete open-PR observation,
+// records the owned PR details under observed's repository and, unless the
+// service is paused, makes it this process's fresh admission observation. A
+// persisted inventory clears an earlier refresh failure in any mode. Callers
+// hold the gate and have revalidated the live configuration that observed
+// describes. false, with nothing written, means a refresh whose fetch started
+// later already saved a newer inventory, which recorded its own observations
+// and authority.
+func (a *App) commitPrObservationLocked(observed config.Config, inventory model.OpenPrInventory, owned []model.PullRequest, released []string) (bool, error) {
+	control, err := a.Control()
+	if err != nil {
+		return false, err
+	}
+	persisted, err := a.Store.PersistPrInventory(inventory, released)
+	if err != nil || !persisted {
+		return false, err
+	}
+	for _, pr := range owned {
+		if err := a.Store.RecordPrObservation(observed.GitHubRepo, pr, false); err != nil {
+			return true, err
+		}
+	}
 	a.runtimeMu.Lock()
 	if control.Mode != model.OperatingModePaused {
-		a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(live), inventory: inventory.Clone(), fetchedAt: time.Now()}
+		a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(observed), inventory: inventory.Clone(), fetchedAt: time.Now()}
 	}
 	a.runtime.prRefreshError = ""
 	a.runtimeMu.Unlock()
-	return nil
+	return true, nil
 }
 
 func (a *App) releasableReservations(ctx context.Context, cfg config.Config, inventory model.OpenPrInventory) ([]string, error) {

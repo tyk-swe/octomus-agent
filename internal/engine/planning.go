@@ -225,15 +225,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if err != nil {
 		return model.OpenPrInventory{}, err
 	}
-	byNumber := map[uint64]model.PullRequest{}
-	for _, pr := range owned {
-		byNumber[pr.Number] = pr
-	}
-	for i, pr := range inventory.PRs {
-		if authoritative, ok := byNumber[pr.Number]; ok {
-			inventory.PRs[i] = authoritative
-		}
-	}
+	overlayOwnedDetails(&inventory, owned)
 	// Fetch only after reading the remote heads, so every commit observed above
 	// that fast-forwards its branch is local for the role clones and decision
 	// fingerprints that use it.
@@ -290,33 +282,13 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if liveFingerprint != snapshotFingerprint {
 		return model.OpenPrInventory{}, errors.New("Configuration changed during planning grounding")
 	}
-	persisted, err := a.Store.PersistPrInventory(inventory, releasable)
-	if err != nil {
-		return model.OpenPrInventory{}, err
-	}
 	// With the live policy confirmed above, a refused persist means only that
 	// a concurrent refresh (housekeeping or dispatch) whose fetch started later
 	// saved a newer inventory first. That refresh recorded its own PR
-	// observations and authority, so this older one must not overwrite them;
-	// the grounding itself is as current as if it had persisted first.
-	if persisted {
-		for _, pr := range owned {
-			if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
-				return model.OpenPrInventory{}, err
-			}
-		}
-		control, err := a.Control()
-		if err != nil {
-			return model.OpenPrInventory{}, err
-		}
-		// As in refreshPRs: the persisted inventory clears an earlier refresh
-		// failure in any mode, and authorizes dispatch only when not paused.
-		a.runtimeMu.Lock()
-		if control.Mode != model.OperatingModePaused {
-			a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now()}
-		}
-		a.runtime.prRefreshError = ""
-		a.runtimeMu.Unlock()
+	// observations and authority, so this older one leaves them alone; the
+	// grounding itself is as current as if it had persisted first.
+	if _, err := a.commitPrObservationLocked(cfg, inventory, owned, releasable); err != nil {
+		return model.OpenPrInventory{}, err
 	}
 	cycle.Grounding = &grounding
 	if err := a.saveCycleMergedSessions(cycle); err != nil {
