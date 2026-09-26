@@ -71,7 +71,7 @@ func TestSegment(t *testing.T) {
 		"a#b",
 		"a\\b",
 		"a\x00b",
-		"é",
+		"\u00e9",
 	} {
 		if got, err := segment(id); err == nil || err.Error() != "Invalid OpenCode identity" || got != "" {
 			t.Errorf("segment(%q) = %q, %v; want a refusal", id, got, err)
