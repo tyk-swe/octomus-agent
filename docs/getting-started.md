@@ -74,9 +74,10 @@ curl -fsSL https://raw.githubusercontent.com/tyk-swe/octomus-agent/main/install.
 
 The installer verifies the downloaded archive against release SHA-256 checksums
 and installs to `/usr/local/bin`. To select a version, download the script and run
-`sh install.sh v0.1.0`; an alternate writable absolute destination is supported
-through `INSTALL_DIR`. Checksums detect corruption; they are not independent
-signatures against a compromised release account.
+`sh install.sh v0.1.0`, or set `OCTOMUS_VERSION=v0.1.0` for the piped `sh`; an
+alternate writable absolute destination is supported through `INSTALL_DIR`.
+Checksums detect corruption; they are not independent signatures against a
+compromised release account.
 
 The executable is statically linked (`CGO_ENABLED=0`) and embeds the dashboard,
 so installation is a single administrator-owned file with no runtime toolchain.

@@ -8,8 +8,9 @@ Employer/name clearance and LICENSE/NOTICE ownership facts remain owner gates.
 
 The application version lives in the `VERSION` file at the repository root. The
 Go binary embeds it at compile time, so `--version`, `/healthz` and runner
-client metadata all report the same string, and release tooling reads the same
-file for tag validation and archive names. Bump it in one place only.
+client metadata all report the same string. The dashboard build shows it too, and
+release tooling reads the same file for tag validation and archive names. Bump it
+in one place only.
 
 ## Build and package
 
