@@ -280,10 +280,11 @@
     Connection checks validate saved configuration. Save or discard edits before checking. Model
     catalogs use the executable paths entered below.
   </p>
-  <div class="actions" aria-describedby="connection-check-help">
+  <div class="actions">
     <button
       id="check-connection"
       class="button"
+      aria-describedby="connection-check-help"
       onclick={() => doctor('execution')}
       disabled={!config || busy || loading || dirty}
       ><Icon name="shield" size={16} />{pending === 'execution'
@@ -293,6 +294,7 @@
     <button
       id="check-audit-connection"
       class="button"
+      aria-describedby="connection-check-help"
       onclick={() => doctor('audit')}
       disabled={!config || busy || loading || dirty}
       >{pending === 'audit' ? 'Checking audit connection…' : 'Check audit connection'}</button

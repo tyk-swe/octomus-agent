@@ -678,8 +678,12 @@ test('configuration keeps drafts and catalogs across views, discards locally, an
   await commands.fill(draftCommands);
   await page.getByLabel('Repair reasoning effort', { exact: true }).selectOption('high');
   await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Check connection', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Check audit connection' })).toBeDisabled();
+  // Each disabled check names the reason it is unavailable.
+  for (const name of ['Check connection', 'Check audit connection']) {
+    const check = page.getByRole('button', { name, exact: true });
+    await expect(check).toBeDisabled();
+    await expect(check).toHaveAccessibleDescription(/Save or discard edits before checking\./);
+  }
   await navigate('Task queue');
   await expect(branch).toBeHidden();
   await navigate('Configuration');
