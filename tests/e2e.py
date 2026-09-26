@@ -91,16 +91,21 @@ class Service:
                 self.process.wait(timeout=5)
                 raise AssertionError(f'service did not stop within 15s of {"SIGKILL" if crash else "SIGTERM"}; service.log tail:\n{service_log(self.root, tail=100)}')
 
-    def request(self, path, method='GET', value=None, api=True):
+    def _open(self, path, method, value, api, timeout):
+        """Sends one authenticated request; `timeout` bounds each socket operation,
+        so a response the service holds longer than that raises TimeoutError."""
         request = urllib.request.Request(f'http://127.0.0.1:{self.port}{"/api" if api else ""}{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
-        with urllib.request.urlopen(request, timeout=5) as response:
+        return urllib.request.urlopen(request, timeout=timeout)
+
+    def request(self, path, method='GET', value=None, api=True, timeout=5):
+        """One request that must succeed: returns the JSON body, raises HTTPError otherwise."""
+        with self._open(path, method, value, api, timeout) as response:
             return json.load(response)
 
-    def expect(self, path, method='GET', value=None):
+    def expect(self, path, method='GET', value=None, timeout=5):
         """One API request that may fail: returns (status, body) instead of raising."""
-        request = urllib.request.Request(f'http://127.0.0.1:{self.port}/api{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with self._open(path, method, value, True, timeout) as response:
                 return response.status, json.load(response)
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read() or b'{}')
@@ -562,14 +567,10 @@ def audit_scenario(mode):
             assert diagnostic['mode'] == 'audit'
             assert diagnostic['checked_revision'] == service.request('/config')['revision']
             assert diagnostic['checked_config'] == service.request('/config')['config']
-            try:
-                service.request('/doctor', 'POST')
-                raise AssertionError('Execution doctor accepted missing verification')
-            except urllib.error.HTTPError as e:
-                assert e.code == 400
-                body = json.load(e)
-                assert body['checked_revision'] == service.request('/config')['revision']
-                assert body['checked_config'] == service.request('/config')['config']
+            code, body = service.expect('/doctor', 'POST')
+            assert code == 400, ('Execution doctor accepted missing verification', code, body)
+            assert body['checked_revision'] == service.request('/config')['revision']
+            assert body['checked_config'] == service.request('/config')['config']
             marker = {'idle': 'idle', 'malformed': 'audit-malformed', 'failed': 'failed-start'}.get(mode, 'audit-decisions')
             (root / marker).touch()
             if mode not in ['failed']:
@@ -578,13 +579,10 @@ def audit_scenario(mode):
             baseline_revision = git('rev-parse', 'main', cwd=root / 'remote.git')
             baseline_refs = git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git')
             if mode == 'budget':
-                try:
-                    service.request('/control/audit', 'POST')
-                    raise AssertionError('Unaffordable audit was accepted')
-                except urllib.error.HTTPError as e:
-                    assert e.code == 409
-                    message = json.load(e)['error']
-                    assert '13' in message and 'increase' in message, message
+                code, body = service.expect('/control/audit', 'POST')
+                assert code == 409, ('Unaffordable audit was accepted', code, body)
+                message = body['error']
+                assert '13' in message and 'increase' in message, message
                 state = service.request('/state')
                 capacity = state['planning_capacity']
                 assert capacity['status'] == 'limit_too_low', capacity
@@ -612,18 +610,15 @@ def audit_scenario(mode):
                 state = service.request('/state')
                 assert state['status'] == 'auditing' and state['control']['paused']
                 for action in ['audit', 'resume', 'cycle']:
-                    try:
-                        service.request('/control/' + action, 'POST')
-                        raise AssertionError('Conflicting control accepted')
-                    except urllib.error.HTTPError as e:
-                        assert e.code == 409
-                        message = json.load(e)['error']
-                        explanation = {
-                            'audit': 'Audits require paused operation with no active work',
-                            'cycle': 'Run once requires paused operation with no active work',
-                            'resume': 'Wait for the audit to finish before starting continuous operation',
-                        }[action]
-                        assert message.startswith(explanation), message
+                    code, body = service.expect('/control/' + action, 'POST')
+                    assert code == 409, ('Conflicting control accepted', action, code, body)
+                    message = body['error']
+                    explanation = {
+                        'audit': 'Audits require paused operation with no active work',
+                        'cycle': 'Run once requires paused operation with no active work',
+                        'resume': 'Wait for the audit to finish before starting continuous operation',
+                    }[action]
+                    assert message.startswith(explanation), message
                 if mode == 'interrupted':
                     service.stop(crash=True)
                 (root / 'audit-hold').unlink()

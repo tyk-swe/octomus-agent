@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import tempfile
 import time
-import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from e2e import Service, setup, existing_pr, git, usage_report, TOKEN
 
@@ -51,7 +50,9 @@ def run(mode):
                     (root / 'reconcile-entered').unlink(missing_ok=True)
                     (root / 'reconcile-hold').touch()
                     with ThreadPoolExecutor(max_workers=1) as pool:
-                        request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST')
+                        # The held request stays open across the controls below,
+                        # longer than the default 5 s socket timeout allows.
+                        request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST', timeout=30)
                         try:
                             service.wait(lambda: (root / 'reconcile-entered').exists(), 'held reconciliation', seconds=3)
                             start = time.monotonic()
@@ -60,11 +61,8 @@ def run(mode):
                             assert service.request('/state')['active_tasks'] == 1
                             assert service.request('/tasks/' + task['id'])['status'] == 'publishing'
                             for action in ['reconcile', 'cancel', 'archive', 'discard', 'retry']:
-                                try:
-                                    service.request('/tasks/' + task['id'] + '/' + action, 'POST')
-                                    raise AssertionError(f'{action} changed a reserved publication')
-                                except urllib.error.HTTPError as e:
-                                    assert e.code == 409
+                                code, body = service.expect('/tasks/' + task['id'] + '/' + action, 'POST')
+                                assert code == 409, (f'{action} changed a reserved publication', code, body)
                             service.request('/control/resume', 'POST')
 
                             def resumed():
@@ -201,11 +199,8 @@ def run(mode):
                     c['max_sessions_per_day'] = service.request('/state')['sessions_today']
                     service.save_config(c)
                     service.stop(); service.start()
-                    try:
-                        service.request('/control/cycle', 'POST')
-                        raise AssertionError('Unaffordable Run once was accepted')
-                    except urllib.error.HTTPError as error:
-                        assert error.code == 409
+                    code, body = service.expect('/control/cycle', 'POST')
+                    assert code == 409, ('Unaffordable Run once was accepted', code, body)
                     service.request('/control/resume', 'POST')
                     task = service.wait(service.terminal_task, 'live admission denied')
                     assert task['blocked_reason'] == 'budget_exhausted'
@@ -228,11 +223,8 @@ def run(mode):
                 task = service.wait(service.terminal_task, 'stale task blocked')
                 assert task['blocked_reason'] == 'stale_base' and 'retry' not in task['allowed_actions']
                 assert service.request('/state')['sessions_today'] == 13
-                try:
-                    service.request('/tasks/' + task['id'] + '/retry', 'POST')
-                    raise AssertionError('Stale task retry was accepted')
-                except urllib.error.HTTPError as e:
-                    assert e.code == 409
+                code, body = service.expect('/tasks/' + task['id'] + '/retry', 'POST')
+                assert code == 409, ('Stale task retry was accepted', code, body)
                 if mode == 'stale-retry':
                     return
                 service.wait(lambda: service.request('/state')['control']['paused'], 'stale drain paused')
@@ -399,7 +391,9 @@ def reconciliation_deadline():
             (root / 'reconcile-delay').write_text('6')
             start = time.monotonic()
             with ThreadPoolExecutor(max_workers=1) as pool:
-                request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST')
+                # The client gives up after its 5 s socket timeout, before the
+                # 7 s wait below: reconciliation must outlive the disconnect.
+                request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST', timeout=5)
                 service.wait(lambda: (root / 'reconcile-processes.jsonl').exists(), 'slow reconciliation entered', seconds=3)
                 try:
                     request.result(timeout=7)
