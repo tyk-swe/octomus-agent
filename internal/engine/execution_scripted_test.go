@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -591,6 +592,62 @@ func TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint(t *testing.T) {
 	}
 	if len(saved.Reviews) != 1 || len(saved.Verification) == 0 {
 		t.Fatalf("the block must follow a clean, verified review: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
+	}
+	assertNoOpenClients(t, script)
+}
+
+// TestExecutionExistingPrComparisonBaseSurvivesMainMovingAfterClone: an
+// existing-PR task compares against the merge base of its verified default
+// revision. Main moving while the workspace is cloned must not replace that
+// base with a commit the clone never fetched; the move surfaces as a stale
+// base before the output checkpoint instead.
+func TestExecutionExistingPrComparisonBaseSurvivesMainMovingAfterClone(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	routes, script := fixture.routes, fixture.script
+	task := existingPrTask(t, fixture)
+	ws := filepath.Join(fixture.dataDir, "tasks", task.ID, "workspace")
+	moved := filepath.Join(fixture.root, "main-moved")
+	// Every remote read of the configured checkout goes through this
+	// upload-pack. The first one after the task clone exists finds main
+	// already moved, as if a maintainer merged while the clone ran.
+	uploadPack := filepath.Join(fixture.root, "moving-upload-pack")
+	remote := filepath.Join(fixture.root, "remote.git")
+	body := fmt.Sprintf(`#!/bin/sh
+if [ -d %[1]q ] && [ ! -e %[2]q ]; then
+  touch %[2]q
+  tree=$(/usr/bin/git --git-dir %[3]q rev-parse 'main^{tree}') || exit 1
+  next=$(/usr/bin/git --git-dir %[3]q -c user.name=External -c user.email=fixture@example.com commit-tree "$tree" -p main -m 'External main change') || exit 1
+  /usr/bin/git --git-dir %[3]q update-ref refs/heads/main "$next" || exit 1
+fi
+exec git-upload-pack "$@"
+`, filepath.Join(ws, ".git"), moved, remote)
+	if err := os.WriteFile(uploadPack, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command(t, fixture.repo, "/usr/bin/git", "config", "remote.origin.uploadpack", uploadPack)
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "fixed\n")})
+	script.Answer(routes.Reviewer, cleanReview("Complete"))
+	saveExecutionTask(t, fixture.planningFixture, task)
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if _, err := os.Stat(moved); err != nil {
+		t.Fatalf("main never moved after the clone: %v", err)
+	}
+	if !blockedAs(saved, model.BlockedReasonStaleBase) || saved.OutputCommit != nil {
+		t.Fatalf("main moving after the clone = %+v; want a stale base before the checkpoint", saved)
+	}
+	out, err := exec.Command("/usr/bin/git", "-C", saved.Workspace, "merge-base", task.DefaultRevision, task.SourceRevision).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base := strings.TrimSpace(string(out)); saved.ComparisonBase != base {
+		t.Fatalf("comparison base = %q; want the merge base %s of the verified default revision", saved.ComparisonBase, base)
+	}
+	if len(saved.Reviews) != 1 || saved.Reviews[0].ComparisonBase != saved.ComparisonBase {
+		t.Fatalf("review rounds must record the comparison base: %+v", saved.Reviews)
+	}
+	if executors := sessionByRole(saved, "executor"); len(executors) != 1 || executors[0].Status != model.SessionCompleted {
+		t.Fatalf("initialization did not complete before the executor: %+v", executors)
 	}
 	assertNoOpenClients(t, script)
 }

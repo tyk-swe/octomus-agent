@@ -387,14 +387,10 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if task.PRNumber != nil {
-			base, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
-			if err != nil {
-				return err
-			}
-			if base == nil {
-				return errors.New("Default branch missing")
-			}
-			task.ComparisonBase, err = gitops.Git(ctx, cfg, ws, []string{"merge-base", *base, task.SourceRevision})
+			// The default revision was verified against the remote above and is
+			// in the clone's object store; re-reading the remote here could name
+			// a commit pushed after the fetch that the clone does not have.
+			task.ComparisonBase, err = gitops.Git(ctx, cfg, ws, []string{"merge-base", task.DefaultRevision, task.SourceRevision})
 			if err != nil {
 				return err
 			}

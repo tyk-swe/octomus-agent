@@ -706,6 +706,20 @@ func TestExecutionExistingPrAppendsComment(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(saved.Workspace, "earlier.txt")); err != nil {
 		t.Fatalf("earlier work missing from the workspace: %v", err)
 	}
+	// Follow-up reviews cover the whole PR: the comparison base is the merge
+	// base of the recorded default revision and the PR head, on every round.
+	out, err := exec.Command("/usr/bin/git", "-C", saved.Workspace, "merge-base", saved.DefaultRevision, head).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base := strings.TrimSpace(string(out)); saved.ComparisonBase != base {
+		t.Fatalf("comparison base = %q; want merge base %s", saved.ComparisonBase, base)
+	}
+	for _, round := range saved.Reviews {
+		if round.ComparisonBase != saved.ComparisonBase {
+			t.Fatalf("review round lost the comparison base: %+v", round)
+		}
+	}
 	if remote := remoteHead(t, fixture, "octomus/existing"); remote != *saved.OutputCommit {
 		t.Fatalf("remote = %s; want output %s", remote, *saved.OutputCommit)
 	}
