@@ -3,27 +3,19 @@ package runner
 // Owned OpenCode HTTP servers. Protocol baseline: OpenCode 1.18.30 (v2 SDK
 // types).
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
-	whatwg "github.com/nlnwa/whatwg-url/url"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
@@ -45,7 +37,6 @@ func OpenCodeVersionWarning(version string) *string {
 // OpenCode owns a `serve --hostname 127.0.0.1 --port 0` child and speaks its
 // HTTP/SSE API.
 type OpenCode struct {
-	cfg       config.Config
 	child     *process.GroupChild
 	stdout    *os.File
 	client    *http.Client
@@ -59,7 +50,7 @@ type OpenCode struct {
 	entity    string
 	waitCh    chan error
 	done      chan struct{}
-	drainDone chan struct{}
+	drainDone <-chan struct{}
 	once      sync.Once
 	closeErr  error
 }
@@ -80,27 +71,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		return nil, err
 	}
 	agent := "octomus-" + strings.ReplaceAll(agentID.String(), "-", "")
-	policy := map[string]any{
-		"share":         "disabled",
-		"autoshare":     false,
-		"autoupdate":    false,
-		"snapshot":      false,
-		"lsp":           false,
-		"formatter":     false,
-		"compaction":    map[string]any{"auto": false, "prune": false},
-		"default_agent": agent,
-		"agent": map[string]any{
-			agent: map[string]any{
-				"mode":       "primary",
-				"prompt":     WorkerInstructions,
-				"permission": map[string]any{"*": "allow", "question": "deny", "task": "deny"},
-			},
-			"title":      map[string]any{"disable": true},
-			"summary":    map[string]any{"disable": true},
-			"compaction": map[string]any{"disable": true},
-		},
-	}
-	policyJSON, err := marshal(policy)
+	policyJSON, err := marshal(workerPolicy(agent))
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +91,10 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		return nil, err
 	}
 	cmd.Stdout = stdoutW
+	// Stderr is kept only as a bounded tail that explains a connect failure.
+	tail := &stderrTail{}
+	cmd.Stderr = tail
+	cmd.WaitDelay = stderrWaitDelay
 	if err := cmd.Start(); err != nil {
 		stdoutR.Close()
 		stdoutW.Close()
@@ -137,22 +112,8 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		close(done)
 		child.Close()
 		stdoutR.Close()
-		reader, waiting := lines, waitCh
-		timer := time.NewTimer(30 * time.Second)
-		defer timer.Stop()
-		for reader != nil || waiting != nil {
-			select {
-			case _, ok := <-reader:
-				if !ok {
-					reader = nil
-				}
-			case <-waiting:
-				waiting = nil
-			case <-timer.C:
-				return nil, err
-			}
-		}
-		return nil, err
+		_ = joinOwned(waitCh, drained(lines), "OpenCode server did not exit during cleanup")
+		return nil, tail.explain(err)
 	}
 	base, err := process.Bounded(ctx, min(cfg.CommandTimeoutSeconds, 60), "OpenCode startup timed out", func(wctx context.Context) (string, error) {
 		for range 1000 {
@@ -176,26 +137,11 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	if err != nil {
 		return cleanup(err)
 	}
-	transport := &http.Transport{
-		Proxy:       nil,
-		DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-	}
-	client := &http.Client{
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	drainDone := make(chan struct{})
-	go func() {
-		defer close(drainDone)
-		// Discard stdout without retaining raw logs. A malformed stream ends
-		// the drain.
-		for range lines {
-		}
-	}()
+	client := newLoopbackClient()
+	// Discard stdout without retaining raw logs, including after a malformed
+	// stream ends the line reader.
+	drainDone := discardStdout(lines, stdoutR)
 	server := &OpenCode{
-		cfg:       cfg.Clone(),
 		child:     child,
 		stdout:    stdoutR,
 		client:    client,
@@ -214,9 +160,9 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	// goroutine, and child wait; the connect error is still the result.
 	fail := func(err error) (*OpenCode, error) {
 		_ = server.Close()
-		return nil, err
+		return nil, tail.explain(err)
 	}
-	health, err := server.json("GET", "/global/health", cwd, nil, 60)
+	health, err := server.call("GET", "/global/health", cwd, nil, 60)
 	if err != nil {
 		return fail(err)
 	}
@@ -231,7 +177,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	server.version = version
 	// Managed host settings can override inline config; do not run with
 	// changed policy.
-	effective, err := server.json("GET", "/config", cwd, nil, 60)
+	effective, err := server.call("GET", "/config", cwd, nil, 60)
 	if err != nil {
 		return fail(err)
 	}
@@ -241,63 +187,25 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	return server, nil
 }
 
-// parseReadyURL accepts only a loopback root address: http scheme, literal
-// 127.0.0.1, a nonzero explicit port, root path, and no user, query, or
-// fragment.
-func parseReadyURL(endpoint string) (string, error) {
-	u, err := whatwg.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("Invalid OpenCode server address: %w", err)
+// newLoopbackClient is the owned server's HTTP client: no proxy, a bounded
+// dial, and redirects returned as responses instead of followed.
+func newLoopbackClient() *http.Client {
+	transport := &http.Transport{
+		Proxy:       nil,
+		DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 	}
-	port, perr := strconv.Atoi(u.Port())
-	authority := endpoint
-	if i := strings.Index(authority, "://"); i >= 0 {
-		authority = authority[i+3:]
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
-	if i := strings.IndexByte(authority, '/'); i >= 0 {
-		authority = authority[:i]
-	}
-	if u.Scheme() != "http" || u.Hostname() != "127.0.0.1" || perr != nil || port <= 0 ||
-		u.Username() != "" || u.Password() != "" || strings.Contains(authority, "@") ||
-		u.Pathname() != "/" || strings.ContainsAny(endpoint, "?#") {
-		return "", fmt.Errorf("OpenCode did not bind to a local server address")
-	}
-	return fmt.Sprintf("http://127.0.0.1:%s", u.Port()), nil
-}
-
-// appliedPolicy validates every safety-critical field of the effective config,
-// beyond the expected fields.
-func appliedPolicy(effective any, agent string) bool {
-	doc, ok := asObject(effective)
-	if !ok {
-		return false
-	}
-	compaction, _ := asObject(doc["compaction"])
-	if doc["share"] != "disabled" || doc["autoshare"] != false || doc["autoupdate"] != false ||
-		doc["snapshot"] != false || doc["lsp"] != false || doc["formatter"] != false ||
-		compaction["auto"] != false || compaction["prune"] != false || doc["default_agent"] != agent {
-		return false
-	}
-	agents, _ := asObject(doc["agent"])
-	worker, _ := asObject(agents[agent])
-	permission, _ := asObject(worker["permission"])
-	if worker["mode"] != "primary" || worker["prompt"] != WorkerInstructions ||
-		permission["*"] != "allow" || permission["question"] != "deny" || permission["task"] != "deny" {
-		return false
-	}
-	for _, helper := range []string{"title", "summary", "compaction"} {
-		entry, _ := asObject(agents[helper])
-		if entry["disable"] != true {
-			return false
-		}
-	}
-	return true
 }
 
 // ProtocolSchema is the version-specific schema for contract checks, fetched
 // from the owned server.
 func (o *OpenCode) ProtocolSchema(cwd string) (any, error) {
-	return o.json("GET", "/doc", cwd, nil, 60)
+	return o.call("GET", "/doc", cwd, nil, 60)
 }
 
 func (o *OpenCode) Version() string { return o.version }
@@ -344,17 +252,38 @@ func (o *OpenCode) roundTrip(ctx context.Context, method, path, cwd string, body
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
-		if len(snippet) > 4096 {
-			snippet = snippet[:4096]
-		}
-		return nil, fmt.Errorf("OpenCode request failed with HTTP %s: %s",
-			response.Status, store.Redact(strings.ToValidUTF8(string(snippet), "�")))
+		return nil, statusError("OpenCode request failed", response)
 	}
 	return readJSONBody(response.Body)
 }
 
-func (o *OpenCode) json(method, path, cwd string, body any, seconds uint64) (any, error) {
+// statusError reports a non-2xx OpenCode response with its status and a
+// bounded, redacted body snippet.
+func statusError(prefix string, response *http.Response) error {
+	snippet, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+	return fmt.Errorf("%s with HTTP %s: %s", prefix, response.Status,
+		store.Redact(strings.ToValidUTF8(string(snippet), "�")))
+}
+
+// postBestEffort sends a cleanup request bounded by its own timeout,
+// independent of the owner context, and ignores the outcome.
+func (o *OpenCode) postBestEffort(timeout time.Duration, path, cwd string, body any) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := o.request(ctx, "POST", path, cwd, body)
+	if err != nil {
+		return
+	}
+	response, err := o.client.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	response.Body.Close()
+}
+
+// call is one bounded JSON round trip under the owner context.
+func (o *OpenCode) call(method, path, cwd string, body any, seconds uint64) (any, error) {
 	return process.Bounded(o.ctx, seconds, "OpenCode response timed out", func(wctx context.Context) (any, error) {
 		return o.roundTrip(wctx, method, path, cwd, body)
 	})
@@ -388,7 +317,7 @@ func readJSONBody(r io.Reader) (any, error) {
 }
 
 func (o *OpenCode) Models(cwd string) ([]Model, error) {
-	value, err := o.json("GET", "/provider", cwd, nil, 60)
+	value, err := o.call("GET", "/provider", cwd, nil, 60)
 	if err != nil {
 		return nil, err
 	}
@@ -396,10 +325,7 @@ func (o *OpenCode) Models(cwd string) ([]Model, error) {
 }
 
 func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string, error) {
-	if err := route.Validate(true); err != nil {
-		return "", err
-	}
-	if err := route.RequireBackend(config.BackendOpencode); err != nil {
+	if err := requireRoute(route, config.BackendOpencode); err != nil {
 		return "", err
 	}
 	permissions := []any{
@@ -413,7 +339,7 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 		if err != nil {
 			return "", err
 		}
-		session, err = o.json("GET", "/session/"+seg, cwd, nil, 60)
+		session, err = o.call("GET", "/session/"+seg, cwd, nil, 60)
 		if err != nil {
 			return "", err
 		}
@@ -423,7 +349,7 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 			modelID["variant"] = *route.Variant
 		}
 		var err error
-		session, err = o.json("POST", "/session", cwd, map[string]any{
+		session, err = o.call("POST", "/session", cwd, map[string]any{
 			"title":      fmt.Sprintf("Octomus %s", o.entity),
 			"agent":      o.agent,
 			"model":      modelID,
@@ -467,10 +393,7 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 }
 
 func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
-	if err := route.Validate(true); err != nil {
-		return "", err
-	}
-	if err := route.RequireBackend(config.BackendOpencode); err != nil {
+	if err := requireRoute(route, config.BackendOpencode); err != nil {
 		return "", err
 	}
 	seg, err := segment(session)
@@ -478,31 +401,27 @@ func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, 
 		return "", err
 	}
 	path := "/session/" + seg
+	// The structured-result check runs inside the bound so that a
+	// schema-invalid result aborts the session like every other failure.
 	answer, err := process.Bounded(o.ctx, o.timeout, "OpenCode session time limit exceeded", func(wctx context.Context) (string, error) {
-		return o.turnInner(wctx, session, path, route, cwd, prompt, schema)
+		answer, err := o.turnInner(wctx, session, path, route, cwd, prompt, schema)
+		if err != nil {
+			return "", err
+		}
+		return FinishTurn(answer, schema)
 	})
 	if err != nil {
 		// Independent of the cancelled owner context. Cleanup is bounded;
 		// closing the adapter kills the group.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if req, rerr := o.request(ctx, "POST", path+"/abort", cwd, nil); rerr == nil {
-			if response, derr := o.client.Do(req); derr == nil {
-				_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-				response.Body.Close()
-			}
-		}
+		o.postBestEffort(5*time.Second, path+"/abort", cwd, nil)
 		return "", err
 	}
-	return FinishTurn(answer, schema)
+	return answer, nil
 }
 
-type postResult struct {
-	value any
-	err   error
-}
-
-type sseEvent struct {
+// valueResult carries one decoded value or the error that ended its
+// producer: the message POST's response or one SSE event.
+type valueResult struct {
 	value any
 	err   error
 }
@@ -521,7 +440,7 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("OpenCode event subscription failed")
+		return "", statusError("OpenCode event subscription failed", response)
 	}
 	// Resolve the message identity before any goroutine starts so entropy
 	// failure unwinds with only the body-close and cancel defers.
@@ -529,8 +448,8 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 	if err != nil {
 		return "", err
 	}
-	events := make(chan sseEvent)
-	post := make(chan postResult, 1)
+	events := make(chan valueResult)
+	post := make(chan valueResult, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -555,7 +474,7 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 		defer wg.Done()
 		value, err := o.roundTrip(inner, "POST", path+"/message", cwd, body)
 		select {
-		case post <- postResult{value, err}:
+		case post <- valueResult{value, err}:
 		case <-inner.Done():
 		}
 	}()
@@ -575,6 +494,8 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 			value = result.value
 			done = true
 		case event, ok := <-events:
+			// sseLoop never closes events; if it ever did, this keeps the
+			// loop from spinning on zero values.
 			if !ok {
 				return "", fmt.Errorf("OpenCode event stream disconnected")
 			}
@@ -634,13 +555,7 @@ func (o *OpenCode) handleEvent(event any, session, message string, route config.
 				replyPath = prefix + "/question/" + seg + "/reject"
 				reply = map[string]any{}
 			}
-			replyCtx, cancelReply := context.WithTimeout(context.Background(), 2*time.Second)
-			if req, err := o.request(replyCtx, "POST", replyPath, cwd, reply); err == nil {
-				if response, err := o.client.Do(req); err == nil {
-					response.Body.Close()
-				}
-			}
-			cancelReply()
+			o.postBestEffort(2*time.Second, replyPath, cwd, reply)
 		}
 		return fmt.Errorf("OpenCode requested interactive input (%s); task blocked", kind)
 	case "message.updated":
@@ -649,13 +564,7 @@ func (o *OpenCode) handleEvent(event any, session, message string, route config.
 			return checkModel(info, route)
 		}
 	case "session.error":
-		name := "runtime error"
-		if errorDoc, ok := asObject(props["error"]); ok {
-			if s, ok := strAt(errorDoc, "name"); ok {
-				name = s
-			}
-		}
-		return fmt.Errorf("OpenCode session failed: %s", name)
+		return fmt.Errorf("OpenCode session failed: %s", errorName(props["error"]))
 	case "message.part.updated":
 		part, _ := asObject(props["part"])
 		if part["type"] == "tool" {
@@ -692,13 +601,7 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 		return "", err
 	}
 	if info["error"] != nil {
-		name := "runtime error"
-		if errorDoc, ok := asObject(info["error"]); ok {
-			if s, ok := strAt(errorDoc, "name"); ok {
-				name = s
-			}
-		}
-		return "", fmt.Errorf("OpenCode turn failed: %s", name)
+		return "", fmt.Errorf("OpenCode turn failed: %s", errorName(info["error"]))
 	}
 	timeDoc, _ := asObject(info["time"])
 	if _, ok := timeDoc["completed"].(json.Number); !ok {
@@ -713,14 +616,8 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 		if !ok || output == nil {
 			return "", fmt.Errorf("OpenCode returned no structured result")
 		}
-		if err := schemas.Validate(output, schema); err != nil {
-			return "", fmt.Errorf("Invalid OpenCode structured result: %w", err)
-		}
-		encoded, err := marshal(output)
-		if err != nil {
-			return "", err
-		}
-		return encoded, nil
+		// Turn validates the encoded result against the schema.
+		return marshal(output)
 	}
 	parts, ok := asArray(doc["parts"])
 	if !ok {
@@ -753,281 +650,25 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 	return answer.String(), nil
 }
 
-// sseLoop is the owned SSE reader: arbitrary HTTP and UTF-8 fragmentation,
-// CRLF, comments and other fields, multiple data lines, and each frame and
-// backlog capped at exactly MaxMessage.
-func sseLoop(ctx context.Context, body io.Reader, out chan<- sseEvent) {
-	emit := func(e sseEvent) bool {
-		select {
-		case out <- e:
-			return true
-		case <-ctx.Done():
-			return false
-		}
-	}
-	var buffer []byte
-	var data []byte
-	frameBytes := 0
-	chunk := make([]byte, 32768)
-	for {
-		for {
-			end := bytes.IndexByte(buffer, '\n')
-			if end < 0 {
-				break
-			}
-			line := buffer[:end+1]
-			buffer = buffer[end+1:]
-			frameBytes += len(line)
-			if frameBytes > MaxMessage {
-				emit(sseEvent{err: fmt.Errorf("OpenCode event exceeds 16 MB protocol limit")})
-				return
-			}
-			if !utf8.Valid(line) {
-				emit(sseEvent{err: fmt.Errorf("Invalid OpenCode event encoding")})
-				return
-			}
-			text := strings.TrimRight(string(line), "\r\n")
-			if text == "" {
-				frameBytes = 0
-				if len(data) > 0 {
-					value, err := decodeJSON(data)
-					data = nil
-					if err != nil {
-						emit(sseEvent{err: fmt.Errorf("Invalid OpenCode event JSON: %w", err)})
-						return
-					}
-					if !emit(sseEvent{value: value}) {
-						return
-					}
-				}
-			} else if rest, found := strings.CutPrefix(text, "data:"); found {
-				rest = strings.TrimPrefix(rest, " ")
-				if len(data) > 0 {
-					data = append(data, '\n')
-				}
-				data = append(data, rest...)
-			}
-		}
-		// Every unconsumed byte belongs to the in-progress frame; complete
-		// lines are drained above before the bound applies.
-		if frameBytes+len(buffer) > MaxMessage {
-			emit(sseEvent{err: fmt.Errorf("OpenCode event backlog exceeds 16 MB")})
-			return
-		}
-		n, err := body.Read(chunk)
-		if n > 0 {
-			buffer = append(buffer, chunk[:n]...)
-			continue
-		}
-		if err != nil {
-			if err == io.EOF {
-				emit(sseEvent{err: fmt.Errorf("OpenCode event stream disconnected")})
-			} else {
-				emit(sseEvent{err: err})
-			}
-			return
-		}
-	}
-}
-
-var messageClock atomic.Uint64
-
-// messageID generates a native ordered 30-char msg_ ID: 12 lower hex chars
-// from the low 48 bits of a monotonically increasing
-// (milliseconds*4096+counter) clock, then 14 base62 random chars. Entropy
-// failure is never silently ignored.
-func messageID() (string, error) {
-	var random [14]byte
-	if _, err := io.ReadFull(rand.Reader, random[:]); err != nil {
-		return "", err
-	}
-	now := uint64(time.Now().UnixMilli()) * 4096
-	for {
-		previous := messageClock.Load()
-		next := previous + 1
-		if next < now+1 {
-			next = now + 1
-		}
-		if messageClock.CompareAndSwap(previous, next) {
-			clock := next & 0xffff_ffff_ffff
-			const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-			suffix := make([]byte, 14)
-			for i := range suffix {
-				suffix[i] = alphabet[int(random[i])%len(alphabet)]
-			}
-			return fmt.Sprintf("msg_%012x%s", clock, suffix), nil
-		}
-	}
-}
-
-// variantMatches accepts the exact variant, or `default` when the route has
-// none.
-func variantMatches(reported string, ok bool, route config.Route) bool {
-	if route.Variant != nil {
-		return ok && reported == *route.Variant
-	}
-	return !ok || reported == "default"
-}
-
-func checkModel(info map[string]any, route config.Route) error {
-	modelID, _ := strAt(info, "modelID")
-	providerID, providerOK := strAt(info, "providerID")
-	if modelID != route.Model || providerOK != (route.Provider != nil) || (providerOK && providerID != *route.Provider) {
-		return fmt.Errorf("OpenCode substituted the requested model")
-	}
-	variant, variantOK := strAt(info, "variant")
-	if !variantMatches(variant, variantOK, route) {
-		return fmt.Errorf("OpenCode substituted the requested variant")
-	}
-	return nil
-}
-
-// segment validates an OpenCode identity and percent-encodes it like
-// NON_ALPHANUMERIC.
-func segment(id string) (string, error) {
-	valid := id != "" && len(id) <= 256
-	if valid {
-		for i := 0; i < len(id); i++ {
-			b := id[i]
-			if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-') {
-				valid = false
-				break
-			}
-		}
-	}
-	if !valid {
-		return "", fmt.Errorf("Invalid OpenCode identity")
-	}
-	var encoded strings.Builder
-	for i := 0; i < len(id); i++ {
-		b := id[i]
-		if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' {
-			encoded.WriteByte(b)
-		} else {
-			fmt.Fprintf(&encoded, "%%%02X", b)
-		}
-	}
-	return encoded.String(), nil
-}
-
-// jsonEqual compares two decoded JSON values by canonical compact form, like
-// JSON value equality.
-func jsonEqual(a, b any) bool {
-	ea, err1 := marshal(a)
-	eb, err2 := marshal(b)
-	return err1 == nil && err2 == nil && ea == eb
-}
-
-// Catalog allowlists /provider output; the document can contain credentials
-// and options that must never leave the adapter.
-func Catalog(value any) ([]Model, error) {
+// errorName names an OpenCode error document, or "runtime error" when the
+// value carries no string name.
+func errorName(value any) string {
 	doc, _ := asObject(value)
-	all, ok := asArray(doc["all"])
-	if !ok {
-		return nil, fmt.Errorf("Invalid OpenCode provider catalog")
+	if name, ok := strAt(doc, "name"); ok {
+		return name
 	}
-	connectedRaw, ok := asArray(doc["connected"])
-	if !ok {
-		return nil, fmt.Errorf("Missing OpenCode provider availability")
-	}
-	connected := map[string]bool{}
-	for _, c := range connectedRaw {
-		if s, ok := c.(string); ok {
-			connected[s] = true
-		}
-	}
-	out := []Model{}
-	for _, p := range all {
-		provider, _ := asObject(p)
-		id, ok := strAt(provider, "id")
-		if !ok {
-			return nil, fmt.Errorf("Missing OpenCode provider identity")
-		}
-		available := connected[id]
-		models, ok := asObject(provider["models"])
-		if !ok {
-			return nil, fmt.Errorf("Invalid OpenCode models")
-		}
-		modelIDs := make([]string, 0, len(models))
-		for modelID := range models {
-			modelIDs = append(modelIDs, modelID)
-		}
-		sort.Strings(modelIDs)
-		for _, modelID := range modelIDs {
-			if len(out) >= 10000 {
-				return nil, fmt.Errorf("OpenCode catalog exceeds 10000 models")
-			}
-			m, _ := asObject(models[modelID])
-			capabilities, _ := asObject(m["capabilities"])
-			toolcall := capabilities["toolcall"] == true
-			input, _ := asObject(capabilities["input"])
-			output, _ := asObject(capabilities["output"])
-			text := input["text"] == true && output["text"] == true
-			variants := []string{}
-			if v, ok := asObject(m["variants"]); ok {
-				for name := range v {
-					variants = append(variants, name)
-				}
-				sort.Strings(variants)
-			}
-			display := modelID
-			if s, ok := strAt(m, "name"); ok {
-				display = s
-			}
-			var providerName *string
-			if s, ok := strAt(provider, "name"); ok {
-				providerName = stringPtr(s)
-			}
-			var reason *string
-			switch {
-			case !available:
-				reason = stringPtr("Provider is not configured; configure OpenCode as the service user")
-			case !toolcall || !text:
-				reason = stringPtr("Model must support text and tool calling")
-			}
-			out = append(out, Model{
-				Backend:           config.BackendOpencode,
-				Provider:          stringPtr(id),
-				ProviderName:      providerName,
-				Model:             modelID,
-				DisplayName:       display,
-				Efforts:           []string{},
-				Variants:          variants,
-				Available:         available && toolcall && text,
-				UnavailableReason: reason,
-			})
-		}
-	}
-	return out, nil
+	return "runtime error"
 }
 
 // Close kills the process group, closes the pipe, joins the drain and child
-// wait with a bounded cleanup, and is idempotent. Each channel is consumed
-// exactly once: a closed channel can fire repeatedly, so each is nilled after
-// it is observed.
+// wait with a bounded cleanup, and is idempotent.
 func (o *OpenCode) Close() error {
 	o.once.Do(func() {
 		close(o.done)
 		o.child.Close()
 		o.stdout.Close()
 		o.client.CloseIdleConnections()
-		waitCh, drainDone := o.waitCh, o.drainDone
-		timer := time.NewTimer(30 * time.Second)
-		defer timer.Stop()
-		for waitCh != nil || drainDone != nil {
-			select {
-			case err := <-waitCh:
-				if err != nil && !strings.Contains(err.Error(), "signal: killed") {
-					o.closeErr = errors.Join(o.closeErr, err)
-				}
-				waitCh = nil
-			case <-drainDone:
-				drainDone = nil
-			case <-timer.C:
-				o.closeErr = errors.Join(o.closeErr, errors.New("OpenCode server did not exit during cleanup"))
-				return
-			}
-		}
+		o.closeErr = joinOwned(o.waitCh, o.drainDone, "OpenCode server did not exit during cleanup")
 	})
 	return o.closeErr
 }

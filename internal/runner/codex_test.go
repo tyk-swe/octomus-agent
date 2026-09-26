@@ -3,14 +3,19 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // The app-server can emit notifications before a request response; the
@@ -47,6 +52,58 @@ func TestCodexModelsAndPreResponseEvents(t *testing.T) {
 	}
 	if answer != "Fixture completed. ✓" {
 		t.Fatalf("answer: %q", answer)
+	}
+}
+
+// model/list pagination follows cursors across pages and accepts an empty
+// final page, while a catalog whose empty pages keep a cursor fails instead of
+// paging forever.
+func TestCodexModelsPagination(t *testing.T) {
+	f := codexFixture(t)
+	client, err := f.connectCodex(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+	f.mode("codex", "paged")
+	models, err := client.Models(f.workspace)
+	if err != nil {
+		t.Fatalf("paged models: %v", err)
+	}
+	if len(models) != 2 || models[0].Model != "gpt-6-astra" || models[1].Model != "gpt-5.6-luna" {
+		t.Fatalf("paged catalog: %+v", models)
+	}
+	f.mode("codex", "empty-pages")
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Models(f.workspace)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "Invalid model pagination") {
+			t.Fatalf("an endless empty catalog must fail: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("model/list pagination was not bounded")
+	}
+}
+
+// A Codex app-server that fails while initializing reports its redacted
+// stderr with the disconnect.
+func TestCodexStartupFailureReportsStderr(t *testing.T) {
+	f := codexFixture(t)
+	f.mode("codex", "init-failure")
+	client, err := f.connectCodex(context.Background())
+	if client != nil {
+		client.Close()
+		t.Fatal("a failed initialize must not connect")
+	}
+	if !errors.Is(err, errCodexDisconnected) || !strings.Contains(err.Error(), "; stderr: fixture init failure token=[redacted]") {
+		t.Fatalf("connect error must explain the failure: %v", err)
+	}
+	if strings.Contains(err.Error(), "ghp_") {
+		t.Fatalf("connect error leaked a secret: %v", err)
 	}
 }
 
@@ -232,6 +289,179 @@ func TestCodexDiagnosticsAndAccount(t *testing.T) {
 	f.mode("codex", "no-auth")
 	if _, err := client.Diagnostics(f.workspace); err == nil || !strings.Contains(err.Error(), "authentication") {
 		t.Fatalf("a missing account must fail diagnostics: %v", err)
+	}
+}
+
+// pipedCodex is a Codex without a child: its protocol lines come from the
+// returned channel and its requests go to a discarded pipe.
+func pipedCodex(t *testing.T, ctx context.Context, timeout uint64) (*Codex, chan lineResult) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		_, _ = io.Copy(io.Discard, r)
+	}()
+	t.Cleanup(func() {
+		w.Close()
+		<-drained
+		r.Close()
+	})
+	lines := make(chan lineResult)
+	return &Codex{stdin: w, lines: lines, timeout: timeout, ctx: ctx}, lines
+}
+
+// Each RPC message is bounded by the session timeout, not the whole call: a
+// silent peer times out with the per-message wording, while notifications
+// that keep arriving within the bound let a slower response still succeed.
+func TestCodexRPCPerMessageBound(t *testing.T) {
+	client, _ := pipedCodex(t, context.Background(), 1)
+	started := time.Now()
+	_, err := client.rpc("model/list", map[string]any{})
+	if err == nil || err.Error() != "Codex response timed out: deadline has elapsed" {
+		t.Fatalf("a silent peer must hit the per-message bound: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 900*time.Millisecond || elapsed > 5*time.Second {
+		t.Fatalf("per-message bound took %v", elapsed)
+	}
+
+	// Five notifications 300 ms apart outlast one session timeout in total.
+	client, lines := pipedCodex(t, context.Background(), 1)
+	go func() {
+		for range 5 {
+			time.Sleep(300 * time.Millisecond)
+			lines <- lineResult{line: []byte(`{"method":"item/completed","params":{}}`)}
+		}
+		lines <- lineResult{line: []byte(`{"id":1,"result":{"ok":true}}`)}
+	}()
+	result, err := client.rpc("model/list", map[string]any{})
+	if err != nil {
+		t.Fatalf("notifications within the bound must keep the call alive: %v", err)
+	}
+	if value, _ := asObject(result); value["ok"] != true {
+		t.Fatalf("result: %v", result)
+	}
+	if len(client.pending.items) != 5 {
+		t.Fatalf("pre-response notifications must be queued in order: %d", len(client.pending.items))
+	}
+}
+
+// backlogCodex is a pipedCodex whose protocol lines are all queued up front,
+// so no feeder outlives an early error, with a state for progress events.
+// Running out of lines reads as a disconnect.
+func backlogCodex(t *testing.T, lines ...string) *Codex {
+	t.Helper()
+	client, _ := pipedCodex(t, context.Background(), 10)
+	queued := make(chan lineResult, len(lines))
+	for _, line := range lines {
+		queued <- lineResult{line: []byte(line)}
+	}
+	close(queued)
+	client.lines = queued
+	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { state.Close() })
+	client.state = state
+	client.entity = "fixture"
+	return client
+}
+
+// notificationOf returns a compact notification line whose encoding is
+// exactly size bytes.
+func notificationOf(t *testing.T, size int) string {
+	t.Helper()
+	empty, err := marshal(map[string]any{"method": "n", "params": map[string]any{"p": ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := marshal(map[string]any{"method": "n", "params": map[string]any{"p": strings.Repeat("x", size-len(empty))}})
+	if err != nil || len(line) != size {
+		t.Fatalf("notification size %d: %v", len(line), err)
+	}
+	return line
+}
+
+// Notifications that arrive before an RPC response are queued in order up to
+// 10000 messages and 8 MiB of compact JSON; one message or byte more fails.
+func TestCodexBacklogBounds(t *testing.T) {
+	const response = `{"id":1,"result":{}}`
+	small := notificationOf(t, 64)
+	mebibyte := notificationOf(t, 1024*1024)
+	repeat := func(line string, n int) []string {
+		lines := make([]string, n)
+		for i := range lines {
+			lines[i] = line
+		}
+		return lines
+	}
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  string
+		bytes int
+	}{
+		{"count at the bound", repeat(small, 10_000), "", 10_000 * 64},
+		{"count over the bound", repeat(small, 10_001), "Codex notification backlog exceeded", 0},
+		{"bytes at the bound", repeat(mebibyte, 8), "", 8 * 1024 * 1024},
+		{"bytes over the bound", append(repeat(mebibyte, 8), small), "Codex notification backlog exceeds 8 MB", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := backlogCodex(t, append(tc.lines, response)...)
+			_, err := client.rpc("model/list", map[string]any{})
+			if tc.want != "" {
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("backlog error: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a backlog at the bound must be kept: %v", err)
+			}
+			if len(client.pending.items) != len(tc.lines) || client.pending.bytes != tc.bytes {
+				t.Fatalf("backlog: %d messages, %d bytes", len(client.pending.items), client.pending.bytes)
+			}
+		})
+	}
+}
+
+// A stale response queued before turn/start's result is skipped by the turn,
+// and the backlog drains to nothing.
+func TestCodexTurnSkipsQueuedStaleResponse(t *testing.T) {
+	const thread = "019a0000-0000-7000-8000-000000000001"
+	client := backlogCodex(t,
+		`{"id":99,"result":{}}`,
+		`{"id":1,"result":{"turn":{"id":"t1"}}}`,
+		`{"method":"item/completed","params":{"threadId":"`+thread+`","turnId":"t1","item":{"type":"agentMessage","phase":"final_answer","text":"ok","status":"completed"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"`+thread+`","turn":{"id":"t1","status":"completed"}}}`,
+	)
+	answer, err := client.turn(thread, codexRoute(), t.TempDir(), "prompt", nil)
+	if err != nil || answer != "ok" {
+		t.Fatalf("turn: %q %v", answer, err)
+	}
+	if len(client.pending.items) != 0 || client.pending.bytes != 0 {
+		t.Fatalf("the backlog must drain: %d messages, %d bytes", len(client.pending.items), client.pending.bytes)
+	}
+}
+
+// Cancelling the owner context ends a pending receive at once with the session
+// cancellation error.
+func TestCodexReceiveObservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client, _ := pipedCodex(t, ctx, 60)
+	time.AfterFunc(100*time.Millisecond, cancel)
+	started := time.Now()
+	_, err := client.receive(time.Now().Add(time.Minute), "Codex session time limit exceeded")
+	if !errors.Is(err, process.ErrSessionCancelled) {
+		t.Fatalf("a cancelled receive must report the session cancellation: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("cancellation took %v", elapsed)
 	}
 }
 

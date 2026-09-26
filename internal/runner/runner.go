@@ -106,7 +106,9 @@ func ValidateRoute(route config.Route, models []Model) error {
 	return nil
 }
 
-// Adapter is one owned runner client. Each invocation owns its clients.
+// Adapter is one owned runner client. Each invocation owns its clients, and
+// an Adapter is used from one goroutine: its calls must not overlap. Close
+// must stay safe after a call that ended at its own deadline.
 type Adapter interface {
 	Models(cwd string) ([]Model, error)
 	Start(route config.Route, cwd string, resume *string) (string, error)
@@ -147,10 +149,9 @@ func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd
 	return nil, fmt.Errorf("Invalid backend")
 }
 
-// FinishTurn is the Runner::turn structured-result check every adapter applies
-// to its final answer: the answer is JSON-decoded with trailing-data
-// rejection, validated, and compactly marshaled. A nil schema returns the
-// answer unchanged.
+// FinishTurn is the structured-result check every adapter applies to its final
+// answer: the answer is JSON-decoded with trailing-data rejection, validated,
+// and compactly marshaled. A nil schema returns the answer unchanged.
 func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 	if schema == nil {
 		return answer, nil
@@ -170,7 +171,9 @@ func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 }
 
 // Runners owns the clients for one task or planning invocation. No shared
-// mutable runner configuration.
+// mutable runner configuration. Runners is used from one goroutine: its
+// methods and the adapters it returns must not be called concurrently, and
+// separate invocations own separate Runners.
 type Runners struct {
 	cfg      config.Config
 	ctx      context.Context
@@ -242,34 +245,45 @@ func (r *Runners) ValidateRoutes(cfg config.Config, cwd string, audit bool) erro
 }
 
 func (r *Runners) Start(route config.Route, cwd string, resume *string) (string, error) {
-	session, err := func() (string, error) {
-		if err := r.CheckRoute(route, cwd); err != nil {
-			return "", err
-		}
-		client, err := r.Client(route.Backend, cwd)
-		if err != nil {
-			return "", err
-		}
-		return client.Start(route, cwd, resume)
-	}()
+	if err := r.CheckRoute(route, cwd); err != nil {
+		return "", unavailable(err)
+	}
+	client, err := r.Client(route.Backend, cwd)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
+		return "", unavailable(err)
+	}
+	session, err := client.Start(route, cwd, resume)
+	if err != nil {
+		return "", unavailable(err)
 	}
 	return session, nil
 }
 
 func (r *Runners) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
-	answer, err := func() (string, error) {
-		client, err := r.Client(route.Backend, cwd)
-		if err != nil {
-			return "", err
-		}
-		return client.Turn(session, route, cwd, prompt, schema)
-	}()
+	client, err := r.Client(route.Backend, cwd)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
+		return "", unavailable(err)
+	}
+	answer, err := client.Turn(session, route, cwd, prompt, schema)
+	if err != nil {
+		return "", unavailable(err)
 	}
 	return answer, nil
+}
+
+// unavailable classifies a non-nil runner failure as runner-unavailable,
+// keeping the cause in the chain.
+func unavailable(err error) error {
+	return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
+}
+
+// requireRoute is the exact-route guard every adapter applies before a
+// session call.
+func requireRoute(route config.Route, backend config.Backend) error {
+	if err := route.Validate(true); err != nil {
+		return err
+	}
+	return route.RequireBackend(backend)
 }
 
 // Close stops every started client once and aggregates their failures.

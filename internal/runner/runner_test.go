@@ -67,7 +67,7 @@ func newFixture(t *testing.T, name string, configure func(shim string) config.Co
 	return &fixture{t: t, root: root, workspace: workspace, cfg: configure(shim), state: state}
 }
 
-// opencodeFixture mirrors Fixture::new: an OpenCode shim with no Codex.
+// opencodeFixture is an OpenCode shim with no Codex installed.
 func opencodeFixture(t *testing.T) *fixture {
 	return newFixture(t, "opencode", func(shim string) config.Config {
 		cfg := config.Default()
@@ -79,7 +79,7 @@ func opencodeFixture(t *testing.T) *fixture {
 	})
 }
 
-// codexFixture mirrors Fixture::codex: a Codex shim with no OpenCode.
+// codexFixture is a Codex shim with no OpenCode installed.
 func codexFixture(t *testing.T) *fixture {
 	return newFixture(t, "codex", func(shim string) config.Config {
 		cfg := config.Default()
@@ -142,6 +142,14 @@ func (f *fixture) codexInterrupt() map[string]any {
 	return entry
 }
 
+// published reads a value a fixture writes to a file. Writers create the file
+// before they write to it, so an existing but blank file is not yet published.
+func published(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	value := strings.TrimSpace(string(data))
+	return value, err == nil && value != ""
+}
+
 func waitUntil(limit time.Duration, condition func() bool) bool {
 	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
@@ -174,7 +182,8 @@ type outcome struct {
 	err    error
 }
 
-// turnIn runs a turn on its own goroutine to exercise concurrent client calls.
+// turnIn runs one turn off the test goroutine so the test can cancel it or
+// bound its duration.
 func turnIn(client Adapter, session string, route config.Route, cwd, prompt string, schema schemas.Schema) chan outcome {
 	ch := make(chan outcome, 1)
 	go func() {
