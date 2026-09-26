@@ -680,3 +680,80 @@ func TestWriteJSONKeepsExactNumbersAndReportsEncodeFailures(t *testing.T) {
 		t.Fatalf("unencodable: %d %q %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
 	}
 }
+
+// The request boundary holds on every path: an oversized body is refused before
+// it can replace a saved configuration, malformed query values are plain-text
+// 400s, and every response, including rejections, carries the security headers.
+func TestHTTPBoundaryRejectionsAndSecurityHeaders(t *testing.T) {
+	app, state := testApp(t)
+	router := Router(app, token, "", "test")
+	cfg := config.Default()
+	cfg.GitHubRepo = "fixture/project"
+	if err := state.Put("settings", "config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := cfg.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, _, err := state.GetRaw("settings", "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized := `{"expected_revision":"` + revision + `","config":{"github_repo":"` + strings.Repeat("x", 300*1024) + `"}}`
+	response := call(t, router, "PUT", "/api/config", oversized)
+	if response.Code != http.StatusRequestEntityTooLarge || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		!strings.Contains(response.Body.String(), "length limit exceeded") {
+		t.Fatalf("oversized save: %d %q %.200q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+	if after, _, err := state.GetRaw("settings", "config"); err != nil || string(after) != string(saved) {
+		t.Fatalf("oversized save changed the configuration: %v", err)
+	}
+	if view := decode(t, call(t, router, "GET", "/api/config", "")); view["revision"] != revision {
+		t.Fatalf("revision after oversized save: %v", view["revision"])
+	}
+
+	type rejection struct{ method, path, body, want string }
+	var rejections []rejection
+	for _, history := range []string{"/api/tasks", "/api/cycles", "/api/prs", "/api/proposals"} {
+		rejections = append(rejections,
+			rejection{"GET", history + "?before=x", "", "Invalid query string: "},
+			rejection{"GET", history + "?limit=-1", "", "Invalid query string: "})
+	}
+	rejections = append(rejections, rejection{"POST", "/api/doctor?mode=bogus", "{}", "Invalid query string: invalid value for `mode`"})
+	for _, check := range rejections {
+		response := call(t, router, check.method, check.path, check.body)
+		if response.Code != http.StatusBadRequest || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+			!strings.HasPrefix(response.Body.String(), check.want) {
+			t.Fatalf("%s %s: %d %q %q", check.method, check.path, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+		}
+	}
+
+	for _, check := range []struct {
+		name     string
+		response *httptest.ResponseRecorder
+		status   int
+	}{
+		{"dashboard", request(t, router, "GET", "/", "", false), http.StatusOK},
+		{"asset miss", request(t, router, "GET", "/_app/missing.js", "", false), http.StatusNotFound},
+		{"health", request(t, router, "GET", "/healthz", "", false), http.StatusOK},
+		{"state", call(t, router, "GET", "/api/state", ""), http.StatusOK},
+		{"unauthenticated", request(t, router, "GET", "/api/state", "", false), http.StatusUnauthorized},
+		{"body rejection", call(t, router, "PUT", "/api/config", "{bad"), http.StatusBadRequest},
+		{"unknown route", call(t, router, "GET", "/api/missing", ""), http.StatusNotFound},
+	} {
+		h := check.response.Header()
+		csp := h.Get("content-security-policy")
+		if check.response.Code != check.status ||
+			h.Get("x-content-type-options") != "nosniff" ||
+			h.Get("x-frame-options") != "DENY" ||
+			h.Get("referrer-policy") != "no-referrer" ||
+			h.Get("cache-control") != "no-store" ||
+			!strings.HasPrefix(csp, "default-src 'self';") ||
+			!strings.Contains(csp, "frame-ancestors 'none'") ||
+			!strings.Contains(csp, "base-uri 'self'") ||
+			!strings.Contains(csp, "form-action 'self'") {
+			t.Fatalf("%s: %d headers %v", check.name, check.response.Code, h)
+		}
+	}
+}
