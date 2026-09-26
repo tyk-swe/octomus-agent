@@ -209,22 +209,22 @@ func writeAll(ctx context.Context, w *os.File, data []byte) error {
 	return nil
 }
 
-// receive reads one protocol message, answering and rejecting interactive
-// JSON-RPC requests.
-func (c *Codex) receive(ctx context.Context) (map[string]any, error) {
-	r, err := process.Bounded(ctx, c.timeout, "Codex response timed out", func(wctx context.Context) (lineResult, error) {
-		select {
-		case r, ok := <-c.lines:
-			if !ok {
-				return lineResult{}, errCodexDisconnected
-			}
-			return r, nil
-		case <-wctx.Done():
-			return lineResult{}, wctx.Err()
+// receive reads one protocol message by deadline, answering and rejecting
+// interactive JSON-RPC requests. what names the bound in the timeout error.
+func (c *Codex) receive(deadline time.Time, what string) (map[string]any, error) {
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	var r lineResult
+	select {
+	case line, ok := <-c.lines:
+		if !ok {
+			return nil, errCodexDisconnected
 		}
-	})
-	if err != nil {
-		return nil, err
+		r = line
+	case <-timer.C:
+		return nil, fmt.Errorf("%s: deadline has elapsed", what)
+	case <-c.ctx.Done():
+		return nil, process.ErrSessionCancelled
 	}
 	if r.err != nil {
 		return nil, r.err
@@ -258,12 +258,15 @@ func (c *Codex) rpc(method string, params map[string]any) (any, error) {
 		return nil, err
 	}
 	// A turn can emit notifications before the request response; preserve
-	// their order.
+	// their order. The whole call is bounded at 60 s and each message by the
+	// session timeout, whichever ends first.
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		v, err := process.BoundedAt(c.ctx, deadline, "Codex RPC timed out", func(wctx context.Context) (map[string]any, error) {
-			return c.receive(wctx)
-		})
+		bound, what := deadline, "Codex RPC timed out"
+		if perMessage := time.Now().Add(time.Duration(c.timeout) * time.Second); perMessage.Before(bound) {
+			bound, what = perMessage, "Codex response timed out"
+		}
+		v, err := c.receive(bound, what)
 		if err != nil {
 			return nil, err
 		}
@@ -463,9 +466,7 @@ func (c *Codex) turn(thread string, route config.Route, cwd, prompt string, sche
 				c.pendingBytes -= queued.size
 				event = queued.value
 			} else {
-				v, err := process.BoundedAt(c.ctx, deadline, "Codex session time limit exceeded", func(wctx context.Context) (map[string]any, error) {
-					return c.receive(wctx)
-				})
+				v, err := c.receive(deadline, "Codex session time limit exceeded")
 				if err != nil {
 					return "", err
 				}
