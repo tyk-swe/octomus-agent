@@ -394,18 +394,11 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 	if cycle.Mode == model.CycleModeExecution {
 		reconsiders = "Include a stable problem_key and relevant_paths as repository-relative files. Always return reconsiders=[]; seeded rediscovery candidates already carry them."
 	}
-	outcomes := make([]roleOutcome, cfg.DiscoveryAgents)
-	var wg sync.WaitGroup
-	for i := uint64(0); i < cfg.DiscoveryAgents; i++ {
-		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			prompt := fmt.Sprintf("Discover worthwhile project improvements, focusing on %s. Also cover the enabled categories as appropriate, and set each proposal's category to exactly one of %v. Inspect actual code and relevant open branch diffs; do not modify files. Return no proposals when benefit is weak. Return at most %d proposals. For each proposal include concrete file evidence, problem, benefit, scope, tier XS/S/M/L/XL, dependencies by proposal id, a self-contained refined prompt with constraints and verification, and target '%s' or a listed owned PR branch. Give IDs prefixed d%d-. "+reconsiders+" "+proposalLimits+" Reuse matching problem identities from decision memory and do not repeat unchanged rejected work or seeded rediscovery candidates. Set decision='candidate' and reason describing value. Do not duplicate history/open work. Maintenance due: %t; prioritize maintenance on main and %v when due; preserve useful capabilities. Grounding: %s. Recorded context: %s", discoveryScopes[i], cfg.Categories, perAgent, cfg.DefaultBranch, i, cycle.Grounding.MaintenanceDue, cycle.Grounding.MaintenanceTargets, ground, recorded)
-			outcomes[i] = a.role(ctx, cfg, cycleID, revision, fmt.Sprintf("discovery-%d", i), "discovery", prompt, schemas.ProposalSchema())
-		}()
-	}
-	wg.Wait()
+	// The agent count is bounded by discoveryScopes above.
+	outcomes := runRoles(int(cfg.DiscoveryAgents), func(i int) roleOutcome {
+		prompt := fmt.Sprintf("Discover worthwhile project improvements, focusing on %s. Also cover the enabled categories as appropriate, and set each proposal's category to exactly one of %v. Inspect actual code and relevant open branch diffs; do not modify files. Return no proposals when benefit is weak. Return at most %d proposals. For each proposal include concrete file evidence, problem, benefit, scope, tier XS/S/M/L/XL, dependencies by proposal id, a self-contained refined prompt with constraints and verification, and target '%s' or a listed owned PR branch. Give IDs prefixed d%d-. "+reconsiders+" "+proposalLimits+" Reuse matching problem identities from decision memory and do not repeat unchanged rejected work or seeded rediscovery candidates. Set decision='candidate' and reason describing value. Do not duplicate history/open work. Maintenance due: %t; prioritize maintenance on main and %v when due; preserve useful capabilities. Grounding: %s. Recorded context: %s", discoveryScopes[i], cfg.Categories, perAgent, cfg.DefaultBranch, i, cycle.Grounding.MaintenanceDue, cycle.Grounding.MaintenanceTargets, ground, recorded)
+		return a.role(ctx, cfg, cycleID, revision, fmt.Sprintf("discovery-%d", i), "discovery", prompt, schemas.ProposalSchema())
+	})
 	if err := a.attachOutcomes(cycle, outcomes); err != nil {
 		return err
 	}
@@ -455,17 +448,9 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 		prompts[i] = fmt.Sprintf("%s Candidates: %s. Grounding: %s. Context: %s", focus, candidates, ground, recorded)
 	}
 	cycleID, revision := cycle.ID, cycle.Grounding.Revision
-	outcomes := make([]roleOutcome, len(slots))
-	var wg sync.WaitGroup
-	for i := range slots {
-		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			outcomes[i] = a.role(ctx, cfg, cycleID, revision, slots[i], "proposal_reviewer", prompts[i], schema)
-		}()
-	}
-	wg.Wait()
+	outcomes := runRoles(len(slots), func(i int) roleOutcome {
+		return a.role(ctx, cfg, cycleID, revision, slots[i], "proposal_reviewer", prompts[i], schema)
+	})
 	if err := a.attachOutcomes(cycle, outcomes); err != nil {
 		return err
 	}
@@ -617,10 +602,24 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 	return outcome
 }
 
-func (a *App) attachOutcomes(cycle *model.Cycle, outcomes []roleOutcome) error {
-	if err := a.refreshCycleSessions(cycle); err != nil {
-		return err
+// runRoles runs one planning role per index concurrently and returns their
+// outcomes in index order once every role has returned. It does no durable
+// I/O: each role appends its own session record, and attachOutcomes saves
+// the cycle.
+func runRoles(n int, run func(i int) roleOutcome) []roleOutcome {
+	outcomes := make([]roleOutcome, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() { outcomes[i] = run(i) })
 	}
+	wg.Wait()
+	return outcomes
+}
+
+// attachOutcomes returns the first role error in index order, leaving the
+// cycle's save to the failure path, or saves the cycle with the sessions its
+// roles recorded.
+func (a *App) attachOutcomes(cycle *model.Cycle, outcomes []roleOutcome) error {
 	var first error
 	for _, outcome := range outcomes {
 		if outcome.err != nil && first == nil {
