@@ -13,8 +13,9 @@ measurement is **unavailable**, not zero.
 
 `octomus-agent --data-dir PATH --usage-report` exports a read-only JSON snapshot.
 Its schema version is 1. `daily` includes the daily budget counter and attributed
-admissions. The `unattributed_admissions` field remains in the report shape and
-is zero for version-7 state. `cycles` includes
+admissions. Version-7 state records every admission in the ledger, so
+`has_admission_ledger` is always true and `unattributed_admissions` is zero; both
+stay in the report shape. `cycles` includes
 planning wall time (not subsequent task execution), mode (audit/execution), status,
 per-decision proposal counts, planning admissions and task admissions associated
 with that cycle. `tasks` includes execution tier, saved routes, admissions, status
@@ -26,7 +27,7 @@ An **admission** reserves budget before starting work. Failed thread starts,
 failed clone setup and interrupted attempts can consume admissions without a
 completed provider turn. Each repair turn and retried executor reserves again,
 even if the runner session is reused. The daily counter and ledger entry commit
-atomically. Existing counters from before this ledger remain unattributed.
+atomically.
 
 `recorded_completed_sessions` counts persisted thread records, not turns: repeated
 repairs share one record, and interrupted persistence can leave incomplete session
