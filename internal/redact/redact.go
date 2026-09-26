@@ -5,6 +5,7 @@
 package redact
 
 import (
+	"cmp"
 	"os"
 	"regexp"
 	"slices"
@@ -55,12 +56,54 @@ func environmentSecrets() []string {
 // Secrets scrubs tokens and secret-bearing environment values without any
 // length limit. Persisted results must be bounded by the caller so shortening
 // is always flagged.
-func Secrets(input string) string {
-	s := tokenPattern.ReplaceAllString(input, "[redacted]")
-	for _, value := range environmentSecrets() {
-		s = strings.ReplaceAll(s, value, "[redacted]")
+func Secrets(input string) string { return scrub(input, environmentSecrets()) }
+
+// scrub replaces every token match and every occurrence of each secret value
+// in input with "[redacted]". All spans are found in the original text and
+// overlapping spans are replaced as one, so replacing one secret never splits
+// another and leaves the rest of it visible. Adjacent spans stay separate.
+func scrub(input string, values []string) string {
+	var spans [][2]int
+	for _, match := range tokenPattern.FindAllStringIndex(input, -1) {
+		spans = append(spans, [2]int{match[0], match[1]})
 	}
-	return s
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		first := len(spans)
+		for from := 0; ; {
+			i := strings.Index(input[from:], value)
+			if i < 0 {
+				break
+			}
+			start, end := from+i, from+i+len(value)
+			if last := len(spans) - 1; last >= first && start < spans[last][1] {
+				// An overlapping occurrence of the same value extends the last one.
+				spans[last][1] = end
+			} else {
+				spans = append(spans, [2]int{start, end})
+			}
+			from = start + 1
+		}
+	}
+	if len(spans) == 0 {
+		return input
+	}
+	slices.SortFunc(spans, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
+	var out strings.Builder
+	last := 0
+	for i := 0; i < len(spans); {
+		start, end := spans[i][0], spans[i][1]
+		for i++; i < len(spans) && spans[i][0] < end; i++ {
+			end = max(end, spans[i][1])
+		}
+		out.WriteString(input[last:start])
+		out.WriteString("[redacted]")
+		last = end
+	}
+	out.WriteString(input[last:])
+	return out.String()
 }
 
 // displayTextLimit bounds every string a dashboard display value can carry,
