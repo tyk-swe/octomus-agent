@@ -195,10 +195,8 @@ func (s *Store) ProposalDetail(cycle, id string) (json.RawMessage, error) {
 
 // SchedulingTasks lists every active task plus a bounded queued window for the run.
 func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	// Every active writer must be visible, regardless of the queued history size or batch.
-	raw, err := queryStrings(s.conn, fmt.Sprintf(`WITH candidates AS (
+	return listRecords[model.Task](s, fmt.Sprintf(`WITH candidates AS (
                 SELECT id,seq FROM record_meta WHERE kind='task' AND archived IS NULL
                     AND status IN (%s)
                 UNION
@@ -222,45 +220,23 @@ func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
             )
             SELECT r.data FROM candidates m JOIN records r ON r.kind='task' AND r.id=m.id
             ORDER BY m.seq ASC`, statusList(model.ActiveStatuses())), runID)
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[model.Task](raw)
 }
 
 // TasksWithStatus lists up to 500 unarchived tasks in the given statuses, oldest first.
 func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	list, err := json.Marshal(statuses)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := queryStrings(s.conn, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[model.Task](raw)
+	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
 }
 
 func (s *Store) RunningCycles() ([]model.Cycle, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'")
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[model.Cycle](raw)
+	return listRecords[model.Cycle](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'")
 }
 
 func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')='running'")
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[model.BaselineCheck](raw)
+	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')='running'")
 }
 
 func (s *Store) BaselineCleanupCandidates() ([]model.BaselineCheck, error) {
@@ -283,13 +259,7 @@ func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
 }
 
 func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq", id)
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[model.Task](raw)
+	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq", id)
 }
 
 // Snapshot runs fn inside one deferred transaction on the service connection.
@@ -703,13 +673,7 @@ func (s *Store) RecordPrObservation(repository string, p model.PullRequest, deli
 
 // DecisionMemory lists the newest 100 saved decisions for a repository.
 func (s *Store) DecisionMemory(repository string) ([]any, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT data FROM records WHERE kind='decision' AND json_extract(data,'$.repository')=?1 COLLATE NOCASE ORDER BY rowid DESC LIMIT 100", repository)
-	if err != nil {
-		return nil, err
-	}
-	return decodeAll[any](raw)
+	return listRecords[any](s, "SELECT data FROM records WHERE kind='decision' AND json_extract(data,'$.repository')=?1 COLLATE NOCASE ORDER BY rowid DESC LIMIT 100", repository)
 }
 
 // RediscoveryRequests lists cancelled tasks awaiting rediscovery for a repository.

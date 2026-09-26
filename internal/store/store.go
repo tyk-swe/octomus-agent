@@ -430,6 +430,13 @@ func QueryRecords[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
 	return decodeAll[T](raw)
 }
 
+// listRecords is QueryRecords on the service connection under the store mutex.
+func listRecords[T any](s *Store, query string, args ...any) ([]T, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return QueryRecords[T](s.conn, query, args...)
+}
+
 // Event appends a redacted operator-visible event.
 func (s *Store) Event(entity, kind, message string) error {
 	s.mu.Lock()
