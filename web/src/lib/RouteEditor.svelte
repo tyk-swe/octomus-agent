@@ -211,7 +211,7 @@
     color: var(--muted);
   }
   .route-problem {
-    color: #9f3f32;
+    color: var(--bad-fg);
   }
   @media (max-width: 1100px) {
     .route-fields,

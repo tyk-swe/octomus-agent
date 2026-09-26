@@ -214,9 +214,9 @@
   .step[data-tone='saved'] .step-index,
   .step[data-tone='checked'] .step-index,
   .step[data-tone='ran'] .step-index {
-    background: #eef5e9;
-    border-color: #e0ecd6;
-    color: #476e48;
+    background: var(--good-bg);
+    border-color: var(--good-line);
+    color: var(--good-fg);
   }
   .step-body {
     min-width: 0;
@@ -241,21 +241,21 @@
     margin-top: 6px;
   }
   .badge.tone-draft {
-    background: #fbf3e6;
-    color: #835d29;
-    border-color: #f0e4ce;
+    background: var(--warn-bg);
+    color: var(--warn-fg);
+    border-color: var(--warn-line);
   }
   .badge.tone-saved,
   .badge.tone-checked,
   .badge.tone-ran {
-    color: #476e48;
-    background: #eef5e9;
-    border-color: #e0ecd6;
+    color: var(--good-fg);
+    background: var(--good-bg);
+    border-color: var(--good-line);
   }
   .badge.tone-failed {
-    background: #fbefeb;
-    color: #915441;
-    border-color: #eeddd5;
+    background: var(--bad-bg);
+    color: var(--bad-fg);
+    border-color: var(--bad-line);
   }
   .setup-footnote {
     margin: 16px 24px 20px;

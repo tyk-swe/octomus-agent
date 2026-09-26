@@ -648,7 +648,7 @@
     font-weight: 400;
     font-size: 12px;
     line-height: 1.7;
-    color: #835d29;
+    color: var(--warn-fg);
   }
   /* Notes for whole collections sit at section level, outside the form grid. */
   .settings-section > .preview-note {
