@@ -437,7 +437,7 @@ func TestDecodeJSONStrict(t *testing.T) {
 		{`"\ud800"`, "unpaired high surrogate"},
 		{`"\udc00"`, "unpaired low surrogate"},
 		{`"\ud800A"`, "unpaired high surrogate"},
-		{`"\ud800A"`, "unpaired high surrogate"},
+		{`"\ud800\u0041"`, "unpaired high surrogate"},
 		{`{"k":["ok","\ud800"]}`, "unpaired high surrogate"},
 		{`"\u12"`, "invalid Unicode escape"},
 		{"\"\xff\"", "invalid UTF-8"},
@@ -465,9 +465,9 @@ func TestDecodeJSONStrict(t *testing.T) {
 		want any
 	}{
 		{`"x😀"`, "x😀"},
-		{`"😀"`, "😀"},
+		{`"\ud83d\ude00"`, "😀"},
 		{`"\\ud800"`, `\ud800`},
-		{`"A"`, "A"},
+		{`"\u0041"`, "A"},
 		{`{"n":1.50,"big":12345678901234567890}`, map[string]any{"n": json.Number("1.50"), "big": json.Number("12345678901234567890")}},
 		{" [1, \"a\"] \n", []any{json.Number("1"), "a"}},
 	} {
@@ -506,7 +506,7 @@ func TestFinishTurnRejectsDuplicateKeys(t *testing.T) {
 	}{
 		{"top level", `{"completed":true,"summary":"Reviewed","findings":[` + finding + `],"findings":[]}`, "findings", schemas.ReviewSchema()},
 		{"inside a finding", `{"completed":false,"summary":"s","findings":[{"title":"a","title":"b","file":"f","detail":"d","priority":"p"}]}`, "title", schemas.ReviewSchema()},
-		{"escaped", `{"summary":"a","summary":"b","completed":true,"findings":[]}`, "summary", schemas.ReviewSchema()},
+		{"escaped", `{"summary":"a","\u0073ummary":"b","completed":true,"findings":[]}`, "summary", schemas.ReviewSchema()},
 		{"inside a proposal", strings.Replace(proposals, `"decision":"accept"`, `"decision":"accept","decision":"reject"`, 1), "decision", schemas.ProposalSchema()},
 	} {
 		got, err := FinishTurn(tc.answer, tc.schema)
@@ -526,6 +526,11 @@ func TestFinishTurnRejectsDuplicateKeys(t *testing.T) {
 		if got, err := FinishTurn(tc.answer, schemas.ReviewSchema()); err != nil || got != tc.want {
 			t.Errorf("FinishTurn(%s) = %q, %v; want %q", tc.answer, got, err, tc.want)
 		}
+	}
+	// The key scan refuses only repeated keys: a number decodeJSON keeps
+	// exactly, even one beyond float64, still reaches schema validation.
+	if got, err := FinishTurn(`{"completed":true,"summary":"s","findings":[],"n":1e400}`, schemas.ReviewSchema()); err == nil || err.Error() != "Runner returned an invalid structured result: Structured result has an unexpected field" {
+		t.Errorf("out-of-range number = %q, %v", got, err)
 	}
 	// Without a schema the answer is plain text and is returned unchanged.
 	text := `{"a":1,"a":2}`

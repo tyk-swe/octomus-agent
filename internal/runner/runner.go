@@ -162,7 +162,11 @@ func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 		// as whichever came last. Only answer text (Codex, scripted runners)
 		// can still repeat a key here: OpenCode's structured result arrives
 		// already decoded from its message response.
-		err = uniqueKeys(json.NewDecoder(strings.NewReader(answer)))
+		dec := json.NewDecoder(strings.NewReader(answer))
+		// Exact numbers, as decodeJSON reads them: a float64 token would
+		// refuse an out-of-range literal decodeJSON accepted.
+		dec.UseNumber()
+		err = uniqueKeys(dec)
 	}
 	if err != nil {
 		return "", fmt.Errorf("Runner returned invalid JSON: %w", err)
