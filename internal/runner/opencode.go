@@ -23,6 +23,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 const OpenCodeProtocolVersion = "1.18.30"
@@ -424,7 +425,7 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 	if !variantMatches(variant, variantOK, route) {
 		return "", fmt.Errorf("OpenCode substituted the requested model or variant")
 	}
-	if !jsonEqual(doc["permission"], permissions) {
+	if !wirejson.Equal(doc["permission"], permissions) {
 		return "", fmt.Errorf("OpenCode session has unexpected permissions")
 	}
 	return id, nil

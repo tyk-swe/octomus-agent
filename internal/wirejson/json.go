@@ -251,6 +251,20 @@ func markedPair(data []byte, err error) ([]byte, error) {
 	return data, marked(err)
 }
 
+// Equal reports whether a and b have the same Marshal output. A value that
+// cannot be marshalled is never equal, not even to itself.
+func Equal(a, b any) bool {
+	left, err := Marshal(a)
+	if err != nil {
+		return false
+	}
+	right, err := Marshal(b)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(left, right)
+}
+
 // Generic re-reads value's Marshal output as generic JSON (maps, slices,
 // strings, booleans, nil and json.Number), so every number keeps its exact
 // encoded spelling. Marshal failures stay marked; a decode failure, which

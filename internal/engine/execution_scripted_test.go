@@ -25,6 +25,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // tickUntil ticks the scheduler, without joining workers, until done closes.
@@ -958,7 +959,7 @@ func TestExecutionShutdownBeforeInitializationStaysRetryable(t *testing.T) {
 	if err := restarted.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	if recovered := loadTask(t, fixture.state, task.ID); !sameRecordJSON(&recovered, &stopped) {
+	if recovered := loadTask(t, fixture.state, task.ID); !wirejson.Equal(&recovered, &stopped) {
 		t.Fatalf("recovery changed a retryable block: %+v", recovered)
 	}
 	assertAdmissions(t, fixture.state, 0, "no work was admitted before the preflight")

@@ -412,7 +412,7 @@ func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (mo
 		if err != nil {
 			return err
 		}
-		if !sameJSON(live, *control) || !capacity.Available() {
+		if !wirejson.Equal(live, *control) || !capacity.Available() {
 			return errRollback
 		}
 		if next, err = txStartBatch(c, *control); err != nil {
@@ -459,7 +459,7 @@ func (s *Store) BeginCycleIfAffordable(cycle model.Cycle, control model.Control,
 		if err != nil {
 			return err
 		}
-		if liveFingerprint != fingerprint || !sameJSON(live, expected) || !capacity.Available() {
+		if liveFingerprint != fingerprint || !wirejson.Equal(live, expected) || !capacity.Available() {
 			return errRollback
 		}
 		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {

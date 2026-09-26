@@ -13,6 +13,7 @@ import (
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func TestShutdownOwnsRetryPreflight(t *testing.T) {
@@ -110,7 +111,7 @@ func TestShutdownWaitsForPublicationReconciliation(t *testing.T) {
 	if err := app.TaskAction(context.Background(), task.ID, "reconcile"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("reconciliation after shutdown = %v; want cancellation", err)
 	}
-	if current := loadTask(t, fixture.state, task.ID); !sameRecordJSON(&saved, &current) {
+	if current := loadTask(t, fixture.state, task.ID); !wirejson.Equal(&saved, &current) {
 		t.Fatal("reconciliation after shutdown changed the durable task")
 	}
 }
@@ -213,7 +214,7 @@ func TestRetryRechecksPolicyAfterRemoteChecks(t *testing.T) {
 		t.Fatalf("retry under changed policy = %v; want conflict", err)
 	}
 	saved := loadTask(t, fixture.state, task.ID)
-	if !sameRecordJSON(&saved, &task) {
+	if !wirejson.Equal(&saved, &task) {
 		t.Fatalf("conflicted retry rewrote the durable task: %+v", saved)
 	}
 }
@@ -293,7 +294,7 @@ func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *test
 					t.Fatalf("stale %s = %v; want conflict", action, err)
 				}
 				saved := loadTask(t, fixture.state, task.ID)
-				if !sameRecordJSON(&saved, &changed) {
+				if !wirejson.Equal(&saved, &changed) {
 					t.Fatalf("stale %s overwrote %s: %+v", action, scenario.mutation, saved)
 				}
 			})
@@ -432,7 +433,7 @@ func TestUnknownActionsAreNotReportedAsEligibilityConflicts(t *testing.T) {
 	if !errors.Is(err, ErrUnknownTaskAction) || IsActionConflict(err) {
 		t.Fatalf("bogus task action = %v; want ErrUnknownTaskAction", err)
 	}
-	if saved := loadTask(t, state, task.ID); !sameRecordJSON(&saved, &task) {
+	if saved := loadTask(t, state, task.ID); !wirejson.Equal(&saved, &task) {
 		t.Fatalf("unknown task action changed the record: %+v", saved)
 	}
 	err = app.CycleAction(cycle.ID, "bogus")

@@ -484,3 +484,36 @@ func TestCloneSharesNoMutableState(t *testing.T) {
 		t.Fatalf("mutating the clone changed the original: %#v", original)
 	}
 }
+
+// Equal compares canonical Marshal output: pointers compare by what they
+// point to, a nil slice (null) differs from an empty one ([]), and a value
+// that cannot be marshalled equals nothing, not even itself.
+func TestEqualComparesMarshalOutput(t *testing.T) {
+	type nested struct {
+		P     *string  `json:"p"`
+		Items []string `json:"items"`
+	}
+	one, other := "one", "one"
+	a := nested{P: &one, Items: []string{"x"}}
+	b := nested{P: &other, Items: []string{"x"}}
+	if !Equal(a, b) || !Equal(&a, b) {
+		t.Fatal("values with equal JSON compared unequal")
+	}
+	changed := "two"
+	b.P = &changed
+	if Equal(a, b) {
+		t.Fatal("a changed pointee compared equal")
+	}
+	if Equal(nested{P: &one}, nested{P: &one, Items: []string{}}) {
+		t.Fatal("a nil slice compared equal to an empty one")
+	}
+	unencodable := badEnum{testEnum(7)}
+	if Equal(unencodable, unencodable) || Equal(unencodable, a) || Equal(a, unencodable) {
+		t.Fatal("a value that cannot be marshalled compared equal")
+	}
+}
+
+// badEnum encodes through MarshalEnum, which refuses out-of-range values.
+type badEnum struct{ value testEnum }
+
+func (b badEnum) MarshalJSON() ([]byte, error) { return MarshalEnum(b.value, testEnumNames) }

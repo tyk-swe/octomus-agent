@@ -225,22 +225,10 @@ func (a *App) revalidateTaskAction(original *model.Task, action string) error {
 	if err != nil {
 		return err
 	}
-	if !sameRecordJSON(current, original) {
+	if !wirejson.Equal(current, original) {
 		return conflictError("Task changed during remote checks; inspect its current state before trying again")
 	}
 	return nil
-}
-
-func sameRecordJSON(a, b *model.Task) bool {
-	left, err := wirejson.Marshal(a)
-	if err != nil {
-		return false
-	}
-	right, err := wirejson.Marshal(b)
-	if err != nil {
-		return false
-	}
-	return string(left) == string(right)
 }
 
 // recordTaskError classifies err into the task's blocked reason and stores its

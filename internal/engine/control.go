@@ -234,7 +234,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		runID = &value
 	}
 	cycle := model.Cycle{
-		Mode: mode, ID: id, Number: next.CycleNumber, Status: "running",
+		Mode: mode, ID: id, Number: next.CycleNumber, Status: model.CycleRunning,
 		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 		Repository: cfg.GitHubRepo, DecisionMemory: []any{}, RunID: runID,
 	}
