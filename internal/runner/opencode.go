@@ -171,9 +171,9 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 			return http.ErrUseLastResponse
 		},
 	}
-	// Discard stdout without retaining raw logs. A malformed stream ends
-	// the drain.
-	drainDone := drained(lines)
+	// Discard stdout without retaining raw logs, including after a malformed
+	// stream ends the line reader.
+	drainDone := discardStdout(lines, stdoutR)
 	server := &OpenCode{
 		cfg:       cfg.Clone(),
 		child:     child,

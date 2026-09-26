@@ -77,6 +77,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def setup_request(self):
+        if mode() == 'overlong-stdout':
+            # Server logs keep reaching stdout after readiness.
+            print('x' * 8191, flush=True)
         expected = 'Basic ' + base64.b64encode(f"{os.environ['OPENCODE_SERVER_USERNAME']}:{os.environ['OPENCODE_SERVER_PASSWORD']}".encode()).decode()
         if self.headers.get('Authorization') != expected:
             self.send_json({'error': 'unauthorized'}, 401)
@@ -289,4 +292,7 @@ port = int(sys.argv[sys.argv.index('--port') + 1])
 server = Server(('127.0.0.1', port), Handler)
 log('opencode-pids.jsonl', {'pid': os.getpid()})
 print(f'opencode server listening on http://127.0.0.1:{server.server_port}', flush=True)
+if mode() == 'overlong-stdout':
+    # One stdout line over the adapter's 16 KiB readiness line bound.
+    print('z' * 20000, flush=True)
 server.serve_forever()

@@ -312,6 +312,37 @@ func TestOpenCodeStartupPolicyFailuresAndTimeoutsAreBounded(t *testing.T) {
 	}
 }
 
+// The owned server's stdout stays drained for its whole life: after one
+// over-long line ends the line reader, the server can keep logging.
+func TestOpenCodeStdoutStaysDrainedAfterOverlongLine(t *testing.T) {
+	f := opencodeFixture(t)
+	f.mode("opencode", "overlong-stdout")
+	client, err := f.connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+	finished := make(chan error, 1)
+	go func() {
+		// Each request logs 8 KiB, so twenty outgrow a 64 KiB pipe.
+		for range 20 {
+			if _, err := client.Models(f.workspace); err != nil {
+				finished <- err
+				return
+			}
+		}
+		finished <- nil
+	}()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("models: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the server blocked on undrained stdout")
+	}
+}
+
 // A redirect is never followed; the 3xx response fails closed.
 func TestOpenCodeRedirectRefusal(t *testing.T) {
 	f := opencodeFixture(t)

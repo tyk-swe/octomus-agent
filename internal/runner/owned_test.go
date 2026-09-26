@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"bytes"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -90,5 +92,51 @@ func TestJoinOwnedReportsUnexpectedExits(t *testing.T) {
 	close(closed)
 	if err := joinOwned(waitCh, closed, "stuck"); err == nil || !strings.Contains(err.Error(), "exit status 3") {
 		t.Fatalf("an unexpected exit must be reported: %v", err)
+	}
+}
+
+// A server's stdout stays drained after an over-long line ends the line
+// reader, and the drain ends at end of stream or when the owner closes the
+// pipe.
+func TestDiscardStdoutSurvivesOverlongLine(t *testing.T) {
+	for _, end := range []string{"writer-closed", "reader-closed"} {
+		t.Run(end, func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			defer w.Close()
+			done := make(chan struct{})
+			defer close(done)
+			drain := discardStdout(lineReader(r, 16_384, done), r)
+			written := make(chan error, 1)
+			go func() {
+				if _, err := w.Write([]byte(strings.Repeat("z", 20_000) + "\n")); err != nil {
+					written <- err
+					return
+				}
+				_, err := w.Write(bytes.Repeat([]byte("log line\n"), 1<<17))
+				written <- err
+			}()
+			select {
+			case err := <-written:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("stdout stopped draining after an over-long line")
+			}
+			if end == "writer-closed" {
+				w.Close()
+			} else {
+				r.Close()
+			}
+			select {
+			case <-drain:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the drain did not end")
+			}
+		})
 	}
 }

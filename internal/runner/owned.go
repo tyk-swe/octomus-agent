@@ -3,6 +3,7 @@ package runner
 // Shared cleanup for the owned Codex app-server and OpenCode server children.
 import (
 	"errors"
+	"io"
 	"os/exec"
 	"syscall"
 	"time"
@@ -19,6 +20,22 @@ func drained(lines <-chan lineResult) <-chan struct{} {
 		defer close(done)
 		for range lines {
 		}
+	}()
+	return done
+}
+
+// discardStdout drains a server's stdout for its whole life without keeping
+// it: lines until the line reader stops (end of stream, a read error or an
+// over-long line), then raw bytes until the pipe ends. Only one reader is ever
+// active, and closing the pipe ends the copy. A server whose stdout is no
+// longer read would block on its next write once the pipe fills.
+func discardStdout(lines <-chan lineResult, stdout io.Reader) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range lines {
+		}
+		_, _ = io.Copy(io.Discard, stdout)
 	}()
 	return done
 }
