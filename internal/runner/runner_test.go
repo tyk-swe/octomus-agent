@@ -477,3 +477,59 @@ func TestDecodeJSONStrict(t *testing.T) {
 		}
 	}
 }
+
+// A structured answer that repeats a key at any depth is ambiguous: the decoded
+// value would keep whichever came last, so a listed finding followed by
+// "findings":[] would read as a clean review. FinishTurn refuses it like any
+// other invalid JSON, while the same key in separate objects stays valid.
+func TestFinishTurnRejectsDuplicateKeys(t *testing.T) {
+	finding := `{"detail":"d","file":"a.go","priority":"high","title":"SQL injection"}`
+	proposal := map[string]any{}
+	for _, key := range []string{"id", "title", "problem", "benefit", "category", "target", "tier", "scope", "prompt", "reason", "problem_key"} {
+		proposal[key] = key
+	}
+	proposal["decision"] = "accept"
+	for _, key := range []string{"evidence", "dependencies", "relevant_paths", "reconsiders"} {
+		proposal[key] = []any{}
+	}
+	encoded, err := json.Marshal(map[string]any{"proposals": []any{proposal}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposals := string(encoded)
+	if got, err := FinishTurn(proposals, schemas.ProposalSchema()); err != nil || got != proposals {
+		t.Fatalf("valid proposals = %q, %v", got, err)
+	}
+	for _, tc := range []struct {
+		name, answer, field string
+		schema              schemas.Schema
+	}{
+		{"top level", `{"completed":true,"summary":"Reviewed","findings":[` + finding + `],"findings":[]}`, "findings", schemas.ReviewSchema()},
+		{"inside a finding", `{"completed":false,"summary":"s","findings":[{"title":"a","title":"b","file":"f","detail":"d","priority":"p"}]}`, "title", schemas.ReviewSchema()},
+		{"escaped", `{"summary":"a","summary":"b","completed":true,"findings":[]}`, "summary", schemas.ReviewSchema()},
+		{"inside a proposal", strings.Replace(proposals, `"decision":"accept"`, `"decision":"accept","decision":"reject"`, 1), "decision", schemas.ProposalSchema()},
+	} {
+		got, err := FinishTurn(tc.answer, tc.schema)
+		want := fmt.Sprintf("Runner returned invalid JSON: duplicate field %q", tc.field)
+		if err == nil || err.Error() != want {
+			t.Errorf("%s: FinishTurn = %q, %v; want %q", tc.name, got, err, want)
+		}
+		var marked *wirejson.Error
+		if errors.As(err, &marked) {
+			t.Errorf("%s: returned a marked *wirejson.Error", tc.name)
+		}
+	}
+	for _, tc := range []struct{ answer, want string }{
+		{`{"summary":"s","completed":true,"findings":[]}`, `{"completed":true,"findings":[],"summary":"s"}`},
+		{`{"completed":false,"summary":"s","findings":[` + finding + `,` + finding + `]}`, `{"completed":false,"findings":[` + finding + `,` + finding + `],"summary":"s"}`},
+	} {
+		if got, err := FinishTurn(tc.answer, schemas.ReviewSchema()); err != nil || got != tc.want {
+			t.Errorf("FinishTurn(%s) = %q, %v; want %q", tc.answer, got, err, tc.want)
+		}
+	}
+	// Without a schema the answer is plain text and is returned unchanged.
+	text := `{"a":1,"a":2}`
+	if got, err := FinishTurn(text, nil); err != nil || got != text {
+		t.Fatalf("unstructured answer = %q, %v", got, err)
+	}
+}

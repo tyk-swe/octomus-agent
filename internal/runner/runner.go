@@ -148,13 +148,22 @@ func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd
 }
 
 // FinishTurn is the structured-result check every adapter applies to its final
-// answer: the answer is JSON-decoded with trailing-data rejection, validated,
-// and compactly marshaled. A nil schema returns the answer unchanged.
+// answer: the answer is JSON-decoded with trailing-data rejection and duplicate
+// keys refused, validated, and compactly marshaled. A nil schema returns the
+// answer unchanged.
 func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 	if schema == nil {
 		return answer, nil
 	}
 	parsed, err := decodeJSON([]byte(answer))
+	if err == nil {
+		// The decoded value keeps the last of repeated keys, so an ambiguous
+		// answer such as a findings list followed by "findings":[] would pass
+		// as whichever came last. Only answer text (Codex, scripted runners)
+		// can still repeat a key here: OpenCode's structured result arrives
+		// already decoded from its message response.
+		err = uniqueKeys(json.NewDecoder(strings.NewReader(answer)))
+	}
 	if err != nil {
 		return "", fmt.Errorf("Runner returned invalid JSON: %w", err)
 	}
@@ -339,6 +348,46 @@ func decodeJSON(data []byte) (any, error) {
 		return nil, fmt.Errorf("trailing JSON data")
 	}
 	return v, nil
+}
+
+// uniqueKeys reads one JSON value from dec and refuses an object key that is
+// repeated at any depth, comparing keys after unescaping. Call it only on
+// input decodeJSON accepted: the decoder's nesting limit bounds the recursion.
+// Its errors stay plain, like decodeJSON's.
+func uniqueKeys(dec *json.Decoder) error {
+	token, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch token {
+	case json.Delim('{'):
+		seen := map[string]struct{}{}
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			name, _ := key.(string)
+			if _, ok := seen[name]; ok {
+				return fmt.Errorf("duplicate field %q", name)
+			}
+			seen[name] = struct{}{}
+			if err := uniqueKeys(dec); err != nil {
+				return err
+			}
+		}
+	case json.Delim('['):
+		for dec.More() {
+			if err := uniqueKeys(dec); err != nil {
+				return err
+			}
+		}
+	default:
+		return nil
+	}
+	// The closing delimiter.
+	_, err = dec.Token()
+	return err
 }
 
 // marshal compactly serializes a protocol value.
