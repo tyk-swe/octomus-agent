@@ -72,11 +72,17 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 			delay := IdleDelay(cfg.CycleIntervalSeconds, control.IdleStreak)
 			control.NextCycleAt = time.Now().Unix() + int64(delay)
 		}
-		if err != nil && cycle.Mode == model.CycleModeExecution && control.Mode == model.OperatingModeRunOnce {
+		failedRunOnce := err != nil && cycle.Mode == model.CycleModeExecution && control.Mode == model.OperatingModeRunOnce
+		if failedRunOnce {
 			_ = a.pauseLocked(&control, &message)
-			_ = a.Store.Event(cycle.ID, "planning_error", message)
 		} else {
 			_ = a.Store.SaveControl(control)
+		}
+		// Every failed pass is logged after its control write, as a failed
+		// preflight is. A pass that shutdown cut short did not fail on its
+		// merits: it is logged only when it paused a Run once.
+		if err != nil && (failedRunOnce || a.ctx.Err() == nil) {
+			_ = a.Store.Event(cycle.ID, "planning_error", message)
 		}
 	}
 	a.gate.Unlock()

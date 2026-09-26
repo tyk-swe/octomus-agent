@@ -510,46 +510,79 @@ func TestResumeClearsOldDelayAndNextTickStartsPlanning(t *testing.T) {
 	}
 }
 
+// planningErrors returns the planning_error events recorded for entity.
+func planningErrors(t *testing.T, state *store.Store, entity string) []model.Event {
+	t.Helper()
+	events, err := state.Events(&entity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := []model.Event{}
+	for _, event := range events {
+		if event.Kind == "planning_error" {
+			found = append(found, event)
+		}
+	}
+	return found
+}
+
+// A failed pass commits nothing of its plan and logs one planning_error for
+// its cycle in either execution mode: Run once pauses, Continuous keeps
+// running and reports the failure in control.
 func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
-	fixture := newScriptedPlanningFixture(t)
-	plan := completePlan(t, fixture)
-	plan.discovery[0] = runnertest.Reply{Answer: "this discovery answer is not JSON"}
-	plan.queue(fixture)
-	app := fixture.pausedApp(t)
-	if err := app.RunOnce(); err != nil {
-		t.Fatal(err)
+	for _, mode := range []model.OperatingMode{model.OperatingModeRunOnce, model.OperatingModeContinuous} {
+		t.Run(mode.String(), func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			plan := completePlan(t, fixture)
+			plan.discovery[0] = runnertest.Reply{Answer: "this discovery answer is not JSON"}
+			plan.queue(fixture)
+			app := fixture.pausedApp(t)
+			start := app.RunOnce
+			if mode == model.OperatingModeContinuous {
+				start = app.Resume
+			}
+			if err := start(); err != nil {
+				t.Fatal(err)
+			}
+			if err := app.Tick(); err != nil {
+				t.Fatal(err)
+			}
+			failed := waitOnlyCycle(t, fixture.state)
+			app.wg.Wait() // Cycle status is persisted before control finalization finishes.
+			if failed.Status != model.CycleFailed || failed.Error == nil || !strings.Contains(*failed.Error, "invalid JSON") {
+				t.Fatalf("malformed discovery was accepted: %+v", failed)
+			}
+			statuses := map[string]int{}
+			for _, session := range failed.Sessions {
+				statuses[session.Status]++
+			}
+			if len(failed.Sessions) != int(1+fixture.cfg.DiscoveryAgents) || statuses[model.SessionFailed] != 1 {
+				t.Fatalf("failed plan did not retain terminal evidence for every started role: %+v", failed.Sessions)
+			}
+			if turns := fixture.script.Turns(fixture.routes.ProposalReviewer); len(turns) != 0 {
+				t.Fatalf("proposal review ran after discovery failed: %+v", turns)
+			}
+			tasks, err := store.List[model.Task](fixture.state, "task")
+			if err != nil || len(tasks) != 0 {
+				t.Fatalf("partial plan leaked tasks: %+v, %v", tasks, err)
+			}
+			memory, err := fixture.state.DecisionMemory(fixture.cfg.GitHubRepo)
+			if err != nil || len(memory) != 0 {
+				t.Fatalf("partial plan leaked decision memory: %+v, %v", memory, err)
+			}
+			control, _ := app.Control()
+			if mode == model.OperatingModeRunOnce && (control.Mode != model.OperatingModePaused || control.Batch != nil || control.Error == nil) {
+				t.Fatalf("failed RunOnce planning was not paused: %+v", control)
+			}
+			if mode == model.OperatingModeContinuous && (control.Mode != model.OperatingModeContinuous || control.Error == nil || *control.Error != *failed.Error) {
+				t.Fatalf("failed Continuous planning did not keep running with its error: %+v", control)
+			}
+			if events := planningErrors(t, fixture.state, failed.ID); len(events) != 1 || events[0].Message != *failed.Error {
+				t.Fatalf("failed pass logged %+v; want one planning_error with the cycle error", events)
+			}
+			assertNoOpenClients(t, fixture.script)
+		})
 	}
-	if err := app.Tick(); err != nil {
-		t.Fatal(err)
-	}
-	failed := waitOnlyCycle(t, fixture.state)
-	app.wg.Wait() // Cycle status is persisted before control finalization finishes.
-	if failed.Status != model.CycleFailed || failed.Error == nil || !strings.Contains(*failed.Error, "invalid JSON") {
-		t.Fatalf("malformed discovery was accepted: %+v", failed)
-	}
-	statuses := map[string]int{}
-	for _, session := range failed.Sessions {
-		statuses[session.Status]++
-	}
-	if len(failed.Sessions) != int(1+fixture.cfg.DiscoveryAgents) || statuses[model.SessionFailed] != 1 {
-		t.Fatalf("failed plan did not retain terminal evidence for every started role: %+v", failed.Sessions)
-	}
-	if turns := fixture.script.Turns(fixture.routes.ProposalReviewer); len(turns) != 0 {
-		t.Fatalf("proposal review ran after discovery failed: %+v", turns)
-	}
-	tasks, err := store.List[model.Task](fixture.state, "task")
-	if err != nil || len(tasks) != 0 {
-		t.Fatalf("partial plan leaked tasks: %+v, %v", tasks, err)
-	}
-	memory, err := fixture.state.DecisionMemory(fixture.cfg.GitHubRepo)
-	if err != nil || len(memory) != 0 {
-		t.Fatalf("partial plan leaked decision memory: %+v, %v", memory, err)
-	}
-	control, _ := app.Control()
-	if control.Mode != model.OperatingModePaused || control.Batch != nil || control.Error == nil {
-		t.Fatalf("failed RunOnce planning was not paused: %+v", control)
-	}
-	assertNoOpenClients(t, fixture.script)
 }
 
 func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
@@ -574,6 +607,9 @@ func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
 	control, err := app.Control()
 	if err != nil || control.Mode != model.OperatingModePaused || control.Error == nil || !strings.Contains(*control.Error, "omitted or invented") {
 		t.Fatalf("failed audit did not retain durable control evidence: %+v, %v", control, err)
+	}
+	if events := planningErrors(t, fixture.state, cycleID); len(events) != 1 || events[0].Message != *cycle.Error {
+		t.Fatalf("failed audit logged %+v; want one planning_error with the cycle error", events)
 	}
 }
 
