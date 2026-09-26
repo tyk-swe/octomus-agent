@@ -184,14 +184,14 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			}
 			if len(verificationErrors) == 0 {
 				// Main movement changes the integration context; never silently publish an obsolete review.
-				if task.PRNumber == nil {
-					def, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
-					if err != nil {
-						return err
-					}
-					if def == nil || *def != task.SourceRevision {
-						return model.BlockedReasonStaleBase
-					}
+				// Publication refuses a moved default branch for every task, so check it before the
+				// checkpoint for existing-PR work too. A new-PR task's source is the default revision.
+				def, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
+				if err != nil {
+					return err
+				}
+				if def == nil || *def != task.DefaultRevision {
+					return model.BlockedReasonStaleBase
 				}
 				task.OutputCommit = &revision
 				return a.publishReviewed(ctx, task)

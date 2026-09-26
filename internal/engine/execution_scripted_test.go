@@ -10,6 +10,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -519,6 +521,77 @@ func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
 		t.Fatalf("executor turns = %+v", turns)
 	}
 	assertAdmissions(t, fixture.state, 2, "resumed executor + reviewer")
+	assertNoOpenClients(t, script)
+}
+
+// advanceRemoteMain lands an external commit on the fixture remote's main,
+// as a maintainer merge would. It reports errors instead of failing the test
+// so it can run inside a scripted reply effect.
+func advanceRemoteMain(fixture *scriptedFixture) error {
+	remote := filepath.Join(fixture.root, "remote.git")
+	git := func(args ...string) (string, error) {
+		out, err := exec.Command("/usr/bin/git", append([]string{"--git-dir", remote}, args...)...).CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("git %v: %w: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	tree, err := git("rev-parse", "main^{tree}")
+	if err != nil {
+		return err
+	}
+	next, err := git("-c", "user.name=External", "-c", "user.email=fixture@example.com", "commit-tree", tree, "-p", "main", "-m", "External main change")
+	if err != nil {
+		return err
+	}
+	_, err = git("update-ref", "refs/heads/main", next)
+	return err
+}
+
+// existingPrTask is a follow-up task on the fixture's owned open PR #42.
+func existingPrTask(t *testing.T, fixture *scriptedFixture) model.Task {
+	t.Helper()
+	head := existingPrBranch(t, fixture.planningFixture)
+	task := executionTask(t, fixture.planningFixture, "octomus/existing")
+	task.Branch = "octomus/existing"
+	task.SourceRevision = head
+	number := uint64(42)
+	task.PRNumber = &number
+	url := "https://github.com/fixture/project/pull/42"
+	task.PRURL = &url
+	return task
+}
+
+// TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint: publication refuses
+// every task whose default branch moved, so an existing-PR task whose main
+// moved during execution blocks as a stale base before recording an output
+// checkpoint that could never publish, and keeps its cancel action.
+func TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	routes, script := fixture.routes, fixture.script
+	task := existingPrTask(t, fixture)
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: func(cwd string) error {
+		if err := writeFile("feature.txt", "fixed\n")(cwd); err != nil {
+			return err
+		}
+		return advanceRemoteMain(fixture)
+	}})
+	script.Answer(routes.Reviewer, cleanReview("Complete"))
+	saveExecutionTask(t, fixture.planningFixture, task)
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if !blockedAs(saved, model.BlockedReasonStaleBase) {
+		t.Fatalf("moved default branch outcome = %+v", saved)
+	}
+	if saved.OutputCommit != nil || len(publications(t, fixture.planningFixture)) != 0 {
+		t.Fatalf("an unpublishable checkpoint was recorded: %+v", saved)
+	}
+	if !slices.Contains(saved.AllowedActions(), "cancel") {
+		t.Fatalf("stale existing-PR task lost its cancel action: %v", saved.AllowedActions())
+	}
+	if len(saved.Reviews) != 1 || len(saved.Verification) == 0 {
+		t.Fatalf("the block must follow a clean, verified review: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
+	}
 	assertNoOpenClients(t, script)
 }
 
