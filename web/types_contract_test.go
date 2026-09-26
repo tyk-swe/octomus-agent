@@ -18,9 +18,9 @@ import (
 // src/lib/types.ts restates the service's JSON records by hand. These tests
 // hold each restated object type to its Go record's JSON field names, and each
 // restated vocabulary to the Go values, so a renamed or added field or status
-// fails here instead of rendering as undefined. Intersections and Pick/Omit
-// types built from these (TaskRow, Task, CycleSummary, ProposalRow) and nested
-// inline objects are not compared.
+// fails here instead of rendering as undefined. The summary rows the store
+// projects in SQL (TaskRow, CycleSummary), types derived with intersections or
+// Pick/Omit (Task, ProposalRow) and nested inline objects are not compared.
 
 var (
 	// A multi-line object type; its top-level keys sit at two-space indentation.
