@@ -966,6 +966,17 @@ func TestRunnerExitBlocksStillActiveTask(t *testing.T) {
 	}
 }
 
+// A nil task runner keeps the supervised production lifecycle, as nil keeps
+// the production default for the other options, rather than leaving dispatch
+// with no runner for the tasks it admits.
+func TestNilTaskRunnerKeepsTheProductionRunner(t *testing.T) {
+	a := New(testStore(t), t.TempDir(), WithTaskRunner(nil))
+	t.Cleanup(a.Shutdown)
+	if a.taskRunner == nil {
+		t.Fatal("WithTaskRunner(nil) removed the production task runner")
+	}
+}
+
 func TestSchedulerWaitsForExecutionSlotBeforeRefreshingCapacity(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())

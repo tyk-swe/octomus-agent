@@ -302,14 +302,6 @@ func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 }
 
 func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.Task) (bool, bool, error) {
-	if a.taskRunner == nil {
-		for _, task := range tasks {
-			if task.Status == model.StatusQueued {
-				return false, true, nil
-			}
-		}
-		return false, len(tasks) > 0, nil
-	}
 	activeByBranch := map[string]struct{}{}
 	activeTasks := map[string]struct{}{}
 	activeCount := uint64(0)
@@ -358,8 +350,9 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 			continue
 		}
 		if available == 0 {
+			// Every later queued task could only wait too.
 			waiting = true
-			continue
+			break
 		}
 		ready, blocked, err := a.dependenciesReady(*task, control)
 		if err != nil {

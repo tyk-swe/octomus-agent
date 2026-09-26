@@ -35,8 +35,15 @@ func (f TaskRunnerFunc) RunTask(ctx context.Context, task model.Task) error { re
 type Option func(*App)
 
 // WithTaskRunner replaces the supervised execution lifecycle that owns each
-// admitted task; tests use it to observe or script dispatch.
-func WithTaskRunner(runner TaskRunner) Option { return func(a *App) { a.taskRunner = runner } }
+// admitted task; tests use it to observe or script dispatch. Nil keeps the
+// production runner.
+func WithTaskRunner(runner TaskRunner) Option {
+	return func(a *App) {
+		if runner != nil {
+			a.taskRunner = runner
+		}
+	}
+}
 
 // WithRunnerConnector makes every runner client the engine builds (task
 // execution, planning roles, doctor/preflight, the settings preflight and
