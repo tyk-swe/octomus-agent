@@ -35,11 +35,18 @@ func IsActionConflict(err error) bool {
 	return errors.As(err, &c) || model.BlockedReasonFromError(err) != model.BlockedReasonUnknown
 }
 
-// TaskAction applies one operator control to a durable task. Gate is held for
+// TaskAction applies one operator control to a durable task. An action name
+// outside the task controls is ErrUnknownTaskAction before any state is read,
+// so a typo is never reported as an eligibility conflict. Gate is held for
 // eligibility and durable writes, released around remote checks, and
 // re-acquired for revalidation. Remote preflights run under the app shutdown scope, never the caller's request
 // scope, so a disconnect cannot interrupt remote checks or publication.
 func (a *App) TaskAction(_ context.Context, id, action string) error {
+	switch action {
+	case "cancel", "retry", "supersede", "archive", "discard", "reconcile":
+	default:
+		return ErrUnknownTaskAction
+	}
 	a.gate.Lock()
 	if err := a.ctx.Err(); err != nil {
 		a.gate.Unlock()
@@ -79,9 +86,6 @@ func (a *App) TaskAction(_ context.Context, id, action string) error {
 		actionErr = a.saveTask(task)
 	case "discard":
 		actionErr = a.DiscardTask(task)
-	default:
-		a.gate.Unlock()
-		return ErrUnknownTaskAction
 	}
 	if actionErr == nil {
 		actionErr = a.Store.Event(id, "operator", action)

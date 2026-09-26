@@ -165,11 +165,15 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 
 // CycleAction applies an operator action to a finished cycle: archive stamps
 // its lifecycle, and discard, allowed only once it is archived, removes its
-// planning workspaces. A running cycle or an in-flight cleanup conflicts.
+// planning workspaces. Any other action name is ErrUnknownCycleAction before
+// any state is read. A running cycle or an in-flight cleanup conflicts.
 // Discard removes the managed directory with the gate released; the call is
 // registered service work from admission so Shutdown waits out an in-flight
 // removal instead of abandoning it mid-delete.
 func (a *App) CycleAction(id, action string) error {
+	if action != "archive" && action != "discard" {
+		return ErrUnknownCycleAction
+	}
 	a.gate.Lock()
 	if err := a.ctx.Err(); err != nil {
 		a.gate.Unlock()
@@ -205,8 +209,6 @@ func (a *App) CycleAction(id, action string) error {
 		if err := a.DiscardCycle(cycle); err != nil {
 			return err
 		}
-	default:
-		return ErrUnknownCycleAction
 	}
 	return a.Store.Event(id, "operator", action)
 }

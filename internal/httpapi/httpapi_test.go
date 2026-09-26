@@ -393,6 +393,35 @@ func TestUnknownCycleActionsAreNotReportedAsArchiveConflicts(t *testing.T) {
 	}
 }
 
+// An unrecognized action on an existing task, or on a cycle that is still
+// running, reports 404 before any eligibility check; a known action on the
+// same running cycle still conflicts.
+func TestUnknownActionsOnLiveRecordsAreNotFound(t *testing.T) {
+	app, state := testApp(t)
+	task := queuedTask(config.Default())
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	running := cycleRecord("cycle-running")
+	running.Status = model.CycleRunning
+	if err := state.Put("cycle", running.ID, running); err != nil {
+		t.Fatal(err)
+	}
+	router := Router(app, token, "", "test")
+	response := call(t, router, "POST", "/api/tasks/"+task.ID+"/bogus", "{}")
+	if response.Code != http.StatusNotFound || decode(t, response)["error"] != "Unknown task action" {
+		t.Fatalf("bogus task action: %d %s", response.Code, response.Body.String())
+	}
+	response = call(t, router, "POST", "/api/cycles/"+running.ID+"/bogus", "{}")
+	if response.Code != http.StatusNotFound || decode(t, response)["error"] != "Unknown cycle action" {
+		t.Fatalf("bogus action on a running cycle: %d %s", response.Code, response.Body.String())
+	}
+	response = call(t, router, "POST", "/api/cycles/"+running.ID+"/archive", "{}")
+	if response.Code != http.StatusConflict || decode(t, response)["error"] != "Wait for planning to finish" {
+		t.Fatalf("archive on a running cycle: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestBaselineAPIAuthenticationRoutesAndMissingRecords(t *testing.T) {
 	app, _, _ := baselineFixture(t)
 	router := Router(app, token, "", "test")
