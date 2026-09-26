@@ -126,13 +126,17 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 	return memory, nil
 }
 
+// decisionAbsorbed reports whether an accepted decision of the same cycle,
+// repository, target and problem supersedes record. Repository names compare
+// with config.EqualASCII, the ASCII-only folding every other repository
+// identity check and the store's COLLATE NOCASE lookups use.
 func decisionAbsorbed(record decisionRecord, records []decisionRecord) bool {
 	if record.Decision == model.DecisionAccepted {
 		return false
 	}
 	for _, accepted := range records {
 		if accepted.Decision == model.DecisionAccepted && accepted.CycleID == record.CycleID &&
-			strings.EqualFold(accepted.Repository, record.Repository) && accepted.Target == record.Target &&
+			config.EqualASCII(accepted.Repository, record.Repository) && accepted.Target == record.Target &&
 			accepted.ProblemKey == record.ProblemKey {
 			return true
 		}
