@@ -447,12 +447,9 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if revision != nil {
 		revisionValue = *revision
 	}
-	fingerprint := ContextFingerprint(revisionValue, inventory.PRs)
-	if revisionValue != "" {
-		if err := a.observeDefaultBranch(cfg, revisionValue, observedAt); err != nil {
-			return err
-		}
-	}
+	fingerprint := contextFingerprint(revisionValue, inventory.PRs)
+	// One gate section commits the whole observation. A configuration that no
+	// longer describes the observed remote makes it obsolete, not failed.
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	live, err := a.Config()
@@ -461,6 +458,11 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	}
 	if !live.SameRemoteIdentity(cfg) {
 		return nil
+	}
+	if revisionValue != "" {
+		if err := a.mergeDefaultObservationLocked(cfg, revisionValue, observedAt); err != nil {
+			return err
+		}
 	}
 	for _, pr := range closed {
 		if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
@@ -471,9 +473,17 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	applyContextFingerprint(&control, fingerprint, time.Now(), cfg.CycleIntervalSeconds)
+	return a.Store.SaveControl(control)
+}
+
+// applyContextFingerprint records the observed remote context. A change from
+// the previously observed context ends the idle streak and pulls a backed-off
+// next cycle forward to the ordinary interval from now.
+func applyContextFingerprint(control *model.Control, fingerprint string, now time.Time, interval uint64) {
 	if control.ContextFingerprint != "" && control.ContextFingerprint != fingerprint {
 		if control.IdleStreak > 1 {
-			ordinary := time.Now().Unix() + int64(cfg.CycleIntervalSeconds)
+			ordinary := now.Unix() + int64(interval)
 			if control.NextCycleAt > ordinary {
 				control.NextCycleAt = ordinary
 			}
@@ -481,10 +491,9 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 		control.IdleStreak = 0
 	}
 	control.ContextFingerprint = fingerprint
-	return a.Store.SaveControl(control)
 }
 
-func ContextFingerprint(revision string, prs []model.PullRequest) string {
+func contextFingerprint(revision string, prs []model.PullRequest) string {
 	parts := make([]string, 0, len(prs))
 	for _, pr := range prs {
 		parts = append(parts, fmt.Sprintf("%d:%s:%s:%s", pr.Number, pr.Head, pr.Base, pr.State))
