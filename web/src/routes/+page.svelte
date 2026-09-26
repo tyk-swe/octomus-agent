@@ -282,6 +282,8 @@
   async function loadOlderCycles() {
     const currentSession = sessionGeneration;
     cyclesLoading = true;
+    // Like every operator action, a new attempt replaces the previous attempt's failure.
+    error = '';
     try {
       await loadCycles(true);
     } catch (e) {

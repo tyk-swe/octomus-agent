@@ -626,8 +626,25 @@ test('a failed request for older cycles is reported and the control stays usable
   page
 }, testInfo) => {
   let release: (() => void) | undefined;
+  let outage = true;
   await page.route('**/api/cycles?*', async (route) => {
     if (new URL(route.request().url()).searchParams.has('before')) {
+      if (!outage) {
+        const older = {
+          id: 'history-older',
+          number: 0,
+          mode: 'execution',
+          status: 'completed',
+          started_at: '2026-09-10T00:00:00Z',
+          completed_at: '2026-09-10T00:01:00Z',
+          error: null,
+          session_count: 0,
+          decisions: {},
+          lifecycle: {}
+        };
+        await route.fulfill({ json: { items: [older], next_cursor: null, counts: {} } });
+        return;
+      }
       await new Promise<void>((resolve) => (release = resolve));
       await route.fulfill({ status: 503, json: { error: 'Synthetic cycles outage' } });
       return;
@@ -653,6 +670,14 @@ test('a failed request for older cycles is reported and the control stays usable
     'Could not load older cycles. Synthetic cycles outage'
   );
   await expect(older).toBeEnabled();
+  // A successful retry loads the page and leaves no stale failure behind.
+  outage = false;
+  await older.click();
+  await expect(
+    page.getByLabel('Cycle', { exact: true }).locator('option[value="history-older"]')
+  ).toHaveCount(1);
+  await expect(older).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 test('slow history requests survive polling while filter changes replace them', async ({
