@@ -409,6 +409,7 @@ test('typing a model ID keeps the chosen effort or variant unless a catalog entr
       json:
         backend === 'codex'
           ? [
+              entry({ model: 'gpt-6', display_name: 'Base', efforts: ['medium'] }),
               entry({ model: 'gpt-6-astra', display_name: 'Astra', efforts: ['medium', 'high'] }),
               entry({ model: 'gpt-6-lite', display_name: 'Lite', efforts: ['medium'] })
             ]
@@ -446,6 +447,17 @@ test('typing a model ID keeps the chosen effort or variant unless a catalog entr
   await expect(effort).toHaveValue('high');
   // A catalog entry for the new model that lacks the effort still clears it.
   await model.fill('gpt-6-lite');
+  await expect(effort).toHaveValue('');
+  // Typing through 'gpt-6', which lacks 'high' but begins longer IDs, keeps the choice...
+  await model.fill('gpt-6-astra');
+  await effort.selectOption('high');
+  await model.fill('');
+  await model.pressSequentially('gpt-6-astra');
+  await expect(effort).toHaveValue('high');
+  // ...until 'gpt-6' is what the operator commits.
+  await model.fill('gpt-6');
+  await expect(effort).toHaveValue('high');
+  await model.press('Tab');
   await expect(effort).toHaveValue('');
 
   const xs = (field: string) => page.getByLabel(`XS execution ${field}`, { exact: true });
