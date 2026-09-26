@@ -11,6 +11,7 @@
   import { routeLabel } from './routes';
   import { createCopyFeedback } from './copyFeedback.svelte';
   import Icon from './Icon.svelte';
+  import PanelDialog from './PanelDialog.svelte';
   import Sha from './Sha.svelte';
   import Badge from './Badge.svelte';
   import EvidenceText from './EvidenceText.svelte';
@@ -48,7 +49,6 @@
     onclose: () => void;
     onopentask: (id: string) => void;
   } = $props();
-  let dialog: HTMLDialogElement;
   let run = $state<RunEvidenceV1 | null>(null),
     cycleDetail = $state<Cycle | null>(null),
     contextError = $state(''),
@@ -148,7 +148,6 @@
     };
   });
   onMount(() => {
-    dialog.showModal();
     return () => {
       feedback.dispose();
       generation++;
@@ -177,23 +176,13 @@
       </ul>
     </details>{/if}{/snippet}
 
-<dialog
-  bind:this={dialog}
-  class="task-dialog evidence-dialog"
-  aria-labelledby="run-evidence-title"
-  oncancel={(e) => {
-    // Every close request, wherever focus is, closes through the page's panel state.
-    e.preventDefault();
-    onclose();
-  }}
+<PanelDialog
+  eyebrow="RECORDED RUN EVIDENCE"
+  closeLabel="Close run evidence"
+  labelledby="run-evidence-title"
+  class="evidence-dialog"
+  {onclose}
 >
-  <div class="dialog-top">
-    <span class="eyebrow">RECORDED RUN EVIDENCE</span><button
-      class="icon-button"
-      aria-label="Close run evidence"
-      onclick={onclose}><Icon name="close" /></button
-    >
-  </div>
   {#if run && planning}
     <div class="task-title">
       <div class="badge-row">
@@ -718,4 +707,4 @@
       >
     </div>
   {/if}
-</dialog>
+</PanelDialog>

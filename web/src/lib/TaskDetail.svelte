@@ -5,6 +5,7 @@
   import { createCopyFeedback } from './copyFeedback.svelte';
   import type { Task, Event, RunEvidenceV1, TaskEvidence } from './types';
   import Icon from './Icon.svelte';
+  import PanelDialog from './PanelDialog.svelte';
   import Sha from './Sha.svelte';
   import Badge from './Badge.svelte';
   import EvidenceText from './EvidenceText.svelte';
@@ -28,7 +29,6 @@
     onselect
   }: { id: string; onclose: () => void; onaction: () => void; onselect: (id: string) => void } =
     $props();
-  let dialog: HTMLDialogElement;
   let task = $state<Task | null>(null),
     error = $state(''),
     tab = $state('Overview'),
@@ -144,7 +144,6 @@
     }
   }
   onMount(() => {
-    dialog.showModal();
     load();
     const timer = setInterval(() => load(), 4000);
     return () => {
@@ -178,23 +177,12 @@
   }
 </script>
 
-<dialog
-  bind:this={dialog}
-  class="task-dialog"
-  aria-labelledby="task-title"
-  oncancel={(e) => {
-    // Every close request, wherever focus is, closes through the page's panel state.
-    e.preventDefault();
-    onclose();
-  }}
+<PanelDialog
+  eyebrow="TASK DETAILS"
+  closeLabel="Close task details"
+  labelledby="task-title"
+  {onclose}
 >
-  <div class="dialog-top">
-    <span class="eyebrow">TASK DETAILS</span><button
-      class="icon-button"
-      aria-label="Close task details"
-      onclick={onclose}><Icon name="close" /></button
-    >
-  </div>
   {#if error}<div class="notice error" role="alert">
       <Icon name="alert" size={18} /><span
         >{taskStale ? 'Retained task details · stale. ' : ''}{error}</span
@@ -514,4 +502,4 @@
       <span class="spinner"></span>
       <p id="task-title">Loading task…</p>
     </div>{/if}
-</dialog>
+</PanelDialog>
