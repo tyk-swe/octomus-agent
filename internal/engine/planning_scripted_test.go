@@ -917,6 +917,61 @@ func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
 	}
 }
 
+// Grounding answers with a structured envelope; every later stage receives
+// the summary text itself, not its escaped JSON. A blank summary fails the
+// pass before any discovery session is admitted.
+func TestPlanningStagesReceiveTheGroundingSummaryText(t *testing.T) {
+	t.Run("summary", func(t *testing.T) {
+		fixture := newScriptedPlanningFixture(t)
+		completePlan(t, fixture).queue(fixture)
+		app := fixture.pausedApp(t)
+		cycleID, err := app.StartAudit(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cycle := waitCycle(t, fixture.state, cycleID); cycle.Status != model.CycleCompleted {
+			t.Fatalf("audit status=%s error=%v; want completed", cycle.Status, cycle.Error)
+		}
+		const summary = "Grounding: Small fixture with a feature contract in README.md."
+		later := 0
+		for _, turn := range fixture.planningTurns() {
+			if strings.HasPrefix(turn.Prompt, "Ground this repository") {
+				continue
+			}
+			later++
+			if !strings.Contains(turn.Prompt, summary) || strings.Contains(turn.Prompt, `{"context"`) {
+				t.Fatalf("a later stage did not receive the grounding summary text: %.200s", turn.Prompt)
+			}
+		}
+		if want := int(fixture.cfg.DiscoveryAgents) + len(model.ReviewerSlots()) + 1; later != want {
+			t.Fatalf("checked %d later-stage prompts; want %d", later, want)
+		}
+	})
+	t.Run("blank", func(t *testing.T) {
+		fixture := newScriptedPlanningFixture(t)
+		fixture.script.Queue(fixture.routes.Orchestrator, runnertest.Reply{Answer: mustJSON(t, map[string]any{"context": " \n\t"})})
+		app := fixture.pausedApp(t)
+		cycleID, err := app.StartAudit(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		cycle := waitCycle(t, fixture.state, cycleID)
+		app.wg.Wait() // Cycle status is persisted before control finalization finishes.
+		if cycle.Status != model.CycleFailed || cycle.Error == nil || *cycle.Error != "Grounding returned an empty context" {
+			got := "<nil>"
+			if cycle.Error != nil {
+				got = *cycle.Error
+			}
+			t.Fatalf("blank grounding status=%s error=%q; want the empty-context failure", cycle.Status, got)
+		}
+		if turns := fixture.planningTurns(); len(turns) != 1 || !strings.HasPrefix(turns[0].Prompt, "Ground this repository") {
+			t.Fatalf("planning ran %d turns after a blank grounding; want the grounding turn only", len(turns))
+		}
+		assertAdmissions(t, fixture.state, 1, "grounding only")
+		assertNoOpenClients(t, fixture.script)
+	})
+}
+
 // planningMutation is a scripted worker edit to a read-only role clone, and a
 // check that the preserved clone still shows it.
 type planningMutation struct {

@@ -333,7 +333,15 @@ func (a *App) summarizeGrounding(ctx context.Context, cfg config.Config, cycle *
 	if err := a.attachOutcomes(cycle, []roleOutcome{outcome}); err != nil {
 		return "", err
 	}
-	return outcome.answer, nil
+	// Later stages receive the summary text itself, not its JSON envelope.
+	var document groundingDocument
+	if err := json.Unmarshal([]byte(outcome.answer), &document); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(document.Context) == "" {
+		return "", errors.New("Grounding returned an empty context")
+	}
+	return document.Context, nil
 }
 
 // proposalLimits states the hard bounds planning enforces on proposal
