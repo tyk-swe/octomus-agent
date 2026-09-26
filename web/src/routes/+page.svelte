@@ -87,6 +87,12 @@
   /** A PR record's identity: the repository compared case-insensitively, plus the number. */
   const prKey = (observed: PrObservation) =>
     `${observed.repository.toLowerCase()}#${observed.pr.number}`;
+  /** How each runner storage status without a measurement reads; unknown words stay verbatim. */
+  const runnerStorageStatus: Record<string, string> = {
+    unconfigured: 'not configured',
+    unavailable: 'path unavailable',
+    error: 'measurement error'
+  };
   let cycleRows = $state<CycleSummary[]>([]);
   let cycleCursor = $state<number | null>(null);
   let cycleRequest = Promise.resolve();
@@ -687,8 +693,9 @@
                   ? `, plus ${data.pr_capacity.reserved} reserved deliveries`
                   : ''}. New-PR work waits for an observed closure or merge; maintenance on eligible
                 owned PRs continues.
-              {:else if data.pr_capacity.status === 'refreshing'}Refreshing the open-PR inventory
-                before admitting new-PR work…
+              {:else if data.pr_capacity.status === 'refreshing'}{data.pr_capacity.reason ??
+                  'Refreshing the open-PR inventory'}. New-PR work waits until the refresh
+                completes.
               {:else}Open-PR capacity is unavailable: {data.pr_capacity.reason ??
                   'no complete inventory observed'}. New-PR work waits; unknown capacity is never
                 treated as zero.{/if}
@@ -1031,7 +1038,7 @@
                   {#each Object.entries(data.storage.runner_transcripts.runners ?? {}) as [backend, usage]}<p
                     >
                       {backend} storage: {usage.bytes === null
-                        ? 'Unavailable'
+                        ? (runnerStorageStatus[usage.status] ?? usage.status)
                         : `${gb(usage.bytes)} GB`}
                     </p>{/each}{:else}<p>
                     Storage measurement pending. This limit controls admission, not disk growth

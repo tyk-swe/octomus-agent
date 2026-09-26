@@ -401,6 +401,55 @@ test('notification health and PR limits remain read-only observations', async ({
   expect(state.baselines).toHaveLength(0);
 });
 
+test('a refreshing PR inventory names its earlier failure, and runner storage names each status', async ({
+  page
+}) => {
+  const writes = trackWrites(page);
+  await page.route('**/api/state', async (route) => {
+    const snapshot: Snapshot = await (await route.fetch()).json();
+    // The service retries a failed inventory refresh and says why in the reason.
+    snapshot.pr_capacity = {
+      limit: 5,
+      owned_open: null,
+      reserved: 0,
+      remaining: null,
+      observed_at: null,
+      status: 'refreshing',
+      reason: 'Refreshing the open-PR inventory after a failure: synthetic auth error'
+    };
+    snapshot.storage = {
+      measured_at: new Date().toISOString(),
+      application_bytes: 2_000_000_000,
+      task_bytes: 1_000_000_000,
+      planning_bytes: 500_000_000,
+      runner_transcripts: {
+        bytes: null,
+        status: 'unavailable',
+        message: 'Runner storage reported separately',
+        runners: {
+          codex: { bytes: null, status: 'unconfigured' },
+          opencode: { bytes: null, status: 'error' }
+        }
+      }
+    };
+    await route.fulfill({ json: snapshot });
+  });
+  await login(page);
+  await expect(
+    page.getByText(
+      'Refreshing the open-PR inventory after a failure: synthetic auth error. New-PR work waits until the refresh completes.'
+    )
+  ).toBeVisible();
+  await page.locator('.operating-details > summary').click();
+  const details = page.locator('.operating-summary');
+  await expect(details.getByText('codex storage: not configured', { exact: true })).toBeVisible();
+  await expect(
+    details.getByText('opencode storage: measurement error', { exact: true })
+  ).toBeVisible();
+  await expect(details.getByText(/storage: Unavailable/)).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
 test('configuration keeps drafts and catalogs across views, discards locally, and refreshes clean values', async ({
   page,
   isMobile
