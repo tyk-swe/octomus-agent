@@ -892,6 +892,42 @@ func TestOldAttentionSurvivesBoundedDashboardAndPages(t *testing.T) {
 	}
 }
 
+// The dashboard lists up to 300 tasks: the newest 100 active, then the newest
+// 100 queued, then the newest 300 of any status not already listed, each task
+// once.
+func TestDashboardListsRecentActiveWorkOnce(t *testing.T) {
+	s := open(t, statePath(t))
+	statuses := []model.Status{model.StatusPublished, model.StatusExecuting, model.StatusQueued, model.StatusPublished, model.StatusBlocked}
+	for i := range 700 {
+		tk := task()
+		tk.ID = fmt.Sprintf("t-%04d", i)
+		tk.Status = statuses[i%len(statuses)]
+		must(t, s.Put("task", tk.ID, tk))
+	}
+	snapshot, err := s.Dashboard()
+	must(t, err)
+	ids := make([]string, 0, len(snapshot.Tasks))
+	seen := map[string]bool{}
+	for _, item := range snapshot.Tasks {
+		id := decodeMap(t, item)["id"].(string)
+		if seen[id] {
+			t.Fatalf("task %s is listed twice", id)
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) != 300 {
+		t.Fatalf("%d tasks; want 300", len(ids))
+	}
+	// Executing tasks end in 1 or 6, queued in 2 or 7: the 100th executing
+	// task is t-0201, and the newest listed history begins at t-0699.
+	for index, want := range map[int]string{0: "t-0696", 99: "t-0201", 100: "t-0697", 199: "t-0202", 200: "t-0699", 201: "t-0698", 202: "t-0695", 299: "t-0534"} {
+		if ids[index] != want {
+			t.Fatalf("task %d = %s; want %s", index, ids[index], want)
+		}
+	}
+}
+
 // planning validation consumes these duplicates.
 func TestUnresolvedProblemIdentitySurvivesRewording(t *testing.T) {
 	s := open(t, statePath(t))

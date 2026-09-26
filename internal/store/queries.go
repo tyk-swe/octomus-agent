@@ -75,41 +75,42 @@ func orEmpty(value *string) string {
 type pageRow struct {
 	summary string
 	seq     int64
+	id      string
 }
 
 func page(c *sql.Conn, kind string, query HistoryQuery) (Page, error) {
 	limit := query.limit()
-	sqlText := "SELECT summary,seq FROM record_meta WHERE kind=?1 AND seq<?2"
+	rows, err := pageRows(c, kind, query, limit+1)
+	if err != nil {
+		return Page{}, err
+	}
+	return decodePage(rows, limit), nil
+}
+
+// pageRows reads up to n projected summaries of one record kind, newest first,
+// through the history filter. Every variant binds all five parameters.
+func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, error) {
 	status := filterAll(query.Status)
-	if status == "attention" {
-		sqlText = strings.Replace(sqlText, "FROM record_meta", "FROM record_meta INDEXED BY meta_attention", 1)
-	} else if status != "" {
-		sqlText = strings.Replace(sqlText, "FROM record_meta", "FROM record_meta INDEXED BY meta_status", 1)
-	}
-	switch {
-	case status == "active":
-		sqlText += fmt.Sprintf(" AND status IN (%s)", statusList(model.ActiveStatuses()))
-	case status == "attention":
-		sqlText += fmt.Sprintf(" AND status IN (%s) AND archived IS NULL", statusList(model.AttentionStatuses()))
-	case status != "":
-		sqlText += " AND status=?3"
+	from, filter := "record_meta", " AND ?3=?3"
+	switch status {
+	case "":
+	case "active":
+		from += " INDEXED BY meta_status"
+		filter = fmt.Sprintf(" AND status IN (%s)", statusList(model.ActiveStatuses())) + filter
+	case "attention":
+		from += " INDEXED BY meta_attention"
+		filter = fmt.Sprintf(" AND status IN (%s) AND archived IS NULL", statusList(model.AttentionStatuses())) + filter
 	default:
-		sqlText += " AND ?3=?3"
+		from += " INDEXED BY meta_status"
+		filter = " AND status=?3"
 	}
-	// Bind ?3 even for named aggregate filters.
-	if status == "active" || status == "attention" {
-		sqlText += " AND ?3=?3"
-	}
-	sqlText += " AND (?4='' OR instr(lower(title || ' ' || target || ' ' || summary),lower(?4))>0) ORDER BY seq DESC LIMIT ?5"
-	rows, err := c.QueryContext(background, sqlText, kind, query.before(), status, orEmpty(query.Q), int64(limit+1))
+	rows, err := c.QueryContext(background,
+		"SELECT summary,seq,id FROM "+from+" WHERE kind=?1 AND seq<?2"+filter+" AND (?4='' OR instr(lower(title || ' ' || target || ' ' || summary),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
+		kind, query.before(), status, orEmpty(query.Q), int64(n))
 	if err != nil {
-		return Page{}, err
+		return nil, err
 	}
-	collected, err := collectPageRows(rows)
-	if err != nil {
-		return Page{}, err
-	}
-	return decodePage(collected, limit), nil
+	return collectPageRows(rows)
 }
 
 func collectPageRows(rows *sql.Rows) ([]pageRow, error) {
@@ -117,7 +118,7 @@ func collectPageRows(rows *sql.Rows) ([]pageRow, error) {
 	var out []pageRow
 	for rows.Next() {
 		var r pageRow
-		if err := rows.Scan(&r.summary, &r.seq); err != nil {
+		if err := rows.Scan(&r.summary, &r.seq, &r.id); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -152,7 +153,7 @@ func (s *Store) ProposalPage(q HistoryQuery) (Page, error) {
 	defer s.mu.Unlock()
 	limit := q.limit()
 	rows, err := s.conn.QueryContext(background,
-		"SELECT json_set(json_remove(data,'$.prompt','$.evidence'),'$.content_revision',content_revision,'$.cycle',number,'$.cycle_id',cycle_id,'$.mode',mode,'$.prompt','','$.evidence',json('[]'),'$.problem',substr(json_extract(data,'$.problem'),1,2000),'$.reason',substr(json_extract(data,'$.reason'),1,2000)),seq FROM proposal_records WHERE seq<?1 AND (?2='' OR decision=?2) AND (?3='' OR cycle_id=?3) AND (?4='' OR instr(lower(title || ' ' || json_extract(data,'$.problem')),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
+		"SELECT json_set(json_remove(data,'$.prompt','$.evidence'),'$.content_revision',content_revision,'$.cycle',number,'$.cycle_id',cycle_id,'$.mode',mode,'$.prompt','','$.evidence',json('[]'),'$.problem',substr(json_extract(data,'$.problem'),1,2000),'$.reason',substr(json_extract(data,'$.reason'),1,2000)),seq,proposal_id FROM proposal_records WHERE seq<?1 AND (?2='' OR decision=?2) AND (?3='' OR cycle_id=?3) AND (?4='' OR instr(lower(title || ' ' || json_extract(data,'$.problem')),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
 		q.before(), filterAll(q.Status), filterAll(q.Cycle), orEmpty(q.Q), int64(limit+1))
 	if err != nil {
 		return Page{}, err
@@ -511,60 +512,40 @@ func (s *Store) Dashboard() (Dashboard, error) {
 		if err := statusCounts(c, result.Counts); err != nil {
 			return err
 		}
-		hundred := 100
-		query := HistoryQuery{Limit: &hundred}
-		tasks, err := page(c, "task", query)
-		if err != nil {
-			return err
-		}
-		for i := 0; i < 2; i++ {
-			if tasks.NextCursor == nil {
-				break
-			}
-			before := *tasks.NextCursor
-			more, err := page(c, "task", HistoryQuery{Before: &before, Limit: &hundred})
-			if err != nil {
-				return err
-			}
-			tasks.Items = append(tasks.Items, more.Items...)
-			tasks.NextCursor = more.NextCursor
-		}
-		// Keep old retried work visible even when it predates the recent history window.
+		// Keep old retried work visible even when it predates the recent
+		// history window: the newest active, then queued, then any tasks.
 		active, queued := "active", "queued"
-		current, err := page(c, "task", HistoryQuery{Status: &active, Limit: &hundred})
+		current, err := pageRows(c, "task", HistoryQuery{Status: &active}, 100)
 		if err != nil {
 			return err
 		}
-		queuedPage, err := page(c, "task", HistoryQuery{Status: &queued, Limit: &hundred})
+		waiting, err := pageRows(c, "task", HistoryQuery{Status: &queued}, 100)
 		if err != nil {
 			return err
 		}
-		items := append(current.Items, queuedPage.Items...)
-		ids := map[string]struct{}{}
-		for _, item := range items {
-			if id := summaryID(item); id != "" {
-				ids[id] = struct{}{}
-			}
+		history, err := pageRows(c, "task", HistoryQuery{}, 300)
+		if err != nil {
+			return err
 		}
-		for _, item := range tasks.Items {
-			if id := summaryID(item); id != "" {
-				if _, seen := ids[id]; seen {
+		result.Tasks = make([]json.RawMessage, 0, 300)
+		listed := map[string]struct{}{}
+		for _, rows := range [][]pageRow{current, waiting, history} {
+			for _, row := range rows {
+				if _, seen := listed[row.id]; seen || len(result.Tasks) == 300 {
 					continue
 				}
+				listed[row.id] = struct{}{}
+				result.Tasks = append(result.Tasks, json.RawMessage(row.summary))
 			}
-			items = append(items, item)
 		}
-		if len(items) > 300 {
-			items = items[:300]
-		}
-		result.Tasks = items
 		twenty := 20
 		cycles, err := page(c, "cycle", HistoryQuery{Limit: &twenty})
 		if err != nil {
 			return err
 		}
 		result.Cycles = cycles.Items
-		prs, err := page(c, "pr", query)
+		hundred := 100
+		prs, err := page(c, "pr", HistoryQuery{Limit: &hundred})
 		if err != nil {
 			return err
 		}
@@ -606,16 +587,6 @@ func statusCounts(c *sql.Conn, counts map[string]int64) error {
 		counts[status] = count
 	}
 	return rows.Err()
-}
-
-func summaryID(item json.RawMessage) string {
-	var summary struct {
-		ID *string `json:"id"`
-	}
-	if err := json.Unmarshal(item, &summary); err != nil || summary.ID == nil {
-		return ""
-	}
-	return *summary.ID
 }
 
 // CleanupCandidates lists retained record ids older than the cutoff.
