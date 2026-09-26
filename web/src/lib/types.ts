@@ -1,7 +1,8 @@
 /**
  * The service's JSON records and vocabularies, restated by hand. web/types_contract_test.go
- * compares each restated object type's keys with its Go record's JSON fields and each
- * status union with its Go enum.
+ * compares the object types it lists with their Go records' JSON fields, and the
+ * CycleMode, OperatingMode, TaskStatus and BaselineStatus unions and ACTIVE_STATUSES with
+ * their Go enums; list a newly restated record or enum there too.
  */
 export type Backend = 'codex' | 'opencode';
 /** Mirrors `model.CycleMode`: an execution cycle queues work, an audit only plans. */
