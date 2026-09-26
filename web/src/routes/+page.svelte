@@ -90,6 +90,7 @@
   let cycleRows = $state<CycleSummary[]>([]);
   let cycleCursor = $state<number | null>(null);
   let cycleRequest = Promise.resolve();
+  let cyclesLoading = $state(false);
   let decisionCounts = $state<Record<string, number>>({});
   let listBefore = $state<number | null>(null);
   let listNext = $state<number | null>(null);
@@ -277,6 +278,18 @@
     });
     cycleRequest = request.catch(() => {});
     return request;
+  }
+  async function loadOlderCycles() {
+    const currentSession = sessionGeneration;
+    cyclesLoading = true;
+    try {
+      await loadCycles(true);
+    } catch (e) {
+      if (currentSession === sessionGeneration)
+        error = `Could not load older cycles. ${(e as Error).message}`;
+    } finally {
+      if (currentSession === sessionGeneration) cyclesLoading = false;
+    }
   }
   async function loadProposal(p: ProposalRow) {
     const currentSession = sessionGeneration;
@@ -469,6 +482,7 @@
     cycleRows = [];
     cycleCursor = null;
     cycleRequest = Promise.resolve();
+    cyclesLoading = false;
     decisionCounts = {};
     listBefore = null;
     listNext = null;
@@ -1058,8 +1072,10 @@
             afresh.
           </p>
           <div class="actions">
-            {#if cycleCursor !== null}<button class="button" onclick={() => loadCycles(true)}
-                >Load older cycles</button
+            {#if cycleCursor !== null}<button
+                class="button"
+                disabled={cyclesLoading}
+                onclick={loadOlderCycles}>Load older cycles</button
               >{/if}
             {#if proposalCycle !== 'all' && cycleRows.find((c) => c.id === proposalCycle)?.status !== 'running'}
               <button class="button" disabled={busy} onclick={() => cycleAction('archive')}

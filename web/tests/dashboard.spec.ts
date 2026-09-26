@@ -622,6 +622,39 @@ test('loaded older cycles and their actions survive background refresh', async (
   await expect(picker).toHaveValue('history-1');
 });
 
+test('a failed request for older cycles is reported and the control stays usable', async ({
+  page
+}, testInfo) => {
+  let release: (() => void) | undefined;
+  await page.route('**/api/cycles?*', async (route) => {
+    if (new URL(route.request().url()).searchParams.has('before')) {
+      await new Promise<void>((resolve) => (release = resolve));
+      await route.fulfill({ status: 503, json: { error: 'Synthetic cycles outage' } });
+      return;
+    }
+    const newest = await (await route.fetch()).json();
+    await route.fulfill({ json: { ...newest, next_cursor: 1 } });
+  });
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Proposals', exact: true })
+    .click();
+  const older = page.getByRole('button', { name: 'Load older cycles' });
+  await older.click();
+  await expect.poll(() => !!release).toBe(true);
+  await expect(older).toBeDisabled();
+  release!();
+  await expect(page.getByRole('alert')).toContainText(
+    'Could not load older cycles. Synthetic cycles outage'
+  );
+  await expect(older).toBeEnabled();
+});
+
 test('slow history requests survive polling while filter changes replace them', async ({
   page
 }, testInfo) => {
