@@ -31,6 +31,9 @@ const (
 	// service flip to stale while the next, slower pass was still running.
 	// Dispatch authority is separate and shorter (prAdmissionLifetime).
 	observationLifetime = 2 * observeInterval
+	// maxRetainDays is the configured retain_completed_days maximum; retention
+	// clamps to it so an unvalidated value cannot overflow the cutoff duration.
+	maxRetainDays = 36500
 )
 
 type storageUsage struct {
@@ -103,8 +106,8 @@ func (a *App) retention(cfg config.Config) error {
 		return err
 	}
 	days := cfg.RetainCompletedDays
-	if days > 36500 {
-		days = 36500
+	if days > maxRetainDays {
+		days = maxRetainDays
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
 	checks, err := a.Store.BaselineCleanupCandidates()
@@ -124,7 +127,7 @@ func (a *App) retention(cfg config.Config) error {
 		active := a.runtime.baseline != nil && a.runtime.baseline.id == check.ID
 		a.runtimeMu.Unlock()
 		a.gate.Unlock()
-		if loadErr == nil && terminal && !active && current != nil {
+		if loadErr == nil && terminal && !active {
 			loadErr = a.CleanupBaseline(current)
 		}
 		if loadErr != nil {
@@ -133,8 +136,8 @@ func (a *App) retention(cfg config.Config) error {
 			}
 		}
 	}
-	for _, kind := range []string{"task", "cycle"} {
-		ids, err := a.Store.CleanupCandidates(kind, cutoff)
+	for _, kind := range []cleanupKind{cleanupTask, cleanupCycle} {
+		ids, err := a.Store.CleanupCandidates(string(kind), cutoff)
 		if err != nil {
 			return err
 		}
@@ -142,28 +145,8 @@ func (a *App) retention(cfg config.Config) error {
 			if a.ctx.Err() != nil {
 				return nil
 			}
-			// The candidate list was read without the gate: the re-read under
-			// it skips a record the operator discarded meanwhile, so its
-			// discarded_at is never rewritten.
 			a.gate.Lock()
-			if kind == "task" {
-				task, loadErr := store.Get[model.Task](a.Store, kind, id)
-				if loadErr == nil && task != nil && task.Lifecycle.DiscardedAt == nil {
-					a.runtimeMu.Lock()
-					_, running := a.runtime.tasks[id]
-					a.runtimeMu.Unlock()
-					if !task.Status.Active() && !running {
-						loadErr = a.DiscardTask(task)
-					}
-				}
-				err = loadErr
-			} else {
-				cycle, loadErr := store.Get[model.Cycle](a.Store, kind, id)
-				if loadErr == nil && cycle != nil && cycle.Lifecycle.DiscardedAt == nil && cycle.Status != model.CycleRunning {
-					loadErr = a.DiscardCycle(cycle)
-				}
-				err = loadErr
-			}
+			err := a.retainCandidateLocked(kind, id)
 			a.gate.Unlock()
 			// A conflict means another cleanup already owns this target —
 			// success in progress, not a cleanup failure to report.
@@ -175,6 +158,31 @@ func (a *App) retention(cfg config.Config) error {
 		}
 	}
 	return nil
+}
+
+// retainCandidateLocked discards one task or cycle retention candidate if it
+// is still eligible. The candidate list was read without the gate: the re-read
+// under it skips a record the operator discarded meanwhile, so its
+// discarded_at is never rewritten. Callers hold the gate.
+func (a *App) retainCandidateLocked(kind cleanupKind, id string) error {
+	if kind == cleanupTask {
+		task, err := store.Get[model.Task](a.Store, "task", id)
+		if err != nil || task == nil || task.Lifecycle.DiscardedAt != nil {
+			return err
+		}
+		a.runtimeMu.Lock()
+		_, running := a.runtime.tasks[id]
+		a.runtimeMu.Unlock()
+		if task.Status.Active() || running {
+			return nil
+		}
+		return a.DiscardTask(task)
+	}
+	cycle, err := store.Get[model.Cycle](a.Store, "cycle", id)
+	if err != nil || cycle == nil || cycle.Lifecycle.DiscardedAt != nil || cycle.Status == model.CycleRunning {
+		return err
+	}
+	return a.DiscardCycle(cycle)
 }
 
 // cleanupKind names the durable entity kind a cleanup claim owns. Each kind
