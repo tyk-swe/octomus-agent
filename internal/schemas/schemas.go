@@ -33,12 +33,18 @@ func ProposalSchema() Schema {
 func ReviewSchema() Schema {
 	return Object(Schema{"completed": Schema{"type": "boolean"}, "summary": String(), "findings": Array(Object(Schema{"title": String(), "file": String(), "detail": String(), "priority": String()}))})
 }
-func Validate(value any, schema Schema) error {
+
+// Validate checks a decoded structured result against schema. Failures below
+// the root name their field path, built only from schema property names and
+// array indices, so untrusted keys are never echoed.
+func Validate(value any, schema Schema) error { return validate(value, schema, "") }
+
+func validate(value any, schema Schema, path string) error {
 	switch schema["type"] {
 	case "object":
 		object, ok := value.(map[string]any)
 		if !ok {
-			return fmt.Errorf("Structured result must be an object")
+			return mismatch(path, "an object")
 		}
 		properties, ok := schema["properties"].(map[string]any)
 		if !ok {
@@ -58,7 +64,10 @@ func Validate(value any, schema Schema) error {
 			_, exists := object[name]
 			if !ok || !exists {
 				encoded, _ := json.Marshal(key)
-				return fmt.Errorf("Structured result is missing required field %s", encoded)
+				if path == "" {
+					return fmt.Errorf("Structured result is missing required field %s", encoded)
+				}
+				return fmt.Errorf("Structured result object %s is missing required field %s", path, encoded)
 			}
 		}
 		// Visit keys in order so the first validation failure is stable.
@@ -69,34 +78,49 @@ func Validate(value any, schema Schema) error {
 		sort.Strings(keys)
 		for _, key := range keys {
 			if nested, ok := properties[key]; ok {
-				if err := Validate(object[key], asSchema(nested)); err != nil {
+				child := key
+				if path != "" {
+					child = path + "." + key
+				}
+				if err := validate(object[key], asSchema(nested), child); err != nil {
 					return err
 				}
 			} else if schema["additionalProperties"] == false {
-				return fmt.Errorf("Structured result has an unexpected field")
+				if path == "" {
+					return fmt.Errorf("Structured result has an unexpected field")
+				}
+				return fmt.Errorf("Structured result object %s has an unexpected field", path)
 			}
 		}
 	case "array":
 		values, ok := value.([]any)
 		if !ok {
-			return fmt.Errorf("Structured result must be an array")
+			return mismatch(path, "an array")
 		}
-		for _, v := range values {
-			if err := Validate(v, asSchema(schema["items"])); err != nil {
+		for i, v := range values {
+			if err := validate(v, asSchema(schema["items"]), fmt.Sprintf("%s[%d]", path, i)); err != nil {
 				return err
 			}
 		}
 	case "string":
 		if _, ok := value.(string); !ok {
-			return fmt.Errorf("Structured result must be a string")
+			return mismatch(path, "a string")
 		}
 	case "boolean":
 		if _, ok := value.(bool); !ok {
-			return fmt.Errorf("Structured result must be a boolean")
+			return mismatch(path, "a boolean")
 		}
 	default:
 		return fmt.Errorf("Unsupported structured result schema")
 	}
 	return nil
+}
+
+// mismatch keeps the root message unchanged and names nested fields.
+func mismatch(path, kind string) error {
+	if path == "" {
+		return fmt.Errorf("Structured result must be %s", kind)
+	}
+	return fmt.Errorf("Structured result field %s must be %s", path, kind)
 }
 func asSchema(v any) Schema { s, _ := v.(map[string]any); return s }
