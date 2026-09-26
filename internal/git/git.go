@@ -26,39 +26,16 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// reasonContext displays its message before the typed reason and inner cause.
-// Rendering joins the chain with ": ".
-type reasonContext struct {
-	msg    string
-	reason model.BlockedReason
-	err    error
-	inner  bool // whether reason sits between msg and err rather than being err
-}
-
-func (e *reasonContext) Error() string {
-	if e.inner {
-		return e.msg + ": " + e.reason.Error() + ": " + e.err.Error()
-	}
-	return e.msg + ": " + e.err.Error()
-}
-
-func (e *reasonContext) Unwrap() []error {
-	if e.inner {
-		return []error{e.reason, e.err}
-	}
-	return []error{e.err}
-}
-
-// blocked attaches a typed reason as the innermost cause while keeping the
-// detailed message outermost, so model.BlockedReasonFromError picks the reason.
+// blocked attaches a typed reason beneath a detailed message ("message:
+// reason"), so model.BlockedReasonFromError picks the reason.
 func blocked(reason model.BlockedReason, message string) error {
-	return &reasonContext{msg: message, err: reason}
+	return fmt.Errorf("%s: %w", message, reason)
 }
 
-// reasoned mirrors err.context(reason).context(message): the reason is a chain
-// node above the original error.
+// reasoned places a typed reason between a detailed message and its cause
+// ("message: reason: cause"); both the reason and the cause stay in the chain.
 func reasoned(reason model.BlockedReason, message string, err error) error {
-	return &reasonContext{msg: message, reason: reason, err: err, inner: true}
+	return fmt.Errorf("%s: %w: %w", message, reason, err)
 }
 
 // Git runs one git invocation as a machine capture; output is trimmed.
