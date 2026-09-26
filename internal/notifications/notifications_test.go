@@ -467,7 +467,11 @@ func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
 	// again.
 	repair("first")
 	server.next(t)
-	waitUntil(t, 5, func() bool { return outboxCount(t, path, "delivered") == 1 }, "the repaired row to be delivered")
+	waitUntil(t, 5, func() bool {
+		var delivered int
+		err := db.QueryRow("SELECT count(*) FROM notification_outbox WHERE status='delivered'").Scan(&delivered)
+		return err == nil && delivered == 1
+	}, "the repaired row to be delivered")
 	corrupt("second")
 	waitUntil(t, 5, func() bool { return count() == 2 }, "the recurring claim failure to be reported")
 	if lines := strings.Split(strings.TrimSuffix(warnings.String(), "\n"), "\n"); lines[0] != lines[1] {
