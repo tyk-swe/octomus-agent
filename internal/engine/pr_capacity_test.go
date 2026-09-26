@@ -159,6 +159,34 @@ func TestCancelledRefreshIsNotRecordedAsFailure(t *testing.T) {
 	}
 }
 
+// while paused, a successful housekeeping refresh supersedes an earlier refresh
+// failure: the failure no longer describes the remote, but the paused service
+// still gains no dispatch authority from the new observation.
+func TestPausedRefreshClearsEarlierFailureWithoutAuthorizingDispatch(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	app.runtimeMu.Lock()
+	app.runtime.prRefreshError = "earlier fixture failure"
+	app.runtimeMu.Unlock()
+	if err := app.RefreshPRs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	app.runtimeMu.Lock()
+	refreshError, observation := app.runtime.prRefreshError, app.runtime.prObservation
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("successful paused refresh kept the earlier failure: %q", refreshError)
+	}
+	if observation != nil {
+		t.Fatal("paused refresh gained dispatch authority")
+	}
+	capacity, err := app.PrCapacity()
+	if err != nil || capacity.Status != "unavailable" || capacity.Remaining != nil || capacity.Reason == nil || strings.Contains(*capacity.Reason, "earlier fixture failure") {
+		t.Fatalf("paused capacity after a successful refresh: %+v, %v", capacity, err)
+	}
+}
+
 // archiving an uncertain checkpoint ends at cancelled; the durable reservation
 // it left behind can only be resolved by remote inspection, so recovery must
 // not resurrect a released one. Published work is never reseeded either.

@@ -246,12 +246,14 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 			return err
 		}
 	}
+	// A persisted complete inventory supersedes any earlier refresh failure,
+	// even while paused; only an unpaused service gains dispatch authority.
+	a.runtimeMu.Lock()
 	if control.Mode != model.OperatingModePaused {
-		a.runtimeMu.Lock()
 		a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(live), inventory: inventory.Clone(), fetchedAt: time.Now()}
-		a.runtime.prRefreshError = ""
-		a.runtimeMu.Unlock()
 	}
+	a.runtime.prRefreshError = ""
+	a.runtimeMu.Unlock()
 	return nil
 }
 

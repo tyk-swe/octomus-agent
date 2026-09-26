@@ -650,3 +650,44 @@ func waitForFixtureFile(t *testing.T, path, failure string) {
 	}
 	t.Fatal(failure)
 }
+
+// groundingCycle saves a running cycle for a direct grounding capture.
+func groundingCycle(t *testing.T, f *scriptedFixture, mode model.CycleMode) model.Cycle {
+	t.Helper()
+	cycle := model.Cycle{
+		Mode: mode, ID: model.ID(), Number: 1, Status: model.CycleRunning, StartedAt: model.Now(),
+		Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
+		Repository: f.cfg.GitHubRepo,
+	}
+	if err := f.state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	return cycle
+}
+
+// An audit grounds while the service is paused. Its persisted inventory
+// supersedes an earlier refresh failure, but a paused service still gains no
+// dispatch authority from it.
+func TestPausedGroundingClearsEarlierRefreshFailure(t *testing.T) {
+	fixture := newScriptedPlanningFixture(t)
+	app := fixture.pausedApp(t)
+	cycle := groundingCycle(t, fixture, model.CycleModeAudit)
+	app.runtimeMu.Lock()
+	app.runtime.prRefreshError = "earlier fixture failure"
+	app.runtimeMu.Unlock()
+	if err := app.captureGrounding(context.Background(), fixture.cfg, &cycle); err != nil {
+		t.Fatal(err)
+	}
+	if cycle.Grounding == nil {
+		t.Fatal("grounding was not recorded")
+	}
+	app.runtimeMu.Lock()
+	refreshError, observation := app.runtime.prRefreshError, app.runtime.prObservation
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("paused grounding kept the earlier refresh failure: %q", refreshError)
+	}
+	if observation != nil {
+		t.Fatal("paused grounding gained dispatch authority")
+	}
+}

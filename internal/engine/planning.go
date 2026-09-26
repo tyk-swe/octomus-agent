@@ -287,12 +287,14 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if err != nil {
 		return err
 	}
+	// As in refreshPRs: the persisted inventory clears an earlier refresh
+	// failure in any mode, and authorizes dispatch only when not paused.
+	a.runtimeMu.Lock()
 	if control.Mode != model.OperatingModePaused {
-		a.runtimeMu.Lock()
 		a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now()}
-		a.runtime.prRefreshError = ""
-		a.runtimeMu.Unlock()
 	}
+	a.runtime.prRefreshError = ""
+	a.runtimeMu.Unlock()
 	cycle.Grounding = &grounding
 	return a.saveCycleMergedSessions(cycle)
 }
