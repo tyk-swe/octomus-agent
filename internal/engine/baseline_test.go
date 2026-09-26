@@ -39,11 +39,7 @@ func baselineApp(t *testing.T) (*App, config.Config) {
 	if err := os.MkdirAll(data, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	state, err := store.Open(filepath.Join(data, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = state.Close() })
+	state := openStore(t, data)
 	if err := state.Put("settings", "config", cfg); err != nil {
 		t.Fatal(err)
 	}

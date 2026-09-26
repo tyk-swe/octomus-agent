@@ -21,6 +21,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // newExecutionFixture mirrors newPlanningFixture but places the data directory
@@ -259,13 +260,11 @@ func TestVerificationCancelledMidCommandReturnsTheCancellationSentinel(t *testin
 		_, err := app.verifyRevision(ctx, &task, revision)
 		done <- err
 	}()
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(started); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("verification command did not start")
-		}
+	if !testutil.WaitUntil(30*time.Second, func() bool {
+		_, err := os.Stat(started)
+		return err == nil
+	}) {
+		t.Fatal("verification command did not start")
 	}
 	cancel()
 	select {
@@ -573,14 +572,9 @@ func enteredPreflights(t *testing.T, fixture *planningFixture) int {
 
 func waitForPreflights(t *testing.T, fixture *planningFixture, count int) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if enteredPreflights(t, fixture) >= count {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testutil.WaitUntil(30*time.Second, func() bool { return enteredPreflights(t, fixture) >= count }) {
+		t.Fatalf("Git preflight did not reach the controlled remote")
 	}
-	t.Fatalf("Git preflight did not reach the controlled remote")
 }
 
 func releasePreflight(t *testing.T, fixture *planningFixture) {

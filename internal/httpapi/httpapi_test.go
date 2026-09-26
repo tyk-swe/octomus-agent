@@ -16,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 const token = "operator-fixture-token-with-at-least-32-characters"
@@ -635,18 +636,17 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 // still reports the check as running. The returned record is the final one.
 func waitBaseline(t *testing.T, router http.Handler, state *store.Store, id string) *model.BaselineCheck {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		check, err := store.Get[model.BaselineCheck](state, "baseline", id)
+	var check *model.BaselineCheck
+	if !testutil.WaitUntil(10*time.Second, func() bool {
+		var err error
+		check, err = store.Get[model.BaselineCheck](state, "baseline", id)
 		cleaned := err == nil && check != nil && check.Status != model.BaselineStatusRunning &&
 			(check.WorkspaceRemoved || check.CleanupError != nil)
-		if cleaned && decode(t, call(t, router, "GET", "/api/state", ""))["baseline_active"] == false {
-			return check
-		}
-		time.Sleep(20 * time.Millisecond)
+		return cleaned && decode(t, call(t, router, "GET", "/api/state", ""))["baseline_active"] == false
+	}) {
+		t.Fatal("baseline check did not finish")
 	}
-	t.Fatal("baseline check did not finish")
-	return nil
+	return check
 }
 
 // queuedTask seeds a blocked task: publication

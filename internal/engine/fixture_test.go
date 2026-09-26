@@ -20,6 +20,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 type planningFixture struct {
@@ -139,28 +140,22 @@ func newFixture(t *testing.T, root string, configure func(*config.Config)) *plan
 	cfg.CommandTimeoutSeconds = 5
 	cfg.MaxSessionsPerDay = 30
 	configure(&cfg)
-	state, err := store.Open(filepath.Join(root, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = state.Close() })
+	state := openStore(t, root)
 	saveSettings(t, state, cfg, model.DefaultControl())
 	return &planningFixture{root: root, dataDir: dataDir, repo: repo, cfg: cfg, state: state}
 }
 
 func waitCycle(t *testing.T, state *store.Store, id string) model.Cycle {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		cycle, err := store.Get[model.Cycle](state, "cycle", id)
-		if err != nil {
+	var cycle *model.Cycle
+	if !testutil.WaitUntil(30*time.Second, func() bool {
+		var err error
+		if cycle, err = store.Get[model.Cycle](state, "cycle", id); err != nil {
 			t.Fatal(err)
 		}
-		if cycle != nil && cycle.Status != model.CycleRunning {
-			return *cycle
-		}
-		time.Sleep(20 * time.Millisecond)
+		return cycle != nil && cycle.Status != model.CycleRunning
+	}) {
+		t.Fatalf("cycle %s did not finish", id)
 	}
-	t.Fatalf("cycle %s did not finish", id)
-	return model.Cycle{}
+	return *cycle
 }

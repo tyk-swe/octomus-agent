@@ -23,6 +23,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // newScriptedPlanningFixture is a scripted fixture whose origin reports the
@@ -116,19 +117,17 @@ func (f *scriptedFixture) planningTurns() []runnertest.Call {
 // waitOnlyCycle waits for the single recorded cycle to leave running.
 func waitOnlyCycle(t *testing.T, state *store.Store) model.Cycle {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		cycles, err := store.List[model.Cycle](state, "cycle")
-		if err != nil {
+	var cycles []model.Cycle
+	if !testutil.WaitUntil(30*time.Second, func() bool {
+		var err error
+		if cycles, err = store.List[model.Cycle](state, "cycle"); err != nil {
 			t.Fatal(err)
 		}
-		if len(cycles) == 1 && cycles[0].Status != model.CycleRunning {
-			return cycles[0]
-		}
-		time.Sleep(20 * time.Millisecond)
+		return len(cycles) == 1 && cycles[0].Status != model.CycleRunning
+	}) {
+		t.Fatal("planning cycle did not finish")
 	}
-	t.Fatal("planning cycle did not finish")
-	return model.Cycle{}
+	return cycles[0]
 }
 
 // assertScriptedPlanningPass checks a completed pass: one fresh session per
@@ -477,23 +476,16 @@ func TestPlanCommitSerializesWithTheSchedulerGate(t *testing.T) {
 	consolidation.Release()
 	// Wait until the finished consolidation is recorded, then give the rest of
 	// the pass (decision fingerprints, task snapshots) time to reach its commit.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	if !testutil.WaitUntil(30*time.Second, func() bool {
 		cycles, err := store.List[model.Cycle](fixture.state, "cycle")
 		if err != nil || len(cycles) != 1 {
 			t.Fatalf("cycles: %d, %v", len(cycles), err)
 		}
-		done := false
-		for _, session := range cycles[0].Sessions {
-			done = done || session.Role == "consolidation" && session.Status == model.SessionCompleted
-		}
-		if done {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("consolidation did not finish")
-		}
-		time.Sleep(20 * time.Millisecond)
+		return slices.ContainsFunc(cycles[0].Sessions, func(session model.Session) bool {
+			return session.Role == "consolidation" && session.Status == model.SessionCompleted
+		})
+	}) {
+		t.Fatal("consolidation did not finish")
 	}
 	for settle := time.Now().Add(time.Second); time.Now().Before(settle); time.Sleep(20 * time.Millisecond) {
 		tasks, err := store.List[model.Task](fixture.state, "task")
@@ -1014,8 +1006,7 @@ func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
 		if err := app.Tick(); err != nil {
 			t.Fatal(err)
 		}
-		deadline := time.Now().Add(30 * time.Second)
-		for {
+		if !testutil.WaitUntil(30*time.Second, func() bool {
 			all, err := store.List[model.Cycle](fixture.state, "cycle")
 			if err != nil {
 				t.Fatal(err)
@@ -1029,13 +1020,9 @@ func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
 					finished++
 				}
 			}
-			if len(all) == cycles && finished == cycles {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: planning pass did not finish", label)
-			}
-			time.Sleep(20 * time.Millisecond)
+			return len(all) == cycles && finished == cycles
+		}) {
+			t.Fatalf("%s: planning pass did not finish", label)
 		}
 		app.wg.Wait() // Control finalization follows the cycle's terminal save.
 		control, err = app.Control()
@@ -1577,14 +1564,12 @@ func TestPlanningAllowanceConsumedDuringPreflightUsesModeSemantics(t *testing.T)
 // waitForFixtureFile waits for a fixture peer's barrier file.
 func waitForFixtureFile(t *testing.T, path, failure string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testutil.WaitUntil(5*time.Second, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	}) {
+		t.Fatal(failure)
 	}
-	t.Fatal(failure)
 }
 
 // groundingCycle saves a running cycle for a direct grounding capture.

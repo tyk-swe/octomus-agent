@@ -13,6 +13,7 @@ import (
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -177,20 +178,19 @@ func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
 	go func() { _ = app.TaskAction(context.Background(), task.ID, "retry") }()
 	waitForPreflights(t, fixture, 1)
 	releasePreflight(t, fixture)
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if saved := loadTask(t, fixture.state, task.ID); saved.Status == model.StatusQueued {
-			if saved.Attempts != 1 || saved.ReviewBaseline != 2 {
-				t.Fatalf("retried task = %+v; want attempt 1 with review baseline 2", saved)
-			}
-			if len(saved.Reviews) != 2 || saved.AttemptReviews() != 0 {
-				t.Fatalf("retry lost retained evidence: %+v", saved)
-			}
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	var saved model.Task
+	if !testutil.WaitUntil(15*time.Second, func() bool {
+		saved = loadTask(t, fixture.state, task.ID)
+		return saved.Status == model.StatusQueued
+	}) {
+		t.Fatalf("retry did not queue: %+v", saved)
 	}
-	t.Fatalf("retry did not queue: %+v", loadTask(t, fixture.state, task.ID))
+	if saved.Attempts != 1 || saved.ReviewBaseline != 2 {
+		t.Fatalf("retried task = %+v; want attempt 1 with review baseline 2", saved)
+	}
+	if len(saved.Reviews) != 2 || saved.AttemptReviews() != 0 {
+		t.Fatalf("retry lost retained evidence: %+v", saved)
+	}
 }
 
 // TestRetryRechecksPolicyAfterRemoteChecks: a policy change during the

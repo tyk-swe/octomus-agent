@@ -19,9 +19,16 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
+// testStore opens a store in a fresh temporary directory; see openStore.
 func testStore(t *testing.T) *store.Store {
 	t.Helper()
-	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	return openStore(t, t.TempDir())
+}
+
+// openStore opens dir/state.db and closes it when the test ends.
+func openStore(t *testing.T, dir string) *store.Store {
+	t.Helper()
+	state, err := store.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1180,16 +1187,7 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		a.runtimeMu.Lock()
-		running := a.runtime.housekeeping
-		a.runtimeMu.Unlock()
-		if !running {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitHousekeeping(t, a)
 	if _, err := os.Stat(filepath.Join(unresolved.Workspace, "evidence.txt")); err != nil {
 		t.Fatalf("paused housekeeping removed unresolved evidence: %v", err)
 	}

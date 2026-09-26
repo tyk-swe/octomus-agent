@@ -24,6 +24,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -523,12 +524,8 @@ func TestExecutionTimeoutJoinsCallbackBeforeFinalizing(t *testing.T) {
 	}
 
 	releaseTurn()
-	deadline := time.Now().Add(30 * time.Second)
-	for !app.Drained() {
-		if time.Now().After(deadline) {
-			t.Fatal("worker did not finish after the turn returned")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testutil.WaitUntil(30*time.Second, app.Drained) {
+		t.Fatal("worker did not finish after the turn returned")
 	}
 	saved := loadTask(t, fixture.state, task.ID)
 	if !blockedAs(saved, model.BlockedReasonTimeout) || saved.Error == nil || !strings.Contains(*saved.Error, "time limit") {

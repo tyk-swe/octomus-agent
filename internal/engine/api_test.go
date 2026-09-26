@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -567,11 +566,7 @@ func TestStateViewStatusPrecedence(t *testing.T) {
 // which the enabled outbox captures once per episode.
 func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
 	dir := t.TempDir()
-	state, err := store.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = state.Close() })
+	state := openStore(t, dir)
 	app := New(state, dir)
 	cfg := testConfig(t.TempDir())
 	if err := state.Put("settings", "config", cfg); err != nil {

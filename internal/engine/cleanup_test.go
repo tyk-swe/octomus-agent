@@ -24,6 +24,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
@@ -1209,17 +1210,13 @@ func TestRetentionSkipsRecordsDiscardedDuringThePass(t *testing.T) {
 // waitHousekeeping waits for the running housekeeping pass to finish.
 func waitHousekeeping(t *testing.T, app *App) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	if !testutil.WaitUntil(30*time.Second, func() bool {
 		app.runtimeMu.Lock()
-		running := app.runtime.housekeeping
-		app.runtimeMu.Unlock()
-		if !running {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+		defer app.runtimeMu.Unlock()
+		return !app.runtime.housekeeping
+	}) {
+		t.Fatal("housekeeping pass did not finish")
 	}
-	t.Fatal("housekeeping pass did not finish")
 }
 
 // Retention, the storage walk and the remote observation are independent
