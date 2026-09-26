@@ -120,6 +120,41 @@ func TestExecutionMalformedAndIncompleteReviewsNeverPublish(t *testing.T) {
 	}
 }
 
+// TestExecutionReviewerWorkspaceEditBlocks: a reviewer must not modify the
+// workspace. A clean answer from a reviewer that left a new file behind is not
+// recorded as a review round, because it would no longer describe the tree at
+// the reviewed revision; the task blocks as workspace_invalid before any
+// verification, and the failed reviewer session keeps the rejected answer.
+func TestExecutionReviewerWorkspaceEditBlocks(t *testing.T) {
+	fixture := newScriptedFixture(t)
+	fixture.configure(t, func(cfg *config.Config) {
+		cfg.VerificationCommands = []string{"test -f feature.txt"}
+	})
+	routes, script := fixture.routes, fixture.script
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "fixed\n")})
+	script.Queue(routes.Reviewer, runnertest.Reply{Answer: cleanReview("Looks fine"), Effect: writeFile("stray.txt", "reviewer edit\n")})
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	saveExecutionTask(t, fixture.planningFixture, task)
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if !blockedAs(saved, model.BlockedReasonWorkspaceInvalid) {
+		t.Fatalf("reviewer workspace edit outcome = %+v", saved)
+	}
+	if len(saved.Reviews) != 0 || len(saved.Verification) != 0 {
+		t.Fatalf("a review of an edited workspace was recorded or verified: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
+	}
+	reviewers := sessionByRole(saved, "reviewer")
+	if len(reviewers) != 1 || reviewers[0].Status != model.SessionFailed || !strings.Contains(reviewers[0].Summary, "Looks fine") {
+		t.Fatalf("reviewer session = %+v; want it failed with the rejected answer", reviewers)
+	}
+	if len(script.Turns(routes.Repair)) != 0 {
+		t.Fatal("a rejected review reached repair")
+	}
+	assertUnpublished(t, fixture, saved)
+	assertAdmissions(t, fixture.state, 2, "executor + reviewer")
+	assertNoOpenClients(t, script)
+}
+
 // TestExecutionFailedVerificationExhaustsRepairBudget: every review is clean
 // but verification fails every time; the repair budget, not the reviewer,
 // decides the outcome, and one persistent repair thread carries every round.
@@ -231,6 +266,81 @@ func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
 	assertUnpublished(t, fixture, saved)
 	assertAdmissions(t, fixture.state, 6, "executor + 3 reviewers + 2 repairs")
 	assertNoOpenClients(t, script)
+}
+
+// TestExecutionRepairPromptCarriesRoundEvidence: a repair turn is handed what
+// its round found. A clean review whose verification failed passes the
+// failing command with its output and no findings; a review with findings
+// skips verification and passes the findings as JSON with no failures.
+func TestExecutionRepairPromptCarriesRoundEvidence(t *testing.T) {
+	t.Run("verification failure", func(t *testing.T) {
+		fixture := newScriptedFixture(t)
+		// The output FAIL-42 does not appear in the command text itself.
+		failing := "echo FAIL-$((40+2)); false"
+		fixture.configure(t, func(cfg *config.Config) {
+			cfg.VerificationCommands = []string{failing}
+			cfg.MaxRepairRounds = 1
+		})
+		routes, script := fixture.routes, fixture.script
+		script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature.txt", Effect: writeFile("feature.txt", "draft\n")})
+		script.Answer(routes.Reviewer, cleanReview("Round one"), cleanReview("Round two"))
+		script.Queue(routes.Repair, runnertest.Reply{Answer: "Repaired", Effect: writeFile("feature.txt", "repaired\n")})
+		task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+		saveExecutionTask(t, fixture.planningFixture, task)
+
+		saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+		if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
+			t.Fatalf("failed verification outcome = %+v", saved)
+		}
+		turns := script.Turns(routes.Repair)
+		if len(turns) != 1 {
+			t.Fatalf("repair turns = %+v; want one", turns)
+		}
+		prompt := turns[0].Prompt
+		_, failures, found := strings.Cut(prompt, "Verification failures: ")
+		if !found || !strings.HasPrefix(failures, `["`+failing+": ") || !strings.Contains(failures, "FAIL-42") {
+			t.Fatalf("repair prompt lacks the failing command and its output: %q", prompt)
+		}
+		if !strings.Contains(prompt, "Findings: []. Verification failures: ") {
+			t.Fatalf("a clean review must hand repair an empty findings list: %q", prompt)
+		}
+		assertUnpublished(t, fixture, saved)
+		assertNoOpenClients(t, script)
+	})
+
+	t.Run("review findings", func(t *testing.T) {
+		fixture := newScriptedFixture(t)
+		fixture.configure(t, func(cfg *config.Config) {
+			cfg.VerificationCommands = []string{"test -f feature.txt"}
+			cfg.MaxRepairRounds = 1
+		})
+		routes, script := fixture.routes, fixture.script
+		finding := map[string]any{"title": "Handle the empty input", "file": "feature.txt:1", "detail": "The draft ignores empty input.", "priority": "P1"}
+		review := mustJSON(t, map[string]any{"completed": true, "summary": "One finding", "findings": []any{finding}})
+		script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature.txt", Effect: writeFile("feature.txt", "draft\n")})
+		script.Answer(routes.Reviewer, review, review)
+		script.Queue(routes.Repair, runnertest.Reply{Answer: "Repaired", Effect: writeFile("feature.txt", "repaired\n")})
+		task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+		saveExecutionTask(t, fixture.planningFixture, task)
+
+		saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+		if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
+			t.Fatalf("unresolved finding outcome = %+v", saved)
+		}
+		if len(saved.Reviews) != 2 || len(saved.Verification) != 0 {
+			t.Fatalf("a review with findings must skip verification: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
+		}
+		turns := script.Turns(routes.Repair)
+		if len(turns) != 1 {
+			t.Fatalf("repair turns = %+v; want one", turns)
+		}
+		want := `Findings: [{"title":"Handle the empty input","file":"feature.txt:1","detail":"The draft ignores empty input.","priority":"P1"}]. Verification failures: []`
+		if !strings.HasSuffix(turns[0].Prompt, want) {
+			t.Fatalf("repair prompt lacks the review findings: %q", turns[0].Prompt)
+		}
+		assertUnpublished(t, fixture, saved)
+		assertNoOpenClients(t, script)
+	})
 }
 
 // TestExecutionWithoutChangesBlocksBeforeReview: an executor that leaves no
