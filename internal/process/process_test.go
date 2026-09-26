@@ -33,6 +33,26 @@ func waitUntil(timeout time.Duration, ready func() bool) bool {
 	}
 }
 
+// waitForPid returns the pid a fixture command writes to path once the value
+// has fully landed: the shell creates the file before `echo` writes it, and
+// an empty pid would name /proc/stat rather than a process.
+func waitForPid(t *testing.T, path string) string {
+	t.Helper()
+	var pid string
+	if !waitUntil(5*time.Second, func() bool {
+		data, err := os.ReadFile(path)
+		if err != nil || !strings.HasSuffix(string(data), "\n") {
+			return false
+		}
+		pid = strings.TrimSpace(string(data))
+		_, err = strconv.Atoi(pid)
+		return err == nil
+	}) {
+		t.Fatalf("the command never wrote %s", filepath.Base(path))
+	}
+	return pid
+}
+
 // processGone reports whether pid no longer runs: the proc entry is gone or it
 // is a zombie awaiting its parent's reap.
 func processGone(pid string) bool {
@@ -159,18 +179,7 @@ func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, 10)
 		done <- err
 	}()
-	pidFile := filepath.Join(temp, "child.pid")
-	if !waitUntil(time.Second, func() bool {
-		_, err := os.Stat(pidFile)
-		return err == nil
-	}) {
-		t.Fatal("the command did not start its child process")
-	}
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid := strings.TrimSpace(string(data))
+	pid := waitForPid(t, filepath.Join(temp, "child.pid"))
 	cancel()
 	if err := <-done; err == nil {
 		t.Fatal("cancellation must fail the command")
@@ -191,18 +200,7 @@ func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
 			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, 1, process.CaptureDiagnostic)
 		done <- err
 	}()
-	pidFile := filepath.Join(temp, "child.pid")
-	if !waitUntil(time.Second, func() bool {
-		_, err := os.Stat(pidFile)
-		return err == nil
-	}) {
-		t.Fatal("the command did not start its child process")
-	}
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid := strings.TrimSpace(string(data))
+	pid := waitForPid(t, filepath.Join(temp, "child.pid"))
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "Command timed out") {
@@ -279,15 +277,8 @@ func TestTermIgnoringGroupIsStillKilled(t *testing.T) {
 			temp, 30, process.CaptureDiagnostic)
 		done <- err
 	}()
-	var leader, child string
-	if !waitUntil(5*time.Second, func() bool {
-		l, lerr := os.ReadFile(filepath.Join(temp, "leader.pid"))
-		c, cerr := os.ReadFile(filepath.Join(temp, "child.pid"))
-		leader, child = strings.TrimSpace(string(l)), strings.TrimSpace(string(c))
-		return lerr == nil && cerr == nil && leader != "" && child != ""
-	}) {
-		t.Fatal("the command did not start")
-	}
+	leader := waitForPid(t, filepath.Join(temp, "leader.pid"))
+	child := waitForPid(t, filepath.Join(temp, "child.pid"))
 	started := time.Now()
 	cancel()
 	select {
