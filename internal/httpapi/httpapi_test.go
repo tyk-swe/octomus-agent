@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +14,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -38,6 +38,19 @@ func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store)
 	return engine.New(state, dir, options...), state
 }
 
+// git runs the host Git (/usr/bin/git, never the fixture shim on PATH) in dir
+// with the service's child environment, so a GIT_DIR, GIT_INDEX_FILE or
+// GIT_WORK_TREE that a Git hook exports to the test run cannot redirect
+// fixture setup into another repository.
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := process.Command("/usr/bin/git", dir)
+	cmd.Args = append(cmd.Args, args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
 // baselineFixture uses a real local git
 // repository as the configured checkout plus a baseline-valid configuration.
 func baselineFixture(t *testing.T) (*engine.App, *store.Store, config.Config) {
@@ -47,21 +60,14 @@ func baselineFixture(t *testing.T) (*engine.App, *store.Store, config.Config) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %s", args, out)
-		}
-	}
-	run("init", "-b", "main")
-	run("config", "user.name", "Fixture")
-	run("config", "user.email", "fixture@example.com")
+	git(t, repo, "init", "-b", "main")
+	git(t, repo, "config", "user.name", "Fixture")
+	git(t, repo, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run("add", ".")
-	run("commit", "-m", "initial")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
 	cfg := config.Default()
 	cfg.Repository = repo
 	cfg.GitHubRepo = "fixture/project"
@@ -93,27 +99,20 @@ func githubFixture(t *testing.T, commands []string) (*engine.App, *store.Store, 
 			t.Fatal(err)
 		}
 	}
-	run := func(cwd string, args ...string) {
-		cmd := exec.Command("/usr/bin/git", args...)
-		cmd.Dir = cwd
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %s", args, out)
-		}
-	}
 	remote := filepath.Join(root, "remote.git")
 	checkout := filepath.Join(root, "checkout")
-	run(root, "init", "--bare", remote)
-	run(root, "init", "-b", "main", checkout)
-	run(checkout, "config", "user.name", "Fixture")
-	run(checkout, "config", "user.email", "fixture@example.com")
+	git(t, root, "init", "--bare", remote)
+	git(t, root, "init", "-b", "main", checkout)
+	git(t, checkout, "config", "user.name", "Fixture")
+	git(t, checkout, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run(checkout, "add", ".")
-	run(checkout, "commit", "-m", "initial")
-	run(checkout, "remote", "add", "origin", remote)
-	run(checkout, "push", "-u", "origin", "main")
-	run(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	git(t, checkout, "add", ".")
+	git(t, checkout, "commit", "-m", "initial")
+	git(t, checkout, "remote", "add", "origin", remote)
+	git(t, checkout, "push", "-u", "origin", "main")
+	git(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
 	t.Setenv("OCTOMUS_FIXTURE", root)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	data := t.TempDir()

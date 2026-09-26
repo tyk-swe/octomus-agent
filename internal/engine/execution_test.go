@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,11 +37,7 @@ func newExecutionFixture(t *testing.T) *planningFixture {
 
 func remoteHead(t *testing.T, fixture *planningFixture, branch string) string {
 	t.Helper()
-	out, err := exec.Command("/usr/bin/git", "--git-dir", filepath.Join(fixture.root, "remote.git"), "rev-parse", branch).Output()
-	if err != nil {
-		t.Fatalf("remote head %s: %v", branch, err)
-	}
-	return strings.TrimSpace(string(out))
+	return git(t, fixture.root, "--git-dir", filepath.Join(fixture.root, "remote.git"), "rev-parse", branch)
 }
 
 func executionTask(t *testing.T, fixture *planningFixture, target string) model.Task {
@@ -206,19 +201,15 @@ func verificationFixture(t *testing.T, commands []string) (*App, model.Task, str
 	}
 	fixture.cfg = cfg
 	ws := filepath.Join(fixture.root, "verify-workspace")
-	command(t, fixture.root, "/usr/bin/git", "init", "--initial-branch=main", ws)
-	command(t, ws, "/usr/bin/git", "config", "user.name", "Fixture")
-	command(t, ws, "/usr/bin/git", "config", "user.email", "fixture@example.com")
+	git(t, fixture.root, "init", "--initial-branch=main", ws)
+	git(t, ws, "config", "user.name", "Fixture")
+	git(t, ws, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(ws, "impl.txt"), []byte("0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	command(t, ws, "/usr/bin/git", "add", "impl.txt")
-	command(t, ws, "/usr/bin/git", "commit", "-m", "Fixture")
-	out, err := exec.Command("/usr/bin/git", "-C", ws, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision := strings.TrimSpace(string(out))
+	git(t, ws, "add", "impl.txt")
+	git(t, ws, "commit", "-m", "Fixture")
+	revision := git(t, ws, "rev-parse", "HEAD")
 	task := executionTask(t, fixture, cfg.DefaultBranch)
 	task.Status = model.StatusReviewing
 	task.Workspace = ws
@@ -561,7 +552,7 @@ func heldUploadPack(t *testing.T, fixture *planningFixture) {
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	command(t, fixture.repo, "/usr/bin/git", "config", "remote.origin.uploadpack", path)
+	git(t, fixture.repo, "config", "remote.origin.uploadpack", path)
 	writeFixtureMode(t, fixture, "hold")
 }
 
@@ -639,7 +630,7 @@ func checkpointedTask(t *testing.T, fixture *planningFixture, target string) mod
 // with the task, in the given state.
 func seedFixturePR(t *testing.T, fixture *planningFixture, task model.Task, state string) {
 	t.Helper()
-	command(t, task.Workspace, "/usr/bin/git", "push", filepath.Join(fixture.root, "remote.git"), *task.OutputCommit+":refs/heads/"+task.Branch)
+	git(t, task.Workspace, "push", filepath.Join(fixture.root, "remote.git"), *task.OutputCommit+":refs/heads/"+task.Branch)
 	pr := []map[string]any{{
 		"number": 1, "title": "x", "body": "<!-- octomus:task:" + task.ID + " -->",
 		"head":     map[string]any{"ref": task.Branch, "sha": "", "repo": map[string]any{"full_name": "fixture/project"}},
@@ -798,21 +789,17 @@ func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
 func existingPrBranch(t *testing.T, fixture *planningFixture) string {
 	t.Helper()
 	work := filepath.Join(fixture.root, "existing-work")
-	command(t, fixture.root, "/usr/bin/git", "clone", fixture.repo, work)
-	command(t, work, "/usr/bin/git", "config", "user.name", "Fixture")
-	command(t, work, "/usr/bin/git", "config", "user.email", "fixture@example.com")
-	command(t, work, "/usr/bin/git", "checkout", "-b", "octomus/existing")
+	git(t, fixture.root, "clone", fixture.repo, work)
+	git(t, work, "config", "user.name", "Fixture")
+	git(t, work, "config", "user.email", "fixture@example.com")
+	git(t, work, "checkout", "-b", "octomus/existing")
 	if err := os.WriteFile(filepath.Join(work, "earlier.txt"), []byte("Preserve the earlier improvement.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	command(t, work, "/usr/bin/git", "add", ".")
-	command(t, work, "/usr/bin/git", "commit", "-m", "Earlier Octomus work")
-	command(t, work, "/usr/bin/git", "push", filepath.Join(fixture.root, "remote.git"), "octomus/existing")
-	out, err := exec.Command("/usr/bin/git", "-C", work, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	head := strings.TrimSpace(string(out))
+	git(t, work, "add", ".")
+	git(t, work, "commit", "-m", "Earlier Octomus work")
+	git(t, work, "push", filepath.Join(fixture.root, "remote.git"), "octomus/existing")
+	head := git(t, work, "rev-parse", "HEAD")
 	pr := []map[string]any{{
 		"number": 42, "title": "An existing improvement", "body": "Existing context.\n<!-- octomus:task:earlier -->",
 		"head":     map[string]any{"ref": "octomus/existing", "sha": head, "repo": map[string]any{"full_name": "fixture/project"}},
@@ -866,11 +853,7 @@ func TestExecutionExistingPrAppendsComment(t *testing.T) {
 	}
 	// Follow-up reviews cover the whole PR: the comparison base is the merge
 	// base of the recorded default revision and the PR head, on every round.
-	out, err := exec.Command("/usr/bin/git", "-C", saved.Workspace, "merge-base", saved.DefaultRevision, head).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if base := strings.TrimSpace(string(out)); saved.ComparisonBase != base {
+	if base := git(t, saved.Workspace, "merge-base", saved.DefaultRevision, head); saved.ComparisonBase != base {
 		t.Fatalf("comparison base = %q; want merge base %s", saved.ComparisonBase, base)
 	}
 	for _, round := range saved.Reviews {
@@ -956,8 +939,8 @@ func TestExecutionDependenciesOrderAndRollback(t *testing.T) {
 		// on vanished work. The delivered commit is fetched into the trusted
 		// checkout first — the same guarantee the fixture's lazy rollback makes
 		// (the ancestry check requires the object locally).
-		command(t, fixture.repo, "/usr/bin/git", "fetch", filepath.Join(fixture.root, "remote.git"), "octomus/existing")
-		command(t, fixture.root, "/usr/bin/git", "--git-dir", filepath.Join(fixture.root, "remote.git"), "update-ref", "refs/heads/octomus/existing", head)
+		git(t, fixture.repo, "fetch", filepath.Join(fixture.root, "remote.git"), "octomus/existing")
+		git(t, fixture.root, "--git-dir", filepath.Join(fixture.root, "remote.git"), "update-ref", "refs/heads/octomus/existing", head)
 		// The rewound head is the dependent's recorded source, so the preflight
 		// authorizes it; initialization then finds the dependency output is no
 		// longer an ancestor of the head. That is a dependency block, whose

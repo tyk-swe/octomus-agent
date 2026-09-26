@@ -461,7 +461,7 @@ func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
 
 	// Another owned PR now fills the last slot alongside our two reservations.
 	// The scheduler must observe it before admitting the next batch.
-	command(t, fixture.root, "/usr/bin/git", "--git-dir", filepath.Join(fixture.root, "remote.git"), "branch", "tyk/another-session", "main")
+	git(t, fixture.root, "--git-dir", filepath.Join(fixture.root, "remote.git"), "branch", "tyk/another-session", "main")
 	pr := `[{"number":7,"title":"Other owned work","body":"<!-- octomus:task:other -->","head":{"ref":"tyk/another-session","sha":"","repo":{"full_name":"fixture/project"}},"base":{"ref":"main","repo":{"full_name":"fixture/project"}},"html_url":"https://github.com/fixture/project/pull/7","state":"open","merged_at":null,"additions":1,"deletions":0,"created_at":"2026-09-07T00:00:00Z"}]`
 	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte(pr), 0o600); err != nil {
 		t.Fatal(err)

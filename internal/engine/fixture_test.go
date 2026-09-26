@@ -17,6 +17,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -47,13 +48,29 @@ func pythonFixtureShim(t *testing.T, path, root, fixture string) {
 	}
 }
 
-func command(t *testing.T, directory, executable string, args ...string) {
+// git runs the host Git in directory and returns its trimmed standard output,
+// failing the test with its standard error. See gitCommand.
+func git(t *testing.T, directory string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command(executable, args...)
-	cmd.Dir = directory
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("%s %s: %v\n%s", executable, strings.Join(args, " "), err, output)
+	cmd := gitCommand(directory, args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s in %s: %v\n%s", strings.Join(args, " "), directory, err, stderr.String())
 	}
+	return strings.TrimSpace(string(output))
+}
+
+// gitCommand builds a host Git command (/usr/bin/git, never a fixture shim on
+// PATH) in directory, for callers that report failure themselves, such as
+// scripted runner effects. It gets the service's child environment, so a
+// GIT_DIR, GIT_INDEX_FILE or GIT_WORK_TREE that a Git hook exports to the test
+// run cannot redirect fixture Git into another repository.
+func gitCommand(directory string, args ...string) *exec.Cmd {
+	cmd := process.Command("/usr/bin/git", directory)
+	cmd.Args = append(cmd.Args, args...)
+	return cmd
 }
 
 func newPlanningFixture(t *testing.T) *planningFixture {
@@ -91,17 +108,17 @@ func newFixture(t *testing.T, root string, configure func(*config.Config)) *plan
 		t.Fatal(err)
 	}
 
-	command(t, root, "/usr/bin/git", "init", "--bare", "--initial-branch=main", remote)
-	command(t, root, "/usr/bin/git", "init", "--initial-branch=main", repo)
-	command(t, repo, "/usr/bin/git", "config", "user.name", "Fixture")
-	command(t, repo, "/usr/bin/git", "config", "user.email", "fixture@example.com")
+	git(t, root, "init", "--bare", "--initial-branch=main", remote)
+	git(t, root, "init", "--initial-branch=main", repo)
+	git(t, repo, "config", "user.name", "Fixture")
+	git(t, repo, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# Fixture\n\nThe feature contract requires fixed output.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	command(t, repo, "/usr/bin/git", "add", "README.md")
-	command(t, repo, "/usr/bin/git", "commit", "-m", "Initial fixture")
-	command(t, repo, "/usr/bin/git", "remote", "add", "origin", remote)
-	command(t, repo, "/usr/bin/git", "push", "-u", "origin", "main")
+	git(t, repo, "add", "README.md")
+	git(t, repo, "commit", "-m", "Initial fixture")
+	git(t, repo, "remote", "add", "origin", remote)
+	git(t, repo, "push", "-u", "origin", "main")
 
 	previousWebhook, hadWebhook := os.LookupEnv(redact.WebhookEnv)
 	if err := os.Unsetenv(redact.WebhookEnv); err != nil {

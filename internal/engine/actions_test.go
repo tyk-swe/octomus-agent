@@ -312,7 +312,7 @@ func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	command(t, fixture.repo, "/usr/bin/git", "config", "remote.origin.uploadpack", path)
+	git(t, fixture.repo, "config", "remote.origin.uploadpack", path)
 	cfg := fixture.cfg.Clone()
 	cfg.CommandTimeoutSeconds = 1
 	if err := fixture.state.Put("settings", "config", cfg); err != nil {
@@ -458,8 +458,8 @@ func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
 	task.Status = model.StatusBlocked
 	saveExecutionTask(t, fixture, task)
 	// The remote target and default branches move past the recorded revisions.
-	command(t, fixture.repo, "/usr/bin/git", "commit", "--allow-empty", "-m", "External work")
-	command(t, fixture.repo, "/usr/bin/git", "push", "origin", fixture.cfg.DefaultBranch)
+	git(t, fixture.repo, "commit", "--allow-empty", "-m", "External work")
+	git(t, fixture.repo, "push", "origin", fixture.cfg.DefaultBranch)
 	err := app.TaskAction(context.Background(), task.ID, "retry")
 	if err == nil || model.BlockedReasonFromError(err) != model.BlockedReasonStaleBase {
 		t.Fatalf("stale retry = %v; want the recorded stale-base failure", err)

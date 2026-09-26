@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -1241,17 +1240,14 @@ func editedPlanningFile() planningMutation {
 func committedPlanningChange() planningMutation {
 	return planningMutation{
 		effect: func(cwd string) error {
-			cmd := exec.Command("/usr/bin/git", "-c", "user.name=Planner", "-c", "user.email=planner@example.com", "commit", "--allow-empty", "-m", "Planning mutation")
-			cmd.Dir = cwd
+			cmd := gitCommand(cwd, "-c", "user.name=Planner", "-c", "user.email=planner@example.com", "commit", "--allow-empty", "-m", "Planning mutation")
 			if output, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("fixture commit: %w: %s", err, output)
 			}
 			return nil
 		},
 		preserved: func(t *testing.T, workspace string) {
-			cmd := exec.Command("/usr/bin/git", "log", "-1", "--format=%s")
-			cmd.Dir = workspace
-			output, err := cmd.Output()
+			output, err := gitCommand(workspace, "log", "-1", "--format=%s").Output()
 			if err != nil || strings.TrimSpace(string(output)) != "Planning mutation" {
 				t.Fatalf("preserved workspace lost the committed mutation: %q, %v", output, err)
 			}

@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -93,11 +91,7 @@ func TestObservationRecordsTheDefaultBranchWithItsContext(t *testing.T) {
 	if err := app.observeRemote(context.Background(), fixture.cfg); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("/usr/bin/git", "--git-dir", filepath.Join(fixture.root, "remote.git"), "rev-parse", "main").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	head := strings.TrimSpace(string(out))
+	head := git(t, fixture.root, "--git-dir", filepath.Join(fixture.root, "remote.git"), "rev-parse", "main")
 	app.runtimeMu.Lock()
 	observation := app.runtime.defaultObservation
 	app.runtimeMu.Unlock()

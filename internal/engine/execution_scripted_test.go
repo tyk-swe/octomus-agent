@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -356,9 +355,8 @@ func TestExecutionWithoutChangesBlocksBeforeReview(t *testing.T) {
 	}{
 		{"no commit", nil, "No changes were committed on top of the source revision"},
 		{"net-empty commit", func(cwd string) error {
-			command := exec.Command("git", "-c", "user.name=Executor", "-c", "user.email=executor@example.test",
+			command := gitCommand(cwd, "-c", "user.name=Executor", "-c", "user.email=executor@example.test",
 				"commit", "--allow-empty", "-m", "Nothing changed")
-			command.Dir = cwd
 			if output, err := command.CombinedOutput(); err != nil {
 				return fmt.Errorf("empty commit: %v: %s", err, output)
 			}
@@ -708,7 +706,7 @@ func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
 func advanceRemoteMain(fixture *scriptedFixture) error {
 	remote := filepath.Join(fixture.root, "remote.git")
 	git := func(args ...string) (string, error) {
-		out, err := exec.Command("/usr/bin/git", append([]string{"--git-dir", remote}, args...)...).CombinedOutput()
+		out, err := gitCommand(fixture.root, append([]string{"--git-dir", remote}, args...)...).CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("git %v: %w: %s", args, err, out)
 		}
@@ -801,7 +799,7 @@ exec git-upload-pack "$@"
 	if err := os.WriteFile(uploadPack, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	command(t, fixture.repo, "/usr/bin/git", "config", "remote.origin.uploadpack", uploadPack)
+	git(t, fixture.repo, "config", "remote.origin.uploadpack", uploadPack)
 	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "fixed\n")})
 	script.Answer(routes.Reviewer, cleanReview("Complete"))
 	saveExecutionTask(t, fixture.planningFixture, task)
@@ -813,11 +811,7 @@ exec git-upload-pack "$@"
 	if !blockedAs(saved, model.BlockedReasonStaleBase) || saved.OutputCommit != nil {
 		t.Fatalf("main moving after the clone = %+v; want a stale base before the checkpoint", saved)
 	}
-	out, err := exec.Command("/usr/bin/git", "-C", saved.Workspace, "merge-base", task.DefaultRevision, task.SourceRevision).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if base := strings.TrimSpace(string(out)); saved.ComparisonBase != base {
+	if base := git(t, saved.Workspace, "merge-base", task.DefaultRevision, task.SourceRevision); saved.ComparisonBase != base {
 		t.Fatalf("comparison base = %q; want the merge base %s of the verified default revision", saved.ComparisonBase, base)
 	}
 	if len(saved.Reviews) != 1 || saved.Reviews[0].ComparisonBase != saved.ComparisonBase {

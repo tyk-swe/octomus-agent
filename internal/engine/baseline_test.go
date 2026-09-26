@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,17 +16,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-func git(t *testing.T, cwd string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = cwd
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git %v: %v", args, err)
-	}
-	return strings.TrimSpace(string(output))
-}
-
 func baselineApp(t *testing.T) (*App, config.Config) {
 	t.Helper()
 	root := t.TempDir()
@@ -35,25 +23,14 @@ func baselineApp(t *testing.T) (*App, config.Config) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitInit := exec.Command("git", "init", "-b", "main")
-	gitInit.Dir = repo
-	if out, err := gitInit.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %s", out)
-	}
-	gitCfg := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %s", args, out)
-		}
-	}
-	gitCfg("config", "user.name", "Fixture")
-	gitCfg("config", "user.email", "fixture@example.com")
+	git(t, repo, "init", "-b", "main")
+	git(t, repo, "config", "user.name", "Fixture")
+	git(t, repo, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitCfg("add", ".")
-	gitCfg("commit", "-m", "initial")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
 	cfg := config.Default()
 	cfg.Repository = repo
 	cfg.GitHubRepo = "fixture/project"

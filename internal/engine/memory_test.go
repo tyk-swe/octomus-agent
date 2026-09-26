@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,17 +23,7 @@ import (
 // they had before, so saved decisions still match.
 func TestDecisionFingerprintTreatsPathsLiterally(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
-	gitOutput := func(args ...string) string {
-		t.Helper()
-		cmd := exec.Command("/usr/bin/git", args...)
-		cmd.Dir = fixture.cfg.Repository
-		output, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("git %v: %v", args, err)
-		}
-		return string(output)
-	}
-	revision := strings.TrimSpace(gitOutput("rev-parse", "HEAD"))
+	revision := git(t, fixture.cfg.Repository, "rev-parse", "HEAD")
 	ctx := context.Background()
 
 	nothing := fmt.Sprintf("%x", sha256.Sum256(nil))
@@ -50,7 +39,7 @@ func TestDecisionFingerprintTreatsPathsLiterally(t *testing.T) {
 		}
 	}
 
-	listing := strings.TrimSpace(gitOutput("ls-tree", "-r", revision, "--", "README.md"))
+	listing := git(t, fixture.cfg.Repository, "ls-tree", "-r", revision, "--", "README.md")
 	if listing == "" {
 		t.Fatal("fixture README.md is not tracked")
 	}
@@ -125,16 +114,6 @@ func TestPlanningMemoryReconsiderationRules(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	cfg := fixture.cfg
 	ctx := context.Background()
-	gitIn := func(args ...string) string {
-		t.Helper()
-		cmd := exec.Command("/usr/bin/git", args...)
-		cmd.Dir = cfg.Repository
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
-		return strings.TrimSpace(string(output))
-	}
 	// A second tracked file that the later commit leaves alone.
 	if err := os.MkdirAll(filepath.Join(cfg.Repository, "docs"), 0o755); err != nil {
 		t.Fatal(err)
@@ -142,9 +121,9 @@ func TestPlanningMemoryReconsiderationRules(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg.Repository, "docs", "guide.md"), []byte("# Guide\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn("add", "docs/guide.md")
-	gitIn("commit", "-m", "Add the guide")
-	recorded := gitIn("rev-parse", "HEAD")
+	git(t, cfg.Repository, "add", "docs/guide.md")
+	git(t, cfg.Repository, "commit", "-m", "Add the guide")
+	recorded := git(t, cfg.Repository, "rev-parse", "HEAD")
 
 	future := time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339)
 	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
@@ -222,10 +201,10 @@ func TestPlanningMemoryReconsiderationRules(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg.Repository, "README.md"), []byte("# Fixture\n\nThe contract changed.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn("commit", "-am", "Change the README")
+	git(t, cfg.Repository, "commit", "-am", "Change the README")
 	// Only decisions about the changed file, or about the whole default-branch
 	// tree, become due; the PR decision reads the unchanged PR head.
-	check("after a README change", gitIn("rev-parse", "HEAD"), map[string]bool{
+	check("after a README change", git(t, cfg.Repository, "rev-parse", "HEAD"), map[string]bool{
 		"readme": true, "guide": false, "whole-tree": true, "expired": true,
 		"pr-readme": false, "merged-accepted": false, "merged-elsewhere": false,
 	})

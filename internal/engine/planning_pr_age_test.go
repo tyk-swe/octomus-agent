@@ -28,8 +28,8 @@ func writeMaintenancePRFixture(t *testing.T, fixture *scriptedFixture, prs []mai
 	entries := make([]map[string]any, 0, len(prs))
 	for i, pr := range prs {
 		branch := fixture.cfg.BranchPrefix + pr.name
-		command(t, fixture.repo, "/usr/bin/git", "branch", branch)
-		command(t, fixture.repo, "/usr/bin/git", "push", "origin", branch)
+		git(t, fixture.repo, "branch", branch)
+		git(t, fixture.repo, "push", "origin", branch)
 		createdAt := pr.createdAt
 		if createdAt == "" {
 			createdAt = now.AddDate(0, 0, -pr.ageDays).Format(time.RFC3339)
