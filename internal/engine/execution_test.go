@@ -825,12 +825,13 @@ func TestExecutionDependenciesOrderAndRollback(t *testing.T) {
 		// (the ancestry check requires the object locally).
 		command(t, fixture.repo, "/usr/bin/git", "fetch", filepath.Join(fixture.root, "remote.git"), "octomus/existing")
 		command(t, fixture.root, "/usr/bin/git", "--git-dir", filepath.Join(fixture.root, "remote.git"), "update-ref", "refs/heads/octomus/existing", head)
+		// The rewound head is the dependent's recorded source, so the preflight
+		// authorizes it; initialization then finds the dependency output is no
+		// longer an ancestor of the head. That is a dependency block, whose
+		// remedy differs from a stale base's.
 		saved := driveTask(t, fixture, app, second.ID)
-		if saved.Status != model.StatusBlocked || saved.BlockedReason == nil {
-			t.Fatalf("rollback dependent outcome = %+v", saved)
-		}
-		if *saved.BlockedReason != model.BlockedReasonDependencyBlocked && *saved.BlockedReason != model.BlockedReasonStaleBase {
-			t.Fatalf("rollback blocked as %v", *saved.BlockedReason)
+		if !blockedAs(saved, model.BlockedReasonDependencyBlocked) {
+			t.Fatalf("rollback dependent outcome = %+v; want dependency_blocked", saved)
 		}
 		if saved.OutputCommit != nil {
 			t.Fatalf("rollback authorized publication: %+v", saved)
