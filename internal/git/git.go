@@ -564,15 +564,33 @@ func Publish(ctx context.Context, task model.Task) (model.PullRequest, error) {
 	return pr, nil
 }
 
+// latestVerification returns the most recent recorded result for command: the
+// only one that gates or describes publication.
+func latestVerification(task model.Task, command string) *model.Verification {
+	for i := len(task.Verification) - 1; i >= 0; i-- {
+		if task.Verification[i].Command == command {
+			return &task.Verification[i]
+		}
+	}
+	return nil
+}
+
 // prBody builds the pull request text for a reviewed commit. A task that
 // already owns a pull request posts a follow-up comment rather than rewriting
 // the description, so earlier delivery notes and any maintainer conversation
 // are never replaced. The task marker makes that append idempotent: a
-// republication of the same task adds nothing.
+// republication of the same task adds nothing. Verification lists one line per
+// configured command, from its latest result at the reviewed commit, so a
+// superseded run never contradicts the result that gated publication.
 func prBody(task model.Task, existing *model.PullRequest, commit string) string {
 	var verification []string
-	for _, v := range task.Verification {
-		if v.Revision != commit {
+	commands := task.ExecutionConfig().VerificationCommands
+	for i, command := range commands {
+		if slices.Contains(commands[:i], command) {
+			continue
+		}
+		v := latestVerification(task, command)
+		if v == nil || v.Revision != commit {
 			continue
 		}
 		result := "failed"
@@ -783,23 +801,11 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		return fail(blocked(model.BlockedReasonWorkspaceInvalid,
 			"Publication requires a clean review at the output revision"))
 	}
-	verified := true
-	for _, cmd := range c.VerificationCommands {
-		found := false
-		for i := len(task.Verification) - 1; i >= 0; i-- {
-			if v := task.Verification[i]; v.Command == cmd {
-				found = v.Success && v.Revision == commit
-				break
-			}
+	for _, command := range c.VerificationCommands {
+		if v := latestVerification(task, command); v == nil || !v.Success || v.Revision != commit {
+			return fail(blocked(model.BlockedReasonWorkspaceInvalid,
+				"Publication requires successful verification at the reviewed revision"))
 		}
-		if !found {
-			verified = false
-			break
-		}
-	}
-	if !verified {
-		return fail(blocked(model.BlockedReasonWorkspaceInvalid,
-			"Publication requires successful verification at the reviewed revision"))
 	}
 	if !strings.HasPrefix(task.Branch, c.BranchPrefix) || task.Branch == c.DefaultBranch {
 		return fail(blocked(model.BlockedReasonWorkspaceInvalid,

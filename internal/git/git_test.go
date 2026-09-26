@@ -925,6 +925,98 @@ func TestPublishRejectsStaleBase(t *testing.T) {
 	}
 }
 
+// TestFixturePublishListsLatestVerificationOnly: a command that failed and was
+// later re-run successfully at the same reviewed commit is described by its
+// latest result only — the one that gated publication — so the public text
+// never shows both outcomes for one command.
+func TestFixturePublishListsLatestVerificationOnly(t *testing.T) {
+	c, root := fixtureRoot(t)
+	c.VerificationCommands = []string{"make test", "make lint"}
+	task, commit := publishableTask(t, c, root, "task-latest")
+	task.Verification = []model.Verification{
+		{Command: "make test", Success: false, Revision: commit, CreatedAt: model.Now()},
+		{Command: "make lint", Success: true, Revision: commit, CreatedAt: model.Now()},
+		{Command: "make test", Success: true, Revision: commit, CreatedAt: model.Now()},
+	}
+	if _, err := git.Publish(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "prs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prs []map[string]any
+	if err := json.Unmarshal(data, &prs); err != nil || len(prs) != 1 {
+		t.Fatalf("prs.json = %s, %v; want one PR", data, err)
+	}
+	body, _ := prs[0]["body"].(string)
+	if !strings.Contains(body, "Verification\n- `make test`: passed\n- `make lint`: passed\n") {
+		t.Fatalf("outbound body = %q; want one latest line per configured command", body)
+	}
+	if strings.Contains(body, "failed") {
+		t.Fatalf("outbound body = %q; a superseded failure must not be listed", body)
+	}
+}
+
+// TestPublishGatesOnTheLatestVerificationPerCommand: only the most recent
+// record of each configured command gates publication, and it must be a
+// success at the reviewed commit.
+func TestPublishGatesOnTheLatestVerificationPerCommand(t *testing.T) {
+	cases := []struct {
+		name   string
+		record func(commit string) []model.Verification
+	}{
+		{
+			name: "latest failed after an earlier pass",
+			record: func(commit string) []model.Verification {
+				return []model.Verification{
+					{Command: "make test", Success: true, Revision: commit},
+					{Command: "make lint", Success: true, Revision: commit},
+					{Command: "make test", Success: false, Revision: commit},
+				}
+			},
+		},
+		{
+			name: "latest passed at another revision",
+			record: func(commit string) []model.Verification {
+				return []model.Verification{
+					{Command: "make test", Success: true, Revision: commit},
+					{Command: "make lint", Success: true, Revision: commit},
+					{Command: "make lint", Success: true, Revision: strings.Repeat("0", 40)},
+				}
+			},
+		},
+		{
+			name: "configured command never recorded",
+			record: func(commit string) []model.Verification {
+				return []model.Verification{{Command: "make test", Success: true, Revision: commit}}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, root := fixtureRoot(t)
+			c.VerificationCommands = []string{"make test", "make lint"}
+			ctx := context.Background()
+			task, commit := publishableTask(t, c, root, "task-gate")
+			task.Verification = tc.record(commit)
+			_, err := git.Publish(ctx, task)
+			if err == nil {
+				t.Fatal("publication without a latest passing verification must be refused")
+			}
+			if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonWorkspaceInvalid {
+				t.Fatalf("reason = %v; want workspace_invalid", reason)
+			}
+			if !strings.Contains(err.Error(), "Publication requires successful verification at the reviewed revision") {
+				t.Fatalf("refusal = %q; want the verification gate", err)
+			}
+			if rev, err := git.RemoteRevision(ctx, c, task.Branch); err != nil || rev != nil {
+				t.Fatalf("remote branch = %v, %v; want nothing pushed", deref(rev), err)
+			}
+		})
+	}
+}
+
 // TestPublishUncertainWrapsCauseOnce: an untyped publication failure is
 // reported as PublicationUncertain with the reason sentence stated once,
 // followed by the underlying cause.
