@@ -34,9 +34,10 @@
   let config = $state<Config | null>(null),
     /** Canonical revision the displayed values came from; writes pin it and checks use it. */
     revision = $state(''),
-    /** Serialized display baseline for the draft/dirty comparison. */
-    baseline = $state(''),
-    baselineCommands = $state(''),
+    /** The saved configuration as displayed, serialized for the draft/dirty comparison. */
+    savedJson = $state(''),
+    /** The saved verification commands as displayed, one per line. */
+    savedCommands = $state(''),
     /** Every field the server transformed for display; those values are previews only. */
     transformed = $state<TransformedField[]>([]),
     /** Transformed fields the operator deliberately chose to replace in full. */
@@ -54,9 +55,9 @@
     preflight = $state<Preflight | null>(null);
   const busy = $derived(pending !== '');
   const dirty = $derived(
-    config !== null && (JSON.stringify(config) !== baseline || commands !== baselineCommands)
+    config !== null && (JSON.stringify(config) !== savedJson || commands !== savedCommands)
   );
-  const savedConfig = $derived<Config | null>(baseline ? JSON.parse(baseline) : null);
+  const savedConfig = $derived<Config | null>(savedJson ? JSON.parse(savedJson) : null);
   const transformedByField = $derived(new Map(transformed.map((entry) => [entry.field, entry])));
   // A transformed collection is a read-only preview until deliberately replaced:
   // its hidden members must never be merged back by position.
@@ -111,7 +112,7 @@
     }
   }
   function acceptSaved(view: SettingsView) {
-    if (!baseline || view.revision !== revision) {
+    if (!savedJson || view.revision !== revision) {
       error = '';
       conflict = false;
       message = '';
@@ -119,11 +120,11 @@
       preflight = null;
     }
     config = view.config;
-    baseline = JSON.stringify(view.config);
+    savedJson = JSON.stringify(view.config);
     revision = view.revision;
     transformed = view.transformed_fields;
     commands = view.config.verification_commands.join('\n');
-    baselineCommands = commands;
+    savedCommands = commands;
     replaced = {};
     // Every caller passes a fresh server view, so an earlier load failure is resolved.
     loadError = '';
@@ -154,8 +155,8 @@
   }
   function discard() {
     if (!dirty || busy) return;
-    config = JSON.parse(baseline);
-    commands = baselineCommands;
+    config = JSON.parse(savedJson);
+    commands = savedCommands;
     replaced = {};
     error = '';
     conflict = false;
@@ -168,8 +169,8 @@
   async function reload() {
     if (busy || loading) return;
     if (config) {
-      config = JSON.parse(baseline);
-      commands = baselineCommands;
+      config = JSON.parse(savedJson);
+      commands = savedCommands;
       replaced = {};
     }
     error = '';
@@ -250,14 +251,14 @@
         mode,
         ok: true,
         detail: result.message,
-        baseline: result.checked_revision,
+        checkedRevision: result.checked_revision,
         at
       };
     } catch (e) {
       error = (e as Error).message;
       preflight =
         e instanceof ApiError && e.checkedRevision
-          ? { mode, ok: false, detail: error, baseline: e.checkedRevision, at }
+          ? { mode, ok: false, detail: error, checkedRevision: e.checkedRevision, at }
           : null;
     } finally {
       pending = '';
