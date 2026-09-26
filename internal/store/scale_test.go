@@ -101,40 +101,21 @@ func TestDuplicateHistoryScale(t *testing.T) {
 	}
 	path := statePath(t)
 	s := open(t, path)
-	proposal := map[string]any{
-		"id": "proposal", "title": "Historical task", "problem_key": "historical-key",
-		"target": "main", "problem": "Missing behavior", "benefit": "Useful behavior",
-		"scope": "one file", "evidence": []string{"README.md"}, "category": "features",
-		"tier": "M", "dependencies": []string{}, "prompt": "Implement behavior",
-		"decision": "accepted", "reason": "Grounded",
-	}
-	data := map[string]any{
-		"id": "historical", "cycle_id": "cycle", "status": "published",
-		"proposal":        proposal,
-		"route":           map[string]any{"backend": "codex", "model": "fixture", "effort": "low"},
-		"config":          map[string]any{"github_repo": "fixture/project"},
-		"source_revision": "source", "comparison_base": "source", "default_revision": "source",
-		"branch": "tyk/history", "workspace": "",
-		"execution_session": nil, "repair_session": nil, "sessions": []any{}, "reviews": []any{},
-		"verification": []map[string]any{{
-			"command": "fixture", "success": true, "output": strings.Repeat("x", 64*1024),
-			"revision": "source", "created_at": "2026-01-01T00:00:00Z",
-		}},
-		"output_commit": nil, "pr_number": nil, "pr_url": nil,
-		"attempts": 0, "error": nil,
-		"created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
-	}
-	// Keep the probe valid for implementations that accidentally load all tasks.
-	rawData, err := json.Marshal(data)
-	must(t, err)
-	var probe model.Task
-	must(t, json.Unmarshal(rawData, &probe))
-	proposalBytes, err := json.Marshal(proposal)
-	must(t, err)
+	// Build the fixture from the typed task so it follows the strict record
+	// format as fields are added; a hand-written map fell behind and stopped
+	// decoding, which disabled this gate.
+	historical := task()
+	historical.Status = model.StatusPublished
+	historical.Branch = "tyk/history"
+	historical.CreatedAt = "2026-01-01T00:00:00Z"
+	historical.UpdatedAt = "2026-01-01T00:00:00Z"
+	historical.Verification = []model.Verification{{
+		Command: "fixture", Success: true, Output: strings.Repeat("x", 64*1024),
+		Revision: "source", CreatedAt: "2026-01-01T00:00:00Z",
+	}}
 	proposals := make([]model.Proposal, 0, 20)
 	for i := range 20 {
-		var p model.Proposal
-		must(t, json.Unmarshal(proposalBytes, &p))
+		p := historical.Proposal
 		p.Title = fmt.Sprintf("New task %d", i)
 		p.ProblemKey = fmt.Sprintf("new-key-%d", i)
 		proposals = append(proposals, p)
@@ -145,12 +126,18 @@ func TestDuplicateHistoryScale(t *testing.T) {
 	stmt, err := tx.Prepare("INSERT INTO records VALUES ('task',?1,?2)")
 	must(t, err)
 	for i := range 2000 {
-		data["id"] = fmt.Sprintf("historical-%d", i)
-		proposal["title"] = fmt.Sprintf("Historical task %d", i)
-		proposal["problem_key"] = fmt.Sprintf("historical-key-%d", i)
-		row, err := json.Marshal(data)
+		historical.ID = fmt.Sprintf("historical-%d", i)
+		historical.Proposal.Title = fmt.Sprintf("Historical task %d", i)
+		historical.Proposal.ProblemKey = fmt.Sprintf("historical-key-%d", i)
+		row, err := json.Marshal(historical)
 		must(t, err)
-		if _, err := stmt.Exec(data["id"], string(row)); err != nil {
+		if i == 0 {
+			// Keep the rows decodable so an implementation that accidentally
+			// loads every task fails the allocation gate, not a decode.
+			var probe model.Task
+			must(t, json.Unmarshal(row, &probe))
+		}
+		if _, err := stmt.Exec(historical.ID, string(row)); err != nil {
 			t.Fatal(err)
 		}
 	}

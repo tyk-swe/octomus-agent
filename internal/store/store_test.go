@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -116,109 +114,6 @@ func TestPlanningCapacityReflectsPolicyUsageAndUTCDay(t *testing.T) {
 	must(t, err)
 	if capacity.Day != "2026-03-02" || capacity.Used != 0 || capacity.Remaining != 14 || capacity.Status != model.PlanningCapacityStatusReady {
 		t.Fatalf("%+v", capacity)
-	}
-}
-
-func TestRedactsTokens(t *testing.T) {
-	redacted := store.Redact("Bearer secretkey123 ghp_abcdefghijklmnop")
-	if strings.Contains(redacted, "secretkey") || strings.Contains(redacted, "ghp_abcdef") {
-		t.Fatal(redacted)
-	}
-	if store.Redact("git clone https://user:pass@example.com/repo") == "git clone https://user:pass@example.com/repo" {
-		t.Fatal("URL credentials survived")
-	}
-	value := store.RedactJSON(map[string]any{"nested": []any{"sk-abcdefghijklmnopqrstuvwxyz"}})
-	if canonical(t, value) != `{"nested":["[redacted]"]}` {
-		t.Fatal(canonical(t, value))
-	}
-}
-
-func TestRedactsTokensUnicodeWhitespace(t *testing.T) {
-	// Every Unicode White_Space code point, including ASCII vertical tab.
-	whitespace := "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
-	for _, separator := range whitespace {
-		t.Run(fmt.Sprintf("U+%04X", separator), func(t *testing.T) {
-			input := "before bEaReR" + string(separator) + "\t" + "synthetic-private-credential after"
-			const want = "before [redacted] after"
-			if got := store.RedactSecrets(input); got != want {
-				t.Fatalf("RedactSecrets = %q, want %q", got, want)
-			}
-			value, err := store.RedactedValue(map[string]any{"nested": []any{input}})
-			must(t, err)
-			if got := canonical(t, value); got != `{"nested":["before [redacted] after"]}` {
-				t.Fatalf("redacted export = %s", got)
-			}
-			// URL userinfo cannot cross whitespace.
-			for _, url := range []string{
-				"https://user" + string(separator) + "name:pass@example.com",
-				"https://user:pass" + string(separator) + "word@example.com",
-			} {
-				if got := store.RedactSecrets(url); got != url {
-					t.Fatalf("URL whitespace boundary changed: %q", got)
-				}
-			}
-		})
-	}
-	for _, separator := range []rune{'\u001c', '\u180e', '\u200b', '\ufeff'} {
-		input := "Bearer" + string(separator) + "synthetic-private-credential"
-		if got := store.RedactSecrets(input); got != input {
-			t.Errorf("non-whitespace U+%04X matched: %q", separator, got)
-		}
-	}
-}
-
-// TestDisplayJSONReportsEveryTransformedString proves the display view walks
-// nested maps and arrays, applies redaction before the length bound, and
-// records each changed string by top-level field, kinds and JSON path so the
-// settings contract can label previews precisely.
-func TestDisplayJSONReportsEveryTransformedString(t *testing.T) {
-	long := strings.Repeat("synthetic-", 2000)
-	object := map[string]any{
-		"nested": map[string]any{
-			"inner":  map[string]any{"token": "value ghp_abcdefghijklmnop", "kept": "plain"},
-			"listed": []any{"sk-abcdefghijklmnopqrstuvwxyz", "fine", long},
-		},
-		"other":   "untouched",
-		"numeric": 7,
-	}
-	display, fields := store.DisplayJSON(object)
-	nested := display["nested"].(map[string]any)
-	if nested["inner"].(map[string]any)["token"] != "value [redacted]" {
-		t.Fatalf("nested map value: %v", nested["inner"])
-	}
-	listed := nested["listed"].([]any)
-	if listed[0] != "[redacted]" || listed[1] != "fine" {
-		t.Fatalf("nested list values: %v", listed)
-	}
-	shortened := listed[2].(string)
-	if utf8.RuneCountInString(shortened) != 16384 || !utf8.ValidString(shortened) {
-		t.Fatalf("shortened display text: %d runes", utf8.RuneCountInString(shortened))
-	}
-	if display["other"] != "untouched" || display["numeric"] != 7 {
-		t.Fatalf("untouched values changed: %v", display)
-	}
-	if len(fields) != 1 {
-		t.Fatalf("transform fields: %+v", fields)
-	}
-	entry := fields[0]
-	if entry.Field != "nested" {
-		t.Fatalf("transform field: %q", entry.Field)
-	}
-	if !reflect.DeepEqual(entry.Kinds, []string{"redacted", "shortened"}) {
-		t.Fatalf("transform kinds: %v", entry.Kinds)
-	}
-	want := [][]any{
-		{"nested", "inner", "token"},
-		{"nested", "listed", 0},
-		{"nested", "listed", 2},
-	}
-	if !reflect.DeepEqual(entry.Paths, want) {
-		t.Fatalf("transform paths: %v", entry.Paths)
-	}
-	// Untouched objects report no transforms at all, and ordering is stable.
-	display, again := store.DisplayJSON(map[string]any{"a": "plain", "b": []any{"also plain"}})
-	if len(again) != 0 || display["a"] != "plain" {
-		t.Fatalf("clean object: %v %+v", display, again)
 	}
 }
 
@@ -864,16 +759,18 @@ func TestCycleSummariesCountCandidateDecisions(t *testing.T) {
 
 func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	s := open(t, statePath(t))
-	// A control batch in the planning phase makes commit_plan write settings
-	// mid-transaction, so a surviving "executing" phase would prove a partial commit.
+	// A control batch in the planning phase makes CommitPlan change settings in
+	// the same transaction, so a surviving "executing" phase would prove a
+	// partial commit. A non-zero idle streak shows both control changes land in
+	// the same write.
 	control := map[string]any{
 		"paused": false, "mode": "run_once", "cycle_number": 1, "next_cycle_at": 0,
-		"error": nil, "idle_streak": 0, "context_fingerprint": "",
+		"error": nil, "idle_streak": 3, "context_fingerprint": "",
 		"batch": map[string]any{"id": "run-1", "phase": "planning", "cycle_id": "cycle-1"},
 	}
 	must(t, s.Put("settings", "control", control))
 	// A reconsiders entry naming a task that was never saved fails the lineage
-	// lookup after the cycle, task, control and decision writes already ran.
+	// lookup after the cycle, task and decision writes already ran.
 	queued := reviewTask()
 	queued.CycleID = "cycle-1"
 	plan := cycleFor(queued)
@@ -931,13 +828,13 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	if d, _, _ := s.GetValue("decision", "decision-1"); d == nil {
 		t.Fatal("decision memory missing")
 	}
-	// An empty plan grows the idle streak.
+	// An empty plan grows the idle streak and leaves the batch phase alone.
 	empty := cycleFor(valid)
 	empty.ID = "cycle-2"
 	must(t, s.CommitPlan(empty, nil))
 	saved, err = store.Get[model.Control](s, "settings", "control")
 	must(t, err)
-	if saved.IdleStreak != 1 {
+	if saved.IdleStreak != 1 || saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting {
 		t.Fatalf("%+v", saved)
 	}
 }
@@ -1039,5 +936,126 @@ func TestPublishedWorkRemainsInDuplicateLookups(t *testing.T) {
 		if d, _ := s.DuplicateTasks(delivered.Config.GitHubRepo, []model.Proposal{proposed}); len(d) != 0 {
 			t.Fatal("another target matched")
 		}
+	}
+}
+
+// BeginCycleIfAffordable and StartBatchIfAffordable revalidate the live
+// configuration, control record and daily budget in the same transaction as
+// their writes. A stale or unaffordable request is refused without an error
+// and leaves the cycle, the control bytes and the queued task untouched.
+func TestAffordabilityChecksRefuseStaleControlWithoutWriting(t *testing.T) {
+	s := open(t, statePath(t))
+	cfg := saveConfig(t, s, func(*config.Config) {})
+	fingerprint, err := cfg.Fingerprint()
+	must(t, err)
+	live := model.DefaultControl()
+	must(t, s.SaveControl(live))
+	before, _, err := s.GetRaw("settings", "control")
+	must(t, err)
+	queued := task()
+	must(t, s.Put("task", queued.ID, queued))
+	now := time.Now()
+	nothingWritten := func(t *testing.T, cycleID string) {
+		t.Helper()
+		if saved, err := store.Get[model.Cycle](s, "cycle", cycleID); err != nil || saved != nil {
+			t.Fatalf("refused cycle was saved: %+v %v", saved, err)
+		}
+		after, _, err := s.GetRaw("settings", "control")
+		must(t, err)
+		if string(after) != string(before) {
+			t.Fatalf("refusal changed control: %s", after)
+		}
+		saved, err := store.Get[model.Task](s, "task", queued.ID)
+		must(t, err)
+		if saved == nil || saved.RunID != nil {
+			t.Fatalf("refusal changed the queued task: %+v", saved)
+		}
+	}
+	next := live.Clone()
+	next.CycleNumber = 1
+	stale := live.Clone()
+	stale.CycleNumber = 99
+
+	for _, refusal := range []struct {
+		name        string
+		expected    model.Control
+		fingerprint string
+	}{
+		{"stale control", stale, fingerprint},
+		{"changed configuration", live, "stale-fingerprint"},
+	} {
+		t.Run(refusal.name, func(t *testing.T) {
+			cycle := cycleFor(queued)
+			capacity, started, err := s.BeginCycleIfAffordable(cycle, next, refusal.expected, refusal.fingerprint, now)
+			must(t, err)
+			if started || !capacity.Available() {
+				t.Fatalf("started=%v capacity=%+v", started, capacity)
+			}
+			nothingWritten(t, cycle.ID)
+		})
+	}
+
+	t.Run("stale batch control", func(t *testing.T) {
+		caller := stale.Clone()
+		_, started, err := s.StartBatchIfAffordable(&caller, now)
+		must(t, err)
+		if started || caller.CycleNumber != 99 || caller.Batch != nil || caller.Mode != stale.Mode {
+			t.Fatalf("started=%v caller=%+v", started, caller)
+		}
+		nothingWritten(t, "")
+	})
+
+	t.Run("unaffordable", func(t *testing.T) {
+		low := saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = c.PlanningAdmissionsRequired() - 1 })
+		lowFingerprint, err := low.Fingerprint()
+		must(t, err)
+		cycle := cycleFor(queued)
+		capacity, started, err := s.BeginCycleIfAffordable(cycle, next, live, lowFingerprint, now)
+		must(t, err)
+		if started || capacity.Status != model.PlanningCapacityStatusLimitTooLow {
+			t.Fatalf("started=%v capacity=%+v", started, capacity)
+		}
+		nothingWritten(t, cycle.ID)
+		caller := live.Clone()
+		capacity, started, err = s.StartBatchIfAffordable(&caller, now)
+		must(t, err)
+		if started || capacity.Available() || !equalJSON(t, caller, live) {
+			t.Fatalf("started=%v capacity=%+v caller=%+v", started, capacity, caller)
+		}
+		nothingWritten(t, "")
+		saveConfig(t, s, func(*config.Config) {})
+	})
+
+	// Matching inputs commit the cycle with its control, then the batch
+	// claims the queued task in the same transaction as the control write.
+	cycle := cycleFor(queued)
+	_, started, err := s.BeginCycleIfAffordable(cycle, next, live, fingerprint, now)
+	must(t, err)
+	if !started {
+		t.Fatal("matching inputs were refused")
+	}
+	if saved, err := store.Get[model.Cycle](s, "cycle", cycle.ID); err != nil || saved == nil {
+		t.Fatalf("started cycle missing: %v", err)
+	}
+	saved, err := store.Get[model.Control](s, "settings", "control")
+	must(t, err)
+	if !equalJSON(t, *saved, next) {
+		t.Fatalf("control = %s, want %s", canonical(t, *saved), canonical(t, next))
+	}
+	caller := next.Clone()
+	_, started, err = s.StartBatchIfAffordable(&caller, now)
+	must(t, err)
+	if !started || caller.Batch == nil || caller.Mode != model.OperatingModeRunOnce {
+		t.Fatalf("started=%v caller=%+v", started, caller)
+	}
+	member, err := store.Get[model.Task](s, "task", queued.ID)
+	must(t, err)
+	if member.RunID == nil || *member.RunID != caller.Batch.ID {
+		t.Fatalf("queued task run_id = %v, want %s", member.RunID, caller.Batch.ID)
+	}
+	saved, err = store.Get[model.Control](s, "settings", "control")
+	must(t, err)
+	if !equalJSON(t, *saved, caller) {
+		t.Fatalf("control = %s, want %s", canonical(t, *saved), canonical(t, caller))
 	}
 }

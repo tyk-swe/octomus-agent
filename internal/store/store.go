@@ -14,9 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
-	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +23,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	_ "modernc.org/sqlite"
 )
-
-// WebhookEnv names the notification destination variable; its value is a secret.
-const WebhookEnv = "OCTOMUS_NOTIFICATION_WEBHOOK_URL"
 
 // Admission is a budget admission, not a completed turn or a provider charge.
 type Admission struct {
@@ -76,9 +70,11 @@ type Store struct {
 	path string
 }
 
-// dsn builds a SQLite URI for path with the connection settings every physical
-// connection needs. The driver applies `_pragma` values on each connect, so a
-// replaced connection can never run without the busy timeout, WAL or FULL sync.
+// dsn builds a SQLite URI for path. Only params (the busy timeout, and the
+// read-only mode for reporting) apply on every connect; journal_mode=WAL
+// persists in the file, and synchronous=FULL is set once on the pinned
+// connection after the schema check, which is why the store never replaces
+// its connection.
 func dsn(path string, params string) string {
 	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(path)
 	return "file:" + escaped + "?" + params
@@ -269,14 +265,17 @@ func (s *Store) CommitPlan(cycle model.Cycle, tasks []model.Task) error {
 				return err
 			}
 		}
+		// Control is read once and written once at the end; nothing else in
+		// this transaction touches it.
 		var control model.Control
-		if found, err := txGet(c, "settings", "control", &control); err != nil {
+		hasControl, err := txGet(c, "settings", "control", &control)
+		if err != nil {
 			return err
-		} else if found && control.Batch != nil && cycle.RunID != nil && *cycle.RunID == control.Batch.ID && control.Batch.CycleID != nil && *control.Batch.CycleID == cycle.ID {
+		}
+		controlChanged := false
+		if hasControl && control.Batch != nil && cycle.RunID != nil && *cycle.RunID == control.Batch.ID && control.Batch.CycleID != nil && *control.Batch.CycleID == cycle.ID {
 			control.Batch.Phase = model.BatchPhaseExecuting
-			if err := txPut(c, "settings", "control", control); err != nil {
-				return err
-			}
+			controlChanged = true
 		}
 		for _, task := range tasks {
 			for _, oldID := range task.Supersedes {
@@ -319,10 +318,7 @@ func (s *Store) CommitPlan(cycle model.Cycle, tasks []model.Task) error {
 					}
 				}
 			}
-			var control model.Control
-			if found, err := txGet(c, "settings", "control", &control); err != nil {
-				return err
-			} else if found {
+			if hasControl {
 				if len(tasks) == 0 {
 					if control.IdleStreak < ^uint32(0) {
 						control.IdleStreak++
@@ -330,10 +326,11 @@ func (s *Store) CommitPlan(cycle model.Cycle, tasks []model.Task) error {
 				} else {
 					control.IdleStreak = 0
 				}
-				if err := txPut(c, "settings", "control", control); err != nil {
-					return err
-				}
+				controlChanged = true
 			}
+		}
+		if controlChanged {
+			return txPut(c, "settings", "control", control)
 		}
 		return nil
 	})
@@ -422,7 +419,13 @@ func List[T any](s *Store, kind string) ([]T, error) {
 func (s *Store) Event(entity, kind, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.conn.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, Redact(message))
+	return txEvent(s.conn, entity, kind, message)
+}
+
+// txEvent appends a redacted event on a caller-owned connection or
+// transaction, so every event path applies the same redaction.
+func txEvent(c *sql.Conn, entity, kind, message string) error {
+	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, Redact(message))
 	return err
 }
 
@@ -430,7 +433,13 @@ func (s *Store) Event(entity, kind, message string) error {
 func (s *Store) Events(entity *string) ([]model.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.conn.QueryContext(background, "SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1) ORDER BY id DESC LIMIT 200", entity)
+	return queryEvents(s.conn, "SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1) ORDER BY id DESC LIMIT 200", entity)
+}
+
+// queryEvents scans id, at, entity_id, kind and message rows. The result is
+// never nil, so an empty list still serializes as [].
+func queryEvents(c *sql.Conn, query string, args ...any) ([]model.Event, error) {
+	rows, err := c.QueryContext(background, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -506,15 +515,22 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 func (s *Store) SessionsToday() (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var sessions int64
-	err := s.conn.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", model.Today()).Scan(&sessions)
-	if err == sql.ErrNoRows {
-		return 0, nil
-	}
+	sessions, err := sessionsOn(s.conn, model.Today())
 	if err != nil {
 		return 0, err
 	}
 	return uint64(sessions), nil
+}
+
+// sessionsOn reads the admission counter for one UTC day; a day without a
+// usage row has admitted nothing.
+func sessionsOn(c *sql.Conn, day string) (int64, error) {
+	var sessions int64
+	err := c.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", day).Scan(&sessions)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return sessions, err
 }
 
 // PlanningCapacity reports whether today's remaining budget funds a planning cycle.
@@ -538,12 +554,7 @@ func planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCapacity, erro
 	if err != nil {
 		return model.PlanningCapacity{}, err
 	}
-	var used int64
-	err = c.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", day).Scan(&used)
-	if err == sql.ErrNoRows {
-		used = 0
-		err = nil
-	}
+	used, err := sessionsOn(c, day)
 	if err != nil {
 		return model.PlanningCapacity{}, err
 	}
@@ -665,22 +676,6 @@ func queryStrings(c *sql.Conn, query string, args ...any) ([][]byte, error) {
 
 // decodeJSON reads saved JSON with exact numbers; generic destinations receive
 // json.Number rather than float64 so re-encoding preserves the saved spelling.
-// RedactedValue serializes a typed export, decodes it as generic JSON (numbers
-// kept verbatim) and scrubs every string in place. Exports use it so redaction
-// happens after the facts are computed from the saved records.
-func RedactedValue(value any) (map[string]any, error) {
-	data, err := wirejson.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	var generic map[string]any
-	if err := decodeJSON(data, &generic); err != nil {
-		return nil, err
-	}
-	RedactJSON(generic)
-	return generic, nil
-}
-
 func decodeJSON(data []byte, dst any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -693,212 +688,9 @@ func decodeJSON(data []byte, dst any) error {
 	return nil
 }
 
-// ErrorMessage renders an error for an operator, with secrets scrubbed. Errors
-// reach operators through saved records and API responses, so every stored
-// error message is built here rather than formatted at each site.
-func ErrorMessage(err error) string { return Redact(err.Error()) }
-
 // StorageLimitError is the refusal an admission gets when the workspace already
 // holds more bytes than the configured limit allows. Shared by task admission
 // and the baseline check.
 func StorageLimitError(measuredBytes uint64) error {
 	return fmt.Errorf("Workspace storage limit reached (%d bytes). Resolve retained tasks or increase the limit: %w", measuredBytes, model.BlockedReasonStorageLimit)
-}
-
-// Whitespace includes Unicode White_Space, TAB–CR and NEL.
-// Go's \s is ASCII-only, so use the equivalent class in every whitespace match.
-const tokenWhitespace = `\p{Z}\x{0009}-\x{000D}\x{0085}`
-
-var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-Za-z0-9._~+/=-]+|(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]{10,}|[a-z]+://[^` + tokenWhitespace + `/@]+:[^` + tokenWhitespace + `/@]+@`)
-
-var (
-	secretsOnce sync.Once
-	secrets     []string
-)
-
-func environmentSecrets() []string {
-	secretsOnce.Do(func() {
-		for _, entry := range os.Environ() {
-			key, value, ok := strings.Cut(entry, "=")
-			if !ok || len(value) < 8 {
-				continue
-			}
-			if key == WebhookEnv || strings.Contains(key, "TOKEN") || strings.Contains(key, "SECRET") || strings.Contains(key, "PASSWORD") || strings.Contains(key, "API_KEY") {
-				secrets = append(secrets, value)
-			}
-		}
-	})
-	return secrets
-}
-
-// RedactSecrets scrubs tokens and secret-bearing environment values without any
-// length limit. Persisted results must be bounded by the caller so shortening is
-// always flagged.
-func RedactSecrets(input string) string {
-	s := tokenPattern.ReplaceAllString(input, "[redacted]")
-	for _, value := range environmentSecrets() {
-		s = strings.ReplaceAll(s, value, "[redacted]")
-	}
-	return s
-}
-
-// displayTextLimit bounds every string a dashboard display value can carry,
-// counted in characters on a rune boundary.
-const displayTextLimit = 16384
-
-// boundDisplayText shortens text to the display limit, cutting on a rune
-// boundary, and reports whether anything was dropped.
-func boundDisplayText(s string) (string, bool) {
-	count := 0
-	for i := range s {
-		if count == displayTextLimit {
-			return s[:i], true
-		}
-		count++
-	}
-	return s, false
-}
-
-// displayString applies the display transformation to one string and reports
-// the kinds applied: "redacted" for secret scrubbing, "shortened" for the
-// display length bound.
-func displayString(s string) (string, []string) {
-	kinds := []string{}
-	redacted := RedactSecrets(s)
-	if redacted != s {
-		kinds = append(kinds, "redacted")
-	}
-	display, shortened := boundDisplayText(redacted)
-	if shortened {
-		kinds = append(kinds, "shortened")
-	}
-	return display, kinds
-}
-
-// Redact scrubs secrets and bounds the text to the display character limit.
-func Redact(input string) string {
-	s, _ := displayString(input)
-	return s
-}
-
-// DisplayTransform records every string inside one top-level field whose
-// display value differs from the canonical saved value, so an operator can
-// tell a display preview from the stored original. Each path is a structured
-// segment list — strings for object keys, numbers for array indices — so
-// callers walk it directly rather than re-parsing a formatted path.
-type DisplayTransform struct {
-	Field string   `json:"field"`
-	Kinds []string `json:"kinds"`
-	Paths [][]any  `json:"paths"`
-}
-
-// comparePathSegments orders structured display paths deterministically;
-// object keys sort before array indices at the same position.
-func comparePathSegments(a, b []any) int {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		ak, aKey := a[i].(string)
-		bk, bKey := b[i].(string)
-		switch {
-		case aKey && bKey:
-			if order := strings.Compare(ak, bk); order != 0 {
-				return order
-			}
-		case aKey:
-			return -1
-		case bKey:
-			return 1
-		default:
-			ai, _ := a[i].(int)
-			bi, _ := b[i].(int)
-			if ai != bi {
-				return ai - bi
-			}
-		}
-	}
-	return len(a) - len(b)
-}
-
-// DisplayJSON returns the display-safe form of a generic JSON object: every
-// string passes through the same redaction and length bound as RedactJSON,
-// and each altered string is reported by field, kind and structured JSON
-// path. The result is display data only; it must never be treated as
-// canonical executable configuration.
-func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
-	transforms := map[string]*DisplayTransform{}
-	var walk func(value any, path []any, field string) any
-	walk = func(value any, path []any, field string) any {
-		switch v := value.(type) {
-		case string:
-			display, kinds := displayString(v)
-			if len(kinds) == 0 {
-				return display
-			}
-			entry := transforms[field]
-			if entry == nil {
-				entry = &DisplayTransform{Field: field, Kinds: []string{}, Paths: [][]any{}}
-				transforms[field] = entry
-			}
-			for _, kind := range kinds {
-				if !slices.Contains(entry.Kinds, kind) {
-					entry.Kinds = append(entry.Kinds, kind)
-				}
-			}
-			entry.Paths = append(entry.Paths, path)
-			return display
-		case []any:
-			for i := range v {
-				v[i] = walk(v[i], append(slices.Clone(path), i), field)
-			}
-			return v
-		case map[string]any:
-			keys := make([]string, 0, len(v))
-			for key := range v {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				v[key] = walk(v[key], append(slices.Clone(path), key), field)
-			}
-			return v
-		default:
-			return value
-		}
-	}
-	fields := make([]string, 0, len(object))
-	for field := range object {
-		fields = append(fields, field)
-	}
-	sort.Strings(fields)
-	for _, field := range fields {
-		object[field] = walk(object[field], []any{field}, field)
-	}
-	result := []DisplayTransform{}
-	for _, field := range fields {
-		if entry := transforms[field]; entry != nil {
-			sort.Strings(entry.Kinds)
-			slices.SortFunc(entry.Paths, comparePathSegments)
-			result = append(result, *entry)
-		}
-	}
-	return object, result
-}
-
-// RedactJSON scrubs every string inside a generic JSON value in place.
-func RedactJSON(value any) any {
-	switch v := value.(type) {
-	case string:
-		return Redact(v)
-	case []any:
-		for i := range v {
-			v[i] = RedactJSON(v[i])
-		}
-		return v
-	case map[string]any:
-		for k := range v {
-			v[k] = RedactJSON(v[k])
-		}
-		return v
-	default:
-		return value
-	}
 }

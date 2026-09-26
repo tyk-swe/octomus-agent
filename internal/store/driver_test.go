@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -120,6 +121,39 @@ func TestReadOnlySnapshotIsConsistentAndIncludesWAL(t *testing.T) {
 	}))
 	if _, err := os.Stat(path + "-journal"); !os.IsNotExist(err) {
 		t.Fatal("read-only access created a rollback journal")
+	}
+}
+
+// --usage-report and --export-run rely on OpenReadOnly being a real
+// SQLITE_OPEN_READONLY handle. URI metacharacters in the data directory must
+// not strip mode=ro or send the open to a different path.
+func TestReadOnlyConnectionRefusesWrites(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "state dir ?#%25")
+	must(t, os.MkdirAll(dir, 0o700))
+	path := filepath.Join(dir, "state.db")
+	s := open(t, path)
+	must(t, s.Put("x", "a", 1))
+	r, err := store.OpenReadOnly(path, "probe")
+	must(t, err)
+	defer r.Close()
+	var seen int64
+	must(t, r.Conn.QueryRowContext(store.Background(), "SELECT count(*) FROM records WHERE kind='x'").Scan(&seen))
+	if seen != 1 {
+		t.Fatalf("read-only handle sees %d records; it opened a different database", seen)
+	}
+	_, err = r.Conn.ExecContext(store.Background(), "INSERT INTO records VALUES ('x','ro','1')")
+	if err == nil || !strings.Contains(err.Error(), "readonly") {
+		t.Fatalf("read-only write error = %v", err)
+	}
+	must(t, s.Put("x", "b", 2))
+	if found, err := s.Get("x", "ro", new(any)); err != nil || found {
+		t.Fatalf("read-only write landed: found=%v err=%v", found, err)
+	}
+	entries, err := os.ReadDir(parent)
+	must(t, err)
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(dir) {
+		t.Fatalf("opening created stray paths: %v", entries)
 	}
 }
 
