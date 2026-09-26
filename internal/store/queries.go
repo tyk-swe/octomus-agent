@@ -329,29 +329,33 @@ func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([
 		if err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var id string
-			var title, key sql.NullString
-			if err := rows.Scan(&id, &title, &key); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			if !title.Valid {
-				rows.Close()
-				return nil, fmt.Errorf("Task %s has no saved proposal title", id)
-			}
-			saved := model.ProblemIdentity(title.String, key.String)
-			for _, proposed := range identities {
-				if equalASCIIFold(strings.TrimSpace(title.String), proposed.title) || saved == proposed.identity {
-					if _, dup := found[id]; !dup {
-						found[id] = struct{}{}
-						ids = append(ids, id)
+		// rows.Err, not a later rows.Close, reports a step error: Next closes
+		// the rows when it fails, and Close then returns nil.
+		err = func() error {
+			defer rows.Close()
+			for rows.Next() {
+				var id string
+				var title, key sql.NullString
+				if err := rows.Scan(&id, &title, &key); err != nil {
+					return err
+				}
+				if !title.Valid {
+					return fmt.Errorf("Task %s has no saved proposal title", id)
+				}
+				saved := model.ProblemIdentity(title.String, key.String)
+				for _, proposed := range identities {
+					if equalASCIIFold(strings.TrimSpace(title.String), proposed.title) || saved == proposed.identity {
+						if _, dup := found[id]; !dup {
+							found[id] = struct{}{}
+							ids = append(ids, id)
+						}
+						break
 					}
-					break
 				}
 			}
-		}
-		if err := rows.Close(); err != nil {
+			return rows.Err()
+		}()
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -553,20 +557,7 @@ func (s *Store) Dashboard() (Dashboard, error) {
 	var result Dashboard
 	err := s.transaction(false, func(c *sql.Conn) error {
 		result.Counts = map[string]int64{}
-		rows, err := c.QueryContext(background, fmt.Sprintf("SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN (%s) OR archived=0) GROUP BY status HAVING sum(count)>0", statusList(model.AttentionStatuses())))
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var status string
-			var count int64
-			if err := rows.Scan(&status, &count); err != nil {
-				rows.Close()
-				return err
-			}
-			result.Counts[status] = count
-		}
-		if err := rows.Close(); err != nil {
+		if err := statusCounts(c, result.Counts); err != nil {
 			return err
 		}
 		hundred := 100
@@ -645,6 +636,25 @@ func (s *Store) Dashboard() (Dashboard, error) {
 		return nil
 	})
 	return result, err
+}
+
+// statusCounts adds the dashboard's task count per status to counts: archived
+// tasks count only outside the attention statuses.
+func statusCounts(c *sql.Conn, counts map[string]int64) error {
+	rows, err := c.QueryContext(background, fmt.Sprintf("SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN (%s) OR archived=0) GROUP BY status HAVING sum(count)>0", statusList(model.AttentionStatuses())))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int64
+		if err := rows.Scan(&status, &count); err != nil {
+			return err
+		}
+		counts[status] = count
+	}
+	return rows.Err()
 }
 
 func summaryID(item json.RawMessage) string {
