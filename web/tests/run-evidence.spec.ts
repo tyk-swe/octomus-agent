@@ -26,6 +26,12 @@ import {
   trackWrites
 } from './synthetic';
 
+// A poll can still be inside a route handler when a test ends; closing the page then
+// disposes its response. That teardown error says nothing about the test's result.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
 test('inspect run reports recorded reviewer roles, review, checks and delivery, then hands off to the task', async ({
   page
 }) => {

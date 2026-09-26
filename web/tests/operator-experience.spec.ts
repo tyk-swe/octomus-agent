@@ -13,6 +13,12 @@ import type {
 } from '../src/lib/types';
 import { login, openNavigation, token, trackWrites } from './synthetic';
 
+// A poll can still be inside a route handler when a test ends; closing the page then
+// disposes its response. That teardown error says nothing about the test's result.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => (resolve = done));
