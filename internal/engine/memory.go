@@ -236,9 +236,9 @@ func recordToMap(record decisionRecord) map[string]any {
 	return value
 }
 
-// ValidateDecisionMemory prevents unchanged rejected or already accepted work
+// validateDecisionMemory prevents unchanged rejected or already accepted work
 // from silently re-entering the executable queue.
-func ValidateDecisionMemory(proposals []model.Proposal, memory decisionMemory) error {
+func validateDecisionMemory(proposals []model.Proposal, memory decisionMemory) error {
 	requests := map[string]string{}
 	for _, request := range memory.requests {
 		if request.ID != "" {

@@ -1115,6 +1115,43 @@ func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
 	}
 }
 
+// Discovery refuses candidates that repeat an identity or leave one empty
+// before any adversarial review runs, so review and consolidation always
+// receive unique candidate identities.
+func TestDiscoveryRefusesDuplicateOrEmptyProposalIdentities(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ids  []string
+		want string
+	}{
+		{"duplicate", []string{"d0-feature", "d0-feature"}, `Discovery returned a duplicate proposal identity "d0-feature"`},
+		{"empty", []string{" "}, "Discovery returned an empty proposal identity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			plan := completePlan(t, fixture)
+			for i, id := range tc.ids {
+				proposal := fixtureProposal("candidate", "Delivers the documented feature.")
+				proposal["id"] = id
+				plan.discovery[i] = runnertest.Reply{Answer: mustJSON(t, map[string]any{"proposals": []any{proposal}})}
+			}
+			plan.queue(fixture)
+			app := fixture.pausedApp(t)
+			cycleID, err := app.StartAudit(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cycle := waitCycle(t, fixture.state, cycleID)
+			if cycle.Status != model.CycleFailed || optionalText(cycle.Error) != tc.want {
+				t.Fatalf("audit status=%s error=%s; want failed with %q", cycle.Status, optionalText(cycle.Error), tc.want)
+			}
+			if reviews := fixture.script.Turns(fixture.routes.ProposalReviewer); len(reviews) != 0 {
+				t.Fatalf("%d adversarial reviews ran after discovery failed", len(reviews))
+			}
+		})
+	}
+}
+
 // Grounding answers with a structured envelope; every later stage receives
 // the summary text itself, not its escaped JSON. A blank summary fails the
 // pass before any discovery session is admitted.

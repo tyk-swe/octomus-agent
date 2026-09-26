@@ -165,7 +165,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if err := ValidateProposals(cfg, proposals, *cycle.Grounding, history); err != nil {
 		return err
 	}
-	if err := ValidateDecisionMemory(proposals, memory); err != nil {
+	if err := validateDecisionMemory(proposals, memory); err != nil {
 		return err
 	}
 	if cycle.Mode == model.CycleModeExecution {
@@ -549,13 +549,11 @@ func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.C
 }
 
 // checkConsolidation requires the orchestrator to return every original
-// candidate exactly once and to invent none.
+// candidate exactly once and to invent none. Candidate identities are unique:
+// discover refuses duplicates, and review leaves the candidates unchanged.
 func checkConsolidation(candidates, returned []model.Proposal) error {
 	want := make(map[string]struct{}, len(candidates))
 	for _, proposal := range candidates {
-		if _, exists := want[proposal.ID]; exists {
-			return fmt.Errorf("Discovery returned duplicate proposal IDs: %q", proposal.ID)
-		}
 		want[proposal.ID] = struct{}{}
 	}
 	seen := make(map[string]struct{}, len(returned))

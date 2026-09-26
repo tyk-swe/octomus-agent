@@ -156,7 +156,6 @@ func TestConsolidationNamesTheOffendingProposal(t *testing.T) {
 	if err := checkConsolidation(candidates, []model.Proposal{{ID: "b"}, {ID: "a"}}); err != nil {
 		t.Fatalf("complete consolidation rejected: %v", err)
 	}
-	assertErrorNames(t, checkConsolidation([]model.Proposal{{ID: "a"}, {ID: "a"}}, nil), `duplicate proposal IDs: "a"`)
 }
 
 func TestDecisionMemoryAndRediscoveryNameTheOffendingProposal(t *testing.T) {
@@ -168,9 +167,9 @@ func TestDecisionMemoryAndRediscoveryNameTheOffendingProposal(t *testing.T) {
 		p.Reconsiders = requests
 		return p
 	}
-	assertErrorNames(t, ValidateDecisionMemory([]model.Proposal{reconsidering(cfg.DefaultBranch, "request-2")}, pending),
+	assertErrorNames(t, validateDecisionMemory([]model.Proposal{reconsidering(cfg.DefaultBranch, "request-2")}, pending),
 		"does not match a pending request", `proposal "a" reconsiders "request-2", which is not pending`)
-	assertErrorNames(t, ValidateDecisionMemory([]model.Proposal{reconsidering("octomus/existing", "request-1")}, pending),
+	assertErrorNames(t, validateDecisionMemory([]model.Proposal{reconsidering("octomus/existing", "request-1")}, pending),
 		"does not match a pending request", `proposal "a" targets "octomus/existing" but request "request-1" targets "main"`)
 
 	accepted := proposal("a", cfg.DefaultBranch)
@@ -180,7 +179,7 @@ func TestDecisionMemoryAndRediscoveryNameTheOffendingProposal(t *testing.T) {
 		Decision: model.DecisionRejected, Reason: "Current decision", SourceRevision: "revision",
 		ContextFingerprint: "revision", ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: "cycle-1",
 	}
-	assertErrorNames(t, ValidateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{recorded}}),
+	assertErrorNames(t, validateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{recorded}}),
 		"repeats a current recorded decision", `(proposal "a", decision "cycle-1:a")`)
 
 	requests := []rediscoveryRequest{request}

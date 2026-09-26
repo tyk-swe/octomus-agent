@@ -86,7 +86,7 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	if err := ValidateProposals(cfg, keyed, model.Grounding{}, nil); err != nil {
 		t.Fatalf("long rejected title with a short key: %v", err)
 	}
-	if err := ValidateDecisionMemory(keyed, decisionMemory{}); err != nil {
+	if err := validateDecisionMemory(keyed, decisionMemory{}); err != nil {
 		t.Fatalf("long rejected title with a short key: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	if err := ValidateProposals(cfg, fallback, model.Grounding{}, nil); err != nil {
 		t.Fatalf("rejected proposals carry no title bound: %v", err)
 	}
-	err := ValidateDecisionMemory(fallback, decisionMemory{})
+	err := validateDecisionMemory(fallback, decisionMemory{})
 	if err == nil || !strings.Contains(err.Error(), `"d1-long"`) || !strings.Contains(err.Error(), "problem identity is 270 bytes") || !strings.Contains(err.Error(), "exceeds bounds") {
 		t.Fatalf("title-derived identity bound = %v; want the proposal, field and size", err)
 	}
@@ -103,7 +103,7 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	for i := 0; i < 41; i++ {
 		paths.RelevantPaths = append(paths.RelevantPaths, fmt.Sprintf("file-%d.go", i))
 	}
-	if err := ValidateDecisionMemory(normalized(paths), decisionMemory{}); err == nil || !strings.Contains(err.Error(), `"d1-paths"`) || !strings.Contains(err.Error(), "41 relevant_paths") {
+	if err := validateDecisionMemory(normalized(paths), decisionMemory{}); err == nil || !strings.Contains(err.Error(), `"d1-paths"`) || !strings.Contains(err.Error(), "41 relevant_paths") {
 		t.Fatalf("relevant_paths bound = %v; want the proposal and field", err)
 	}
 
@@ -111,7 +111,7 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	for i := 0; i < 101; i++ {
 		reconsiders.Reconsiders = append(reconsiders.Reconsiders, fmt.Sprintf("task-%d", i))
 	}
-	if err := ValidateDecisionMemory(normalized(reconsiders), decisionMemory{}); err == nil || !strings.Contains(err.Error(), `"d1-reconsiders"`) || !strings.Contains(err.Error(), "101 reconsiders") {
+	if err := validateDecisionMemory(normalized(reconsiders), decisionMemory{}); err == nil || !strings.Contains(err.Error(), `"d1-reconsiders"`) || !strings.Contains(err.Error(), "101 reconsiders") {
 		t.Fatalf("reconsiders bound = %v; want the proposal and field", err)
 	}
 }
