@@ -20,6 +20,22 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
+const (
+	// retentionInterval and observeInterval pace the housekeeping passes.
+	retentionInterval = 15 * time.Minute
+	observeInterval   = 5 * time.Minute
+	// observationLifetime is how long a remote observation (open-PR inventory
+	// or default-branch revision) stays fresh for the dashboard. Each is
+	// stamped only after its pass's earlier steps (retention, the storage walk,
+	// the PR refresh), so a lifetime equal to observeInterval let a healthy
+	// service flip to stale while the next, slower pass was still running.
+	// Dispatch authority is separate and shorter (prAdmissionLifetime).
+	observationLifetime = 2 * observeInterval
+	// maxRetainDays is the configured retain_completed_days maximum; retention
+	// clamps to it so an unvalidated value cannot overflow the cutoff duration.
+	maxRetainDays = 36500
+)
+
 type storageUsage struct {
 	MeasuredAt        string         `json:"measured_at"`
 	ApplicationBytes  uint64         `json:"application_bytes"`
@@ -37,8 +53,8 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 		a.runtimeMu.Unlock()
 		return
 	}
-	cleanup := a.runtime.lastRetention.IsZero() || now.Sub(a.runtime.lastRetention) >= 15*time.Minute
-	observe := a.runtime.lastObserve.IsZero() || now.Sub(a.runtime.lastObserve) >= 5*time.Minute
+	cleanup := a.runtime.lastRetention.IsZero() || now.Sub(a.runtime.lastRetention) >= retentionInterval
+	observe := a.runtime.lastObserve.IsZero() || now.Sub(a.runtime.lastObserve) >= observeInterval
 	if !cleanup && !observe {
 		a.runtimeMu.Unlock()
 		return
@@ -59,20 +75,28 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 			a.runtime.housekeeping = false
 			a.runtimeMu.Unlock()
 		}()
-		if cleanup {
-			if err := a.retention(cfg); err != nil {
+		// Retention, the storage walk and the remote observation are
+		// independent: a failed step is reported and the later steps still
+		// run. Once the service is stopping, the remaining steps are obsolete:
+		// the pass ends at the next step boundary, and an interrupted step's
+		// cancellation is not a housekeeping failure.
+		report := func(err error) {
+			if err != nil && a.ctx.Err() == nil {
 				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
-				return
-			}
-			if err := a.measureStorage(cfg); err != nil {
-				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
-				return
 			}
 		}
-		if stat, err := os.Stat(cfg.Repository); observe && cfg.GitHubRepo != "" && err == nil && stat.IsDir() {
-			if err := a.observeRemote(a.ctx, cfg); err != nil {
-				_ = a.Store.Event("system", "housekeeping_error", store.ErrorMessage(err))
+		if cleanup {
+			report(a.retention(cfg))
+			if a.ctx.Err() != nil {
+				return
 			}
+			report(a.measureStorage(cfg))
+		}
+		if a.ctx.Err() != nil {
+			return
+		}
+		if stat, err := os.Stat(cfg.Repository); observe && cfg.GitHubRepo != "" && err == nil && stat.IsDir() {
+			report(a.observeRemote(a.ctx, cfg))
 		}
 	}()
 }
@@ -82,8 +106,8 @@ func (a *App) retention(cfg config.Config) error {
 		return err
 	}
 	days := cfg.RetainCompletedDays
-	if days > 36500 {
-		days = 36500
+	if days > maxRetainDays {
+		days = maxRetainDays
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
 	checks, err := a.Store.BaselineCleanupCandidates()
@@ -103,7 +127,7 @@ func (a *App) retention(cfg config.Config) error {
 		active := a.runtime.baseline != nil && a.runtime.baseline.id == check.ID
 		a.runtimeMu.Unlock()
 		a.gate.Unlock()
-		if loadErr == nil && terminal && !active && current != nil {
+		if loadErr == nil && terminal && !active {
 			loadErr = a.CleanupBaseline(current)
 		}
 		if loadErr != nil {
@@ -112,8 +136,8 @@ func (a *App) retention(cfg config.Config) error {
 			}
 		}
 	}
-	for _, kind := range []string{"task", "cycle"} {
-		ids, err := a.Store.CleanupCandidates(kind, cutoff)
+	for _, kind := range []cleanupKind{cleanupTask, cleanupCycle} {
+		ids, err := a.Store.CleanupCandidates(string(kind), cutoff)
 		if err != nil {
 			return err
 		}
@@ -122,24 +146,7 @@ func (a *App) retention(cfg config.Config) error {
 				return nil
 			}
 			a.gate.Lock()
-			if kind == "task" {
-				task, loadErr := store.Get[model.Task](a.Store, kind, id)
-				if loadErr == nil && task != nil {
-					a.runtimeMu.Lock()
-					_, running := a.runtime.tasks[id]
-					a.runtimeMu.Unlock()
-					if !task.Status.Active() && !running {
-						loadErr = a.DiscardTask(task)
-					}
-				}
-				err = loadErr
-			} else {
-				cycle, loadErr := store.Get[model.Cycle](a.Store, kind, id)
-				if loadErr == nil && cycle != nil && cycle.Status != model.CycleRunning {
-					loadErr = a.DiscardCycle(cycle)
-				}
-				err = loadErr
-			}
+			err := a.retainCandidateLocked(kind, id)
 			a.gate.Unlock()
 			// A conflict means another cleanup already owns this target —
 			// success in progress, not a cleanup failure to report.
@@ -151,6 +158,31 @@ func (a *App) retention(cfg config.Config) error {
 		}
 	}
 	return nil
+}
+
+// retainCandidateLocked discards one task or cycle retention candidate if it
+// is still eligible. The candidate list was read without the gate: the re-read
+// under it skips a record the operator discarded meanwhile, so its
+// discarded_at is never rewritten. Callers hold the gate.
+func (a *App) retainCandidateLocked(kind cleanupKind, id string) error {
+	if kind == cleanupTask {
+		task, err := store.Get[model.Task](a.Store, "task", id)
+		if err != nil || task == nil || task.Lifecycle.DiscardedAt != nil {
+			return err
+		}
+		a.runtimeMu.Lock()
+		_, running := a.runtime.tasks[id]
+		a.runtimeMu.Unlock()
+		if task.Status.Active() || running {
+			return nil
+		}
+		return a.DiscardTask(task)
+	}
+	cycle, err := store.Get[model.Cycle](a.Store, "cycle", id)
+	if err != nil || cycle == nil || cycle.Lifecycle.DiscardedAt != nil || cycle.Status == model.CycleRunning {
+		return err
+	}
+	return a.DiscardCycle(cycle)
 }
 
 // cleanupKind names the durable entity kind a cleanup claim owns. Each kind
@@ -180,9 +212,6 @@ type cleanupKey struct {
 func (a *App) claimCleanup(kind cleanupKind, id string) bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
-	if a.runtime.cleanups == nil {
-		a.runtime.cleanups = map[cleanupKey]struct{}{}
-	}
 	key := cleanupKey{kind: kind, id: id}
 	if _, owned := a.runtime.cleanups[key]; owned {
 		return false
@@ -355,7 +384,9 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if err := gitops.ValidateRemote(ctx, cfg); err != nil {
 		return err
 	}
-	if err := a.refreshPRs(ctx, cfg); err != nil {
+	// A superseded refresh means a concurrent one saved a newer complete
+	// inventory first; the observation continues with that saved inventory.
+	if err := a.refreshPRs(ctx, cfg); err != nil && !errors.Is(err, errPrInventorySuperseded) {
 		return err
 	}
 	inventory, err := a.Store.OpenPrInventory()
@@ -413,12 +444,9 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if revision != nil {
 		revisionValue = *revision
 	}
-	fingerprint := ContextFingerprint(revisionValue, inventory.PRs)
-	if revisionValue != "" {
-		if err := a.observeDefaultBranch(cfg, revisionValue, observedAt); err != nil {
-			return err
-		}
-	}
+	fingerprint := contextFingerprint(revisionValue, inventory.PRs)
+	// One gate section commits the whole observation. A configuration that no
+	// longer describes the observed remote makes it obsolete, not failed.
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	live, err := a.Config()
@@ -427,6 +455,11 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	}
 	if !live.SameRemoteIdentity(cfg) {
 		return nil
+	}
+	if revisionValue != "" {
+		if err := a.mergeDefaultObservationLocked(cfg, revisionValue, observedAt); err != nil {
+			return err
+		}
 	}
 	for _, pr := range closed {
 		if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
@@ -437,9 +470,17 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	applyContextFingerprint(&control, fingerprint, time.Now(), cfg.CycleIntervalSeconds)
+	return a.Store.SaveControl(control)
+}
+
+// applyContextFingerprint records the observed remote context. A change from
+// the previously observed context ends the idle streak and pulls a backed-off
+// next cycle forward to the ordinary interval from now.
+func applyContextFingerprint(control *model.Control, fingerprint string, now time.Time, interval uint64) {
 	if control.ContextFingerprint != "" && control.ContextFingerprint != fingerprint {
 		if control.IdleStreak > 1 {
-			ordinary := time.Now().Unix() + int64(cfg.CycleIntervalSeconds)
+			ordinary := now.Unix() + int64(interval)
 			if control.NextCycleAt > ordinary {
 				control.NextCycleAt = ordinary
 			}
@@ -447,10 +488,9 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 		control.IdleStreak = 0
 	}
 	control.ContextFingerprint = fingerprint
-	return a.Store.SaveControl(control)
 }
 
-func ContextFingerprint(revision string, prs []model.PullRequest) string {
+func contextFingerprint(revision string, prs []model.PullRequest) string {
 	parts := make([]string, 0, len(prs))
 	for _, pr := range prs {
 		parts = append(parts, fmt.Sprintf("%d:%s:%s:%s", pr.Number, pr.Head, pr.Base, pr.State))

@@ -21,7 +21,6 @@ import (
 const (
 	baselineCommandOutputLimit   = 16 * 1024
 	baselineAggregateOutputLimit = 1024 * 1024
-	observationFreshSeconds      = 300
 )
 
 // BaselineConflict is an operator-visible HTTP 409 conflict:
@@ -215,13 +214,13 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 		return nil, err
 	}
 	check := model.BaselineCheck{
-		ID:        model.ID(),
-		Status:    model.BaselineStatusRunning,
-		Config:    live.Clone(),
-		StartedAt: model.Now(),
-		Commands:  []model.BaselineCommand{},
+		ID:                model.ID(),
+		Status:            model.BaselineStatusRunning,
+		Config:            live.Clone(),
+		ConfigFingerprint: fingerprint,
+		StartedAt:         model.Now(),
+		Commands:          []model.BaselineCommand{},
 	}
-	check.ConfigFingerprint = fingerprint
 	if err := a.Store.Put("baseline", check.ID, check); err != nil {
 		return nil, err
 	}
@@ -236,7 +235,7 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 	go func() {
 		defer a.wg.Done()
 		defer cancel()
-		a.baselineWorker(check.ID, ctx)
+		a.baselineWorker(ctx, check.ID)
 	}()
 	return &check, nil
 }
@@ -292,8 +291,8 @@ func (a *App) BaselineRevisionStatus(check *model.BaselineCheck, live config.Con
 	}
 	fresh := false
 	if at, err := time.Parse(time.RFC3339Nano, observation.ObservedAt); err == nil {
-		age := time.Since(at).Seconds()
-		fresh = age >= 0 && age <= observationFreshSeconds
+		age := time.Since(at)
+		fresh = age >= 0 && age <= observationLifetime
 	}
 	sameTarget := observation.Describes(check.Config)
 	switch {
@@ -339,6 +338,11 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 	a.runtimeMu.Lock()
 	observation := a.runtime.defaultObservation
 	a.runtimeMu.Unlock()
+	// An observation of another repository or branch (the configuration
+	// changed since it was made) says nothing about the live target.
+	if observation != nil && !observation.Describes(live) {
+		observation = nil
+	}
 	var reasonValue any
 	if reason != nil {
 		reasonValue = *reason
@@ -450,7 +454,14 @@ var baselineStatusDebug = map[model.BaselineStatus]string{
 // baselineWorker runs the check under its overall deadline, resolves the final
 // status under the gate and always clears the runtime slot via the guard. The
 // guard also abandons a still-running record if the worker exits unexpectedly.
-func (a *App) baselineWorker(id string, ctx context.Context) {
+//
+// A check stays active until its owned clone is gone: the worker records the
+// terminal status, then the cleanup outcome, and releases the slot last, as it
+// exits. Until then eligibility reports "A baseline check is already running"
+// even though the durable record already reads as finished and cleaned up;
+// that window ends when the worker exits, and its notify follows the release.
+// Observers that need the slot free wait for baseline_active to clear.
+func (a *App) baselineWorker(ctx context.Context, id string) {
 	defer func() {
 		if check, err := store.Get[model.BaselineCheck](a.Store, "baseline", id); err == nil && check != nil && check.Status == model.BaselineStatusRunning {
 			_ = a.abandonBaseline(check,
@@ -471,6 +482,7 @@ func (a *App) baselineWorker(id string, ctx context.Context) {
 	c := check.Config
 	limit := time.Duration(c.TaskTimeoutSeconds) * time.Second
 	workCtx, workCancel := context.WithCancel(ctx)
+	defer workCancel()
 	executionDone := make(chan struct{})
 	result := process.WithDeadline(ctx, workCancel, limit, func() model.BaselineStatus {
 		defer close(executionDone)

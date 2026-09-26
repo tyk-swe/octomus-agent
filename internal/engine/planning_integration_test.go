@@ -181,6 +181,14 @@ func TestPauseCancelsHeldCapacityRefreshAndRejectsItsResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.wg.Wait()
+	// The pause made the held refresh obsolete; its cancellation is not a
+	// remote inventory failure to report for the rest of the pause.
+	app.runtimeMu.Lock()
+	refreshError := app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("cancelled refresh was recorded as a failure: %q", refreshError)
+	}
 	if err := os.Remove(delay); err != nil {
 		t.Fatal(err)
 	}

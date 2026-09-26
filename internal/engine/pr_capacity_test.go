@@ -60,10 +60,20 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 		t.Fatalf("refresh failure did not revoke capacity with its reason: %+v, %v", capacity, err)
 	}
 
-	// An observation older than five minutes is stale.
+	// An observation older than one housekeeping interval stays fresh until
+	// the next, possibly slower, observation pass has had time to land.
 	a.runtimeMu.Lock()
 	a.runtime.prRefreshError = ""
-	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-301 * time.Second)}
+	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(observeInterval + time.Minute))}
+	a.runtimeMu.Unlock()
+	capacity, err = a.PrCapacity()
+	if err != nil || capacity.Status != "ready" || capacity.Remaining == nil {
+		t.Fatalf("observation within its lifetime was reported stale: %+v, %v", capacity, err)
+	}
+
+	// An observation older than its lifetime is stale.
+	a.runtimeMu.Lock()
+	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(prObservationLifetime + time.Second))}
 	a.runtimeMu.Unlock()
 	capacity, err = a.PrCapacity()
 	if err != nil || capacity.Status != "unavailable" || capacity.Remaining != nil {
@@ -129,6 +139,92 @@ func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T)
 	capacity, err = app.PrCapacity()
 	if err != nil || capacity.Status != "ready" || capacity.Remaining == nil || *capacity.Remaining != 5 {
 		t.Fatalf("complete observation did not clear the failure: %+v, %v", capacity, err)
+	}
+}
+
+// a refresh whose own context was cancelled (pause, configuration save,
+// shutdown) is obsolete: its interrupted remote capture reports "Operation
+// cancelled", which must not become the capacity failure reason.
+func TestCancelledRefreshIsNotRecordedAsFailure(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := app.refreshPRs(ctx, fixture.cfg); err == nil {
+		t.Fatal("a cancelled refresh unexpectedly completed")
+	}
+	app.runtimeMu.Lock()
+	refreshError := app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("cancelled refresh was recorded as a failure: %q", refreshError)
+	}
+	capacity, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capacity.Status != "unavailable" || capacity.Reason == nil || strings.Contains(strings.ToLower(*capacity.Reason), "cancelled") {
+		t.Fatalf("cancelled refresh changed the capacity reason: %+v", capacity)
+	}
+}
+
+// while paused, a successful housekeeping refresh supersedes an earlier refresh
+// failure: the failure no longer describes the remote, but the paused service
+// still gains no dispatch authority from the new observation.
+func TestPausedRefreshClearsEarlierFailureWithoutAuthorizingDispatch(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	app.runtimeMu.Lock()
+	app.runtime.prRefreshError = "earlier fixture failure"
+	app.runtimeMu.Unlock()
+	if err := app.RefreshPRs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	app.runtimeMu.Lock()
+	refreshError, observation := app.runtime.prRefreshError, app.runtime.prObservation
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("successful paused refresh kept the earlier failure: %q", refreshError)
+	}
+	if observation != nil {
+		t.Fatal("paused refresh gained dispatch authority")
+	}
+	capacity, err := app.PrCapacity()
+	if err != nil || capacity.Status != "unavailable" || capacity.Remaining != nil || capacity.Reason == nil || strings.Contains(*capacity.Reason, "earlier fixture failure") {
+		t.Fatalf("paused capacity after a successful refresh: %+v, %v", capacity, err)
+	}
+}
+
+// a housekeeping observation whose refresh was superseded by a concurrent one
+// that saved a newer complete inventory first is not a failure: the older
+// inventory is refused, no refresh failure is recorded, and the observation
+// finishes with the newer saved inventory.
+func TestObservationContinuesWithASupersedingInventory(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	newer := model.OpenPrInventory{Repository: fixture.cfg.GitHubRepo, ObservedAt: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), PRs: []model.PullRequest{}}
+	if persisted, err := fixture.state.PersistPrInventory(newer, nil); err != nil || !persisted {
+		t.Fatalf("persist newer inventory: %t, %v", persisted, err)
+	}
+	if err := app.observeRemote(context.Background(), fixture.cfg); err != nil {
+		t.Fatalf("superseded refresh failed the observation: %v", err)
+	}
+	control, err := app.Control()
+	if err != nil || control.ContextFingerprint == "" {
+		t.Fatalf("observation did not record the context fingerprint: %+v, %v", control, err)
+	}
+	app.runtimeMu.Lock()
+	refreshError := app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("superseded refresh was recorded as a failure: %q", refreshError)
+	}
+	stored, err := fixture.state.OpenPrInventory()
+	if err != nil || stored == nil || stored.ObservedAt != newer.ObservedAt {
+		t.Fatalf("older refresh replaced the newer inventory: %+v, %v", stored, err)
 	}
 }
 

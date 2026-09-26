@@ -128,7 +128,10 @@ func decisionFingerprint(ctx context.Context, cfg config.Config, revision string
 	if _, err := model.DecisionMemoryFingerprint(revision, paths, ""); err != nil {
 		return "", err
 	}
-	args := []string{"ls-tree", "-r", revision, "--"}
+	// relevant_paths are model-supplied: match them literally, never as
+	// pathspec magic such as ":(glob)" or ":!", which ls-tree refuses with a
+	// fatal error that would fail the whole plan. Ordinary paths list the same.
+	args := []string{"--literal-pathspecs", "ls-tree", "-r", revision, "--"}
 	args = append(args, paths...)
 	output, err := gitops.Git(ctx, cfg, cfg.Repository, args)
 	if err != nil {
@@ -225,13 +228,25 @@ func ValidateDecisionMemory(proposals []model.Proposal, memory []any) error {
 		}
 	}
 	for _, proposal := range proposals {
-		if len(proposal.ProblemKey) > 200 || len(proposal.Reconsiders) > 100 || len(proposal.RelevantPaths) > 40 {
-			return errors.New("Proposal decision metadata exceeds bounds")
+		// Every proposal is recorded in decision memory, whatever its decision,
+		// so name the proposal and field: planning replaced an empty
+		// problem_key with the title-derived identity before this check.
+		if len(proposal.ProblemKey) > 200 {
+			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: problem identity is %d bytes (limit 200; an empty problem_key falls back to the title)", proposal.ID, len(proposal.ProblemKey))
+		}
+		if len(proposal.Reconsiders) > 100 {
+			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: %d reconsiders (limit 100)", proposal.ID, len(proposal.Reconsiders))
+		}
+		if len(proposal.RelevantPaths) > 40 {
+			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: %d relevant_paths (limit 40)", proposal.ID, len(proposal.RelevantPaths))
 		}
 		for _, id := range proposal.Reconsiders {
 			target, ok := requests[id]
-			if !ok || target != proposal.Target {
-				return errors.New("Rediscovery identity or target does not match a pending request")
+			if !ok {
+				return fmt.Errorf("Rediscovery identity or target does not match a pending request: proposal %q reconsiders %q, which is not pending", proposal.ID, id)
+			}
+			if target != proposal.Target {
+				return fmt.Errorf("Rediscovery identity or target does not match a pending request: proposal %q targets %q but request %q targets %q", proposal.ID, proposal.Target, id, target)
 			}
 		}
 		if proposal.Decision != model.DecisionAccepted {
@@ -260,7 +275,8 @@ func ValidateDecisionMemory(proposals []model.Proposal, memory []any) error {
 				}
 			}
 			if !validRequest {
-				return errors.New("Accepted proposal repeats a current recorded decision without an explicit rediscovery request")
+				recorded, _ := entry["id"].(string)
+				return fmt.Errorf("Accepted proposal repeats a current recorded decision without an explicit rediscovery request (proposal %q, decision %q)", proposal.ID, recorded)
 			}
 		}
 	}

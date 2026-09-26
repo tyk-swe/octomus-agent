@@ -552,7 +552,7 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	if response := call(t, router, "POST", "/api/baseline-checks/"+id+"/cancel", "{}"); response.Code != http.StatusOK {
 		t.Fatalf("cancel: %d %s", response.Code, response.Body.String())
 	}
-	finished := waitBaseline(t, state, id)
+	finished := waitBaseline(t, router, state, id)
 	if finished.Status != model.BaselineStatusCancelled {
 		t.Fatalf("status %s", finished.Status)
 	}
@@ -588,15 +588,18 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	}
 }
 
-func waitBaseline(t *testing.T, state *store.Store, id string) *model.BaselineCheck {
+// waitBaseline waits until the check has fully settled. The worker records the
+// terminal status, then the owned-workspace cleanup outcome, and releases the
+// service's baseline slot last, as it exits; eligibility read before that
+// still reports the check as running. The returned record is the final one.
+func waitBaseline(t *testing.T, router http.Handler, state *store.Store, id string) *model.BaselineCheck {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		check, err := store.Get[model.BaselineCheck](state, "baseline", id)
-		// The terminal record lands before owned-workspace cleanup completes;
-		// wait for both so the returned check is the fully settled record.
-		if err == nil && check != nil && check.Status != model.BaselineStatusRunning &&
-			(check.WorkspaceRemoved || check.CleanupError != nil) {
+		cleaned := err == nil && check != nil && check.Status != model.BaselineStatusRunning &&
+			(check.WorkspaceRemoved || check.CleanupError != nil)
+		if cleaned && decode(t, call(t, router, "GET", "/api/state", ""))["baseline_active"] == false {
 			return check
 		}
 		time.Sleep(20 * time.Millisecond)

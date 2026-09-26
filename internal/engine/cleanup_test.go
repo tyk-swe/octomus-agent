@@ -772,3 +772,299 @@ func TestInterruptedCleanupLeavesNoClaimAndRetriesAfterRestart(t *testing.T) {
 		t.Fatalf("retried cleanup recorded a failure: %+v", events)
 	}
 }
+
+// A housekeeping pass still running at shutdown stops at its next step
+// boundary: the storage walk and remote observation that remain are obsolete,
+// and their cancellation is not a housekeeping failure for the event log. The
+// removal barrier holds retention until Shutdown has cancelled the service,
+// so the order is deterministic.
+func TestHousekeepingShutdownRecordsNoCancellationError(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	cycle := discardableCycle(t, fixture.dataDir)
+	if err := fixture.state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	barrier := newRemovalBarrier(t, filepath.Join(fixture.dataDir, "cycles", cycle.ID))
+	app := New(fixture.state, fixture.dataDir, WithWorkspaceRemoval(barrier.remove))
+	// Retention and observation are both due on the first tick.
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	barrier.wait(t)
+	stopped := make(chan struct{})
+	go func() {
+		app.Shutdown()
+		close(stopped)
+	}()
+	<-app.Context().Done()
+	barrier.Release()
+	select {
+	case <-stopped:
+	case <-time.After(30 * time.Second):
+		t.Fatal("shutdown did not finish after the held removal released")
+	}
+	system := "system"
+	events, err := fixture.state.Events(&system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "housekeeping_error" {
+			t.Fatalf("shutdown recorded a housekeeping failure: %+v", event)
+		}
+	}
+	// The removal already in flight still finalizes its record.
+	saved, err := store.Get[model.Cycle](fixture.state, "cycle", cycle.ID)
+	if err != nil || saved == nil || saved.Lifecycle.DiscardedAt == nil {
+		t.Fatalf("held retention cleanup did not finalize: %+v, %v", saved, err)
+	}
+	if _, found, err := fixture.state.GetValue("settings", "storage"); err != nil || found {
+		t.Fatalf("storage was walked after shutdown: %t, %v", found, err)
+	}
+}
+
+// Retention reads its candidate list without the gate. A record the operator
+// discards after that read, while retention is still busy with an earlier
+// candidate, is skipped on retention's gated re-read: its discarded_at keeps
+// the operator's time and no cleanup failure is reported.
+func TestRetentionSkipsRecordsDiscardedDuringThePass(t *testing.T) {
+	for _, kind := range []string{"task", "cycle"} {
+		t.Run(kind, func(t *testing.T) {
+			state := testStore(t)
+			dataDir := t.TempDir()
+			cfg := testConfig(t.TempDir())
+			cfg.RetainCompletedDays = 1
+			saveSettings(t, state, cfg, model.DefaultControl())
+			var held, raced string
+			var discard func(*App) error
+			var discardedAt func() *string
+			if kind == "task" {
+				first := discardableTask(t, cfg, dataDir, "held-task")
+				second := discardableTask(t, cfg, dataDir, "raced-task")
+				for _, task := range []model.Task{first, second} {
+					if err := state.Put("task", task.ID, task); err != nil {
+						t.Fatal(err)
+					}
+				}
+				held, raced = filepath.Join(dataDir, "tasks", first.ID), second.ID
+				discard = func(app *App) error { return app.TaskAction(context.Background(), raced, "discard") }
+				discardedAt = func() *string {
+					saved, err := store.Get[model.Task](state, "task", raced)
+					if err != nil || saved == nil {
+						t.Fatalf("reload task: %+v, %v", saved, err)
+					}
+					return saved.Lifecycle.DiscardedAt
+				}
+			} else {
+				first := discardableCycle(t, dataDir)
+				second := discardableCycle(t, dataDir)
+				for _, cycle := range []model.Cycle{first, second} {
+					if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+						t.Fatal(err)
+					}
+				}
+				held, raced = filepath.Join(dataDir, "cycles", first.ID), second.ID
+				discard = func(app *App) error { return app.CycleAction(raced, "discard") }
+				discardedAt = func() *string {
+					saved, err := store.Get[model.Cycle](state, "cycle", raced)
+					if err != nil || saved == nil {
+						t.Fatalf("reload cycle: %+v, %v", saved, err)
+					}
+					return saved.Lifecycle.DiscardedAt
+				}
+			}
+			barrier := newRemovalBarrier(t, held)
+			app := New(state, dataDir, WithWorkspaceRemoval(barrier.remove))
+			t.Cleanup(app.Shutdown)
+
+			done := make(chan error, 1)
+			go func() { done <- app.retention(cfg) }()
+			barrier.wait(t)
+			if err := completesDuring(t, "operator discard", func() error { return discard(app) }); err != nil {
+				t.Fatalf("operator discard during retention: %v", err)
+			}
+			operator := discardedAt()
+			if operator == nil {
+				t.Fatal("operator discard was not recorded")
+			}
+			barrier.Release()
+			if err := <-done; err != nil {
+				t.Fatalf("retention: %v", err)
+			}
+			if after := discardedAt(); after == nil || *after != *operator {
+				got := "<nil>"
+				if after != nil {
+					got = *after
+				}
+				t.Fatalf("retention rewrote the operator's discard time: %s -> %s", *operator, got)
+			}
+			if events := cleanupEvents(t, state, raced); len(events) != 0 {
+				t.Fatalf("retention reported a failure for a discarded record: %+v", events)
+			}
+		})
+	}
+}
+
+// waitHousekeeping waits for the running housekeeping pass to finish.
+func waitHousekeeping(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		app.runtimeMu.Lock()
+		running := app.runtime.housekeeping
+		app.runtimeMu.Unlock()
+		if !running {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("housekeeping pass did not finish")
+}
+
+// Retention, the storage walk and the remote observation are independent
+// housekeeping steps: a failed retention is reported, and the storage
+// measurement and the observation due in the same pass still run.
+func TestHousekeepingContinuesPastAFailedRetention(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	// A finished baseline record that is not a valid check fails retention's
+	// candidate read on every pass.
+	if err := fixture.state.Put("baseline", "unreadable", map[string]any{"status": "failed", "workspace_removed": false}); err != nil {
+		t.Fatal(err)
+	}
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	// Retention and observation are both due on the first tick.
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	waitHousekeeping(t, app)
+	system := "system"
+	events, err := fixture.state.Events(&system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := 0
+	for _, event := range events {
+		if event.Kind == "housekeeping_error" {
+			failures++
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("housekeeping reported %d failures; want the retention failure only: %+v", failures, events)
+	}
+	if _, found, err := fixture.state.GetValue("settings", "storage"); err != nil || !found {
+		t.Fatalf("storage was not measured after the retention failure: %t, %v", found, err)
+	}
+	control, err := app.Control()
+	if err != nil || control.ContextFingerprint == "" {
+		t.Fatalf("remote observation did not run after the retention failure: %+v, %v", control, err)
+	}
+}
+
+// housekeepingTimers reads when retention and observation last started.
+func housekeepingTimers(app *App) (retention, observe time.Time) {
+	app.runtimeMu.Lock()
+	defer app.runtimeMu.Unlock()
+	return app.runtime.lastRetention, app.runtime.lastObserve
+}
+
+// Retention (with the storage walk) runs every 15 minutes and the remote
+// observation every 5, each only when due: a pass started for one step leaves
+// the other step, and its timer, alone.
+func TestHousekeepingRunsOnlyTheDueSteps(t *testing.T) {
+	for _, due := range []string{"observation", "retention"} {
+		t.Run(due, func(t *testing.T) {
+			fixture := newPlanningFixture(t)
+			cycle := discardableCycle(t, fixture.dataDir)
+			if err := fixture.state.Put("cycle", cycle.ID, cycle); err != nil {
+				t.Fatal(err)
+			}
+			app := New(fixture.state, fixture.dataDir)
+			t.Cleanup(app.Shutdown)
+			// The step that is not due ran moments ago.
+			recent := time.Now().Add(-time.Minute)
+			app.runtimeMu.Lock()
+			if due == "observation" {
+				app.runtime.lastRetention = recent
+			} else {
+				app.runtime.lastObserve = recent
+			}
+			app.runtimeMu.Unlock()
+			started := time.Now()
+			if err := app.Tick(); err != nil {
+				t.Fatal(err)
+			}
+			waitHousekeeping(t, app)
+
+			retention, observe := housekeepingTimers(app)
+			saved, err := store.Get[model.Cycle](fixture.state, "cycle", cycle.ID)
+			if err != nil || saved == nil {
+				t.Fatalf("reload cycle: %+v, %v", saved, err)
+			}
+			_, measured, err := fixture.state.GetValue("settings", "storage")
+			if err != nil {
+				t.Fatal(err)
+			}
+			control, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			observed := control.ContextFingerprint != ""
+			retained := saved.Lifecycle.DiscardedAt != nil
+			if due == "observation" {
+				if !observed || retained || measured || !retention.Equal(recent) || observe.Before(started) {
+					t.Fatalf("observation-only pass: observed=%t retained=%t measured=%t retention=%v observe=%v", observed, retained, measured, retention, observe)
+				}
+			} else if observed || !retained || !measured || !observe.Equal(recent) || retention.Before(started) {
+				t.Fatalf("retention-only pass: observed=%t retained=%t measured=%t retention=%v observe=%v", observed, retained, measured, retention, observe)
+			}
+			if events := cleanupEvents(t, fixture.state, cycle.ID); len(events) != 0 {
+				t.Fatalf("housekeeping reported a cleanup failure: %+v", events)
+			}
+		})
+	}
+}
+
+// Only one housekeeping pass runs at a time: while a pass is still working,
+// a Tick for which both steps are due again starts nothing and leaves their
+// timers alone. The next Tick after the pass ends starts the next one.
+func TestHousekeepingRunsOneJobAtATime(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	cycle := discardableCycle(t, fixture.dataDir)
+	if err := fixture.state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	barrier := newRemovalBarrier(t, filepath.Join(fixture.dataDir, "cycles", cycle.ID))
+	app := New(fixture.state, fixture.dataDir, WithWorkspaceRemoval(barrier.remove))
+	// Shutdown waits for the held pass, so a failure before the release below
+	// must release it first rather than hang.
+	t.Cleanup(func() {
+		barrier.Release()
+		app.Shutdown()
+	})
+	// Retention and observation are both due on the first tick; retention then
+	// holds the pass inside the cycle's removal.
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	barrier.wait(t)
+	app.runtimeMu.Lock()
+	app.runtime.lastRetention, app.runtime.lastObserve = time.Time{}, time.Time{}
+	app.runtimeMu.Unlock()
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if retention, observe := housekeepingTimers(app); !retention.IsZero() || !observe.IsZero() {
+		t.Fatalf("a second housekeeping pass started while one was running: retention=%v observe=%v", retention, observe)
+	}
+
+	barrier.Release()
+	waitHousekeeping(t, app)
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if retention, observe := housekeepingTimers(app); retention.IsZero() || observe.IsZero() {
+		t.Fatalf("no housekeeping pass started after the previous one ended: retention=%v observe=%v", retention, observe)
+	}
+	waitHousekeeping(t, app)
+}

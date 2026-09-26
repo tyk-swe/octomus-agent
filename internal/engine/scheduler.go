@@ -100,25 +100,18 @@ func (a *App) Tick() error {
 	if err != nil {
 		return err
 	}
-	visibleCycles := map[string]struct{}{}
-	for _, task := range tasks {
-		visibleCycles[task.CycleID] = struct{}{}
-	}
-	a.runtimeMu.Lock()
-	for cycleID := range a.runtime.checkedCycles {
-		if _, visible := visibleCycles[cycleID]; !visible {
-			delete(a.runtime.checkedCycles, cycleID)
-		}
-	}
-	a.runtimeMu.Unlock()
-	if err := a.validateQueuedCycles(tasks); err != nil {
+	blocked, err := a.validateQueuedCycles(tasks)
+	if err != nil {
 		return err
 	}
 	// Validation may have durably blocked queued records; dispatch only the
-	// canonical post-validation view.
-	tasks, err = a.Store.SchedulingTasks(runID)
-	if err != nil {
-		return err
+	// canonical post-validation view. Queued records change only under the
+	// gate, so when nothing was blocked the view read above is that view.
+	if blocked {
+		tasks, err = a.Store.SchedulingTasks(runID)
+		if err != nil {
+			return err
+		}
 	}
 	started, waiting, err := a.dispatch(cfg, control, tasks)
 	if err != nil {
@@ -147,16 +140,33 @@ func (a *App) Tick() error {
 	return nil
 }
 
-func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
+// pauseLocked is the scheduler's pause. It durably pauses control, recording
+// message as its error when set, and then invalidates the process-local PR
+// observations as Pause does, so a refresh in flight cannot authorize work
+// after a later resume. Callers hold the gate and write their event after it.
+func (a *App) pauseLocked(control *model.Control, message *string) error {
 	control.SetMode(model.OperatingModePaused)
+	if message != nil {
+		control.Error = message
+	}
+	if err := a.Store.SaveControl(*control); err != nil {
+		return err
+	}
+	a.invalidatePrObservation()
+	return nil
+}
+
+func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 	message := "Run once completed; new work paused"
 	if unresolved > 0 {
 		message = "Run once finished with unresolved work"
 	}
-	if err := a.Store.Event("system", "run_complete", message); err != nil {
+	// The event follows the durable pause, so a failed save leaves no record
+	// of a transition that did not happen.
+	if err := a.pauseLocked(&control, nil); err != nil {
 		return err
 	}
-	return a.Store.SaveControl(control)
+	return a.Store.Event("system", "run_complete", message)
 }
 
 func (a *App) maybePlan(cfg config.Config, control model.Control) error {
@@ -200,9 +210,7 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 				_ = a.handlePlanningCapacity(live, capacityErr.capacity)
 			} else if loadErr == nil && controlsEqual(live, expected) && live.Mode == model.OperatingModeRunOnce {
 				message := store.ErrorMessage(err)
-				live.SetMode(model.OperatingModePaused)
-				live.Error = &message
-				_ = a.Store.SaveControl(live)
+				_ = a.pauseLocked(&live, &message)
 				_ = a.Store.Event("system", "planning_error", message)
 			} else if loadErr == nil && controlsEqual(live, expected) && live.Mode == model.OperatingModeContinuous {
 				message := store.ErrorMessage(err)
@@ -224,22 +232,36 @@ func (a *App) handlePlanningCapacity(control model.Control, capacity model.Plann
 		return a.Store.SaveControl(control)
 	}
 	message := capacity.Message()
-	control.SetMode(model.OperatingModePaused)
-	control.Error = &message
-	if err := a.Store.SaveControl(control); err != nil {
+	if err := a.pauseLocked(&control, &message); err != nil {
 		return err
 	}
-	a.invalidatePrObservation()
 	return a.Store.Event("system", "planning_capacity", message)
 }
 
-func (a *App) validateQueuedCycles(tasks []model.Task) error {
+// validateQueuedCycles revalidates, once per process, the plan of every cycle
+// with a queued task in tasks, and blocks every queued member of an invalid
+// plan. It reports whether it blocked any task, even when it then fails.
+// tasks is the whole scheduling view: a cycle with no member in it leaves the
+// validated-cycle cache.
+func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
+	visibleCycles := map[string]struct{}{}
+	for _, task := range tasks {
+		visibleCycles[task.CycleID] = struct{}{}
+	}
+	a.runtimeMu.Lock()
+	for cycleID := range a.runtime.checkedCycles {
+		if _, visible := visibleCycles[cycleID]; !visible {
+			delete(a.runtime.checkedCycles, cycleID)
+		}
+	}
+	a.runtimeMu.Unlock()
 	cycleIDs := map[string]struct{}{}
 	for _, task := range tasks {
 		if task.Status == model.StatusQueued {
 			cycleIDs[task.CycleID] = struct{}{}
 		}
 	}
+	blocked := false
 	for cycleID := range cycleIDs {
 		a.runtimeMu.Lock()
 		_, checked := a.runtime.checkedCycles[cycleID]
@@ -249,13 +271,14 @@ func (a *App) validateQueuedCycles(tasks []model.Task) error {
 		}
 		cycleTasks, err := a.Store.TasksForCycle(cycleID)
 		if err != nil {
-			return err
+			return blocked, err
 		}
 		if err := ValidateTaskPlan(cycleTasks); err != nil {
 			for i := range cycleTasks {
 				if cycleTasks[i].Status == model.StatusQueued {
+					blocked = true
 					if blockErr := a.setTaskError(&cycleTasks[i], invalidPlan(err.Error())); blockErr != nil {
-						return blockErr
+						return blocked, blockErr
 					}
 				}
 			}
@@ -264,7 +287,7 @@ func (a *App) validateQueuedCycles(tasks []model.Task) error {
 		a.runtime.checkedCycles[cycleID] = struct{}{}
 		a.runtimeMu.Unlock()
 	}
-	return nil
+	return blocked, nil
 }
 
 func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.Task) (bool, bool, error) {
@@ -302,6 +325,15 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 	waiting := false
 	var inventory *model.OpenPrInventory
 	inventoryChecked := false
+	// One refresh request per pass: after the first, a refresh is in flight
+	// or throttled, and admissions in this pass only lower the capacity.
+	refreshRequested := false
+	requestRefresh := func() {
+		if !refreshRequested {
+			refreshRequested = true
+			a.startPrRefresh(cfg)
+		}
+	}
 	for i := range tasks {
 		task := &tasks[i]
 		if task.Status != model.StatusQueued {
@@ -347,7 +379,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 				inventoryChecked = true
 			}
 			if inventory == nil {
-				a.startPrRefresh(cfg)
+				requestRefresh()
 				waiting = true
 				continue
 			}
@@ -356,7 +388,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 				return started, waiting, err
 			}
 			if !admitted {
-				a.startPrRefresh(cfg)
+				requestRefresh()
 				waiting = true
 				continue
 			}
