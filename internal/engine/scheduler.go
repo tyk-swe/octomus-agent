@@ -111,14 +111,18 @@ func (a *App) Tick() error {
 		}
 	}
 	a.runtimeMu.Unlock()
-	if err := a.validateQueuedCycles(tasks); err != nil {
+	blocked, err := a.validateQueuedCycles(tasks)
+	if err != nil {
 		return err
 	}
 	// Validation may have durably blocked queued records; dispatch only the
-	// canonical post-validation view.
-	tasks, err = a.Store.SchedulingTasks(runID)
-	if err != nil {
-		return err
+	// canonical post-validation view. Queued records change only under the
+	// gate, so when nothing was blocked the view read above is that view.
+	if blocked {
+		tasks, err = a.Store.SchedulingTasks(runID)
+		if err != nil {
+			return err
+		}
 	}
 	started, waiting, err := a.dispatch(cfg, control, tasks)
 	if err != nil {
@@ -245,13 +249,17 @@ func (a *App) handlePlanningCapacity(control model.Control, capacity model.Plann
 	return a.Store.Event("system", "planning_capacity", message)
 }
 
-func (a *App) validateQueuedCycles(tasks []model.Task) error {
+// validateQueuedCycles revalidates, once per process, the plan of every cycle
+// with a queued task in tasks, and blocks every queued member of an invalid
+// plan. It reports whether it blocked any task, even when it then fails.
+func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 	cycleIDs := map[string]struct{}{}
 	for _, task := range tasks {
 		if task.Status == model.StatusQueued {
 			cycleIDs[task.CycleID] = struct{}{}
 		}
 	}
+	blocked := false
 	for cycleID := range cycleIDs {
 		a.runtimeMu.Lock()
 		_, checked := a.runtime.checkedCycles[cycleID]
@@ -261,13 +269,14 @@ func (a *App) validateQueuedCycles(tasks []model.Task) error {
 		}
 		cycleTasks, err := a.Store.TasksForCycle(cycleID)
 		if err != nil {
-			return err
+			return blocked, err
 		}
 		if err := ValidateTaskPlan(cycleTasks); err != nil {
 			for i := range cycleTasks {
 				if cycleTasks[i].Status == model.StatusQueued {
+					blocked = true
 					if blockErr := a.setTaskError(&cycleTasks[i], invalidPlan(err.Error())); blockErr != nil {
-						return blockErr
+						return blocked, blockErr
 					}
 				}
 			}
@@ -276,7 +285,7 @@ func (a *App) validateQueuedCycles(tasks []model.Task) error {
 		a.runtime.checkedCycles[cycleID] = struct{}{}
 		a.runtimeMu.Unlock()
 	}
-	return nil
+	return blocked, nil
 }
 
 func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.Task) (bool, bool, error) {
