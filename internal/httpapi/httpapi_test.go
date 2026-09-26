@@ -239,6 +239,31 @@ func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
 	if response.Body.String() != "override dashboard" {
 		t.Fatalf("override: %q", response.Body.String())
 	}
+	// Index pages in an override are HTML under their resolved name, not the
+	// extensionless request path: nosniff would otherwise make browsers
+	// download them.
+	indexed := t.TempDir()
+	for name, body := range map[string]string{"200.html": "fallback", "index.html": "root index", "sub/index.html": "sub index"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(indexed, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(indexed, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	indexedRouter := Router(app, token, indexed, "test")
+	for _, check := range []struct{ uri, body string }{
+		{"/", "root index"},
+		{"/sub", "sub index"},
+		{"/sub/", "sub index"},
+		{"/missing", "fallback"},
+	} {
+		response := request(t, indexedRouter, "GET", check.uri, "", false)
+		if response.Code != http.StatusOK || response.Body.String() != check.body ||
+			response.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+			t.Fatalf("%s: %d %q %q", check.uri, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+		}
+	}
 }
 
 func TestValidAuthenticationBypassesPendingFailureDelay(t *testing.T) {

@@ -118,19 +118,20 @@ func (o *overrideAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	data, found := o.read(name)
+	data, served, found := o.read(name)
 	if !found {
-		data, found = o.read(indexName)
-		name = indexName
+		data, served, found = o.read(indexName)
 	}
 	if !found {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	serveFile(w, r, name, data)
+	serveFile(w, r, served, data)
 }
 
-func (o *overrideAssets) read(name string) ([]byte, bool) {
+// read returns a file's bytes and the name it was served from, which decides
+// the content type: a directory (or the root) serves its index.html.
+func (o *overrideAssets) read(name string) (data []byte, served string, ok bool) {
 	if name == "" {
 		name = "index.html"
 	}
@@ -138,25 +139,25 @@ func (o *overrideAssets) read(name string) ([]byte, bool) {
 	// traversal, this is only the directory-open failure mode.
 	file, err := o.root.Open("/" + name)
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	defer file.Close()
 	stat, err := file.Stat()
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	if stat.IsDir() {
 		// ServeDir appends index.html for directory requests.
-		index, err := o.root.Open("/" + strings.TrimSuffix(name, "/") + "/index.html")
+		name = strings.TrimSuffix(name, "/") + "/index.html"
+		index, err := o.root.Open("/" + name)
 		if err != nil {
-			return nil, false
+			return nil, "", false
 		}
 		defer index.Close()
-		data, err := readAll(index)
-		return data, err == nil
+		file = index
 	}
-	data, err := readAll(file)
-	return data, err == nil
+	data, err = readAll(file)
+	return data, name, err == nil
 }
 
 func readAll(file http.File) ([]byte, error) {
