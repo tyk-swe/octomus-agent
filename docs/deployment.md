@@ -151,7 +151,7 @@ ceiling. External PR changes can also alter backlog after observation.
 
 The workspace budget is an **admission limit**, checked before launching model work. Active commands can grow beyond it; set host disk and process limits appropriate to the repository. The MVP does not estimate dollar spend or interrupt a provider's in-flight token billing. Use account-level spending limits as appropriate.
 
-Housekeeping runs every 15 minutes, including while paused or configured only for audits. Published task workspaces and completed cycle directories follow the configured retention period (14 days by default). Successful planning-role clones are disposed after structured results, session evidence and unchanged-source checks are persisted. Failed or modified clones and unresolved task workspaces remain retained. **Archive task/cycle** resolves retained work and makes its workspace eligible for retention; **Discard workspace** explicitly removes an archived workspace. Each happens once; repeating it is a conflict. Database evidence, identities and lineage remain available. A failed cleanup is retried on every pass and logged at once when its message changes, otherwise at most once a day per service process. Active workspaces and symlink paths are excluded from cleanup. Activity events are capped at the configured count. Command output is drained and bounded; raw runner tool arguments and output streams are not stored in the dashboard event log. Runner transcript storage is separate: Codex uses the service account's Codex home, and OpenCode uses its data directory. Configure host retention for the selected runners separately.
+Housekeeping runs every 15 minutes, including while paused or configured only for audits. Published task workspaces and completed cycle directories follow the configured retention period (14 days by default). Successful planning-role clones are disposed after structured results, session evidence and unchanged-source checks are persisted. Failed or modified clones and unresolved task workspaces remain retained. **Archive task/cycle** resolves retained work and makes its workspace eligible for retention; **Discard workspace** explicitly removes an archived workspace. Each happens once; repeating it is a conflict. Database evidence, identities and lineage remain available. A failed cleanup is retried on later passes; a new or changed failure is recorded as an activity event at once, an unchanged one at most once a day per service process. Active workspaces and symlink paths are excluded from cleanup. Activity events are capped at the configured count. Command output is drained and bounded; raw runner tool arguments and output streams are not stored in the dashboard event log. Runner transcript storage is separate: Codex uses the service account's Codex home, and OpenCode uses its data directory. Configure host retention for the selected runners separately.
 
 Logs: `journalctl -u octomus-agent`. Task errors and session metadata also appear in the dashboard. Known credential patterns, the webhook URL and values from token/secret/password/API-key environment variables are redacted from dashboard JSON and summaries. Keep secrets out of project documentation and task prompts; this redaction is not a secret-detection guarantee.
 
@@ -187,9 +187,9 @@ table in `internal/httpapi/httpapi.go` (`buildRoutes`) is authoritative.
   baseline check or action name, `409` for a conflict with current state (including a
   superseded configuration revision), `500` for storage or encoding failures, and `400`
   otherwise, such as a configuration value out of range. Request rejections are
-  `text/plain`: `400` for malformed JSON or a malformed query value, `422` for wrong
-  types, unknown fields or an invalid configuration field, and `413` for a body over
-  256 KiB.
+  `text/plain`: `400` for malformed JSON or a malformed query value, `422` when the body
+  or a `config` patch fails strict decoding (a wrong type, an unknown field or an
+  unknown name), and `413` for a body over 256 KiB.
 - Every `/api` JSON response is redacted. Request headers must arrive within 10
   seconds, and idle keep-alive connections close after two minutes.
 
@@ -252,8 +252,8 @@ stop the service first, or use **Check connection** in the running dashboard.
 `--doctor` prints the result as JSON, including each required runner's installed
 version and protocol baseline (Codex, OpenCode or both), and writes each version
 mismatch to stderr as a `WARN` line, also when the check fails. Correct a mismatch
-before live commissioning. SIGINT, SIGTERM or a hangup stops an interrupted `--doctor`
+before live commissioning. SIGINT, SIGTERM or a hangup stops a running `--doctor`
 along with the runner processes it started; it then exits with status 1 and
-`Doctor interrupted`.
+`Error: Doctor interrupted`.
 
 `--usage-report` opens version-7 SQLite state read-only, works alongside the service, and needs neither a token nor dashboard assets. It exports admission counts and saved cycle/task evidence, not provider billing. See the [cost methodology](cost.md). Admission records are retained with the state database; include their growth in disk monitoring and backups. `--export-run` likewise opens the database read-only, without the service lock, and prints the recorded `RunEvidenceV1` for one saved cycle; see [run evidence](run-evidence.md).

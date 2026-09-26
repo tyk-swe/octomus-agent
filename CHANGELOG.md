@@ -84,5 +84,5 @@ the first release contains.
   control sequences, and leaves ordinary words such as `task-` readable.
 - An interrupted `--doctor` stops the runner processes it started and exits with
   status 1, and the HTTP server bounds header reads and idle connections.
-- An unchanged cleanup failure is logged at most once a day instead of on every
-  housekeeping pass.
+- An unchanged cleanup failure is recorded as an activity event at most once a day per
+  service process instead of on every housekeeping pass.

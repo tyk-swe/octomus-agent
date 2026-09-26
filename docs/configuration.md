@@ -79,9 +79,9 @@ and [deployment](deployment.md) for budgeting, host limits, and retention behavi
 ## Field reference
 
 Saving checks every field and refuses the whole save when one is out of range, naming
-that setting and the range it accepts. Counts are whole numbers. The repository fields,
-complete routes and at least one verification command are required only when a check
-or run needs them, so an incomplete draft can still be saved.
+that setting and the range it accepts. Counts are whole numbers. `repository`,
+`github_repo`, complete routes and at least one verification command are required only
+when a check or run needs them, so an incomplete draft can still be saved.
 
 ### Repository and branches
 
@@ -126,7 +126,7 @@ orchestrator, discovery and proposal reviewer routes; execution needs every rout
 | `max_no_progress_rounds` | 2 | At least 1 | Consecutive repair rounds that leave the reviewed revision unchanged before the task blocks. |
 | `max_retries` | 2 | 0–10 | Further attempts per task, by operator retry or restart recovery. |
 | `session_timeout_seconds` | 1,800 | 10–604,800 | Longest agent turn. |
-| `task_timeout_seconds` | 14,400 | From the session timeout to 604,800 | Whole task: execution, review, repair, verification and delivery. |
+| `task_timeout_seconds` | 14,400 | From the session timeout to 604,800 | Whole task: execution, review, repair, verification and delivery; also each clean-baseline check. |
 | `command_timeout_seconds` | 600 | 1–604,800 | Each Git, GitHub CLI and verification command. |
 
 A task snapshots these settings when accepted. An explicit retry adopts the current
