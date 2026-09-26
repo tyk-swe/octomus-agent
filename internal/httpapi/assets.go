@@ -1,7 +1,8 @@
-// Dashboard asset serving. The embedded build applies the HTTP fallback rules:
-// only extensionless non-_app paths fall back to the SPA entry point. An
-// override directory uses ServeDir semantics: every miss falls back to its
-// 200.html. Both enforce the same method and path-safety boundaries.
+// Dashboard asset serving. The embedded build falls back to the SPA entry point
+// (200.html) only for extensionless paths outside _app/; its other misses are
+// 404. An override directory serves <dir>/index.html for a directory request
+// and falls back to its 200.html on every miss. Both enforce the same method
+// and path-safety boundaries.
 package httpapi
 
 import (
@@ -91,7 +92,8 @@ func contentType(name string) string {
 	return "application/octet-stream"
 }
 
-// embeddedAssets serves the compiled dashboard with the established fallback rules.
+// embeddedAssets serves the compiled dashboard: a miss on an extensionless
+// path outside _app/ serves 200.html, and any other miss is 404.
 type embeddedAssets struct{ files fs.FS }
 
 func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -118,9 +120,9 @@ func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveFile(w, r, name, data)
 }
 
-// overrideAssets serves a filesystem directory like tower_http's ServeDir
-// with not_found_service pointed at 200.html: every miss serves the entry
-// point, whatever its name looks like.
+// overrideAssets serves a filesystem directory: a directory request (or the
+// root) serves its index.html, and every miss serves the 200.html entry point,
+// whatever its name looks like.
 type overrideAssets struct{ root http.FileSystem }
 
 func (o *overrideAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +159,7 @@ func (o *overrideAssets) read(name string) (data []byte, served string, ok bool)
 		return nil, "", false
 	}
 	if stat.IsDir() {
-		// ServeDir appends index.html for directory requests.
+		// A directory request serves that directory's index.html.
 		name = strings.TrimSuffix(name, "/") + "/index.html"
 		index, err := o.root.Open("/" + name)
 		if err != nil {

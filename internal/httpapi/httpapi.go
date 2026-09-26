@@ -226,9 +226,10 @@ func (a *api) authenticate(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// apiStatus mirrors ApiError::from: storage/codec failures are internal,
-// typed conflicts map to 409, everything else is a bad request. Explicit
-// sentinel errors carry their own status, including not-found cases.
+// apiStatus classifies a handler error: storage (sqlite) and codec (wirejson)
+// failures are internal (500), the not-found and unknown-action sentinels are
+// 404, baseline and action conflicts are 409, and anything else is a bad
+// request (400).
 func apiStatus(err error) int {
 	var jc *wirejson.Error
 	var sq *sqlite.Error
@@ -316,9 +317,10 @@ func writeRawJSON(w http.ResponseWriter, status int, value any) {
 	_, _ = w.Write(data)
 }
 
-// decodeBody reads one JSON request body under the 256 KiB bound and classifies
-// failures the way axum's Json extractor does: syntax at 400, data at 422,
-// overflow at 413 — all text/plain, not the JSON error shape.
+// decodeBody reads one JSON request body of at most 256 KiB. Its rejections are
+// plain-text bodyErrors: overflow is 413, an unreadable body or invalid JSON
+// syntax is 400, and a type or strict-decode failure (wirejson or
+// UnmarshalTypeError) is 422.
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 	if err != nil {
@@ -339,8 +341,9 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	return nil
 }
 
-// bodyError is an extraction-layer rejection: a plain-text status that never
-// takes the JSON error shape, matching axum's Json and body rejections.
+// bodyError is an extraction-layer rejection of a request body or query
+// string. It is written as text/plain at its own status and never takes the
+// JSON error shape.
 type bodyError struct {
 	status  int
 	message string

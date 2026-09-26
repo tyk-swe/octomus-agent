@@ -115,8 +115,9 @@ type Worker struct {
 	lastWarning string
 }
 
-// webhookClient mirrors reqwest's operator-safe client: no redirects, no proxy,
-// a 10 second request bound and a 5 second connect bound.
+// webhookClient is the operator-safe delivery client: it follows no redirects
+// (a 3xx is recorded as the delivery's HTTP status), ignores proxy environment
+// variables, and bounds each request to 10 seconds and each connect to 5.
 func webhookClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
@@ -270,8 +271,8 @@ func (w *Worker) deliver(delivery *store.NotificationDelivery) (uint16, string) 
 	return uint16(response.StatusCode), ""
 }
 
-// isTimeout mirrors reqwest's is_timeout: request-level deadline expiry and
-// transport timeouts both count, but a caller cancellation does not.
+// isTimeout reports whether a failed request timed out: request deadline
+// expiry and transport timeouts count, but a caller cancellation does not.
 func isTimeout(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
