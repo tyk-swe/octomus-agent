@@ -209,6 +209,8 @@
       error = (e as Error).message;
       // The service also answers 409 when it is no longer paused or when tasks must be
       // resolved first; a reload fixes neither. Only the stale-revision conflict asks for one.
+      // TestConfigConflictsAskForReloadOnlyWhenStale (internal/httpapi) holds the service's
+      // 409 texts to this pattern.
       conflict = e instanceof ApiError && e.status === 409 && /\breload\b/i.test(error);
     } finally {
       pending = '';

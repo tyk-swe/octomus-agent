@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -253,5 +256,71 @@ func TestConfigAPIDisplayIdentityCollision(t *testing.T) {
 	if response := call(t, router, "PUT", "/api/config",
 		fmt.Sprintf(`{"expected_revision":%q,"config":{"max_retries":1}}`, firstRevision)); response.Code != http.StatusConflict {
 		t.Fatalf("stale save revision: %d", response.Code)
+	}
+}
+
+// The settings form offers "Discard edits and reload" only for the stale-revision
+// save conflict, which it recognises by testing the 409 error text with a pattern
+// in web/src/lib/Settings.svelte. The service's other save conflicts cannot be
+// fixed by a reload and must not match it.
+func TestConfigConflictsAskForReloadOnlyWhenStale(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "Settings.svelte"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := regexp.MustCompile(`e\.status === 409 && /([^/]+)/i\.test\(error\)`).FindSubmatch(source)
+	if found == nil {
+		t.Fatal("Settings.svelte no longer tests a 409 error with /…/i; update this contract")
+	}
+	asksReload := regexp.MustCompile(`(?i)` + string(found[1]))
+
+	app, state := testApp(t)
+	router := Router(app, token, "", "test")
+	cfg := config.Default()
+	cfg.GitHubRepo = "fixture/project"
+	if err := state.Put("settings", "config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := cfg.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict := func(body string) string {
+		t.Helper()
+		response := call(t, router, "PUT", "/api/config", body)
+		if response.Code != http.StatusConflict {
+			t.Fatalf("%d %s; want 409", response.Code, response.Body.String())
+		}
+		message, _ := decode(t, response)["error"].(string)
+		if message == "" {
+			t.Fatalf("409 without an error message: %s", response.Body.String())
+		}
+		return message
+	}
+
+	stale := conflict(`{"expected_revision":"` + strings.Repeat("0", 64) + `","config":{"max_retries":3}}`)
+	if !asksReload.MatchString(stale) {
+		t.Errorf("stale-revision conflict %q does not match %s; the dashboard would hide its reload control", stale, asksReload)
+	}
+
+	task := queuedTask(cfg)
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	unresolved := conflict(`{"expected_revision":"` + revision + `","config":{"github_repo":"fixture/other"}}`)
+
+	control, err := app.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.SetMode(model.OperatingModeContinuous)
+	if err := state.SaveControl(control); err != nil {
+		t.Fatal(err)
+	}
+	running := conflict(`{"expected_revision":"` + revision + `","config":{"max_retries":3}}`)
+	for _, message := range []string{unresolved, running} {
+		if asksReload.MatchString(message) {
+			t.Errorf("conflict %q matches %s, so the dashboard would offer a reload that cannot resolve it", message, asksReload)
+		}
 	}
 }
