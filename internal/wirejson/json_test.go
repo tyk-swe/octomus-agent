@@ -336,6 +336,51 @@ func TestRecordWritesEmptyContainersThatDecodeStrictly(t *testing.T) {
 
 func second(_ []byte, err error) error { return err }
 
+// Generic views feed API responses and exports, so a uint64 beyond float64's
+// exact range must keep its saved spelling instead of being rounded.
+func TestGenericKeepsExactNumbersAndMarksEncodeFailures(t *testing.T) {
+	type record struct {
+		N    uint64         `json:"n"`
+		F    float64        `json:"f"`
+		List []int64        `json:"list"`
+		Any  any            `json:"any"`
+		Map  map[string]any `json:"map"`
+	}
+	value := record{
+		N: 18446744073709551615, F: 0.1, List: []int64{-9007199254740993},
+		Any: json.Number("12345678901234567890.5"), Map: map[string]any{"k": true},
+	}
+	want := map[string]any{
+		"n": json.Number("18446744073709551615"), "f": json.Number("0.1"),
+		"list": []any{json.Number("-9007199254740993")},
+		"any":  json.Number("12345678901234567890.5"), "map": map[string]any{"k": true},
+	}
+	object, err := GenericMap(value)
+	if err != nil || !reflect.DeepEqual(object, want) {
+		t.Fatalf("GenericMap = %#v, %v; want %#v", object, err, want)
+	}
+	generic, err := Generic(value)
+	if err != nil || !reflect.DeepEqual(generic, any(want)) {
+		t.Fatalf("Generic = %#v, %v; want %#v", generic, err, want)
+	}
+	if generic, err := Generic([]uint64{18446744073709551615}); err != nil ||
+		!reflect.DeepEqual(generic, []any{json.Number("18446744073709551615")}) {
+		t.Fatalf("Generic(list) = %#v, %v", generic, err)
+	}
+	if object, err := GenericMap([]int{1}); err == nil {
+		t.Fatalf("GenericMap(list) = %#v; want an error", object)
+	}
+	for name, err := range map[string]error{
+		"Generic":    func() error { _, err := Generic(make(chan int)); return err }(),
+		"GenericMap": func() error { _, err := GenericMap(struct{ C chan int }{}); return err }(),
+	} {
+		var typed *Error
+		if !errors.As(err, &typed) {
+			t.Errorf("%s(chan) = %v; want a typed encode error", name, err)
+		}
+	}
+}
+
 type cloneItem struct {
 	Tags []string
 }

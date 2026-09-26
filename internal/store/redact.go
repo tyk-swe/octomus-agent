@@ -199,12 +199,8 @@ func RedactJSON(value any) any {
 // kept verbatim) and scrubs every string in place. Exports use it so redaction
 // happens after the facts are computed from the saved records.
 func RedactedValue(value any) (map[string]any, error) {
-	data, err := wirejson.Marshal(value)
+	generic, err := wirejson.GenericMap(value)
 	if err != nil {
-		return nil, err
-	}
-	var generic map[string]any
-	if err := decodeJSON(data, &generic); err != nil {
 		return nil, err
 	}
 	RedactJSON(generic)

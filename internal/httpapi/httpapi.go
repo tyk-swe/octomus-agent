@@ -6,7 +6,6 @@
 package httpapi
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
@@ -262,8 +261,7 @@ func writeAPIError(w http.ResponseWriter, status int, message string) {
 // server-generated settings transform metadata, then writes compact JSON.
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	_, settingsView := value.(*engine.SettingsView)
-	var generic any
-	err := genericJSON(value, &generic)
+	generic, err := wirejson.Generic(value)
 	var out []byte
 	if err == nil {
 		if object, ok := generic.(map[string]any); ok && settingsView {
@@ -290,18 +288,6 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(out)
-}
-
-// genericJSON re-encodes value into dst as generic JSON (maps, slices and
-// json.Number), so numbers keep their exact encoded form.
-func genericJSON(value, dst any) error {
-	data, err := wirejson.Marshal(value)
-	if err != nil {
-		return err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	return decoder.Decode(dst)
 }
 
 // writeRawJSON answers without redaction: healthz and assets never carry
@@ -467,8 +453,8 @@ func (a *api) taskDetail(_ http.ResponseWriter, _ *http.Request, params map[stri
 	if task == nil {
 		return 0, nil, engine.ErrTaskNotFound
 	}
-	var value map[string]any
-	if err := genericJSON(*task, &value); err != nil {
+	value, err := wirejson.GenericMap(*task)
+	if err != nil {
 		return 0, nil, err
 	}
 	value["allowed_actions"] = task.AllowedActions()
@@ -613,8 +599,8 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	} else {
 		body = result
 	}
-	var checked any
-	if err := genericJSON(cfg, &checked); err != nil {
+	checked, err := wirejson.Generic(cfg)
+	if err != nil {
 		return 0, nil, err
 	}
 	body["checked_config"] = checked

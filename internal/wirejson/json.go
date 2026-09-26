@@ -219,6 +219,37 @@ func markedPair(data []byte, err error) ([]byte, error) {
 	return data, marked(err)
 }
 
+// Generic re-reads value's Marshal output as generic JSON (maps, slices,
+// strings, booleans, nil and json.Number), so every number keeps its exact
+// encoded spelling. Marshal failures stay marked; a decode failure, which
+// Marshal's own output never causes, is plain.
+func Generic(value any) (any, error) {
+	var result any
+	if err := genericInto(value, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GenericMap is Generic for a value that encodes as a JSON object.
+func GenericMap(value any) (map[string]any, error) {
+	var result map[string]any
+	if err := genericInto(value, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func genericInto(value, dst any) error {
+	data, err := Marshal(value)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(dst)
+}
+
 // Record serializes a value alias with non-null empty containers.
 func Record(value any) ([]byte, error) {
 	return markedPair(record(value))
