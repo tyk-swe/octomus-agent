@@ -218,6 +218,19 @@ func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
 	if len(cycle.Proposals) != 1 || cycle.Proposals[0].ID != "d0-feature" || cycle.Proposals[0].Decision != model.DecisionAccepted {
 		t.Fatalf("audit did not record the consolidated decision: %+v", cycle.Proposals)
 	}
+	// Roles that write proposals are told the bounds planning enforces.
+	proposing := 0
+	for _, turn := range fixture.planningTurns() {
+		if strings.HasPrefix(turn.Prompt, "Discover worthwhile") || strings.HasPrefix(turn.Prompt, "Act as final orchestrator") {
+			proposing++
+			if !strings.Contains(turn.Prompt, "Hard limits: title at most 200 bytes; always set problem_key") {
+				t.Fatalf("proposal prompt omits the metadata bounds: %.120s", turn.Prompt)
+			}
+		}
+	}
+	if proposing != int(fixture.cfg.DiscoveryAgents)+1 {
+		t.Fatalf("checked %d proposal prompts; want every discovery and the consolidation", proposing)
+	}
 	control, err := app.Control()
 	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil {
 		t.Fatalf("audit changed queue mode: %+v, %v", control, err)

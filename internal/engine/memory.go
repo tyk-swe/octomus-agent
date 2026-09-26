@@ -228,8 +228,17 @@ func ValidateDecisionMemory(proposals []model.Proposal, memory []any) error {
 		}
 	}
 	for _, proposal := range proposals {
-		if len(proposal.ProblemKey) > 200 || len(proposal.Reconsiders) > 100 || len(proposal.RelevantPaths) > 40 {
-			return errors.New("Proposal decision metadata exceeds bounds")
+		// Every proposal is recorded in decision memory, whatever its decision,
+		// so name the proposal and field: planning replaced an empty
+		// problem_key with the title-derived identity before this check.
+		if len(proposal.ProblemKey) > 200 {
+			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: problem identity is %d bytes (limit 200; an empty problem_key falls back to the title)", proposal.ID, len(proposal.ProblemKey))
+		}
+		if len(proposal.Reconsiders) > 100 {
+			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: %d reconsiders (limit 100)", proposal.ID, len(proposal.Reconsiders))
+		}
+		if len(proposal.RelevantPaths) > 40 {
+			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: %d relevant_paths (limit 40)", proposal.ID, len(proposal.RelevantPaths))
 		}
 		for _, id := range proposal.Reconsiders {
 			target, ok := requests[id]
