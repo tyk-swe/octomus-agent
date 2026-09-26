@@ -10,7 +10,7 @@ import threading
 import time
 
 from e2e import BINARY, Service, base_config, poll, setup
-from e2e_runners import configuration, stop_peers
+from e2e_runners import configuration, stop_service_and_peers
 
 ENV = 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'
 SECRET = 'synthetic-path-secret-9f27c1/query?key=synthetic-query-secret-4d80'
@@ -80,7 +80,7 @@ def assert_no_url_leak(root, service):
     for payload in payloads:
         assert SECRET not in json.dumps(payload), 'webhook URL leaked into the API'
     for args in [['--usage-report']] + [['--export-run', cycle['id']] for cycle in state['cycles']]:
-        result = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), *args], env=service.env, capture_output=True, text=True, check=True)
+        result = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), *args], env=service.env, capture_output=True, text=True, check=True, timeout=30)
         assert SECRET not in result.stdout and SECRET not in result.stderr
     db = sqlite3.connect(root / '.octomus/state.db')
     leaked = []
@@ -163,10 +163,10 @@ def scenario(mode):
                 return
             raise AssertionError(f'unknown notifications scenario {mode}')
         finally:
-            service.stop()
-            service.log.close()
-            stop_peers(root)
-            receiver.close()
+            try:
+                stop_service_and_peers(service, root)
+            finally:
+                receiver.close()
 
 
 if __name__ == '__main__':

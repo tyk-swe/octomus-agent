@@ -44,6 +44,15 @@ def stop_peers(root):
             pass
 
 
+def stop_service_and_peers(service, root):
+    """Scenario teardown: OpenCode peers are stopped even when the service stop fails."""
+    try:
+        service.stop()
+    finally:
+        stop_peers(root)
+        service.log.close()
+
+
 def successful_workflow(mode):
     with tempfile.TemporaryDirectory(prefix='octomus-runners-') as directory:
         root = Path(directory)
@@ -97,9 +106,7 @@ def successful_workflow(mode):
             assert report['tasks'][0]['repair_route'] == c['repair_route']
             print(f'PASS {mode}: exact routes, fresh reviews, persistent repairs and verified delivery')
         finally:
-            service.stop()
-            stop_peers(root)
-            service.log.close()
+            stop_service_and_peers(service, root)
 
 
 def failed_review(mode):
@@ -135,9 +142,7 @@ def failed_review(mode):
                 assert all(s['route']['backend'] == 'opencode' for s in task['sessions'])
             print(f'PASS OpenCode {mode}: failed review cannot authorize publication')
         finally:
-            service.stop()
-            stop_peers(root)
-            service.log.close()
+            stop_service_and_peers(service, root)
 
 
 def audit():
@@ -161,9 +166,7 @@ def audit():
             assert len(usage_report(root)['admissions']) == 13
             print('PASS OpenCode audit: unavailable execution runners do not block planning')
         finally:
-            service.stop()
-            stop_peers(root)
-            service.log.close()
+            stop_service_and_peers(service, root)
 
 
 def task_deadline():
@@ -188,9 +191,7 @@ def task_deadline():
             assert not (root / 'publications.jsonl').exists()
             print('PASS task deadline: abort finishes before server cleanup; no detached shell or publication')
         finally:
-            service.stop()
-            stop_peers(root)
-            service.log.close()
+            stop_service_and_peers(service, root)
 
 
 if __name__ == '__main__':

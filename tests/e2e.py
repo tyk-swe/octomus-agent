@@ -2,7 +2,6 @@
 """Runs the actual service, scheduler, SQLite, and Git against deterministic external peers.
 No network writes, real Codex turns, credentials, or spending. Run after make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
 """
-import contextlib
 import json
 import os
 from pathlib import Path
@@ -44,6 +43,15 @@ def poll(predicate, seconds, interval=0.1, tick=None):
     return None
 
 
+def service_log(root, tail=None):
+    """Returns root/service.log for failure messages, only its last `tail` lines when given."""
+    try:
+        text = (root / 'service.log').read_text(errors='replace')
+    except OSError as error:
+        return f'<service.log unavailable: {error!r}>'
+    return text if tail is None else '\n'.join(text.splitlines()[-tail:])
+
+
 def base_config(service, commands, **overrides):
     """Loads the saved display configuration every scenario starts from.
 
@@ -72,7 +80,14 @@ class Service:
     def stop(self, crash=False):
         if self.process and self.process.poll() is None:
             self.process.kill() if crash else self.process.terminate()
-            self.process.wait(timeout=15)
+            try:
+                self.process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                # Never leave the service running; the raised error chains any
+                # scenario failure already in flight.
+                self.process.kill()
+                self.process.wait(timeout=5)
+                raise AssertionError(f'service did not stop within 15s of {"SIGKILL" if crash else "SIGTERM"}; service.log tail:\n{service_log(self.root, tail=100)}')
 
     def request(self, path, method='GET', value=None, api=True):
         request = urllib.request.Request(f'http://127.0.0.1:{self.port}{"/api" if api else ""}{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
@@ -101,14 +116,35 @@ class Service:
         return self.request('/config', 'PUT', {'expected_revision': revision, 'config': config})
 
     def wait(self, predicate, label, seconds=45):
+        last_error = None
+
+        def attempt():
+            # poll() retries these; remember the latest for the timeout report.
+            nonlocal last_error
+            try:
+                return predicate()
+            except urllib.error.HTTPError as error:
+                try:
+                    body = error.read()[:2000].decode(errors='replace')
+                except OSError as read_error:
+                    body = f'<body unavailable: {read_error!r}>'
+                last_error = f'HTTP {error.code}: {body}'
+                raise
+            except (OSError, urllib.error.URLError) as error:
+                last_error = repr(error)
+                raise
+
         def exited():
             if self.process and self.process.poll() is not None:
-                raise AssertionError(f'{label}: service exited\n{(self.root / "service.log").read_text()}')
-        result = poll(predicate, seconds, tick=exited)
+                raise AssertionError(f'{label}: service exited\n{service_log(self.root)}')
+        result = poll(attempt, seconds, tick=exited)
         if result:
             return result
-        state = self.request('/state')
-        raise AssertionError(f'{label} timed out: {json.dumps(state, indent=2)}')
+        try:
+            state = json.dumps(self.request('/state'), indent=2)
+        except (OSError, urllib.error.URLError, ValueError) as error:
+            state = f'<state unavailable: {error!r}>'
+        raise AssertionError(f'{label} timed out after {seconds}s; last error: {last_error}\nstate: {state}\nservice.log tail:\n{service_log(self.root, tail=100)}')
 
     def configure(self):
         commands = ['false'] if (self.root / 'failed-verification').exists() else ['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done']
@@ -181,7 +217,7 @@ def existing_pr(root):
 
 def usage_report(root):
     # Runs concurrently with the service lock, with no token or dashboard assets.
-    report = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--usage-report'], text=True))
+    report = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--usage-report'], text=True, timeout=30))
     assert sum(d['admissions'] for d in report['daily']) == len(report['admissions'])
     assert all(d['unattributed_admissions'] == 0 for d in report['daily'])
     return report
@@ -362,7 +398,7 @@ def scenario(mode):
             if mode == 'normal':
                 service.stop()
                 (root / 'version').write_text('0.0.0-fixture')
-                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor'], env=service.env, capture_output=True, text=True, check=True)
+                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor'], env=service.env, capture_output=True, text=True, check=True, timeout=60)
                 assert json.loads(diagnostic.stdout)['warnings']
                 assert 'mismatch' in diagnostic.stderr
             print(f'PASS {mode}: complete reviewed delivery with no duplicate PRs')
@@ -617,7 +653,7 @@ def audit_scenario(mode):
             assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
             if mode == 'accepted':
                 service.stop()
-                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor', '--audit'], env=service.env, capture_output=True, text=True, check=True)
+                diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor', '--audit'], env=service.env, capture_output=True, text=True, check=True, timeout=60)
                 assert json.loads(diagnostic.stdout)['mode'] == 'audit'
             print(f'PASS audit-{mode}: durable decisions, paused queue, no publication')
         finally:
