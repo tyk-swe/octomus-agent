@@ -472,13 +472,12 @@ func DiagnosticText(binary string, output *ProcessOutput) (string, error) {
 	return text, nil
 }
 
-func checked(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (string, error) {
-	output, err := Capture(ctx, binary, args, cwd, seconds, mode)
+// RunMachine executes a command whose stdout is machine output: fail closed on
+// any command failure, truncation past the machine ceiling, or invalid UTF-8.
+func RunMachine(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
+	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureMachine)
 	if err != nil {
 		return "", err
-	}
-	if mode == CaptureDiagnostic {
-		return DiagnosticText(binary, output)
 	}
 	if err := ensureSuccess(binary, output); err != nil {
 		return "", err
@@ -490,18 +489,6 @@ func checked(ctx context.Context, binary string, args []string, cwd string, seco
 		return "", errors.New("Machine output is not valid UTF-8")
 	}
 	return string(output.Stdout.Bytes), nil
-}
-
-// Run executes a command for human-readable evidence, keeping bounded stdout
-// and stderr on success.
-func Run(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
-	return checked(ctx, binary, args, cwd, seconds, CaptureDiagnostic)
-}
-
-// RunMachine executes a command whose stdout is machine output: fail closed on
-// any command failure, truncation past the machine ceiling, or invalid UTF-8.
-func RunMachine(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
-	return checked(ctx, binary, args, cwd, seconds, CaptureMachine)
 }
 
 // ShellCheck runs one operator-configured verification command through

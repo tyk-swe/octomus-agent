@@ -176,7 +176,7 @@ func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := process.Run(ctx, "bash",
+		_, err := process.RunMachine(ctx, "bash",
 			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, 10)
 		done <- err
 	}()
@@ -347,7 +347,7 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 	// counted in the baseline; a leak only ever grows the count.
 	for i := 0; i < 3; i++ {
 		_, _ = process.Capture(context.Background(), "octomus-no-such-binary", nil, temp, 10, process.CaptureDiagnostic)
-		_, _ = process.Run(context.Background(), "true", nil, temp, 10)
+		_, _ = process.RunMachine(context.Background(), "true", nil, temp, 10)
 	}
 	runtime.GC()
 	beforeFDs, beforeG := fds(), runtime.NumGoroutine()
@@ -359,7 +359,7 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 		}
 	}
 	for i := 0; i < 10; i++ {
-		if _, err := process.Run(context.Background(), "true", nil, temp, 10); err != nil {
+		if _, err := process.RunMachine(context.Background(), "true", nil, temp, 10); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -383,7 +383,7 @@ func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
 	script := fmt.Sprintf(`printf 't=%%s w=%%s g=%%s' "${%s-unset}" "${%s-unset}" "$GIT_TERMINAL_PROMPT"`,
 		redact.TokenEnv, redact.WebhookEnv)
-	out, err := process.Run(context.Background(), "bash", []string{"-c", script}, temp, 10)
+	out, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, temp, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +411,7 @@ func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
 	t.Setenv("GIT_CONFIG_KEY_0", "user.name")
 	t.Setenv("GIT_CONFIG_VALUE_0", "Kept Operator")
 	script := `for key in "$@"; do printf '%s=%s ' "$key" "${!key-unset}"; done`
-	out, err := process.Run(context.Background(), "bash",
+	out, err := process.RunMachine(context.Background(), "bash",
 		append([]string{"-c", script, "env"}, append(located, "GIT_CONFIG_COUNT")...), temp, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -420,7 +420,7 @@ func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
 	for _, key := range located {
 		want.WriteString(key + "=unset ")
 	}
-	want.WriteString("GIT_CONFIG_COUNT=1")
+	want.WriteString("GIT_CONFIG_COUNT=1 ")
 	if out != want.String() {
 		t.Fatalf("child environment = %q; want %q", out, want.String())
 	}

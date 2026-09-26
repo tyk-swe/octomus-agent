@@ -468,18 +468,6 @@ func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (mo
 	return capacity, started, err
 }
 
-// BeginCycle saves a new cycle and the control that references it together.
-func (s *Store) BeginCycle(cycle model.Cycle, control model.Control) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.transaction(false, func(c *sql.Conn) error {
-		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {
-			return err
-		}
-		return txPut(c, "settings", "control", control)
-	})
-}
-
 // BeginCycleIfAffordable atomically revalidates the exact live configuration,
 // the expected control record, and planning affordability before exposing a
 // running cycle or changing the RunOnce phase.
