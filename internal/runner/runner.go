@@ -242,34 +242,45 @@ func (r *Runners) ValidateRoutes(cfg config.Config, cwd string, audit bool) erro
 }
 
 func (r *Runners) Start(route config.Route, cwd string, resume *string) (string, error) {
-	session, err := func() (string, error) {
-		if err := r.CheckRoute(route, cwd); err != nil {
-			return "", err
-		}
-		client, err := r.Client(route.Backend, cwd)
-		if err != nil {
-			return "", err
-		}
-		return client.Start(route, cwd, resume)
-	}()
+	if err := r.CheckRoute(route, cwd); err != nil {
+		return "", unavailable(err)
+	}
+	client, err := r.Client(route.Backend, cwd)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
+		return "", unavailable(err)
+	}
+	session, err := client.Start(route, cwd, resume)
+	if err != nil {
+		return "", unavailable(err)
 	}
 	return session, nil
 }
 
 func (r *Runners) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
-	answer, err := func() (string, error) {
-		client, err := r.Client(route.Backend, cwd)
-		if err != nil {
-			return "", err
-		}
-		return client.Turn(session, route, cwd, prompt, schema)
-	}()
+	client, err := r.Client(route.Backend, cwd)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
+		return "", unavailable(err)
+	}
+	answer, err := client.Turn(session, route, cwd, prompt, schema)
+	if err != nil {
+		return "", unavailable(err)
 	}
 	return answer, nil
+}
+
+// unavailable classifies a non-nil runner failure as runner-unavailable,
+// keeping the cause in the chain.
+func unavailable(err error) error {
+	return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
+}
+
+// requireRoute is the exact-route guard every adapter applies before a
+// session call.
+func requireRoute(route config.Route, backend config.Backend) error {
+	if err := route.Validate(true); err != nil {
+		return err
+	}
+	return route.RequireBackend(backend)
 }
 
 // Close stops every started client once and aggregates their failures.

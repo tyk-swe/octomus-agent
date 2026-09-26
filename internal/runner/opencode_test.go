@@ -180,8 +180,52 @@ func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 				if !strings.Contains(err.Error(), "interactive input") {
 					t.Fatalf("%s error: %v", mode, err)
 				}
+			case "failed":
+				if err.Error() != "OpenCode turn failed: StructuredOutputError" {
+					t.Fatalf("%s error must name the runner failure: %v", mode, err)
+				}
 			}
 		})
+	}
+}
+
+// A session.error event and an errored response both name the runner's error,
+// falling back to "runtime error" when the error carries no string name.
+func TestOpenCodeErrorsNameTheRunnerFailure(t *testing.T) {
+	client := &OpenCode{}
+	for _, tc := range []struct {
+		name  string
+		error any
+		want  string
+	}{
+		{"named", map[string]any{"name": "ProviderAuthError", "data": map[string]any{}}, "ProviderAuthError"},
+		{"unnamed", map[string]any{"data": map[string]any{}}, "runtime error"},
+		{"non-string name", map[string]any{"name": json.Number("5")}, "runtime error"},
+		{"non-object", "failed", "runtime error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := map[string]any{"type": "session.error", "properties": map[string]any{"sessionID": "ses_a", "error": tc.error}}
+			err := client.handleEvent(event, "ses_a", "msg_parent", route(), "/workspace")
+			if err == nil || err.Error() != "OpenCode session failed: "+tc.want {
+				t.Fatalf("session.error: %v", err)
+			}
+			response := map[string]any{"info": map[string]any{
+				"id": "msg_reply", "sessionID": "ses_a", "parentID": "msg_parent", "role": "assistant",
+				"providerID": "fixture", "modelID": "fixture-model", "variant": "high", "error": tc.error,
+			}}
+			if _, err := client.validateTurn(response, "ses_a", "msg_parent", route(), nil); err == nil || err.Error() != "OpenCode turn failed: "+tc.want {
+				t.Fatalf("errored response: %v", err)
+			}
+		})
+	}
+	// A session.error event without an error document still fails, and another
+	// session's error is ignored.
+	event := map[string]any{"type": "session.error", "properties": map[string]any{"sessionID": "ses_a"}}
+	if err := client.handleEvent(event, "ses_a", "msg_parent", route(), "/workspace"); err == nil || err.Error() != "OpenCode session failed: runtime error" {
+		t.Fatalf("session.error without an error document: %v", err)
+	}
+	if err := client.handleEvent(event, "ses_other", "msg_parent", route(), "/workspace"); err != nil {
+		t.Fatalf("another session's error must be ignored: %v", err)
 	}
 }
 

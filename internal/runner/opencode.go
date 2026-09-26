@@ -378,10 +378,7 @@ func (o *OpenCode) Models(cwd string) ([]Model, error) {
 }
 
 func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string, error) {
-	if err := route.Validate(true); err != nil {
-		return "", err
-	}
-	if err := route.RequireBackend(config.BackendOpencode); err != nil {
+	if err := requireRoute(route, config.BackendOpencode); err != nil {
 		return "", err
 	}
 	permissions := []any{
@@ -449,10 +446,7 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 }
 
 func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
-	if err := route.Validate(true); err != nil {
-		return "", err
-	}
-	if err := route.RequireBackend(config.BackendOpencode); err != nil {
+	if err := requireRoute(route, config.BackendOpencode); err != nil {
 		return "", err
 	}
 	seg, err := segment(session)
@@ -631,13 +625,7 @@ func (o *OpenCode) handleEvent(event any, session, message string, route config.
 			return checkModel(info, route)
 		}
 	case "session.error":
-		name := "runtime error"
-		if errorDoc, ok := asObject(props["error"]); ok {
-			if s, ok := strAt(errorDoc, "name"); ok {
-				name = s
-			}
-		}
-		return fmt.Errorf("OpenCode session failed: %s", name)
+		return fmt.Errorf("OpenCode session failed: %s", errorName(props["error"]))
 	case "message.part.updated":
 		part, _ := asObject(props["part"])
 		if part["type"] == "tool" {
@@ -674,13 +662,7 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 		return "", err
 	}
 	if info["error"] != nil {
-		name := "runtime error"
-		if errorDoc, ok := asObject(info["error"]); ok {
-			if s, ok := strAt(errorDoc, "name"); ok {
-				name = s
-			}
-		}
-		return "", fmt.Errorf("OpenCode turn failed: %s", name)
+		return "", fmt.Errorf("OpenCode turn failed: %s", errorName(info["error"]))
 	}
 	timeDoc, _ := asObject(info["time"])
 	if _, ok := timeDoc["completed"].(json.Number); !ok {
@@ -733,6 +715,16 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 		return "", fmt.Errorf("OpenCode returned no final result")
 	}
 	return answer.String(), nil
+}
+
+// errorName names an OpenCode error document, or "runtime error" when the
+// value carries no string name.
+func errorName(value any) string {
+	doc, _ := asObject(value)
+	if name, ok := strAt(doc, "name"); ok {
+		return name
+	}
+	return "runtime error"
 }
 
 // sseLoop is the owned SSE reader: arbitrary HTTP and UTF-8 fragmentation,

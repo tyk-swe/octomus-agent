@@ -367,10 +367,7 @@ func (c *Codex) Models(cwd string) ([]Model, error) {
 }
 
 func (c *Codex) Start(route config.Route, cwd string, resume *string) (string, error) {
-	if err := route.Validate(true); err != nil {
-		return "", err
-	}
-	if err := route.RequireBackend(config.BackendCodex); err != nil {
+	if err := requireRoute(route, config.BackendCodex); err != nil {
 		return "", err
 	}
 	params := map[string]any{
@@ -417,10 +414,7 @@ func (c *Codex) Start(route config.Route, cwd string, resume *string) (string, e
 }
 
 func (c *Codex) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
-	if err := route.Validate(true); err != nil {
-		return "", err
-	}
-	if err := route.RequireBackend(config.BackendCodex); err != nil {
+	if err := requireRoute(route, config.BackendCodex); err != nil {
 		return "", err
 	}
 	answer, err := c.turn(session, route, cwd, prompt, schema)
