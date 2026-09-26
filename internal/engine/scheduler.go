@@ -147,16 +147,33 @@ func (a *App) Tick() error {
 	return nil
 }
 
-func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
+// pauseLocked is the scheduler's pause. It durably pauses control, recording
+// message as its error when set, and then invalidates the process-local PR
+// observations as Pause does, so a refresh in flight cannot authorize work
+// after a later resume. Callers hold the gate and write their event after it.
+func (a *App) pauseLocked(control *model.Control, message *string) error {
 	control.SetMode(model.OperatingModePaused)
+	if message != nil {
+		control.Error = message
+	}
+	if err := a.Store.SaveControl(*control); err != nil {
+		return err
+	}
+	a.invalidatePrObservation()
+	return nil
+}
+
+func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 	message := "Run once completed; new work paused"
 	if unresolved > 0 {
 		message = "Run once finished with unresolved work"
 	}
-	if err := a.Store.Event("system", "run_complete", message); err != nil {
+	// The event follows the durable pause, so a failed save leaves no record
+	// of a transition that did not happen.
+	if err := a.pauseLocked(&control, nil); err != nil {
 		return err
 	}
-	return a.Store.SaveControl(control)
+	return a.Store.Event("system", "run_complete", message)
 }
 
 func (a *App) maybePlan(cfg config.Config, control model.Control) error {
@@ -200,9 +217,7 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 				_ = a.handlePlanningCapacity(live, capacityErr.capacity)
 			} else if loadErr == nil && controlsEqual(live, expected) && live.Mode == model.OperatingModeRunOnce {
 				message := store.ErrorMessage(err)
-				live.SetMode(model.OperatingModePaused)
-				live.Error = &message
-				_ = a.Store.SaveControl(live)
+				_ = a.pauseLocked(&live, &message)
 				_ = a.Store.Event("system", "planning_error", message)
 			} else if loadErr == nil && controlsEqual(live, expected) && live.Mode == model.OperatingModeContinuous {
 				message := store.ErrorMessage(err)
@@ -224,12 +239,9 @@ func (a *App) handlePlanningCapacity(control model.Control, capacity model.Plann
 		return a.Store.SaveControl(control)
 	}
 	message := capacity.Message()
-	control.SetMode(model.OperatingModePaused)
-	control.Error = &message
-	if err := a.Store.SaveControl(control); err != nil {
+	if err := a.pauseLocked(&control, &message); err != nil {
 		return err
 	}
-	a.invalidatePrObservation()
 	return a.Store.Event("system", "planning_capacity", message)
 }
 

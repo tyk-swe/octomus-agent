@@ -68,18 +68,15 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 		} else {
 			control.Error = nil
 		}
-		failedRunOnce := err != nil && cycle.Mode == model.CycleModeExecution && control.Mode == model.OperatingModeRunOnce
-		if failedRunOnce {
-			control.SetMode(model.OperatingModePaused)
-			a.invalidatePrObservation()
-		}
 		if cycle.Mode == model.CycleModeExecution {
 			delay := IdleDelay(cfg.CycleIntervalSeconds, control.IdleStreak)
 			control.NextCycleAt = time.Now().Unix() + int64(delay)
 		}
-		_ = a.Store.SaveControl(control)
-		if failedRunOnce {
+		if err != nil && cycle.Mode == model.CycleModeExecution && control.Mode == model.OperatingModeRunOnce {
+			_ = a.pauseLocked(&control, &message)
 			_ = a.Store.Event(cycle.ID, "planning_error", message)
+		} else {
+			_ = a.Store.SaveControl(control)
 		}
 	}
 	a.gate.Unlock()
