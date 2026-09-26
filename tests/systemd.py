@@ -24,6 +24,8 @@ try:
     script.write_text(f'''#!/bin/sh
 set -eu
 touch '{root}/home/state' '{root}/checkout/source'
+stat -c %a '{root}/home/state' > '{root}/home/state.mode'
+grep '^NoNewPrivs:' /proc/self/status > '{root}/home/no-new-privs'
 touch /tmp/octomus-private-fixture
 if touch '{root}/forbidden/escape'; then exit 1; fi
 sleep 120 &
@@ -43,12 +45,17 @@ echo $! > '{root}/home/child.pid'
     properties = []
     for line in (PROJECT / 'deploy/octomus-agent.service').read_text().splitlines():
         key = line.partition('=')[0]
-        if key in ['NoNewPrivileges', 'ProtectSystem', 'PrivateTmp', 'ProtectKernelTunables', 'RestrictSUIDSGID', 'KillMode', 'TimeoutStopSec']:
+        if key in ['NoNewPrivileges', 'ProtectSystem', 'PrivateTmp', 'ProtectKernelTunables', 'RestrictSUIDSGID', 'UMask', 'KillMode', 'TimeoutStopSec']:
             properties += ['-p', line]
     properties += ['-p', f'ReadWritePaths={root}/home {root}/checkout', '-p', 'User=nobody']
     subprocess.run(['systemd-run', '--unit', unit, '--wait', '--pipe', *properties, str(script)], check=True)
     assert (root / 'home/state').exists() and (root / 'checkout/source').exists()
     assert not (root / 'forbidden/escape').exists()
+    # UMask=0077 keeps state, logs and workspaces private to the service user.
+    mode = (root / 'home/state.mode').read_text().strip()
+    assert mode == '600', f'Service-created file has mode {mode}, not 600 (UMask=0077)'
+    no_new_privs = (root / 'home/no-new-privs').read_text().split()
+    assert no_new_privs == ['NoNewPrivs:', '1'], f'NoNewPrivileges not in effect: {no_new_privs}'
     pid = (root / 'home/child.pid').read_text().strip()
     # Gone means reaped or a zombie; the state follows the last ')', since the
     # command name before it may contain spaces or parentheses.
@@ -57,7 +64,7 @@ echo $! > '{root}/home/child.pid'
     except (FileNotFoundError, ProcessLookupError):
         state = 'reaped'
     assert state in ['reaped', 'Z', 'X'], f'Child survived control-group cleanup (state {state})'
-    print('PASS systemd: allowed writes, protected filesystem and child cleanup')
+    print('PASS systemd: allowed writes, protected filesystem, private file mode, no new privileges and child cleanup')
 finally:
     subprocess.run(['systemctl', 'stop', unit], check=False, capture_output=True)
     subprocess.run(['systemctl', 'reset-failed', unit], check=False, capture_output=True)
