@@ -181,8 +181,9 @@ func (a *App) connect(entity string) runner.Connector {
 	return runner.DefaultConnector(a.Store, entity)
 }
 
-// New builds an idle App over state and dataDir. Nothing runs until the
-// service owner calls Recover and then Run (or Tick in tests).
+// New builds an idle App over state and dataDir and starts no work. The
+// service owner calls Recover before exposing operator controls, then Run to
+// schedule (tests drive Tick directly).
 func New(state *store.Store, dataDir string, options ...Option) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
