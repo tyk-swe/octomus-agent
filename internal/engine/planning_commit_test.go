@@ -74,7 +74,7 @@ func TestCommitTasksQueuesEachAcceptedProposal(t *testing.T) {
 		}
 		ids[task.ID] = struct{}{}
 		if task.Status != model.StatusQueued || task.CycleID != cycle.ID || task.RunID == nil || *task.RunID != runID {
-			t.Fatalf("%s is not a queued member of the plan's batch: status=%s cycle=%s run=%v", name, task.Status, task.CycleID, task.RunID)
+			t.Fatalf("%s is not a queued member of the plan's batch: status=%s cycle=%s run=%s", name, task.Status, task.CycleID, optionalText(task.RunID))
 		}
 		if task.Route.String() != cfg.Tiers[task.Proposal.Tier].String() || task.Config.GitHubRepo != cfg.GitHubRepo {
 			t.Fatalf("%s did not snapshot its tier route and configuration: %s", name, task.Route)

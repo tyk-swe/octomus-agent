@@ -127,7 +127,7 @@ func TestExecutionDeliversFullLifecycle(t *testing.T) {
 		t.Fatalf("task did not publish: %+v", saved)
 	}
 	if saved.OutputCommit == nil || *saved.OutputCommit == saved.SourceRevision {
-		t.Fatalf("missing output checkpoint: %+v", saved.OutputCommit)
+		t.Fatalf("missing output checkpoint: %s", optionalText(saved.OutputCommit))
 	}
 	if saved.PRNumber == nil || saved.PRURL == nil || !strings.Contains(*saved.PRURL, "github.com/fixture/project/pull/") {
 		t.Fatalf("missing publication identity: %+v", saved)

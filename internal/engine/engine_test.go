@@ -274,7 +274,7 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	}
 	member := loadTask(t, state, task.ID)
 	if member.RunID == nil || *member.RunID != started.Batch.ID {
-		t.Fatalf("original queued task is not a batch member: %+v", member.RunID)
+		t.Fatalf("original queued task is not a batch member: run=%s", optionalText(member.RunID))
 	}
 	later := queuedTask(cfg, "later", cfg.DefaultBranch, "octomus/later")
 	if err := state.Put("task", later.ID, later); err != nil {

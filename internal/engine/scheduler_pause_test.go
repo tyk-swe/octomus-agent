@@ -70,7 +70,7 @@ func TestSchedulerPausesInvalidatePrObservations(t *testing.T) {
 				t.Fatalf("run once did not pause: %+v, %v", paused, err)
 			}
 			if tc.failure != "" && (paused.Error == nil || *paused.Error != tc.failure) {
-				t.Fatalf("failed pass recorded error %v; want %q", paused.Error, tc.failure)
+				t.Fatalf("failed pass recorded error %s; want %q", optionalText(paused.Error), tc.failure)
 			}
 			app.runtimeMu.Lock()
 			observation, refresh := app.runtime.prObservation, app.runtime.prRefresh
