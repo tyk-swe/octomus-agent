@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -319,7 +320,7 @@ func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	found := map[string]struct{}{}
+	matched := map[string]struct{}{}
 	var ids []string
 	for _, target := range order {
 		identities := targets[target]
@@ -344,9 +345,9 @@ func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([
 				}
 				saved := model.ProblemIdentity(title.String, key.String)
 				for _, proposed := range identities {
-					if equalASCIIFold(strings.TrimSpace(title.String), proposed.title) || saved == proposed.identity {
-						if _, dup := found[id]; !dup {
-							found[id] = struct{}{}
+					if config.EqualASCII(strings.TrimSpace(title.String), proposed.title) || saved == proposed.identity {
+						if _, dup := matched[id]; !dup {
+							matched[id] = struct{}{}
 							ids = append(ids, id)
 						}
 						break
@@ -372,26 +373,6 @@ func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([
 		tasks = append(tasks, task)
 	}
 	return tasks, nil
-}
-
-// equalASCIIFold folds only ASCII letters.
-func equalASCIIFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		x, y := a[i], b[i]
-		if x >= 'A' && x <= 'Z' {
-			x += 'a' - 'A'
-		}
-		if y >= 'A' && y <= 'Z' {
-			y += 'a' - 'A'
-		}
-		if x != y {
-			return false
-		}
-	}
-	return true
 }
 
 func (s *Store) HasUnresolvedTasks() (bool, error) {
