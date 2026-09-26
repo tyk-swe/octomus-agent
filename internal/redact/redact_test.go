@@ -2,7 +2,9 @@ package redact_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +12,37 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
+
+// Secret-bearing environment values are read once per process, so the test
+// binary exports them before any test runs.
+const (
+	operatorToken = "synthetic-operator-access-value"
+	webhookURL    = "https://hooks.example.invalid/T000/synthetic-path"
+)
+
+func TestMain(m *testing.M) {
+	if err := os.Setenv(redact.TokenEnv, operatorToken); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv(redact.WebhookEnv, webhookURL); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
+// The operator token and the webhook destination are scrubbed wherever they
+// appear, although neither matches a token pattern: the webhook variable's
+// name carries no TOKEN or SECRET marker, so it is named explicitly.
+func TestScrubsSecretEnvironmentValues(t *testing.T) {
+	for _, value := range []string{operatorToken, webhookURL} {
+		if got := redact.Secrets("before " + value + " after"); got != "before [redacted] after" {
+			t.Fatalf("Secrets(%q) = %q", value, got)
+		}
+		if got := redact.Error(errors.New("failed: " + value)); got != "failed: [redacted]" {
+			t.Fatalf("Error(%q) = %q", value, got)
+		}
+	}
+}
 
 // canonical returns the compact, key-sorted JSON of a generic value.
 func canonical(t *testing.T, value any) string {
