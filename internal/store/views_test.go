@@ -29,7 +29,7 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	published.ID = "published"
 	published.Status = model.StatusPublished
 	published.OutputCommit = str("out00001")
-	published.PRNumber = ptrU64(9)
+	published.PRNumber = new(uint64(9))
 	published.Lifecycle.ArchivedAt = str("2020-01-01T00:00:00Z")
 	blocked := task()
 	blocked.ID = "blocked"
@@ -74,7 +74,7 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 		}
 		return out
 	}
-	if got := ids(scheduling); len(got) != 3 || !contains(got, "active") || !contains(got, "queued") || !contains(got, "reserved") {
+	if got := ids(scheduling); len(got) != 3 || !slices.Contains(got, "active") || !slices.Contains(got, "queued") || !slices.Contains(got, "reserved") {
 		t.Fatalf("scheduling: %v", got)
 	}
 	withStatus, err := s.TasksWithStatus([]string{"reviewing", "blocked"})
@@ -344,15 +344,4 @@ func TestCleanupCandidatesResumeAfterTheCursorAndWrap(t *testing.T) {
 			t.Fatalf("baseline window after %q = %v; want %v", after, got, want)
 		}
 	}
-}
-
-func ptrU64(v uint64) *uint64 { return &v }
-
-func contains(list []string, want string) bool {
-	for _, item := range list {
-		if item == want {
-			return true
-		}
-	}
-	return false
 }

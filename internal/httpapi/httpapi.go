@@ -174,7 +174,6 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 			allowed = append(allowed, route.method)
 		}
 		if route.method == r.Method {
-			route := route
 			matched = &route
 			params = candidate
 			break

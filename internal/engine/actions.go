@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
@@ -191,13 +192,7 @@ func (a *App) eligibleTask(id, action string) (*model.Task, error) {
 	if task == nil {
 		return nil, ErrTaskNotFound
 	}
-	allowed := false
-	for _, candidate := range task.AllowedActions() {
-		if candidate == action {
-			allowed = true
-		}
-	}
-	if !allowed {
+	if !slices.Contains(task.AllowedActions(), action) {
 		return nil, conflictError("This action is not eligible for the task's recorded failure and workspace state")
 	}
 	// An owned workspace cleanup in flight wins over every action — retry,

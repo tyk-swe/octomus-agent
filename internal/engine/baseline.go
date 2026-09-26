@@ -136,21 +136,20 @@ func (a *App) baselineRuntimeIneligibility() (*string, error) {
 	planning := a.runtime.planning()
 	reconciling := a.runtime.reconcilingPublication
 	a.runtimeMu.Unlock()
-	text := func(s string) *string { return &s }
 	var reason *string
 	switch {
 	case baseline:
-		reason = text("A baseline check is already running")
+		reason = new("A baseline check is already running")
 	case a.ctx.Err() != nil:
-		reason = text("The service is shutting down")
+		reason = new("The service is shutting down")
 	case !control.Paused:
-		reason = text("Pause the service before running a baseline check")
+		reason = new("Pause the service before running a baseline check")
 	case tasks > 0:
-		reason = text("Wait for active tasks before running a baseline check")
+		reason = new("Wait for active tasks before running a baseline check")
 	case planning:
-		reason = text("Wait for planning to finish before running a baseline check")
+		reason = new("Wait for planning to finish before running a baseline check")
 	case reconciling:
-		reason = text("Wait for publication reconciliation before running a baseline check")
+		reason = new("Wait for publication reconciliation before running a baseline check")
 	}
 	return reason, nil
 }

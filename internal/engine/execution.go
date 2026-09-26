@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -380,13 +381,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 	if current != task.SourceRevision {
 		// Only the recorded source may advance, and only onto a dependency's
 		// recorded output; any other remote movement remains a stale base.
-		found := false
-		for _, output := range dependencyOutputs {
-			if output == current {
-				found = true
-			}
-		}
-		if !found {
+		if !slices.Contains(dependencyOutputs, current) {
 			return model.BlockedReasonStaleBase
 		}
 		task.SourceRevision = current
