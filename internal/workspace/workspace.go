@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
@@ -131,7 +132,9 @@ func makeDirsWritable(root, name string) {
 		if info.Mode().Perm()&0o700 != 0o700 {
 			_ = owned.Chmod(dir, info.Mode().Perm()|0o700)
 		}
-		f, err := owned.Open(dir)
+		// O_DIRECTORY: an entry swapped for a FIFO since Lstat fails here
+		// instead of blocking cleanup on an open that waits for a writer.
+		f, err := owned.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY, 0)
 		if err != nil {
 			return
 		}
