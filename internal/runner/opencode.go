@@ -326,14 +326,34 @@ func (o *OpenCode) roundTrip(ctx context.Context, method, path, cwd string, body
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
-		if len(snippet) > 4096 {
-			snippet = snippet[:4096]
-		}
-		return nil, fmt.Errorf("OpenCode request failed with HTTP %s: %s",
-			response.Status, store.Redact(strings.ToValidUTF8(string(snippet), "�")))
+		return nil, statusError("OpenCode request failed", response)
 	}
 	return readJSONBody(response.Body)
+}
+
+// statusError reports a non-2xx OpenCode response with its status and a
+// bounded, redacted body snippet.
+func statusError(prefix string, response *http.Response) error {
+	snippet, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+	return fmt.Errorf("%s with HTTP %s: %s", prefix, response.Status,
+		store.Redact(strings.ToValidUTF8(string(snippet), "�")))
+}
+
+// postBestEffort sends a cleanup request bounded by its own timeout,
+// independent of the owner context, and ignores the outcome.
+func (o *OpenCode) postBestEffort(timeout time.Duration, path, cwd string, body any) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := o.request(ctx, "POST", path, cwd, body)
+	if err != nil {
+		return
+	}
+	response, err := o.client.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	response.Body.Close()
 }
 
 func (o *OpenCode) json(method, path, cwd string, body any, seconds uint64) (any, error) {
@@ -460,14 +480,7 @@ func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, 
 	if err != nil {
 		// Independent of the cancelled owner context. Cleanup is bounded;
 		// closing the adapter kills the group.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if req, rerr := o.request(ctx, "POST", path+"/abort", cwd, nil); rerr == nil {
-			if response, derr := o.client.Do(req); derr == nil {
-				_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-				response.Body.Close()
-			}
-		}
+		o.postBestEffort(5*time.Second, path+"/abort", cwd, nil)
 		return "", err
 	}
 	return FinishTurn(answer, schema)
@@ -497,7 +510,7 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("OpenCode event subscription failed")
+		return "", statusError("OpenCode event subscription failed", response)
 	}
 	// Resolve the message identity before any goroutine starts so entropy
 	// failure unwinds with only the body-close and cancel defers.
@@ -610,13 +623,7 @@ func (o *OpenCode) handleEvent(event any, session, message string, route config.
 				replyPath = prefix + "/question/" + seg + "/reject"
 				reply = map[string]any{}
 			}
-			replyCtx, cancelReply := context.WithTimeout(context.Background(), 2*time.Second)
-			if req, err := o.request(replyCtx, "POST", replyPath, cwd, reply); err == nil {
-				if response, err := o.client.Do(req); err == nil {
-					response.Body.Close()
-				}
-			}
-			cancelReply()
+			o.postBestEffort(2*time.Second, replyPath, cwd, reply)
 		}
 		return fmt.Errorf("OpenCode requested interactive input (%s); task blocked", kind)
 	case "message.updated":

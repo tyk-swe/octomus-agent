@@ -134,6 +134,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(info)
             else:
                 self.send_json({'error': 'missing session'}, 404)
+        elif self.parts == ['event'] and mode() == 'event-404':
+            self.send_json({'error': 'no events'}, 404)
         elif self.parts == ['event']:
             events = queue.Queue()
             with lock:

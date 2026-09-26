@@ -151,7 +151,7 @@ func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 		"incomplete", "truncated", "failed", "missing-structured",
 		"malformed-structured", "interactive", "question",
 		"interactive-v2", "question-v2", "disconnect", "events-disconnect",
-		"invalid-event", "invalid-json", "oversized-json",
+		"invalid-event", "invalid-json", "oversized-json", "event-404",
 	} {
 		t.Run(mode, func(t *testing.T) {
 			f := opencodeFixture(t)
@@ -183,6 +183,11 @@ func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 			case "failed":
 				if err.Error() != "OpenCode turn failed: StructuredOutputError" {
 					t.Fatalf("%s error must name the runner failure: %v", mode, err)
+				}
+			case "event-404":
+				// The operator can tell a protocol change from auth drift.
+				if err.Error() != `OpenCode event subscription failed with HTTP 404 Not Found: {"error": "no events"}` {
+					t.Fatalf("%s error must report the HTTP status: %v", mode, err)
 				}
 			}
 		})
