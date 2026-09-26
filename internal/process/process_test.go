@@ -13,8 +13,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // waitUntil polls ready every 10 ms until it holds or timeout elapses.
@@ -437,6 +439,105 @@ func TestDiagnosticTextAndStatusFormat(t *testing.T) {
 	}
 	if got := out.Status.String(); got != "signal: 9 (SIGKILL)" {
 		t.Fatalf("status = %q; want signal: 9 (SIGKILL)", got)
+	}
+}
+
+// failureTextLimit mirrors the store's display bound for recorded messages.
+const failureTextLimit = 16384
+
+// TestFailureTextFitsWhole: a failure whose output fits the display bound is
+// reported exactly as before — the status, stdout, a newline, then stderr.
+func TestFailureTextFitsWhole(t *testing.T) {
+	_, err := process.RunMachine(context.Background(), "bash",
+		[]string{"-c", "printf o; printf e >&2; exit 3"}, t.TempDir(), 10)
+	if err == nil || err.Error() != "bash exited with exit status: 3: o\ne" {
+		t.Fatalf("failure text = %v; want the unchanged small-failure form", err)
+	}
+}
+
+// TestFailureTextKeepsStderrAndStdoutEnds: bulk stdout never pushes the cause
+// out of a failure message. The recorded text keeps stderr, both ends of
+// stdout with an explicit omission marker, scrubs secrets, and fits the
+// display bound so storing it cuts nothing more.
+func TestFailureTextKeepsStderrAndStdoutEnds(t *testing.T) {
+	script := `echo STDOUT-HEAD
+for i in $(seq 800); do echo "page $i token ghp_abcdefghijklmnopqrstuvwxyz0123456789 filler filler"; done
+echo STDOUT-TAIL
+echo 'gh: API rate limit exceeded (HTTP 403)' >&2
+exit 1`
+	_, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10)
+	if err == nil {
+		t.Fatal("exit 1 must fail")
+	}
+	text := err.Error()
+	for _, want := range []string{"bash exited with exit status: 1: STDOUT-HEAD", "STDOUT-TAIL", "characters omitted", "[stderr]\ngh: API rate limit exceeded (HTTP 403)"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("failure text lacks %q:\n%.300s", want, text)
+		}
+	}
+	if strings.Contains(text, "ghp_") {
+		t.Fatal("failure text leaked a token")
+	}
+	if n := utf8.RuneCountInString(text); n > failureTextLimit {
+		t.Fatalf("failure text has %d characters; want at most %d", n, failureTextLimit)
+	}
+	if store.ErrorMessage(err) != text {
+		t.Fatal("recording the failure text must not shorten it further")
+	}
+}
+
+// TestFailureTextBoundsLargeStderr: when both streams are large, each keeps
+// its beginning and end, stderr keeps a fixed share of the bound, and the
+// whole message still fits it.
+func TestFailureTextBoundsLargeStderr(t *testing.T) {
+	script := `echo STDOUT-HEAD; head -c 40000 /dev/zero | tr '\0' o; echo; echo STDOUT-TAIL
+{ echo STDERR-HEAD; head -c 40000 /dev/zero | tr '\0' e; echo; echo STDERR-TAIL; } >&2
+exit 2`
+	_, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10)
+	if err == nil {
+		t.Fatal("exit 2 must fail")
+	}
+	text := err.Error()
+	stdout, stderr, ok := strings.Cut(text, "\n[stderr]\n")
+	if !ok {
+		t.Fatalf("failure text lacks a stderr section:\n%.200s", text)
+	}
+	for _, want := range []string{"STDOUT-HEAD", "STDOUT-TAIL", "characters omitted"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout section lacks %q", want)
+		}
+	}
+	for _, want := range []string{"STDERR-HEAD", "STDERR-TAIL", "characters omitted"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr section lacks %q", want)
+		}
+	}
+	if n := utf8.RuneCountInString(stderr); n < 4000 || n > 4096 {
+		t.Fatalf("stderr section has %d characters; want its fixed share", n)
+	}
+	if n := utf8.RuneCountInString(text); n > failureTextLimit || n < failureTextLimit-64 {
+		t.Fatalf("failure text has %d characters; want the bound used, not exceeded", n)
+	}
+}
+
+// TestFailureTextOmitsAnEmptyStderrSection: a large failure with nothing on
+// stderr is elided without an empty stderr section.
+func TestFailureTextOmitsAnEmptyStderrSection(t *testing.T) {
+	script := `echo STDOUT-HEAD; head -c 40000 /dev/zero | tr '\0' o; echo; echo STDOUT-TAIL; exit 4`
+	_, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10)
+	if err == nil {
+		t.Fatal("exit 4 must fail")
+	}
+	text := err.Error()
+	if strings.Contains(text, "[stderr]") {
+		t.Fatalf("failure text carries an empty stderr section: %.200s", text)
+	}
+	if !strings.HasPrefix(text, "bash exited with exit status: 4: STDOUT-HEAD") ||
+		!strings.Contains(text, "characters omitted") || !strings.HasSuffix(text, "STDOUT-TAIL\n") {
+		t.Fatalf("failure text lost an end of stdout: %.200s", text)
+	}
+	if n := utf8.RuneCountInString(text); n > failureTextLimit {
+		t.Fatalf("failure text has %d characters; want at most %d", n, failureTextLimit)
 	}
 }
 

@@ -408,12 +408,79 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 	}, nil
 }
 
+const (
+	// failureTextLimit is the store's display bound for recorded messages, in
+	// characters: a failure message built within it is never cut again when it
+	// is saved or shown.
+	failureTextLimit = 16384
+	// stderrShare is the part of an over-long failure message stderr may always
+	// claim, however much stdout there was: stderr usually carries the cause
+	// (an HTTP error, a "fatal:" line) while stdout carries bulk output.
+	stderrShare = 4096
+	// elisionReserve is room for elideMiddle's marker at any omitted count a
+	// capture can produce.
+	elisionReserve = 48
+)
+
 func ensureSuccess(binary string, output *ProcessOutput) error {
-	if !output.Status.Success() {
-		return fmt.Errorf("%s exited with %s: %s", binary, output.Status,
-			store.Redact(output.Stdout.Preview()+"\n"+output.Stderr.Preview()))
+	if output.Status.Success() {
+		return nil
 	}
-	return nil
+	return errors.New(failureText(binary, output))
+}
+
+// failureText renders a failed command for operators: its exit status, then
+// scrubbed stdout and stderr. Output that fits the display bound is kept
+// whole, as `<stdout>\n<stderr>`. Longer output keeps both ends of each stream
+// around an explicit omission marker, in `<stdout>\n[stderr]\n<stderr>` form,
+// with stderr keeping up to stderrShare of the bound. Secrets are scrubbed
+// from complete text before anything is cut, so a partial secret can never
+// escape the scrubber.
+func failureText(binary string, output *ProcessOutput) string {
+	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
+	budget := failureTextLimit - utf8.RuneCountInString(prefix)
+	stdout, stderr := output.Stdout.Preview(), output.Stderr.Preview()
+	if joined := store.RedactSecrets(stdout + "\n" + stderr); utf8.RuneCountInString(joined) <= budget {
+		return prefix + joined
+	}
+	stdout, stderr = store.RedactSecrets(stdout), store.RedactSecrets(stderr)
+	if stderr == "" {
+		return prefix + elideMiddle(stdout, budget)
+	}
+	const separator = "\n[stderr]\n"
+	budget -= utf8.RuneCountInString(separator)
+	stderrRunes := utf8.RuneCountInString(stderr)
+	stderr = elideMiddle(stderr, min(stderrRunes, max(stderrShare, budget-utf8.RuneCountInString(stdout))))
+	stdout = elideMiddle(stdout, budget-utf8.RuneCountInString(stderr))
+	return prefix + stdout + separator + stderr
+}
+
+// elideMiddle shortens text to at most limit characters, keeping its beginning
+// and end around a marker that states how many characters were omitted. limit
+// must leave room for the marker (elisionReserve).
+func elideMiddle(text string, limit int) string {
+	total := utf8.RuneCountInString(text)
+	if total <= limit {
+		return text
+	}
+	keep := max(limit-elisionReserve, 0)
+	head := keep / 2
+	tail := keep - head
+	return text[:runeOffset(text, head)] +
+		fmt.Sprintf("\n[... %d characters omitted ...]\n", total-keep) +
+		text[runeOffset(text, total-tail):]
+}
+
+// runeOffset returns the byte offset at which the nth character of s starts,
+// or len(s) when s has no more than n characters.
+func runeOffset(s string, n int) int {
+	for i := range s {
+		if n == 0 {
+			return i
+		}
+		n--
+	}
+	return len(s)
 }
 
 // DiagnosticText renders human-readable evidence: bounded stdout, with bounded
