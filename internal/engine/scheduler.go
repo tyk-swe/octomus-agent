@@ -302,6 +302,15 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 	waiting := false
 	var inventory *model.OpenPrInventory
 	inventoryChecked := false
+	// One refresh request per pass: after the first, a refresh is in flight
+	// or throttled, and admissions in this pass only lower the capacity.
+	refreshRequested := false
+	requestRefresh := func() {
+		if !refreshRequested {
+			refreshRequested = true
+			a.startPrRefresh(cfg)
+		}
+	}
 	for i := range tasks {
 		task := &tasks[i]
 		if task.Status != model.StatusQueued {
@@ -347,7 +356,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 				inventoryChecked = true
 			}
 			if inventory == nil {
-				a.startPrRefresh(cfg)
+				requestRefresh()
 				waiting = true
 				continue
 			}
@@ -356,7 +365,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 				return started, waiting, err
 			}
 			if !admitted {
-				a.startPrRefresh(cfg)
+				requestRefresh()
 				waiting = true
 				continue
 			}

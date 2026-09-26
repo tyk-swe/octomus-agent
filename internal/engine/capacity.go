@@ -166,6 +166,13 @@ func prCapacityFrom(cfg config.Config, inventory model.OpenPrInventory, reservat
 }
 
 func (a *App) startPrRefresh(cfg config.Config) {
+	// A refresh in flight settles every waiting task; skip the capacity read.
+	a.runtimeMu.Lock()
+	inFlight := a.runtime.prRefresh != nil
+	a.runtimeMu.Unlock()
+	if inFlight {
+		return
+	}
 	capacity, err := a.PrCapacity()
 	available := err == nil && capacity.Remaining != nil && *capacity.Remaining > 0
 	a.runtimeMu.Lock()
