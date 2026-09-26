@@ -643,6 +643,11 @@ func (a *App) refreshCycleSessions(cycle *model.Cycle) error {
 	return nil
 }
 
+// saveCycleMergedSessions saves cycle with the session records its roles
+// appended. Callers invoke it only while no role of the cycle is running
+// (before the first role or after runRoles returns): the refresh and the Put
+// are separate store-lock acquisitions, so a concurrent AppendCycleSession
+// would be overwritten.
 func (a *App) saveCycleMergedSessions(cycle *model.Cycle) error {
 	if err := a.refreshCycleSessions(cycle); err != nil {
 		return err

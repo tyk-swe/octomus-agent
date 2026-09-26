@@ -157,6 +157,8 @@ func (a *App) pauseLocked(control *model.Control, message *string) error {
 	return nil
 }
 
+// finishRunOnce pauses a Run once batch that has no pending work left and
+// records how it ended. Callers hold the gate.
 func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 	message := "Run once completed; new work paused"
 	if unresolved > 0 {
@@ -236,6 +238,9 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 	return nil
 }
 
+// handlePlanningCapacity settles a pass that planning capacity refused:
+// Continuous waits for the reset, Run once pauses with the reason. Callers
+// hold the gate.
 func (a *App) handlePlanningCapacity(control model.Control, capacity model.PlanningCapacity) error {
 	if control.Mode == model.OperatingModeContinuous {
 		control.Error = nil
@@ -253,7 +258,7 @@ func (a *App) handlePlanningCapacity(control model.Control, capacity model.Plann
 // with a queued task in tasks, and blocks every queued member of an invalid
 // plan. It reports whether it blocked any task, even when it then fails.
 // tasks is the whole scheduling view: a cycle with no member in it leaves the
-// validated-cycle cache.
+// validated-cycle cache. Callers hold the gate.
 func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 	visibleCycles := map[string]struct{}{}
 	for _, task := range tasks {
@@ -301,6 +306,10 @@ func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 	return blocked, nil
 }
 
+// dispatch starts the queued tasks in tasks that concurrency, dependencies,
+// branch exclusivity and PR capacity allow, and reports whether it started
+// any and whether any is still waiting. Callers hold the gate, the only place
+// queued records change, so tasks stays the current queue while it runs.
 func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.Task) (bool, bool, error) {
 	activeByBranch := map[string]struct{}{}
 	activeTasks := map[string]struct{}{}
@@ -410,6 +419,9 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 	return started, waiting, nil
 }
 
+// dependenciesReady reports whether every dependency of task is published.
+// The second result is the blocking reason when a dependency can never
+// become ready; the third is a storage failure. Callers hold the gate.
 func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, error, error) {
 	for _, id := range task.Proposal.Dependencies {
 		dependency, err := store.Get[model.Task](a.Store, "task", id)
