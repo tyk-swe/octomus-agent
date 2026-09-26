@@ -100,25 +100,8 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	}
 	requests := rediscoveryRequests(memory)
 	if cycle.Mode == model.CycleModeExecution {
-		for _, request := range requests {
-			id, _ := request["id"].(string)
-			if id == "" {
-				return errors.New("Missing rediscovery identity")
-			}
-			old, err := store.Get[model.Task](a.Store, "task", id)
-			if err != nil || old == nil {
-				if err == nil {
-					err = fmt.Errorf("Missing rediscovery task %s", id)
-				}
-				return err
-			}
-			proposal := old.Proposal.Clone()
-			proposal.ID = "rediscover-" + old.ID
-			proposal.Dependencies = []string{}
-			proposal.Reconsiders = []string{old.ID}
-			proposal.Decision = model.DecisionCandidate
-			proposal.Reason = "Operator requested fresh assessment against current context"
-			cycle.Proposals = append(cycle.Proposals, proposal)
+		if err := a.seedRediscoveries(cycle, requests); err != nil {
+			return err
 		}
 	}
 	// Roles see the capacity of the inventory this grounding observed, whatever
@@ -173,17 +156,48 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 		return err
 	}
 	if cycle.Mode == model.CycleModeAudit {
-		cycle.Status = model.CycleIdle
-		for _, proposal := range proposals {
-			if proposal.Decision == model.DecisionAccepted {
-				cycle.Status = model.CycleCompleted
-				break
-			}
-		}
+		cycle.Status = plannedStatus(proposals)
 		cycle.CompletedAt = stringPointer(model.Now())
 		return a.commitPlan(*cycle, nil)
 	}
 	return a.commitTasks(cfg, cycle)
+}
+
+// seedRediscoveries adds each pending rediscovery request to an execution
+// pass as a candidate that reconsiders the cancelled task it came from.
+func (a *App) seedRediscoveries(cycle *model.Cycle, requests []map[string]any) error {
+	for _, request := range requests {
+		id, _ := request["id"].(string)
+		if id == "" {
+			return errors.New("Missing rediscovery identity")
+		}
+		old, err := store.Get[model.Task](a.Store, "task", id)
+		if err != nil || old == nil {
+			if err == nil {
+				err = fmt.Errorf("Missing rediscovery task %s", id)
+			}
+			return err
+		}
+		proposal := old.Proposal.Clone()
+		proposal.ID = "rediscover-" + old.ID
+		proposal.Dependencies = []string{}
+		proposal.Reconsiders = []string{old.ID}
+		proposal.Decision = model.DecisionCandidate
+		proposal.Reason = "Operator requested fresh assessment against current context"
+		cycle.Proposals = append(cycle.Proposals, proposal)
+	}
+	return nil
+}
+
+// plannedStatus is the status of a finished plan: completed when it accepted
+// any proposal, idle otherwise.
+func plannedStatus(proposals []model.Proposal) string {
+	for _, proposal := range proposals {
+		if proposal.Decision == model.DecisionAccepted {
+			return model.CycleCompleted
+		}
+	}
+	return model.CycleIdle
 }
 
 // checkRediscoveryDecisions requires every rediscovery request to be decided by
@@ -901,27 +915,62 @@ func (a *App) commitTasks(cfg config.Config, cycle *model.Cycle) error {
 		if err != nil {
 			return err
 		}
-		source := cycle.Grounding.Revision
-		branch := cfg.BranchPrefix + taskID
-		var number *uint64
-		var url *string
-		if target != nil {
-			source = target.Head
-			branch = target.Branch
-			n := target.Number
-			u := target.URL
-			number, url = &n, &u
-		}
-		now := model.Now()
-		policy := model.AttemptPolicy{MaxRepairRounds: cfg.MaxRepairRounds, MaxNoProgressRounds: cfg.MaxNoProgressRounds, MaxRetries: cfg.MaxRetries, TaskTimeoutSeconds: cfg.TaskTimeoutSeconds, SessionTimeoutSeconds: cfg.SessionTimeoutSeconds, CommandTimeoutSeconds: cfg.CommandTimeoutSeconds}
-		planned = append(planned, model.Task{ID: taskID, CycleID: cycle.ID, Proposal: proposal, Status: model.StatusQueued, Route: cfg.Tiers[original.Tier].Clone(), Config: cfg.Clone(), SourceRevision: source, ComparisonBase: "", DefaultRevision: cycle.Grounding.Revision, Branch: branch, Workspace: "", Sessions: []model.Session{}, Reviews: []model.ReviewRound{}, Verification: []model.Verification{}, PRNumber: number, PRURL: url, CreatedAt: now, UpdatedAt: now, AttemptPolicy: &policy, RunID: cloneStringPointer(cycle.RunID), SupersededBy: []string{}, Supersedes: append([]string(nil), original.Reconsiders...)})
+		planned = append(planned, newPlannedTask(cfg, cycle, original, proposal, taskID, target))
 	}
-	cycle.Status = model.CycleIdle
-	if len(planned) > 0 {
-		cycle.Status = model.CycleCompleted
-	}
+	cycle.Status = plannedStatus(cycle.Proposals)
 	cycle.CompletedAt = stringPointer(model.Now())
 	return a.commitPlan(*cycle, planned)
+}
+
+// newPlannedTask builds the queued task for the accepted proposal original.
+// proposal is its copy with dependencies mapped to task identities, and target
+// is the owned PR it writes, nil for the default branch. Each task gets its
+// own timestamps and attempt policy snapshot.
+func newPlannedTask(cfg config.Config, cycle *model.Cycle, original, proposal model.Proposal, taskID string, target *model.PullRequest) model.Task {
+	source := cycle.Grounding.Revision
+	branch := cfg.BranchPrefix + taskID
+	var number *uint64
+	var url *string
+	if target != nil {
+		source = target.Head
+		branch = target.Branch
+		n := target.Number
+		u := target.URL
+		number, url = &n, &u
+	}
+	now := model.Now()
+	policy := model.AttemptPolicy{
+		MaxRepairRounds:       cfg.MaxRepairRounds,
+		MaxNoProgressRounds:   cfg.MaxNoProgressRounds,
+		MaxRetries:            cfg.MaxRetries,
+		TaskTimeoutSeconds:    cfg.TaskTimeoutSeconds,
+		SessionTimeoutSeconds: cfg.SessionTimeoutSeconds,
+		CommandTimeoutSeconds: cfg.CommandTimeoutSeconds,
+	}
+	return model.Task{
+		ID:              taskID,
+		CycleID:         cycle.ID,
+		Proposal:        proposal,
+		Status:          model.StatusQueued,
+		Route:           cfg.Tiers[original.Tier].Clone(),
+		Config:          cfg.Clone(),
+		SourceRevision:  source,
+		ComparisonBase:  "",
+		DefaultRevision: cycle.Grounding.Revision,
+		Branch:          branch,
+		Workspace:       "",
+		Sessions:        []model.Session{},
+		Reviews:         []model.ReviewRound{},
+		Verification:    []model.Verification{},
+		PRNumber:        number,
+		PRURL:           url,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		AttemptPolicy:   &policy,
+		RunID:           cloneStringPointer(cycle.RunID),
+		SupersededBy:    []string{},
+		Supersedes:      append([]string(nil), original.Reconsiders...),
+	}
 }
 
 func cloneStringPointer(value *string) *string {

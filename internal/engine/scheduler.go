@@ -100,17 +100,6 @@ func (a *App) Tick() error {
 	if err != nil {
 		return err
 	}
-	visibleCycles := map[string]struct{}{}
-	for _, task := range tasks {
-		visibleCycles[task.CycleID] = struct{}{}
-	}
-	a.runtimeMu.Lock()
-	for cycleID := range a.runtime.checkedCycles {
-		if _, visible := visibleCycles[cycleID]; !visible {
-			delete(a.runtime.checkedCycles, cycleID)
-		}
-	}
-	a.runtimeMu.Unlock()
 	blocked, err := a.validateQueuedCycles(tasks)
 	if err != nil {
 		return err
@@ -252,7 +241,20 @@ func (a *App) handlePlanningCapacity(control model.Control, capacity model.Plann
 // validateQueuedCycles revalidates, once per process, the plan of every cycle
 // with a queued task in tasks, and blocks every queued member of an invalid
 // plan. It reports whether it blocked any task, even when it then fails.
+// tasks is the whole scheduling view: a cycle with no member in it leaves the
+// validated-cycle cache.
 func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
+	visibleCycles := map[string]struct{}{}
+	for _, task := range tasks {
+		visibleCycles[task.CycleID] = struct{}{}
+	}
+	a.runtimeMu.Lock()
+	for cycleID := range a.runtime.checkedCycles {
+		if _, visible := visibleCycles[cycleID]; !visible {
+			delete(a.runtime.checkedCycles, cycleID)
+		}
+	}
+	a.runtimeMu.Unlock()
 	cycleIDs := map[string]struct{}{}
 	for _, task := range tasks {
 		if task.Status == model.StatusQueued {
