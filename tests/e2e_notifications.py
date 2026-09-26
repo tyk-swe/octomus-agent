@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
+"""Webhook attention delivery against a local receiver, with synthetic peers and real local Git."""
+import contextlib
 import functools
 import http.server
 import json
-from pathlib import Path
 import re
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 
-from e2e import BINARY, Service, base_config, poll, run_selected, setup
-from e2e_runners import configuration, stop_service_and_peers
+from harness import BINARY, base_config, configuration, fixture_service, poll, run_selected, use_codex_routes
 
 ENV = 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'
 SECRET = 'synthetic-path-secret-9f27c1/query?key=synthetic-query-secret-4d80'
@@ -97,78 +96,61 @@ def assert_no_url_leak(root, service):
 
 
 def scenario(mode):
-    with tempfile.TemporaryDirectory(prefix=f'octomus-notify-{mode}-') as tmp:
-        root = Path(tmp)
-        setup(root)
-        receiver = Receiver()
-        service = Service(root)
-        try:
-            service.env[ENV] = receiver.url()
-            if mode == 'deliver':
-                (root / 'malformed-review').touch()
-                service.start()
-                service.configure()
-                found = receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['task_id']], 'attention delivery without dashboard polling')[0]
-                event = attention(found['body'])
-                task = service.request(f"/tasks/{event['task_id']}")
-                assert task['status'] == 'blocked', task
-                assert event['category'] == 'runner_unavailable' and event['action'] == 'inspect_task'
-                assert event['repository'] == 'fixture/project' and event['cycle_id'] and event['run_id']
-                assert found['path'] == f'/{SECRET}', found['path']
-                assert {k.lower(): v for k, v in found['headers'].items()}.get('content-type') == 'application/json'
-                health = service.request('/state')['notifications']
-                assert health['state'] == 'enabled' and health['configured'], health
-                assert_no_url_leak(root, service)
-                print('PASS deliver: blocked task produced one minimal attention event')
-                return
-            if mode == 'restart':
-                (root / 'malformed-review').touch()
-                service.start()
-                service.configure()
-                task = service.wait(service.terminal_task, 'blocked task')
-                receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['task_id'] == task['id']], 'attention delivery')
-                assert len(receiver.events()) == 1
-                service.stop(crash=True)
-                service.start()
-                time.sleep(5)
-                assert len(receiver.events()) == 1, f'restart must not re-notify a delivered episode: {receiver.events()}'
-                print('PASS restart: a delivered episode is not repeated after a crash')
-                return
-            if mode == 'service-error':
-                (root / 'failed-discovery').touch()
-                service.start()
-                service.configure()
-                found = receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['category'] == 'service_error_paused'], 'service pause event')[0]
-                event = attention(found['body'])
-                assert event['action'] == 'inspect_service' and event['task_id'] is None, event
-                state = service.request('/state')
-                assert state['control']['paused'] and state['control']['error'], state['control']
-                print('PASS service-error: an error pause raises one inspect_service event')
-                return
-            if mode in ['env-strip', 'env-strip-opencode']:
-                service.start()
-                config = configuration(service) if mode == 'env-strip-opencode' else base_config(service, [f'test -z "${{{ENV}+x}}"', 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], cycle_interval_seconds=3600, task_timeout_seconds=120)
-                if mode == 'env-strip':
-                    codex = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
-                    # Shipped tiers and repair carry effort but no model.
-                    for role in config['roles']:
-                        config['roles'][role] = dict(codex)
-                    for tier in config['tiers']:
-                        config['tiers'][tier] = dict(codex)
-                    config['repair_route'] = dict(codex)
-                service.save_config(config)
-                service.request('/control/cycle', 'POST')
-                task = service.wait(service.terminal_task, 'published task')
-                assert task['status'] == 'published', task['error']
-                assert SECRET not in (root / 'service.log').read_text()
-                print('PASS env-strip: published work never saw the webhook environment')
-                return
-            raise AssertionError(f'unknown notifications scenario {mode}')
-        finally:
-            try:
-                stop_service_and_peers(service, root)
-            finally:
-                receiver.close()
+    with contextlib.closing(Receiver()) as receiver, fixture_service(f'octomus-notify-{mode}-', env={ENV: receiver.url()}, start=False) as (root, service):
+        if mode == 'deliver':
+            (root / 'malformed-review').touch()
+            service.start()
+            service.configure()
+            found = receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['task_id']], 'attention delivery without dashboard polling')[0]
+            event = attention(found['body'])
+            task = service.request(f"/tasks/{event['task_id']}")
+            assert task['status'] == 'blocked', task
+            assert event['category'] == 'runner_unavailable' and event['action'] == 'inspect_task'
+            assert event['repository'] == 'fixture/project' and event['cycle_id'] and event['run_id']
+            assert found['path'] == f'/{SECRET}', found['path']
+            assert {k.lower(): v for k, v in found['headers'].items()}.get('content-type') == 'application/json'
+            health = service.request('/state')['notifications']
+            assert health['state'] == 'enabled' and health['configured'], health
+            assert_no_url_leak(root, service)
+            print('PASS deliver: blocked task produced one minimal attention event')
+            return
+        if mode == 'restart':
+            (root / 'malformed-review').touch()
+            service.start()
+            service.configure()
+            task = service.wait(service.terminal_task, 'blocked task')
+            receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['task_id'] == task['id']], 'attention delivery')
+            assert len(receiver.events()) == 1
+            service.stop(crash=True)
+            service.start()
+            time.sleep(5)
+            assert len(receiver.events()) == 1, f'restart must not re-notify a delivered episode: {receiver.events()}'
+            print('PASS restart: a delivered episode is not repeated after a crash')
+            return
+        if mode == 'service-error':
+            (root / 'failed-discovery').touch()
+            service.start()
+            service.configure()
+            found = receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['category'] == 'service_error_paused'], 'service pause event')[0]
+            event = attention(found['body'])
+            assert event['action'] == 'inspect_service' and event['task_id'] is None, event
+            state = service.request('/state')
+            assert state['control']['paused'] and state['control']['error'], state['control']
+            print('PASS service-error: an error pause raises one inspect_service event')
+            return
+        if mode in ['env-strip', 'env-strip-opencode']:
+            service.start()
+            config = configuration(service) if mode == 'env-strip-opencode' else base_config(service, [f'test -z "${{{ENV}+x}}"', 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], cycle_interval_seconds=3600, task_timeout_seconds=120)
+            if mode == 'env-strip':
+                use_codex_routes(config)
+            service.save_config(config)
+            service.request('/control/cycle', 'POST')
+            task = service.wait(service.terminal_task, 'published task')
+            assert task['status'] == 'published', task['error']
+            assert SECRET not in (root / 'service.log').read_text()
+            print('PASS env-strip: published work never saw the webhook environment')
+            return
+        raise AssertionError(f'unknown notifications scenario {mode}')
 
 
 if __name__ == '__main__':

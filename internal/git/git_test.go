@@ -63,7 +63,7 @@ func testConfig() config.Config {
 	return c
 }
 
-// fixtureRoot replicates tests/e2e.py setup(): fixture bin wrappers on PATH, a
+// fixtureRoot replicates tests/harness.py setup(): fixture bin wrappers on PATH, a
 // real checkout whose origin is the local bare remote, and OCTOMUS_FIXTURE.
 func fixtureRoot(t *testing.T) (config.Config, string) {
 	t.Helper()
