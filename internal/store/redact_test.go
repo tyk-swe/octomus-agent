@@ -112,3 +112,32 @@ func TestDisplayJSONReportsEveryTransformedString(t *testing.T) {
 		t.Fatalf("clean object: %v %+v", display, again)
 	}
 }
+
+// TestDisplayJSONPathsFollowKeyAndIndexOrder pins the path order the settings
+// view relies on: array indices ascend numerically (10 after 9, not after 1),
+// and sibling map keys sort by byte order regardless of how deep each nests.
+func TestDisplayJSONPathsFollowKeyAndIndexOrder(t *testing.T) {
+	secrets := make([]any, 12)
+	for i := range secrets {
+		secrets[i] = fmt.Sprintf("sk-abcdefghijklmnop%02d", i)
+	}
+	object := map[string]any{
+		"field": map[string]any{
+			"b": map[string]any{"c": "ghp_abcdefghijklmnop", "a": []any{"plain", "ghp_abcdefghijklmnop"}},
+			"a": secrets,
+			"B": "ghp_abcdefghijklmnop",
+		},
+	}
+	_, fields := store.DisplayJSON(object)
+	if len(fields) != 1 {
+		t.Fatalf("transform fields: %+v", fields)
+	}
+	want := [][]any{{"field", "B"}}
+	for i := range secrets {
+		want = append(want, []any{"field", "a", i})
+	}
+	want = append(want, []any{"field", "b", "a", 1}, []any{"field", "b", "c"})
+	if got := fields[0].Paths; !reflect.DeepEqual(got, want) {
+		t.Fatalf("transform paths:\n got %v\nwant %v", got, want)
+	}
+}

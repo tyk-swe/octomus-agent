@@ -109,32 +109,6 @@ type DisplayTransform struct {
 	Paths [][]any  `json:"paths"`
 }
 
-// comparePathSegments orders structured display paths deterministically;
-// object keys sort before array indices at the same position.
-func comparePathSegments(a, b []any) int {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		ak, aKey := a[i].(string)
-		bk, bKey := b[i].(string)
-		switch {
-		case aKey && bKey:
-			if order := strings.Compare(ak, bk); order != 0 {
-				return order
-			}
-		case aKey:
-			return -1
-		case bKey:
-			return 1
-		default:
-			ai, _ := a[i].(int)
-			bi, _ := b[i].(int)
-			if ai != bi {
-				return ai - bi
-			}
-		}
-	}
-	return len(a) - len(b)
-}
-
 // DisplayJSON returns the display-safe form of a generic JSON object: every
 // string passes through the same redaction and length bound as RedactJSON,
 // and each altered string is reported by field, kind and structured JSON
@@ -192,8 +166,9 @@ func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
 	result := []DisplayTransform{}
 	for _, field := range fields {
 		if entry := transforms[field]; entry != nil {
+			// walk visits fields, map keys and array indices in sorted order,
+			// so Paths are already ordered; only Kinds needs sorting.
 			sort.Strings(entry.Kinds)
-			slices.SortFunc(entry.Paths, comparePathSegments)
 			result = append(result, *entry)
 		}
 	}
