@@ -450,7 +450,20 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 			return nil
 		}
 	}
-	prompt := fmt.Sprintf(
+	_, _, err := a.invoke(ctx, client, invocation{
+		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
+		resume: task.ExecutionSession, keep: func(session string) { task.ExecutionSession = &session },
+		prompt: executorPrompt(task, cfg), reserved: admissionReserved,
+	})
+	return err
+}
+
+// executorPrompt is the executor's task prompt. Its "Implement this accepted
+// task" prefix is matched by the e2e runner fixtures (tests/fixtures), and it
+// carries required policy: the full comparison base and no publication by
+// the worker.
+func executorPrompt(task *model.Task, cfg config.Config) string {
+	return fmt.Sprintf(
 		"Implement this accepted task end to end in this workspace. Source revision: %s. Full comparison base: %s. Existing PR: %s. Preserve existing accumulated branch behavior; inspect its full diff. Do not push, publish, merge or deploy. Required repository verification commands: %s. Objective and constraints:\n%s\nProblem: %s\nBenefit: %s\nScope: %s\nEvidence: %s\nReturn a concise summary of actual changes, verification and material risks or migration notes.",
 		task.SourceRevision,
 		task.ComparisonBase,
@@ -461,12 +474,6 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 		task.Proposal.Benefit,
 		task.Proposal.Scope,
 		debugList(task.Proposal.Evidence))
-	_, _, err := a.invoke(ctx, client, invocation{
-		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
-		resume: task.ExecutionSession, keep: func(session string) { task.ExecutionSession = &session },
-		prompt: prompt, reserved: admissionReserved,
-	})
-	return err
 }
 
 func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runner.Runners, revision string) (model.Review, error) {
@@ -479,9 +486,6 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	if !ok {
 		return model.Review{}, errors.New("code_reviewer route is missing")
 	}
-	prompt := fmt.Sprintf(
-		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
-		task.ComparisonBase, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
 	var review model.Review
 	judge := func(thread, answer string) (string, error) {
 		if err := json.Unmarshal([]byte(answer), &review); err != nil {
@@ -498,11 +502,20 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	}
 	if _, _, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "reviewer", route: route, workspace: ws,
-		prompt: prompt, schema: schemas.ReviewSchema(), judge: judge,
+		prompt: reviewPrompt(task, revision), schema: schemas.ReviewSchema(), judge: judge,
 	}); err != nil {
 		return model.Review{}, err
 	}
 	return review, nil
+}
+
+// reviewPrompt is a fresh reviewer's prompt for revision. Its "Perform a
+// fresh code review" prefix is matched by the e2e runner fixtures, and it
+// requires the full diff from the comparison base, never only the last commit.
+func reviewPrompt(task *model.Task, revision string) string {
+	return fmt.Sprintf(
+		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
+		task.ComparisonBase, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
 }
 
 // verifyRevision runs every configured verification command against exactly
@@ -560,21 +573,10 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	if err := a.transition(task, model.StatusRepairing); err != nil {
 		return err
 	}
-	findings := review.Findings
-	if findings == nil {
-		findings = []model.Finding{}
-	}
-	findingsJSON, err := wirejson.Marshal(findings)
+	prompt, err := repairPrompt(task, cfg, review, verificationErrors)
 	if err != nil {
 		return err
 	}
-	prompt := fmt.Sprintf(
-		"Repair actionable findings and verification failures for this task. Preserve useful capabilities and meaningful tests. Do not push, publish, merge or deploy. If a finding is unsupported, explain the technical evidence in your final summary; the next fresh reviewer must independently assess it. Rerun relevant verification %s. Full comparison base: %s. Task: %s. Findings: %s. Verification failures: %s",
-		debugList(cfg.VerificationCommands),
-		task.ComparisonBase,
-		task.Proposal.Prompt,
-		string(findingsJSON),
-		debugList(verificationErrors))
 	// The repair thread persists across rounds: the first repair starts it and
 	// every later round resumes it.
 	_, _, err = a.invoke(ctx, client, invocation{
@@ -583,6 +585,28 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 		prompt: prompt,
 	})
 	return err
+}
+
+// repairPrompt is a repair round's prompt: the review's findings as JSON (an
+// empty list when there are none) and the failed verification output. Its
+// "Repair actionable findings" prefix is matched by the e2e runner fixtures,
+// and it carries the no-publication policy.
+func repairPrompt(task *model.Task, cfg config.Config, review model.Review, verificationErrors []string) (string, error) {
+	findings := review.Findings
+	if findings == nil {
+		findings = []model.Finding{}
+	}
+	findingsJSON, err := wirejson.Marshal(findings)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(
+		"Repair actionable findings and verification failures for this task. Preserve useful capabilities and meaningful tests. Do not push, publish, merge or deploy. If a finding is unsupported, explain the technical evidence in your final summary; the next fresh reviewer must independently assess it. Rerun relevant verification %s. Full comparison base: %s. Task: %s. Findings: %s. Verification failures: %s",
+		debugList(cfg.VerificationCommands),
+		task.ComparisonBase,
+		task.Proposal.Prompt,
+		string(findingsJSON),
+		debugList(verificationErrors)), nil
 }
 
 func (a *App) published(task *model.Task, p model.PullRequest) error {
@@ -700,6 +724,10 @@ func pathIdentityComponents(path string) []string {
 	}
 	return parts
 }
+
+// debugOption, debugList and debugString render prompt values in Rust's Debug
+// notation. The service was ported from Rust and its runner fixtures match
+// the prompts it produced, so the notation is kept for byte-stable prompts.
 
 // debugOption renders a saved optional value as `Some("…")` or `None`.
 func debugOption(value *string) string {

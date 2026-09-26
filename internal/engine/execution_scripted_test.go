@@ -162,6 +162,19 @@ func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
 	if len(revisions) != 3 {
 		t.Fatalf("every repair must progress to a new revision: %+v", saved.Reviews)
 	}
+	// Each fresh reviewer is asked for the full diff at its own round's
+	// revision, and each repair is handed the failed verification.
+	reviewTurns := script.Turns(routes.Reviewer)
+	for i, round := range saved.Reviews {
+		if !strings.Contains(reviewTurns[i].Prompt, "git diff "+saved.ComparisonBase+" HEAD. Recorded HEAD: "+round.Revision+".") {
+			t.Fatalf("review %d prompt does not name its full diff and revision: %q", i, reviewTurns[i].Prompt)
+		}
+	}
+	for i, turn := range script.Turns(routes.Repair) {
+		if !strings.Contains(turn.Prompt, `Verification failures: ["false: `) {
+			t.Fatalf("repair %d prompt lacks the verification failure: %q", i, turn.Prompt)
+		}
+	}
 	repairs := sessionByRole(saved, "repair")
 	if len(repairs) != 1 || saved.RepairSession == nil || repairs[0].ID != *saved.RepairSession || repairs[0].Status != model.SessionCompleted {
 		t.Fatalf("repair session not persistent: %+v", saved.Sessions)
