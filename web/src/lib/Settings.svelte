@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, ApiError, relative } from './api';
+  import { api, ApiError, clockTime, relative } from './api';
   import type {
     Backend,
     Config,
@@ -11,6 +11,7 @@
     TransformedField
   } from './types';
   import RouteEditor from './RouteEditor.svelte';
+  import { BACKENDS, backendLabel } from './routes';
   import SetupChecklist from './SetupChecklist.svelte';
   import BaselineCheck from './BaselineCheck.svelte';
   import { parseCommands, type Preflight, type SetupStatus } from './setup';
@@ -95,7 +96,6 @@
     ...known.filter((key) => keys.includes(key)),
     ...keys.filter((key) => !known.includes(key))
   ];
-  const limits = LIMITS;
   async function load() {
     if (loading || busy || dirty) return;
     loading = true;
@@ -191,7 +191,7 @@
       // replaces its canonical value completely and omitted fields keep theirs.
       const patch: Record<string, unknown> = {};
       for (const key of Object.keys(draft) as (keyof Config)[]) {
-        if (!savedConfig || JSON.stringify(draft[key]) !== JSON.stringify(savedConfig[key]))
+        if (JSON.stringify(draft[key]) !== JSON.stringify(savedConfig?.[key]))
           patch[key] = draft[key];
       }
       const view = await api<SettingsView>('/config', 'PUT', {
@@ -225,7 +225,7 @@
     try {
       const models = await api<Model[]>('/model-catalog', 'POST', { backend, binary });
       catalogs[backend] = { binary, models, loaded: true };
-      message = `${models.filter((model) => model.available).length} ${backend === 'codex' ? 'Codex' : 'OpenCode'} models available. Routes are never silently substituted.`;
+      message = `${models.filter((model) => model.available).length} ${backendLabel(backend)} models available. Routes are never silently substituted.`;
     } catch (e) {
       error = (e as Error).message;
       catalogs[backend] = { binary, models: [], loaded: false, error };
@@ -239,7 +239,7 @@
     error = '';
     conflict = false;
     message = '';
-    const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const at = clockTime();
     try {
       const result = await api<{ message: string; checked_revision: string }>(
         `/doctor?mode=${mode}`,
@@ -440,24 +440,19 @@
           >
         </div>
         <div class="catalog-actions">
-          <button
-            id="load-codex-models"
-            type="button"
-            class="button small"
-            onclick={() => catalog('codex')}
-            disabled={loading}
-            >{pending === 'catalog-codex' ? 'Loading Codex models…' : 'Load Codex models'}</button
-          >
-          <button
-            id="load-opencode-models"
-            type="button"
-            class="button small"
-            onclick={() => catalog('opencode')}
-            disabled={loading}
-            >{pending === 'catalog-opencode'
-              ? 'Loading OpenCode models…'
-              : 'Load OpenCode models'}</button
-          >
+          {#each BACKENDS as backend}
+            {@const label = backendLabel(backend)}
+            <button
+              id={`load-${backend}-models`}
+              type="button"
+              class="button small"
+              onclick={() => catalog(backend)}
+              disabled={loading}
+              >{pending === `catalog-${backend}`
+                ? `Loading ${label} models…`
+                : `Load ${label} models`}</button
+            >
+          {/each}
         </div>
         {@render previewNote('roles', 'role routes', true)}
         {#each ordered(Object.keys(config.roles), ROLES) as role}
@@ -520,9 +515,9 @@
         </div>
         {@render previewNote('runner_storage_paths', 'storage paths', true)}
         <div class="form-grid">
-          {#each ['codex', 'opencode'] as backend}
+          {#each BACKENDS as backend}
             <label
-              >{backend === 'codex' ? 'Codex' : 'OpenCode'} storage measurement path (optional)
+              >{backendLabel(backend)} storage measurement path (optional)
               <input
                 value={config.runner_storage_paths[backend] ?? ''}
                 placeholder="Absolute path to runner storage"
@@ -539,7 +534,7 @@
               >
             </label>
           {/each}
-          {#each limits as limit}<label
+          {#each LIMITS as limit}<label
               >{limit.label}<input
                 type="number"
                 min={limit.min}

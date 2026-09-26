@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Backend, ModelCatalog, Route } from './types';
+  import { backendLabel } from './routes';
 
   let {
     name,
@@ -167,7 +168,7 @@
   {#if !catalog?.loaded}<p class="route-help">
       {catalog?.error
         ? 'Catalog unavailable. Saved values are preserved.'
-        : `Load ${backend === 'codex' ? 'Codex' : 'OpenCode'} models to see available choices.`}
+        : `Load ${backendLabel(backend)} models to see available choices.`}
     </p>{/if}
 </div>
 
