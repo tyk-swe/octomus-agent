@@ -9,9 +9,10 @@ import (
 	whatwg "github.com/nlnwa/whatwg-url/url"
 )
 
-// NotificationDestination validates and normalizes with the same WHATWG URL
-// algorithm as reqwest::Url. The identity hashes the normalized URL, including
-// its query order and empty-query marker. It never includes a trailing newline.
+// NotificationDestination validates and normalizes with the WHATWG URL
+// Standard (github.com/nlnwa/whatwg-url). The identity hashes the normalized
+// URL, including its query order and empty-query marker. It never includes a
+// trailing newline.
 func NotificationDestination(raw string) (normalized, identity string, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || len(raw) > 8192 {

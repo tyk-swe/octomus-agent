@@ -63,8 +63,10 @@ func (b BlockedReason) Error() string {
 	return blockedReasonMessages[b]
 }
 
-// BlockedReasonFromError walks wrapped and multi-cause errors so the deepest
-// typed reason wins.
+// BlockedReasonFromError returns the BlockedReason among err's wrapped and
+// joined causes, or BlockedReasonUnknown. A reason wraps nothing, so one wrap
+// chain holds at most one; when joined branches hold several, the causes are
+// visited depth-first in order and the last reason found wins.
 func BlockedReasonFromError(err error) BlockedReason {
 	result := BlockedReasonUnknown
 	var visit func(error)
@@ -87,6 +89,7 @@ func BlockedReasonFromError(err error) BlockedReason {
 	visit(err)
 	return result
 }
+
 func (p PlanningCapacity) Available() bool { return p.Status == PlanningCapacityStatusReady }
 func (p PlanningCapacity) Message() string {
 	guidance := "Planning can start."

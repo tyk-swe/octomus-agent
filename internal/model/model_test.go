@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -129,6 +130,16 @@ func TestUTCIdentitiesAndTypedErrors(t *testing.T) {
 	}
 	if BlockedReasonFromError(fmt.Errorf("outer: %w", BlockedReasonTimeout)) != BlockedReasonTimeout {
 		t.Fatal("typed cause lost")
+	}
+	// Joined branches are visited in order: a later branch's reason wins over
+	// an earlier, more deeply wrapped one, and a branch without one changes
+	// nothing.
+	joined := errors.Join(fmt.Errorf("a: %w", fmt.Errorf("b: %w", BlockedReasonStaleBase)), BlockedReasonTimeout, errors.New("plain"))
+	if got := BlockedReasonFromError(joined); got != BlockedReasonTimeout {
+		t.Fatalf("joined reasons resolved to %v; want the later branch's timeout", got)
+	}
+	if got := BlockedReasonFromError(errors.New("plain")); got != BlockedReasonUnknown {
+		t.Fatalf("an untyped error resolved to %v", got)
 	}
 	p := PlanningCapacity{Status: PlanningCapacityStatusDailyExhausted, Required: 13}
 	if p.EnsureAvailable() == nil || BlockedReasonFromError(p.EnsureAvailable()) != BlockedReasonBudgetExhausted {
