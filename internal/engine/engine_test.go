@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -507,6 +508,64 @@ func TestRecoverySeedsOnlyResumableAndCheckpointedPrReservations(t *testing.T) {
 	recovered, err := store.Get[model.Task](state, "task", resumableCheckpoint.ID)
 	if err != nil || recovered == nil || recovered.Status != model.StatusQueued || recovered.Attempts != 1 || recovered.Sessions[0].Status != model.SessionInterrupted {
 		t.Fatalf("checkpoint recovery lost resumable evidence: %+v, %v", recovered, err)
+	}
+}
+
+// TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget: an interrupted
+// publication whose retry budget is spent still holds reviewed and verified
+// output. Recovery blocks it for reconciliation, which publishes without
+// another attempt or model turn, instead of as a retry limit whose only retry
+// is refused. Work without a checkpoint keeps the retry limit.
+func TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget(t *testing.T) {
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	session := "execution-session"
+	commit := "output-commit"
+	exhausted := func(id string, status model.Status, output *string) model.Task {
+		task := queuedTask(cfg, id, cfg.DefaultBranch, cfg.BranchPrefix+id)
+		task.Status = status
+		task.OutputCommit = output
+		task.ExecutionSession = &session
+		task.Workspace = filepath.Join(t.TempDir(), id)
+		task.Attempts = cfg.MaxRetries
+		task.Sessions = []model.Session{model.NewSession("running", "executor", task.Route)}
+		if err := os.MkdirAll(filepath.Join(task.Workspace, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Put("task", task.ID, task); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	checkpoint := exhausted("publishing-checkpoint", model.StatusPublishing, &commit)
+	uncommitted := exhausted("reviewing-without-checkpoint", model.StatusReviewing, nil)
+
+	a := New(state, t.TempDir())
+	t.Cleanup(a.Shutdown)
+	if err := a.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := loadTask(t, state, checkpoint.ID)
+	if !blockedAs(recovered, model.BlockedReasonPublicationUncertain) || recovered.Attempts != cfg.MaxRetries ||
+		recovered.OutputCommit == nil || *recovered.OutputCommit != commit || recovered.Sessions[0].Status != model.SessionInterrupted {
+		t.Fatalf("exhausted checkpoint recovery = %+v", recovered)
+	}
+	if actions := recovered.AllowedActions(); !slices.Contains(actions, "reconcile") || slices.Contains(actions, "retry") {
+		t.Fatalf("exhausted checkpoint actions = %v; want reconcile instead of retry", actions)
+	}
+	if recovered.Error == nil || !strings.Contains(*recovered.Error, "Reconcile publication") {
+		t.Fatalf("exhausted checkpoint must name its remedy: %v", recovered.Error)
+	}
+	reservations, err := state.PrReservations(cfg.GitHubRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(reservations, func(r store.PrReservation) bool { return r.TaskID == checkpoint.ID }) {
+		t.Fatalf("exhausted checkpoint lost its PR reservation: %+v", reservations)
+	}
+	if other := loadTask(t, state, uncommitted.ID); !blockedAs(other, model.BlockedReasonRetryLimit) || other.Attempts != cfg.MaxRetries {
+		t.Fatalf("exhausted work without a checkpoint = %+v; want the retry limit", other)
 	}
 }
 

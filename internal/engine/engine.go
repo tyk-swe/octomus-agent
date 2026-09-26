@@ -305,11 +305,18 @@ func (a *App) Recover() error {
 		default:
 			task.Status = model.StatusBlocked
 			reason := model.BlockedReasonWorkspaceInvalid
+			message := "Service interrupted before workspace initialization completed, or retry budget exhausted. Inspect the preserved task before retrying."
 			if workspace.Initialized(task) {
 				reason = model.BlockedReasonRetryLimit
+				if task.OutputCommit != nil {
+					// Reviewed, verified output only needs its publication
+					// finished; reconciliation needs no attempt or model turn.
+					reason = model.BlockedReasonPublicationUncertain
+					message = "Service interrupted during publication after the retry budget was exhausted. Reconcile publication to finish delivery without another model turn."
+				}
 			}
 			task.BlockedReason = &reason
-			task.Error = stringPointer("Service interrupted before workspace initialization completed, or retry budget exhausted. Inspect the preserved task before retrying.")
+			task.Error = stringPointer(message)
 		}
 		task.UpdatedAt = model.Now()
 		if err := a.Store.Put("task", task.ID, task); err != nil {
