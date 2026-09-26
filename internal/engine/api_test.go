@@ -307,9 +307,9 @@ func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
 }
 
 // TestStateViewReportsBaselineSummaryWithoutCommands: the state view
-// summarizes the latest baseline check, with its configuration match and
-// revision, but never its command evidence, and a finished check is not
-// reported as active.
+// summarizes the latest baseline check, with the configuration revision it
+// ran under and whether that still matches the saved configuration, but never
+// its command evidence, and a finished check is not reported as active.
 func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
 	app, cfg := baselineApp(t)
 	fingerprint, err := BaselineFingerprint(cfg)

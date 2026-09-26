@@ -53,10 +53,10 @@ Every configured command must pass on the reviewed revision before publication. 
 check stays visible and can block delivery. Commands run with the service user's permissions
 on the dedicated host.
 
-A command must leave the workspace as it found it. One that modifies files, commits, or
-leaves a new file that the repository does not git-ignore (a coverage report or a cache,
-for example) fails verification and blocks the task, so ignore such artifacts in the
-repository's `.gitignore`.
+A command must leave the workspace as it found it. One that changes tracked files, moves
+HEAD (by committing, for example), or leaves a new file that the repository does not
+git-ignore (a coverage report or a cache, for example) fails verification and blocks the
+task, so ignore such artifacts in the repository's `.gitignore`.
 
 The optional **Check clean baseline** runs the saved commands against the remote default
 revision before model work. It does not verify any later task's changes.
