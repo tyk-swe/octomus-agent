@@ -17,7 +17,7 @@ build-race: dashboard
 
 # gofmt comes from the module's toolchain, not PATH; parse errors fail too.
 check: dashboard
-	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal tests web/embed*.go) || exit 1; \
+	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal tests web/*.go) || exit 1; \
 	if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files" >&2; exit 1; fi
 	go vet ./...
 	npm run check --prefix web
