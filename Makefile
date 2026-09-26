@@ -1,5 +1,9 @@
 .PHONY: dashboard build build-race check test package audit
 
+# Integration suites run the freshly built binary and stream their PASS lines
+# (Python block-buffers stdout when it is a pipe, as under make and CI).
+E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
+
 dashboard:
 	npm run build --prefix web
 
@@ -11,8 +15,10 @@ build: dashboard
 build-race: dashboard
 	CGO_ENABLED=1 go build -race -o bin/octomus-agent-race ./cmd/octomus-agent
 
+# gofmt comes from the module's toolchain, not PATH; parse errors fail too.
 check: dashboard
-	test -z "$$(gofmt -l version.go cmd internal web/embed*.go)"
+	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal tests web/embed*.go) || exit 1; \
+	if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files" >&2; exit 1; fi
 	go vet ./...
 	npm run check --prefix web
 	npm run format:check --prefix web
@@ -20,18 +26,23 @@ check: dashboard
 test: build
 	go test ./...
 	CGO_ENABLED=1 go test -race ./...
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/binary_contract.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/evidence_snapshot.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e_baseline.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e_notifications.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e_runners.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/e2e_hardening.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" python3 tests/distribution.py
+	$(E2E_ENV) python3 tests/binary_contract.py
+	$(E2E_ENV) python3 tests/evidence_snapshot.py
+	$(E2E_ENV) python3 tests/e2e.py
+	$(E2E_ENV) python3 tests/e2e_baseline.py
+	$(E2E_ENV) python3 tests/e2e_notifications.py
+	$(E2E_ENV) python3 tests/e2e_runners.py
+	$(E2E_ENV) python3 tests/e2e_hardening.py
+	$(E2E_ENV) python3 tests/distribution.py
 	python3 tests/package_guards.py
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" npm test --prefix web
+	$(E2E_ENV) npm test --prefix web
 
+# `go run pkg@version` selects a toolchain from govulncheck's own go.mod, which
+# can be older than this module's and then cannot type-check it; pin the
+# toolchain this module resolves to (GOTOOLCHAIN auto-switching included).
 audit:
+	toolchain=$$(go env GOVERSION | cut -d' ' -f1); \
+	case $$toolchain in go1.*) export GOTOOLCHAIN=$$toolchain ;; esac; \
 	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 	npm audit --prefix web --audit-level=high
 
