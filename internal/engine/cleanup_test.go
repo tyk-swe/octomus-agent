@@ -822,3 +822,85 @@ func TestHousekeepingShutdownRecordsNoCancellationError(t *testing.T) {
 		t.Fatalf("storage was walked after shutdown: %t, %v", found, err)
 	}
 }
+
+// Retention reads its candidate list without the gate. A record the operator
+// discards after that read, while retention is still busy with an earlier
+// candidate, is skipped on retention's gated re-read: its discarded_at keeps
+// the operator's time and no cleanup failure is reported.
+func TestRetentionSkipsRecordsDiscardedDuringThePass(t *testing.T) {
+	for _, kind := range []string{"task", "cycle"} {
+		t.Run(kind, func(t *testing.T) {
+			state := testStore(t)
+			dataDir := t.TempDir()
+			cfg := testConfig(t.TempDir())
+			cfg.RetainCompletedDays = 1
+			saveSettings(t, state, cfg, model.DefaultControl())
+			var held, raced string
+			var discard func(*App) error
+			var discardedAt func() *string
+			if kind == "task" {
+				first := discardableTask(t, cfg, dataDir, "held-task")
+				second := discardableTask(t, cfg, dataDir, "raced-task")
+				for _, task := range []model.Task{first, second} {
+					if err := state.Put("task", task.ID, task); err != nil {
+						t.Fatal(err)
+					}
+				}
+				held, raced = filepath.Join(dataDir, "tasks", first.ID), second.ID
+				discard = func(app *App) error { return app.TaskAction(context.Background(), raced, "discard") }
+				discardedAt = func() *string {
+					saved, err := store.Get[model.Task](state, "task", raced)
+					if err != nil || saved == nil {
+						t.Fatalf("reload task: %+v, %v", saved, err)
+					}
+					return saved.Lifecycle.DiscardedAt
+				}
+			} else {
+				first := discardableCycle(t, dataDir)
+				second := discardableCycle(t, dataDir)
+				for _, cycle := range []model.Cycle{first, second} {
+					if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+						t.Fatal(err)
+					}
+				}
+				held, raced = filepath.Join(dataDir, "cycles", first.ID), second.ID
+				discard = func(app *App) error { return app.CycleAction(raced, "discard") }
+				discardedAt = func() *string {
+					saved, err := store.Get[model.Cycle](state, "cycle", raced)
+					if err != nil || saved == nil {
+						t.Fatalf("reload cycle: %+v, %v", saved, err)
+					}
+					return saved.Lifecycle.DiscardedAt
+				}
+			}
+			barrier := newRemovalBarrier(t, held)
+			app := New(state, dataDir, WithWorkspaceRemoval(barrier.remove))
+			t.Cleanup(app.Shutdown)
+
+			done := make(chan error, 1)
+			go func() { done <- app.retention(cfg) }()
+			barrier.wait(t)
+			if err := completesDuring(t, "operator discard", func() error { return discard(app) }); err != nil {
+				t.Fatalf("operator discard during retention: %v", err)
+			}
+			operator := discardedAt()
+			if operator == nil {
+				t.Fatal("operator discard was not recorded")
+			}
+			barrier.Release()
+			if err := <-done; err != nil {
+				t.Fatalf("retention: %v", err)
+			}
+			if after := discardedAt(); after == nil || *after != *operator {
+				got := "<nil>"
+				if after != nil {
+					got = *after
+				}
+				t.Fatalf("retention rewrote the operator's discard time: %s -> %s", *operator, got)
+			}
+			if events := cleanupEvents(t, state, raced); len(events) != 0 {
+				t.Fatalf("retention reported a failure for a discarded record: %+v", events)
+			}
+		})
+	}
+}

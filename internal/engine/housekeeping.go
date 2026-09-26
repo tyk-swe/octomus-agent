@@ -146,10 +146,13 @@ func (a *App) retention(cfg config.Config) error {
 			if a.ctx.Err() != nil {
 				return nil
 			}
+			// The candidate list was read without the gate: the re-read under
+			// it skips a record the operator discarded meanwhile, so its
+			// discarded_at is never rewritten.
 			a.gate.Lock()
 			if kind == "task" {
 				task, loadErr := store.Get[model.Task](a.Store, kind, id)
-				if loadErr == nil && task != nil {
+				if loadErr == nil && task != nil && task.Lifecycle.DiscardedAt == nil {
 					a.runtimeMu.Lock()
 					_, running := a.runtime.tasks[id]
 					a.runtimeMu.Unlock()
@@ -160,7 +163,7 @@ func (a *App) retention(cfg config.Config) error {
 				err = loadErr
 			} else {
 				cycle, loadErr := store.Get[model.Cycle](a.Store, kind, id)
-				if loadErr == nil && cycle != nil && cycle.Status != model.CycleRunning {
+				if loadErr == nil && cycle != nil && cycle.Lifecycle.DiscardedAt == nil && cycle.Status != model.CycleRunning {
 					loadErr = a.DiscardCycle(cycle)
 				}
 				err = loadErr
