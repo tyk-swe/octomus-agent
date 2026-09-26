@@ -687,6 +687,99 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 	}
 }
 
+// A cleanup that keeps failing the same way is one cleanup_error event, not
+// one per retention pass: a task, a cycle and a baseline whose identity is
+// permanently refused each report once across passes. A changed message is
+// reported at once, an unchanged one again after a day, and a pass that
+// finally discards the target writes nothing more and forgets the failure.
+func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
+	state := testStore(t)
+	dataDir := t.TempDir()
+	cfg := testConfig(t.TempDir())
+	cfg.RetainCompletedDays = 1
+	saveSettings(t, state, cfg, model.DefaultControl())
+	task := discardableTask(t, cfg, dataDir, "stuck-task")
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	cycle := discardableCycle(t, dataDir)
+	if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	check := makeCheck(cfg, model.BaselineStatusFailed)
+	check.ID = "not-a-uuid"
+	check.CompletedAt = stringPointer(model.Now())
+	if err := state.Put("baseline", check.ID, check); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	failure := "removal refused: bearer fixturesecrettoken123"
+	app := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
+		mu.Lock()
+		message := failure
+		mu.Unlock()
+		if message != "" {
+			return errors.New(message)
+		}
+		return workspace.RemoveOwnedDir(root, path)
+	}))
+	t.Cleanup(app.Shutdown)
+	pass := func() {
+		t.Helper()
+		if err := app.retention(cfg); err != nil {
+			t.Fatalf("retention: %v", err)
+		}
+	}
+	counts := func(want map[string]int) {
+		t.Helper()
+		for id, n := range want {
+			if events := cleanupEvents(t, state, id); len(events) != n {
+				t.Fatalf("%s cleanup events = %+v; want %d", id, events, n)
+			}
+		}
+	}
+
+	pass()
+	pass()
+	counts(map[string]int{task.ID: 1, cycle.ID: 1, check.ID: 1})
+	if events := cleanupEvents(t, state, task.ID); strings.Contains(events[0].Message, "fixturesecrettoken123") {
+		t.Fatalf("cleanup failure not redacted: %q", events[0].Message)
+	}
+
+	mu.Lock()
+	failure = "removal refused: a different reason"
+	mu.Unlock()
+	pass()
+	counts(map[string]int{task.ID: 2, cycle.ID: 2, check.ID: 1})
+
+	app.runtimeMu.Lock()
+	aged := app.runtime.cleanupReports[cleanupKey{kind: cleanupTask, id: task.ID}]
+	aged.at = aged.at.Add(-cleanupReportInterval)
+	app.runtime.cleanupReports[cleanupKey{kind: cleanupTask, id: task.ID}] = aged
+	app.runtimeMu.Unlock()
+	pass()
+	counts(map[string]int{task.ID: 3, cycle.ID: 2, check.ID: 1})
+
+	mu.Lock()
+	failure = ""
+	mu.Unlock()
+	pass()
+	counts(map[string]int{task.ID: 3, cycle.ID: 2, check.ID: 1})
+	if saved := loadTask(t, state, task.ID); saved.Lifecycle.DiscardedAt == nil {
+		t.Fatalf("recovered cleanup did not discard the task: %+v", saved.Lifecycle)
+	}
+	if saved, err := store.Get[model.Cycle](state, "cycle", cycle.ID); err != nil || saved == nil || saved.Lifecycle.DiscardedAt == nil {
+		t.Fatalf("recovered cleanup did not discard the cycle: %+v, %v", saved, err)
+	}
+	app.runtimeMu.Lock()
+	remembered := len(app.runtime.cleanupReports)
+	_, baselineRemembered := app.runtime.cleanupReports[cleanupKey{kind: cleanupBaseline, id: check.ID}]
+	app.runtimeMu.Unlock()
+	if remembered != 1 || !baselineRemembered {
+		t.Fatalf("cleanup reports after recovery = %d; want only the still-refused baseline", remembered)
+	}
+}
+
 // An owner-path refusal is preserved end to end: the foreign directory is not
 // removed, the record is not marked, and the refusal is reported rather than
 // claimed as success.

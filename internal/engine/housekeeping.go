@@ -34,6 +34,12 @@ const (
 	// maxRetainDays is the configured retain_completed_days maximum; retention
 	// clamps to it so an unvalidated value cannot overflow the cutoff duration.
 	maxRetainDays = 36500
+	// cleanupReportInterval is how long retention stays quiet about a target
+	// whose cleanup keeps failing with the same message. Some refusals are
+	// permanent (a symlinked data directory, a workspace outside the task's
+	// owned directory); an event every pass would crowd real history out of
+	// the bounded event log.
+	cleanupReportInterval = 24 * time.Hour
 )
 
 type storageUsage struct {
@@ -152,10 +158,10 @@ func (a *App) retention(cfg config.Config) error {
 		if loadErr == nil && terminal && !active {
 			loadErr = a.CleanupBaseline(current)
 		}
-		if loadErr != nil {
-			if eventErr := a.Store.Event(check.ID, "cleanup_error", store.ErrorMessage(loadErr)); eventErr != nil {
-				return eventErr
-			}
+		if loadErr == nil {
+			a.clearCleanupReport(cleanupBaseline, check.ID)
+		} else if eventErr := a.reportCleanupFailure(cleanupBaseline, check.ID, loadErr); eventErr != nil {
+			return eventErr
 		}
 	}
 	for _, kind := range []cleanupKind{cleanupTask, cleanupCycle} {
@@ -172,14 +178,55 @@ func (a *App) retention(cfg config.Config) error {
 			a.gate.Unlock()
 			// A conflict means another cleanup already owns this target —
 			// success in progress, not a cleanup failure to report.
-			if err != nil && !IsActionConflict(err) {
-				if eventErr := a.Store.Event(id, "cleanup_error", store.ErrorMessage(err)); eventErr != nil {
+			if err == nil {
+				a.clearCleanupReport(kind, id)
+			} else if !IsActionConflict(err) {
+				if eventErr := a.reportCleanupFailure(kind, id, err); eventErr != nil {
 					return eventErr
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// cleanupReport is the last cleanup failure retention reported for a target:
+// its redacted message and when the event was written.
+type cleanupReport struct {
+	message string
+	at      time.Time
+}
+
+// reportCleanupFailure writes a cleanup_error event for a retention target
+// unless the same message was reported for it within cleanupReportInterval.
+// A changed message is reported at once. The memory is per process, so a
+// restart reports a lasting failure once more.
+func (a *App) reportCleanupFailure(kind cleanupKind, id string, err error) error {
+	message := store.ErrorMessage(err)
+	key := cleanupKey{kind: kind, id: id}
+	now := time.Now()
+	a.runtimeMu.Lock()
+	last, reported := a.runtime.cleanupReports[key]
+	if reported && last.message == message && now.Sub(last.at) < cleanupReportInterval {
+		a.runtimeMu.Unlock()
+		return nil
+	}
+	a.runtime.cleanupReports[key] = cleanupReport{message: message, at: now}
+	a.runtimeMu.Unlock()
+	if eventErr := a.Store.Event(id, "cleanup_error", message); eventErr != nil {
+		// Nothing was recorded, so the next pass reports it again.
+		a.clearCleanupReport(kind, id)
+		return eventErr
+	}
+	return nil
+}
+
+// clearCleanupReport forgets a target's reported failure once a retention
+// pass meets it without one, so a later failure is reported at once.
+func (a *App) clearCleanupReport(kind cleanupKind, id string) {
+	a.runtimeMu.Lock()
+	delete(a.runtime.cleanupReports, cleanupKey{kind: kind, id: id})
+	a.runtimeMu.Unlock()
 }
 
 // retainCandidateLocked discards one task or cycle retention candidate if it

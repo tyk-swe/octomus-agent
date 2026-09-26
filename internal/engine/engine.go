@@ -117,6 +117,10 @@ type runtimeState struct {
 	// removal, and released on every exit; nothing persists them, so a restart
 	// never inherits a lockout.
 	cleanups map[cleanupKey]struct{}
+	// cleanupReports holds the last cleanup failure retention reported for
+	// each target, so an unchanged failure is an event once a day rather
+	// than every pass. Like the claims it is never persisted.
+	cleanupReports map[cleanupKey]cleanupReport
 }
 
 func (r *runtimeState) idle() bool {
@@ -195,7 +199,7 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 		ctx:     ctx,
 		cancel:  cancel,
 		wake:    make(chan struct{}, 1),
-		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}},
+		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}},
 	}
 	// The production runner is the supervised execution lifecycle; tests
 	// substitute it with WithTaskRunner.
