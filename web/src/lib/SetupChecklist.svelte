@@ -228,10 +228,6 @@
     gap: 8px 12px;
     align-items: center;
   }
-  h3 {
-    font-size: 14px;
-    margin: 0;
-  }
   .step-body > p {
     margin: 6px 0 0;
     font-size: 12px;

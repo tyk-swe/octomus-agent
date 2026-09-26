@@ -57,11 +57,6 @@ input:disabled,
 textarea:disabled {
   background: #fafbf7;
 }
-.divider {
-  height: 1px;
-  background: #edf1e6;
-  margin: 23px 24px;
-}
 .inline-note {
   display: flex;
   gap: 8px;

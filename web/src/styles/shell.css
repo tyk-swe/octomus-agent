@@ -228,8 +228,7 @@ nav button.active b {
   font-size: 12px;
   color: var(--muted);
 }
-.live-indicator span,
-.footer-dot {
+.live-indicator span {
   width: 5px;
   height: 5px;
   border-radius: 50%;
@@ -250,6 +249,12 @@ nav button.active b {
 .live-indicator.offline > span::after {
   border-color: #b27b45;
   animation: none;
+}
+.live-indicator.offline {
+  color: #8b5b35;
+}
+.live-indicator.offline span {
+  background: #b27b45;
 }
 @keyframes live-pulse {
   0% {

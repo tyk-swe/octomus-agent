@@ -510,7 +510,9 @@
 .footer-dot {
   width: 4px;
   height: 4px;
+  border-radius: 50%;
   background: #a4b78e;
+  display: inline-block;
 }
 .notice {
   display: flex;
