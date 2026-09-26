@@ -681,13 +681,16 @@ test('loaded older cycles and their actions survive background refresh', async (
       error: null,
       session_count: 0,
       decisions: {},
+      // Retention cleanup discarded history-2's workspaces without it being archived.
       lifecycle:
         newest - i === 1 && archived
           ? {
               archived_at: '2026-09-10T00:00:00Z',
               ...(discarded ? { discarded_at: '2026-09-10T00:02:00Z' } : {})
             }
-          : {}
+          : newest - i === 2
+            ? { discarded_at: '2026-09-10T00:03:00Z' }
+            : {}
     })).filter((cycle) => cycle.number < before);
     const items = cycles.slice(0, 100);
     await route.fulfill({
@@ -728,6 +731,16 @@ test('loaded older cycles and their actions survive background refresh', async (
   const archive = page.getByRole('button', { name: 'Archive cycle', exact: true });
   const discard = page.getByRole('button', { name: 'Discard cycle workspaces' });
   await expect(discard).toHaveCount(0);
+  await expect(archive).toBeVisible();
+  // A cycle whose workspaces are already discarded has no lifecycle action left, even
+  // when retention cleanup discarded them without an archive.
+  await expect(picker.locator('option[value="history-2"]')).toHaveText(
+    'Execution cycle #002 · completed · workspaces discarded'
+  );
+  await picker.selectOption('history-2');
+  await expect(archive).toHaveCount(0);
+  await expect(discard).toHaveCount(0);
+  await picker.selectOption('history-1');
   await archive.click();
   await expect(discard).toBeVisible();
   await expect(picker).toHaveValue('history-1');

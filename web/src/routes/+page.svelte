@@ -169,7 +169,8 @@
   /**
    * The picked cycle's loaded summary. Its lifecycle decides which workspace action is
    * still open: archiving again would restart the retention clock, and a discarded
-   * cycle has nothing left to discard.
+   * cycle has nothing left to discard or to archive, including one that retention
+   * cleanup discarded without an archive.
    */
   let selectedCycle = $derived(
     proposalCycle === 'all' ? undefined : cycleRows.find((c) => c.id === proposalCycle)
@@ -825,7 +826,7 @@
                 disabled={cyclesLoading}
                 onclick={loadOlderCycles}>Load older cycles</button
               >{/if}
-            {#if selectedCycle && selectedCycle.status !== 'running'}
+            {#if selectedCycle && selectedCycle.status !== 'running' && !selectedCycle.lifecycle.discarded_at}
               {#if !selectedCycle.lifecycle.archived_at}<button
                   class="button"
                   disabled={busy}
