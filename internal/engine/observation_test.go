@@ -235,6 +235,61 @@ func TestHousekeepingRefreshObsoletedByAPolicySaveIsNotAFailure(t *testing.T) {
 	}
 }
 
+// A housekeeping refresh that genuinely fails for the PR identity a
+// configuration save has just replaced reports nothing about the saved policy:
+// its failure is not left as the capacity failure reason under the new
+// configuration.
+func TestFailedRefreshForAReplacedPolicyIsNotTheCapacityReason(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	hold, entered, fail := holdOpenPrInventoryRead(t, fixture)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	app.runtimeMu.Lock()
+	app.runtime.lastRetention = time.Now()
+	app.runtimeMu.Unlock()
+	app.maybeStartHousekeeping(fixture.cfg)
+	if !testutil.WaitUntil(30*time.Second, func() bool {
+		_, err := os.Stat(entered)
+		return err == nil
+	}) {
+		t.Fatal("housekeeping refresh did not read the open-PR inventory")
+	}
+	live, err := app.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := live.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := map[string]json.RawMessage{"branch_prefix": json.RawMessage(`"octomus-next/"`)}
+	if _, err := app.SaveConfig(revision, patch); err != nil {
+		t.Fatal(err)
+	}
+	// The held read of the replaced policy's inventory now fails for real.
+	if err := os.WriteFile(fail, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	waitHousekeeping(t, app)
+
+	app.runtimeMu.Lock()
+	refreshError := app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("a failure of the replaced policy's refresh became the current failure: %q", refreshError)
+	}
+	capacity, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capacity.Reason != nil && strings.Contains(*capacity.Reason, "inventory failed") {
+		t.Fatalf("the replaced policy's failure became the capacity reason: %+v", capacity)
+	}
+}
+
 // A current observation commits the default-branch revision together with the
 // context fingerprint.
 func TestObservationRecordsTheDefaultBranchWithItsContext(t *testing.T) {

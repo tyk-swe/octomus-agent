@@ -233,6 +233,16 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		if result == nil || ctx.Err() != nil || errors.Is(result, context.Canceled) || errors.Is(result, errPrPolicyChanged) || errors.Is(result, errPrInventorySuperseded) {
 			return
 		}
+		// A genuine failure of a PR identity that a save replaced while this
+		// refresh ran is obsolete too: it says nothing about the saved policy.
+		// The gate orders this check against SaveConfig, which saves and
+		// invalidates in one gate section. No caller holds the gate here: the
+		// deferred unlock below has already run.
+		a.gate.Lock()
+		defer a.gate.Unlock()
+		if live, err := a.Config(); err == nil && !store.PrIdentityOf(snapshot).Matches(live) {
+			return
+		}
 		a.runtimeMu.Lock()
 		observation := a.runtime.prObservation
 		if observation == nil || (observation.identity.Matches(snapshot) && !observation.fetchedAt.After(startedAt)) {
