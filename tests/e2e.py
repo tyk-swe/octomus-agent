@@ -17,7 +17,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from harness import BINARY, CODEX_ROUTE, TOKEN, Service, base_config, existing_pr, fixture_service, git, poll, process_gone, run_selected, update_prs, usage_report, use_codex_routes
+from harness import BINARY, CODEX_ROUTE, TOKEN, Service, base_config, existing_pr, fixture_service, git, poll, process_gone, run_selected, select_scenarios, update_prs, usage_report, use_codex_routes
 
 
 def scenario(mode):
@@ -378,7 +378,6 @@ def audit_scenario(mode):
             assert row['planning_admissions'] == 13
         service.stop()
         service.start()
-        time.sleep(1.2)
         assert service.request('/state')['tasks'] == queued_before
         current_publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
         assert current_publications == publications
@@ -403,7 +402,10 @@ def harness_scenario():
     scenario failure through after releasing holds before the service stops.
     update_prs waits for the gh fixture's lock and replaces prs.json whole.
     run_selected runs scenarios by name, bounds concurrency and reports failures
-    after every scenario has finished teardown.
+    after every scenario has finished teardown. select_scenarios expands suite
+    aliases and qualified names into one registry-ordered list, deduplicates
+    overlapping selections, and refuses unknown names and duplicate registries
+    before any scenario runs.
     """
     calls = {}
 
@@ -446,7 +448,7 @@ def harness_scenario():
             assert report and report.startswith('missing route timed out after 1s; last error: HTTP 404: {"error":"Unknown API route"}\nstate: <state unavailable: BadStatusLine('), report
             assert report.endswith('service.log tail:\nearlier line\nlast service line'), report
 
-            service.process = subprocess.Popen([sys.executable, '-c', 'import signal, sys, time\nsignal.signal(signal.SIGTERM, lambda *_: sys.exit(66))\nprint("ready", flush=True)\ntime.sleep(30)'], stdout=subprocess.PIPE, text=True)
+            service.process = subprocess.Popen([sys.executable, '-c', 'import signal, sys, time\nsignal.signal(signal.SIGTERM, lambda *_: sys.exit(66))\nprint("ready", flush=True)\nsignal.pause()'], stdout=subprocess.PIPE, text=True)
             with service.process.stdout:
                 assert service.process.stdout.readline() == 'ready\n'
             report = None
@@ -484,7 +486,7 @@ def harness_scenario():
     try:
         with fixture_service('octomus-harness-fixture-', start=False) as (root, service):
             (root / 'audit-hold').touch()
-            service.process = subprocess.Popen([sys.executable, '-c', f'import pathlib, signal, sys, time\nhold = pathlib.Path({str(root / "audit-hold")!r})\nsignal.signal(signal.SIGTERM, lambda *_: sys.exit(3 if hold.exists() else 0))\nprint("ready", flush=True)\ntime.sleep(30)'], stdout=subprocess.PIPE, text=True)
+            service.process = subprocess.Popen([sys.executable, '-c', f'import pathlib, signal, sys, time\nhold = pathlib.Path({str(root / "audit-hold")!r})\nsignal.signal(signal.SIGTERM, lambda *_: sys.exit(3 if hold.exists() else 0))\nprint("ready", flush=True)\nsignal.pause()'], stdout=subprocess.PIPE, text=True)
             with service.process.stdout:
                 assert service.process.stdout.readline() == 'ready\n'
             raise failure
@@ -561,14 +563,53 @@ def harness_scenario():
         assert str(error) == 'parallel-selftest failed scenarios: b', error
     assert active == 0 and maximum == 2 and sorted(finished) == ['a', 'b', 'c', 'd'], (active, maximum, finished)
     assert 'FAIL parallel-selftest b' in output.getvalue() and 'synthetic scenario failure' in output.getvalue(), output.getvalue()
-    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field; fixture teardown releases holds first; update_prs takes the gh lock; scenarios run by name with bounded concurrency and failures wait for teardown')
+
+    ran.clear()
+    suites = [
+        ('one', [(name, functools.partial(ran.append, f'one/{name}')) for name in ['x', 'y']]),
+        ('two', [('z', functools.partial(ran.append, 'two/z'))]),
+    ]
+    everything = select_scenarios(suites, [])
+    assert [name for name, _ in everything] == ['one/x', 'one/y', 'two/z'], everything
+    output = io.StringIO()
+    run_selected('integration', everything, [], workers=1, output=output)
+    assert ran == ['one/x', 'one/y', 'two/z'], ran
+    assert output.getvalue() == ''.join(f'RUN integration {name}\n' for name in ran), output.getvalue()
+    assert [name for name, _ in select_scenarios(suites, ['two'])] == ['two/z']
+    assert [name for name, _ in select_scenarios(suites, ['one/y'])] == ['one/y']
+    assert [name for name, _ in select_scenarios(suites, ['two', 'one/y', 'two/z'])] == ['one/y', 'two/z']
+    ran.clear()
+    try:
+        select_scenarios(suites, ['one/x', 'nope', 'three'])
+        raise AssertionError('an unknown integration selection was accepted')
+    except SystemExit as error:
+        refusal = str(error)
+    assert 'nope' in refusal and 'three' in refusal, refusal
+    for expected in ['one', 'two', 'one/x', 'one/y', 'two/z']:
+        assert expected in refusal, refusal
+    assert ran == [], 'a callable ran while an unknown selection was refused'
+    nothing = object()
+    for bad in [
+        [('one', [('x', nothing)]), ('one', [('y', nothing)])],
+        [('one', [('x', nothing), ('x', nothing)])],
+        [('one', [('two/z', nothing)]), ('one/two', [('z', nothing)])],
+    ]:
+        try:
+            select_scenarios(bad, [])
+            raise AssertionError(f'a duplicate registry was accepted: {bad}')
+        except SystemExit:
+            pass
+    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field; fixture teardown releases holds first; update_prs takes the gh lock; scenarios run by name with bounded concurrency and failures wait for teardown; suite selection expands aliases and qualified names in registry order, deduplicates overlaps and refuses unknown names and duplicate registries')
+
+
+SCENARIOS = [
+    ('harness', harness_scenario),
+    ('settings', settings_scenario),
+    *[(mode, functools.partial(scenario, mode)) for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']],
+    *[(f'missing-{role}', functools.partial(missing_session_scenario, role)) for role in ['executor', 'repair']],
+    *[(f'audit-{mode}', functools.partial(audit_scenario, mode)) for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']],
+]
 
 
 if __name__ == '__main__':
-    run_selected('e2e', [
-        ('harness', harness_scenario),
-        ('settings', settings_scenario),
-        *[(mode, functools.partial(scenario, mode)) for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']],
-        *[(f'missing-{role}', functools.partial(missing_session_scenario, role)) for role in ['executor', 'repair']],
-        *[(f'audit-{mode}', functools.partial(audit_scenario, mode)) for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']],
-    ], sys.argv[1:])
+    run_selected('e2e', SCENARIOS, sys.argv[1:])

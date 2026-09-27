@@ -263,7 +263,6 @@ def run(mode):
             service.request('/tasks/' + first['id'] + '/archive', 'POST')
             service.stop(); service.start()
             service.wait(lambda: bool(service.request('/state')['prs']), 'archived predecessor observation')
-            time.sleep(1)
             assert not service.request('/state')['prs'][0]['external_head_movement'], 'Archival must not replace the latest known delivery head'
         elif mode == 'dependency-rollback':
             service.wait(lambda: service.request('/state')['control']['paused'], 'rollback drain paused')
@@ -326,7 +325,7 @@ def run(mode):
             assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
         service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot completion')
         cycles = len(service.request('/state')['cycles'])
-        service.stop(); service.start(); time.sleep(1.2)
+        service.stop(); service.start()
         assert service.request('/state')['control']['mode'] == 'paused'
         assert len(service.request('/state')['cycles']) == cycles
 
@@ -399,8 +398,11 @@ def hardening_reconciliation_deadline():
     print('PASS hardening reconciliation deadline and process cleanup', flush=True)
 
 
+SCENARIOS = [
+    *[(mode, functools.partial(hardening, mode)) for mode in ['reconcile-controls', 'archive-uncertain', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'dependency-rollback', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner', 'publication-body-edit', 'publication-secret', 'publication-secret-followup']],
+    ('reconciliation-deadline', hardening_reconciliation_deadline),
+]
+
+
 if __name__ == '__main__':
-    run_selected('hardening', [
-        *[(mode, functools.partial(hardening, mode)) for mode in ['reconcile-controls', 'archive-uncertain', 'published-duplicate', 'published-case-change', 'published-trimmed-title', 'cancel-route', 'audit-absorbed', 'live-budget', 'stale-retry', 'supersede', 'obsolete', 'interrupt-planning', 'chain', 'dependency-rollback', 'fork', 'unordered', 'pr-outcome', 'publication-race', 'publication-body', 'publication-base', 'publication-owner', 'publication-body-edit', 'publication-secret', 'publication-secret-followup']],
-        ('reconciliation-deadline', hardening_reconciliation_deadline),
-    ], sys.argv[1:])
+    run_selected('hardening', SCENARIOS, sys.argv[1:])

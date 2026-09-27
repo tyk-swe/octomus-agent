@@ -47,6 +47,12 @@ writes:
   `--print-config`.
 - `tests/helpers/public_payload.test.mjs` (`node --test`): the private-payload gate the
   run-evidence example imports.
+- `tests/integration.py`: one runner over every service suite, which is what
+  `make test` uses. Arguments select whole suites by alias (`e2e`, `baseline`,
+  `notifications`, `runners`, `hardening`) or single scenarios by qualified name,
+  for example `python3 tests/integration.py baseline notifications` or
+  `python3 tests/integration.py hardening/chain`; an unknown name lists the
+  suites and qualified scenarios.
 - `tests/e2e.py`: discovery, reviews, repairs, publication recovery and audits.
 - `tests/e2e_baseline.py`: clean-baseline checks, cancellation, restart and cleanup.
 - `tests/e2e_notifications.py`: attention webhook delivery and URL non-leakage.
@@ -58,9 +64,15 @@ writes:
 - `npm test --prefix web`: the dashboard browser tests, including the evidence display
   rules `web/tests/evidence.spec.ts` checks without a page.
 
+Focused targets run one stage each against the built binary: `make test-go`,
+`make test-contracts`, `make test-integration` (with `INTEGRATION_SCENARIOS`
+suite aliases or qualified names) and `make test-browser` (with
+`PLAYWRIGHT_ARGS` such as `--project=desktop`).
+
 The e2e suites share `tests/harness.py` and accept scenario names, for example
 `python3 tests/e2e_hardening.py chain fork`; an unknown name lists the available ones.
-Set `OCTOMUS_TEST_BINARY` to test another executable. Go tests share polling and
+Scenarios run with up to four workers; `OCTOMUS_TEST_JOBS` sets the limit
+(1 runs serially). Set `OCTOMUS_TEST_BINARY` to test another executable. Go tests share polling and
 process helpers through `internal/testutil`, and inject `internal/runner/runnertest`
 in place of runner processes; `internal/schemas/schematest` holds each structured-output
 schema to the Go type that decodes its answers. `web/types_contract_test.go` and

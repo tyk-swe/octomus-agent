@@ -57,6 +57,9 @@ owns strict typed JSON boundaries for saved records and API requests.
 - `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py`, `e2e_baseline.py`, and
   `e2e_notifications.py` share `tests/harness.py` and `tests/fixtures`:
   deterministic Codex/OpenCode/GitHub peers with real local Git.
+  `tests/integration.py` is the aggregate runner `make test` uses; it selects
+  whole suites by alias or single scenarios by `suite/scenario` name, and the
+  direct suite files remain focused entry points.
   `binary_contract.py` checks executable startup and embedded assets.
   `distribution.py`, `package_guards.py` and `systemd.py` cover packaging and
   deployment; `evidence_snapshot.py` runs the documented backup and export examples
@@ -81,15 +84,20 @@ race detector. Install dashboard dependencies with
 - `make check`: gofmt/`go vet`, Svelte/TypeScript and Prettier checks, including
   `tests/helpers`.
 - `make test`: Go tests (including `-race`), production binary, dashboard build,
-  integration and browser tests.
+  all service suites through `tests/integration.py`, and browser tests.
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
+- `make test-go` / `make test-contracts` / `make test-integration` /
+  `make test-browser`: one stage each. `test-integration` accepts
+  `INTEGRATION_SCENARIOS` suite aliases or `suite/scenario` names;
+  `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests run four workers.
 - `make test-race-e2e` (opt-in, about seven minutes): `tests/e2e.py` against the
   race-instrumented build.
 - `make audit` (govulncheck and `npm audit`; needs module downloads) and `make package`
   (release archive and `SHA256SUMS` in `dist/`) also run in CI.
 - Focused integration: `make build`, then
-  `OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e.py [SCENARIO...]`;
-  every e2e suite takes scenario names and lists them for an unknown one. These
+  `OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/integration.py [SUITE_OR_SUITE/SCENARIO...]`;
+  direct suite files like `tests/e2e.py [SCENARIO...]` work the same way.
+  An unknown selection lists the suites and qualified names. These
   tests use fixtures, not live accounts or model calls.
 
 Run relevant behavior tests while editing and the full checks before delivery.

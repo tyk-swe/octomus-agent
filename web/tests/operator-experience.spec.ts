@@ -1556,7 +1556,9 @@ test('short desktop sidebars keep Disconnect reachable by mouse', async ({
   await page.mouse.wheel(0, 800);
   const disconnect = page.getByRole('button', { name: /Disconnect/ });
   await expect(disconnect).toBeInViewport({ ratio: 1 });
-  await page.screenshot({ path: testInfo.outputPath('sidebar-1280x680.png') });
+  await expect(async () => {
+    await page.screenshot({ path: testInfo.outputPath('sidebar-1280x680.png') });
+  }).toPass({ timeout: 15000 });
   await disconnect.click();
   await expect(page.getByRole('heading', { name: 'Your project’s control room.' })).toBeVisible();
 });

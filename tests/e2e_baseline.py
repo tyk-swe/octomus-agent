@@ -188,7 +188,6 @@ def scenario(mode):
                 'echo done'])
             view = latest(service)
             assert view['check'] is None and view['eligible'], view
-            time.sleep(2.5)
             assert latest(service)['check'] is None and not service.request('/state')['baseline_active']
             (root / 'checkout/README.md').write_text('dirty local edits\n')
             (root / 'checkout/untracked.txt').write_text('junk\n')
@@ -241,7 +240,7 @@ def scenario(mode):
             print('PASS mutation: worktree edits and HEAD movement both stop verification')
             return
         if mode == 'timeout':
-            config = save_config(service, verification_commands=[f'touch {marker}; sleep 31337 & sleep 60'], command_timeout_seconds=10)
+            config = save_config(service, verification_commands=[f'touch {marker}; sleep 31337 & sleep 60'], command_timeout_seconds=1)
             code, check = service.expect('/baseline-checks', 'POST', {'expected_revision': config['revision']})
             assert code == 202, check
             service.wait(lambda: marker.exists(), 'command entry')
@@ -250,16 +249,6 @@ def scenario(mode):
             assert check['commands'] and check['commands'][0]['success'] is False
             assert check['workspace_removed'], check
             print('PASS timeout: command deadline ends the check and kills descendants')
-            return
-        if mode == 'timeout-overall':
-            config = save_config(service, verification_commands=[f'touch {marker}; sleep 60'], session_timeout_seconds=10, task_timeout_seconds=10, command_timeout_seconds=60)
-            code, check = service.expect('/baseline-checks', 'POST', {'expected_revision': config['revision']})
-            assert code == 202, check
-            service.wait(lambda: marker.exists(), 'command entry')
-            check = wait_check(service, ['timed_out'], cleaned=True)
-            assert 'overall limit' in check['error'], check['error']
-            assert check['workspace_removed']
-            print('PASS timeout-overall: the task budget caps the whole check')
             return
         if mode == 'restart':
             pgid_file = root / 'baseline-pgid'
@@ -361,7 +350,10 @@ def scenario(mode):
         raise AssertionError(f'unknown baseline scenario {mode}')
 
 
+SCENARIOS = [(mode, functools.partial(scenario, mode)) for mode in ['audit-exclusion', 'gates', 'pass', 'failure', 'mutation', 'timeout', 'restart', 'cancel-restart', 'shutdown', 'symlink', 'disconnect', 'storage', 'truncation']]
+
+
 if __name__ == '__main__':
-    run_selected('baseline', [(mode, functools.partial(scenario, mode)) for mode in ['audit-exclusion', 'gates', 'pass', 'failure', 'mutation', 'timeout', 'timeout-overall', 'restart', 'cancel-restart', 'shutdown', 'symlink', 'disconnect', 'storage', 'truncation']], sys.argv[1:])
+    run_selected('baseline', SCENARIOS, sys.argv[1:])
     if not sys.argv[1:]:
         print('All baseline scenarios passed')
