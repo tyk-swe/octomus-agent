@@ -33,7 +33,7 @@ the first release contains.
 - Verification runs on the reviewed revision. A command that changes tracked files,
   moves `HEAD` or leaves an untracked file that is not git-ignored is recorded as failed
   evidence rather than passing silently, so verification artifacts such as coverage
-  reports must be ignored.
+  reports must be git-ignored.
 - Repair rounds are budgeted per attempt: an explicit retry starts a fresh budget and
   keeps earlier review evidence.
 - Planning attaches every started role to its cycle before a partial batch failure ends
@@ -51,13 +51,13 @@ the first release contains.
   cuts short as interrupted rather than failed.
 - Verification evidence keeps the end of each command's stdout and stderr and its exit
   status, secret-scrubbed within 16 KiB, and marks every cut. A failed Git or GitHub
-  command keeps its stderr and both ends of long stdout around an explicit omission
-  marker.
+  command's error keeps both ends of long stdout and stderr around an explicit omission
+  marker, and always leaves room for stderr.
 - A command stopped by a timeout or cancellation gets `SIGTERM` and up to two seconds to
   exit before its process group is killed, so Git can remove its lock files.
-- Pull request descriptions list one verification line per configured command, from its
-  latest result at the reviewed commit, so a re-run flaky failure no longer appears
-  beside its pass.
+- Pull request descriptions and follow-up comments list one verification line per
+  configured command, from its latest result at the reviewed commit, so a re-run flaky
+  failure no longer appears beside its pass.
 - Errors name what failed: configuration errors the setting and its accepted range (the
   dashboard's operating-limit help shows each range), route errors the route and
   component, structured-result errors the field path (for example
@@ -155,11 +155,12 @@ the first release contains.
   target, every scheduler pause drops process-local PR admission authority, and a
   repository path respelled in settings (`/srv/repo/`) no longer strands queued new-PR
   tasks behind back-to-back refreshes.
-- Housekeeping runs each step even after an earlier one fails, and neither shutdown nor
-  a configuration save during a remote observation records a false `housekeeping_error`.
-  Retention skips records discarded while it runs, resumes after the last candidate it
-  visited so 100 permanently failing candidates cannot hold back newer ones, and removes
-  workspaces that contain read-only directories such as a Go module cache.
+- Housekeeping runs each step even after an earlier one fails. Shutdown no longer records
+  a false `housekeeping_error`, and a remote observation whose repository settings
+  change just before it is recorded is dropped instead of reported as one. Retention
+  skips records discarded while it runs, resumes after the last candidate it visited so
+  100 permanently failing candidates cannot hold back newer ones, and removes workspaces
+  that contain read-only directories such as a Go module cache.
 - An unchanged cleanup failure is recorded as an activity event at most once a day per
   service process instead of on every housekeeping pass.
 - Archiving a superseded task withdraws its pending rediscovery request. Archiving or
