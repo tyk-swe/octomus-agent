@@ -638,10 +638,20 @@ func (m mismatchAdapter) Diagnose(cwd string) (runner.Diagnostics, error) {
 	return diagnostics, err
 }
 
+// catalogFailingAdapter is a mismatched runner whose model catalog request
+// fails, as an incompatible protocol version can make it.
+type catalogFailingAdapter struct {
+	mismatchAdapter
+}
+
+func (catalogFailingAdapter) Models(string) ([]runner.Model, error) {
+	return nil, errors.New("model/list: unexpected response shape")
+}
+
 // The doctor lists each backend's diagnostics in the one wire shape the
 // dashboard and CLI read, names the observed Codex version, and returns
-// version-mismatch warnings as data, also when a route check fails, for the
-// command-line doctor to print.
+// version-mismatch warnings as data, also when a route check or the catalog
+// request fails, for the command-line doctor to print.
 func TestDoctorReportsBackendDiagnosticsAndWarnings(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	app := fixture.pausedApp(t)
@@ -686,5 +696,18 @@ func TestDoctorReportsBackendDiagnosticsAndWarnings(t *testing.T) {
 	result, warnings, err = app.DoctorFor(fixture.cfg, model.CycleModeAudit)
 	if err == nil || result != nil || len(warnings) != 1 || warnings[0] != warning {
 		t.Fatalf("failing doctor = %v, %v, warnings %q; want the warning with the failure", result, err, warnings)
+	}
+
+	catalogFailing := func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (runner.Adapter, error) {
+		client, err := connect(ctx, backend, cfg, cwd)
+		if err != nil {
+			return nil, err
+		}
+		return catalogFailingAdapter{mismatchAdapter{Adapter: client, warning: warning}}, nil
+	}
+	app = fixture.pausedApp(t, WithRunnerConnector(catalogFailing))
+	result, warnings, err = app.DoctorFor(fixture.cfg, model.CycleModeAudit)
+	if err == nil || err.Error() != "Codex: model/list: unexpected response shape" || result != nil || len(warnings) != 1 || warnings[0] != warning {
+		t.Fatalf("doctor with a failing catalog = %v, %v, warnings %q; want the warning with the failure", result, err, warnings)
 	}
 }
