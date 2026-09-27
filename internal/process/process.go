@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -136,43 +137,66 @@ func (c Captured) Text() string {
 // TailText renders the real end of a truncated capture, the rolling window
 // of its last bytes, as lossy UTF-8; it is empty for a complete capture. The
 // window starts wherever the stream then was, possibly inside a secret that
-// redaction can then no longer recognise, or between a bearer prefix and its
-// token, so its partial first line is dropped, or, when the window holds no
-// newline, its partial first word, or everything when there is no whitespace
-// either. The next word goes too when what was dropped could end a bearer
-// prefix, and so do the last words or lines of a multi-word or multi-line
-// environment secret the window began inside (redact.TrimCutSecretStart).
+// redaction can then no longer recognise, so its partial first line is
+// dropped, or, when the window holds no newline, its partial first word, or
+// everything when there is no whitespace either. Redaction also recognises
+// some tokens only after context that may have been dropped: a bearer token
+// after "Bearer" and whitespace, an API key after a terminal escape sequence
+// that holds spaces, and the later words or lines of a multi-word or
+// multi-line environment secret after its first ones. So, repeatedly, the
+// kept text loses its first word while what was dropped just before it could
+// end a bearer prefix, loses such a key and the rest of its sequence, and
+// loses the later part of such an environment secret
+// (redact.TrimCutSecretStart).
 func (c Captured) TailText() string {
 	if !c.Truncated {
 		return ""
 	}
 	text := strings.ToValidUTF8(string(c.tail), "\uFFFD")
-	cut, rest, found := strings.Cut(text, "\n")
+	dropped, rest, found := strings.Cut(text, "\n")
 	if !found {
 		i := strings.IndexFunc(text, unicode.IsSpace)
 		if i < 0 {
 			return ""
 		}
-		cut, rest = text[:i], text[i:]
+		dropped, rest = text[:i], text[i:]
 	}
-	rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
-	if mayEndBearerPrefix(strings.TrimRightFunc(cut, unicode.IsSpace)) {
-		// Redaction recognises a bearer token only after its prefix, and
-		// the whitespace between them may include the newline just cut.
-		if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
-			rest = strings.TrimLeftFunc(rest[i:], unicode.IsSpace)
-		} else {
-			rest = ""
+	for {
+		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
+		// A word to drop ends at the first whitespace from `from` on.
+		from := -1
+		if key := cutEscapeKey.FindStringIndex(rest); key != nil {
+			from = key[1]
+		} else if mayEndBearerPrefix(strings.TrimRightFunc(dropped, unicode.IsSpace)) {
+			from = 0
 		}
+		if from >= 0 {
+			i := strings.IndexFunc(rest[from:], unicode.IsSpace)
+			if i < 0 {
+				return ""
+			}
+			dropped, rest = rest[:from+i], rest[from+i:]
+			continue
+		}
+		trimmed := redact.TrimCutSecretStart(rest)
+		if len(trimmed) == len(rest) {
+			return rest
+		}
+		dropped, rest = rest[:len(rest)-len(trimmed)], trimmed
 	}
-	return strings.TrimLeftFunc(redact.TrimCutSecretStart(rest), unicode.IsSpace)
 }
 
-// mayEndBearerPrefix reports whether text, the part of a tail window dropped
-// before its first kept word with trailing whitespace removed, could end the
-// "Bearer" that redaction needs before a token: it is empty (the window began
-// in the whitespace after the prefix), all of it is the end of the prefix, or
-// it ends with the whole prefix.
+// cutEscapeKey matches kept text that starts with an API key redaction
+// recognises only after a terminal escape sequence whose last byte is a
+// letter: the rest of such a sequence, whose intermediate bytes may be
+// spaces, then the key (redact's key pattern).
+var cutEscapeKey = regexp.MustCompile(`(?i)^[\x20-\x2f]*[a-z]sk-[a-z0-9_-]{10}`)
+
+// mayEndBearerPrefix reports whether text, dropped just before the kept text
+// and with trailing whitespace removed, could end the "Bearer" that redaction
+// needs before a token: it is empty (the window began in the whitespace after
+// the prefix), all of it is the end of the prefix (the window began inside
+// it), or it ends with the whole prefix.
 func mayEndBearerPrefix(text string) bool {
 	const prefix = "bearer"
 	n := min(len(text), len(prefix))

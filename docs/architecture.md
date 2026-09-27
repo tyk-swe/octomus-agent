@@ -168,16 +168,16 @@ scrubbed, a truncated capture's head is cut back to its last newline (or,
 without one, its last whitespace or nothing), dropping the partial line the
 limit cut, together with the first words or lines of a redacted environment
 value the limit fell inside. Its kept end likewise drops the partial first line
-the window began inside (or, without a newline, the partial first word, and the
-next word too when the cut could separate a bearer token from its prefix),
-together with the last words or lines of a redacted environment value the window
-began inside. Failure texts and verification evidence render from that text,
-with a truncation marker where output was dropped. Machine stdout is complete up
-to 16 MiB or returns `OutputTooLarge` (a failed command's error still keeps
-the real end past that, from the same 64 KiB window); invalid UTF-8 also fails
-explicitly. Git/GitHub machine
-consumers never parse a diagnostic truncation marker. All captures retain timeout,
-draining and process-group ownership.
+the window began inside (or, without a newline, the partial first word), then
+any token redaction recognises only after context that was dropped (a bearer
+token after its prefix, an API key after a terminal escape sequence), and the
+last words or lines of a redacted environment value the window began inside.
+Failure texts and verification evidence render from that text, with a truncation
+marker where output was dropped. Machine stdout is complete up to 16 MiB or
+returns `OutputTooLarge` (a failed command's error still keeps the real end past
+that, from the same 64 KiB window); invalid UTF-8 also fails explicitly.
+Git/GitHub machine consumers never parse a diagnostic truncation marker. All
+captures retain timeout, draining and process-group ownership.
 
 State-snapshot cost was measured on 2026-09-22 at `529b63f` with
 `OCTOMUS_SCALE_TEST=1 go test ./internal/store -run TestBoundedHistoryScale -v`. The
