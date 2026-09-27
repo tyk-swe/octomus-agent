@@ -1,5 +1,3 @@
-// Package report is local, read-only usage reporting. It never opens the
-// database through store.Open, which owns writable state.
 package report
 
 import (
@@ -11,7 +9,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// Measurement is the one paragraph every report carries about what admissions mean.
 const Measurement = "Admissions reserve budget before work starts. They include failed starts and retries; they are not completed turns or billed usage. Completed session counts describe persisted thread records; a repair thread can contain multiple turns. Cycle wall time excludes subsequent task execution. No provider charges or merge status are inferred."
 
 type Daily struct {
@@ -57,8 +54,6 @@ type TierRow struct {
 	Admissions    uint64 `json:"admissions"`
 }
 
-// Report is the usage report. HasAdmissionLedger is always true on version-7
-// state; the field keeps the report shape stable.
 type Report struct {
 	SchemaVersion      uint32            `json:"schema_version"`
 	GeneratedAt        string            `json:"generated_at"`
@@ -71,13 +66,10 @@ type Report struct {
 	Admissions         []store.Admission `json:"admissions"`
 }
 
-// records decodes every saved record of one kind in id order.
 func records[T any](c *sql.Conn, kind string) ([]T, error) {
 	return store.QueryRecords[T](c, "SELECT data FROM records WHERE kind=?1 ORDER BY id", kind)
 }
 
-// UsageReport reads one consistent snapshot of the state database and returns
-// the redacted report as generic JSON.
 func UsageReport(path string) (map[string]any, error) {
 	r, err := store.OpenReadOnly(path, "usage reporting")
 	if err != nil {
@@ -85,7 +77,6 @@ func UsageReport(path string) (map[string]any, error) {
 	}
 	defer r.Close()
 	var report Report
-	// One consistent snapshot even while the service is admitting work.
 	err = r.Snapshot(func(c *sql.Conn) error {
 		var err error
 		report, err = assemble(c)
@@ -98,8 +89,6 @@ func UsageReport(path string) (map[string]any, error) {
 }
 
 func assemble(c *sql.Conn) (Report, error) {
-	// Every version-7 database has the admission ledger; OpenReadOnly refuses
-	// any other schema.
 	admissions, err := store.QueryRecords[store.Admission](c, "SELECT data FROM admissions ORDER BY at,id")
 	if err != nil {
 		return Report{}, err
@@ -193,8 +182,6 @@ func assemble(c *sql.Conn) (Report, error) {
 	}, nil
 }
 
-// dailyUsage reads each day's admission counter and splits it into the
-// admissions the ledger attributes to that UTC day and the unattributed rest.
 func dailyUsage(c *sql.Conn, attributed map[string]uint64) ([]Daily, error) {
 	rows, err := c.QueryContext(store.Background(), "SELECT day,sessions FROM usage ORDER BY day")
 	if err != nil {

@@ -35,8 +35,6 @@ func TestCurrentCLIContract(t *testing.T) {
 	}
 }
 
-// The listen address is parsed once, from the flag or the environment, and
-// startup reuses that address to decide whether to warn about exposure.
 func TestListenAddressIsParsedOnceFromFlagOrEnvironment(t *testing.T) {
 	envWith := func(values map[string]string) func(string) (string, bool) {
 		return func(key string) (string, bool) {
@@ -56,7 +54,6 @@ func TestListenAddressIsParsedOnceFromFlagOrEnvironment(t *testing.T) {
 		{"flag", []string{"--listen", "127.0.0.1:0"}, nil, "127.0.0.1:0", true, 0},
 		{"flag with numeric scope", []string{"--listen=[::1%1]:9"}, nil, "[::1%1]:9", true, 9},
 		{"environment", nil, map[string]string{"OCTOMUS_LISTEN": "0.0.0.0:4300"}, "0.0.0.0:4300", false, 4300},
-		// Only the final value is validated, so a flag replaces a bad environment value.
 		{"flag over environment", []string{"--listen", "[::1]:4400"}, map[string]string{"OCTOMUS_LISTEN": "not an address"}, "[::1]:4400", true, 4400},
 	} {
 		parsed, display, err := parse(tc.args, envWith(tc.env))
@@ -80,7 +77,6 @@ func TestListenAddressIsParsedOnceFromFlagOrEnvironment(t *testing.T) {
 			`invalid value "127.0.0.1" for '--listen': invalid socket address syntax`},
 		{"environment", nil, map[string]string{"OCTOMUS_LISTEN": "localhost:4200"},
 			`invalid value "localhost:4200" for '--listen': invalid socket address syntax`},
-		// A bad flag is reported where it appears, before later arguments.
 		{"flag before unknown argument", []string{"--listen", "", "--unknown"}, nil,
 			`invalid value "" for '--listen': invalid socket address syntax`},
 	} {
@@ -92,7 +88,6 @@ func TestListenAddressIsParsedOnceFromFlagOrEnvironment(t *testing.T) {
 
 func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 	directory := t.TempDir() + "/service"
-	// Startup prepares the data directory and database before token validation.
 	var out, err bytes.Buffer
 	code := run([]string{"--data-dir", directory}, func(string) (string, bool) { return "", false }, &out, &err)
 	if code != 1 || out.Len() != 0 || !bytes.Contains(err.Bytes(), []byte("OCTOMUS_TOKEN")) {
@@ -101,7 +96,6 @@ func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(directory, stateDBName)); statErr != nil {
 		t.Fatal("state database was not created before the token check", statErr)
 	}
-	// A short token is rejected with its own message.
 	code = run([]string{"--data-dir", directory}, func(k string) (string, bool) {
 		if k == "OCTOMUS_TOKEN" {
 			return "short", true
@@ -111,8 +105,6 @@ func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 	if code != 1 || !bytes.Contains(err.Bytes(), []byte("at least 32 characters")) {
 		t.Fatal(code, err.String())
 	}
-	// --doctor runs before the token check: an unconfigured repository is an
-	// explicit diagnostic failure, not a usage error.
 	for _, args := range [][]string{{"--doctor"}, {"--doctor", "--audit"}} {
 		var derr bytes.Buffer
 		code := run(append([]string{"--data-dir", directory}, args...), func(string) (string, bool) { return "", false }, &out, &derr)
@@ -120,8 +112,6 @@ func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 			t.Fatal(args, code, derr.String())
 		}
 	}
-	// Read-only exports still fail explicitly on missing state without
-	// creating anything.
 	empty := t.TempDir() + "/must-not-exist"
 	for _, args := range [][]string{{"--usage-report"}, {"--export-run", "cycle"}} {
 		var out, err bytes.Buffer
@@ -135,7 +125,6 @@ func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 	}
 }
 
-// Read-only exports run before state creation, locking or workers start.
 func TestReadOnlyExportsReturnBeforeTouchingApplicationState(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "state-dir")
 	noEnv := func(string) (string, bool) { return "", false }
@@ -145,8 +134,6 @@ func TestReadOnlyExportsReturnBeforeTouchingApplicationState(t *testing.T) {
 		return code, out.String(), err.String()
 	}
 
-	// No saved state: an explicit failure that never creates the data directory,
-	// takes the service lock or starts a worker.
 	code, out, errText := call("--export-run", "cycle-a")
 	if code == 0 || out != "" || !strings.Contains(errText, "state database") {
 		t.Fatal(code, out, errText)
@@ -155,7 +142,6 @@ func TestReadOnlyExportsReturnBeforeTouchingApplicationState(t *testing.T) {
 		t.Fatal("export created the data directory")
 	}
 
-	// Incompatible action flags are rejected.
 	code, _, errText = call("--export-run", "cycle-a", "--usage-report")
 	if code == 0 || !strings.Contains(errText, "cannot be used with") {
 		t.Fatal(code, errText)
@@ -166,7 +152,6 @@ func TestReadOnlyExportsReturnBeforeTouchingApplicationState(t *testing.T) {
 		}
 	}
 
-	// With synthetic saved state the flags print the representation on stdout only.
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

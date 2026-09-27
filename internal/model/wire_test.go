@@ -61,8 +61,6 @@ func TestCycleLifecycleIsOmittedOnlyWhileEmpty(t *testing.T) {
 	}
 }
 
-// Records decode from a zero value, so a reused variable never keeps optional
-// fields the JSON leaves out.
 func TestDecodingIntoAReusedRecordResetsAbsentFields(t *testing.T) {
 	data, err := json.Marshal(Cycle{ID: "fresh"})
 	if err != nil {

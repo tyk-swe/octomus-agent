@@ -58,18 +58,14 @@ func putTask(t *testing.T, state *store.Store, id, status string, reason *model.
 	}
 }
 
-// receiver hands every request body to the channel and delays the first
-// response like the scripted peer does.
 type receiver struct {
 	url      string
 	requests chan []byte
 	server   *httptest.Server
 	mu       sync.Mutex
-	delay    time.Duration // the next response's delay; only the first is held
+	delay    time.Duration
 }
 
-// takeDelay returns the pending first-response delay and clears it. Handlers
-// run concurrently, so the delay is read and cleared under the lock.
 func (r *receiver) takeDelay() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -81,9 +77,6 @@ func (r *receiver) takeDelay() time.Duration {
 func newReceiver(t *testing.T, status int, firstDelay time.Duration) *receiver {
 	t.Helper()
 	r := &receiver{requests: make(chan []byte, 32), delay: firstDelay}
-	// closed ends every held response when the test finishes: the delay is the
-	// most a response is held, not what cleanup must wait out, because
-	// httptest.Server.Close waits for running handlers.
 	closed := make(chan struct{})
 	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, err := io.ReadAll(req.Body)
@@ -97,8 +90,6 @@ func newReceiver(t *testing.T, status int, firstDelay time.Duration) *receiver {
 		if delay := r.takeDelay(); delay > 0 {
 			hold := time.NewTimer(delay)
 			defer hold.Stop()
-			// A client that gives up (its timeout or a stopped worker) closes
-			// the connection, which cancels the request context.
 			select {
 			case <-hold.C:
 			case <-req.Context().Done():
@@ -108,7 +99,6 @@ func newReceiver(t *testing.T, status int, firstDelay time.Duration) *receiver {
 		w.WriteHeader(status)
 	}))
 	r.url = r.server.URL + "/hook"
-	// Cleanups run last-registered first: release held handlers, then close.
 	t.Cleanup(r.server.Close)
 	t.Cleanup(func() { close(closed) })
 	return r
@@ -132,9 +122,6 @@ func waitUntil(t *testing.T, seconds float64, condition func() bool, what string
 	}
 }
 
-// refusingAddress returns a loopback address that refuses connections for the
-// rest of the test. A socket that never listens holds its port, so no other
-// process can bind it, and a connection attempt is refused at once.
 func refusingAddress(t *testing.T) string {
 	t.Helper()
 	syscall.ForkLock.RLock()
@@ -360,13 +347,10 @@ func TestHeldHTTPShutdownLeavesTheClaimedRowForRecovery(t *testing.T) {
 	reason := model.BlockedReasonTimeout
 	putTask(t, state, "task-1", "blocked", &reason)
 	server.next(t)
-	// While the delivery is held, ordinary store work is unblocked.
 	if health, err := state.NotificationHealth(); err != nil || health.Pending != 1 {
 		t.Fatalf("pending during held delivery: %+v %v", health, err)
 	}
 	worker.Stop()
-	// The abandoned in-flight row stays claimed and retries with the same
-	// event id once its rescheduled attempt is due.
 	destination := queryDestination(t, path)
 	before := outboxRows(t, path, "pending")
 	if len(before) != 1 {
@@ -401,9 +385,6 @@ func TestOversizedIdentitiesFailAsInvalidPayloadInsteadOfTruncating(t *testing.T
 	}
 }
 
-// An event the worker cannot encode within the payload bounds is a local
-// failure: it is never sent, and it fails terminally after one attempt
-// instead of retrying.
 func TestWorkerFailsOversizedEventsTerminally(t *testing.T) {
 	state, path := testStore(t)
 	server := newReceiver(t, 200, 0)
@@ -432,8 +413,6 @@ func TestWorkerFailsOversizedEventsTerminally(t *testing.T) {
 	}
 }
 
-// A destination that refuses the connection is a transport failure: the row
-// stays pending for a later attempt with no HTTP status recorded.
 func TestWorkerRetriesTransportFailures(t *testing.T) {
 	state, path := testStore(t)
 	destination := "http://" + refusingAddress(t) + "/hook"
@@ -458,7 +437,6 @@ func TestWorkerRetriesTransportFailures(t *testing.T) {
 	}
 }
 
-// rawDB exposes outbox fields that the health view aggregates away.
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
@@ -515,7 +493,6 @@ func queryDestination(t *testing.T, path string) string {
 	return destination
 }
 
-// syncBuffer collects the warnings the worker's loop writes.
 type syncBuffer struct {
 	mu   sync.Mutex
 	text strings.Builder
@@ -533,8 +510,6 @@ func (b *syncBuffer) String() string {
 	return b.text.String()
 }
 
-// Outbox failures the loop cannot record are reported on the warning stream
-// once per episode, never every tick, and never name the destination.
 func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
 	state, path := testStore(t)
 	server := newReceiver(t, 200, 0)
@@ -547,8 +522,6 @@ func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
 	count := func() int { return strings.Count(warnings.String(), "WARN notifications: ") }
 	db := rawDB(t, path)
 	destination := queryDestination(t, path)
-	// An attempt count that is not an integer makes every claim fail to read
-	// the row.
 	corrupt := func(eventID string) {
 		t.Helper()
 		if _, err := db.Exec(`INSERT INTO notification_outbox
@@ -566,13 +539,10 @@ func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
 	}
 	corrupt("first")
 	waitUntil(t, 5, func() bool { return count() > 0 }, "the failing claim to be reported")
-	// The loop retries every second; repeated failed ticks still make one line.
 	time.Sleep(2200 * time.Millisecond)
 	if count() != 1 || !strings.HasSuffix(warnings.String(), "\n") {
 		t.Fatalf("repeated claim failure warnings: %q", warnings.String())
 	}
-	// A working claim ends the episode, so the same failure later is reported
-	// again.
 	repair("first")
 	server.next(t)
 	waitUntil(t, 5, func() bool {
@@ -585,7 +555,6 @@ func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
 	if lines := strings.Split(strings.TrimSuffix(warnings.String(), "\n"), "\n"); lines[0] != lines[1] {
 		t.Fatalf("recurring failure: %q", lines)
 	}
-	// A delivery that cannot be recorded is reported too.
 	if _, err := db.Exec(`CREATE TRIGGER refuse_delivered BEFORE UPDATE OF status ON notification_outbox
 		WHEN NEW.status='delivered' BEGIN SELECT RAISE(ABORT,'synthetic finish failure'); END`); err != nil {
 		t.Fatal(err)

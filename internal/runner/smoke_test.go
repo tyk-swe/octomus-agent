@@ -1,11 +1,5 @@
 package runner
 
-// The pinned CLI drives only the local protocol surface — health, policy,
-// catalog, session create and resume — against a provider whose endpoint can
-// never answer, so no model call is possible. Skipped unless
-// OCTOMUS_OPENCODE_SMOKE_BINARY points at the pinned binary; the heavier
-// TestPinnedOpenCodeContract exercises real turns under
-// OCTOMUS_CONTRACT_OPENCODE_BINARY instead.
 import (
 	"context"
 	"encoding/json"
@@ -28,8 +22,6 @@ func TestPinnedOpenCodeProtocolSmokeWithoutModelCalls(t *testing.T) {
 	if err := os.Mkdir(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The provider endpoint is unreachable by construction: session lifecycle
-	// must never depend on it answering.
 	configPath := filepath.Join(root, "smoke.json")
 	policy, err := json.Marshal(map[string]any{
 		"enabled_providers": []string{"smoke"},
@@ -58,8 +50,6 @@ func TestPinnedOpenCodeProtocolSmokeWithoutModelCalls(t *testing.T) {
 	if err := os.WriteFile(configPath, policy, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The CLI gets only temporary XDG directories, the synthetic provider
-	// configuration, and the adapter's own policy environment.
 	wrapper := filepath.Join(root, "opencode")
 	script := fmt.Sprintf(`#!/usr/bin/env python3
 import os,sys

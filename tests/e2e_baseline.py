@@ -66,11 +66,6 @@ def scenario(mode):
     with fixture_service(f'octomus-baseline-{mode}-') as (root, service):
         marker = root / 'baseline-entered'
         if mode == 'audit-exclusion':
-            # Hold the audit before it has a cycle, then during planning.
-            # Both intervals must refuse a baseline with the same reason
-            # advertised by the dashboard eligibility view.
-            # An audit can run without verification commands; baseline
-            # validation must not mask the active-audit conflict.
             config = base_config(service, [],
                                  cycle_interval_seconds=3600, task_timeout_seconds=60)
             config['command_timeout_seconds'] = 60
@@ -95,8 +90,6 @@ def scenario(mode):
                 assert not (state['baseline_active'] and state['cycle_active']), state
 
             with ThreadPoolExecutor(max_workers=1) as pool:
-                # The preflight hold keeps the audit request open past the
-                # default 5 s socket timeout.
                 audit = pool.submit(service.expect, '/control/audit', 'POST', timeout=30)
                 try:
                     service.wait(lambda: (root / 'reconcile-entered').exists(), 'audit preflight entry')
@@ -167,7 +160,6 @@ def scenario(mode):
             check_id = check['id']
             service.wait(lambda: marker.exists(), 'command entry')
             assert service.expect('/baseline-checks', 'POST', {'expected_revision': config['revision']})[0] == 409
-            # A well-formed but outdated revision conflicts before a check exists.
             stale = '0' * 64
             assert service.expect('/baseline-checks', 'POST', {'expected_revision': stale})[0] == 409
             for path in ['/control/cycle', '/control/resume', '/control/audit', f'/tasks/{task["id"]}/reconcile']:

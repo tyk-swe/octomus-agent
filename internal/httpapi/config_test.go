@@ -16,9 +16,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// TestMain installs a synthetic secret that intentionally matches the
-// verification_commands field name. The settings response must redact config
-// values without corrupting its structural transform metadata.
 func TestMain(m *testing.M) {
 	if err := os.Setenv("OCTOMUS_HTTPAPI_TEST_SECRET", "verification_commands"); err != nil {
 		os.Exit(2)
@@ -26,7 +23,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// settingsView decodes one settings read/update response into its parts.
 func settingsView(t *testing.T, body []byte) (map[string]any, string, []map[string]any) {
 	t.Helper()
 	var view struct {
@@ -58,8 +54,6 @@ func transformKinds(t *testing.T, fields []map[string]any, field string) []any {
 func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 	app, state := testApp(t)
 	router := Router(app, token, "", "test")
-	// A harmless command literal that trips secret scrubbing plus an overlong
-	// path that trips the display bound exercise both transform kinds.
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
 	cfg.VerificationCommands = []string{"echo ghp_syntheticsecrettoken123", "true"}
@@ -106,13 +100,11 @@ func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 	if kinds := transformKinds(t, fields, "runner_storage_paths"); !reflect.DeepEqual(kinds, []any{"shortened"}) {
 		t.Fatalf("path transforms: %v", kinds)
 	}
-	// Reading again returns the same revision for unchanged canonical state.
 	again := call(t, router, "GET", "/api/config", "")
 	if _, repeat, _ := settingsView(t, again.Body.Bytes()); repeat != revision {
 		t.Fatalf("unstable revision: %q != %q", repeat, revision)
 	}
 
-	// An unrelated numeric edit preserves every untouched canonical value.
 	response = call(t, router, "PUT", "/api/config",
 		`{"expected_revision":"`+revision+`","config":{"max_sessions_per_day":200}}`)
 	if response.Code != http.StatusOK {
@@ -142,7 +134,6 @@ func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 		t.Fatalf("returned revision %q != saved fingerprint %q", revision, newFingerprint)
 	}
 
-	// A stale revision conflicts and leaves the saved record byte-identical.
 	after, found, err := state.GetRaw("settings", "config")
 	if err != nil || !found {
 		t.Fatalf("saved config: found=%t, err=%v", found, err)
@@ -155,7 +146,6 @@ func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 		t.Fatal("stale save changed the saved record")
 	}
 
-	// Whole-map and whole-list replacements are exact.
 	response = call(t, router, "PUT", "/api/config",
 		`{"expected_revision":"`+revision+`","config":{"runner_storage_paths":{"opencode":"/o"},"verification_commands":[]}}`)
 	if response.Code != http.StatusOK {
@@ -174,8 +164,6 @@ func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 		t.Fatalf("saved config: found=%t, err=%v", found, err)
 	}
 
-	// Rejections: missing revision, legacy whole-config bodies, unknown fields
-	// and duplicate keys all fail without touching the saved record.
 	escapedKey := `{"expected_revision":"` + revision + `","config":{"runner_storage_paths":{"codex":"/a","co` + "\\u0064" + `ex":"/b"}}}`
 	for name, body := range map[string]struct {
 		raw    string
@@ -207,7 +195,6 @@ func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 		})
 	}
 
-	// A canonical saved record still loads when an existing version-7 database is reopened.
 	reopened, err := store.Open(state.Path())
 	if err != nil {
 		t.Fatal(err)
@@ -219,9 +206,6 @@ func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 	}
 }
 
-// TestConfigAPIDisplayIdentityCollision proves two different canonical
-// configurations that transform to identical display values still carry
-// distinct revisions, so display text can never stand in for identity.
 func TestConfigAPIDisplayIdentityCollision(t *testing.T) {
 	app, state := testApp(t)
 	router := Router(app, token, "", "test")
@@ -248,7 +232,6 @@ func TestConfigAPIDisplayIdentityCollision(t *testing.T) {
 	if firstRevision == secondRevision {
 		t.Fatal("canonical revisions must differ")
 	}
-	// A baseline start or save pinned to the first revision now conflicts.
 	if response := call(t, router, "POST", "/api/baseline-checks",
 		fmt.Sprintf(`{"expected_revision":%q}`, firstRevision)); response.Code != http.StatusConflict {
 		t.Fatalf("stale baseline revision: %d", response.Code)
@@ -259,10 +242,6 @@ func TestConfigAPIDisplayIdentityCollision(t *testing.T) {
 	}
 }
 
-// The settings form offers "Discard edits and reload" only for the stale-revision
-// save conflict, which it recognises by testing the 409 error text with a pattern
-// in web/src/lib/Settings.svelte. The service's other save conflicts cannot be
-// fixed by a reload and must not match it.
 func TestConfigConflictsAskForReloadOnlyWhenStale(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "Settings.svelte"))
 	if err != nil {

@@ -1,11 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
 
-  /**
-   * The unauthenticated screen. It holds no service state of its own: the token
-   * is bound back to the page, which clears it as soon as a connection succeeds
-   * so it never outlives the request that used it.
-   */
   let {
     accessToken = $bindable(''),
     error,

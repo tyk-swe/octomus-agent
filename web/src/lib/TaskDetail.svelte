@@ -47,7 +47,6 @@
   let evidenceRequest: AbortController | null = null;
   const feedback = createCopyFeedback();
   const TABS = ['Overview', 'Sessions', 'Reviews', 'Verification', 'Activity'];
-  /** Button labels for the actions the service allows, as model.Task.AllowedActions names them. */
   const ACTION_LABELS: Record<string, string> = {
     retry: 'Retry task',
     cancel: 'Cancel task',
@@ -56,12 +55,7 @@
     archive: 'Archive task',
     discard: 'Discard workspace'
   };
-  /** Actions that give up the task or its workspace. */
   const DESTRUCTIVE_ACTIONS = new Set(['discard', 'cancel']);
-  /**
-   * Tabs follow the ARIA tabs pattern: only the selected tab is in the Tab order, and the
-   * arrow, Home and End keys select and focus another tab.
-   */
   function moveTab(event: KeyboardEvent, from: string) {
     const index = TABS.indexOf(from);
     const next =
@@ -79,11 +73,6 @@
     tab = TABS[next];
     document.getElementById('task-tab-' + tab)?.focus();
   }
-  /**
-   * Recorded evidence is fetched per (cycle, task, task revision) and skipped while that
-   * key is unchanged. Awaiting it keeps slow evidence reads from being restarted on
-   * every task poll, and preserves a coherent evidence snapshot during refresh.
-   */
   async function loadEvidence(cycleId: string, key: string, force = false) {
     if (evidenceKey === key && !force) return;
     evidenceLoading = true;
@@ -101,7 +90,6 @@
         undefined,
         controller.signal
       );
-      // A late response must not describe a task this panel no longer shows.
       if (current !== evidenceGeneration || controller.signal.aborted || task !== id) return;
       evidence = findTaskEvidence(run, task);
       evidenceError = evidence ? '' : 'This task has no recorded evidence in its planning cycle.';
@@ -109,11 +97,8 @@
     } catch (e) {
       if (current !== evidenceGeneration || controller.signal.aborted || task !== id) return;
       evidenceError = (e as Error).message;
-      // A rejected session must not keep displaying the previous session's records.
       if (e instanceof ApiError && e.status === 401) evidence = null;
       evidenceStale = evidence !== null;
-      // Retain failures for this identity/revision, including cycles removed by retention.
-      // Retry explicitly or fetch again when the saved task changes.
     } finally {
       if (current === evidenceGeneration) evidenceLoading = false;
     }
@@ -166,8 +151,6 @@
       evidenceRequest?.abort();
     };
   });
-  // Recorded result, taken from the server's normalized statuses. When evidence is
-  // absent these stay explicitly unknown instead of falling back to optimistic booleans.
   let outcome = $derived(evidence ? outcomeVerdict(evidence) : null);
   let review = $derived(reviewVerdict(evidence));
   let checks = $derived(checksVerdict(evidence));
@@ -287,7 +270,6 @@
           <strong>Blocked reason:</strong>
           {task.blocked_reason.replaceAll('_', ' ')}
         </p>{/if}
-      <!-- Archiving withdraws a pending request; the saved flag stays set. -->
       {#if task.rediscovery_requested && task.lifecycle?.archived_at}<p>
           Rediscovery withdrawn. The task was archived before an execution cycle reassessed this
           objective.

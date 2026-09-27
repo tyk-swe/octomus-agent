@@ -15,21 +15,11 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// src/lib/types.ts restates the service's JSON records by hand. These tests
-// hold each restated object type to its Go record's JSON field names, and each
-// restated vocabulary to the Go values, so a renamed or added field or status
-// fails here instead of rendering as undefined. The summary rows the store
-// projects in SQL (TaskRow, CycleSummary), types derived with intersections or
-// Pick/Omit (Task, ProposalRow) and nested inline objects are not compared.
-
 var (
-	// A multi-line object type; its top-level keys sit at two-space indentation.
 	objectBlock = regexp.MustCompile(`(?m)^export type (\w+) = \{\n((?:  .*\n)*?)\};$`)
 	blockKey    = regexp.MustCompile(`(?m)^  ([a-z_]+)\??:`)
-	// A one-line object type such as `export type X = { a: string; b?: number };`.
-	objectLine = regexp.MustCompile(`(?m)^export type (\w+) = \{ (.*) \};$`)
-	lineKey    = regexp.MustCompile(`(?:^|; )([a-z_]+)\??:`)
-	// A union of string literals, on one line or one member per line.
+	objectLine  = regexp.MustCompile(`(?m)^export type (\w+) = \{ (.*) \};$`)
+	lineKey     = regexp.MustCompile(`(?:^|; )([a-z_]+)\??:`)
 	stringUnion = regexp.MustCompile(`(?m)^export type (\w+) =((?:\s*\|?\s*'[a-z_]+')+);$`)
 	quoted      = regexp.MustCompile(`'([a-z_]+)'`)
 )
@@ -43,7 +33,6 @@ func dashboardSource(t *testing.T, name string) string {
 	return string(data)
 }
 
-// objectTypes returns the sorted top-level keys of every object type in source.
 func objectTypes(source string) map[string][]string {
 	types := map[string][]string{}
 	for _, match := range objectBlock.FindAllStringSubmatch(source, -1) {
@@ -62,7 +51,6 @@ func objectTypes(source string) map[string][]string {
 	return types
 }
 
-// jsonKeys returns the sorted JSON field names value encodes with.
 func jsonKeys(t *testing.T, value any) []string {
 	t.Helper()
 	record := reflect.TypeOf(value)
@@ -85,7 +73,6 @@ func jsonKeys(t *testing.T, value any) []string {
 	return keys
 }
 
-// quotedList returns the quoted words of the array literal marker is assigned.
 func quotedList(t *testing.T, source, marker string) []string {
 	t.Helper()
 	_, rest, found := strings.Cut(source, marker)
@@ -103,7 +90,6 @@ func quotedList(t *testing.T, source, marker string) []string {
 	return words
 }
 
-// enumNames lists a Go enum's wire names in value order.
 func enumNames[T interface {
 	~uint8
 	String() string
@@ -194,7 +180,6 @@ func TestDashboardVocabulariesMirrorGo(t *testing.T) {
 	if got := quotedList(t, types, "export const ACTIVE_STATUSES"); !slices.Equal(got, active) {
 		t.Errorf("types.ts ACTIVE_STATUSES = %q; want model.ActiveStatuses() %q", got, active)
 	}
-	// DECISIONS is in display order, so only its membership must match.
 	decisions := quotedList(t, dashboardSource(t, "evidence.ts"), "export const DECISIONS")
 	if !slices.Equal(slices.Sorted(slices.Values(decisions)), slices.Sorted(slices.Values(model.Decisions()))) {
 		t.Errorf("evidence.ts DECISIONS = %q; want the words of model.Decisions() %q", decisions, model.Decisions())

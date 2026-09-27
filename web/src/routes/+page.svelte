@@ -25,7 +25,6 @@
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
   import { DECISIONS, cycleLabel, decisionTone } from '$lib/evidence';
-  /** The running build's version; the sidebar shows its major.minor part. */
   const version = __APP_VERSION__;
   const shortVersion = version.split('.').slice(0, 2).join('.');
   let connected = $state(false),
@@ -45,13 +44,11 @@
     runPanel = $state<{ cycle: string; proposal: string | null } | null>(null),
     mobileOpen = $state(false),
     lastUpdated = $state('');
-  /** The control that opened the first panel; keyboard focus returns there on close. */
   let panelOpener: HTMLElement | null = null;
   function rememberOpener() {
     if (selected || runPanel) return;
     panelOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   }
-  /** Only one panel is ever open: run evidence hands deep inspection to TaskDetail. */
   function inspectRun(cycle: string, proposal: string | null) {
     rememberOpener();
     selected = null;
@@ -75,12 +72,10 @@
   function inspectLatestRun() {
     if (latestCycle) inspectRun(latestCycle.id, null);
   }
-  /** The overview's attention link: the queue, filtered to blocked and failed work. */
   async function viewAttention() {
     await navigate('queue');
     filter = 'attention';
   }
-  /** Each view with its page heading; the paged history views also name what they list. */
   const navigation: {
     id: string;
     label: string;
@@ -129,25 +124,21 @@
     }
   ];
   const current = $derived(navigation.find((item) => item.id === view));
-  /** The operating mode as the header status names it; any other mode reads as paused. */
   const OPERATING_MODE_LABELS: Record<string, string> = {
     run_once: 'Run once',
     continuous: 'Continuous operation',
     paused: 'New work paused'
   };
-  /** The header status: operating mode, active tasks, and whether paused work may still publish. */
   function operatingStatus(snapshot: Snapshot): string {
     const mode = OPERATING_MODE_LABELS[snapshot.control.mode] ?? 'New work paused';
     const publishing =
       snapshot.control.paused && snapshot.active_tasks > 0 ? ' · active workflows may publish' : '';
     return `${mode} · ${snapshot.active_tasks} active tasks${publishing}`;
   }
-  /** The continuous-operation toggle while its request is pending. */
   const TOGGLE_PENDING_LABELS: Record<string, string> = {
     resume: 'Starting continuous…',
     pause: 'Pausing…'
   };
-  /** The status filters each paged history view offers, in tab order. */
   const QUEUE_FILTERS = [
     'all',
     'active',
@@ -162,16 +153,9 @@
   let filtered = $state<TaskRow[]>([]);
   let proposals = $state<ProposalRow[]>([]);
   let prRows = $state<PrObservation[]>([]);
-  /** A PR record's identity: the repository compared case-insensitively, plus the number. */
   const prKey = (observed: PrObservation) =>
     `${observed.repository.toLowerCase()}#${observed.pr.number}`;
   let cycleRows = $state<CycleSummary[]>([]);
-  /**
-   * The picked cycle's loaded summary. Its lifecycle decides which workspace action is
-   * still open: archiving again would restart the retention clock, and a discarded
-   * cycle has nothing left to discard or to archive, including one that retention
-   * cleanup discarded without an archive.
-   */
   let selectedCycle = $derived(
     proposalCycle === 'all' ? undefined : cycleRows.find((c) => c.id === proposalCycle)
   );
@@ -185,21 +169,16 @@
   let listLoading = $state(false);
   let listLoaded = $state(false);
   let listError = $state('');
-  // Non-reactive bookkeeping, never rendered: request chains and generations, the list
-  // effect's last scope and page, and the refresh guard. The list effect and the request
-  // handlers read and write these without subscribing to them, so they are not $state.
   let cycleRequest = Promise.resolve();
   let listGeneration = 0;
   let listRequest: AbortController | null = null;
   let lastScope = '';
   let lastPage = '';
   let sessionGeneration = 0;
-  /** A refresh asked for while one is in flight runs once more after it, never alongside it. */
   let refreshing = false;
   let refreshQueued = false;
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
-  /** Status totals behind the queue filter tabs; 'active' and 'attention' are status groups. */
   let queueTabCounts = $derived.by(() => {
     const counts = data?.counts ?? {};
     const sum = (keys: readonly string[]) => keys.reduce((n, k) => n + (counts[k] ?? 0), 0);
@@ -213,7 +192,6 @@
       cancelled: counts.cancelled
     } as Record<string, number | undefined>;
   });
-  /** Decision totals behind the proposal filter tabs, scoped to the selected cycle. */
   let proposalTabCounts = $derived({
     all: Object.values(decisionCounts).reduce((n, v) => n + v, 0),
     ...decisionCounts
@@ -236,7 +214,6 @@
       !data.active_tasks &&
       !data.baseline_active
   });
-  /** Polled snapshot facts the setup checklist reads; nothing new is stored or fetched. */
   const setupStatus = $derived<SetupStatus | null>(
     data
       ? {
@@ -255,7 +232,6 @@
         }
       : null
   );
-  /** The checklist hands off to the existing Overview controls; the operator still has to click. */
   async function chooseOnOverview(action: 'audit' | 'cycle') {
     await navigate('overview');
     document.getElementById(action === 'audit' ? 'run-audit-control' : 'run-once-control')?.focus();
@@ -326,7 +302,6 @@
             (p) => p.cycle_id === summary.cycle_id && p.id === summary.id
           );
           if (!previous) return summary;
-          // Keep fetched detail separate from the truncated polling summary.
           const detailChanged = previous.content_revision !== summary.content_revision;
           Object.assign(previous, summary);
           if (detailChanged) {
@@ -372,7 +347,6 @@
   async function loadOlderCycles() {
     const currentSession = sessionGeneration;
     cyclesLoading = true;
-    // Like every operator action, a new attempt replaces the previous attempt's failure.
     error = '';
     try {
       await loadCycles(true);
@@ -393,7 +367,6 @@
       const detail = await api<ProposalDetail>(
         `/proposals/${encodeURIComponent(p.cycle_id)}/${encodeURIComponent(p.id)}`
       );
-      // A response for an older summary must not overwrite newer evidence.
       if (
         currentSession === sessionGeneration &&
         p.content_revision === revision &&
@@ -419,7 +392,6 @@
       await loadCycles();
       await refresh();
     } catch (e) {
-      // A 401 has already ended the session and explained why on the login screen.
       if (currentSession === sessionGeneration) error = (e as Error).message;
     } finally {
       busy = false;
@@ -429,7 +401,6 @@
   async function refresh() {
     if (!connected) return;
     if (refreshing) {
-      // The in-flight snapshot may predate an action that just finished.
       refreshQueued = true;
       return;
     }
@@ -477,7 +448,6 @@
       disconnect();
       error = 'Session expired. Connect again to inspect private records.';
     });
-    // Timer polls skip while one is in flight; only explicit refreshes queue a follow-up.
     const timer = setInterval(() => {
       if (!refreshing) void refresh();
     }, 4000);
@@ -513,7 +483,6 @@
       document.getElementById('navigation-toggle')?.focus();
       return;
     }
-    // "/" jumps to the list search on the views that have one.
     if (event.key !== '/' || event.defaultPrevented || mobileOpen) return;
     const target = event.target as HTMLElement | null;
     if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
@@ -546,7 +515,6 @@
         await navigate('proposals');
       }
     } catch (e) {
-      // A 401 has already ended the session and explained why on the login screen.
       if (currentSession === sessionGeneration) error = (e as Error).message;
     } finally {
       busy = false;
@@ -745,8 +713,6 @@
           </div>
         {/if}
         {#if data.pr_capacity.status !== 'ready'}
-          <!-- Only the capacity message is live: the relative observation time changes every
-               minute and would otherwise re-announce the whole notice. -->
           <div class="notice">
             <Icon name="alert" /><span
               ><span role="status" aria-live="polite"
@@ -977,7 +943,6 @@
               }}>Next page</button
             >
           </div>
-          <!-- Background feedback follows all results, including PR delivery history. -->
           {@render listFeedback(current.noun, filtered.length + proposals.length + prRows.length)}
         {/if}
         <footer class="content-footer">
@@ -1010,7 +975,6 @@
       >
       <button class="button" disabled={listLoading} onclick={() => listRefresh++}>Retry</button>
     </div>{/if}
-  <!-- Keep the status line's space between polls, including at the bottom of a page. -->
   {#if listLoading || listLoaded}<div
       class:empty={!listLoaded && !count}
       class="list-feedback"

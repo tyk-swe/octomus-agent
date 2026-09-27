@@ -41,7 +41,6 @@ func validProposal() map[string]any {
 	return proposal
 }
 
-// Nested failures name the schema path, never an untrusted key.
 func TestStructuredResultErrorsNameTheField(t *testing.T) {
 	finding := func() map[string]any {
 		return map[string]any{"title": "t", "file": "f", "detail": "d", "priority": "p"}
@@ -89,8 +88,6 @@ func TestStructuredResultErrorsNameTheField(t *testing.T) {
 	}
 }
 
-// A schema this package cannot check refuses every answer instead of passing
-// it, also below the root.
 func TestUnsupportedSchemasRefuseEveryAnswer(t *testing.T) {
 	for _, test := range []struct {
 		name   string

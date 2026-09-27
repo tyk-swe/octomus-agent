@@ -1,7 +1,5 @@
 package runner
 
-// Pinned clients use a synthetic loopback provider. The tests skip unless a
-// pinned binary is provided through OCTOMUS_CONTRACT_*_BINARY.
 import (
 	"context"
 	"encoding/json"
@@ -91,8 +89,6 @@ func contract(t *testing.T, backend config.Backend, binary string) {
 	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(configToml), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Isolate only the child environment. Never read or modify operator
-	// account state.
 	wrapper := filepath.Join(root, "client")
 	script := fmt.Sprintf(`#!/usr/bin/env python3
 import os,sys

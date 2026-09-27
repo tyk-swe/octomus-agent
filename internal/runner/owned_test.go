@@ -14,10 +14,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 )
 
-// cutPhraseEnv and cutLinesEnv name a multi-word passphrase and a multi-line
-// key in the environment, which redaction scrubs only as whole values. The
-// redactor reads the environment once per process, so TestMain exports them
-// before any test.
 const (
 	cutPhraseEnv = "RUNNER_TEST_PASSWORD"
 	cutPhrase    = "correct horse battery staple"
@@ -34,7 +30,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// startOwned starts an owned command and delivers its wait result.
 func startOwned(t *testing.T, args ...string) (*process.GroupChild, chan error) {
 	t.Helper()
 	cmd := process.Command(args[0], t.TempDir())
@@ -60,8 +55,6 @@ func waitResult(t *testing.T, waitCh chan error) error {
 	}
 }
 
-// Only a SIGKILL exit is the expected end of a killed child; other signals,
-// exit codes and look-alike texts are not.
 func TestKilledClassifiesOnlySIGKILL(t *testing.T) {
 	child, waitCh := startOwned(t, "sleep", "5")
 	child.Close()
@@ -85,8 +78,6 @@ func TestKilledClassifiesOnlySIGKILL(t *testing.T) {
 	}
 }
 
-// joinOwned waits for both the child and its reader, hides the expected kill
-// and reports any other exit.
 func TestJoinOwnedReportsUnexpectedExits(t *testing.T) {
 	child, waitCh := startOwned(t, "sleep", "5")
 	reader := make(chan struct{})
@@ -115,8 +106,6 @@ func TestJoinOwnedReportsUnexpectedExits(t *testing.T) {
 		t.Fatalf("an unexpected exit must be reported: %v", err)
 	}
 
-	// A clean exit whose stderr a descendant still holds ends the wait with
-	// ErrWaitDelay, which is not a failure.
 	cmd := process.Command("sh", t.TempDir())
 	cmd.Args = append(cmd.Args, "-c", "sleep 5 & exit 0")
 	cmd.Stderr = &stderrTail{}
@@ -137,9 +126,6 @@ func TestJoinOwnedReportsUnexpectedExits(t *testing.T) {
 	}
 }
 
-// A server's stdout stays drained after an over-long line ends the line
-// reader, and the drain ends at end of stream or when the owner closes the
-// pipe.
 func TestDiscardStdoutSurvivesOverlongLine(t *testing.T) {
 	for _, end := range []string{"writer-closed", "reader-closed"} {
 		t.Run(end, func(t *testing.T) {
@@ -183,8 +169,6 @@ func TestDiscardStdoutSurvivesOverlongLine(t *testing.T) {
 	}
 }
 
-// The stderr tail keeps a bounded end of the stream, reports only whole lines
-// or words once it was cut, redacts secrets and leaves a silent failure as is.
 func TestStderrTailExplainsConnectFailures(t *testing.T) {
 	cause := errors.New("connect failed")
 	if err := (&stderrTail{}).explain(cause); err != cause {
@@ -203,7 +187,6 @@ func TestStderrTailExplainsConnectFailures(t *testing.T) {
 		t.Fatalf("explained error: %q", err)
 	}
 
-	// A secret cut at the start of the kept tail is dropped with its line.
 	tail = &stderrTail{}
 	fmt.Fprint(tail, "token ghp_fixtureStartupSecret0001\n")
 	kept := "StartupSecret0001\n"
@@ -216,8 +199,6 @@ func TestStderrTailExplainsConnectFailures(t *testing.T) {
 		t.Fatalf("cut tail: %q", err)
 	}
 
-	// One long line, terminated or not, keeps only the whole words after its
-	// partial first word and the word after that.
 	for _, end := range []string{"", "\n"} {
 		tail = &stderrTail{}
 		fmt.Fprint(tail, "ghp_fixtureStartupSecret0001 "+strings.Repeat("word ", stderrTailLimit/5)+end)
@@ -227,12 +208,9 @@ func TestStderrTailExplainsConnectFailures(t *testing.T) {
 		}
 	}
 
-	// The last lines or words of an environment secret the cut began inside
-	// no longer match the whole value; they are dropped with its partial
-	// first line or word.
 	for _, secret := range []struct {
 		name, text string
-		start      int // where the kept tail begins: inside the value's first line or word
+		start      int
 		fill       func(n int) string
 	}{
 		{name: "multi-line key", text: "KEY=" + cutLines + "\n", start: len("KEY=first"), fill: func(n int) string {
@@ -253,7 +231,6 @@ func TestStderrTailExplainsConnectFailures(t *testing.T) {
 		}
 	}
 
-	// A cut run with no line or word boundary is not reported at all.
 	tail = &stderrTail{}
 	fmt.Fprint(tail, strings.Repeat("z", 3*stderrTailLimit))
 	if err := tail.explain(cause); err != cause {
@@ -261,8 +238,6 @@ func TestStderrTailExplainsConnectFailures(t *testing.T) {
 	}
 }
 
-// Wherever the cut falls in a bearer header on one long line, including
-// inside or just after "Bearer", no part of the token is reported.
 func TestStderrTailCutKeepsBearerTokensRedacted(t *testing.T) {
 	cause := errors.New("connect failed")
 	header := "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl"

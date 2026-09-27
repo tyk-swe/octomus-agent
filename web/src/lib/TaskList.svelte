@@ -4,7 +4,6 @@
   import Icon from './Icon.svelte';
   import type { TaskRow } from './types';
 
-  /** Task rows that each open the task's details; an empty list reads as all caught up. */
   let { tasks, onselect }: { tasks: TaskRow[]; onselect: (id: string) => void } = $props();
 </script>
 

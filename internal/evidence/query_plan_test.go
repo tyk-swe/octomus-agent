@@ -9,8 +9,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// Run evidence reads under the store mutex, so selecting a cycle's tasks must
-// seek the cycle projection index rather than decode every saved task.
 func TestCycleTasksQuerySeeksTheCycleIndex(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

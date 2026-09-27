@@ -12,9 +12,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// ErrNotPaused and ErrBusy refuse an audit that needs paused, idle operation.
-// They are conflicts (HTTP 409), like the same refusal ControlAction reports
-// before it releases the gate.
 var (
 	ErrNotPaused = conflictError("Octomus must be paused for this operation")
 	ErrBusy      = conflictError("Octomus has active work")
@@ -33,8 +30,6 @@ func (a *App) runtimeIdle() bool {
 	return a.runtime.idle()
 }
 
-// enterContinuous is ControlAction's durable resume transition. Callers hold
-// gate and check runtime conflicts.
 func (a *App) enterContinuous(control *model.Control) error {
 	cfg, err := a.Config()
 	if err != nil {
@@ -53,10 +48,6 @@ func (a *App) enterContinuous(control *model.Control) error {
 	return nil
 }
 
-// startRunOnceBatch starts a run-once batch from the expected control record
-// in one transaction with planning affordability. The store refuses both an
-// unaffordable pass and a control record that changed since the caller read
-// it; the second is a conflict, never a batch reported as started.
 func (a *App) startRunOnceBatch(control *model.Control) error {
 	capacity, started, err := a.Store.StartBatchIfAffordable(control, time.Now())
 	if err != nil {
@@ -71,8 +62,6 @@ func (a *App) startRunOnceBatch(control *model.Control) error {
 	return conflictError("Control state changed; try again")
 }
 
-// StartAudit validates remote and route availability outside gate, then
-// atomically starts an audit only if paused state and policy are unchanged.
 func (a *App) StartAudit(ctx context.Context) (string, error) {
 	cfg, control, err := a.admitAuditPreflight()
 	if err != nil {
@@ -106,10 +95,6 @@ func (a *App) StartAudit(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// admitAuditPreflight admits an audit's remote preflight under the gate: the
-// service is live, idle and paused, audit policy validates and a complete
-// planning pass is affordable. It then marks the audit preflight in flight and
-// registers it as service work, which the caller ends with a.wg.Done.
 func (a *App) admitAuditPreflight() (config.Config, model.Control, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -162,8 +147,6 @@ func (a *App) doctor(ctx context.Context, cfg config.Config, audit bool) error {
 	return nil
 }
 
-// endPreflight clears a preflight that will not start its cycle and wakes the
-// scheduler.
 func (a *App) endPreflight() {
 	a.runtimeMu.Lock()
 	a.runtime.preflight = nil
@@ -171,10 +154,6 @@ func (a *App) endPreflight() {
 	a.notify()
 }
 
-// beginCycle admits the planning pass a preflight validated; callers hold the
-// gate. Work that started, or an operator change made, while the preflight ran
-// with the gate released is a conflict: the state ControlAction refuses before
-// a preflight starts.
 func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.CycleMode) (string, error) {
 	if err := a.ctx.Err(); err != nil {
 		return "", err
@@ -238,8 +217,6 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 		Repository: cfg.GitHubRepo, DecisionMemory: []any{}, RunID: runID,
 	}
-	// live was read under the gate, so the store's compare catches only a
-	// write that bypassed it.
 	capacity, started, err := a.Store.BeginCycleIfAffordable(cycle, next, live, fingerprint, time.Now())
 	if err != nil {
 		return "", err
@@ -264,10 +241,6 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 	return id, nil
 }
 
-// sameOperatorControl compares what admitted a planning preflight: pause and
-// mode, cycle number, recorded error and run-once batch. Remote observation
-// owns ContextFingerprint and IdleStreak and may only bring NextCycleAt
-// forward, always under the gate, so its writes never invalidate a preflight.
 func sameOperatorControl(a, b model.Control) bool {
 	a.ContextFingerprint, b.ContextFingerprint = "", ""
 	a.IdleStreak, b.IdleStreak = 0, 0

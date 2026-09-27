@@ -62,7 +62,6 @@ func TestBackendRoundTripsItsWireNames(t *testing.T) {
 	}
 }
 
-// Absent fields take the defaults, never a reused variable's previous values.
 func TestDecodingIntoAReusedConfigRestoresDefaults(t *testing.T) {
 	provider, variant := "stale-provider", "stale-variant"
 	route := Route{Backend: BackendOpencode, Model: "stale", Provider: &provider, Variant: &variant}

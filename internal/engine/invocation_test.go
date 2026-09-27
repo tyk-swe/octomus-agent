@@ -1,8 +1,5 @@
 package engine
 
-// Role invocation tests: admission accounting and redaction hold for every
-// role because every agent turn runs through the one invocation module.
-
 import (
 	"context"
 	"database/sql"
@@ -21,7 +18,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// admissionsByRole counts the admission ledger per role.
 func admissionsByRole(t *testing.T, state *store.Store) map[string]int {
 	t.Helper()
 	counts := map[string]int{}
@@ -50,12 +46,6 @@ func admissionsByRole(t *testing.T, state *store.Store) map[string]int {
 	return counts
 }
 
-// TestInvocationAdmitsExactlyOncePerTurn: each attempt at a turn consumes
-// exactly one admission, and no turn reserves twice. Initialization reserves
-// the first executor turn's admission, which a failed start keeps; the retry's
-// initialization reserves the next one for the turn that runs, so the failed
-// start plus its retry record 2 executor admissions. Every reviewer and repair
-// turn of a two-round repair records one, with the repair thread resumed.
 func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	fixture.configure(t, func(cfg *config.Config) {
@@ -96,7 +86,6 @@ func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 		t.Fatalf("admissions by role = %+v; want %+v (the failed start plus one per turn)", got, want)
 	}
 	assertAdmissions(t, fixture.state, 7, "one per attempt and turn")
-	// Every admission beyond the failed start paid for exactly one turn.
 	for route, turns := range map[config.Route]int{routes.Executor: 1, routes.Reviewer: 3, routes.Repair: 2} {
 		if n := len(script.Turns(route)); n != turns {
 			t.Fatalf("%s turns = %d, want %d", route, n, turns)
@@ -117,12 +106,6 @@ func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 	}
 }
 
-// TestAdmissionMeasuresPastUnreadableWorkspaceDirectories: a directory that a
-// worker or verification command left without read or search permission inside
-// a retained workspace neither refuses every later turn's admission nor fails
-// every housekeeping storage pass; both measure the bytes they can read and
-// leave the directory's mode alone. Root ignores directory modes, so the test
-// needs an unprivileged user.
 func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
@@ -171,9 +154,6 @@ func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
 	}
 }
 
-// TestInvocationRejectsReservedResume: a reserved admission covers only a
-// fresh session's first turn, so a resumed turn marked reserved is refused
-// before it reaches the runner rather than running unadmitted.
 func TestInvocationRejectsReservedResume(t *testing.T) {
 	state := testStore(t)
 	app := New(state, t.TempDir())
@@ -198,9 +178,6 @@ func TestInvocationRejectsReservedResume(t *testing.T) {
 	assertAdmissions(t, state, 0, "a refused turn admits nothing")
 }
 
-// TestInvocationSkipsCancelledOwner: a turn whose owner is already cancelled
-// is refused before it measures storage, reserves a daily admission, prepares
-// a workspace or reaches the runner, and an owned client scope still closes.
 func TestInvocationSkipsCancelledOwner(t *testing.T) {
 	state := testStore(t)
 	app := New(state, t.TempDir())
@@ -229,10 +206,6 @@ func TestInvocationSkipsCancelledOwner(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestInvocationCloseFailureFailsPlanningTurn: a planning turn owns its client
-// scope and closes it before its record is finalized, so a scope that fails
-// to close fails an otherwise good turn. The answer is discarded and the cycle
-// records the role's session as failed with the close error.
 func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
 	state := testStore(t)
 	app := New(state, t.TempDir())
@@ -248,8 +221,6 @@ func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
 	route := config.NewRoute("scripted-discovery", "medium")
 	script := runnertest.New(runnertest.CatalogFor(route)...)
 	script.Answer(route, "Discovered")
-	// FailClose applies to the backend's next close, so the turn is invoked
-	// directly: a full planning cycle's preflight could consume it first.
 	script.FailClose(route.Backend, errors.New("fixture close"))
 	clients := runner.New(context.Background(), config.Default(), script.Connector())
 
@@ -279,11 +250,8 @@ func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// secretToken is secret-shaped: the store's redaction replaces it.
 const secretToken = "ghp_invocationSecret0123456789"
 
-// assertRedactedSummaries requires every listed role's sessions to be recorded
-// with a summary that kept the surrounding text but lost the secret.
 func assertRedactedSummaries(t *testing.T, sessions []model.Session, roles []string) {
 	t.Helper()
 	seen := map[string]int{}
@@ -300,17 +268,12 @@ func assertRedactedSummaries(t *testing.T, sessions []model.Session, roles []str
 	}
 }
 
-// scriptedProposal is fixtureProposal under its own id, title and problem
-// key, so several share a cycle without being the same work, with a reason
-// that carries the secret.
 func scriptedProposal(id, decision string) map[string]any {
 	proposal := fixtureProposal(decision, "Found with "+secretToken)
 	proposal["id"], proposal["title"], proposal["problem_key"] = id, "Scripted proposal "+id, "scripted-"+id
 	return proposal
 }
 
-// TestInvocationRedactsEveryRoleSummary: a secret-shaped answer is saved
-// redacted in the session summary of every task role and every planning role.
 func TestInvocationRedactsEveryRoleSummary(t *testing.T) {
 	t.Run("task roles", func(t *testing.T) {
 		fixture := newScriptedFixture(t, withGitHubIdentity())
@@ -351,7 +314,6 @@ func TestInvocationRedactsEveryRoleSummary(t *testing.T) {
 		review := mustJSON(t, map[string]any{"assessments": assessments})
 		script.Answer(routes.ProposalReviewer, review, review)
 
-		// Audits require the paused service, so the app is not resumed.
 		app := fixture.pausedApp(t)
 		cycleID, err := app.StartAudit(context.Background())
 		if err != nil {

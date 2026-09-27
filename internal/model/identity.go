@@ -9,10 +9,6 @@ import (
 	whatwg "github.com/nlnwa/whatwg-url/url"
 )
 
-// NotificationDestination validates and normalizes with the WHATWG URL
-// Standard (github.com/nlnwa/whatwg-url). The identity hashes the normalized
-// URL, including its query order and empty-query marker. It never includes a
-// trailing newline.
 func NotificationDestination(raw string) (normalized, identity string, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || len(raw) > 8192 {
@@ -36,7 +32,6 @@ func NotificationDestination(raw string) (normalized, identity string, err error
 	case "https:":
 	case "http:":
 		ip, e := netip.ParseAddr(strings.Trim(u.Hostname(), "[]"))
-		// Only ::1 qualifies as IPv6 loopback; mapped IPv4 addresses do not.
 		if e != nil || !(ip.Is4() && ip.IsLoopback() || ip == netip.IPv6Loopback()) {
 			return "", "", fmt.Errorf("Plain HTTP notification webhooks require a loopback IP address")
 		}
@@ -46,8 +41,6 @@ func NotificationDestination(raw string) (normalized, identity string, err error
 	return normalized, fmt.Sprintf("%x", sha256.Sum256([]byte(normalized))), nil
 }
 
-// DecisionMemoryFingerprint consumes successful `git ls-tree -r` stdout.
-// A decision without relevant paths uses the revision itself.
 func DecisionMemoryFingerprint(revision string, paths []string, treeOutput string) (string, error) {
 	if len(paths) > 40 {
 		return "", fmt.Errorf("Decision has too many relevant paths")

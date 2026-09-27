@@ -7,8 +7,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 )
 
-// Catalog allowlists /provider output; the document can contain credentials
-// and options that must never leave the adapter.
 func Catalog(value any) ([]Model, error) {
 	doc, _ := asObject(value)
 	all, ok := asArray(doc["all"])

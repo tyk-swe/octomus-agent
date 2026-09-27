@@ -12,23 +12,12 @@ import type {
   Route
 } from './types';
 
-/**
- * First-run setup checklist states, derived from the configuration draft, the last
- * saved configuration, loaded catalogs, the latest explicit connection check and the
- * polled service snapshot. Nothing here is persisted or sent to the service.
- *
- * Entered: typed in this tab. Saved: written to the service. Checked: the exact saved
- * configuration passed an explicit connection check. Ran: a cycle actually executed.
- * Populated fields, catalog matches and a passed check never prove repository push
- * permission or model inference; only a run's recorded evidence does.
- */
 export type SetupTone = 'missing' | 'draft' | 'saved' | 'checked' | 'failed' | 'ran';
 export type SetupStep = { tone: SetupTone; label: string; detail: string };
 export type Preflight = {
   mode: CycleMode;
   ok: boolean;
   detail: string;
-  /** Canonical configuration revision the server checked; any other revision is stale. */
   checkedRevision: string;
   at: string;
 };
@@ -84,7 +73,6 @@ export function routeComplete(route: Route | undefined): boolean {
     : filled(route.model) && filled(route.effort);
 }
 
-/** True only when a catalog loaded for the entered executable lists this exact route as available. */
 export function routeValidated(
   route: Route,
   config: Config,
@@ -102,7 +90,6 @@ export function routeValidated(
     : !route.variant || model.variants.includes(route.variant);
 }
 
-/** Mirrors config.Config.RoutesFor (internal/config): audits skip the code reviewer, execution tiers and repair. */
 export function requiredRoutes(config: Config, audit: boolean): [string, Route][] {
   const roles = Object.entries(config.roles).filter(([role]) => !audit || role !== 'code_reviewer');
   return audit

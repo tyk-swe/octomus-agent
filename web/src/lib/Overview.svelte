@@ -12,10 +12,6 @@
   import { ACTIVE_STATUSES } from './types';
   import type { CycleSummary, Snapshot } from './types';
 
-  /**
-   * The Overview view: onboarding, the latest run, attention, work in motion, activity and
-   * operating limits. It only presents the polled snapshot; every action is the page's.
-   */
   let {
     data,
     latestCycle,
@@ -41,14 +37,12 @@
     onviewattention: () => void;
     onrunonce: () => void;
   } = $props();
-  /** The overview's picture of one cycle, from discovery to a delivered PR. */
   const pipeline: { name: string; icon: IconName; detail: string }[] = [
     { name: 'Ground & discover', icon: 'proposals', detail: 'Understand what matters' },
     { name: 'Challenge & refine', icon: 'shield', detail: 'Keep the worthwhile work' },
     { name: 'Build & verify', icon: 'code', detail: 'Make the complete change' },
     { name: 'Review & deliver', icon: 'prs', detail: 'Fresh eyes before every PR' }
   ];
-  /** How each runner storage status without a measurement reads; unknown words stay verbatim. */
   const runnerStorageStatus: Record<string, string> = {
     unconfigured: 'not configured',
     unavailable: 'path unavailable',

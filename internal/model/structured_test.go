@@ -8,9 +8,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/schemas/schematest"
 )
 
-// Runners hold each answer to these schemas and the strict decoders then read
-// it, so a field added to only one side would fail every planning or review
-// turn with an unexpected or missing field.
 func TestStructuredSchemasMatchStrictDecoders(t *testing.T) {
 	proposals := schemas.ProposalSchema()
 	schematest.Match(t, "proposal document", proposals, reflect.TypeOf(struct {
@@ -18,8 +15,6 @@ func TestStructuredSchemasMatchStrictDecoders(t *testing.T) {
 	}{}))
 	schematest.Match(t, "review", schemas.ReviewSchema(), reflect.TypeOf(Review{}))
 
-	// A sample answer the schema accepts must decode strictly and keep every
-	// value it carried.
 	document := schematest.Sample(proposals).(map[string]any)
 	if err := schemas.Validate(document, proposals); err != nil {
 		t.Fatalf("sample proposal document: %v", err)

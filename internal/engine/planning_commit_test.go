@@ -7,17 +7,9 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// commitTasks queues one task per accepted proposal of a finished execution
-// plan. Dependencies map to the new task identities while the cycle keeps the
-// proposal identities; a task on an owned PR writes that PR's branch from its
-// head, and a default-branch task gets a fresh owned branch from the grounded
-// revision. Every task snapshots the tier route, configuration and attempt
-// policy, and joins the plan's Run once batch.
 func TestCommitTasksQueuesEachAcceptedProposal(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
-	// Six distinct attempt-policy values, so a task whose policy swapped two
-	// of them cannot match the expected policy below.
 	cfg.MaxRepairRounds, cfg.MaxNoProgressRounds, cfg.MaxRetries = 4, 2, 3
 	cfg.TaskTimeoutSeconds, cfg.SessionTimeoutSeconds, cfg.CommandTimeoutSeconds = 14400, 1800, 600
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -104,7 +96,6 @@ func TestCommitTasksQueuesEachAcceptedProposal(t *testing.T) {
 	}
 }
 
-// A plan that accepts nothing finishes idle and queues nothing.
 func TestCommitTasksFinishesAPlanWithoutAcceptedWorkIdle(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -130,8 +121,6 @@ func TestCommitTasksFinishesAPlanWithoutAcceptedWorkIdle(t *testing.T) {
 	}
 }
 
-// Each planned task owns its attempt policy and batch identity: adjusting one
-// task's copy changes neither another task's nor the cycle's.
 func TestPlannedTasksOwnTheirSnapshots(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	runID := "batch"

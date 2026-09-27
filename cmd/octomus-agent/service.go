@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// These two components meet only at the command's service boundary. Recovery
-// belongs here, before a listener exists; Run only schedules recovered state.
 type serviceScheduler interface {
 	Recover() error
 	Run(context.Context) error
@@ -33,8 +31,6 @@ type serviceComponents struct {
 }
 
 func (c serviceComponents) run(ctx context.Context, address string, stderr io.Writer) error {
-	// A recovery failure is a startup failure. In particular, /healthz is never
-	// exposed for a scheduler that cannot read its durable state.
 	if err := c.scheduler.Recover(); err != nil {
 		c.scheduler.Shutdown()
 		return err
@@ -61,9 +57,6 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 		return err
 	}
 	fmt.Fprintf(stderr, "Octomus listening on http://%s\n", listener.Addr())
-	// The service owns the scheduler's lifetime. A server failure must stop a
-	// scheduler waiting on its run context, even when the signal context is
-	// still active.
 	serviceCtx, cancelService := context.WithCancel(ctx)
 	defer cancelService()
 	runDone := make(chan error, 1)
@@ -87,9 +80,6 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 		}
 	}
 
-	// Stop accepting health checks as soon as either core loop has exited.
-	// Shutdown can wait for an in-flight handler, so let scheduler cancellation
-	// progress alongside that graceful HTTP drain.
 	cancelService()
 	_ = listener.Close()
 	httpStopped := make(chan struct{})
@@ -110,8 +100,6 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 		<-serveDone
 	}
 	stopWorker()
-	// Bounded drain: every worker already stopped; this only waits for any
-	// straggling handles the runtime still tracks.
 	for range 100 {
 		if c.scheduler.Drained() {
 			break

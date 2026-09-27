@@ -10,10 +10,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// Dispatch-time revalidation blocks every queued member of a plan whose
-// writers to one PR are unordered, and the same Tick dispatches none of them
-// although execution slots are free. Active members are left alone, and the
-// validated-cycle cache forgets the cycle once none of its members is visible.
 func TestTickBlocksInvalidQueuedPlan(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -62,7 +58,6 @@ func TestTickBlocksInvalidQueuedPlan(t *testing.T) {
 		t.Fatal("validated cycle was not cached")
 	}
 
-	// Once no member of the cycle is visible to scheduling, the cache drops it.
 	running.Status = model.StatusPublished
 	if err := state.Put("task", running.ID, *running); err != nil {
 		t.Fatal(err)
@@ -76,15 +71,12 @@ func TestTickBlocksInvalidQueuedPlan(t *testing.T) {
 	if cached {
 		t.Fatal("the cache kept a cycle with no visible member")
 	}
-	app.Shutdown() // Waits for any task a Tick started.
+	app.Shutdown()
 	if count := dispatched.Load(); count != 0 {
 		t.Fatalf("Ticks dispatched %d members of an invalid plan", count)
 	}
 }
 
-// ValidateTaskPlan is the dispatch-time check of a saved plan: dependencies
-// stay within one existing PR, form no cycle, and order every writer to that
-// PR totally. Default-branch tasks never depend on one another.
 func TestValidateTaskPlan(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	const existing = "octomus/existing"
@@ -96,7 +88,7 @@ func TestValidateTaskPlan(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		tasks []model.Task
-		want  string // empty for a valid plan
+		want  string
 	}{
 		{name: "empty plan", tasks: nil},
 		{name: "independent default-branch tasks", tasks: []model.Task{task("a", "main"), task("b", "main")}},

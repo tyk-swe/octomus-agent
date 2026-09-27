@@ -131,9 +131,6 @@ func TestUTCIdentitiesAndTypedErrors(t *testing.T) {
 	if BlockedReasonFromError(fmt.Errorf("outer: %w", BlockedReasonTimeout)) != BlockedReasonTimeout {
 		t.Fatal("typed cause lost")
 	}
-	// Joined branches are visited in order: a later branch's reason wins over
-	// an earlier, more deeply wrapped one, and a branch without one changes
-	// nothing.
 	joined := errors.Join(fmt.Errorf("a: %w", fmt.Errorf("b: %w", BlockedReasonStaleBase)), BlockedReasonTimeout, errors.New("plain"))
 	if got := BlockedReasonFromError(joined); got != BlockedReasonTimeout {
 		t.Fatalf("joined reasons resolved to %v; want the later branch's timeout", got)
@@ -178,8 +175,6 @@ func TestTimestampFractionPrecision(t *testing.T) {
 	}
 }
 
-// enumRoundTrip checks that every wire name encodes, decodes and prints as the
-// value at its index, and that a value past the names cannot be saved.
 func enumRoundTrip[T interface {
 	~uint8
 	String() string
@@ -222,7 +217,6 @@ func TestEveryEnumRoundTripsItsWireNames(t *testing.T) {
 	enumRoundTrip[BatchPhase](t, []string{"draining", "planning", "executing"})
 }
 
-// A reason added without guidance would otherwise read as unclassified.
 func TestEveryBlockedReasonHasItsOwnGuidance(t *testing.T) {
 	if len(blockedReasonMessages) != len(blockedReasonNames) {
 		t.Fatalf("%d blocked reason messages for %d names", len(blockedReasonMessages), len(blockedReasonNames))
@@ -244,8 +238,6 @@ func TestEveryBlockedReasonHasItsOwnGuidance(t *testing.T) {
 	}
 }
 
-// A planning pass runs grounding, every discovery agent, one proposal review per
-// reviewer slot and consolidation; admission must fund all of them up front.
 func TestPlanningAdmissionsMatchPlanningRoles(t *testing.T) {
 	c := config.Default()
 	for _, agents := range []uint64{8, 9, 10} {
@@ -257,8 +249,6 @@ func TestPlanningAdmissionsMatchPlanningRoles(t *testing.T) {
 	}
 }
 
-// AllowedActions drives the dashboard buttons and action eligibility, so each
-// lifecycle, status and blocked-reason group is pinned to its exact list.
 func TestTaskAllowedActions(t *testing.T) {
 	at, commit := "2026-01-01T00:00:00+00:00", "abc123"
 	reason := func(r BlockedReason) *BlockedReason { return &r }
@@ -298,7 +288,6 @@ func TestTaskAllowedActions(t *testing.T) {
 		}
 	}
 
-	// Every reason not listed here offers a plain retry.
 	recovery := map[BlockedReason][]string{
 		BlockedReasonStaleBase:            {"supersede"},
 		BlockedReasonInvalidPlan:          {"supersede"},
@@ -317,7 +306,6 @@ func TestTaskAllowedActions(t *testing.T) {
 			}
 			want := append([]string{"cancel", "archive"}, tail...)
 			if got := (Task{Status: status, BlockedReason: &r}).AllowedActions(); !reflect.DeepEqual(got, want) {
-				// BlockedReason is an error, so %s alone would print its guidance.
 				t.Errorf("%s %s: AllowedActions() = %#v; want %#v", status, r.String(), got, want)
 			}
 		}

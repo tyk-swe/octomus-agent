@@ -1,6 +1,3 @@
-// api.go holds the engine-side operations the HTTP layer invokes. Each method
-// follows the operator control contract: gate ordering, conflict
-// classification, durable writes and operator events all match.
 package engine
 
 import (
@@ -19,7 +16,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// Errors for an unknown record or action, which the HTTP layer maps to 404.
 var (
 	ErrCycleNotFound      = errors.New("Cycle not found")
 	ErrUnknownControl     = errors.New("Unknown control")
@@ -29,10 +25,6 @@ var (
 	ErrProposalNotFound   = errors.New("Proposal not found")
 )
 
-// ControlAction runs the conflict check under the scheduler gate, then the
-// durable mode transition and its operator event. The response is the
-// serialized control record (plus planning_capacity for resume), exactly as
-// the dashboard reads it.
 func (a *App) ControlAction(action string) (map[string]any, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -45,9 +37,6 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	}
 	switch action {
 	case "audit":
-		// Audit includes a remote preflight, so the gate drops for remote work
-		// and the launch itself revalidates paused and idle state. The launch
-		// records the operator event on the cycle it starts.
 		a.withoutGate(func() { _, err = a.StartAudit(a.ctx) })
 		if err != nil {
 			return nil, err
@@ -73,8 +62,6 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 		if err := cfg.Validate(true); err != nil {
 			return nil, err
 		}
-		// Saves the batch's control itself, in the transaction that checks
-		// planning affordability.
 		if err := a.startRunOnceBatch(&control); err != nil {
 			return nil, err
 		}
@@ -99,10 +86,6 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	return body, nil
 }
 
-// controlConflict returns the conflict that refuses action in the current
-// runtime and durable mode, or nil. Audit and run once need paused operation
-// with no active work, and neither run once nor resume may start beside an
-// audit; resume also waits for a baseline check. Callers hold the gate.
 func (a *App) controlConflict(action string, control model.Control) error {
 	a.runtimeMu.Lock()
 	baselineActive := a.runtime.baseline != nil
@@ -126,16 +109,6 @@ func (a *App) controlConflict(action string, control model.Control) error {
 	}
 }
 
-// CycleAction applies an operator action to a finished cycle: archive stamps
-// its lifecycle, and discard, allowed only once it is archived, removes its
-// planning workspaces. Each happens once: repeating either conflicts rather
-// than rewriting the recorded lifecycle time. Any other action name is
-// ErrUnknownCycleAction before any state is read. A running cycle or an
-// in-flight cleanup conflicts.
-//
-// Discard removes the managed directory with the gate released; the call is
-// registered service work from admission so Shutdown waits out an in-flight
-// removal instead of abandoning it mid-delete.
 func (a *App) CycleAction(id, action string) error {
 	if action != "archive" && action != "discard" {
 		return ErrUnknownCycleAction
@@ -182,19 +155,12 @@ func (a *App) CycleAction(id, action string) error {
 	return a.Store.Event(id, "operator", action)
 }
 
-// SettingsView is the settings read contract: a display-safe configuration, the
-// canonical revision it was computed from, and metadata naming every string the
-// display transformation changed. The revision identifies canonical executable
-// state; the displayed values are previews and are never written back.
 type SettingsView struct {
 	Config            map[string]any            `json:"config"`
 	Revision          string                    `json:"revision"`
 	TransformedFields []redact.DisplayTransform `json:"transformed_fields"`
 }
 
-// NewSettingsView builds the display view of one canonical configuration: the
-// revision is the canonical fingerprint, computed before any display
-// transformation, so identical saved state always reports the same revision.
 func NewSettingsView(c config.Config) (*SettingsView, error) {
 	revision, err := c.Fingerprint()
 	if err != nil {
@@ -208,7 +174,6 @@ func NewSettingsView(c config.Config) (*SettingsView, error) {
 	return &SettingsView{Config: display, Revision: revision, TransformedFields: fields}, nil
 }
 
-// Settings answers the current display-safe settings view.
 func (a *App) Settings() (*SettingsView, error) {
 	c, err := a.Config()
 	if err != nil {
@@ -217,16 +182,10 @@ func (a *App) Settings() (*SettingsView, error) {
 	return NewSettingsView(c)
 }
 
-// ConfigPatchError marks a settings replacement that failed the strict typed
-// decode; the API maps it to the same body rejection as a malformed request.
 type ConfigPatchError struct{ inner error }
 
 func (e *ConfigPatchError) Error() string { return e.inner.Error() }
 
-// mergeConfigPatch applies explicit top-level replacements to the canonical
-// configuration. Raw patch values are embedded verbatim so the merged document
-// decodes through the strict typed boundary exactly like a complete request:
-// unknown fields, duplicate keys and invalid values are all rejected there.
 func mergeConfigPatch(live config.Config, patch map[string]json.RawMessage) (config.Config, error) {
 	generic, err := wirejson.GenericMap(live)
 	if err != nil {
@@ -246,10 +205,6 @@ func mergeConfigPatch(live config.Config, patch map[string]json.RawMessage) (con
 	return next, nil
 }
 
-// SaveConfig applies an explicit partial update under optimistic concurrency:
-// the service must be paused and drained, the expected revision must match the
-// live canonical fingerprint, supplied top-level fields replace their values
-// completely and the merged result validates before persisting.
 func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessage) (*SettingsView, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -282,10 +237,6 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix {
-		// HasUnresolvedTasks counts every unarchived task not yet published
-		// or cancelled: queued and active work too, unlike
-		// model.UnresolvedStatuses. All of it still depends on the old
-		// repository identity and branch policy.
 		unresolved, err := a.Store.HasUnresolvedTasks()
 		if err != nil {
 			return nil, err
@@ -304,13 +255,6 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	return NewSettingsView(c)
 }
 
-// DoctorFor validates cfg for mode, checks the remote, then connects each
-// backend the mode's routes use and validates every route against that
-// backend's discovered catalog, reporting every route and backend failure
-// together. The result names which Codex version was observed when the codex
-// backend answered. Version-mismatch warnings are also returned on their own,
-// even when a check fails, so the command-line doctor can print them for its
-// operator; the service never writes them to its own output.
 func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
 	if mode == model.CycleModeAudit {
 		if err := cfg.ValidateAudit(); err != nil {
@@ -349,8 +293,6 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 			if err != nil {
 				return err
 			}
-			// A version mismatch often explains why the catalog request or a
-			// route check fails, so it is kept before either runs.
 			if diagnostic.Warning != nil && *diagnostic.Warning != "" {
 				warnings = append(warnings, *diagnostic.Warning)
 			}
@@ -399,9 +341,6 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	return result, warnings, nil
 }
 
-// ModelCatalog lists the models a backend reports when run from binary. The
-// override is validated and applied to a copy of the saved configuration only;
-// it is never saved.
 func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Model, error) {
 	if err := config.ValidateBinary(binary); err != nil {
 		return nil, err
@@ -426,9 +365,6 @@ func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Mode
 	return client.Models(a.DataDir)
 }
 
-// StateView assembles the live dashboard document: the stored snapshot
-// flattened with runtime state, capacity, notification health and the latest
-// baseline summary in the state view.
 func (a *App) StateView() (map[string]any, error) {
 	control, err := a.Control()
 	if err != nil {
@@ -471,9 +407,6 @@ func (a *App) StateView() (map[string]any, error) {
 	cycleActive := a.runtime.cycle != nil
 	baselineActive := a.runtime.baseline != nil
 	a.runtimeMu.Unlock()
-	// A committed running cycle is durable before its runtime slot is assigned.
-	// Read it from the same snapshot as the visible cycles: a later store query
-	// could see its terminal status and contradict the returned cycle summary.
 	if !cycleActive {
 		for _, raw := range snapshot.Cycles {
 			var cycle struct {
@@ -526,7 +459,6 @@ func (a *App) StateView() (map[string]any, error) {
 			"revision_status": a.baselineRevisionStatus(latest, cfg),
 		}
 	}
-	// A missing record reads as nil.
 	storage, _, err := a.Store.GetValue("settings", "storage")
 	if err != nil {
 		return nil, err

@@ -1,7 +1,5 @@
 package runner
 
-// The owned OpenCode server's unattended policy and the checks on what it
-// reports: its ready address, effective config, identities and model route.
 import (
 	"crypto/rand"
 	"fmt"
@@ -16,11 +14,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 )
 
-// workerPolicy is the unattended inline config the owned server runs under:
-// sharing, updates, snapshots, LSP, formatting and compaction are off; agent
-// is the default primary agent with the worker instructions and every
-// permission except question and task; the helper agents are disabled.
-// appliedPolicy checks the server's effective config against it.
 func workerPolicy(agent string) map[string]any {
 	return map[string]any{
 		"share":         "disabled",
@@ -44,9 +37,6 @@ func workerPolicy(agent string) map[string]any {
 	}
 }
 
-// parseReadyURL accepts only a loopback root address: http scheme, literal
-// 127.0.0.1, a nonzero explicit port, root path, and no user, query, or
-// fragment.
 func parseReadyURL(endpoint string) (string, error) {
 	u, err := whatwg.Parse(endpoint)
 	if err != nil {
@@ -68,8 +58,6 @@ func parseReadyURL(endpoint string) (string, error) {
 	return fmt.Sprintf("http://127.0.0.1:%s", u.Port()), nil
 }
 
-// appliedPolicy validates every safety-critical field of the effective config,
-// beyond the expected fields.
 func appliedPolicy(effective any, agent string) bool {
 	doc, ok := asObject(effective)
 	if !ok {
@@ -99,10 +87,6 @@ func appliedPolicy(effective any, agent string) bool {
 
 var messageClock atomic.Uint64
 
-// messageID generates a native ordered 30-char msg_ ID: 12 lower hex chars
-// from the low 48 bits of a monotonically increasing
-// (milliseconds*4096+counter) clock, then 14 base62 random chars. Entropy
-// failure is never silently ignored.
 func messageID() (string, error) {
 	var random [14]byte
 	if _, err := io.ReadFull(rand.Reader, random[:]); err != nil {
@@ -127,8 +111,6 @@ func messageID() (string, error) {
 	}
 }
 
-// variantMatches accepts the exact variant, or `default` when the route has
-// none.
 func variantMatches(reported string, ok bool, route config.Route) bool {
 	if route.Variant != nil {
 		return ok && reported == *route.Variant
@@ -149,9 +131,6 @@ func checkModel(info map[string]any, route config.Route) error {
 	return nil
 }
 
-// segment validates an OpenCode identity ([A-Za-z0-9_-], 1-256 bytes) and
-// percent-encodes every byte that is not an ASCII letter or digit, including
-// '_' and '-', so a runner-supplied ID is always exactly one path segment.
 func segment(id string) (string, error) {
 	valid := id != "" && len(id) <= 256
 	if valid {

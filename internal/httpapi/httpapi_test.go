@@ -21,7 +21,6 @@ import (
 
 const token = "operator-fixture-token-with-at-least-32-characters"
 
-// openStore opens dir/state.db and closes it when the test ends.
 func openStore(t *testing.T, dir string) *store.Store {
 	t.Helper()
 	state, err := store.Open(filepath.Join(dir, "state.db"))
@@ -39,10 +38,6 @@ func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store)
 	return engine.New(state, dir, options...), state
 }
 
-// git runs the host Git (/usr/bin/git, never the fixture shim on PATH) in dir
-// with the service's child environment, so a GIT_DIR, GIT_INDEX_FILE or
-// GIT_WORK_TREE that a Git hook exports to the test run cannot redirect
-// fixture setup into another repository.
 func git(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := process.Command("/usr/bin/git", dir)
@@ -52,8 +47,6 @@ func git(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// baselineFixture uses a real local git
-// repository as the configured checkout plus a baseline-valid configuration.
 func baselineFixture(t *testing.T) (*engine.App, *store.Store, config.Config) {
 	t.Helper()
 	app, state := testApp(t)
@@ -79,10 +72,6 @@ func baselineFixture(t *testing.T) (*engine.App, *store.Store, config.Config) {
 	return app, state, cfg
 }
 
-// githubFixture mirrors tests/fixtures: the repository's git and gh shims sit
-// first on PATH so remote reads hit a real local bare remote while identity
-// answers as github.com/fixture/project. Verification commands then run for
-// real in an owned clone, which keeps a live check deterministic.
 func githubFixture(t *testing.T, commands []string) (*engine.App, *store.Store, config.Config) {
 	t.Helper()
 	root := t.TempDir()
@@ -128,7 +117,6 @@ func githubFixture(t *testing.T, commands []string) (*engine.App, *store.Store, 
 	return engine.New(state, data), state, cfg
 }
 
-// request performs one call against the router, optionally authenticated.
 func request(t *testing.T, handler http.Handler, method, path string, body string, auth bool) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader *strings.Reader
@@ -243,8 +231,6 @@ func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
 	if response.Body.String() != "override dashboard" {
 		t.Fatalf("override: %q", response.Body.String())
 	}
-	// Both asset sources share one boundary: the method is checked before the
-	// path, and an unsafe path is refused before any file is looked up.
 	for name, assets := range map[string]http.Handler{"embedded": router, "override": Router(app, token, override, "test")} {
 		for _, uri := range []string{"/", "/%2e%2e/go.mod"} {
 			response := request(t, assets, "POST", uri, "", false)
@@ -259,9 +245,6 @@ func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
 			}
 		}
 	}
-	// Index pages in an override are HTML under their resolved name, not the
-	// extensionless request path: nosniff would otherwise make browsers
-	// download them.
 	indexed := t.TempDir()
 	for name, body := range map[string]string{"200.html": "fallback", "index.html": "root index", "sub/index.html": "sub index"} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(indexed, name)), 0o755); err != nil {
@@ -307,9 +290,6 @@ func TestValidAuthenticationBypassesPendingFailureDelay(t *testing.T) {
 	}
 }
 
-// TestControlActionsThroughHTTP covers the control surface at the
-// wire layer: pause and run-once batch work under the default paused control
-// while a malformed action and a content-type miss keep their statuses.
 func TestControlActionsThroughHTTP(t *testing.T) {
 	app, state := testApp(t)
 	repo := t.TempDir()
@@ -370,8 +350,6 @@ func TestControlActionsThroughHTTP(t *testing.T) {
 	}
 }
 
-// An unrecognized cycle action reports 404, not the 409 that belongs to
-// discarding a cycle nobody archived yet.
 func TestUnknownCycleActionsAreNotReportedAsArchiveConflicts(t *testing.T) {
 	app, state := testApp(t)
 	cycle := model.Cycle{
@@ -396,9 +374,6 @@ func TestUnknownCycleActionsAreNotReportedAsArchiveConflicts(t *testing.T) {
 	}
 }
 
-// An unrecognized action on an existing task, or on a cycle that is still
-// running, reports 404 before any eligibility check; a known action on the
-// same running cycle still conflicts.
 func TestUnknownActionsOnLiveRecordsAreNotFound(t *testing.T) {
 	app, state := testApp(t)
 	task := queuedTask(config.Default())
@@ -425,8 +400,6 @@ func TestUnknownActionsOnLiveRecordsAreNotFound(t *testing.T) {
 	}
 }
 
-// The paused-and-idle refusals StartAudit reports after ControlAction has
-// released the gate answer the same 409 as the gate-held check, never 400.
 func TestControlRaceRefusalsAreConflicts(t *testing.T) {
 	for _, err := range []error{engine.ErrBusy, engine.ErrNotPaused} {
 		if status := apiStatus(err); status != http.StatusConflict {
@@ -463,8 +436,6 @@ func TestBaselineAPIAuthenticationRoutesAndMissingRecords(t *testing.T) {
 	}
 }
 
-// A 405 names every method the matched path answers, once each and in route
-// order, after authentication and the content-type rule have run.
 func TestMethodNotAllowedNamesThePathMethods(t *testing.T) {
 	app, _ := testApp(t)
 	router := Router(app, token, "", "test")
@@ -481,7 +452,6 @@ func TestMethodNotAllowedNamesThePathMethods(t *testing.T) {
 			t.Fatalf("%s %s: %d allow %q body %q", check.method, check.path, response.Code, response.Header().Get("Allow"), response.Body.String())
 		}
 	}
-	// Unauthenticated requests learn nothing about the path's methods.
 	response := request(t, router, "DELETE", "/api/config", "{}", false)
 	if response.Code != http.StatusUnauthorized || response.Header().Get("Allow") != "" {
 		t.Fatalf("unauthenticated: %d allow %q", response.Code, response.Header().Get("Allow"))
@@ -489,7 +459,6 @@ func TestMethodNotAllowedNamesThePathMethods(t *testing.T) {
 }
 
 func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
-	// The sleeping command keeps the worker alive through every gate check.
 	app, state, cfg := githubFixture(t, []string{"sleep 60"})
 	router := Router(app, token, "", "test")
 	startBody := func(c config.Config) string {
@@ -503,7 +472,6 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 		}
 		return string(data)
 	}
-	// The legacy whole-config payload is an unknown field now.
 	if data, err := json.Marshal(map[string]any{"expected_config": cfg}); err != nil {
 		t.Fatal(err)
 	} else if response := call(t, router, "POST", "/api/baseline-checks", string(data)); response.Code != http.StatusUnprocessableEntity {
@@ -589,8 +557,6 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	if _, ok := baseline["commands"]; ok {
 		t.Fatal("state summary must not include commands")
 	}
-	// Cancelling interrupts the sleeping command, persists the terminal record
-	// and removes the owned clone.
 	if response := call(t, router, "POST", "/api/baseline-checks/"+id+"/cancel", "{}"); response.Code != http.StatusOK {
 		t.Fatalf("cancel: %d %s", response.Code, response.Body.String())
 	}
@@ -601,9 +567,6 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	if finished.CompletedAt == nil || finished.Error == nil || !finished.WorkspaceRemoved {
 		t.Fatalf("finished: %+v", finished)
 	}
-	// Cancellation may land during remote setup (no command evidence yet) or
-	// inside the sleeping command (one failed record); both orderings are
-	// correct. The mid-command case is covered deterministically by e2e.
 	if len(finished.Commands) > 1 || (len(finished.Commands) == 1 && finished.Commands[0].Success) {
 		t.Fatalf("cancelled command evidence: %+v", finished.Commands)
 	}
@@ -630,10 +593,6 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	}
 }
 
-// waitBaseline waits until the check has fully settled. The worker records the
-// terminal status, then the owned-workspace cleanup outcome, and releases the
-// service's baseline slot last, as it exits; eligibility read before that
-// still reports the check as running. The returned record is the final one.
 func waitBaseline(t *testing.T, router http.Handler, state *store.Store, id string) *model.BaselineCheck {
 	t.Helper()
 	var check *model.BaselineCheck
@@ -649,8 +608,6 @@ func waitBaseline(t *testing.T, router http.Handler, state *store.Store, id stri
 	return check
 }
 
-// queuedTask seeds a blocked task: publication
-// uncertain, so reconcile is a live action.
 func queuedTask(cfg config.Config) model.Task {
 	reason := model.BlockedReasonPublicationUncertain
 	return model.Task{
@@ -672,9 +629,6 @@ func queuedTask(cfg config.Config) model.Task {
 
 func stringPointer(s string) *string { return &s }
 
-// Every JSON body route answers extraction failures once, as text: an
-// oversized body at 413, malformed JSON at 400 and a body of the wrong shape
-// at 422, before any handler work runs.
 func TestBodyRejectionsKeepTheirPlainTextForm(t *testing.T) {
 	app, state := testApp(t)
 	router := Router(app, token, "", "test")
@@ -708,8 +662,6 @@ func TestBodyRejectionsKeepTheirPlainTextForm(t *testing.T) {
 	}
 }
 
-// Responses keep integers exact through redaction, and a value that cannot be
-// encoded becomes a JSON 500 rather than a partial or empty body.
 func TestWriteJSONKeepsExactNumbersAndReportsEncodeFailures(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	writeJSON(recorder, http.StatusCreated, map[string]any{"count": uint64(1<<63 + 1), "note": "ok"})
@@ -725,9 +677,6 @@ func TestWriteJSONKeepsExactNumbersAndReportsEncodeFailures(t *testing.T) {
 	}
 }
 
-// The request boundary holds on every path: an oversized body is refused before
-// it can replace a saved configuration, malformed query values are plain-text
-// 400s, and every response, including rejections, carries the security headers.
 func TestHTTPBoundaryRejectionsAndSecurityHeaders(t *testing.T) {
 	app, state := testApp(t)
 	router := Router(app, token, "", "test")

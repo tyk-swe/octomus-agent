@@ -1,4 +1,3 @@
-/* The frame around a view: sidebar, navigation, top bar and page heading. */
 .sidebar {
   width: 232px;
   background: linear-gradient(178deg, #143f37 0%, #103830 55%, #0d302a 100%);

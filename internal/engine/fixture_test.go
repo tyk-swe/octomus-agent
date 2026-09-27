@@ -1,10 +1,5 @@
 package engine
 
-// The shared local fixture the engine tests build on: real local Git with a
-// bare remote and a pushed clone, the Python gh peer on PATH and, for
-// newPlanningFixture, the Python git identity shim and Codex peer. It makes no
-// network requests and performs no model calls.
-
 import (
 	"fmt"
 	"os"
@@ -49,8 +44,6 @@ func pythonFixtureShim(t *testing.T, path, root, fixture string) {
 	}
 }
 
-// git runs the host Git in directory and returns its trimmed standard output,
-// failing the test with its standard error. See gitCommand.
 func git(t *testing.T, directory string, args ...string) string {
 	t.Helper()
 	cmd := gitCommand(directory, args...)
@@ -63,11 +56,6 @@ func git(t *testing.T, directory string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-// gitCommand builds a host Git command (/usr/bin/git, never a fixture shim on
-// PATH) in directory, for callers that report failure themselves, such as
-// scripted runner effects. It gets the service's child environment, so a
-// GIT_DIR, GIT_INDEX_FILE or GIT_WORK_TREE that a Git hook exports to the test
-// run cannot redirect fixture Git into another repository.
 func gitCommand(directory string, args ...string) *exec.Cmd {
 	cmd := process.Command("/usr/bin/git", directory)
 	cmd.Args = append(cmd.Args, args...)
@@ -89,10 +77,6 @@ func newPlanningFixture(t *testing.T) *planningFixture {
 	})
 }
 
-// newFixture builds the shared local fixture under root: a bare remote at
-// remote.git, a pushed clone at repository, the gh peer in root/bin (which may
-// already hold other shims) at the front of PATH, an isolated environment, and
-// a store holding the test settings once configure has adjusted them.
 func newFixture(t *testing.T, root string, configure func(*config.Config)) *planningFixture {
 	t.Helper()
 	bin := filepath.Join(root, "bin")

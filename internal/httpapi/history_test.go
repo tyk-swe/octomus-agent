@@ -9,9 +9,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// History pages accept any unsigned limit: the store clamps it to 1..100, so an
-// oversized limit is the page cap rather than a wrapped negative number, and
-// only a malformed value is a request error.
 func TestHistoryLimitClampsOversizedValuesAndRejectsMalformedOnes(t *testing.T) {
 	app, state := testApp(t)
 	cfg := config.Default()
@@ -51,7 +48,6 @@ func TestHistoryLimitClampsOversizedValuesAndRejectsMalformedOnes(t *testing.T) 
 	}
 }
 
-// Each history route pages only its own record kind.
 func TestHistoryRoutesPageTheirOwnKind(t *testing.T) {
 	app, state := testApp(t)
 	task := queuedTask(config.Default())

@@ -1,8 +1,3 @@
-/**
- * The evidence display mapping (src/lib/evidence.ts), checked directly without a page.
- * These rules decide how saved records are named on every surface, so each case pins
- * one rule rather than one screen.
- */
 import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import {
@@ -30,14 +25,11 @@ import { A, B, command, reviewer, reviewRound, taskEvidence } from './synthetic'
 test.skip(({ isMobile }) => isMobile, 'Pure mapping rules run once, on the desktop project.');
 
 test('decision counts list only decisions that occurred, in a fixed order', () => {
-  // The cycle summary reports every decision, including those with 0 proposals.
   expect(decisionCounts({ candidate: 0, deferred: 0, rejected: 0, accepted: 3 })).toEqual([
     { decision: 'accepted', count: 3, tone: 'clean' }
   ]);
   expect(decisionCounts({ accepted: 0, rejected: 0, deferred: 0, candidate: 0 })).toEqual([]);
   expect(decisionCounts({})).toEqual([]);
-  // Known decisions keep their order; unknown words that occurred follow, sorted. Being
-  // unknown never drops a word; only a 0 count does.
   expect(
     decisionCounts({ zeta: 1, candidate: 2, deferred: 1, unknown: 0, rejected: 4, alpha: 5 })
   ).toEqual([
@@ -50,9 +42,6 @@ test('decision counts list only decisions that occurred, in a fixed order', () =
 });
 
 test('an idle cycle is a finished planning pass that accepted nothing, in either mode', () => {
-  // The service saves `idle` when execution planning queues no task, and when an audit
-  // accepts no recommendation. Both are successful outcomes, never a failure or a
-  // claim that work was completed.
   const execution = planningVerdict({ status: 'idle', mode: 'execution' });
   expect(execution).toMatchObject({ label: 'Planning complete · nothing accepted', tone: 'clean' });
   expect(execution.detail).toContain('An empty task set is a successful idle cycle');
@@ -62,7 +51,6 @@ test('an idle cycle is a finished planning pass that accepted nothing, in either
     tone: 'clean',
     detail: 'The audit finished and no recommendation was accepted.'
   });
-  // A status the dashboard does not know is still named verbatim and never toned.
   expect(planningVerdict({ status: 'paused', mode: 'execution' })).toMatchObject({
     label: 'Planning paused',
     tone: ''
@@ -84,7 +72,6 @@ test('a task outcome takes the tone of its finished status; any other status is 
     tone: 'blocked',
     detail: 'The saved task status, verbatim. Blocked reason: repair limit. An error is recorded.'
   });
-  // Queued, active and unknown statuses never read as settled, let alone clean.
   for (const status of ['queued', ...ACTIVE_STATUSES, 'unrecognised'])
     expect(outcomeVerdict({ status })).toMatchObject({ label: status, tone: 'running' });
 });
@@ -95,7 +82,6 @@ test('task rows show one icon per status family, and every active status shares 
   expect(taskIcon('failed')).toBe('alert');
   expect(taskIcon('queued')).toBe('clock');
   for (const status of ACTIVE_STATUSES) expect(taskIcon(status)).toBe('activity');
-  // A cancelled task and any status the dashboard does not know show the plain work icon.
   expect(taskIcon('cancelled')).toBe('code');
   expect(taskIcon('unrecognised')).toBe('code');
 });
@@ -106,7 +92,6 @@ test('reviewer slots are named by position, and an unknown slot stays verbatim',
   expect(reviewerSlot('adversary-c')).toBe('adversary-c');
 });
 
-/** Task evidence whose latest review is `review`, with `latest` overridden when given. */
 function withReview(review: Partial<ReviewEvidence>, latest: Partial<ReviewRoundEvidence> = {}) {
   return taskEvidence('synthetic-task', {
     latest_review: {
@@ -130,7 +115,6 @@ test('review standing is clean only when the server reports it clean at the outp
       'No review recorded',
       'cancelled'
     ],
-    // A count without the round itself is still no review evidence.
     ['a count without a round', withReview({ latest: null }), 'No review recorded', 'cancelled'],
     [
       'clean at the output commit',
@@ -151,7 +135,6 @@ test('review standing is clean only when the server reports it clean at the outp
       'blocked'
     ],
     ['one finding', withReview({}, { findings: [finding] }), '1 recorded finding', 'blocked'],
-    // Findings outweigh a clean-looking round, even at the output commit.
     [
       'two findings',
       withReview({}, { findings: [finding, finding] }),
@@ -165,7 +148,6 @@ test('review standing is clean only when the server reports it clean at the outp
       'No review summary recorded',
       'blocked'
     ],
-    // Complete, summarised and without findings, but the server did not call it clean.
     ['no clean report', withReview({}), 'Review standing unknown', 'blocked']
   ];
   for (const [name, evidence, label, tone] of cases)
@@ -204,7 +186,6 @@ test('configured checks pass only when every command passed at the output commit
     label: 'All 2 passed at the output commit',
     tone: 'clean'
   });
-  // A recorded failure outweighs every other state.
   expect(
     checks([command('lint', 'passed'), command('test', 'failed'), command('build', 'no_result')])
   ).toEqual({
@@ -212,7 +193,6 @@ test('configured checks pass only when every command passed at the output commit
     tone: 'failed',
     detail: '1 failed, 1 no result recorded'
   });
-  // A missing result is not a failure, and never a pass.
   expect(checks([command('lint', 'passed'), command('test', 'no_result')])).toEqual({
     label: '1 of 2 passed at the output commit',
     tone: 'blocked',
@@ -234,7 +214,6 @@ test('reviewer agreement is reported only from recorded verdicts in every slot',
   });
   const unusable = (slot: string, state: 'missing' | 'malformed' | 'duplicate') =>
     reviewer(slot, { state, decision: null, reason: null });
-  // Nothing usable in any slot is an absence of evidence ...
   expect(
     reviewerAgreement([unusable('adversary-a', 'missing'), unusable('adversary-b', 'malformed')])
   ).toEqual({
@@ -243,7 +222,6 @@ test('reviewer agreement is reported only from recorded verdicts in every slot',
     detail:
       'Not every reviewer slot has exactly one recorded verdict: Reviewer A (no verdict recorded), Reviewer B (malformed batch). Agreement cannot be reported.'
   });
-  // ... while one usable slot is incomplete evidence, never unanimity.
   expect(
     reviewerAgreement([reviewer('adversary-a'), unusable('adversary-b', 'duplicate')])
   ).toMatchObject({
@@ -326,7 +304,6 @@ test('a command explanation names the revisions it compared, recorded or not', (
   expect(commandExplanation(command('test', 'passed_at_other_revision', A), B)).toBe(
     `Latest recorded result passed at ${at(A)}, not at the recorded output commit ${at(B)}. A pass at another revision does not count.`
   );
-  // Neither revision recorded: the sentence says so instead of inventing one.
   expect(commandExplanation(command('test', 'passed_at_other_revision', null), null)).toBe(
     'Latest recorded result passed at an unrecorded revision, not at the recorded output commit. A pass at another revision does not count.'
   );
@@ -397,7 +374,6 @@ test('a recorded PR reference is delivery, and its absence is named', () => {
   ).toMatchObject({ label: 'Recorded PR · number unavailable', tone: 'clean' });
 });
 
-/** A stylesheet's own text followed by every file it imports, in cascade order. */
 function wholeSheet(entry: URL): string {
   const text = readFileSync(entry, 'utf8');
   const imports = [...text.matchAll(/@import\s+'([^']+)'/g)];
@@ -405,13 +381,10 @@ function wholeSheet(entry: URL): string {
 }
 
 test('the dashboard stylesheet styles every badge tone and the evidence text classes', () => {
-  // A tone without a rule falls back to the neutral badge, so adverse evidence such as
-  // "no verdict recorded" would look like any other fact.
   const css = wholeSheet(new URL('../src/app.css', import.meta.url));
   const selector = (name: string) => new RegExp(`${name.replaceAll('.', '\\.')}(?![\\w-])`);
   for (const tone of TONES)
     expect(css, `app.css is missing .badge.${tone}`).toMatch(selector(`.badge.${tone}`));
-  // EvidenceText.svelte renders these without styles of its own.
   for (const shared of ['.muted', '.expandable', '.preview'])
     expect(css, `app.css is missing ${shared}`).toMatch(selector(shared));
 });

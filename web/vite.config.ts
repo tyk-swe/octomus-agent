@@ -3,7 +3,6 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [sveltekit()],
-  // The repository's single version source, which the service binary embeds too.
   define: {
     __APP_VERSION__: JSON.stringify(
       readFileSync(new URL('../VERSION', import.meta.url), 'utf8').trim()

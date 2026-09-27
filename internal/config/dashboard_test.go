@@ -12,11 +12,6 @@ import (
 	"testing"
 )
 
-// The dashboard's settings form (web/src/lib) restates parts of this package:
-// the range of every numeric limit it lets the operator enter, the improvement
-// categories it offers and the order it renders roles and tiers in. These tests
-// read those TypeScript sources, so neither side can change without the other.
-
 func dashboardSource(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", name))
@@ -32,8 +27,6 @@ type dashboardLimit struct {
 	bounded  bool
 }
 
-// limitEntry matches one LIMITS object literal, which keeps key first and min,
-// then the optional max, last.
 var limitEntry = regexp.MustCompile(`(?s)\{\s*key:\s*'([a-z_]+)'.*?min:\s*([\d_]+)(?:,\s*max:\s*([\d_]+))?\s*\}`)
 
 func dashboardLimits(t *testing.T) []dashboardLimit {
@@ -67,10 +60,6 @@ func dashboardLimits(t *testing.T) []dashboardLimit {
 	return limits
 }
 
-// TestDashboardLimitsMatchValidation holds every LIMITS entry to Validate: the
-// service accepts the form's minimum and maximum and rejects the value just
-// outside each, and a limit the form leaves unbounded is unbounded here too.
-// Every numeric Config field has exactly one entry.
 func TestDashboardLimitsMatchValidation(t *testing.T) {
 	fields := map[string]int{}
 	configType := reflect.TypeFor[Config]()
@@ -91,8 +80,6 @@ func TestDashboardLimitsMatchValidation(t *testing.T) {
 			t.Errorf("LIMITS repeats %q", limit.key)
 		}
 		seen[limit.key] = true
-		// The task timeout must be at least the session timeout, so setting one
-		// moves the other only as far as that rule requires.
 		accepts := func(value uint64) bool {
 			cfg := Default()
 			reflect.ValueOf(&cfg).Elem().Field(index).SetUint(value)
@@ -128,9 +115,6 @@ func TestDashboardLimitsMatchValidation(t *testing.T) {
 	}
 }
 
-// TestDashboardVocabulariesMatchConfig requires the settings form to offer
-// exactly Categories() and to render roles and tiers in Roles() and Tiers()
-// order.
 func TestDashboardVocabulariesMatchConfig(t *testing.T) {
 	settings := dashboardSource(t, "Settings.svelte")
 	quoted := regexp.MustCompile(`'([^']*)'`)

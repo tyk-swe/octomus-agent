@@ -31,25 +31,16 @@ type decisionRecord struct {
 	ReconsiderationDue bool            `json:"reconsideration_due,omitempty"`
 }
 
-// rediscoveryRequest is one pending rediscovery request: a cancelled task the
-// operator asked planning to assess afresh. entry is the store's projection of
-// the request, which planning roles receive verbatim.
 type rediscoveryRequest struct {
 	ID, Target string
 	entry      map[string]any
 }
 
-// decisionMemory is what one planning pass remembers: the current recorded
-// decisions, each marked with whether it is due for reconsideration, and the
-// pending rediscovery requests.
 type decisionMemory struct {
 	decisions []decisionRecord
 	requests  []rediscoveryRequest
 }
 
-// promptEntries is the decision memory planning roles receive: every decision
-// with its kind and reconsideration_due, then every rediscovery request with
-// kind "rediscovery".
 func (m decisionMemory) promptEntries() []any {
 	entries := make([]any, 0, len(m.decisions)+len(m.requests))
 	for _, record := range m.decisions {
@@ -126,10 +117,6 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 	return memory, nil
 }
 
-// decisionAbsorbed reports whether an accepted decision of the same cycle,
-// repository, target and problem supersedes record. Repository names compare
-// with config.EqualASCII, the ASCII-only folding every other repository
-// identity check and the store's COLLATE NOCASE lookups use.
 func decisionAbsorbed(record decisionRecord, records []decisionRecord) bool {
 	if record.Decision == model.DecisionAccepted {
 		return false
@@ -148,13 +135,9 @@ func decisionFingerprint(ctx context.Context, cfg config.Config, revision string
 	if len(paths) == 0 {
 		return model.DecisionMemoryFingerprint(revision, paths, "")
 	}
-	// Validate paths before passing any of them as git pathspecs.
 	if _, err := model.DecisionMemoryFingerprint(revision, paths, ""); err != nil {
 		return "", err
 	}
-	// relevant_paths are model-supplied: match them literally, never as
-	// pathspec magic such as ":(glob)" or ":!", which ls-tree refuses with a
-	// fatal error that would fail the whole plan. Ordinary paths list the same.
 	args := []string{"--literal-pathspecs", "ls-tree", "-r", revision, "--"}
 	args = append(args, paths...)
 	output, err := gitops.Git(ctx, cfg, cfg.Repository, args)
@@ -236,8 +219,6 @@ func recordToMap(record decisionRecord) map[string]any {
 	return value
 }
 
-// validateDecisionMemory prevents unchanged rejected or already accepted work
-// from silently re-entering the executable queue.
 func validateDecisionMemory(proposals []model.Proposal, memory decisionMemory) error {
 	requests := map[string]string{}
 	for _, request := range memory.requests {
@@ -246,9 +227,6 @@ func validateDecisionMemory(proposals []model.Proposal, memory decisionMemory) e
 		}
 	}
 	for _, proposal := range proposals {
-		// Every proposal is recorded in decision memory, whatever its decision,
-		// so name the proposal and field: planning replaced an empty
-		// problem_key with the title-derived identity before this check.
 		if len(proposal.ProblemKey) > 200 {
 			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: problem identity is %d bytes (limit 200; an empty problem_key falls back to the title)", proposal.ID, len(proposal.ProblemKey))
 		}
@@ -274,8 +252,6 @@ func validateDecisionMemory(proposals []model.Proposal, memory decisionMemory) e
 			if record.Target != proposal.Target || record.ProblemKey != proposal.ProblemIdentity() {
 				continue
 			}
-			// A decision due for reconsideration, or an audit's recommendation,
-			// never vetoes accepted work.
 			if record.ReconsiderationDue || (record.CycleMode == model.CycleModeAudit && record.Decision == model.DecisionAccepted) {
 				continue
 			}

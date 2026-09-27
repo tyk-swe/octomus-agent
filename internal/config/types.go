@@ -1,4 +1,3 @@
-// Wire records use the current Go JSON field names and request defaults.
 package config
 
 import (
@@ -17,9 +16,6 @@ func (v *Route) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(
 func (v Route) MarshalJSON() ([]byte, error)     { type plain Route; return wirejson.Record(plain(v)) }
 func (v Route) Clone() Route                     { return wirejson.Clone(v) }
 
-// Config is the saved operator policy. Its JSON field names are the operator
-// contract; validateMode enforces every field's accepted range and units, and
-// docs/configuration.md describes each field.
 type Config struct {
 	Repository             string            `json:"repository"`
 	GitHubRepo             string            `json:"github_repo"`
@@ -53,7 +49,6 @@ type Config struct {
 	RetainEvents           uint64            `json:"retain_events"`
 }
 
-// UnmarshalJSON decodes strictly; absent fields take their Default() values.
 func (v *Config) UnmarshalJSON(data []byte) error {
 	return wirejson.DecodeWithDefaults(data, v, Default())
 }

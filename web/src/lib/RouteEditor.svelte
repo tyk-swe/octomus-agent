@@ -13,7 +13,6 @@
     route: Route;
     catalog?: ModelCatalog;
     anchor?: string;
-    /** True while the saved route is a display-only preview pending replacement. */
     disabled?: boolean;
   } = $props();
   const id = $props.id();
@@ -56,15 +55,9 @@
   function changeModel(value: string) {
     if (value === route.model) return;
     route.model = value;
-    // An ID that begins a longer catalog ID may be a step on the way to it, so its
-    // choices are checked when the field is committed instead.
     if (!models.some((model) => model.model !== value && model.model.startsWith(value)))
       pruneChoices(value);
   }
-  /**
-   * Only a catalog entry for the model proves a choice unsupported; an unknown or
-   * partially typed model keeps the current choice and `problem` flags it.
-   */
   function pruneChoices(value: string) {
     const model = models.find((model) => model.model === value);
     if (!model) return;

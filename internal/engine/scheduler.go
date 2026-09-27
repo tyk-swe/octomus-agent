@@ -13,7 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// IdleDelay applies bounded exponential backoff after repeated empty plans.
 func IdleDelay(base uint64, streak uint32) uint64 {
 	ceiling := uint64(86400)
 	if base > ceiling {
@@ -36,9 +35,6 @@ func IdleDelay(base uint64, streak uint32) uint64 {
 	return delay
 }
 
-// Tick performs one short authoritative scheduling pass. Remote preflights,
-// planning, PR refreshes, and task work are launched after their durable
-// eligibility checks and execute outside gate.
 func (a *App) Tick() error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -54,8 +50,6 @@ func (a *App) Tick() error {
 		return err
 	}
 	a.maybeStartHousekeeping(cfg)
-	// Reconciliation can write a preserved PR branch. Reserve publication while
-	// leaving the gate available to pause and other operator controls.
 	a.runtimeMu.Lock()
 	reconciling := a.runtime.reconcilingPublication
 	baseline := a.runtime.baseline != nil
@@ -63,8 +57,7 @@ func (a *App) Tick() error {
 	if reconciling {
 		return nil
 	}
-	// A running baseline check owns the whole service: no cycle, task dispatch
-	// or batch completion may proceed until it finishes.
+	// A running baseline check owns the whole service: no cycle, dispatch or batch completion may proceed.
 	if baseline {
 		return nil
 	}
@@ -105,9 +98,6 @@ func (a *App) Tick() error {
 	if err != nil {
 		return err
 	}
-	// Validation may have durably blocked queued records; dispatch only the
-	// canonical post-validation view. Queued records change only under the
-	// gate, so when nothing was blocked the view read above is that view.
 	if blocked {
 		tasks, err = a.Store.SchedulingTasks(runID)
 		if err != nil {
@@ -141,11 +131,6 @@ func (a *App) Tick() error {
 	return nil
 }
 
-// pauseLocked is every pause: the operator's and the scheduler's. It durably
-// pauses control, recording message as its error when set, and then
-// invalidates the process-local PR observations, so a refresh in flight
-// cannot authorize work after a later resume. Callers hold the gate and write
-// their event after it.
 func (a *App) pauseLocked(control *model.Control, message *string) error {
 	control.SetMode(model.OperatingModePaused)
 	if message != nil {
@@ -158,25 +143,17 @@ func (a *App) pauseLocked(control *model.Control, message *string) error {
 	return nil
 }
 
-// finishRunOnce pauses a Run once batch that has no pending work left and
-// records how it ended. Callers hold the gate.
 func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 	message := "Run once completed; new work paused"
 	if unresolved > 0 {
 		message = "Run once finished with unresolved work"
 	}
-	// The event follows the durable pause, so a failed save leaves no record
-	// of a transition that did not happen.
 	if err := a.pauseLocked(&control, nil); err != nil {
 		return err
 	}
 	return a.Store.Event("system", "run_complete", message)
 }
 
-// maybePlan starts an execution planning preflight when the runtime is idle
-// and planning capacity is available. Callers hold the gate, and every change
-// that makes the runtime busy happens under the gate, so the runtime stays
-// idle from the check below until the preflight flag is set.
 func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 	a.runtimeMu.Lock()
 	if !a.runtime.idle() {
@@ -200,8 +177,6 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 		err := a.doctor(a.ctx, snapshot, false)
 		a.gate.Lock()
 		defer a.gate.Unlock()
-		// Registered after the unlock, so it runs first: listeners are
-		// notified while the gate is still held.
 		defer a.notify()
 		if err == nil {
 			_, err = a.beginCycle(snapshot, expected, model.CycleModeExecution)
@@ -210,12 +185,9 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 			return
 		}
 		a.endPreflight()
-		// A preflight that shutdown cut short did not fail on its merits:
-		// control is left to restart recovery, exactly as after a crash.
 		if a.ctx.Err() != nil {
 			return
 		}
-		// A failed preflight settles only the control it was started from.
 		live, loadErr := a.Control()
 		if loadErr != nil || !sameOperatorControl(live, expected) {
 			return
@@ -239,9 +211,6 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 	return nil
 }
 
-// handlePlanningCapacity settles a pass that planning capacity refused:
-// Continuous waits for the reset, Run once pauses with the reason. Callers
-// hold the gate.
 func (a *App) handlePlanningCapacity(control model.Control, capacity model.PlanningCapacity) error {
 	if control.Mode == model.OperatingModeContinuous {
 		control.Error = nil
@@ -255,11 +224,6 @@ func (a *App) handlePlanningCapacity(control model.Control, capacity model.Plann
 	return a.Store.Event("system", "planning_capacity", message)
 }
 
-// validateQueuedCycles revalidates, once per process, the plan of every cycle
-// with a queued task in tasks, and blocks every queued member of an invalid
-// plan. It reports whether it blocked any task, even when it then fails.
-// tasks is the whole scheduling view: a cycle with no member in it leaves the
-// validated-cycle cache. Callers hold the gate.
 func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 	visibleCycles := map[string]struct{}{}
 	for _, task := range tasks {
@@ -307,10 +271,6 @@ func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 	return blocked, nil
 }
 
-// dispatch starts the queued tasks in tasks that concurrency, dependencies,
-// branch exclusivity and PR capacity allow, and reports whether it started
-// any and whether any is still waiting. Callers hold the gate, the only place
-// queued records change, so tasks stays the current queue while it runs.
 func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.Task) (bool, bool, error) {
 	activeByBranch := map[string]struct{}{}
 	activeTasks := map[string]struct{}{}
@@ -338,8 +298,6 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 	waiting := false
 	var inventory *model.OpenPrInventory
 	inventoryChecked := false
-	// One refresh request per pass: after the first, a refresh is in flight
-	// or throttled, and admissions in this pass only lower the capacity.
 	refreshRequested := false
 	requestRefresh := func() {
 		if !refreshRequested {
@@ -352,15 +310,11 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 		if task.Status != model.StatusQueued {
 			continue
 		}
-		// Claims are only ever taken on terminal records, so a queued task is
-		// never owned by cleanup; the check is defensive insurance against a
-		// dispatch racing a removal into a half-removed workspace.
 		if a.cleanupClaimed(cleanupTask, task.ID) {
 			waiting = true
 			continue
 		}
 		if available == 0 {
-			// Every later queued task could only wait too.
 			waiting = true
 			break
 		}
@@ -420,9 +374,6 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 	return started, waiting, nil
 }
 
-// dependenciesReady reports whether every dependency of task is published.
-// The second result is the blocking reason when a dependency can never
-// become ready; the third is a storage failure. Callers hold the gate.
 func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, error, error) {
 	for _, id := range task.Proposal.Dependencies {
 		dependency, err := store.Get[model.Task](a.Store, "task", id)
@@ -446,8 +397,6 @@ func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, e
 	return true, nil, nil
 }
 
-// ValidateTaskPlan enforces dependency and same-branch writer ordering again at
-// dispatch, so edited records cannot bypass planning validation.
 func ValidateTaskPlan(tasks []model.Task) error {
 	byID := map[string]model.Task{}
 	for _, task := range tasks {

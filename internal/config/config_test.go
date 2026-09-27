@@ -129,7 +129,6 @@ func TestRepositoryValidationPreservesSymlinkParent(t *testing.T) {
 				t.Fatal(err)
 			}
 			c := Default()
-			// filepath.Join would erase the symlink/.. component under test.
 			c.Repository = link + string(os.PathSeparator) + ".."
 			c.GitHubRepo = "fixture/project"
 			c.VerificationCommands = []string{"go test ./..."}
@@ -256,7 +255,6 @@ func TestValidationNumericBoundaries(t *testing.T) {
 	}
 }
 
-// Each rejected setting names its field and, for ranges, what it accepts.
 func TestValidationNamesTheFailingSetting(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -316,11 +314,6 @@ func TestRepositoryIdentity(t *testing.T) {
 	}
 }
 
-// SamePath is the lexical path identity settings, task workspaces and runner
-// session directories use: repeated separators, a trailing slash and interior
-// '.' segments do not matter, '..' stays literal, a leading relative '.' is
-// kept, an empty path is not the root, and a relative path never names an
-// absolute one.
 func TestSamePath(t *testing.T) {
 	for _, tc := range []struct {
 		a, b string
@@ -345,7 +338,6 @@ func TestSamePath(t *testing.T) {
 	}
 }
 
-// Route errors name the route and the component that failed.
 func TestRouteErrorsNameTheRouteAndComponent(t *testing.T) {
 	text := func(s string) *string { return &s }
 	for _, test := range []struct {

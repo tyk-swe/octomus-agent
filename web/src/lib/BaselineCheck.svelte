@@ -14,7 +14,6 @@
   }: {
     active: boolean;
     editable: boolean;
-    /** Canonical revision of the saved configuration; the check always runs that exact state. */
     savedRevision: string;
     dirty: boolean;
     onchanged: () => void;
@@ -24,7 +23,6 @@
     pending = $state(''),
     confirming = $state(false);
   let generation = 0;
-  /** The revision already read on mount; only a later saved revision forces a new read. */
   let lastSaved = untrack(() => savedRevision);
   let request: AbortController | null = null;
   const check = $derived(view?.check ?? null);
@@ -35,8 +33,6 @@
       ? false
       : (view?.config_matches ?? null)
   );
-  // A running check is not a failure: only the statuses that stopped without passing
-  // take the failed tone.
   const statusTone = (status: BaselineCheck['status']): Tone =>
     status === 'passed' ? 'clean' : status === 'running' ? 'running' : 'failed';
   async function load(force = false) {
@@ -83,7 +79,6 @@
     if (savedRevision === lastSaved) return;
     lastSaved = savedRevision;
     confirming = false;
-    // The forced load supersedes any read still in flight for the previous revision.
     if (active) void load(true);
   });
   $effect(() => {
@@ -93,11 +88,6 @@
     )
       confirming = false;
   });
-  /**
-   * The confirmation replaces the button that opened it, so focus moves into the dialog and
-   * back to that button on Back. An automatic close (an edit, a new revision) never moves
-   * focus: the operator is working elsewhere.
-   */
   async function openConfirm() {
     confirming = true;
     await tick();

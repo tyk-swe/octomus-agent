@@ -1,8 +1,5 @@
 package engine
 
-// Decision memory: fingerprints of model-supplied relevant paths and the
-// bounds on proposal decision metadata.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -17,18 +14,12 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// relevant_paths come from model output. A path that looks like git pathspec
-// magic is matched literally (normally matching nothing) instead of failing
-// ls-tree and, with it, the whole plan; ordinary paths keep the fingerprint
-// they had before, so saved decisions still match.
 func TestDecisionFingerprintTreatsPathsLiterally(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	revision := git(t, fixture.cfg.Repository, "rev-parse", "HEAD")
 	ctx := context.Background()
 
 	nothing := fmt.Sprintf("%x", sha256.Sum256(nil))
-	// ":/README.md" names the tracked README.md as pathspec magic, so only a
-	// literal match keeps it from silently listing that file.
 	for _, paths := range [][]string{{":(glob)*.md"}, {":!README.md"}, {":/README.md"}} {
 		fingerprint, err := decisionFingerprint(ctx, fixture.cfg, revision, paths)
 		if err != nil {
@@ -48,28 +39,21 @@ func TestDecisionFingerprintTreatsPathsLiterally(t *testing.T) {
 	if err != nil || fingerprint != want {
 		t.Fatalf("ordinary path fingerprint = %s, %v; want %s", fingerprint, err, want)
 	}
-	// A decision without relevant paths is bound to the revision itself.
 	if fingerprint, err := decisionFingerprint(ctx, fixture.cfg, revision, []string{}); err != nil || fingerprint != revision {
 		t.Fatalf("pathless fingerprint = %s, %v; want the revision %s", fingerprint, err, revision)
 	}
 }
 
-// Decision memory records every proposal, whatever its decision, and bounds
-// its metadata. A bound failure names the proposal and the field; an empty
-// problem_key falls back to the title, so a long title on a rejected idea is
-// the likely cause. The bounds themselves are unchanged: a long title with a
-// short explicit problem_key stays valid.
 func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	rejected := func(id, title, key string) model.Proposal {
 		return model.Proposal{ID: id, Title: title, ProblemKey: key, Target: cfg.DefaultBranch, Decision: model.DecisionRejected, Reason: "No measured benefit.", RelevantPaths: []string{}, Reconsiders: []string{}}
 	}
-	// Planning replaces every problem_key with the proposal's identity first.
 	normalized := func(proposal model.Proposal) []model.Proposal {
 		proposal.ProblemKey = proposal.ProblemIdentity()
 		return []model.Proposal{proposal}
 	}
-	longTitle := strings.Repeat("긴제목", 30) // 90 characters, 270 bytes
+	longTitle := strings.Repeat("긴제목", 30)
 
 	keyed := normalized(rejected("d1-keyed", longTitle, "short-stable-key"))
 	if err := ValidateProposals(cfg, keyed, model.Grounding{}, nil); err != nil {
@@ -105,16 +89,10 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 	}
 }
 
-// planningMemory offers recorded decisions for reconsideration once their
-// relevant files change at the target's head, or once 30 days (the recorded
-// reconsider_after) pass. It drops records whose target is no longer eligible,
-// records without an identity and alternatives an accepted decision of the
-// same cycle absorbed, and it lists pending rediscovery requests.
 func TestPlanningMemoryReconsiderationRules(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	cfg := fixture.cfg
 	ctx := context.Background()
-	// A second tracked file that the later commit leaves alone.
 	if err := os.MkdirAll(filepath.Join(cfg.Repository, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +144,6 @@ func TestPlanningMemoryReconsiderationRules(t *testing.T) {
 
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
-	// The open PR's head stays at the recorded revision throughout.
 	pr := ownedPR("octomus/open")
 	pr.Head = recorded
 	check := func(label, revision string, wantDue map[string]bool) {
@@ -202,18 +179,12 @@ func TestPlanningMemoryReconsiderationRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	git(t, cfg.Repository, "commit", "-am", "Change the README")
-	// Only decisions about the changed file, or about the whole default-branch
-	// tree, become due; the PR decision reads the unchanged PR head.
 	check("after a README change", git(t, cfg.Repository, "rev-parse", "HEAD"), map[string]bool{
 		"readme": true, "guide": false, "whole-tree": true, "expired": true,
 		"pr-readme": false, "merged-accepted": false, "merged-elsewhere": false,
 	})
 }
 
-// Planning roles receive decision memory as JSON: each current decision with
-// its kind and reconsideration_due, newest first, then each pending
-// rediscovery request. The bytes are part of the recorded prompt context, so
-// they stay stable.
 func TestPlanningMemoryPromptJSONIsStable(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())

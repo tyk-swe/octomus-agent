@@ -1,8 +1,3 @@
-// Dashboard asset serving. The embedded build falls back to the SPA entry point
-// (200.html) only for extensionless paths outside _app/; its other misses are
-// 404. An override directory serves <dir>/index.html for a directory request
-// and falls back to its 200.html on every miss. Both enforce the same method
-// and path-safety boundaries.
 package httpapi
 
 import (
@@ -20,7 +15,6 @@ import (
 
 const indexName = "200.html"
 
-// assetMethods is the Allow value for the only methods assets answer.
 const assetMethods = "GET, HEAD"
 
 func assetHandler(override string) http.Handler {
@@ -30,9 +24,6 @@ func assetHandler(override string) http.Handler {
 	return &embeddedAssets{files: dashboard.Files()}
 }
 
-// decodedPath validates r.URL.Path, which net/http has already decoded once:
-// it rejects invalid UTF-8, . and .. segments, backslashes and NUL, and strips
-// leading slashes. It decodes nothing itself.
 func decodedPath(urlPath string) (string, bool) {
 	if !utf8.ValidString(urlPath) {
 		return "", false
@@ -49,9 +40,6 @@ func decodedPath(urlPath string) (string, bool) {
 	return trimmed, true
 }
 
-// assetName applies the boundary both asset handlers share: only GET and HEAD
-// are answered (405 naming them otherwise), then an unsafe path is a 400. It
-// returns the decoded name, or false once it has written the rejection.
 func assetName(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", assetMethods)
@@ -66,16 +54,12 @@ func assetName(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return name, true
 }
 
-// hasExtension treats a trailing dot as an extension,
-// a leading-dot name has none.
 func hasExtension(name string) bool {
 	base := name[strings.LastIndex(name, "/")+1:]
 	i := strings.LastIndex(base, ".")
 	return i > 0
 }
 
-// serveFile writes one file with the expected response shape: GET gets the
-// bytes, HEAD only the headers, and both get content type and length.
 func serveFile(w http.ResponseWriter, r *http.Request, name string, contents []byte) {
 	w.Header().Set("Content-Type", contentType(name))
 	w.Header().Set("Content-Length", strconv.Itoa(len(contents)))
@@ -92,8 +76,6 @@ func contentType(name string) string {
 	return "application/octet-stream"
 }
 
-// embeddedAssets serves the compiled dashboard: a miss on an extensionless
-// path outside _app/ serves 200.html, and any other miss is 404.
 type embeddedAssets struct{ files fs.FS }
 
 func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -120,9 +102,6 @@ func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveFile(w, r, name, data)
 }
 
-// overrideAssets serves a filesystem directory: a directory request (or the
-// root) serves its index.html, and every miss serves the 200.html entry point,
-// whatever its name looks like.
 type overrideAssets struct{ root http.FileSystem }
 
 func (o *overrideAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -141,14 +120,10 @@ func (o *overrideAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveFile(w, r, served, data)
 }
 
-// read returns a file's bytes and the name it was served from, which decides
-// the content type: a directory (or the root) serves its index.html.
 func (o *overrideAssets) read(name string) (data []byte, served string, ok bool) {
 	if name == "" {
 		name = "index.html"
 	}
-	// http.Dir rejects paths escaping the root; decodedPath already refused
-	// traversal, this is only the directory-open failure mode.
 	file, err := o.root.Open("/" + name)
 	if err != nil {
 		return nil, "", false
@@ -159,7 +134,6 @@ func (o *overrideAssets) read(name string) (data []byte, served string, ok bool)
 		return nil, "", false
 	}
 	if stat.IsDir() {
-		// A directory request serves that directory's index.html.
 		name = strings.TrimSuffix(name, "/") + "/index.html"
 		index, err := o.root.Open("/" + name)
 		if err != nil {

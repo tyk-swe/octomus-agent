@@ -13,8 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// PrReservation holds one admitted default-branch task's share of the owned-PR
-// limit until its pull request is observed or the task can no longer publish.
 type PrReservation struct {
 	TaskID     string
 	Repository string
@@ -22,10 +20,6 @@ type PrReservation struct {
 	AdmittedAt string
 }
 
-// PrIdentity is the configuration a PR inventory was observed under. A task
-// admitted under a different identity cannot consume that inventory's capacity.
-// Repository paths compare as config.SameRemoteIdentity compares them, so a
-// respelling that settings accept as the same repository never strands work.
 type PrIdentity struct {
 	Repository    string
 	GitHubRepo    string
@@ -33,8 +27,6 @@ type PrIdentity struct {
 	BranchPrefix  string
 }
 
-// PrIdentityOf returns the identity c observes PR inventories under, with the
-// GitHub repository lowercased.
 func PrIdentityOf(c config.Config) PrIdentity {
 	return PrIdentity{Repository: c.Repository, GitHubRepo: strings.ToLower(c.GitHubRepo), DefaultBranch: c.DefaultBranch, BranchPrefix: c.BranchPrefix}
 }
@@ -42,7 +34,6 @@ func (p PrIdentity) Matches(c config.Config) bool {
 	return config.SamePath(p.Repository, c.Repository) && config.EqualASCII(c.GitHubRepo, p.GitHubRepo) && p.DefaultBranch == c.DefaultBranch && p.BranchPrefix == c.BranchPrefix
 }
 
-// errRollback aborts a transaction that ends without a caller-visible error.
 var errRollback = errors.New("rollback")
 
 func reservationRows(c *sql.Conn, repository string) ([]PrReservation, error) {
@@ -62,19 +53,16 @@ func reservationRows(c *sql.Conn, repository string) ([]PrReservation, error) {
 	return reservations, rows.Err()
 }
 
-// insertReservation records the admission reservation for a task that does not hold one yet.
 func insertReservation(c *sql.Conn, taskID, repository, branch, admittedAt string) error {
 	_, err := c.ExecContext(background, "INSERT INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)", taskID, repository, branch, admittedAt)
 	return err
 }
 
-// seedReservation seeds the reservation for a task that may already hold one.
 func seedReservation(c *sql.Conn, taskID, repository, branch, admittedAt string) error {
 	_, err := c.ExecContext(background, "INSERT OR IGNORE INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)", taskID, repository, branch, admittedAt)
 	return err
 }
 
-// releaseReservation drops the reservation of a task that can no longer publish.
 func releaseReservation(c *sql.Conn, taskID string) error {
 	_, err := c.ExecContext(background, "DELETE FROM pr_reservations WHERE task_id=?1", taskID)
 	return err
@@ -89,16 +77,12 @@ func savedInventory(c *sql.Conn) (*model.OpenPrInventory, error) {
 	return &inventory, nil
 }
 
-// OpenPrInventory returns the latest complete persisted observation. The
-// scheduler still requires its own fresh-process authority before admission.
 func (s *Store) OpenPrInventory() (*model.OpenPrInventory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return savedInventory(s.conn)
 }
 
-// PrUnion combines the observed owned-open inventory with reservations no open
-// PR represents yet: (observed, unrepresented reservations, remaining).
 func PrUnion(inventory model.OpenPrInventory, reservations []PrReservation, limit uint64) (uint64, uint64, uint64) {
 	numbers := map[uint64]struct{}{}
 	branches := map[string]struct{}{}
@@ -122,8 +106,6 @@ func PrUnion(inventory model.OpenPrInventory, reservations []PrReservation, limi
 	return observed, unrepresented, remaining
 }
 
-// HasPrReservation reports whether the task holds an open-PR capacity
-// reservation.
 func (s *Store) HasPrReservation(taskID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -135,15 +117,12 @@ func (s *Store) HasPrReservation(taskID string) (bool, error) {
 	return err == nil, err
 }
 
-// PrReservations lists the open-PR capacity reservations held for the
-// repository, matched case-insensitively, in no particular order.
 func (s *Store) PrReservations(repository string) ([]PrReservation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return reservationRows(s.conn, repository)
 }
 
-// PrReservationCandidates lists tasks that may still hold or need a reservation.
 func (s *Store) PrReservationCandidates() ([]model.Task, error) {
 	return listRecords[model.Task](s, fmt.Sprintf(`SELECT r.data FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
                 WHERE m.kind='task' AND (
@@ -153,17 +132,12 @@ func (s *Store) PrReservationCandidates() ([]model.Task, error) {
                 )`, statusList(model.ActiveStatuses())))
 }
 
-// SeedPrReservation reserves open-PR capacity for the task's branch. It is
-// idempotent: a reservation the task already holds is kept unchanged.
 func (s *Store) SeedPrReservation(task model.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return seedReservation(s.conn, task.ID, strings.ToLower(task.Config.GitHubRepo), task.Branch, model.Now())
 }
 
-// AdmitNewPrTask moves a queued default-branch task to executing when the saved
-// inventory still matches the caller's and capacity remains, reserving its PR
-// slot in the same transaction. The task is updated in place on success.
 func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -226,8 +200,6 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 	return admitted, err
 }
 
-// PersistPrInventory saves a newer inventory observation and releases
-// reservations the caller closed or whose PRs are now published.
 func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,6 +277,4 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 	return err == nil, err
 }
 
-// invalidTimestamp is the operator-facing reason for an unparseable inventory
-// timestamp, kept short and free of Go's parse-layout diagnostics.
 const invalidTimestamp = "input contains invalid characters"

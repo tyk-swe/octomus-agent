@@ -12,9 +12,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
-// TestRemoveOwnedDir pins the housekeeping cleanup contract: only plainly
-// named direct children of the owned root may be deleted, and no component —
-// including the target itself — may be a symlink.
 func TestRemoveOwnedDir(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "tasks")
 	if err := os.MkdirAll(filepath.Join(root, "task-1", "workspace"), 0o755); err != nil {
@@ -23,18 +20,15 @@ func TestRemoveOwnedDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "task-1", "workspace", "artifact"), []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// An owned direct child is removed entirely.
 	if err := workspace.RemoveOwnedDir(root, filepath.Join(root, "task-1")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "task-1")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("removed child still present: %v", err)
 	}
-	// A missing child is already gone, not an error.
 	if err := workspace.RemoveOwnedDir(root, filepath.Join(root, "task-2")); err != nil {
 		t.Fatal(err)
 	}
-	// A symlink in place of the child refuses cleanup and leaves the target intact.
 	outside := filepath.Join(t.TempDir(), "outside")
 	if err := os.MkdirAll(outside, 0o755); err != nil {
 		t.Fatal(err)
@@ -53,7 +47,6 @@ func TestRemoveOwnedDir(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outside, "keep")); err != nil {
 		t.Fatal("symlink cleanup must never touch the target")
 	}
-	// A symlinked ancestor refuses cleanup too, even when the child is real.
 	realRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(realRoot, "task-4"), 0o755); err != nil {
 		t.Fatal(err)
@@ -69,18 +62,14 @@ func TestRemoveOwnedDir(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(realRoot, "task-4")); err != nil {
 		t.Fatal("refused cleanup must leave the real child intact")
 	}
-	// Names that are not plain children are invalid cleanup paths.
 	for _, bad := range []string{".", ".."} {
 		if err := workspace.RemoveOwnedDir(root, filepath.Join(root, bad)); err == nil {
 			t.Fatalf("cleanup of %q must fail", bad)
 		}
 	}
-	// The filesystem root has no name and no parent; a degenerate "/" root
-	// must never reach removal.
 	if err := workspace.RemoveOwnedDir("/", "/"); err == nil {
 		t.Fatal("cleanup of the filesystem root must fail")
 	}
-	// A path that is not a direct child of the root is refused.
 	deeper := filepath.Join(root, "task-5", "workspace")
 	if err := os.MkdirAll(deeper, 0o755); err != nil {
 		t.Fatal(err)
@@ -93,10 +82,6 @@ func TestRemoveOwnedDir(t *testing.T) {
 	}
 }
 
-// TestRemoveOwnedDirRemovesReadOnlyTrees pins that toolchain output such as a
-// Go module cache inside a workspace — directories without write, read or
-// search permission — never prevents that workspace's removal. Root ignores
-// those modes, so the test needs an unprivileged user.
 func TestRemoveOwnedDirRemovesReadOnlyTrees(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
@@ -114,7 +99,6 @@ func TestRemoveOwnedDirRemovesReadOnlyTrees(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tree, "locked", "inner", "f.go"), []byte("package inner\n"), 0o444); err != nil {
 		t.Fatal(err)
 	}
-	// Children before parents, so every mode can be applied.
 	modes := []struct {
 		path string
 		mode fs.FileMode
@@ -156,7 +140,6 @@ func TestRemoveOwnedDirRejectsNoncanonicalPaths(t *testing.T) {
 	}
 	for _, suffix := range []string{"/link/../victim", "/./victim", "//victim", "/victim/"} {
 		t.Run(suffix, func(t *testing.T) {
-			// Do not use Join: it would clean away the traversal under test.
 			if err := workspace.RemoveOwnedDir(root, root+suffix); err == nil {
 				t.Fatal("noncanonical cleanup path must be refused")
 			}
@@ -169,8 +152,6 @@ func TestRemoveOwnedDirRejectsNoncanonicalPaths(t *testing.T) {
 	}
 }
 
-// TestDirectorySize pins housekeeping's accounting: regular file sizes sum,
-// symlinks contribute nothing, and a missing tree measures as zero.
 func TestDirectorySize(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, content string) {
@@ -204,11 +185,6 @@ func TestDirectorySize(t *testing.T) {
 	}
 }
 
-// TestDirectorySizeSkipsUnreadableSubtrees pins that a directory below the
-// measured root which denies listing (0o000) or searching (0o644) is measured
-// as what could be read instead of failing every storage admission, and that
-// measurement leaves those modes alone. The measured root itself still fails
-// closed. Root ignores directory modes, so the test needs an unprivileged user.
 func TestDirectorySizeSkipsUnreadableSubtrees(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
@@ -265,8 +241,6 @@ func TestDirectorySizeSkipsUnreadableSubtrees(t *testing.T) {
 	}
 }
 
-// TestInitialized pins the resumable-workspace predicate: a recorded session,
-// a comparison base and a real checkout must all be present.
 func TestInitialized(t *testing.T) {
 	root := t.TempDir()
 	checkout := filepath.Join(root, "workspace")

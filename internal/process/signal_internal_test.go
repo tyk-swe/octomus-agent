@@ -2,9 +2,6 @@ package process
 
 import "testing"
 
-// TestSignalStringNamesLinuxSignals pins the searchable names status text
-// carries for every standard Linux signal, including the Linux-only and
-// aliased ones, and that unknown or real-time numbers carry no name.
 func TestSignalStringNamesLinuxSignals(t *testing.T) {
 	for signal, want := range map[int]string{
 		1:  " (SIGHUP)",

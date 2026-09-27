@@ -10,7 +10,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// SupportedSchemaVersion identifies state created by the Go-only format.
 const SupportedSchemaVersion = 7
 
 //go:embed schema.sql
@@ -18,9 +17,6 @@ var schemaSQL string
 
 const taskSummary = "json_object('id',NEW.id,'cycle_id',json_extract(NEW.data,'$.cycle_id'),'title',substr(json_extract(NEW.data,'$.proposal.title'),1,200),'category',json_extract(NEW.data,'$.proposal.category'),'tier',json_extract(NEW.data,'$.proposal.tier'),'target',json_extract(NEW.data,'$.proposal.target'),'branch',json_extract(NEW.data,'$.branch'),'status',json_extract(NEW.data,'$.status'),'pr_url',json_extract(NEW.data,'$.pr_url'),'pr_number',json_extract(NEW.data,'$.pr_number'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'blocked_reason',json_extract(NEW.data,'$.blocked_reason'),'created_at',json_extract(NEW.data,'$.created_at'),'updated_at',json_extract(NEW.data,'$.updated_at'),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}')),'superseded_by',json(COALESCE(json_extract(NEW.data,'$.superseded_by'),'[]')))"
 
-// cycleSummary builds the cycle projection's summary object. Its decision
-// counts are generated from model.Decisions, so they stay aligned with the Go
-// model vocabulary.
 func cycleSummary() string {
 	decisions := make([]string, 0, 4)
 	for _, decision := range model.Decisions() {
@@ -35,8 +31,6 @@ func projection() string {
 	return fmt.Sprintf("INSERT INTO record_meta(kind,id,seq,status,repository,target,title,cycle_id,run_id,archived,discarded,summary) VALUES (NEW.kind,NEW.id,NEW.rowid,COALESCE(json_extract(NEW.data,'$.status'),json_extract(NEW.data,'$.pr.state'),''),COALESCE(json_extract(NEW.data,'$.config.github_repo'),json_extract(NEW.data,'$.repository'),''),COALESCE(json_extract(NEW.data,'$.proposal.target'),''),COALESCE(json_extract(NEW.data,'$.proposal.title'),json_extract(NEW.data,'$.pr.title'),''),COALESCE(json_extract(NEW.data,'$.cycle_id'),''),json_extract(NEW.data,'$.run_id'),json_extract(NEW.data,'$.lifecycle.archived_at'),json_extract(NEW.data,'$.lifecycle.discarded_at'),CASE NEW.kind WHEN 'task' THEN %s WHEN 'cycle' THEN %s WHEN 'pr' THEN %s ELSE '{}' END) ON CONFLICT(kind,id) DO UPDATE SET status=excluded.status,repository=excluded.repository,target=excluded.target,title=excluded.title,cycle_id=excluded.cycle_id,run_id=excluded.run_id,archived=excluded.archived,discarded=excluded.discarded,summary=excluded.summary;", taskSummary, cycleSummary(), prSummary)
 }
 
-// schemaStatus inspects an existing database before journal settings or DDL run.
-// Only a database without user objects can be initialized as fresh state.
 func schemaStatus(ctx context.Context, c *sql.Conn) (bool, error) {
 	version, err := userVersion(ctx, c)
 	if err != nil {

@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-# The service strips its operator token and webhook URL from every child.
 assert 'OCTOMUS_TOKEN' not in os.environ
 assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 args = sys.argv[1:]
@@ -13,13 +12,6 @@ if args == ['remote', 'get-url', 'origin']:
     sys.exit(0)
 args = [str(Path(os.environ['OCTOMUS_FIXTURE']) / 'remote.git') if a == 'https://github.com/fixture/project.git' else a for a in args]
 root = Path(os.environ['OCTOMUS_FIXTURE'])
-# Once the first follow-up delivery lands and the caller has fetched it, the next
-# read of the shared branch reports it rewound to the pre-delivery head. Reads
-# while armed-but-undelivered record the planning head; that first qualifying
-# read always precedes the delivery push. Requiring the delivered head in the
-# caller's object store keeps the race deterministic: pre-fetch reads still
-# observe the pushed head, while the dependent's later ancestry check sees the
-# rewound remote with the delivered commit already local.
 if (root / 'dependency-rollback').exists() and args[:2] == ['ls-remote', '--heads'] and args[-1] == 'refs/heads/octomus/existing':
     remote = str(root / 'remote.git')
     head = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, 'rev-parse', 'octomus/existing'], text=True).strip()

@@ -11,8 +11,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// Exercise indexed views together on one small state so SQL and scan
-// mismatches surface before the scheduler uses them.
 func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	s := open(t, statePath(t))
 
@@ -64,7 +62,6 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	must(t, s.Put("baseline", "base-clean", baseline("base-clean", model.BaselineStatusFailed, true)))
 	must(t, s.Put("settings", "baseline_latest", "base-done"))
 
-	// Scheduling: active tasks, queued non-default targets, then queued default targets.
 	scheduling, err := s.SchedulingTasks(nil)
 	must(t, err)
 	ids := func(tasks []model.Task) []string {
@@ -93,7 +90,6 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 		t.Fatal("blocked work should count as unresolved")
 	}
 
-	// Cycles, baselines and cleanup candidates.
 	running, err := s.RunningCycles()
 	must(t, err)
 	if len(running) != 1 || running[0].ID != "cycle-running" {
@@ -120,8 +116,6 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 		t.Fatalf("cleanup candidates: %v", old)
 	}
 
-	// Proposal pages carry cycle metadata and omit prompts; the detail view is
-	// the saved proposal plus its content revision.
 	proposals, err := s.ProposalPage(store.HistoryQuery{})
 	must(t, err)
 	if len(proposals.Items) != 3 || proposals.Counts["accepted"] != 2 || proposals.Counts["rejected"] != 1 {
@@ -147,7 +141,6 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 		t.Fatalf("missing proposal: %s %v", missing, err)
 	}
 
-	// PR history views.
 	output, err := s.LatestPrOutput("FIXTURE/PROJECT", 9)
 	must(t, err)
 	if output == nil || *output != "out00001" {
@@ -159,7 +152,6 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 		t.Fatalf("reservation candidates: %v", got)
 	}
 
-	// Batches: starting one assigns queued unarchived tasks and counts members.
 	control := startBatch(t, s)
 	if control.Batch == nil || control.Mode != model.OperatingModeRunOnce || control.Batch.Phase != model.BatchPhaseDraining {
 		t.Fatalf("batch control: %+v", control)
@@ -191,7 +183,6 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 		t.Fatalf("begin cycle control: %+v", reloaded)
 	}
 
-	// Events: scoped listing and pruning.
 	must(t, s.Event("queued", "status", "Queued"))
 	must(t, s.Event("active", "status", "Reviewing"))
 	scoped, err := s.Events(str("active"))
@@ -207,10 +198,6 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 	}
 }
 
-// The scheduling view lists every unarchived active task, whatever its batch,
-// plus the run's unarchived queued tasks from both windows: those targeting
-// another branch or already holding a PR reservation, and those targeting the
-// default branch without one. Each task appears once, oldest first.
 func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
 	s := open(t, statePath(t))
 	put := func(id string, edit func(*model.Task)) model.Task {
@@ -254,8 +241,6 @@ func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
 		t.Fatalf("scheduling = %v; want %v", got, want)
 	}
 
-	// A batch takes the queued tasks present when it starts; later queued
-	// work waits for the next run, but active work is always listed.
 	control := startBatch(t, s)
 	put("after-batch", queued)
 	put("publishing", status(model.StatusPublishing))
@@ -269,11 +254,6 @@ func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
 	}
 }
 
-// Cleanup candidates are a window of at most 100 that starts after the
-// caller's cursor and wraps around to the oldest, so a caller that resumes
-// after the last candidate it visited reaches every candidate, however many
-// older ones stay candidates. The cursor itself comes last, and an empty,
-// unknown or no-longer-eligible cursor still positions the window.
 func TestCleanupCandidatesResumeAfterTheCursorAndWrap(t *testing.T) {
 	s := open(t, statePath(t))
 	const cutoff = "2021-01-01T00:00:00Z"

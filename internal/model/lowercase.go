@@ -8,9 +8,6 @@ import (
 	"golang.org/x/text/language"
 )
 
-// Unicode Final_Sigma applies to the entire string; x/text limits
-// its lookahead to 30 case-ignorable runes, so resolve sigmas before asking it
-// for the remaining (including multi-rune) lowercase mappings.
 func lowercaseIdentity(s string) string {
 	var out strings.Builder
 	out.Grow(len(s))
@@ -20,8 +17,6 @@ func lowercaseIdentity(s string) string {
 			r = 'ς'
 		}
 		out.WriteRune(r)
-		// Case_Ignorable takes precedence: some marks and modifier letters
-		// are also Cased, but must not supply the context for a final sigma.
 		if !isCaseIgnorable(r) {
 			precededByCased = isCased(r)
 		}
@@ -43,8 +38,6 @@ func isCased(r rune) bool {
 }
 
 func isCaseIgnorable(r rune) bool {
-	// Unicode 17 Case_Ignorable: these categories plus the punctuation with
-	// Word_Break = MidLetter, MidNumLet or Single_Quote.
 	if unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf, unicode.Lm, unicode.Sk) {
 		return true
 	}

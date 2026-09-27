@@ -6,7 +6,6 @@ export function setToken(value: string) {
   session = new AbortController();
   token = value;
 }
-/** The dashboard clears all private views when any current-session request gets a 401. */
 export function onUnauthorized(handler: () => void) {
   unauthorized = handler;
   return () => {
@@ -17,7 +16,6 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
-    /** Canonical configuration revision the checked result applies to. */
     public checkedRevision?: string
   ) {
     super(message);
@@ -47,10 +45,8 @@ export async function api<T>(
     text = await response.text();
     result = JSON.parse(text);
   } catch {
-    // An unreadable body, such as a proxy's HTML page; it is never returned as data.
     parsed = false;
   }
-  // Includes the body read: an old session's response cannot populate a new session.
   requestSignal.throwIfAborted();
   if (response.status === 401) unauthorized?.();
   if (!response.ok) {
@@ -71,11 +67,6 @@ export async function api<T>(
     );
   return result as T;
 }
-/**
- * The service writes request rejections it cannot express as JSON, such as a body or
- * query that does not decode, as plain text. Other unreadable bodies, like a proxy's
- * HTML error page, are never shown.
- */
 function plainText(response: Response, text: string): string {
   if (!/^text\/plain\b/i.test(response.headers.get('Content-Type') ?? '')) return '';
   const message = text.trim();
@@ -92,11 +83,9 @@ export function relative(value: string) {
         ? `${Math.floor(seconds / 3600)}h ago`
         : `${Math.floor(seconds / 86400)}d ago`;
 }
-/** Gigabytes with the two decimals every storage figure is shown with. */
 export function gb(bytes: number): string {
   return (bytes / 1e9).toFixed(2);
 }
-/** Wall-clock time of a dashboard refresh, e.g. `14:03`. */
 export function clockTime(date = new Date()): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

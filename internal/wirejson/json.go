@@ -1,5 +1,3 @@
-// Package wirejson handles owned JSON records and strict request objects.
-// It rejects ambiguous field names and duplicate keys at typed boundaries.
 package wirejson
 
 import (
@@ -14,7 +12,6 @@ import (
 	"unicode/utf8"
 )
 
-// Error marks typed codec failures for API error classification.
 type Error struct{ inner error }
 
 func (e *Error) Error() string { return e.inner.Error() }
@@ -31,37 +28,20 @@ func marked(err error) error {
 	return &Error{inner: err}
 }
 
-// Decode reads one JSON object into the struct dst points to. dst's own
-// UnmarshalJSON is never called, so dst may be the record type itself. Unknown
-// fields fail when strict. Fields tagged wire:"default" and pointer fields may
-// be absent, and every other field is required unless defaultAll. Absent
-// fields keep dst's current values (nil lists and maps become empty), so pass
-// a zero value unless those values are intended defaults. dst is changed only
-// on success.
 func Decode(data []byte, dst any, strict, defaultAll bool) error {
 	return marked(decode(data, dst, strict, defaultAll))
 }
 
-// DecodeStrict decodes a request body or structured answer: unknown fields
-// fail, and every field that is not a pointer or tagged wire:"default" is
-// required. Decoding starts from a zero T, so absent optional fields are
-// zero rather than dst's old values, and dst is changed only on success.
-// T's own UnmarshalJSON is never called, so that method may pass its receiver.
 func DecodeStrict[T any](data []byte, dst *T) error {
 	var decoded T
 	return decodeInto(data, dst, decoded, true, false)
 }
 
-// DecodeRecord decodes a saved record like DecodeStrict, except that unknown
-// fields are ignored.
 func DecodeRecord[T any](data []byte, dst *T) error {
 	var decoded T
 	return decodeInto(data, dst, decoded, false, false)
 }
 
-// DecodeWithDefaults decodes an object whose fields may all be absent:
-// unknown fields fail, and absent fields take their values from defaults,
-// never from dst. dst is changed only on success.
 func DecodeWithDefaults[T any](data []byte, dst *T, defaults T) error {
 	return decodeInto(data, dst, defaults, true, true)
 }
@@ -134,7 +114,6 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 		if !seen[i] && !defaultAll && f.Tag.Get("wire") != "default" && f.Type.Kind() != reflect.Pointer {
 			return fmt.Errorf("missing field %q", strings.Split(f.Tag.Get("json"), ",")[0])
 		}
-		// Lists and maps are emitted as empty containers in the current API.
 		if v.Field(i).Kind() == reflect.Slice && v.Field(i).IsNil() {
 			v.Field(i).Set(reflect.MakeSlice(f.Type, 0, 0))
 		}
@@ -151,7 +130,6 @@ func decodeValue(raw []byte, v reflect.Value) error {
 	if bytes.Equal(raw, []byte("null")) && v.Kind() != reflect.Pointer && v.Kind() != reflect.Interface {
 		return fmt.Errorf("null is not allowed")
 	}
-	// The nested type owns its defaults, field strictness, and enums.
 	if _, ok := v.Addr().Interface().(json.Unmarshaler); ok {
 		return json.Unmarshal(raw, v.Addr().Interface())
 	}
@@ -242,7 +220,6 @@ func decodeValue(raw []byte, v reflect.Value) error {
 	return json.Unmarshal(raw, v.Addr().Interface())
 }
 
-// Marshal produces the compact Go JSON representation.
 func Marshal(value any) ([]byte, error) {
 	return markedPair(json.Marshal(value))
 }
@@ -251,8 +228,6 @@ func markedPair(data []byte, err error) ([]byte, error) {
 	return data, marked(err)
 }
 
-// Equal reports whether a and b have the same Marshal output. A value that
-// cannot be marshalled is never equal, not even to itself.
 func Equal(a, b any) bool {
 	left, err := Marshal(a)
 	if err != nil {
@@ -265,10 +240,6 @@ func Equal(a, b any) bool {
 	return bytes.Equal(left, right)
 }
 
-// Generic re-reads value's Marshal output as generic JSON (maps, slices,
-// strings, booleans, nil and json.Number), so every number keeps its exact
-// encoded spelling. Marshal failures stay marked; a decode failure, which
-// Marshal's own output never causes, is plain.
 func Generic(value any) (any, error) {
 	var result any
 	if err := genericInto(value, &result); err != nil {
@@ -277,7 +248,6 @@ func Generic(value any) (any, error) {
 	return result, nil
 }
 
-// GenericMap is Generic for a value that encodes as a JSON object.
 func GenericMap(value any) (map[string]any, error) {
 	var result map[string]any
 	if err := genericInto(value, &result); err != nil {
@@ -296,7 +266,6 @@ func genericInto(value, dst any) error {
 	return dec.Decode(dst)
 }
 
-// Record serializes a value alias with non-null empty containers.
 func Record(value any) ([]byte, error) {
 	return markedPair(record(value))
 }
@@ -321,8 +290,6 @@ func record(value any) ([]byte, error) {
 	return json.Marshal(copy.Interface())
 }
 
-// Clone gives snapshot owners separate maps, slices, and optional values, also
-// inside opaque JSON evidence. Scalars and immutable strings are copied as-is.
 func Clone[T any](value T) T { return clone(reflect.ValueOf(value)).Interface().(T) }
 func clone(v reflect.Value) reflect.Value {
 	switch v.Kind() {
@@ -370,10 +337,6 @@ func clone(v reflect.Value) reflect.Value {
 	}
 }
 
-// ValidStrings rejects invalid UTF-8 and unpaired or truncated \u escapes,
-// which encoding/json would silently replace with U+FFFD. It scans raw JSON
-// text of any shape. Its errors are plain, not *Error, so each caller chooses
-// how a failure is classified: the runner's protocol boundaries rely on that.
 func ValidStrings(data []byte) error {
 	if !utf8.Valid(data) {
 		return fmt.Errorf("invalid UTF-8")
@@ -419,8 +382,6 @@ func ValidStrings(data []byte) error {
 	return nil
 }
 
-// UnmarshalEnum decodes one JSON string naming a value in names and stores its
-// index in dst. dst is changed only on success.
 func UnmarshalEnum[T ~uint8](data []byte, names []string, dst *T) error {
 	value, err := enumOf(data, names)
 	if err == nil {
@@ -453,7 +414,6 @@ func enumOf(data []byte, names []string) (uint8, error) {
 	return 0, fmt.Errorf("invalid enum value %q (expected one of: %s)", name, strings.Join(names, ", "))
 }
 
-// EnumName returns the wire name of value, or "" when it is out of range.
 func EnumName[T ~uint8](value T, names []string) string {
 	if int(value) >= len(names) {
 		return ""
@@ -461,7 +421,6 @@ func EnumName[T ~uint8](value T, names []string) string {
 	return names[value]
 }
 
-// MarshalEnum encodes value as its wire name and refuses out-of-range values.
 func MarshalEnum[T ~uint8](value T, names []string) ([]byte, error) {
 	name := EnumName(value, names)
 	if name == "" {

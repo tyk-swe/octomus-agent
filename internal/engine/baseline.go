@@ -24,15 +24,11 @@ const (
 	baselineAggregateOutputLimit = 1024 * 1024
 )
 
-// baselineJob is the live check's cancellation handle and identity; clearing it
-// is the worker's last act (the guard in baselineWorker).
 type baselineJob struct {
 	id     string
 	cancel context.CancelFunc
 }
 
-// boundedOutput shortens output to limit bytes on a UTF-8 boundary, appending
-// the truncation marker inside the limit, and reports whether anything was cut.
 func boundedOutput(text string, limit int, diagnosticTruncated bool) (string, bool) {
 	if limit == 0 {
 		return "", diagnosticTruncated || text != ""
@@ -54,10 +50,6 @@ func boundedOutput(text string, limit int, diagnosticTruncated bool) (string, bo
 	return text[:keep] + marker, true
 }
 
-// commandOutput renders one captured command:
-// bounded stdout, then a [stderr] section, then the exit status on failure.
-// The middle return reports capture-level truncation only; boundedOutput
-// measures over-limit text itself, in the same byte unit.
 func commandOutput(output *process.ProcessOutput, err error) (string, bool, bool) {
 	if err != nil {
 		return err.Error(), false, false
@@ -74,17 +66,10 @@ func commandOutput(output *process.ProcessOutput, err error) (string, bool, bool
 	return text.String(), output.Stdout.Truncated || output.Stderr.Truncated, output.Status.Success()
 }
 
-// runCheckCommand and checkOutcome are shared with task verification and live
-// in execution.go.
-
-// baselineCancelled reports the durable operator-cancel marker.
 func (a *App) baselineCancelled(id string) (bool, error) {
 	return a.Store.MarkerSet("baseline_cancel", id)
 }
 
-// observeDefaultBranch records a fresh remote default-branch observation under
-// the gate after revalidating that the live configuration still describes the
-// same remote.
 func (a *App) observeDefaultBranch(cfg config.Config, revision, observedAt string) error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -98,8 +83,6 @@ func (a *App) observeDefaultBranch(cfg config.Config, revision, observedAt strin
 	return a.mergeDefaultObservationLocked(cfg, revision, observedAt)
 }
 
-// mergeDefaultObservationLocked updates the in-memory observation while the
-// gate is held; a newer same-target observation already recorded wins.
 func (a *App) mergeDefaultObservationLocked(cfg config.Config, revision, observedAt string) error {
 	observed, err := time.Parse(time.RFC3339Nano, observedAt)
 	if err != nil {
@@ -123,8 +106,6 @@ func (a *App) mergeDefaultObservationLocked(cfg config.Config, revision, observe
 	return nil
 }
 
-// baselineRuntimeIneligibility reports the active-work reason before checking
-// baseline configuration. StartBaseline holds the gate across this check and launch.
 func (a *App) baselineRuntimeIneligibility() (*string, error) {
 	control, err := a.Control()
 	if err != nil {
@@ -154,8 +135,6 @@ func (a *App) baselineRuntimeIneligibility() (*string, error) {
 	return reason, nil
 }
 
-// baselineEligibility reports whether a check may start and the operator-facing
-// reason when not.
 func (a *App) baselineEligibility() (bool, *string, error) {
 	reason, err := a.baselineRuntimeIneligibility()
 	if err != nil || reason != nil {
@@ -172,11 +151,6 @@ func (a *App) baselineEligibility() (bool, *string, error) {
 	return true, nil, nil
 }
 
-// StartBaseline validates the expected canonical configuration revision against
-// the live saved configuration, persists a running check and starts its worker.
-// A stale revision conflicts before any record, clone or other work is created;
-// the check snapshots and runs the exact canonical configuration it validated.
-// The whole eligibility check and launch serialize on the gate.
 func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -228,7 +202,6 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 	return &check, nil
 }
 
-// CancelBaseline records the durable cancel intent and interrupts the worker.
 func (a *App) CancelBaseline(id string) error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -258,15 +231,11 @@ func (a *App) CancelBaseline(id string) error {
 	return nil
 }
 
-// baselineConfigMatches reports whether the live configuration's fingerprint
-// is still the one a check recorded at start.
 func baselineConfigMatches(check *model.BaselineCheck, live config.Config) bool {
 	fingerprint, err := live.Fingerprint()
 	return err == nil && fingerprint == check.ConfigFingerprint
 }
 
-// baselineRevisionStatus compares a check's recorded revision to the freshest
-// in-memory default-branch observation of the same remote.
 func (a *App) baselineRevisionStatus(check *model.BaselineCheck, live config.Config) string {
 	if !live.SameRemoteIdentity(check.Config) {
 		return "unknown"
@@ -295,7 +264,6 @@ func (a *App) baselineRevisionStatus(check *model.BaselineCheck, live config.Con
 
 const baselineCaveat = "A baseline check verifies the saved commands on a clone made at its start time; it does not prove later host, tool or remote health and is not publication evidence."
 
-// BaselineView assembles the dashboard payload for one check (or the latest).
 func (a *App) BaselineView(id *string) (map[string]any, error) {
 	var check *model.BaselineCheck
 	var err error
@@ -326,8 +294,6 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 	a.runtimeMu.Lock()
 	observation := a.runtime.defaultObservation
 	a.runtimeMu.Unlock()
-	// An observation of another repository or branch (the configuration
-	// changed since it was made) says nothing about the live target.
 	if observation != nil && !observation.Describes(live) {
 		observation = nil
 	}
@@ -347,8 +313,6 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 	}, nil
 }
 
-// recoverBaselines turns checks left running by a stop into durable terminal
-// records: operator-cancelled when the marker exists, interrupted otherwise.
 func (a *App) recoverBaselines() error {
 	checks, err := a.Store.RunningBaselines()
 	if err != nil {
@@ -364,8 +328,6 @@ func (a *App) recoverBaselines() error {
 	return nil
 }
 
-// abandonBaseline records that a running check was abandoned, with the
-// operator-cancelled and worker-interrupted wording each caller supplies.
 func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted string) error {
 	marked, err := a.baselineCancelled(check.ID)
 	if err != nil {
@@ -382,15 +344,6 @@ func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted
 	return a.Store.Put("baseline", check.ID, *check)
 }
 
-// removeBaselineWorkspace removes the check's owned clone directory and records
-// the outcome; a refusal is evidence, not a worker failure. Callers must not
-// hold the scheduler gate: the check is claimed, the recursive deletion runs
-// gate-free so unrelated controls stay responsive, then the gate serializes a
-// finalization that applies only the cleanup fields to the current durable
-// record. A record that vanished mid-removal is left vanished — writing the
-// caller's stale copy back would resurrect it. A check already claimed by
-// another cleanup is skipped, not double-removed — callers see success, since
-// ownership means the outcome is being recorded by the owner.
 func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 	if _, err := uuid.Parse(check.ID); err != nil {
 		return errors.New("Invalid baseline identity")
@@ -414,16 +367,11 @@ func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 		check.WorkspaceRemoved = true
 	}
 	check.CleanupError = cleanupError
-	// The record may have advanced while the gate was released; apply the
-	// cleanup outcome to its current state rather than writing back a stale
-	// copy.
 	current, err := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
 	if err != nil {
 		return err
 	}
 	if current == nil {
-		// The durable record vanished mid-removal; nothing to finalize. The
-		// caller's in-memory copy already carries the cleanup outcome.
 		return nil
 	}
 	if removeErr == nil {
@@ -439,16 +387,6 @@ var baselineStatusDebug = map[model.BaselineStatus]string{
 	model.BaselineStatusTimedOut: "TimedOut", model.BaselineStatusInterrupted: "Interrupted",
 }
 
-// baselineWorker runs the check under its overall deadline, resolves the final
-// status under the gate and always clears the runtime slot via the guard. The
-// guard also abandons a still-running record if the worker exits unexpectedly.
-//
-// A check stays active until its owned clone is gone: the worker records the
-// terminal status, then the cleanup outcome, and releases the slot last, as it
-// exits. Until then eligibility reports "A baseline check is already running"
-// even though the durable record already reads as finished and cleaned up;
-// that window ends when the worker exits, and its notify follows the release.
-// Observers that need the slot free wait for baseline_active to clear.
 func (a *App) baselineWorker(ctx context.Context, id string) {
 	defer func() {
 		if check, err := store.Get[model.BaselineCheck](a.Store, "baseline", id); err == nil && check != nil && check.Status == model.BaselineStatusRunning {
@@ -488,8 +426,6 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 		}
 		return status
 	})
-	// WithDeadline's cleanup grace is bounded, but the callback owns the check
-	// record and its incremental writes. Join it before the terminal write.
 	<-executionDone
 	var status model.BaselineStatus
 	a.gate.Lock()
@@ -526,8 +462,6 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	}
 }
 
-// executeBaseline verifies the saved commands on a disposable clone made at the
-// remote default branch revision recorded at start.
 func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (model.BaselineStatus, error) {
 	c := check.Config
 	measured, err := workspace.DirectorySize(a.DataDir)
@@ -571,9 +505,6 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 	}
 	allOK := true
 	remaining := baselineAggregateOutputLimit
-	// CancelBaseline records its marker and cancels ctx in one gate hold, so
-	// ctx alone stops the commands; baselineWorker reads the marker once to
-	// resolve the final status.
 	for _, command := range c.VerificationCommands {
 		if ctx.Err() != nil {
 			return model.BaselineStatusRunning, process.ErrCancelled
@@ -597,9 +528,6 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 				failure = errors.New("Workspace or HEAD changed during verification")
 			}
 		}
-		// Scrub secrets without the persistence cap so a long command's output
-		// reaches boundedOutput at its true length: truncating here first would
-		// silently drop the tail while marking it complete.
 		limit := remaining
 		if limit > baselineCommandOutputLimit {
 			limit = baselineCommandOutputLimit

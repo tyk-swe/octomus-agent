@@ -9,10 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// sseLoop is the owned SSE reader: arbitrary HTTP and UTF-8 fragmentation,
-// CRLF, comments and other fields, multiple data lines, and each frame and
-// backlog capped at exactly MaxMessage. It never closes out: it ends after
-// sending exactly one error value, or earlier once ctx is done.
 func sseLoop(ctx context.Context, body io.Reader, out chan<- valueResult) {
 	emit := func(e valueResult) bool {
 		select {
@@ -65,8 +61,6 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- valueResult) {
 				data = append(data, rest...)
 			}
 		}
-		// Every unconsumed byte belongs to the in-progress frame; complete
-		// lines are drained above before the bound applies.
 		if frameBytes+len(buffer) > MaxMessage {
 			emit(valueResult{err: fmt.Errorf("OpenCode event backlog exceeds 16 MB")})
 			return

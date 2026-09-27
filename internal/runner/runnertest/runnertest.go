@@ -1,18 +1,3 @@
-// Package runnertest provides a scripted runner.Adapter for Go tests: a third
-// implementation of the adapter seam next to Codex and OpenCode that replaces
-// only the runner process. Runners still performs real route validation,
-// catalog checks and runner-unavailable classification against the scripted
-// catalog.
-//
-// A Script is shared by every client its Connector builds. Tests give each role
-// a distinct route (usually a distinct model) and queue replies per route; each
-// turn on a route consumes that route's next reply in order, whatever the
-// prompt says. Every connect, catalog, diagnostics, start, turn and close call
-// is recorded for assertions.
-//
-// The scripted adapter never touches the Octomus store or any Git remote. A
-// reply's Effect runs against the turn's working directory only, standing in
-// for a worker editing its workspace.
 package runnertest
 
 import (
@@ -27,23 +12,13 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
 
-// Reply scripts one turn on a route.
 type Reply struct {
-	// Answer is the runner's final message. Structured turns check it against
-	// the turn's schema exactly as the production adapters do, so malformed
-	// or schema-invalid answers fail the turn.
 	Answer string
-	// Effect, when set, runs against the turn's working directory before the
-	// turn answers, as the worker's edits. An effect error fails the turn.
 	Effect func(cwd string) error
-	// Err, when set, fails the turn after any Effect ran.
-	Err error
-	// Gate, when set, blocks the turn until the gate is released or the
-	// client's context is cancelled.
-	Gate *Gate
+	Err    error
+	Gate   *Gate
 }
 
-// Gate blocks scripted turns until a test releases them.
 type Gate struct {
 	entered     chan struct{}
 	released    chan struct{}
@@ -55,13 +30,10 @@ func NewGate() *Gate {
 	return &Gate{entered: make(chan struct{}), released: make(chan struct{})}
 }
 
-// Entered is closed once a turn is blocked on the gate.
 func (g *Gate) Entered() <-chan struct{} { return g.entered }
 
-// Release lets every turn blocked on the gate, now or later, continue.
 func (g *Gate) Release() { g.releaseOnce.Do(func() { close(g.released) }) }
 
-// CallKind names one adapter operation.
 type CallKind string
 
 const (
@@ -73,26 +45,18 @@ const (
 	CallClose       CallKind = "close"
 )
 
-// Call records one request the engine made of a scripted client. Fields that
-// do not apply to the kind are zero.
 type Call struct {
 	Kind    CallKind
 	Backend config.Backend
-	// Client numbers the connected client (1-based, in connect order), so
-	// tests can tell which calls shared a client.
-	Client int
-	Route  config.Route
-	Cwd    string
-	// Resume is the session a start asked to resume; nil starts fresh.
-	Resume *string
-	// Session is the identity a start returned, or the session a turn ran on.
+	Client  int
+	Route   config.Route
+	Cwd     string
+	Resume  *string
 	Session string
 	Prompt  string
 	Schema  schemas.Schema
 }
 
-// Script is a scripted runner shared by every client its Connector builds.
-// All methods are safe for concurrent use.
 type Script struct {
 	mu          sync.Mutex
 	catalog     []runner.Model
@@ -106,7 +70,6 @@ type Script struct {
 	open        int
 }
 
-// New returns a script serving catalog.
 func New(catalog ...runner.Model) *Script {
 	return &Script{
 		catalog:     slices.Clone(catalog),
@@ -118,16 +81,12 @@ func New(catalog ...runner.Model) *Script {
 	}
 }
 
-// SetCatalog replaces the catalog every client serves from now on.
 func (s *Script) SetCatalog(catalog ...runner.Model) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.catalog = slices.Clone(catalog)
 }
 
-// Connector connects scripted clients. It ignores the configured binaries: the
-// script replaces the whole runner process. Each client is bound to the ctx it
-// was connected with, like a production client.
 func (s *Script) Connector() runner.Connector {
 	return func(ctx context.Context, backend config.Backend, _ config.Config, cwd string) (runner.Adapter, error) {
 		s.mu.Lock()
@@ -143,7 +102,6 @@ func (s *Script) Connector() runner.Connector {
 	}
 }
 
-// Queue appends replies to route's queue.
 func (s *Script) Queue(route config.Route, replies ...Reply) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,21 +109,18 @@ func (s *Script) Queue(route config.Route, replies ...Reply) {
 	s.replies[key] = append(s.replies[key], replies...)
 }
 
-// Answer queues plain answers on route.
 func (s *Script) Answer(route config.Route, answers ...string) {
 	for _, answer := range answers {
 		s.Queue(route, Reply{Answer: answer})
 	}
 }
 
-// FailConnect makes the next connect of backend fail with err.
 func (s *Script) FailConnect(backend config.Backend, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.connectErrs[backend] = append(s.connectErrs[backend], err)
 }
 
-// FailStart makes the next start (fresh or resumed) on route fail with err.
 func (s *Script) FailStart(route config.Route, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -173,24 +128,20 @@ func (s *Script) FailStart(route config.Route, err error) {
 	s.startErrs[key] = append(s.startErrs[key], err)
 }
 
-// FailClose makes the next close of a backend client fail with err.
 func (s *Script) FailClose(backend config.Backend, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closeErrs[backend] = append(s.closeErrs[backend], err)
 }
 
-// Calls returns every recorded call in order.
 func (s *Script) Calls() []Call {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.calls)
 }
 
-// Starts returns the start calls on route, in order.
 func (s *Script) Starts(route config.Route) []Call { return s.routed(CallStart, route) }
 
-// Turns returns the turn calls on route, in order.
 func (s *Script) Turns(route config.Route) []Call { return s.routed(CallTurn, route) }
 
 func (s *Script) routed(kind CallKind, route config.Route) []Call {
@@ -206,35 +157,28 @@ func (s *Script) routed(kind CallKind, route config.Route) []Call {
 	return calls
 }
 
-// Pending reports how many replies remain queued on route.
 func (s *Script) Pending(route config.Route) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.replies[routeKey(route)])
 }
 
-// OpenClients reports connected clients that were not closed yet.
 func (s *Script) OpenClients() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.open
 }
 
-// CodexModel is an available Codex catalog entry supporting efforts.
 func CodexModel(name string, efforts ...string) runner.Model {
 	return runner.Model{Backend: config.BackendCodex, Model: name, DisplayName: name,
 		Efforts: append([]string{}, efforts...), Variants: []string{}, Available: true}
 }
 
-// OpenCodeModel is an available OpenCode catalog entry supporting variants.
 func OpenCodeModel(provider, name string, variants ...string) runner.Model {
 	return runner.Model{Backend: config.BackendOpencode, Provider: &provider, ProviderName: &provider,
 		Model: name, DisplayName: name, Efforts: []string{}, Variants: append([]string{}, variants...), Available: true}
 }
 
-// CatalogFor returns the smallest available catalog that satisfies exactly
-// routes: one entry per backend/provider/model with the routes' efforts or
-// variants.
 func CatalogFor(routes ...config.Route) []runner.Model {
 	catalog := []runner.Model{}
 	for _, route := range routes {
@@ -265,16 +209,13 @@ func CatalogFor(routes ...config.Route) []runner.Model {
 	return catalog
 }
 
-// client is one connected scripted adapter.
 type client struct {
 	script  *Script
 	ctx     context.Context
 	backend config.Backend
 	id      int
-	// active holds the sessions started or resumed on this client; like a
-	// production client, a turn requires one.
-	active map[string]struct{}
-	closed bool
+	active  map[string]struct{}
+	closed  bool
 }
 
 func (c *client) record(call Call) {
@@ -283,7 +224,6 @@ func (c *client) record(call Call) {
 	c.script.calls = append(c.script.calls, call)
 }
 
-// usable reports a closed client or a cancelled context.
 func (c *client) usable() error {
 	if c.closed {
 		return errors.New("runnertest: client is closed")
@@ -321,8 +261,6 @@ func (c *client) Diagnose(cwd string) (runner.Diagnostics, error) {
 	return runner.Diagnostics{Backend: c.backend, ProtocolVersion: "scripted", Version: "scripted"}, nil
 }
 
-// Start rejects routes absent from the catalog, then resumes resume (which must
-// be a session this script started) or starts a fresh session.
 func (c *client) Start(route config.Route, cwd string, resume *string) (string, error) {
 	c.script.mu.Lock()
 	defer c.script.mu.Unlock()
@@ -360,8 +298,6 @@ func (c *client) Start(route config.Route, cwd string, resume *string) (string, 
 	return session, nil
 }
 
-// Turn consumes route's next reply: it waits on the reply's gate, applies its
-// effect, then returns its error or its schema-checked answer.
 func (c *client) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
 	reply, err := func() (Reply, error) {
 		c.script.mu.Lock()
@@ -433,7 +369,6 @@ func pop[K comparable](queues map[K][]error, key K) error {
 	return queue[0]
 }
 
-// routeKey identifies a route by every field, since Route holds pointers.
 func routeKey(route config.Route) string {
 	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", route.Backend.Slug(), deref(route.Provider), route.Model, route.Effort, deref(route.Variant))
 }

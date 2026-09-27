@@ -1,10 +1,5 @@
 package engine
 
-// A planning pass is all-or-nothing, so a validation failure fails every
-// admission it used. Each failure names the offending proposal and the
-// conflicting proposal, task, request or value, while keeping the wording that
-// operators, dashboards and end-to-end checks already match on.
-
 import (
 	"strings"
 	"testing"
@@ -13,7 +8,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// assertErrorNames fails unless err is non-nil and contains every fragment.
 func assertErrorNames(t *testing.T, err error, fragments ...string) {
 	t.Helper()
 	if err == nil {
@@ -85,7 +79,6 @@ func TestProposalValidationNamesTheOffendingProposal(t *testing.T) {
 			assertErrorNames(t, ValidateProposals(limited, tc.proposals, grounding, tc.history), tc.fragments...)
 		})
 	}
-	// Faults are reported in plan order, whatever the map iteration order.
 	first := ValidateProposals(cfg, []model.Proposal{onPR("x", "gone"), onPR("y", "lost")}, grounding, nil)
 	for i := 0; i < 20; i++ {
 		again := ValidateProposals(cfg, []model.Proposal{onPR("x", "gone"), onPR("y", "lost")}, grounding, nil)
@@ -96,8 +89,6 @@ func TestProposalValidationNamesTheOffendingProposal(t *testing.T) {
 	assertErrorNames(t, first, `proposal "x" depends on "gone"`)
 }
 
-// A plan with unordered writers on several existing PR branches names the
-// branch whose first proposal appears first in the plan, on every run.
 func TestBranchOrderFaultNamesTheFirstBranchInPlanOrder(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	zeta, alpha := ownedPR("octomus/zeta"), ownedPR("octomus/alpha")
@@ -192,8 +183,6 @@ func TestDecisionMemoryAndRediscoveryNameTheOffendingProposal(t *testing.T) {
 	}
 }
 
-// Discovery agents share the candidate limit that seeded rediscovery
-// candidates leave; a full seeded pass leaves them nothing.
 func TestDiscoveryProposalLimitSharesTheRemainingCandidates(t *testing.T) {
 	for _, tc := range []struct {
 		seeded int

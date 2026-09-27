@@ -1,12 +1,3 @@
-/**
- * Display mapping for `RunEvidenceV1` (see docs/run-evidence.md).
- *
- * Every label here is derived from the server's already-normalized evidence statuses.
- * Nothing in this module recomputes an optimistic boolean from raw records: unknown,
- * stale and missing states are preserved and named. Kept in one module so the run
- * evidence panel and the task detail summary cannot describe the same record
- * differently.
- */
 import type { IconName } from './Icon.svelte';
 import { ACTIVE_STATUSES } from './types';
 import type {
@@ -22,25 +13,14 @@ import type {
   VerdictState
 } from './types';
 
-/**
- * Badge tones every surface must style. `cancelled` reads as "nothing
- * recorded", not "fine", so a surface that leaves it unstyled hides exactly
- * the adverse evidence this mapping exists to show. tests/evidence.spec.ts
- * checks the dashboard stylesheet (src/app.css and its imports) against this list.
- */
 export const TONES = ['clean', 'blocked', 'failed', 'running', 'cancelled'] as const;
 export type Tone = (typeof TONES)[number] | '';
 export type Verdict = { label: string; tone: Tone; detail: string };
 
-/** A count with its noun, e.g. `1 finding`, `2 findings`; irregular plurals are passed in. */
 export function plural(count: number, noun: string, pluralNoun = `${noun}s`): string {
   return `${count} ${count === 1 ? noun : pluralNoun}`;
 }
 
-/**
- * Reviewer slots are positional and fixed in `internal/evidence`; these labels explain the
- * role each slot argues, rather than repeating its internal identity.
- */
 const REVIEWER_ROLES: Record<string, string> = {
   'adversary-a': 'Problem and value',
   'adversary-b': 'Feasibility and risk'
@@ -56,7 +36,6 @@ export function reviewerSlot(reviewer: string): string {
   return REVIEWER_SLOTS[reviewer] ?? reviewer;
 }
 
-/** Decision words keep their own badge tone; `deferred` must never read as `rejected`. */
 export function decisionTone(decision: string | null): Tone {
   return decision === 'accepted'
     ? 'clean'
@@ -67,24 +46,16 @@ export function decisionTone(decision: string | null): Tone {
         : 'cancelled';
 }
 
-/**
- * Persisted `model.Decisions()` words in internal/model, in the order the dashboard
- * shows them. Mirrors the server vocabulary the way `ACTIVE_STATUSES` mirrors
- * `model.ActiveStatuses`.
- */
 export const DECISIONS = ['accepted', 'rejected', 'deferred', 'candidate'] as const;
 
-/** The mode word every surface names a cycle with. */
 export function modeLabel(mode: string): string {
   return mode === 'audit' ? 'Audit' : 'Execution';
 }
 
-/** One cycle heading, e.g. `Execution cycle #001`. */
 export function cycleLabel(cycle: { mode: string; number: number }): string {
   return `${modeLabel(cycle.mode)} cycle #${String(cycle.number).padStart(3, '0')}`;
 }
 
-/** Saved baseline statuses, spelled the way the check panel shows them. */
 export function baselineStatusLabel(status: BaselineStatus): string {
   const labels: Record<BaselineStatus, string> = {
     running: 'Running',
@@ -104,7 +75,6 @@ const VERDICT_STATES: Record<VerdictState, { label: string; tone: Tone }> = {
   malformed: { label: 'Malformed batch', tone: 'failed' }
 };
 
-/** The state badge for one reviewer slot. A recorded verdict shows its own decision. */
 export function verdictBadge(verdict: ReviewerVerdict): { label: string; tone: Tone } {
   if (verdict.state === 'recorded' && verdict.decision)
     return { label: verdict.decision, tone: decisionTone(verdict.decision) };
@@ -113,11 +83,6 @@ export function verdictBadge(verdict: ReviewerVerdict): { label: string; tone: T
   return VERDICT_STATES[verdict.state];
 }
 
-/**
- * Agreement across the two slots. Reported only from verdicts that are actually
- * recorded: a missing or malformed slot makes the reviewer evidence incomplete rather
- * than unanimous.
- */
 export function reviewerAgreement(verdicts: ReviewerVerdict[]): Verdict {
   if (verdicts.length === 0)
     return {
@@ -150,12 +115,6 @@ export function reviewerAgreement(verdicts: ReviewerVerdict[]): Verdict {
   };
 }
 
-/**
- * Badge for one saved review round in the task's own review history.
- *
- * Zero findings alone is not "Clean": an incomplete round or a blank summary is
- * reported as such, matching `model.Review.Clean` (internal/model) on the server.
- */
 export function reviewRoundBadge(round: {
   result: { completed: boolean; summary: string; findings: unknown[] };
 }): { label: string; tone: Tone } {
@@ -166,10 +125,6 @@ export function reviewRoundBadge(round: {
   return { label: 'Clean', tone: 'clean' };
 }
 
-/**
- * Whether a round ran at the recorded output commit. Historical cleanliness and
- * matching the delivered commit are separate facts and are never merged.
- */
 export function roundRevisionLabel(
   revision: string,
   outputCommit: string | null
@@ -177,7 +132,6 @@ export function roundRevisionLabel(
   return revisionMatchLabel(outputCommit ? revision === outputCommit : null);
 }
 
-/** The run view uses the server's normalized comparison, including null. */
 export function revisionMatchLabel(matches: boolean | null): { label: string; tone: Tone } {
   if (matches === null) return { label: 'No output commit recorded', tone: 'cancelled' };
   return matches
@@ -185,7 +139,6 @@ export function revisionMatchLabel(matches: boolean | null): { label: string; to
     : { label: 'Not the recorded output commit', tone: 'blocked' };
 }
 
-/** Published, failed, blocked and cancelled tasks keep their own tone; others read as running. */
 const OUTCOME_TONES: Record<string, Tone> = {
   published: 'clean',
   failed: 'failed',
@@ -193,7 +146,6 @@ const OUTCOME_TONES: Record<string, Tone> = {
   cancelled: 'cancelled'
 };
 
-/** The recorded outcome word for a task, with what the status does and does not imply. */
 export function outcomeVerdict(task: {
   status: string;
   blocked_reason?: string | null;
@@ -213,7 +165,6 @@ export function outcomeVerdict(task: {
   };
 }
 
-/** The shared fallback for evidence that has not loaded; never an optimistic pass. */
 export const UNKNOWN_VERDICT: Verdict = {
   label: 'Unknown',
   tone: 'cancelled',
@@ -221,10 +172,6 @@ export const UNKNOWN_VERDICT: Verdict = {
     'Recorded evidence has not been loaded for this task, so this is unknown rather than passing.'
 };
 
-/**
- * Review standing at the recorded output commit, taken from the server's `clean` and
- * `clean_at_output_revision` rather than recomputed here.
- */
 export function reviewVerdict(evidence: TaskEvidence | null): Verdict {
   if (!evidence) return UNKNOWN_VERDICT;
   const review = evidence.latest_review;
@@ -294,7 +241,6 @@ export function commandBadge(state: CommandState): { label: string; tone: Tone }
   return COMMAND_STATES[state];
 }
 
-/** Configured-check standing. No configured commands is never reported as passing. */
 export function checksVerdict(evidence: TaskEvidence | null): Verdict {
   if (!evidence) return UNKNOWN_VERDICT;
   const checks: CommandEvidence = evidence.required_commands;
@@ -327,10 +273,6 @@ export function checksVerdict(evidence: TaskEvidence | null): Verdict {
   };
 }
 
-/**
- * The recorded pull-request reference. A saved URL describes delivery at publication
- * time; it is never presented as a fresh observation of the GitHub head.
- */
 export function prVerdict(evidence: TaskEvidence | null): Verdict {
   if (!evidence) return UNKNOWN_VERDICT;
   const pr = evidence.pull_request;
@@ -347,7 +289,6 @@ export function prVerdict(evidence: TaskEvidence | null): Verdict {
   };
 }
 
-/** Resolves one task's evidence inside a run, keyed on the task identity. */
 export function findTaskEvidence(run: RunEvidenceV1, taskId: string): TaskEvidence | null {
   for (const proposal of run.proposals)
     for (const task of proposal.linked_tasks) if (task.id === taskId) return task;
@@ -358,12 +299,6 @@ export function shortCommit(value: string | null): string {
   return value ? value.slice(0, 12) : 'None recorded';
 }
 
-/**
- * The planning-only outcome word for a cycle. `completed` means planning finished and
- * decisions are recorded; it never means the run's work is complete. `idle` is the
- * service's successful cycle that accepted nothing: no queued work, or no accepted
- * audit recommendation.
- */
 export function planningVerdict(cycle: { status: string; mode: CycleMode }): Verdict {
   const noun = cycle.mode === 'audit' ? 'Audit' : 'Planning';
   const outputs = cycle.mode === 'audit' ? 'recommendations' : 'decisions';
@@ -410,11 +345,6 @@ export function planningVerdict(cycle: { status: string; mode: CycleMode }): Ver
   }
 }
 
-/**
- * Decision counts in a fixed order, so accepted never trades places with deferred.
- * Only decisions that occurred are listed: the cycle summary reports every decision
- * with a 0 count, while run evidence names only the decisions it saw.
- */
 export function decisionCounts(
   decisions: Record<string, number>
 ): { decision: string; count: number; tone: Tone }[] {
@@ -450,7 +380,6 @@ const OUTCOME_GROUPS: {
   { label: () => 'failed', tone: 'failed', statuses: ['failed'] },
   { label: () => 'cancelled', tone: 'cancelled', statuses: ['cancelled'] }
 ];
-/** Task outcomes grouped for a run summary. Several tasks can deliver one PR, so the count stays in task units. */
 export function taskOutcomeCounts(
   tasks: { status: string }[]
 ): { label: string; count: number; tone: Tone }[] {
@@ -466,12 +395,10 @@ const TASK_ICONS: Record<string, IconName> = {
   failed: 'alert',
   queued: 'clock'
 };
-/** The icon a task row shows for its status: any active status shows activity. */
 export function taskIcon(status: string): IconName {
   return TASK_ICONS[status] ?? (ACTIVE_STATUSES.includes(status) ? 'activity' : 'code');
 }
 
-/** Why a configured command's state is what it is, naming the revisions involved. */
 export function commandExplanation(command: CommandResult, output: string | null): string {
   const at = command.latest_revision ? shortCommit(command.latest_revision) : null;
   switch (command.state) {

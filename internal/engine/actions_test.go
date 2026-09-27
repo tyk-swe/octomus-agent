@@ -1,8 +1,5 @@
 package engine
 
-// Task controls release the gate for remote preflights, serialize concurrent
-// actions and adopt live policy on explicit retry.
-
 import (
 	"context"
 	"errors"
@@ -24,9 +21,6 @@ func TestShutdownOwnsRetryPreflight(t *testing.T) {
 	waitForPreflights(t, fixture, 1)
 	joined := make(chan struct{})
 	go func() {
-		// The entered-preflight file proves TaskAction registered, but file
-		// polling does not order this Wait after its wg.Add. Passing through
-		// the gate it registered under does, as in Shutdown.
 		app.gate.Lock()
 		app.gate.Unlock()
 		app.wg.Wait()
@@ -50,8 +44,6 @@ func TestShutdownOwnsRetryPreflight(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("retry did not return after shutdown")
 	}
-	// A caller may close the database as soon as Shutdown returns. Every new
-	// action must reject before even reading it.
 	if err := fixture.state.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +68,6 @@ func TestShutdownWaitsForPublicationReconciliation(t *testing.T) {
 	waitForPreflights(t, fixture, 1)
 
 	app.Shutdown()
-	// These assertions deliberately precede waiting for TaskAction: shutdown
-	// must itself guarantee durable completion and removal of runtime ownership.
 	saved := loadTask(t, fixture.state, task.ID)
 	if saved.Status != model.StatusBlocked || saved.Error == nil || saved.OutputCommit == nil || *saved.OutputCommit != *task.OutputCommit {
 		t.Errorf("shutdown returned before reconciliation recorded its outcome: %+v", saved)
@@ -117,10 +107,6 @@ func TestShutdownWaitsForPublicationReconciliation(t *testing.T) {
 	}
 }
 
-// heldPreflightFixture saves a blocked durable task whose remote preflights
-// hold behind a controlled upload-pack. The app is created but not resumed:
-// controls run against durable state through the same action path as the
-// HTTP router.
 func heldPreflightFixture(t *testing.T) (*planningFixture, *App, model.Task) {
 	t.Helper()
 	fixture := newExecutionFixture(t)
@@ -133,8 +119,6 @@ func heldPreflightFixture(t *testing.T) (*planningFixture, *App, model.Task) {
 	return fixture, app, task
 }
 
-// TestConcurrentRetriesQueueOnlyOneAttempt: two retries interleave at the
-// released gate; only the first queues an attempt.
 func TestConcurrentRetriesQueueOnlyOneAttempt(t *testing.T) {
 	fixture, app, task := heldPreflightFixture(t)
 	results := make(chan error, 2)
@@ -160,8 +144,6 @@ func TestConcurrentRetriesQueueOnlyOneAttempt(t *testing.T) {
 	}
 }
 
-// TestRetryStartsAFreshRepairRoundBudget: the new attempt budgets repairs
-// from the recorded reviews while retaining the earlier evidence.
 func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
 	fixture, app, task := heldPreflightFixture(t)
 	round := model.ReviewRound{
@@ -193,14 +175,11 @@ func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
 	}
 }
 
-// TestRetryRechecksPolicyAfterRemoteChecks: a policy change during the
-// released remote check is a conflict, and the durable task is untouched.
 func TestRetryRechecksPolicyAfterRemoteChecks(t *testing.T) {
 	fixture, app, task := heldPreflightFixture(t)
 	done := make(chan error, 1)
 	go func() { done <- app.TaskAction(context.Background(), task.ID, "retry") }()
 	waitForPreflights(t, fixture, 1)
-	// The live policy tightens while the remote check is in flight.
 	cfg, err := app.Config()
 	if err != nil {
 		t.Fatal(err)
@@ -219,9 +198,6 @@ func TestRetryRechecksPolicyAfterRemoteChecks(t *testing.T) {
 	}
 }
 
-// TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions: controls
-// do not wait on held Git work, and a stale retry/reconcile cannot overwrite a
-// concurrent mutation.
 func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *testing.T) {
 	for _, action := range []string{"retry", "reconcile"} {
 		for _, scenario := range []struct {
@@ -238,8 +214,6 @@ func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *test
 				done := make(chan error, 1)
 				go func() { done <- app.TaskAction(context.Background(), task.ID, action) }()
 				waitForPreflights(t, fixture, 1)
-				// An unrelated running task plus operator controls must all
-				// complete while the remote check holds.
 				unrelated := executionTask(t, fixture, fixture.cfg.DefaultBranch)
 				unrelated.Status = model.StatusExecuting
 				saveExecutionTask(t, fixture, unrelated)
@@ -302,11 +276,8 @@ func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *test
 	}
 }
 
-// TestRetryPreflightAdoptsTheCurrentCommandTimeout: the remote preflight runs
-// under the live attempt policy, never the task's saved snapshot.
 func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 	fixture := newExecutionFixture(t)
-	// A remote read slower than the first configured command timeout.
 	script := "#!/bin/sh\nsleep 2\nexec git-upload-pack \"$@\"\n"
 	path := filepath.Join(fixture.root, "slow-upload-pack")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -319,8 +290,6 @@ func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	task := executionTask(t, fixture, cfg.DefaultBranch)
-	// The saved snapshot holds the generous timeout the task was created with;
-	// the retry must adopt the live (tighter) one.
 	policy := model.AttemptPolicyFromConfig(fixture.cfg)
 	task.AttemptPolicy = &policy
 	task.Status = model.StatusBlocked
@@ -350,18 +319,12 @@ func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 	}
 }
 
-// TestTaskActionSupersedeArchiveDiscard covers the lifecycle controls beyond
-// retry/reconcile: supersede marks durable rediscovery intent, archive moves a
-// finished task out of the active set, and discard removes the owned workspace
-// and records disposal — each gated by AllowedActions.
 func TestTaskActionSupersedeArchiveDiscard(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
 	ctx := context.Background()
 
-	// A stale-base block offers supersede; superseding preserves the durable
-	// record while requesting fresh evidence on the next cycle.
 	stale := executionTask(t, fixture, fixture.cfg.DefaultBranch)
 	stale.Status = model.StatusBlocked
 	reason := model.BlockedReasonStaleBase
@@ -375,8 +338,6 @@ func TestTaskActionSupersedeArchiveDiscard(t *testing.T) {
 		t.Fatalf("superseded task = %+v", saved)
 	}
 
-	// A published task archives, then discards; discard removes only the
-	// task's owned workspace directory.
 	done := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
 	done.Status = model.StatusPublished
 	saveExecutionTask(t, fixture, done)
@@ -405,10 +366,6 @@ func TestTaskActionSupersedeArchiveDiscard(t *testing.T) {
 	}
 }
 
-// An action name outside the controls is unknown, never an eligibility
-// conflict: a bogus task action on an existing blocked task and a bogus cycle
-// action on a running cycle both answer the unknown-action sentinel (404 over
-// HTTP) and leave the records and their events untouched.
 func TestUnknownActionsAreNotReportedAsEligibilityConflicts(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -447,9 +404,6 @@ func TestUnknownActionsAreNotReportedAsEligibilityConflicts(t *testing.T) {
 	}
 }
 
-// TestRetryOnStaleBaseStaysBlocked: remote movement since the recorded base
-// fails the retry preflight and preserves the stale evidence instead of
-// queuing an attempt.
 func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	app := New(fixture.state, fixture.dataDir)
@@ -457,7 +411,6 @@ func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
 	task := executionTask(t, fixture, fixture.cfg.DefaultBranch)
 	task.Status = model.StatusBlocked
 	saveExecutionTask(t, fixture, task)
-	// The remote target and default branches move past the recorded revisions.
 	git(t, fixture.repo, "commit", "--allow-empty", "-m", "External work")
 	git(t, fixture.repo, "push", "origin", fixture.cfg.DefaultBranch)
 	err := app.TaskAction(context.Background(), task.ID, "retry")
@@ -473,17 +426,10 @@ func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
 	}
 }
 
-// TestRetryChecksARecordedWorkspaceBeforeQueuing: a task whose initialization
-// recorded a workspace but never started a session may resume only in a fully
-// initialized, clean clone at its source revision. Retry refuses anything else
-// up front, before any runner start or daily admission, and reconcile records
-// the same verdict instead of reporting restored prerequisites.
 func TestRetryChecksARecordedWorkspaceBeforeQueuing(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		action string
-		// prepare lays out the recorded workspace and returns the comparison
-		// base initialization recorded, "" when it never got that far.
+		name    string
+		action  string
 		prepare func(t *testing.T, fixture *scriptedFixture, task model.Task, ws string) string
 		queued  bool
 	}{
@@ -542,7 +488,6 @@ func TestRetryChecksARecordedWorkspaceBeforeQueuing(t *testing.T) {
 			if !blockedAs(saved, model.BlockedReasonWorkspaceInvalid) || saved.Attempts != task.Attempts {
 				t.Fatalf("%s outcome = status %s, reason %v, attempts %d", test.action, saved.Status, saved.BlockedReason, saved.Attempts)
 			}
-			// Nothing was queued, so ticking the scheduler starts no work.
 			if err := app.Tick(); err != nil {
 				t.Fatal(err)
 			}
@@ -555,8 +500,6 @@ func TestRetryChecksARecordedWorkspaceBeforeQueuing(t *testing.T) {
 	}
 }
 
-// cloneAtSource clones the task's source revision into ws and returns the
-// comparison base initialization records for a new-PR task.
 func cloneAtSource(t *testing.T, fixture *scriptedFixture, task model.Task, ws string) string {
 	t.Helper()
 	if err := gitops.CloneAt(context.Background(), fixture.cfg, ws, task.SourceRevision); err != nil {

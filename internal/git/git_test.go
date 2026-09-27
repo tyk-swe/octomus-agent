@@ -18,10 +18,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-// realGit runs the host git binary directly: fixture setup must not flow
-// through the wrapped fixture command. It still gets the service's child
-// environment, so Git variables a hook exports to the test run (GIT_DIR,
-// GIT_INDEX_FILE) cannot redirect fixture setup into another repository.
 func realGit(t *testing.T, cwd string, args ...string) string {
 	t.Helper()
 	cmd := process.Command("/usr/bin/git", cwd)
@@ -40,7 +36,6 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-// initRepo creates a real repository with an initial commit on main.
 func initRepo(t *testing.T) string {
 	t.Helper()
 	repo := filepath.Join(t.TempDir(), "repository")
@@ -63,8 +58,6 @@ func testConfig() config.Config {
 	return c
 }
 
-// fixtureRoot replicates tests/harness.py setup(): fixture bin wrappers on PATH, a
-// real checkout whose origin is the local bare remote, and OCTOMUS_FIXTURE.
 func fixtureRoot(t *testing.T) (config.Config, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -106,19 +99,11 @@ func fixtureRoot(t *testing.T) (config.Config, string) {
 	return c, root
 }
 
-// envSecretName/Value are a clearly synthetic secret-bearing environment
-// pair: the name matches the scrubber's API_KEY name rule and the value is
-// long enough to be collected, while matching no token pattern on its own.
 const (
 	envSecretName  = "OCTOMUS_FIXTURE_API_KEY"
 	envSecretValue = "fixture-env-secret-0123456789"
 )
 
-// TestMain installs the env-secret pair at process start. The store's
-// scrubber freezes os.Environ on its first call, and any failing-command
-// error path can trigger that freeze long before a publishing test runs —
-// so the pair must be present from the start, exactly as operator secrets
-// are in the service's real environment.
 func TestMain(m *testing.M) {
 	if err := os.Setenv(envSecretName, envSecretValue); err != nil {
 		panic(err)
@@ -128,7 +113,6 @@ func TestMain(m *testing.M) {
 
 func strptr(s string) *string { return &s }
 
-// deref renders an optional revision for failure messages.
 func deref(s *string) string {
 	if s == nil {
 		return "<nil>"
@@ -136,8 +120,6 @@ func deref(s *string) string {
 	return *s
 }
 
-// Real commits establish true/false ancestry; command failures must not
-// read as a false predicate.
 func TestGitAncestryIsAPredicateAndCommandErrorsFailClosed(t *testing.T) {
 	repository := initRepo(t)
 	c := testConfig()
@@ -163,24 +145,17 @@ func TestGitAncestryIsAPredicateAndCommandErrorsFailClosed(t *testing.T) {
 	if ok, err := git.IsAncestor(ctx, c, repository, first, second); err != nil || !ok {
 		t.Fatalf("ancestor predicate = %v, %v; want true", ok, err)
 	}
-	// Exit status 1 is Git's documented "not an ancestor" answer: false, not error.
 	if ok, err := git.IsAncestor(ctx, c, repository, second, first); err != nil || ok {
 		t.Fatalf("reversed predicate = %v, %v; want false", ok, err)
 	}
-	// A missing object is a real command failure (exit 128) and must not read
-	// as a false ancestry predicate.
 	if _, err := git.IsAncestor(ctx, c, repository, strings.Repeat("0", 40), second); err == nil {
 		t.Fatal("a missing object must be an error, not a false predicate")
 	}
-	// A failed rev-parse cannot be an empty revision either.
 	if _, err := git.Git(ctx, c, repository, []string{"rev-parse", "refs/heads/missing"}); err == nil {
 		t.Fatal("a failed rev-parse must be an error")
 	}
 }
 
-// TestCloneAtCreatesAnIndependentCheckout covers clone identity: the workspace
-// lands detached at the requested revision with the trusted origin, the
-// deterministic committer identity, and the .octomus exclude rule.
 func TestCloneAtCreatesAnIndependentCheckout(t *testing.T) {
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
@@ -199,8 +174,6 @@ func TestCloneAtCreatesAnIndependentCheckout(t *testing.T) {
 	if head != revision {
 		t.Fatalf("workspace HEAD = %s; want %s", head, revision)
 	}
-	// The clone's origin must carry the trusted URL of the configured checkout,
-	// not a local path that would make the workspace itself a remote.
 	origin, err := git.Git(ctx, c, workspace, []string{"remote", "get-url", "origin"})
 	if err != nil {
 		t.Fatal(err)
@@ -215,14 +188,11 @@ func TestCloneAtCreatesAnIndependentCheckout(t *testing.T) {
 		!strings.Contains(string(exclude), "/.octomus/") {
 		t.Fatalf("exclude = %q, %v", exclude, err)
 	}
-	// An existing destination is never clobbered; recovery must inspect it.
 	if err := git.CloneAt(ctx, c, workspace, revision); err == nil {
 		t.Fatal("cloning over an existing workspace must fail")
 	}
 }
 
-// TestRemoteValidationAndRevisionLookup covers the configured-remote checks
-// and ls-remote revision reads against the fixture peer.
 func TestRemoteValidationAndRevisionLookup(t *testing.T) {
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
@@ -257,12 +227,6 @@ func TestRemoteValidationAndRevisionLookup(t *testing.T) {
 	}
 }
 
-// TestValidateRemoteForms pins which origin URLs name the configured GitHub
-// repository. Task clones copy the origin into their own configuration and
-// publication pushes to it, so a URL carrying credentials, another host or
-// transport, or another path must never pass. It runs real Git with no global
-// or system configuration, so no url.insteadOf rewrite changes what origin
-// reports, and a stub gh that answers only the auth check.
 func TestValidateRemoteForms(t *testing.T) {
 	repo := initRepo(t)
 	bin := t.TempDir()
@@ -284,7 +248,7 @@ func TestValidateRemoteForms(t *testing.T) {
 	)
 	for _, tc := range []struct {
 		origin string
-		want   string // "" accepts
+		want   string
 	}{
 		{"https://github.com/fixture/project.git", ""},
 		{"git@github.com:fixture/project.git", ""},
@@ -309,7 +273,6 @@ func TestValidateRemoteForms(t *testing.T) {
 			t.Errorf("origin %q = %v; want %q", tc.origin, err, tc.want)
 		}
 	}
-	// A valid origin still needs gh authenticated against github.com.
 	realGit(t, repo, "remote", "set-url", "origin", "https://github.com/fixture/project.git")
 	writeFile(t, filepath.Join(bin, "gh.unauthenticated"), "")
 	if err := git.ValidateRemote(ctx, c); err == nil {
@@ -317,11 +280,6 @@ func TestValidateRemoteForms(t *testing.T) {
 	}
 }
 
-// TestRemoteRevisionIgnoresTailMatchingRefs: ls-remote patterns also match the
-// tail of longer ref names, so a branch named `a/refs/heads/main` answers the
-// query for `refs/heads/main` too, and sorts first. Only the exact ref may
-// resolve: a decoy must neither replace the real head nor make an absent
-// branch look present.
 func TestRemoteRevisionIgnoresTailMatchingRefs(t *testing.T) {
 	c, root := fixtureRoot(t)
 	ctx := context.Background()
@@ -343,8 +301,6 @@ func TestRemoteRevisionIgnoresTailMatchingRefs(t *testing.T) {
 	}
 }
 
-// TestCleanlinessAndSnapshot covers `git status --porcelain` cleanliness, HEAD
-// comparison, and staged snapshot commits in a real workspace.
 func TestCleanlinessAndSnapshot(t *testing.T) {
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
@@ -379,15 +335,11 @@ func TestCleanlinessAndSnapshot(t *testing.T) {
 	if ok, err := git.At(ctx, c, workspace, commit); err != nil || !ok {
 		t.Fatalf("post-snapshot workspace = %v, %v; want clean at the new head", ok, err)
 	}
-	// A second snapshot with nothing staged keeps HEAD unchanged.
 	if again, err := git.Snapshot(ctx, c, workspace, "No change"); err != nil || again != commit {
 		t.Fatalf("unchanged snapshot = %s, %v; want %s", again, err, commit)
 	}
 }
 
-// The snapshot commit is published with the branch, so its message is
-// scrubbed like PR metadata: token-shaped text and secret environment values
-// never reach Git history.
 func TestSnapshotScrubsCommitMessage(t *testing.T) {
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
@@ -413,9 +365,6 @@ func TestSnapshotScrubsCommitMessage(t *testing.T) {
 	}
 }
 
-// TestParseInventory exercises the paginated inventory contract: sorting,
-// identical duplicates tolerated, and hard failures for conflicting entries,
-// missing identity, foreign repositories, unknown states and empty replies.
 func TestParseInventory(t *testing.T) {
 	c := testConfig()
 	entry := func(number int, state, branch, head, base, baseRepo, body string) string {
@@ -471,8 +420,6 @@ func TestParseInventory(t *testing.T) {
 	}
 }
 
-// publicationTask builds the recorded task state publication expects: a clean
-// review and passing verification at the output commit.
 func publicationTask(c config.Config, workspace, commit, source, id string) model.Task {
 	return model.Task{
 		ID:              id,
@@ -494,9 +441,6 @@ func publicationTask(c config.Config, workspace, commit, source, id string) mode
 	}
 }
 
-// publishableTask clones a real workspace at the fixture main head, lands a
-// reviewed change and returns the checkpointed publication task plus its
-// output commit.
 func publishableTask(t *testing.T, c config.Config, root, id string) (model.Task, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -516,9 +460,6 @@ func publishableTask(t *testing.T, c config.Config, root, id string) (model.Task
 	return publicationTask(c, workspace, commit, source, id), commit
 }
 
-// TestFixturePublishCreatesPullRequest drives the whole publication sequence
-// through the fixture peers: remote validation, ancestry, the leased push, and
-// the `gh pr create` whose URL is validated rather than trusted.
 func TestFixturePublishCreatesPullRequest(t *testing.T) {
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
@@ -544,13 +485,11 @@ func TestFixturePublishCreatesPullRequest(t *testing.T) {
 	if pr.Number != 1 || pr.URL != "https://github.com/fixture/project/pull/1" {
 		t.Fatalf("published = %+v; want PR #1 at the fixture URL", pr)
 	}
-	// The pushed head on the fixture remote is the reviewed commit.
 	remoteHead := realGit(t, root, "--git-dir", filepath.Join(root, "remote.git"),
 		"rev-parse", "refs/heads/octomus/work")
 	if remoteHead != commit {
 		t.Fatalf("remote branch = %s; want the reviewed commit %s", remoteHead, commit)
 	}
-	// The default branch never moved.
 	if remoteMain := realGit(t, root, "--git-dir", filepath.Join(root, "remote.git"),
 		"rev-parse", "main"); remoteMain != source {
 		t.Fatalf("remote main = %s; want untouched %s", remoteMain, source)
@@ -566,7 +505,6 @@ func TestFixturePublishCreatesPullRequest(t *testing.T) {
 	if len(created) != 1 {
 		t.Fatalf("prs.json = %s; want exactly one PR", prs)
 	}
-	// The peer recorded the exact --title argument and --body-file payload.
 	if title, _ := created[0]["title"].(string); title != "Concrete improvement" {
 		t.Fatalf("outbound title = %q; want the proposal title", title)
 	}
@@ -582,7 +520,6 @@ func TestFixturePublishCreatesPullRequest(t *testing.T) {
 	if !strings.Contains(string(publications), `"action": "create"`) {
 		t.Fatalf("publications = %s; want a create action", publications)
 	}
-	// A second publish of the same task reconciles as already delivered.
 	again, err := git.Publish(ctx, task)
 	if err != nil {
 		t.Fatal(err)
@@ -596,14 +533,11 @@ func TestFixturePublishCreatesPullRequest(t *testing.T) {
 	}
 }
 
-// TestFixtureFollowUpAppendsComment covers the owned-PR follow-up path: the
-// evidence lands as an append-only comment and the description is untouched.
 func TestFixtureFollowUpAppendsComment(t *testing.T) {
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
 	ctx := context.Background()
 	checkout := c.Repository
-	// Earlier Octomus work on the owned branch, with its own marker.
 	realGit(t, checkout, "checkout", "-b", "octomus/existing")
 	writeFile(t, filepath.Join(checkout, "earlier.txt"), "Preserve the earlier improvement.\n")
 	realGit(t, checkout, "add", ".")
@@ -612,7 +546,6 @@ func TestFixtureFollowUpAppendsComment(t *testing.T) {
 	earlier := realGit(t, checkout, "rev-parse", "HEAD")
 	realGit(t, checkout, "checkout", "main")
 	writeFile(t, filepath.Join(root, "prs.json"), fmt.Sprintf(`[{"number":42,"title":"An existing improvement","body":"Existing context.\n<!-- octomus:task:earlier -->","head":{"ref":"octomus/existing","sha":%q,"repo":{"full_name":"fixture/project"}},"base":{"ref":"main","repo":{"full_name":"fixture/project"}},"html_url":"https://github.com/fixture/project/pull/42","state":"open","merged_at":null,"additions":2000,"deletions":0,"created_at":"2026-08-01T00:00:00Z"}]`, earlier))
-	// The follow-up task builds on the delivered head of the existing branch.
 	workspace := filepath.Join(root, "data", "tasks", "task-2", "workspace")
 	if err := git.CloneAt(ctx, c, workspace, earlier); err != nil {
 		t.Fatal(err)
@@ -660,17 +593,11 @@ func TestFixtureFollowUpAppendsComment(t *testing.T) {
 	if len(comments) != 1 || !strings.Contains(fmt.Sprint(comments[0]), "<!-- octomus:task:task-2 -->") {
 		t.Fatalf("comments = %v; want the follow-up marker appended", comments)
 	}
-	// The maintainer-editable description is never rewritten by a follow-up.
 	if body, _ := saved[0]["body"].(string); !strings.HasPrefix(body, "Existing context.") {
 		t.Fatalf("body = %q; want the original description preserved", body)
 	}
 }
 
-// TestFixturePublishScrubsSecretsForPublicDelivery: token-patterned and
-// environment-secret values in the proposal, the verification command and the
-// executor summary are scrubbed from the exact title argument and body
-// payload the peer receives, while harmless text and the delivery identity
-// survive intact.
 func TestFixturePublishScrubsSecretsForPublicDelivery(t *testing.T) {
 	c, root := fixtureRoot(t)
 	ctx := context.Background()
@@ -723,8 +650,6 @@ func TestFixturePublishScrubsSecretsForPublicDelivery(t *testing.T) {
 	if pr.Number != 1 {
 		t.Fatalf("published = %+v; want PR #1", pr)
 	}
-	// Replaying the delivery adds nothing even though the task's canonical
-	// text still carries the secret-shaped values.
 	again, err := git.Publish(ctx, task)
 	if err != nil || again.Number != 1 {
 		t.Fatalf("re-publication = %+v, %v; want the existing PR", again, err)
@@ -735,15 +660,11 @@ func TestFixturePublishScrubsSecretsForPublicDelivery(t *testing.T) {
 	}
 }
 
-// TestFixtureFollowUpScrubsCommentMetadata: an owned-PR follow-up posts the
-// scrubbed record as an append-only comment; the maintainer-visible
-// description is preserved byte-for-byte.
 func TestFixtureFollowUpScrubsCommentMetadata(t *testing.T) {
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
 	ctx := context.Background()
 	checkout := c.Repository
-	// Earlier Octomus work on the owned branch, with its own marker.
 	realGit(t, checkout, "checkout", "-b", "octomus/existing")
 	writeFile(t, filepath.Join(checkout, "earlier.txt"), "Preserve the earlier improvement.\n")
 	realGit(t, checkout, "add", ".")
@@ -812,7 +733,6 @@ func TestFixtureFollowUpScrubsCommentMetadata(t *testing.T) {
 			t.Fatalf("follow-up comment missing %q: %q", want, comment)
 		}
 	}
-	// Replaying the follow-up appends no second comment.
 	again, err := git.Publish(ctx, task)
 	if err != nil || again.Number != 42 {
 		t.Fatalf("replayed follow-up = %+v, %v; want PR #42", again, err)
@@ -823,9 +743,6 @@ func TestFixtureFollowUpScrubsCommentMetadata(t *testing.T) {
 	}
 }
 
-// TestFixturePublishLongBodyKeepsDeliveryIdentity: a body far beyond the
-// bounded operator-message formatter's 16,384-character cap is delivered
-// whole — publication never routes through that truncating formatter.
 func TestFixturePublishLongBodyKeepsDeliveryIdentity(t *testing.T) {
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
@@ -856,17 +773,13 @@ func TestFixturePublishLongBodyKeepsDeliveryIdentity(t *testing.T) {
 	}
 }
 
-// TestPublishRefusesUnsafeMetadataBeforeAnyWrite: metadata that cannot be
-// represented safely is refused before the first outbound write — no push, no
-// pull request, no comment — and the operator-facing refusal never echoes the
-// rejected private text.
 func TestPublishRefusesUnsafeMetadataBeforeAnyWrite(t *testing.T) {
 	cases := []struct {
 		name   string
 		id     string
 		adjust func(*model.Task)
 		want   string
-		echo   string // planted private text that must never surface in the error
+		echo   string
 	}{
 		{
 			name: "oversized body",
@@ -905,9 +818,6 @@ func TestPublishRefusesUnsafeMetadataBeforeAnyWrite(t *testing.T) {
 			want: "unsupported character",
 		},
 		{
-			// A task id colliding with the token policy destroys the marker
-			// under scrubbing: delivery is refused rather than published
-			// without its identity.
 			name:   "marker collision",
 			id:     "task-ghp_collisionSecret777",
 			adjust: func(task *model.Task) {},
@@ -939,7 +849,6 @@ func TestPublishRefusesUnsafeMetadataBeforeAnyWrite(t *testing.T) {
 			if tc.echo != "" && strings.Contains(err.Error(), tc.echo) {
 				t.Fatalf("refusal echoed the rejected private text: %q", err)
 			}
-			// Nothing reached the remote: no pushed branch, no PR, no comment.
 			if rev, err := git.RemoteRevision(ctx, c, task.Branch); err != nil || rev != nil {
 				t.Fatalf("remote branch = %v, %v; want nothing pushed", rev, err)
 			}
@@ -956,9 +865,6 @@ func TestPublishRefusesUnsafeMetadataBeforeAnyWrite(t *testing.T) {
 	}
 }
 
-// TestPublishRejectsStaleBase pins the remote-movement guard: when the default
-// branch advanced past the recorded source, publication refuses with
-// StaleBase rather than pushing.
 func TestPublishRejectsStaleBase(t *testing.T) {
 	c, root := fixtureRoot(t)
 	ctx := context.Background()
@@ -975,7 +881,6 @@ func TestPublishRejectsStaleBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The remote default branch moves after the task recorded its base.
 	writeFile(t, filepath.Join(c.Repository, "other.txt"), "moved\n")
 	realGit(t, c.Repository, "add", ".")
 	realGit(t, c.Repository, "commit", "-m", "External movement")
@@ -988,16 +893,11 @@ func TestPublishRejectsStaleBase(t *testing.T) {
 	if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonStaleBase {
 		t.Fatalf("reason = %v; want stale_base", reason)
 	}
-	// Nothing reached the remote.
 	if rev, err := git.RemoteRevision(ctx, c, "octomus/work"); err != nil || rev != nil {
 		t.Fatalf("remote branch = %v, %v; want nothing pushed", rev, err)
 	}
 }
 
-// TestFixturePublishListsLatestVerificationOnly: a command that failed and was
-// later re-run successfully at the same reviewed commit is described by its
-// latest result only — the one that gated publication — so the public text
-// never shows both outcomes for one command.
 func TestFixturePublishListsLatestVerificationOnly(t *testing.T) {
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test", "make lint"}
@@ -1027,9 +927,6 @@ func TestFixturePublishListsLatestVerificationOnly(t *testing.T) {
 	}
 }
 
-// TestPublishGatesOnTheLatestVerificationPerCommand: only the most recent
-// record of each configured command gates publication, and it must be a
-// success at the reviewed commit.
 func TestPublishGatesOnTheLatestVerificationPerCommand(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -1086,13 +983,7 @@ func TestPublishGatesOnTheLatestVerificationPerCommand(t *testing.T) {
 	}
 }
 
-// TestPublishGatesRefuseBeforeAnyWrite: each safety gate in front of the push
-// refuses on its own, with its typed reason, and leaves the remote exactly as it
-// was: no ref moved, no pull request created, no comment posted. Unreviewed,
-// moved or foreign work must never reach the remote. The verification gate has
-// its own table in TestPublishGatesOnTheLatestVerificationPerCommand.
 func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
-	// seedPRs writes pull requests the gh peer serves for the task's branch.
 	seedPRs := func(t *testing.T, root string, prs ...map[string]any) {
 		t.Helper()
 		data, err := json.Marshal(prs)
@@ -1130,8 +1021,6 @@ func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
 			want:   "Publication requires a clean review at the output revision",
 		},
 		{
-			// An earlier clean review of the output does not cover a later
-			// round that reviewed something else.
 			name: "latest review at another revision",
 			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
 				later := task.Reviews[0]
@@ -1164,8 +1053,6 @@ func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
 			want:   "Cannot publish outside the owned branch namespace",
 		},
 		{
-			// Even a prefix that admits every branch never admits the default
-			// branch itself.
 			name: "default branch",
 			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
 				task.Config.BranchPrefix = ""
@@ -1191,8 +1078,6 @@ func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
 			want:   "Workspace HEAD changed after review",
 		},
 		{
-			// Two pull requests from the branch cannot be told apart; the
-			// foreign head repository keeps the peer from resolving their heads.
 			name: "ambiguous PR association",
 			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
 				seedPRs(t, root,
@@ -1203,8 +1088,6 @@ func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
 			want:   "Ambiguous PR association; reconcile before publication",
 		},
 		{
-			// An owned, open pull request on the branch carries another task's
-			// marker: this task must not publish over it.
 			name: "branch owned by another task",
 			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
 				realGit(t, root, "--git-dir", filepath.Join(root, "remote.git"),
@@ -1215,8 +1098,6 @@ func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
 			want:   "Branch is already associated with another task",
 		},
 		{
-			// The reviewed output descends from the default head but not from
-			// the recorded source revision.
 			name: "output does not contain the recorded source",
 			adjust: func(t *testing.T, root string, task *model.Task, commit string) {
 				realGit(t, task.Workspace, "checkout", "--detach", task.SourceRevision)
@@ -1247,7 +1128,6 @@ func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
 			if !strings.HasPrefix(err.Error(), tc.want+": ") {
 				t.Fatalf("refusal = %q; want %q", err, tc.want)
 			}
-			// Nothing reached the remote: no ref moved, no PR, no comment.
 			if after := realGit(t, root, "--git-dir", remote, "for-each-ref"); after != refs {
 				t.Fatalf("remote refs = %q; want them unchanged from %q", after, refs)
 			}
@@ -1259,15 +1139,10 @@ func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
 	}
 }
 
-// TestFixturePublishNeverRecursesIntoSubmodules: publication pushes only the
-// owned branch even when the operator's global Git configuration enables
-// submodule recursion and the reviewed commit moves a submodule to a commit
-// its own remote has never seen.
 func TestFixturePublishNeverRecursesIntoSubmodules(t *testing.T) {
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
 	ctx := context.Background()
-	// A submodule remote with one commit on main, added to the fixture's main.
 	sub := filepath.Join(root, "sub.git")
 	realGit(t, root, "init", "--bare", "-b", "main", sub)
 	seed := filepath.Join(root, "sub-seed")
@@ -1280,7 +1155,6 @@ func TestFixturePublishNeverRecursesIntoSubmodules(t *testing.T) {
 	realGit(t, c.Repository, "commit", "-m", "Add submodule")
 	realGit(t, c.Repository, "push", "origin", "main")
 	task, _ := publishableTask(t, c, root, "task-submodule")
-	// The reviewed change also moves the submodule to a local, unpushed commit.
 	realGit(t, task.Workspace, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
 	writeFile(t, filepath.Join(task.Workspace, "sub", "lib.txt"), "changed locally\n")
 	realGit(t, filepath.Join(task.Workspace, "sub"), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com",
@@ -1292,7 +1166,6 @@ func TestFixturePublishNeverRecursesIntoSubmodules(t *testing.T) {
 	task.OutputCommit = strptr(commit)
 	task.Reviews[0].Revision = commit
 	task.Verification[0].Revision = commit
-	// Ambient operator configuration that would otherwise recurse on push.
 	global := filepath.Join(root, "global.gitconfig")
 	writeFile(t, global, "[submodule]\n\trecurse = true\n[push]\n\trecurseSubmodules = on-demand\n[protocol \"file\"]\n\tallow = always\n")
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
@@ -1308,15 +1181,10 @@ func TestFixturePublishNeverRecursesIntoSubmodules(t *testing.T) {
 	}
 }
 
-// TestPublishUncertainWrapsCauseOnce: an untyped publication failure is
-// reported as PublicationUncertain with the reason sentence stated once,
-// followed by the underlying cause.
 func TestPublishUncertainWrapsCauseOnce(t *testing.T) {
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
 	task, _ := publishableTask(t, c, root, "task-uncertain")
-	// The fixture still answers `remote get-url` and `gh auth status`, so the
-	// first failure is ls-remote in a checkout that is not a repository.
 	task.Config.Repository = t.TempDir()
 	_, err := git.Publish(context.Background(), task)
 	if err == nil {
@@ -1334,9 +1202,6 @@ func TestPublishUncertainWrapsCauseOnce(t *testing.T) {
 	}
 }
 
-// TestPublicationChecksEveryIdentityFieldAndClosedReconciliation: every
-// identity field (repositories, ownership, branch, base, reviewed head, marker)
-// must match, and closed/merged states pass only explicit reconciliation.
 func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T) {
 	c := testConfig()
 	commit := strings.Repeat("a", 40)
@@ -1350,7 +1215,6 @@ func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T
 	if err := git.ValidatePublication(task, pr, true, false); err != nil {
 		t.Fatalf("matching publication rejected: %v", err)
 	}
-	// A missing task marker fails publication even when every field matches.
 	if err := git.ValidatePublication(task, pr, false, false); err == nil {
 		t.Fatal("publication without the task marker must fail")
 	}
@@ -1379,9 +1243,6 @@ func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T
 	}
 }
 
-// TestFixtureGhChildCleanup exercises fixture-peer cleanup: the gh fixture can
-// spawn a delayed child, and cancelling mid-call must terminate the peer's own
-// descendant within bounded time rather than leaking it.
 func TestFixtureGhChildCleanup(t *testing.T) {
 	c, root := fixtureRoot(t)
 	if _, err := os.Stat("/proc/self"); err != nil {
@@ -1399,7 +1260,6 @@ func TestFixtureGhChildCleanup(t *testing.T) {
 		Pid      int `json:"pid"`
 		ChildPid int `json:"child_pid"`
 	}
-	// The file appears before its line lands, so wait for a decodable record.
 	if !testutil.WaitUntil(5*time.Second, func() bool {
 		data, err := os.ReadFile(logPath)
 		if err != nil {
@@ -1423,7 +1283,6 @@ func TestFixtureGhChildCleanup(t *testing.T) {
 	if !testutil.WaitUntil(5*time.Second, func() bool { return testutil.ProcessGone(child) }) {
 		t.Fatal("the fixture peer's descendant survived cancellation")
 	}
-	// The peer's leader was waited for: its proc entry is gone entirely.
 	if !testutil.WaitUntil(5*time.Second, func() bool {
 		_, err := os.Stat("/proc/" + fmt.Sprint(entry.Pid))
 		return errors.Is(err, os.ErrNotExist)

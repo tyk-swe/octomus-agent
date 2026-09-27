@@ -1,7 +1,5 @@
 package runner
 
-// Owned OpenCode HTTP servers. Protocol baseline: OpenCode 1.18.30 (v2 SDK
-// types).
 import (
 	"context"
 	"encoding/json"
@@ -37,8 +35,6 @@ func OpenCodeVersionWarning(version string) *string {
 	return &warning
 }
 
-// OpenCode owns a `serve --hostname 127.0.0.1 --port 0` child and speaks its
-// HTTP/SSE API.
 type OpenCode struct {
 	child     *process.GroupChild
 	stdout    *os.File
@@ -67,8 +63,6 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		return nil, err
 	}
 	password := passwordID.String()
-	// A unique agent cannot inherit a host agent's model, variant, or tool
-	// settings.
 	agentID, err := uuid.NewRandom()
 	if err != nil {
 		return nil, err
@@ -94,7 +88,6 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		return nil, err
 	}
 	cmd.Stdout = stdoutW
-	// Stderr is kept only as a bounded tail that explains a connect failure.
 	tail := &stderrTail{}
 	cmd.Stderr = tail
 	cmd.WaitDelay = stderrWaitDelay
@@ -109,8 +102,6 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	go func() { waitCh <- cmd.Wait() }()
 	done := make(chan struct{})
 	lines := lineReader(stdoutR, 16_384, done)
-	// Startup cleanup joins the line reader and the direct child under one
-	// bounded wait; the startup error is returned regardless of cleanup.
 	cleanup := func(err error) (*OpenCode, error) {
 		close(done)
 		child.Close()
@@ -141,8 +132,6 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		return cleanup(err)
 	}
 	client := newLoopbackClient()
-	// Discard stdout without retaining raw logs, including after a malformed
-	// stream ends the line reader.
 	drainDone := discardStdout(lines, stdoutR)
 	server := &OpenCode{
 		child:     child,
@@ -159,8 +148,6 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		done:      done,
 		drainDone: drainDone,
 	}
-	// Once the server value exists, Close owns joining the transport, drain
-	// goroutine, and child wait; the connect error is still the result.
 	fail := func(err error) (*OpenCode, error) {
 		_ = server.Close()
 		return nil, tail.explain(err)
@@ -178,8 +165,6 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		return fail(fmt.Errorf("Missing OpenCode version"))
 	}
 	server.version = version
-	// Managed host settings can override inline config; do not run with
-	// changed policy.
 	effective, err := server.call("GET", "/config", cwd, nil, 60)
 	if err != nil {
 		return fail(err)
@@ -190,8 +175,6 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	return server, nil
 }
 
-// newLoopbackClient is the owned server's HTTP client: no proxy, a bounded
-// dial, and redirects returned as responses instead of followed.
 func newLoopbackClient() *http.Client {
 	transport := &http.Transport{
 		Proxy:       nil,
@@ -205,16 +188,12 @@ func newLoopbackClient() *http.Client {
 	}
 }
 
-// ProtocolSchema is the version-specific schema for contract checks, fetched
-// from the owned server.
 func (o *OpenCode) ProtocolSchema(cwd string) (any, error) {
 	return o.call("GET", "/doc", cwd, nil, 60)
 }
 
 func (o *OpenCode) Version() string { return o.version }
 
-// Diagnose reports the server version against the documented protocol
-// baseline.
 func (o *OpenCode) Diagnose(cwd string) (Diagnostics, error) {
 	return Diagnostics{
 		Backend:         config.BackendOpencode,
@@ -248,7 +227,6 @@ func (o *OpenCode) request(ctx context.Context, method, path, cwd string, body a
 	return req, nil
 }
 
-// roundTrip sends one JSON request and reads a bounded JSON response.
 func (o *OpenCode) roundTrip(ctx context.Context, method, path, cwd string, body any) (any, error) {
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
@@ -267,35 +245,21 @@ func (o *OpenCode) roundTrip(ctx context.Context, method, path, cwd string, body
 	return readJSONBody(response.Body)
 }
 
-// statusSnippetLimit bounds the body bytes a failed response reports.
 const statusSnippetLimit = 4096
 
-// statusReadLimit bounds how much of a failed response's body is read. The
-// read goes past the snippet so that a secret straddling the snippet's end is
-// redacted whole before the snippet is cut.
 const statusReadLimit = 4 * statusSnippetLimit
 
-// statusBodyWait bounds how long a failed response's body is read, so a body
-// that stalls cannot hold the caller until its own, possibly session-long,
-// deadline.
 const statusBodyWait = 2 * time.Second
 
-// statusError reports a non-2xx OpenCode response with its status and a
-// bounded, redacted body snippet. stop cancels the request's context; it ends
-// a body read still running after statusBodyWait.
 func statusError(prefix string, response *http.Response, stop context.CancelFunc) error {
 	timer := time.AfterFunc(statusBodyWait, stop)
 	body, err := io.ReadAll(io.LimitReader(response.Body, statusReadLimit+1))
 	timer.Stop()
 	text := redact.Secrets(strings.ToValidUTF8(string(body), "\uFFFD"))
 	if err != nil || len(body) > statusReadLimit {
-		// The read stopped inside the body, so its last word may be the start
-		// of a secret that redaction cannot recognise, and the words before
-		// it the first words of an environment secret.
 		text = redact.TrimCutSecretEnd(beforeLastWord(text))
 	}
 	if len(text) > statusSnippetLimit {
-		// Redaction already ran, so this cut cannot expose part of a secret.
 		cut := statusSnippetLimit
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
@@ -305,8 +269,6 @@ func statusError(prefix string, response *http.Response, stop context.CancelFunc
 	return fmt.Errorf("%s with HTTP %s: %s", prefix, response.Status, text)
 }
 
-// postBestEffort sends a cleanup request bounded by its own timeout,
-// independent of the owner context, and ignores the outcome.
 func (o *OpenCode) postBestEffort(timeout time.Duration, path, cwd string, body any) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -322,15 +284,12 @@ func (o *OpenCode) postBestEffort(timeout time.Duration, path, cwd string, body 
 	response.Body.Close()
 }
 
-// call is one bounded JSON round trip under the owner context.
 func (o *OpenCode) call(method, path, cwd string, body any, seconds uint64) (any, error) {
 	return process.Bounded(o.ctx, seconds, "OpenCode response timed out", func(wctx context.Context) (any, error) {
 		return o.roundTrip(wctx, method, path, cwd, body)
 	})
 }
 
-// readJSONBody reads a JSON body capped at exactly MaxMessage and rejects
-// trailing data.
 func readJSONBody(r io.Reader) (any, error) {
 	var data []byte
 	chunk := make([]byte, 32768)
@@ -441,8 +400,6 @@ func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, 
 		return "", err
 	}
 	path := "/session/" + seg
-	// The structured-result check runs inside the bound so that a
-	// schema-invalid result aborts the session like every other failure.
 	answer, err := process.Bounded(o.ctx, o.timeout, "OpenCode session time limit exceeded", func(wctx context.Context) (string, error) {
 		answer, err := o.turnInner(wctx, session, path, route, cwd, prompt, schema)
 		if err != nil {
@@ -451,16 +408,12 @@ func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, 
 		return FinishTurn(answer, schema)
 	})
 	if err != nil {
-		// Independent of the cancelled owner context. Cleanup is bounded;
-		// closing the adapter kills the group.
 		o.postBestEffort(5*time.Second, path+"/abort", cwd, nil)
 		return "", err
 	}
 	return answer, nil
 }
 
-// valueResult carries one decoded value or the error that ended its
-// producer: the message POST's response or one SSE event.
 type valueResult struct {
 	value any
 	err   error
@@ -469,7 +422,6 @@ type valueResult struct {
 func (o *OpenCode) turnInner(wctx context.Context, session, path string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
 	inner, cancel := context.WithCancel(wctx)
 	defer cancel()
-	// Subscribe before submitting so permission requests cannot be missed.
 	req, err := o.request(inner, "GET", "/event", cwd, nil)
 	if err != nil {
 		return "", err
@@ -482,8 +434,6 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return "", statusError("OpenCode event subscription failed", response, cancel)
 	}
-	// Resolve the message identity before any goroutine starts so entropy
-	// failure unwinds with only the body-close and cancel defers.
 	message, err := messageID()
 	if err != nil {
 		return "", err
@@ -534,8 +484,6 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 			value = result.value
 			done = true
 		case event, ok := <-events:
-			// sseLoop never closes events; if it ever did, this keeps the
-			// loop from spinning on zero values.
 			if !ok {
 				return "", fmt.Errorf("OpenCode event stream disconnected")
 			}
@@ -552,7 +500,6 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 	return o.validateTurn(value, session, message, route, schema)
 }
 
-// handleEvent processes one SSE event during a turn.
 func (o *OpenCode) handleEvent(event any, session, message string, route config.Route, cwd string) error {
 	doc, _ := asObject(event)
 	props, _ := asObject(doc["properties"])
@@ -656,7 +603,6 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 		if !ok || output == nil {
 			return "", fmt.Errorf("OpenCode returned no structured result")
 		}
-		// Turn validates the encoded result against the schema.
 		return marshal(output)
 	}
 	parts, ok := asArray(doc["parts"])
@@ -690,8 +636,6 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 	return answer.String(), nil
 }
 
-// errorName names an OpenCode error document, or "runtime error" when the
-// value carries no string name.
 func errorName(value any) string {
 	doc, _ := asObject(value)
 	if name, ok := strAt(doc, "name"); ok {
@@ -700,8 +644,6 @@ func errorName(value any) string {
 	return "runtime error"
 }
 
-// Close kills the process group, closes the pipe, joins the drain and child
-// wait with a bounded cleanup, and is idempotent.
 func (o *OpenCode) Close() error {
 	o.once.Do(func() {
 		close(o.done)

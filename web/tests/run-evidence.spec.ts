@@ -1,10 +1,3 @@
-/**
- * Browser coverage for the authenticated "Inspect run" experience.
- *
- * Every fixture here is explicitly synthetic. No reviewer text is copied from the
- * rehearsal report, and no test asserts a live model identity or a fresh GitHub
- * observation, because the feature does not claim either.
- */
 import { test, expect, type Locator, type Page, type Route } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import {
@@ -28,8 +21,6 @@ import {
   trackWrites
 } from './synthetic';
 
-// A poll can still be inside a route handler when a test ends; closing the page then
-// disposes its response. That teardown error says nothing about the test's result.
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
@@ -42,7 +33,6 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
   const writes = trackWrites(page);
   await login(page);
 
-  // Entry point: the existing latest-cycle panel on the overview.
   await page.getByRole('button', { name: 'Inspect run' }).click();
   const evidence = page.getByRole('dialog');
   await expect(evidence.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
@@ -50,7 +40,6 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
   await expect(page.getByText('Planning completion is not task completion').first()).toBeVisible();
   await expect(page.getByText('This is not a replayed event timeline')).toBeVisible();
 
-  // The recorded outcome first, then the published proposal's records in order.
   await expect(page.getByText('Planning complete', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Work complete')).toHaveCount(0);
   await page.getByLabel('Proposal', { exact: true }).selectOption('task-reviewed');
@@ -68,7 +57,6 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
   await expect(page.getByRole('heading', { name: 'Review at the output commit' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Configured checks' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Recorded pull request' })).toBeVisible();
-  // Reviewer A and B sit side by side on desktop and stack on narrow screens.
   const cards = page.locator('.reviewer-card');
   await expect(cards).toHaveCount(2);
   const [first, second] = await Promise.all([
@@ -82,7 +70,6 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
     expect(second!.y).toBeGreaterThan(first!.y + first!.height - 1);
   }
 
-  // Real server-normalized statuses, not recomputed booleans.
   await expect(page.getByText('Both reviewers recorded accepted', { exact: true })).toBeVisible();
   await expect(page.getByText('Clean at the output commit', { exact: true })).toBeVisible();
   await expect(page.getByText('All 1 passed at the output commit', { exact: true })).toBeVisible();
@@ -95,7 +82,6 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
   await expect(page.getByText('requested routes, not verified runtime identity')).toBeVisible();
   await expect(page.getByText('Limitations recorded in this evidence (9)')).toBeVisible();
 
-  // Deep inspection is handed to TaskDetail; the panels never stack.
   await page.getByRole('button', { name: 'Open task details' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await expect(page.getByRole('heading', { name: 'Recorded result' })).toBeVisible();
@@ -105,7 +91,6 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
     'href',
     'https://github.com/fixture/project/pull/12'
   );
-  // Operating limits are preserved, moved beneath the result into a disclosure.
   await expect(page.getByText('Effective operating limits')).toBeVisible();
   await page.getByText('Effective operating limits').click();
   await expect(page.getByText('Daily admissions:')).toBeVisible();
@@ -117,8 +102,6 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
 test('the queue fact reflects committed tasks, and published outcomes stay in task units', async ({
   page
 }, testInfo) => {
-  // The served cycle-1 run committed three tasks; the fact reports them, not a
-  // bare capability flag.
   await login(page);
   await expect(page.getByText('published task', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('published PR', { exact: false })).toHaveCount(0);
@@ -126,8 +109,6 @@ test('the queue fact reflects committed tasks, and published outcomes stay in ta
   await expect(page.getByText('Created — 3 tasks committed')).toBeVisible();
   await page.getByRole('button', { name: 'Close run evidence' }).click();
 
-  // An execution-enabled run that finished planning without committing work is
-  // not displayed as a created queue.
   await serveProposals(page, [proposalRow('accepted-only', 'synthetic-cycle', 7)]);
   await page.route('**/api/cycles/synthetic-cycle/evidence', async (route: Route) => {
     await route.fulfill({
@@ -230,7 +211,6 @@ test('accepted, rejected, deferred and missing reviewer assessments each render 
   await expect(page.getByText('Recorded verdicts differ')).toBeVisible();
   await expect(page.getByText('Deferred is not rejected.').first()).toBeVisible();
 
-  // A missing or malformed slot is never filled in from the other reviewer or the decision.
   await picker.selectOption('unreviewed-proposal');
   await expect(page.getByText('Reviewer evidence incomplete', { exact: true })).toBeVisible();
   await expect(page.getByText('No verdict recorded', { exact: true })).toBeVisible();
@@ -284,14 +264,12 @@ test('a decision word keeps one badge style on proposal cards, counts and the fi
       await look(counts.getByText(`${decision}: 1`, { exact: true }))
     );
   }
-  // Every decision badge in the list, the candidate's included, stays legible.
   const scan = await new AxeBuilder({ page })
     .include('.proposal-controls')
     .include('.proposal-list')
     .withTags(['wcag2a', 'wcag2aa'])
     .analyze();
   expect(scan.violations.map((violation) => violation.id)).toEqual([]);
-  // The recorded final decision in run evidence reads the same as the list.
   await page
     .locator('.proposal-card')
     .filter({ hasText: 'candidate-proposal' })
@@ -544,9 +522,7 @@ test('a review round with zero findings is not clean when incomplete or unsummar
   await expect(page.getByText('A round is clean only when it completed')).toBeVisible();
   await expect(page.getByText('No summary recorded', { exact: true })).toBeVisible();
   await expect(page.getByText('Incomplete', { exact: true })).toBeVisible();
-  // Exactly one of three zero-finding rounds is clean.
   await expect(page.getByText('Clean', { exact: true })).toHaveCount(1);
-  // Historical cleanliness and matching the output commit stay separate facts.
   await expect(page.getByText('Not the recorded output commit', { exact: true })).toHaveCount(2);
   await expect(page.getByText('At the recorded output commit', { exact: true })).toHaveCount(1);
   await expect(page.getByText('No review summary was recorded for this round.')).toBeVisible();
@@ -650,7 +626,6 @@ test('delayed evidence never overwrites a newer selection and is dropped on clos
   ).toBeVisible();
   release();
   await page.waitForTimeout(1000);
-  // The abandoned response must never replace the newer run.
   await expect(page.getByRole('heading', { name: 'Execution cycle #022' })).toBeVisible();
   await expect(page.getByText('Recorded in the abandoned selection')).toHaveCount(0);
 });
@@ -676,18 +651,15 @@ test('a delayed task evidence response is discarded after the selected task chan
     .getByRole('button', { name: 'Task queue', exact: true })
     .click();
 
-  // Published task first: its evidence request is held open.
   await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
   await expect(page.getByRole('heading', { name: 'Recorded result' })).toBeVisible();
   await page.getByRole('button', { name: 'Close task details' }).click();
 
-  // A different task in the same cycle resolves immediately.
   await page.getByRole('button', { name: /Complete the repository setup flow/ }).click();
   await expect(page.getByText('No review recorded', { exact: true })).toBeVisible();
   await expect(page.getByText('No pull request recorded', { exact: true })).toBeVisible();
   release();
   await page.waitForTimeout(1000);
-  // The earlier task's delivery evidence must not appear under this task.
   await expect(page.getByText('No pull request recorded', { exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open on GitHub' })).toHaveCount(0);
 });
@@ -775,7 +747,6 @@ test('read-only inspection and the evidence download perform no writes', async (
       expect(task).not.toHaveProperty('workspace');
       expect(task).not.toHaveProperty('verification');
     }
-  // Nothing in the panel offers upload or public sharing.
   await expect(page.getByRole('button', { name: /share/i })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /upload/i })).toHaveCount(0);
 
@@ -783,7 +754,6 @@ test('read-only inspection and the evidence download perform no writes', async (
   for (const tab of ['Sessions', 'Reviews', 'Verification', 'Activity', 'Overview'])
     await page.getByRole('tab', { name: new RegExp(tab) }).click();
   await expect(page.getByRole('heading', { name: 'Recorded result' })).toBeVisible();
-  // Owner actions remain present as explicit, separate actions.
   await expect(page.getByRole('link', { name: 'Open PR #12' })).toBeVisible();
 
   expect(writes).toEqual([]);
@@ -804,7 +774,6 @@ test('retained evidence is labelled stale after a failed refresh and cleared on 
       await route.fulfill({ status: 401, json: { error: 'Unauthorized' } });
     else await route.fulfill({ json: await (await route.fetch()).json() });
   });
-  // Each task poll reports a new revision so the evidence key changes and refetches.
   await page.route('**/api/tasks/task-reviewed', async (route: Route) => {
     const body = await (await route.fetch()).json();
     taskCalls += 1;
@@ -823,12 +792,10 @@ test('retained evidence is labelled stale after a failed refresh and cleared on 
 
   mode = 'fail';
   await expect(page.getByText('Retained · stale')).toBeVisible({ timeout: 15000 });
-  // Retained records stay visible, explicitly labelled rather than silently refreshed.
   await expect(page.getByText('Clean at the output commit', { exact: true })).toBeVisible();
   await expect(page.getByText('which may now be out of date')).toBeVisible();
 
   mode = 'unauthorized';
-  // A rejected session must not keep showing the previous session's records.
   await expect(page.getByText('Clean at the output commit', { exact: true })).toHaveCount(0, {
     timeout: 15000
   });
@@ -1125,7 +1092,6 @@ for (const action of [
   test(`a 401 from ${action.button} keeps the session-expired explanation`, async ({
     page
   }, testInfo) => {
-    // A configured, paused, idle service makes Run once available; nothing reaches the service.
     await page.route('**/api/state', async (route) => {
       const snapshot = await (await route.fetch()).json();
       snapshot.configured = true;
@@ -1190,7 +1156,6 @@ test('Escape closes task details through page state after its focused action was
   page
 }, testInfo) => {
   await page.clock.install();
-  // Task and task-event reads show whether the closed panel still polls.
   let taskReads = 0;
   page.on('request', (request) => {
     const url = new URL(request.url());
@@ -1204,7 +1169,6 @@ test('Escape closes task details through page state after its focused action was
   const held = new Promise<void>((resolve) => (release = resolve));
   await page.route('**/api/tasks/task-reviewed/archive', async (route) => {
     await held;
-    // Terminates in the browser: the shared fixture task stays published.
     await route.fulfill({ json: { ok: true } });
   });
   await login(page);
@@ -1218,7 +1182,6 @@ test('Escape closes task details through page state after its focused action was
   await row.click();
   const archive = page.getByRole('dialog').getByRole('button', { name: 'Archive task' });
   await archive.click();
-  // The pending action disables the focused button, so focus falls to the document body.
   await expect(archive).toBeDisabled();
   await expect.poll(() => focusOnBody(page)).toBe(true);
   release();
@@ -1246,14 +1209,12 @@ test('Escape closes run evidence after its focused retry control was replaced', 
   const inspect = page.getByRole('button', { name: 'Inspect run' });
   await inspect.click();
   const dialog = page.getByRole('dialog');
-  // The first request must have failed before the retry is allowed to succeed.
   await expect(
     dialog.getByRole('heading', { name: 'Recorded evidence could not be loaded' })
   ).toBeVisible();
   fail = false;
   await dialog.getByRole('button', { name: 'Try again' }).click();
   await expect(dialog.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
-  // The retry button is gone, so focus has fallen to the document body.
   expect(await focusOnBody(page)).toBe(true);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -1321,7 +1282,6 @@ test('overview and run evidence list only the proposal decisions that occurred',
     await route.fulfill({ json: snapshot });
   });
   await login(page);
-  // The cycle summary reports every decision, with 0 for those that never occurred.
   const overview = page
     .locator('.run-outcome')
     .getByRole('list', { name: 'Proposal decisions', exact: true });
@@ -1343,7 +1303,6 @@ test('overview and run evidence list only the proposal decisions that occurred',
 test('an idle cycle reads as finished planning that accepted nothing on the overview and in run evidence', async ({
   page
 }) => {
-  // The service saves `idle` for a successful cycle that queued no work.
   await page.route('**/api/state', async (route) => {
     const snapshot = await (await route.fetch()).json();
     snapshot.cycles[0].status = 'idle';

@@ -18,7 +18,6 @@ func TestUsageReportCountsEverySavedTaskAndOnlyLedgerAdmissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	stateDB := filepath.Join(dataDir, stateDBName)
-	// Open creates the current version-7 schema, including the admission ledger.
 	s, err := store.Open(stateDB)
 	if err != nil {
 		t.Fatal(err)

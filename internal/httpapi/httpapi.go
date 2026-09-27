@@ -1,8 +1,3 @@
-// Package httpapi serves the authenticated operator API exactly as the
-// current contract: route-layer authentication with bounded failure backoff,
-// content-type enforcement on mutations, JSON redaction on every matched
-// response, a 256 KiB request-body bound, security headers, /healthz, and the
-// dashboard asset fallback outside the API prefix.
 package httpapi
 
 import (
@@ -37,11 +32,9 @@ type api struct {
 	tokenHash [32]byte
 	failures  *authFailures
 	assets    http.Handler
-	table     []apiRoute // built once; read-only afterwards
+	table     []apiRoute
 }
 
-// authFailures implements bounded exponential delay: it starts
-// at 100 ms, doubles to a 1 s ceiling and resets after a quiet minute.
 type authFailures struct {
 	mu    sync.Mutex
 	count uint
@@ -67,9 +60,6 @@ func (f *authFailures) delay(now time.Time) time.Duration {
 	return delay
 }
 
-// handlerFunc answers one matched route: (status, body). A nil error writes
-// body as JSON; errors use {"error": message} at their classified status.
-// Extraction rejections keep their own response form.
 type handlerFunc func(w http.ResponseWriter, r *http.Request, params map[string]string) (int, any, error)
 
 type apiRoute struct {
@@ -78,8 +68,6 @@ type apiRoute struct {
 	handle handlerFunc
 }
 
-// Router assembles the service handler: /healthz and the asset fallback
-// unauthenticated, everything under /api behind the token middleware.
 func Router(app *engine.App, token, assetsOverride, version string) http.Handler {
 	s := &api{
 		app:       app,
@@ -111,8 +99,6 @@ func setHeaders(w http.ResponseWriter) {
 	h.Set("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 }
 
-// buildRoutes lists the API routes in match order: for a path, the first
-// route with the request's method wins.
 func (a *api) buildRoutes() []apiRoute {
 	return []apiRoute{
 		{"GET", segs("/state"), a.stateView},
@@ -141,14 +127,8 @@ func (a *api) buildRoutes() []apiRoute {
 
 func segs(pattern string) []string { return strings.Split(strings.TrimPrefix(pattern, "/"), "/") }
 
-// serveAPI applies route-layer semantics: path matching picks the
-// route (and its middleware) independent of method, so authentication and the
-// content-type rule run before the 405 dispatch, which names the path's
-// methods in Allow. Unmatched paths get the same 404 body without either check.
 func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 	parts := segs(path)
-	// allowed collects the methods of every route matching the path; the loop
-	// only completes without a method match, which is exactly the 405 case.
 	var allowed []string
 	var matched *apiRoute
 	params := map[string]string{}
@@ -186,7 +166,6 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 	if !a.authenticate(w, r) {
 		return
 	}
-	// Browser mutations require a non-simple content type. No CORS policy is enabled.
 	if r.Method != http.MethodGet && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		writeAPIError(w, http.StatusUnsupportedMediaType, "Use application/json")
 		return
@@ -209,8 +188,6 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 	writeJSON(w, status, body)
 }
 
-// authenticate verifies the bearer token by hash and answers failures after a
-// bounded exponential delay.
 func (a *api) authenticate(w http.ResponseWriter, r *http.Request) bool {
 	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	digest := sha256.Sum256([]byte(token))
@@ -222,10 +199,6 @@ func (a *api) authenticate(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// apiStatus classifies a handler error: storage (sqlite) and codec (wirejson)
-// failures are internal (500), the not-found and unknown-action sentinels are
-// 404, engine conflicts (baseline conflicts included) are 409, and anything
-// else is a bad request (400).
 func apiStatus(err error) int {
 	var jc *wirejson.Error
 	var sq *sqlite.Error
@@ -247,27 +220,18 @@ func apiStatus(err error) int {
 	}
 }
 
-// writeAPIError emits the one error body shape the dashboard reads. Matched-
-// route errors pass through the same redaction as success bodies.
 func writeAPIError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]any{"error": message})
 }
 
-// writeJSON encodes the response, redacts operator data and preserves
-// server-generated settings transform metadata, then writes compact JSON.
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	_, settingsView := value.(*engine.SettingsView)
 	generic, err := wirejson.Generic(value)
 	var out []byte
 	if err == nil {
 		if object, ok := generic.(map[string]any); ok && settingsView {
-			// transformed_fields is server-generated structural metadata: running
-			// secret scrubbing over its field names and paths can make the dashboard
-			// lose the association between a redacted preview and its config field.
 			transforms, hasTransforms := object["transformed_fields"]
 			delete(object, "transformed_fields")
-			// Keep the redacted value redact.JSON returns rather than relying on
-			// it scrubbing the map in place.
 			generic = redact.JSON(object)
 			if redacted, ok := generic.(map[string]any); ok && hasTransforms {
 				redacted["transformed_fields"] = transforms
@@ -286,8 +250,6 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_, _ = w.Write(out)
 }
 
-// writeRawJSON answers without redaction: healthz and assets never carry
-// operator data and bypass response redaction.
 func writeRawJSON(w http.ResponseWriter, status int, value any) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -299,10 +261,6 @@ func writeRawJSON(w http.ResponseWriter, status int, value any) {
 	_, _ = w.Write(data)
 }
 
-// decodeBody reads one JSON request body of at most 256 KiB. Its rejections are
-// plain-text bodyErrors: overflow is 413, an unreadable body or invalid JSON
-// syntax is 400, and a type or strict-decode failure (wirejson or
-// UnmarshalTypeError) is 422.
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 	if err != nil {
@@ -323,9 +281,6 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	return nil
 }
 
-// bodyError is an extraction-layer rejection of a request body or query
-// string. It is written as text/plain at its own status and never takes the
-// JSON error shape.
 type bodyError struct {
 	status  int
 	message string
@@ -344,8 +299,6 @@ func (a *api) stateView(_ http.ResponseWriter, r *http.Request, _ map[string]str
 	return http.StatusOK, view, err
 }
 
-// historyQuery parses the dashboard's paged history filter; malformed numbers
-// produce a 400 response.
 func historyQuery(r *http.Request) (store.HistoryQuery, error) {
 	var query store.HistoryQuery
 	values := r.URL.Query()
@@ -361,8 +314,6 @@ func historyQuery(r *http.Request) (store.HistoryQuery, error) {
 		if err != nil {
 			return query, &bodyError{http.StatusBadRequest, fmt.Sprintf("Invalid query string: %v", err)}
 		}
-		// Saturate instead of wrapping: an unsigned value above MaxInt would
-		// otherwise turn negative and page one item instead of the store's cap.
 		v := int(min(limit, math.MaxInt))
 		query.Limit = &v
 	}
@@ -380,7 +331,6 @@ func first(values map[string][]string, key string) *string {
 	return &list[0]
 }
 
-// history pages one record kind's history under the dashboard's filter.
 func (a *api) history(kind string) handlerFunc {
 	return func(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
 		query, err := historyQuery(r)
@@ -478,10 +428,6 @@ func (a *api) getConfig(_ http.ResponseWriter, _ *http.Request, _ map[string]str
 	return http.StatusOK, view, err
 }
 
-// configUpdateBody is the revision-gated settings write: the canonical
-// revision the operator loaded plus only the top-level fields being replaced.
-// Omitted fields keep their canonical saved values; whole-configuration bodies
-// without the revision are unknown fields here and are rejected.
 type configUpdateBody struct {
 	ExpectedRevision string                     `json:"expected_revision"`
 	Config           map[string]json.RawMessage `json:"config"`
@@ -505,8 +451,6 @@ func (a *api) saveConfig(w http.ResponseWriter, r *http.Request, _ map[string]st
 	return http.StatusOK, view, nil
 }
 
-// baselineStartBody rejects unknown fields; the request names the saved
-// canonical configuration revision rather than echoing displayed values.
 type baselineStartBody struct {
 	ExpectedRevision string `json:"expected_revision"`
 }
@@ -570,8 +514,6 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	if err != nil {
 		return 0, nil, err
 	}
-	// A passing result lists any version warnings in its body; a failing one
-	// answers with the error alone. The service log never receives them.
 	result, _, err := a.app.DoctorFor(cfg, mode)
 	status := http.StatusOK
 	var body map[string]any
@@ -590,13 +532,10 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	if err != nil {
 		return 0, nil, err
 	}
-	// The checked canonical revision is the authoritative identity the result
-	// applies to; the redacted display copy alone cannot carry it.
 	body["checked_revision"] = revision
 	return status, body, nil
 }
 
-// catalogRequest rejects unknown fields.
 type catalogRequest struct {
 	Backend config.Backend `json:"backend"`
 	Binary  string         `json:"binary"`

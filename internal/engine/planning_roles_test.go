@@ -10,10 +10,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// Each discovery agent takes its focus from discoveryScopes by index, so no
-// agent count the configuration accepts may exceed the scopes. A larger count
-// is refused before any session is admitted instead of panicking inside a
-// role goroutine.
 func TestDiscoveryScopesCoverEveryAcceptedAgentCount(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	scopes := uint64(len(discoveryScopes))
@@ -53,8 +49,6 @@ func TestDiscoveryScopesCoverEveryAcceptedAgentCount(t *testing.T) {
 	}
 }
 
-// Every reviewer slot has its own adversarial brief. The runner fixtures
-// recognize a reviewer turn by its "Adversarial proposal review" prefix.
 func TestEveryReviewerSlotHasAnIndependentFocus(t *testing.T) {
 	slots := model.ReviewerSlots()
 	if len(reviewFocus) != len(slots) {

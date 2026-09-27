@@ -15,15 +15,11 @@ SCRIPT = PROJECT / 'scripts/package.sh'
 TARGET = 'x86_64-unknown-linux-gnu'
 VERSION = 'v9.9.9-guard'
 
-# The archive is exactly the executable plus the documented allowlist: legal
-# files, operator docs and the systemd unit. Anything else is a packaging bug.
 ALLOWED = re.compile(
     r'octomus-agent(|/('
     r'octomus-agent|LICENSE|README\.md|SECURITY\.md|CHANGELOG\.md|CONTRIBUTING\.md|AGENTS\.md'
     r'|docs(|/.+)|deploy(|/.+)))/?$'
 )
-# Private state, credentials, transcripts, caches and test fixtures
-# must never appear even if the allowlist above is loosened by mistake.
 DENIED = re.compile(
     r'(\.git|\.octomus|service\.lock|state\.db|\.db-(wal|shm|journal)|node_modules'
     r'|package(-lock)?\.json|/(src|internal|cmd|web|tests|target|bin|dist)/|fixtures)'

@@ -1,10 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
 
-  /**
-   * The list search, bound to the page's query. The page focuses it on "/"; Escape
-   * clears a query here before the key reaches anything else.
-   */
   let { value = $bindable('') }: { value: string } = $props();
 </script>
 

@@ -23,12 +23,9 @@ TOKEN = 'distribution-fixture-token-at-least-32-characters'
 def smoke(binary):
     with tempfile.TemporaryDirectory(prefix='octomus-distribution-') as directory:
         root = Path(directory)
-        # Only the executable is copied; there is no web directory or Node dependency.
         executable = root / 'octomus-agent'
         shutil.copy(binary, executable)
         (root / 'empty-bin').mkdir()
-        # Like binary_contract.run: no ambient OCTOMUS_* setting (such as a real
-        # webhook URL) reaches the packaged service.
         env = {k: v for k, v in os.environ.items() if not k.startswith('OCTOMUS_')}
         env.update(OCTOMUS_TOKEN=TOKEN, PATH=str(root / 'empty-bin'))
         subprocess.run([str(executable), '--version'], cwd=root, env=env, check=True, timeout=15)
@@ -66,7 +63,6 @@ def smoke(binary):
                     process.wait(timeout=15)
                 log.seek(0)
                 assert ('Non-loopback listener' in log.read()) == (listen == '0.0.0.0')
-        # A regressed override check would start serving instead of exiting.
         failure = subprocess.run([str(executable), '--assets', str(root / 'missing')], cwd=root, env=env, capture_output=True, text=True, timeout=15)
         assert failure.returncode != 0 and 'Dashboard override missing' in failure.stderr
     print('PASS embedded binary: HTTP, JS, SPA, override validation and listener warnings')
@@ -81,8 +77,6 @@ def archive_with(path, members):
             tar.addfile(info, io.BytesIO(data))
 
 
-# Installer failures by fixture mode. Each one must leave the previous
-# installation untouched and no temporary executable in the destination.
 INSTALLER_FAILURES = {
     'checksum': 'Checksum mismatch; nothing installed',
     'duplicate': 'Missing or ambiguous checksum',
@@ -104,7 +98,6 @@ def installer(binary, package=None):
         release.mkdir()
         archive = release / 'package.tar.gz'
         if package:
-            # The real release archive goes through install.sh's own extraction.
             shutil.copyfile(package, archive)
         else:
             with tarfile.open(archive, 'w:gz') as tar:
@@ -136,9 +129,6 @@ else: output.write_bytes(archive)
         (peers / 'uname').write_text('''#!/bin/sh
 if [ "$1" = -s ]; then echo Linux; else echo "$INSTALLER_ARCH"; fi
 ''')
-        # Destinations are user-writable, so sudo must not be needed, except for the
-        # protected destination: there this peer stands in for root and opens that
-        # one directory for the duration of each command.
         (peers / 'sudo').write_text('''#!/bin/sh
 echo "$*" >> "$INSTALLER_FIXTURE/sudo-used"
 [ -n "${INSTALLER_SUDO_DIR:-}" ] || exit 1
@@ -165,8 +155,6 @@ exit "$status"
             assert path.read_bytes() == binary.read_bytes()
             assert os.access(path, os.X_OK)
             assert not list(path.parent.glob('.octomus-agent.*')), 'temporary executable left behind'
-            # The next steps print literally (quoted heredoc) and name the documented
-            # data directory, so state never lands in the shell's current directory.
             assert 'OCTOMUS_TOKEN="$(openssl rand -hex 32)"' in result.stdout, result.stdout
             assert 'octomus-agent --data-dir /var/lib/octomus/.octomus\n' in result.stdout, result.stdout
 
@@ -183,25 +171,20 @@ exit "$status"
                 env['INSTALLER_ARCH'] = 'riscv64' if mode == 'unsupported' else arch
                 refused(install('v0.1.0', mode=mode), message)
         env.update(INSTALLER_ARCH='x86_64', INSTALLER_TARGET='x86_64-unknown-linux-gnu')
-        # Only OCTOMUS_VERSION selects a release; a generic VERSION belongs to other tools.
         installed_binary(install(VERSION='1.4.2'))
         refused(install(mode='nolatest'), 'No published stable release found')
         installed_binary(install(mode='nolatest', OCTOMUS_VERSION='v0.1.0'))
-        # A version is a plain release tag: no path separators or untagged numbers
-        # reach the download URL.
         refused(install('v1.0/evil'), 'Invalid version')
         refused(install('1.0.0'), 'Version must be a release tag such as v0.1.0')
         refused(install(OCTOMUS_VERSION='v0.1.0/../evil'), 'Invalid version')
         refused(install(INSTALL_DIR='relative/bin'), 'INSTALL_DIR must be absolute')
         assert not (root / 'relative').exists(), 'relative INSTALL_DIR was created'
-        # A missing destination under a writable parent is created without sudo.
         fresh = root / 'fresh/bin'
         result = install(INSTALL_DIR=str(fresh))
         assert not (root / 'sudo-used').exists(), 'installer used sudo: ' + (root / 'sudo-used').read_text()
         installed_binary(result, fresh / 'octomus-agent')
         sudo = 'sudo for a non-writable INSTALL_DIR'
         if os.geteuid() == 0:
-            # Root can write every directory, so install.sh never reaches its sudo branch.
             sudo = 'sudo branch skipped as root'
         else:
             protected = root / 'protected'
@@ -220,8 +203,6 @@ exit "$status"
           + ', invalid version and relative INSTALL_DIR' + (', real package archive' if package else ''))
 
 
-# The package archive must never carry operator state, credentials, runner
-# transcripts, caches or test fixtures.
 DENIED_DIRECTORIES = {'.octomus', 'node_modules', 'tests', 'fixtures', '.git',
                       '.codex', '.opencode', '.cache', '.npm', '__pycache__'}
 DENIED_SUFFIXES = ('.db', '.sqlite', '.sqlite3', '.wal', '-wal', '.shm', '-shm',

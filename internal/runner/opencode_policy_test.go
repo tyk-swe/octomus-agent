@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// The owned server must report a loopback root address: http, host
-// 127.0.0.1, a nonzero explicit port, and no credentials, path, query or
-// fragment. The address is returned rebuilt from its port; credentials, a
-// path, a query or a fragment are refused rather than stripped.
 func TestParseReadyURL(t *testing.T) {
 	for _, endpoint := range []string{"http://127.0.0.1:4096", "http://127.0.0.1:4096/"} {
 		got, err := parseReadyURL(endpoint)
@@ -27,8 +23,6 @@ func TestParseReadyURL(t *testing.T) {
 		"http://127.0.0.1/",
 		"http://127.0.0.1:0/",
 		"http://127.0.0.1:65536/",
-		// The scheme's default port is elided by URL parsing, so it is not
-		// an explicit port.
 		"http://127.0.0.1:80/",
 		"http://user@127.0.0.1:4096/",
 		"http://user:pw@127.0.0.1:4096/",
@@ -45,9 +39,6 @@ func TestParseReadyURL(t *testing.T) {
 	}
 }
 
-// segment admits only [A-Za-z0-9_-] identities of 1-256 bytes and encodes
-// every byte that is not an ASCII letter or digit, so a runner-supplied ID is
-// always exactly one path segment.
 func TestSegment(t *testing.T) {
 	for id, want := range map[string]string{
 		"ses_ab-C9":              "ses%5Fab%2DC9",
@@ -80,8 +71,6 @@ func TestSegment(t *testing.T) {
 	}
 }
 
-// The policy sent to the server is exactly what the effective-config check
-// accepts once it round-trips through JSON, and only for its own agent.
 func TestWorkerPolicyPassesAppliedPolicy(t *testing.T) {
 	encoded, err := marshal(workerPolicy("octomus-a"))
 	if err != nil {
@@ -99,17 +88,12 @@ func TestWorkerPolicyPassesAppliedPolicy(t *testing.T) {
 	}
 }
 
-// Managed host settings can override any part of the inline policy. Each
-// single safety-critical drift from the policy the adapter sends makes the
-// effective config fail the check; unrelated extra settings do not.
 func TestAppliedPolicyRejectsEachDrift(t *testing.T) {
 	const agent = "octomus-x"
 	encoded, err := marshal(workerPolicy(agent))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// effective decodes a fresh copy of the sent policy, as the server
-	// reports it, so each case mutates its own document.
 	effective := func() map[string]any {
 		t.Helper()
 		value, err := decodeJSON([]byte(encoded))

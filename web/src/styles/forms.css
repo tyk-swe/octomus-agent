@@ -1,4 +1,3 @@
-/* Configuration inputs, the save bar, dialogs and their tabs. */
 label {
   display: flex;
   flex-direction: column;
@@ -53,8 +52,6 @@ select {
   background-position: right 11px center;
   padding-right: 34px;
 }
-/* A field that cannot be edited, whether disabled or a read-only preview, never looks
-   editable. The select keeps its chevron, so only the colour is set. */
 input:disabled,
 textarea:disabled,
 input[readonly],
@@ -356,7 +353,6 @@ pre {
     transform: rotate(360deg);
   }
 }
-/* Quiet scrollbars for the rails and scrollable regions. */
 .sidebar,
 .detail-content,
 .tabs,
