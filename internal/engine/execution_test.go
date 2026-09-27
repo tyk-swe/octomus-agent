@@ -1146,8 +1146,9 @@ func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
 	cancel()
 
 	err := app.superviseExecution(cancelled, task, func(ctx context.Context, _ *model.Task) error {
-		// Ignore the cancel long enough for the deadline to fire as well.
-		time.Sleep(1200 * time.Millisecond)
+		// Ignore the cancel long enough for the deadline to fire as well: two
+		// seconds past the one-second limit, inside the deadline grace.
+		time.Sleep(3 * time.Second)
 		return ctx.Err()
 	})
 	if err != nil {
