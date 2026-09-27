@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestBoundedReadKeepsTheHeadAndTheRealEnd: a stream past its limit keeps its
@@ -113,5 +114,20 @@ func TestTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
 	}
 	if got := (Captured{Bytes: []byte("whole\n"), tail: []byte("ignored\n")}).TailText(); got != "" {
 		t.Fatalf("complete capture TailText() = %q; want none", got)
+	}
+}
+
+// TestTailTextStaysLinearInEscapeIntermediates: a window full of the last word
+// of an environment secret TestMain exports, punctuation that a terminal
+// escape sequence's intermediate bytes may also be, loses one word at a time,
+// and every word could still start the rest of such a sequence before a key.
+// Scanning the remaining run again for each word took about a minute here;
+// scanning it once keeps the real end in a fraction of a second.
+func TestTailTextStaysLinearInEscapeIntermediates(t *testing.T) {
+	tail := "x " + strings.Repeat("! ", TailLimit/2-8) + "kept"
+	start := time.Now()
+	got := Captured{Truncated: true, tail: []byte(tail)}.TailText()
+	if elapsed := time.Since(start); got != "kept" || elapsed > 5*time.Second {
+		t.Fatalf("TailText() = %.40q after %v; want %q within 5s", got, elapsed, "kept")
 	}
 }

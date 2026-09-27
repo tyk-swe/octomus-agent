@@ -25,8 +25,9 @@ import (
 // variables that commands inherit, as verification commands inherit the
 // service's environment: a single token, a multi-word passphrase and a
 // multi-line key. captureBearerEnv is a passphrase that ends like a bearer
-// prefix. The redactor reads the environment once per process, so TestMain
-// exports them before any test.
+// prefix, and captureMarkEnv one whose last word is punctuation that a
+// terminal escape sequence may also hold. The redactor reads the environment
+// once per process, so TestMain exports them before any test.
 const (
 	captureSecretEnv = "CAPTURE_TEST_API_KEY"
 	captureSecret    = "s3cr3tValue-0123456789"
@@ -36,10 +37,12 @@ const (
 	captureLines     = "first-line-of-key\nsecond-line-of-key\nthird-line"
 	captureBearerEnv = "CAPTURE_TEST_BEARER_SECRET"
 	captureBearer    = "opaque value then tokenbearer"
+	captureMarkEnv   = "CAPTURE_TEST_MARK_PASSWORD"
+	captureMark      = "ends with a mark !"
 )
 
 func TestMain(m *testing.M) {
-	for name, value := range map[string]string{captureSecretEnv: captureSecret, capturePhraseEnv: capturePhrase, captureLinesEnv: captureLines, captureBearerEnv: captureBearer} {
+	for name, value := range map[string]string{captureSecretEnv: captureSecret, capturePhraseEnv: capturePhrase, captureLinesEnv: captureLines, captureBearerEnv: captureBearer, captureMarkEnv: captureMark} {
 		if err := os.Setenv(name, value); err != nil {
 			panic(err)
 		}

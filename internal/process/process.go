@@ -162,12 +162,20 @@ func (c Captured) TailText() string {
 		}
 		dropped, rest = text[:i], text[i:]
 	}
+	// run is where the escape sequence intermediate bytes the kept text
+	// starts with end in text. Each run is scanned once, not once per word
+	// dropped inside it, so the loop stays linear.
+	run := 0
 	for {
 		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
+		at := len(text) - len(rest)
+		if at >= run {
+			run = at + len(rest) - len(strings.TrimLeft(rest, escapeIntermediates))
+		}
 		// A word to drop ends at the first whitespace from `from` on.
 		from := -1
-		if key := cutEscapeKey.FindStringIndex(rest); key != nil {
-			from = key[1]
+		if key := cutEscapeKey.FindStringIndex(text[run:]); key != nil {
+			from = run - at + key[1]
 		} else if mayEndBearerPrefix(strings.TrimRightFunc(dropped, unicode.IsSpace)) {
 			from = 0
 		} else if trimmed := redact.TrimCutSecretStart(rest); len(trimmed) < len(rest) {
@@ -184,11 +192,14 @@ func (c Captured) TailText() string {
 	}
 }
 
-// cutEscapeKey matches kept text that starts with an API key redaction
-// recognises only after a terminal escape sequence whose last byte is a
-// letter: the rest of such a sequence, whose intermediate bytes may be
-// spaces, then the key (redact's key pattern).
-var cutEscapeKey = regexp.MustCompile(`(?i)^[\x20-\x2f]*[a-z]sk-[a-z0-9_-]{10}`)
+// escapeIntermediates are the intermediate bytes of a terminal escape
+// sequence, spaces among them, which can come before its last byte.
+const escapeIntermediates = " !\"#$%&'()*+,-./"
+
+// cutEscapeKey matches, after the escapeIntermediates kept text starts with,
+// an API key redaction recognises only after a terminal escape sequence whose
+// last byte is a letter: that letter, then the key (redact's key pattern).
+var cutEscapeKey = regexp.MustCompile(`(?i)^[a-z]sk-[a-z0-9_-]{10}`)
 
 // mayEndBearerPrefix reports whether text, dropped just before the kept text
 // and with trailing whitespace removed, could end the "Bearer" that redaction
