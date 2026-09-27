@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import type {
   BaselineView,
@@ -12,7 +12,7 @@ import type {
   TaskRow,
   TransformedField
 } from '../src/lib/types';
-import { login, openNavigation, token, trackWrites } from './synthetic';
+import { login, openNavigation, test, token, trackWrites } from './synthetic';
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });

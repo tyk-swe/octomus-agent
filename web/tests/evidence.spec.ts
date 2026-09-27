@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { test, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import {
   checksVerdict,
   commandExplanation,
@@ -20,7 +20,7 @@ import {
   verdictBadge
 } from '../src/lib/evidence';
 import { ACTIVE_STATUSES, type ReviewEvidence, type ReviewRoundEvidence } from '../src/lib/types';
-import { A, B, command, reviewer, reviewRound, taskEvidence } from './synthetic';
+import { A, B, command, reviewer, reviewRound, taskEvidence, test } from './synthetic';
 
 test.skip(({ isMobile }) => isMobile, 'Pure mapping rules run once, on the desktop project.');
 

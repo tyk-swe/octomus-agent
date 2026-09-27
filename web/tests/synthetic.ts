@@ -1,4 +1,4 @@
-import { expect, type Page, type Route } from '@playwright/test';
+import { expect, test as base, type Page, type Route } from '@playwright/test';
 import type {
   CommandResult,
   CommandState,
@@ -11,6 +11,30 @@ import type {
   SettingsView,
   TaskEvidence
 } from '../src/lib/types';
+
+// A route handler that races a client abort (navigation, polling churn) finds
+// the request or its fetched response already disposed; the client is gone, so
+// there is nothing to fulfill and the error is noise, not a test failure.
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    const register = page.route.bind(page);
+    page.route = (url, handler, options) =>
+      register(
+        url,
+        async (route, request) => {
+          try {
+            await handler(route, request);
+          } catch (error) {
+            if (!(error instanceof Error && error.message.includes('disposed'))) {
+              throw error;
+            }
+          }
+        },
+        options
+      );
+    await use(page);
+  }
+});
 
 export const token = 'browser-test-operator-token-32-characters';
 export const SYNTHETIC = 'Synthetic browser-test verdict text. Not a real reviewer statement.';

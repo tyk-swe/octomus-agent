@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { test, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { configFixture, login, openNavigation } from './synthetic';
+import { configFixture, login, openNavigation, test } from './synthetic';
 const token = 'browser-test-operator-token-32-characters';
 
 const codexModels = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
