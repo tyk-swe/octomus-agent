@@ -155,11 +155,20 @@ until explicit resolution. Archive/discard changes workspace lifecycle without
 deleting database evidence; each happens once per task or cycle, and repeating it
 conflicts. Application storage is measured separately from runner
 transcripts. Storage admission remains a pre-turn check, not a filesystem quota.
+Measurement skips a directory below the measured root that denies listing or
+searching, so storage can be undercounted by what it holds; the measured root
+itself and every other filesystem error still fail the measurement, and
+measurement never changes permissions.
 
 Diagnostic subprocess output retains a bounded 256 KiB preview and truncation
-flags. Machine stdout is complete up to 16 MiB or returns `OutputTooLarge`; invalid
-UTF-8 also fails explicitly. Git/GitHub machine consumers never parse a diagnostic
-truncation marker. All captures retain timeout, draining and process-group ownership.
+flags. Before secrets are scrubbed, a truncated capture is cut back to its last
+newline (or, without one, its last whitespace or nothing), dropping the partial
+line the limit cut, together with the first words or lines of a redacted
+environment value the limit fell inside; failure texts and verification evidence
+render from that text. Machine stdout is complete up to 16 MiB or returns
+`OutputTooLarge`; invalid UTF-8 also fails explicitly. Git/GitHub machine
+consumers never parse a diagnostic truncation marker. All captures retain timeout,
+draining and process-group ownership.
 
 State-snapshot cost was measured on 2026-09-22 at `529b63f` with
 `OCTOMUS_SCALE_TEST=1 go test ./internal/store -run TestBoundedHistoryScale -v`. The

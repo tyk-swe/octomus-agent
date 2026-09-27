@@ -129,6 +129,11 @@ the first release contains.
   submodules, and the commit message Octomus generates is secret-scrubbed like PR text.
 - Redaction replaces overlapping secrets whole, keeps catching `sk-` keys after terminal
   control sequences, and leaves ordinary words such as `task-` readable.
+- An unreadable directory inside a workspace no longer fails every session admission,
+  baseline check and housekeeping storage pass; its contents go unmeasured. Secrets cut
+  by a capture or read limit stay redacted, as do `sk-` keys printed after a terminal
+  escape such as `ESC(B`, and `--doctor` keeps a runner's version warning when its
+  model catalog request fails.
 - A structured runner answer that repeats an object key is refused as invalid JSON, so a
   review can no longer list a finding and then read as clean through a repeated empty
   `findings`.
