@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run only as root on a disposable systemd CI VM; never uses live service state."""
+import errno
 import os
 from pathlib import Path
 import pwd
@@ -20,9 +21,20 @@ try:
         path.mkdir()
         os.chown(path, account.pw_uid, account.pw_gid)
     root.chmod(0o755)
+    # A default POSIX ACL inherited from the parent (as on some CI images)
+    # overrides the umask for new files, so clear ACLs on the fixture tree to
+    # let the file-mode check observe the unit's UMask alone.
+    for path in [root, *(root / name for name in ['home', 'checkout', 'forbidden'])]:
+        for attribute in ['system.posix_acl_default', 'system.posix_acl_access']:
+            try:
+                os.removexattr(path, attribute)
+            except OSError as error:
+                if error.errno not in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
+                    raise
     script = root / 'check.sh'
     script.write_text(f'''#!/bin/sh
 set -eu
+umask > '{root}/home/umask'
 touch '{root}/home/state' '{root}/checkout/source'
 stat -c %a '{root}/home/state' > '{root}/home/state.mode'
 grep '^NoNewPrivs:' /proc/self/status > '{root}/home/no-new-privs'
@@ -52,6 +64,8 @@ echo $! > '{root}/home/child.pid'
     assert (root / 'home/state').exists() and (root / 'checkout/source').exists()
     assert not (root / 'forbidden/escape').exists()
     # UMask=0077 keeps state, logs and workspaces private to the service user.
+    umask = (root / 'home/umask').read_text().strip()
+    assert umask == '0077', f'Service umask is {umask}, not 0077 (UMask=0077)'
     mode = (root / 'home/state.mode').read_text().strip()
     assert mode == '600', f'Service-created file has mode {mode}, not 600 (UMask=0077)'
     no_new_privs = (root / 'home/no-new-privs').read_text().split()
