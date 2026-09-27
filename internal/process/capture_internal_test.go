@@ -64,9 +64,10 @@ func TestTailWindowKeepsTheLastBytesAcrossWraps(t *testing.T) {
 // word is an API key after a cut terminal escape sequence, since redaction
 // would no longer recognise either token, and so do the remaining words or
 // lines of an environment secret the window began inside (the passphrases
-// and the multi-line key TestMain exports). A dropped word that could itself
-// be such context takes the token after it along, and a whole prefix that is
-// not dropped stays for redaction. A complete capture has no tail text.
+// and the multi-line key TestMain exports), with the rest of the word such a
+// secret ends in. A dropped word that could itself be such context takes the
+// token after it along, and a whole prefix that is not dropped stays for
+// redaction. A complete capture has no tail text.
 func TestTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -91,6 +92,7 @@ func TestTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
 		{name: "key not after an escape", tail: "xx task-abcdefghijklmnop kept", want: "task-abcdefghijklmnop kept"},
 		{name: "cut secret ending like a bearer prefix", tail: "que value then tokenbearer abcdefghijklmnop kept", want: "kept"},
 		{name: "cut inside a passphrase", tail: "rse battery staple kept", want: "kept"},
+		{name: "cut passphrase ending inside a URL credential", tail: "rrect horse battery staple://bot:s3cr3tpass@github.com/x kept", want: "kept"},
 		{name: "cut inside a multi-line key", tail: "st-line-of-key\nsecond-line-of-key\nthird-line\nkept\n", want: "kept\n"},
 		{name: "cut after a multi-line key's first line", tail: "cond-line-of-key\nthird-line\nkept\n", want: "kept\n"},
 		{name: "only a cut secret's end", tail: "cond-line-of-key\nthird-line\n", want: ""},

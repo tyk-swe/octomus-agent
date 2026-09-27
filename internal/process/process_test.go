@@ -713,6 +713,7 @@ func TestTailTextNeverShowsASecretTheWindowCut(t *testing.T) {
 		{name: "bearer token", print: `'Authorization: Bearer abcdefghijklmnop'`, text: "Authorization: Bearer abcdefghijklmnop", cut: len("Authorization: Bea"), leak: "abcdefghijklmnop"},
 		{name: "bearer token after a line break", print: `'Authorization: Bearer\nabcdefghijklmnop'`, text: "Authorization: Bearer\nabcdefghijklmnop", cut: len("Authorization: Be"), leak: "abcdefghijklmnop"},
 		{name: "passphrase", print: `"$` + capturePhraseEnv + `"`, text: capturePhrase, cut: len("correct hor"), leak: "battery"},
+		{name: "URL credential after a passphrase", print: `"$` + capturePhraseEnv + `://bot:s3cr3tpassword0123@github.com/x"`, text: capturePhrase + "://bot:s3cr3tpassword0123@github.com/x", cut: len("correct hor"), leak: "sword0123"},
 		{name: "multi-line key", print: `"$` + captureLinesEnv + `"`, text: captureLines, cut: len("first-line-of-k"), leak: "second-line-of-key"},
 	} {
 		for _, layout := range []struct{ name, sep string }{{"lines", "\n"}, {"one line", " "}} {

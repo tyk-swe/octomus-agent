@@ -147,7 +147,8 @@ func (c Captured) Text() string {
 // kept text loses its first word while what was dropped just before it could
 // end a bearer prefix, loses such a key and the rest of its sequence, and
 // loses the later part of such an environment secret
-// (redact.TrimCutSecretStart).
+// (redact.TrimCutSecretStart) with the rest of the word it ends in, which may
+// belong to a token redaction recognises only with that part.
 func (c Captured) TailText() string {
 	if !c.Truncated {
 		return ""
@@ -169,20 +170,17 @@ func (c Captured) TailText() string {
 			from = key[1]
 		} else if mayEndBearerPrefix(strings.TrimRightFunc(dropped, unicode.IsSpace)) {
 			from = 0
+		} else if trimmed := redact.TrimCutSecretStart(rest); len(trimmed) < len(rest) {
+			from = len(rest) - len(trimmed)
 		}
-		if from >= 0 {
-			i := strings.IndexFunc(rest[from:], unicode.IsSpace)
-			if i < 0 {
-				return ""
-			}
-			dropped, rest = rest[:from+i], rest[from+i:]
-			continue
-		}
-		trimmed := redact.TrimCutSecretStart(rest)
-		if len(trimmed) == len(rest) {
+		if from < 0 {
 			return rest
 		}
-		dropped, rest = rest[:len(rest)-len(trimmed)], trimmed
+		i := strings.IndexFunc(rest[from:], unicode.IsSpace)
+		if i < 0 {
+			return ""
+		}
+		dropped, rest = rest[:from+i], rest[from+i:]
 	}
 }
 
