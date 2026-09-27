@@ -579,7 +579,8 @@ func failedResponse(body string) *http.Response {
 // A failed response's body is redacted before the reported snippet is cut, so
 // a secret straddling the snippet's end is never reported in part, wherever
 // the cut falls. When the read itself stops inside the body, the last word
-// read is dropped because redaction cannot recognise a partial secret.
+// read is dropped because redaction cannot recognise a partial secret, and
+// with it any first words of an environment secret it cut.
 func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
 	never := func() {}
 	for _, secret := range []string{"ghp_Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9", "Bearer eyJhbGciOiJIUzI1NiJ9.c2lnbmF0dXJl"} {
@@ -612,6 +613,16 @@ func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
 		if err.Error() != want {
 			t.Fatalf("%d bytes of the last token read: %q", kept, err)
 		}
+	}
+	// The words before the one the read cut can be the first words of an
+	// environment passphrase, which no longer matches whole; they are dropped
+	// with it.
+	kept := len("correct horse batt")
+	pad := statusReadLimit + 1 - kept - len(" ") - len(whole)
+	body := whole + strings.Repeat("b", pad) + " " + cutPhrase + " never read"
+	want := "OpenCode request failed with HTTP 500 Internal Server Error: " + strings.Repeat("[redacted] ", 79) + strings.Repeat("b", pad) + " "
+	if err := statusError("OpenCode request failed", failedResponse(body), never); err.Error() != want {
+		t.Fatalf("a passphrase the read cut: ...%q", err.Error()[max(len(err.Error())-60, 0):])
 	}
 	// A body that fits is reported whole, secrets redacted.
 	err := statusError("OpenCode request failed", failedResponse("denied for token ghp_Zq9Zq9Zq9Zq9Zq9Zq9\n"), never)

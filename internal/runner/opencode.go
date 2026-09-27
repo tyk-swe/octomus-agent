@@ -290,8 +290,9 @@ func statusError(prefix string, response *http.Response, stop context.CancelFunc
 	text := redact.Secrets(strings.ToValidUTF8(string(body), "\uFFFD"))
 	if err != nil || len(body) > statusReadLimit {
 		// The read stopped inside the body, so its last word may be the start
-		// of a secret that redaction cannot recognise.
-		text = beforeLastWord(text)
+		// of a secret that redaction cannot recognise, and the words before
+		// it the first words of an environment secret.
+		text = redact.TrimCutSecretEnd(beforeLastWord(text))
 	}
 	if len(text) > statusSnippetLimit {
 		// Redaction already ran, so this cut cannot expose part of a secret.

@@ -108,17 +108,19 @@ type Captured struct {
 // A truncated capture stops wherever the limit fell, possibly inside a secret
 // that redaction can then no longer recognise, so its partial last line is
 // dropped: the text is cut back to its last newline, or to its last
-// whitespace when the kept bytes hold no newline, or to nothing.
+// whitespace when the kept bytes hold no newline, or to nothing. The first
+// words or lines of a multi-word or multi-line environment secret the limit
+// cut are dropped with it (redact.TrimCutSecretEnd).
 func (c Captured) Text() string {
 	text := strings.ToValidUTF8(string(c.Bytes), "\uFFFD")
 	if !c.Truncated {
 		return text
 	}
 	if i := strings.LastIndexByte(text, '\n'); i >= 0 {
-		return text[:i]
+		return redact.TrimCutSecretEnd(text[:i])
 	}
 	if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
-		return text[:i]
+		return redact.TrimCutSecretEnd(text[:i])
 	}
 	return ""
 }

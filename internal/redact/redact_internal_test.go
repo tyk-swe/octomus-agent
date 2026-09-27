@@ -38,3 +38,60 @@ func TestScrubRedactsOverlappingSecretsWhole(t *testing.T) {
 		}
 	}
 }
+
+// Text cut back to whitespace inside a multi-word or multi-line secret value
+// still ends with the value's complete first words or lines, which no longer
+// match the whole value; they are removed. A value that ends the text whole is
+// left for scrubbing, and text that stops inside a word is left as it is: the
+// capture rule has already dropped such a partial word.
+func TestTrimCutSecretDropsTheLeadingPartOfACutValue(t *testing.T) {
+	values := []string{
+		"correct horse battery staple",
+		"first-line-of-key\nsecond-line-of-key\nthird-line",
+		"s3cr3tValue-0123456789",
+	}
+	for input, want := range map[string]string{
+		"PASS=correct horse": "PASS=",
+		"PASS=correct":       "PASS=",
+		"log\nKEY=first-line-of-key\nsecond-line-of-key": "log\nKEY=",
+		"log\nKEY=first-line-of-key":                     "log\nKEY=",
+		"first-line-of-key":                              "",
+		// Nothing of a value is left before whitespace in it.
+		"PASS=correct horse battery staple": "PASS=correct horse battery staple",
+		"PASS=corr":                         "PASS=corr",
+		"KEY=s3cr3tValu":                    "KEY=s3cr3tValu",
+		"plain log line":                    "plain log line",
+		"":                                  "",
+	} {
+		if got := trimCutSecretEnd(input, values); got != want {
+			t.Errorf("trimCutSecretEnd(%q) = %q; want %q", input, got, want)
+		}
+	}
+}
+
+// Text whose start was cut inside a multi-word or multi-line secret value and
+// then advanced past whitespace still starts with the value's complete last
+// words or lines; they are removed. A value that starts the text whole is left
+// for scrubbing, and text that starts inside a word is left as it is.
+func TestTrimCutSecretStartDropsTheTrailingPartOfACutValue(t *testing.T) {
+	values := []string{
+		"correct horse battery staple",
+		"first-line-of-key\nsecond-line-of-key\nthird-line",
+		"invalid \xff",
+	}
+	for input, want := range map[string]string{
+		"battery staple word":                " word",
+		"staple\nnext":                       "\nnext",
+		"second-line-of-key\nthird-line\nok": "\nok",
+		"third-line":                         "",
+		// Nothing of a value is left after whitespace in it.
+		"correct horse battery staple": "correct horse battery staple",
+		"aple word":                    "aple word",
+		"plain log line":               "plain log line",
+		"":                             "",
+	} {
+		if got := trimCutSecretStart(input, values); got != want {
+			t.Errorf("trimCutSecretStart(%q) = %q; want %q", input, got, want)
+		}
+	}
+}

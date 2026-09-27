@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // TokenEnv names the operator access token variable. Its value is a secret:
@@ -69,6 +71,50 @@ func environmentSecrets() []string {
 // length limit. Persisted results must be bounded by the caller so shortening
 // is always flagged.
 func Secrets(input string) string { return scrub(input, environmentSecrets()) }
+
+// TrimCutSecretEnd removes from the end of text the complete first words or
+// lines of a secret-bearing environment value. Text cut back to whitespace
+// because a read or capture limit fell inside such a value still ends with
+// them, and they no longer match the whole value, so scrubbing alone would
+// leave them visible. Only a part that ends where the value itself has
+// whitespace is removed.
+func TrimCutSecretEnd(text string) string { return trimCutSecretEnd(text, environmentSecrets()) }
+
+func trimCutSecretEnd(text string, values []string) string {
+	cut := 0
+	for _, value := range values {
+		for i, r := range value {
+			if i > cut && unicode.IsSpace(r) && strings.HasSuffix(text, value[:i]) {
+				cut = i
+			}
+		}
+	}
+	return text[:len(text)-cut]
+}
+
+// TrimCutSecretStart mirrors TrimCutSecretEnd for text whose start was cut and
+// then advanced past whitespace, such as a kept tail that drops its partial
+// first line: it removes from the start of text the complete last words or
+// lines of a secret-bearing environment value, a part that begins where the
+// value itself has whitespace.
+func TrimCutSecretStart(text string) string {
+	return trimCutSecretStart(text, environmentSecrets())
+}
+
+func trimCutSecretStart(text string, values []string) string {
+	cut := 0
+	for _, value := range values {
+		for i, r := range value {
+			if !unicode.IsSpace(r) {
+				continue
+			}
+			if rest := value[i+utf8.RuneLen(r):]; len(rest) > cut && strings.HasPrefix(text, rest) {
+				cut = len(rest)
+			}
+		}
+	}
+	return text[cut:]
+}
 
 // scrub replaces every token match and every occurrence of each secret value
 // in input with "[redacted]". All spans are found in the original text and
