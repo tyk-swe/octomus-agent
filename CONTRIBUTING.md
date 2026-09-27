@@ -55,13 +55,15 @@ writes:
 - `tests/distribution.py`: the executable and installer using local release fixtures.
 - `tests/package_guards.py`: `scripts/package.sh` rejection cases and the release
   archive allowlist.
-- `npm test --prefix web`: the dashboard browser tests.
+- `npm test --prefix web`: the dashboard browser tests, including the evidence display
+  rules `web/tests/evidence.spec.ts` checks without a page.
 
 The e2e suites share `tests/harness.py` and accept scenario names, for example
 `python3 tests/e2e_hardening.py chain fork`; an unknown name lists the available ones.
 Set `OCTOMUS_TEST_BINARY` to test another executable. Go tests share polling and
 process helpers through `internal/testutil`, and inject `internal/runner/runnertest`
-in place of runner processes. `web/types_contract_test.go` and
+in place of runner processes; `internal/schemas/schematest` holds each structured-output
+schema to the Go type that decodes its answers. `web/types_contract_test.go` and
 `internal/config/dashboard_test.go` hold the dashboard's TypeScript types, limits and
 vocabularies to the Go records and validation. Browser tests use clearly synthetic
 data; their screenshots are not live operating evidence. `tests/systemd.py` requires

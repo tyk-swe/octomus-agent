@@ -15,19 +15,22 @@ owns strict typed JSON boundaries for saved records and API requests.
 - `cmd/octomus-agent`: CLI flags, read-only exports and service startup.
 - `internal/engine`: scheduler and cycle orchestration: `engine.go` (App
   construction, options, runtime state and restart recovery), `scheduler.go`
-  (tick, dispatch and idle backoff), `planning.go` (grounding, discovery,
+  (tick, dispatch, pauses and idle backoff), `planning.go` (grounding, discovery,
   proposal review and plan validation), `execution.go` (execution, review, repair and
-  verification), `invocation.go` (role invocation: every agent turn's
-  admission, session start or resume, session record and redaction),
+  verification, with their role prompts), `invocation.go` (role invocation: every
+  agent turn's admission, session start or resume, session record and redaction),
   `memory.go` (decision memory and rediscovery requests), `housekeeping.go`
-  (retention, workspace and disk limits), `baseline.go` (clean-baseline checks,
-  separate from task verification), `capacity.go` (owned-PR admission),
-  `actions.go`/`control.go`/`api.go` (operator controls and views).
+  (retention, storage measurement and remote observation), `baseline.go`
+  (clean-baseline checks, separate from task verification), `capacity.go` (open-PR
+  observation and owned-PR admission), `actions.go`/`control.go`/`api.go` (operator
+  controls and views).
 - `internal/runner`: runner-neutral model discovery, exact routing and dispatch
-  (`runner.go`); `codex.go` (app-server protocol) and `opencode.go` (HTTP/SSE)
-  implement it.
-  `runnertest` is the scripted adapter tests inject as the runner connector
-  (engine `WithRunnerConnector`) in place of a runner process.
+  (`runner.go`); `codex.go` (app-server protocol) and `opencode.go` (HTTP/SSE, with
+  `opencode_policy.go`, `opencode_sse.go` and `opencode_catalog.go`) implement it.
+  `owned.go` joins and cleans up both owned runner children and explains a failed
+  connect with a redacted stderr tail. `runnertest` is the scripted adapter tests
+  inject as the runner connector (engine `WithRunnerConnector`) in place of a runner
+  process.
 - `internal/config`, `internal/model`, `internal/store`: policy, durable records
   and SQLite. In the store, `store.go` holds records, transactions and admission
   reservation; `schema.sql` is the embedded fresh DDL whose triggers maintain
@@ -40,7 +43,8 @@ owns strict typed JSON boundaries for saved records and API requests.
 - `internal/notifications`: opt-in webhook delivery. `internal/report`: read-only
   usage reporting. `internal/evidence`: read-only `RunEvidenceV1` export.
   `internal/httpapi`: authenticated controls and embedded dashboard serving.
-  `internal/schemas`: structured output.
+  `internal/schemas`: structured-output schemas and validation; its test-only
+  `schematest` holds each schema to the Go type that decodes its answers.
 - `internal/git`, `internal/process`, `internal/workspace`: Git/GitHub
   publication, owned process groups and managed-directory safety.
 - `web/src`: dashboard, shared TypeScript types, settings, setup checklist and
@@ -61,7 +65,9 @@ owns strict typed JSON boundaries for saved records and API requests.
   the dashboard build and release tooling), `scripts/package.sh`, `install.sh` and
   `deploy/octomus-agent.service`. `web/scripts/render-launch-assets.mjs` captures
   `docs/dashboard.png`.
-- `web/tests`: dashboard browser tests served by `tests/serve_ui.py`.
+- `web/tests`: dashboard browser tests against the synthetic service
+  `tests/serve_ui.py` starts, with shared synthetic fixtures in `synthetic.ts`;
+  `evidence.spec.ts` checks the evidence display rules and badge styles without a page.
   `docs/architecture.md` describes the operating contract.
 
 ## Build and verify
@@ -78,6 +84,8 @@ race detector. Install dashboard dependencies with
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
 - `make test-race-e2e` (opt-in, about seven minutes): `tests/e2e.py` against the
   race-instrumented build.
+- `make audit` (govulncheck and `npm audit`; needs module downloads) and `make package`
+  (release archive and `SHA256SUMS` in `dist/`) also run in CI.
 - Focused integration: `make build`, then
   `OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e.py [SCENARIO...]`;
   every e2e suite takes scenario names and lists them for an unknown one. These
