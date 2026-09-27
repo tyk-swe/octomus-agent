@@ -519,7 +519,7 @@ func TestBaselineOverallDeadlineTimesOutAndCleansWorkspace(t *testing.T) {
 	pidPath := filepath.Join(root, "shell.pid")
 	check := makeCheck(cfg, model.BaselineStatusRunning)
 	check.Config.SessionTimeoutSeconds = 1
-	check.Config.TaskTimeoutSeconds = 1
+	check.Config.TaskTimeoutSeconds = 5
 	check.Config.CommandTimeoutSeconds = 60
 	check.Config.VerificationCommands = []string{"echo $$ > " + pidPath + "; sleep 60"}
 	if err := app.Store.Put("baseline", check.ID, check); err != nil {
@@ -533,7 +533,28 @@ func TestBaselineOverallDeadlineTimesOutAndCleansWorkspace(t *testing.T) {
 	app.runtimeMu.Lock()
 	app.runtime.baseline = &baselineJob{id: check.ID, cancel: cancel}
 	app.runtimeMu.Unlock()
-	app.baselineWorker(ctx, check.ID)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.baselineWorker(ctx, check.ID)
+	}()
+	// The overall deadline also covers the storage and clone setup ahead of the
+	// command; confirm the shell actually started so a slow setup cannot pass
+	// for a deadline kill.
+	started := func() bool {
+		_, err := os.Stat(pidPath)
+		return err == nil
+	}
+	for !started() {
+		select {
+		case <-done:
+			if !started() {
+				t.Fatal("baseline worker finished before the verification command started")
+			}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	<-done
 	saved, err := store.Get[model.BaselineCheck](app.Store, "baseline", check.ID)
 	if err != nil || saved == nil {
 		t.Fatalf("load finished check: %v", err)

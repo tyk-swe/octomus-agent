@@ -376,8 +376,10 @@ def audit_scenario(mode):
         assert row['mode'] == 'audit' and row['task_admissions'] == 0
         if mode in ['accepted', 'idle', 'queued']:
             assert row['planning_admissions'] == 13
+        observed = service.request('/state')['pr_capacity']['observed_at']
         service.stop()
         service.start()
+        service.wait(lambda: service.request('/state')['pr_capacity']['observed_at'] != observed, 'fresh PR observation after restart')
         assert service.request('/state')['tasks'] == queued_before
         current_publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
         assert current_publications == publications

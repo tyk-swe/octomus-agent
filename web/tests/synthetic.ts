@@ -2,11 +2,13 @@ import { expect, type Page, type Route } from '@playwright/test';
 import type {
   CommandResult,
   CommandState,
+  Config,
   ProposalEvidence,
   ProposalRow,
   ReviewerVerdict,
   ReviewRoundEvidence,
   RunEvidenceV1,
+  SettingsView,
   TaskEvidence
 } from '../src/lib/types';
 
@@ -22,6 +24,37 @@ export async function login(page: Page) {
   await page.getByLabel('Operator access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+}
+
+export async function configFixture(page: Page) {
+  let saved: SettingsView | null = null;
+  await page.route('**/api/config', async (route) => {
+    if (route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON() as {
+        expected_revision: string;
+        config: Partial<Config>;
+      };
+      if (!saved || body.expected_revision !== saved.revision) {
+        await route.fulfill({
+          status: 409,
+          json: { error: 'Synthetic save conflict; reload settings and check the current values.' }
+        });
+        return;
+      }
+      saved = {
+        config: { ...saved.config, ...body.config },
+        revision: 'f'.repeat(64),
+        transformed_fields: []
+      };
+      await route.fulfill({ json: saved });
+      return;
+    }
+    if (!saved) {
+      const response = await route.fetch();
+      saved = (await response.json()) as SettingsView;
+    }
+    await route.fulfill({ json: saved });
+  });
 }
 
 export function trackWrites(page: Page) {

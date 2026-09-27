@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import type { Config, SettingsView } from '../src/lib/types';
-import { login, openNavigation } from './synthetic';
+import { configFixture, login, openNavigation } from './synthetic';
 const token = 'browser-test-operator-token-32-characters';
 
 const codexModels = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
@@ -52,6 +51,7 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
 }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  await configFixture(page);
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Your project’s control room.' })).toBeVisible();
   await page.getByLabel('Operator access token').fill('incorrect');
@@ -340,34 +340,7 @@ test('model routing across all roles, provider variants, draft catalogs and unav
       await route.fulfill({ json: catalogState === 'normal' ? opencodeModels : [] });
     }
   });
-  let saved: SettingsView | null = null;
-  await page.route('**/api/config', async (route) => {
-    if (route.request().method() === 'PUT') {
-      const body = route.request().postDataJSON() as {
-        expected_revision: string;
-        config: Partial<Config>;
-      };
-      if (!saved || body.expected_revision !== saved.revision) {
-        await route.fulfill({
-          status: 409,
-          json: { error: 'Synthetic save conflict; reload settings and check the current values.' }
-        });
-        return;
-      }
-      saved = {
-        config: { ...saved.config, ...body.config },
-        revision: 'f'.repeat(64),
-        transformed_fields: []
-      };
-      await route.fulfill({ json: saved });
-      return;
-    }
-    if (!saved) {
-      const response = await route.fetch();
-      saved = (await response.json()) as SettingsView;
-    }
-    await route.fulfill({ json: saved });
-  });
+  await configFixture(page);
   await page.goto('/');
   await page.getByLabel('Operator access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
