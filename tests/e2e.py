@@ -2,9 +2,9 @@
 """Runs the actual service, scheduler, SQLite, and Git against deterministic external peers.
 No network writes, real Codex turns, credentials, or spending. Run after make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
 Every e2e suite accepts scenario names (`python3 tests/e2e.py normal audit-idle`) to run only those;
-an unknown name lists them all. The shared harness is tests/harness.py.
+an unknown name lists them all. Scenarios run with up to four workers by default;
+OCTOMUS_TEST_JOBS sets the limit (1 runs serially). The shared harness is tests/harness.py.
 """
-import contextlib
 import functools
 import http.server
 import io
@@ -402,7 +402,8 @@ def harness_scenario():
     a live process from a zombie or a reaped one. fixture_service passes a
     scenario failure through after releasing holds before the service stops.
     update_prs waits for the gh fixture's lock and replaces prs.json whole.
-    run_selected runs scenarios by name.
+    run_selected runs scenarios by name, bounds concurrency and reports failures
+    after every scenario has finished teardown.
     """
     calls = {}
 
@@ -521,18 +522,46 @@ def harness_scenario():
     ran = []
     registry = [(name, functools.partial(ran.append, name)) for name in ['a', 'b', 'c']]
     output = io.StringIO()
-    with contextlib.redirect_stdout(output):
-        run_selected('selftest', registry, ['c', 'a'])
-        run_selected('selftest', registry, [])
-        try:
-            run_selected('selftest', registry, ['b', 'nope'])
-            raise AssertionError('an unknown scenario name was accepted')
-        except SystemExit as error:
-            refusal = str(error)
+    run_selected('selftest', registry, ['c', 'a'], workers=1, output=output)
+    run_selected('selftest', registry, [], workers=1, output=output)
+    try:
+        run_selected('selftest', registry, ['b', 'nope'], workers=2, output=output)
+        raise AssertionError('an unknown scenario name was accepted')
+    except SystemExit as error:
+        refusal = str(error)
     assert ran == ['a', 'c', 'a', 'b', 'c'], ran
     assert output.getvalue() == ''.join(f'RUN selftest {name}\n' for name in ran), output.getvalue()
     assert refusal == 'unknown selftest scenarios: nope; available: a, b, c', refusal
-    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field; fixture teardown releases holds first; update_prs takes the gh lock; scenarios run by name')
+
+    barrier = threading.Barrier(2, timeout=5)
+    lock = threading.Lock()
+    active = maximum = 0
+    finished = []
+
+    def concurrent(name):
+        nonlocal active, maximum
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+        try:
+            barrier.wait()
+            if name == 'b':
+                raise RuntimeError('synthetic scenario failure')
+        finally:
+            with lock:
+                active -= 1
+                finished.append(name)
+
+    output = io.StringIO()
+    registry = [(name, functools.partial(concurrent, name)) for name in ['a', 'b', 'c', 'd']]
+    try:
+        run_selected('parallel-selftest', registry, ['d', 'c', 'b', 'a'], workers=2, output=output)
+        raise AssertionError('a scenario failure was swallowed')
+    except SystemExit as error:
+        assert str(error) == 'parallel-selftest failed scenarios: b', error
+    assert active == 0 and maximum == 2 and sorted(finished) == ['a', 'b', 'c', 'd'], (active, maximum, finished)
+    assert 'FAIL parallel-selftest b' in output.getvalue() and 'synthetic scenario failure' in output.getvalue(), output.getvalue()
+    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field; fixture teardown releases holds first; update_prs takes the gh lock; scenarios run by name with bounded concurrency and failures wait for teardown')
 
 
 if __name__ == '__main__':

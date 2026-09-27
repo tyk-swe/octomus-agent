@@ -163,8 +163,10 @@ permissions.
 
 Diagnostic subprocess output retains the first 256 KiB of each stream and
 truncation flags, and for a longer stream its last 64 KiB, kept in a rolling
-window allocated only once the stream passes 256 KiB. Before secrets are
-scrubbed, a truncated capture's head is cut back to its last newline (or,
+window allocated only once the stream passes 256 KiB. `internal/redact` owns
+cut-fragment normalization and `internal/process` exposes captured streams only
+as safe diagnostic text. Before secrets are scrubbed, a truncated capture's
+head is cut back to its last newline (or,
 without one, its last whitespace or nothing), dropping the partial line the
 limit cut, together with the first words or lines of a redacted environment
 value the limit fell inside. Its kept end likewise drops the partial first line

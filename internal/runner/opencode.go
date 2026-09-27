@@ -255,9 +255,11 @@ func statusError(prefix string, response *http.Response, stop context.CancelFunc
 	timer := time.AfterFunc(statusBodyWait, stop)
 	body, err := io.ReadAll(io.LimitReader(response.Body, statusReadLimit+1))
 	timer.Stop()
-	text := redact.Secrets(strings.ToValidUTF8(string(body), "\uFFFD"))
+	text := strings.ToValidUTF8(string(body), "\uFFFD")
 	if err != nil || len(body) > statusReadLimit {
-		text = redact.TrimCutSecretEnd(beforeLastWord(text))
+		text = redact.Fragment(text, redact.HeadWordCut)
+	} else {
+		text = redact.Secrets(text)
 	}
 	if len(text) > statusSnippetLimit {
 		cut := statusSnippetLimit

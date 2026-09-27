@@ -55,10 +55,10 @@ func commandOutput(output *process.ProcessOutput, err error) (string, bool, bool
 		return err.Error(), false, false
 	}
 	var text strings.Builder
-	text.WriteString(strings.ToValidUTF8(string(output.Stdout.Bytes), "�"))
+	text.WriteString(output.Stdout.SafeText())
 	if len(output.Stderr.Bytes) > 0 {
 		text.WriteString("\n[stderr]\n")
-		text.WriteString(strings.ToValidUTF8(string(output.Stderr.Bytes), "�"))
+		text.WriteString(output.Stderr.SafeText())
 	}
 	if !output.Status.Success() {
 		text.WriteString("\n" + output.Status.String())

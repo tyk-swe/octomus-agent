@@ -7,13 +7,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/redact"
@@ -79,73 +77,34 @@ type Captured struct {
 	tail      []byte
 }
 
-func (c Captured) Text() string {
+func (c Captured) SafeText() string {
 	text := strings.ToValidUTF8(string(c.Bytes), "\uFFFD")
 	if !c.Truncated {
-		return text
+		return redact.Secrets(text)
 	}
-	if i := strings.LastIndexByte(text, '\n'); i >= 0 {
-		return redact.TrimCutSecretEnd(text[:i])
-	}
-	if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
-		return redact.TrimCutSecretEnd(text[:i])
-	}
-	return ""
+	return redact.Fragment(text, redact.HeadLineCut)
 }
 
-func (c Captured) TailText() string {
+func (c Captured) SafeTailText() string {
 	if !c.Truncated {
 		return ""
 	}
-	text := strings.ToValidUTF8(string(c.tail), "\uFFFD")
-	dropped, rest, found := strings.Cut(text, "\n")
-	if !found {
-		i := strings.IndexFunc(text, unicode.IsSpace)
-		if i < 0 {
-			return ""
-		}
-		dropped, rest = text[:i], text[i:]
-	}
-	run := 0
-	for {
-		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
-		at := len(text) - len(rest)
-		if at >= run {
-			run = at + len(rest) - len(strings.TrimLeft(rest, escapeIntermediates))
-		}
-		from := -1
-		if key := cutEscapeKey.FindStringIndex(text[run:]); key != nil {
-			from = run - at + key[1]
-		} else if mayEndBearerPrefix(strings.TrimRightFunc(dropped, unicode.IsSpace)) {
-			from = 0
-		} else if trimmed := redact.TrimCutSecretStart(rest); len(trimmed) < len(rest) {
-			from = len(rest) - len(trimmed)
-		}
-		if from < 0 {
-			return rest
-		}
-		i := strings.IndexFunc(rest[from:], unicode.IsSpace)
-		if i < 0 {
-			return ""
-		}
-		dropped, rest = rest[:from+i], rest[from+i:]
-	}
-}
-
-const escapeIntermediates = " !\"#$%&'()*+,-./"
-
-var cutEscapeKey = regexp.MustCompile(`(?i)^[a-z]sk-[a-z0-9_-]{10}`)
-
-func mayEndBearerPrefix(text string) bool {
-	const prefix = "bearer"
-	n := min(len(text), len(prefix))
-	return (n == len(text) || n == len(prefix)) && strings.EqualFold(text[len(text)-n:], prefix[len(prefix)-n:])
+	return redact.Fragment(strings.ToValidUTF8(string(c.tail), "\uFFFD"), redact.TailLineCut)
 }
 
 const diagnosticTruncatedMarker = "[diagnostic output truncated]"
 
-func (c Captured) Preview() string {
-	return joinPreview(c.Text(), c.TailText(), c.Truncated)
+func (c Captured) SafePreview() string {
+	return strings.Join(redact.Parts(c.previewParts()...), "")
+}
+
+func (c Captured) previewParts() []redact.Part {
+	parts := []redact.Part{{Text: strings.ToValidUTF8(string(c.Bytes), "\uFFFD"), CutEnd: c.Truncated}}
+	if c.Truncated {
+		parts = append(parts, redact.Part{Text: "\n" + diagnosticTruncatedMarker},
+			redact.Part{Text: strings.ToValidUTF8(string(c.tail), "\uFFFD"), CutStart: true, Prefix: "\n"})
+	}
+	return parts
 }
 
 func joinPreview(head, tail string, truncated bool) string {
@@ -432,10 +391,16 @@ func ensureSuccess(binary string, output *ProcessOutput) error {
 func failureText(binary string, output *ProcessOutput) string {
 	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
 	budget := failureTextLimit - utf8.RuneCountInString(prefix)
-	if joined := redact.Secrets(output.Stdout.Preview() + "\n" + output.Stderr.Preview()); utf8.RuneCountInString(joined) <= budget {
+	stdoutParts := output.Stdout.previewParts()
+	parts := append(stdoutParts, redact.Part{Text: "\n"})
+	parts = append(parts, output.Stderr.previewParts()...)
+	// Keep both streams intact until all overlapping secret spans are found.
+	// The same scrubbed parts feed both the complete and shortened error forms.
+	safe := redact.Parts(parts...)
+	if joined := strings.Join(safe, ""); utf8.RuneCountInString(joined) <= budget {
 		return prefix + joined
 	}
-	stdout, stderr := scrubPreview(output.Stdout), scrubPreview(output.Stderr)
+	stdout, stderr := scrubbedPreview(safe[:len(stdoutParts)]), scrubbedPreview(safe[len(stdoutParts)+1:])
 	if stderr.text() == "" {
 		return prefix + stdout.elide(budget)
 	}
@@ -450,8 +415,12 @@ type failurePreview struct {
 	truncated  bool
 }
 
-func scrubPreview(c Captured) failurePreview {
-	return failurePreview{head: redact.Secrets(c.Text()), tail: redact.Secrets(c.TailText()), truncated: c.Truncated}
+func scrubbedPreview(parts []string) failurePreview {
+	preview := failurePreview{head: parts[0], truncated: len(parts) == 3}
+	if preview.truncated {
+		preview.tail = strings.TrimPrefix(parts[2], "\n")
+	}
+	return preview
 }
 
 func (p failurePreview) text() string { return joinPreview(p.head, p.tail, p.truncated) }

@@ -39,7 +39,8 @@ owns strict typed JSON boundaries for saved records and API requests.
   `capacity.go` and `notifications.go` serve operational views, PR capacity and the
   outbox.
 - `internal/redact`: the one secret scrubber and display bound, shared by every
-  package that records or returns text, and the token and webhook variable names.
+  package that records or returns text, the token and webhook variable names, and
+  `Fragment` for text already cut by a capture or read limit.
 - `internal/notifications`: opt-in webhook delivery. `internal/report`: read-only
   usage reporting. `internal/evidence`: read-only `RunEvidenceV1` export.
   `internal/httpapi`: authenticated controls and embedded dashboard serving.

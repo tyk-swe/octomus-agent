@@ -39,6 +39,18 @@ func TestScrubsSecretEnvironmentValues(t *testing.T) {
 	}
 }
 
+func TestPartsScrubsAcrossNormalizedCaptureCuts(t *testing.T) {
+	parts := redact.Parts(
+		redact.Part{Text: "prefix\nBearer \ncut", CutEnd: true},
+		redact.Part{Text: "\n"},
+		redact.Part{Text: "discarded\nopaque-credential kept", CutStart: true},
+		redact.Part{Text: "unbroken", CutStart: true, Prefix: "must not appear"},
+	)
+	if !reflect.DeepEqual(parts, []string{"prefix\n[redacted]", "", " kept", ""}) {
+		t.Fatalf("Parts lost cross-part context or exposed cut text: %q", parts)
+	}
+}
+
 func canonical(t *testing.T, value any) string {
 	t.Helper()
 	data, err := json.Marshal(value)
@@ -221,5 +233,26 @@ func TestDisplayJSONPathsFollowKeyAndIndexOrder(t *testing.T) {
 	want = append(want, []any{"field", "b", "a", 1}, []any{"field", "b", "c"})
 	if got := fields[0].Paths; !reflect.DeepEqual(got, want) {
 		t.Fatalf("transform paths:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestFragmentScrubsCutBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input string
+		kind  redact.FragmentKind
+		want  string
+	}{
+		{name: "head line", input: "Bearer abcdefghijklmnop partial\nlast line", kind: redact.HeadLineCut, want: "[redacted] partial"},
+		{name: "head word", input: "denied for ghp_abcdefghijklmnop", kind: redact.HeadWordCut, want: "denied for"},
+		{name: "tail line", input: "xx Bearer abcdefghijklmnop kept", kind: redact.TailLineCut, want: "[redacted] kept"},
+		{name: "tail two words", input: "cut\nBearer abcdefghijklmnop kept", kind: redact.TailTwoWordsCut, want: "[redacted] kept"},
+		{name: "environment value cut", input: "before " + operatorToken + "\npartial", kind: redact.HeadLineCut, want: "before [redacted]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := redact.Fragment(test.input, test.kind); got != test.want {
+				t.Fatalf("Fragment(%q) = %q; want %q", test.input, got, test.want)
+			}
+		})
 	}
 }

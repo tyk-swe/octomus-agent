@@ -5,6 +5,7 @@ No network writes, real Codex turns, credentials, or spending. Run the suites af
 make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
 """
 import contextlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import fcntl
 import json
 import os
@@ -15,6 +16,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import traceback
 import urllib.error
 import urllib.request
 
@@ -60,21 +62,50 @@ def service_log(root, tail=None):
     return text if tail is None else '\n'.join(text.splitlines()[-tail:])
 
 
-def run_selected(suite, scenarios, names):
-    """Runs `names`, or every scenario when it is empty, in registry order.
+def run_selected(suite, scenarios, names, *, workers=None, output=None):
+    """Runs `names`, or every scenario when it is empty, with bounded parallelism.
 
     `scenarios` lists (name, zero-argument callable) pairs; unknown names are
-    refused before anything runs.
+    refused before anything runs. Each scenario owns its fixtures. Set
+    OCTOMUS_TEST_JOBS=1 for registry-order serial execution; the default is up
+    to four workers. All running scenarios finish teardown before failure returns.
     """
     registry = dict(scenarios)
     assert len(registry) == len(scenarios), f'duplicate {suite} scenario names'
     unknown = [name for name in names if name not in registry]
     if unknown:
         raise SystemExit(f'unknown {suite} scenarios: {", ".join(unknown)}; available: {", ".join(registry)}')
-    for name, run in registry.items():
-        if not names or name in names:
-            print(f'RUN {suite} {name}', flush=True)
-            run()
+    if workers is None:
+        try:
+            workers = int(os.environ.get('OCTOMUS_TEST_JOBS', min(4, os.cpu_count() or 1)))
+        except ValueError:
+            raise SystemExit('OCTOMUS_TEST_JOBS must be a positive integer') from None
+    if workers < 1:
+        raise SystemExit('OCTOMUS_TEST_JOBS must be a positive integer')
+    selected = [(name, run) for name, run in registry.items() if not names or name in names]
+
+    def execute(name, run):
+        print(f'RUN {suite} {name}', flush=True, file=output)
+        run()
+
+    if workers == 1 or len(selected) <= 1:
+        for name, run in selected:
+            execute(name, run)
+        return
+
+    failed = []
+    with ThreadPoolExecutor(max_workers=min(workers, len(selected))) as pool:
+        pending = {pool.submit(execute, name, run): name for name, run in selected}
+        for future in as_completed(pending):
+            try:
+                future.result()
+            except Exception as error:
+                name = pending[future]
+                failed.append(name)
+                print(f'FAIL {suite} {name}', flush=True, file=output)
+                traceback.print_exception(type(error), error, error.__traceback__, file=output)
+    if failed:
+        raise SystemExit(f'{suite} failed scenarios: {", ".join(sorted(failed))}')
 
 
 def process_gone(pid):
@@ -183,8 +214,8 @@ class Service:
 
         `config` is sent as the `config` patch: callers that mutate a loaded
         display view send every field back, while precise callers may pass a
-        partial map. Scenarios are serialized, so the revision read here is the
-        one the caller loaded.
+        partial map. Each scenario owns its service, so the revision read here
+        is the one the caller loaded.
         """
         revision = self.request('/config')['revision']
         return self.request('/config', 'PUT', {'expected_revision': revision, 'config': config})

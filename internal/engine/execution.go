@@ -565,12 +565,12 @@ func (o checkOutcome) evidenceText(limit int) string {
 		return boundedTail(redact.Secrets(o.capture.Error()), limit)
 	}
 	clean := func(stream process.Captured) string {
-		text := redact.Secrets(strings.TrimSpace(stream.Text()))
+		text := strings.TrimSpace(stream.SafeText())
 		if !stream.Truncated {
 			return text
 		}
 		text += "\n" + outputTruncatedMarker
-		if tail := redact.Secrets(strings.TrimSpace(stream.TailText())); tail != "" {
+		if tail := strings.TrimSpace(stream.SafeTailText()); tail != "" {
 			text += "\n" + tail
 		}
 		return text

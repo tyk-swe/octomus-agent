@@ -22,20 +22,24 @@ import (
 )
 
 const (
-	captureSecretEnv = "CAPTURE_TEST_API_KEY"
-	captureSecret    = "s3cr3tValue-0123456789"
-	capturePhraseEnv = "CAPTURE_TEST_PASSWORD"
-	capturePhrase    = "correct horse battery staple"
-	captureLinesEnv  = "CAPTURE_TEST_SECRET"
-	captureLines     = "first-line-of-key\nsecond-line-of-key\nthird-line"
-	captureBearerEnv = "CAPTURE_TEST_BEARER_SECRET"
-	captureBearer    = "opaque value then tokenbearer"
-	captureMarkEnv   = "CAPTURE_TEST_MARK_PASSWORD"
-	captureMark      = "ends with a mark !"
+	captureSecretEnv  = "CAPTURE_TEST_API_KEY"
+	captureSecret     = "s3cr3tValue-0123456789"
+	capturePhraseEnv  = "CAPTURE_TEST_PASSWORD"
+	capturePhrase     = "correct horse battery staple"
+	captureLinesEnv   = "CAPTURE_TEST_SECRET"
+	captureLines      = "first-line-of-key\nsecond-line-of-key\nthird-line"
+	captureBearerEnv  = "CAPTURE_TEST_BEARER_SECRET"
+	captureBearer     = "opaque value then tokenbearer"
+	captureMarkEnv    = "CAPTURE_TEST_MARK_PASSWORD"
+	captureMark       = "ends with a mark !"
+	captureSplitEnv   = "CAPTURE_TEST_SPLIT_SECRET"
+	captureSplit      = "ghp_abcdefghijklmnop\nsensitive-suffix"
+	captureReverseEnv = "CAPTURE_TEST_REVERSE_SECRET"
+	captureReverse    = "sensitive-prefix\nghp_abcdefghijklmnop"
 )
 
 func TestMain(m *testing.M) {
-	for name, value := range map[string]string{captureSecretEnv: captureSecret, capturePhraseEnv: capturePhrase, captureLinesEnv: captureLines, captureBearerEnv: captureBearer, captureMarkEnv: captureMark} {
+	for name, value := range map[string]string{captureSecretEnv: captureSecret, capturePhraseEnv: capturePhrase, captureLinesEnv: captureLines, captureBearerEnv: captureBearer, captureMarkEnv: captureMark, captureSplitEnv: captureSplit, captureReverseEnv: captureReverse} {
 		if err := os.Setenv(name, value); err != nil {
 			panic(err)
 		}
@@ -506,7 +510,7 @@ func TestSignalStatusFormat(t *testing.T) {
 	}
 }
 
-func TestCapturedTextDropsThePartialLineACaptureCut(t *testing.T) {
+func TestCapturedSafeTextDropsThePartialLineACaptureCut(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		bytes     string
@@ -521,20 +525,20 @@ func TestCapturedTextDropsThePartialLineACaptureCut(t *testing.T) {
 		{name: "cut inside a character", bytes: "done\nnext \xe2\x82", truncated: true, want: "done"},
 		{name: "cut inside a passphrase", bytes: "PASS=correct horse batt", truncated: true, want: "PASS="},
 		{name: "cut inside a multi-line key", bytes: "done\nKEY=first-line-of-key\nsecond-line-of-key\nthi", truncated: true, want: "done\nKEY="},
-		{name: "complete passphrase", bytes: "PASS=correct horse battery staple", want: "PASS=correct horse battery staple"},
+		{name: "complete passphrase", bytes: "PASS=correct horse battery staple", want: "PASS=[redacted]"},
 		{name: "invalid bytes kept whole", bytes: "bad \xff", want: "bad \uFFFD"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			captured := process.Captured{Bytes: []byte(test.bytes), Truncated: test.truncated}
-			if got := captured.Text(); got != test.want {
-				t.Fatalf("Text() = %q; want %q", got, test.want)
+			if got := captured.SafeText(); got != test.want {
+				t.Fatalf("SafeText() = %q; want %q", got, test.want)
 			}
 			want := test.want
 			if test.truncated {
 				want += "\n[diagnostic output truncated]"
 			}
-			if got := captured.Preview(); got != want {
-				t.Fatalf("Preview() = %q; want %q", got, want)
+			if got := captured.SafePreview(); got != want {
+				t.Fatalf("SafePreview() = %q; want %q", got, want)
 			}
 		})
 	}
@@ -660,7 +664,7 @@ func TestTailTextNeverShowsASecretTheWindowCut(t *testing.T) {
 						t.Fatal(err)
 					}
 					captured := stream.pick(out)
-					tail := captured.TailText()
+					tail := captured.SafeTailText()
 					if !captured.Truncated || len(captured.Bytes) != process.DiagnosticLimit || len(tail) > process.TailLimit {
 						t.Fatalf("capture kept %d head bytes and %d tail bytes, truncated=%t", len(captured.Bytes), len(tail), captured.Truncated)
 					}
@@ -686,6 +690,68 @@ func TestFailureTextFitsWhole(t *testing.T) {
 		[]string{"-c", "printf o; printf e >&2; exit 3"}, t.TempDir(), 10)
 	if err == nil || err.Error() != "bash exited with exit status: 3: o\ne" {
 		t.Fatalf("failure text = %v; want the unchanged small-failure form", err)
+	}
+}
+
+func TestFailureTextRedactsCredentialsSplitAcrossStreams(t *testing.T) {
+	const token = "opaque-cross-stream-credential"
+	for _, tc := range []struct {
+		name    string
+		repeats int
+	}{
+		{name: "small", repeats: 1},
+		{name: "over display limit before redaction", repeats: 1024},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := process.RunMachine(context.Background(), "bash",
+				[]string{"-c", `printf 'Authorization: Bearer '; printf '%s' "$1" >&2; exit 3`, "--", strings.Repeat(token, tc.repeats)},
+				t.TempDir(), 10)
+			if err == nil {
+				t.Fatal("exit 3 must fail")
+			}
+			if strings.Contains(err.Error(), token) {
+				t.Fatal("failure text leaked a credential split across stdout and stderr")
+			}
+			if err.Error() != "bash exited with exit status: 3: Authorization: [redacted]" {
+				t.Fatal("failure text must preserve the failure context and redact the combined credential")
+			}
+		})
+	}
+}
+
+func TestFailureTextRedactsOverlappingSecretsAcrossStreams(t *testing.T) {
+	for _, secret := range []struct{ name, value string }{
+		{"token in stdout", captureSplit},
+		{"token in stderr", captureReverse},
+	} {
+		for _, size := range []struct {
+			name  string
+			lines int
+		}{
+			{"small", 0},
+			{"over display limit", 4000},
+			{"truncated stdout", 40000},
+		} {
+			t.Run(secret.name+"/"+size.name, func(t *testing.T) {
+				stdout, stderr, _ := strings.Cut(secret.value, "\n")
+				_, err := process.RunPredicate(context.Background(), "bash",
+					[]string{"-c", `if (( $3 > 0 )); then seq -f 'context %g' "$3"; fi; printf '%s' "$1"; printf '%s\nSTDERR-END' "$2" >&2; exit 3`, "--", stdout, stderr, strconv.Itoa(size.lines)},
+					t.TempDir(), 10, nil)
+				if err == nil {
+					t.Fatal("exit 3 must fail")
+				}
+				text := err.Error()
+				if strings.Contains(text, stdout) || strings.Contains(text, stderr) {
+					t.Fatal("failure text leaked part of an environment secret overlapping a token across streams")
+				}
+				if !strings.HasPrefix(text, "bash exited with exit status: 3: ") || !strings.Contains(text, "[redacted]") || !strings.HasSuffix(text, "STDERR-END") {
+					t.Fatal("failure text must preserve the exit status and stderr context while redacting the overlapping secret")
+				}
+				if utf8.RuneCountInString(text) > failureTextLimit {
+					t.Fatal("failure text exceeded its display budget")
+				}
+			})
+		}
 	}
 }
 
@@ -814,7 +880,7 @@ func TestShellCheckRetainsBashPipefail(t *testing.T) {
 	if err != nil || !passed.Status.Success() {
 		t.Fatalf("passing check = %v, %v", passed, err)
 	}
-	if text := strings.TrimSpace(passed.Stdout.Preview()); text != "Ok" {
+	if text := strings.TrimSpace(passed.Stdout.SafePreview()); text != "Ok" {
 		t.Fatalf("check output = %q; want the filtered output", text)
 	}
 }
