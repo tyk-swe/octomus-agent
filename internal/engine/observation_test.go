@@ -2,13 +2,16 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // holdRemoteRevisionRead replaces the fixture's git shim with one that, while
@@ -79,6 +82,156 @@ func TestObservationObsoletedByARemoteChangeCommitsNothing(t *testing.T) {
 	control, err := app.Control()
 	if err != nil || control.ContextFingerprint != "" {
 		t.Fatalf("obsolete observation recorded a context fingerprint: %+v, %v", control, err)
+	}
+}
+
+// holdOpenPrInventoryRead replaces the fixture's gh peer with one that, while
+// the returned hold file exists, parks the open-PR inventory read after
+// touching the returned entered file, and while the returned fail file
+// exists, fails that read.
+func holdOpenPrInventoryRead(t *testing.T, f *planningFixture) (hold, entered, fail string) {
+	t.Helper()
+	fixtures := filepath.Join(repositoryRoot(t), "tests", "fixtures")
+	hold = filepath.Join(f.root, "hold-open-pr-inventory")
+	entered = filepath.Join(f.root, "open-pr-inventory-entered")
+	fail = filepath.Join(f.root, "fail-open-pr-inventory")
+	script := fmt.Sprintf(`#!/usr/bin/env python3
+import os, runpy, sys, time
+from pathlib import Path
+os.environ['OCTOMUS_FIXTURE'] = %[1]q
+sys.path.insert(0, %[2]q)
+args = sys.argv[1:]
+if args[:1] == ['api'] and '/pulls?state=open' in args[-1]:
+    hold = Path(%[3]q)
+    if hold.exists():
+        Path(%[4]q).touch()
+        while hold.exists():
+            time.sleep(0.02)
+    if Path(%[5]q).exists():
+        sys.exit('fixture inventory outage')
+runpy.run_path(%[6]q, run_name='__main__')
+`, f.root, fixtures, hold, entered, fail, filepath.Join(fixtures, "gh.py"))
+	if err := os.WriteFile(filepath.Join(f.root, "bin", "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hold, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return hold, entered, fail
+}
+
+// A configuration save that changes the PR identity while a housekeeping
+// observation's inventory refresh is in flight makes that refresh obsolete,
+// as a pause or save makes a dispatch refresh: its result is not recorded as
+// the capacity failure reason, the pass records no housekeeping_error and
+// commits nothing, and the next observation under the saved policy completes.
+// A genuine inventory failure in a later pass is still reported.
+func TestHousekeepingRefreshObsoletedByAPolicySaveIsNotAFailure(t *testing.T) {
+	fixture := newPlanningFixture(t)
+	hold, entered, fail := holdOpenPrInventoryRead(t, fixture)
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	// Only the remote observation runs in this pass.
+	app.runtimeMu.Lock()
+	app.runtime.lastRetention = time.Now()
+	app.runtimeMu.Unlock()
+	app.maybeStartHousekeeping(fixture.cfg)
+	if !testutil.WaitUntil(30*time.Second, func() bool {
+		_, err := os.Stat(entered)
+		return err == nil
+	}) {
+		t.Fatal("housekeeping refresh did not read the open-PR inventory")
+	}
+	live, err := app.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := live.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := map[string]json.RawMessage{"branch_prefix": json.RawMessage(`"octomus-next/"`)}
+	if _, err := app.SaveConfig(revision, patch); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	waitHousekeeping(t, app)
+
+	app.runtimeMu.Lock()
+	refreshError := app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if refreshError != "" {
+		t.Fatalf("obsolete refresh was recorded as an inventory failure: %q", refreshError)
+	}
+	capacity, err := app.PrCapacity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capacity.Reason == nil || strings.Contains(*capacity.Reason, "policy changed") {
+		t.Fatalf("obsolete refresh became the capacity reason: %+v", capacity)
+	}
+	system := "system"
+	events, err := fixture.state.Events(&system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "housekeeping_error" {
+			t.Fatalf("obsolete refresh was recorded as a housekeeping failure: %+v", event)
+		}
+	}
+	if inventory, err := fixture.state.OpenPrInventory(); err != nil || inventory != nil {
+		t.Fatalf("obsolete refresh saved an inventory: %+v, %v", inventory, err)
+	}
+	control, err := app.Control()
+	if err != nil || control.ContextFingerprint != "" {
+		t.Fatalf("obsolete observation recorded a context fingerprint: %+v, %v", control, err)
+	}
+
+	// The next observation under the saved policy completes normally.
+	saved, err := app.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.observeRemote(context.Background(), saved); err != nil {
+		t.Fatalf("observation under the saved policy failed: %v", err)
+	}
+	if inventory, err := fixture.state.OpenPrInventory(); err != nil || inventory == nil {
+		t.Fatalf("observation under the saved policy saved no inventory: %+v, %v", inventory, err)
+	}
+	control, err = app.Control()
+	if err != nil || control.ContextFingerprint == "" {
+		t.Fatalf("observation under the saved policy recorded no context fingerprint: %+v, %v", control, err)
+	}
+
+	if err := os.WriteFile(fail, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.runtimeMu.Lock()
+	app.runtime.lastObserve = time.Time{}
+	app.runtimeMu.Unlock()
+	app.maybeStartHousekeeping(saved)
+	waitHousekeeping(t, app)
+	app.runtimeMu.Lock()
+	refreshError = app.runtime.prRefreshError
+	app.runtimeMu.Unlock()
+	if !strings.Contains(refreshError, "Open pull request inventory failed") {
+		t.Fatalf("an inventory outage was not recorded as an inventory failure: %q", refreshError)
+	}
+	events, err = fixture.state.Events(&system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := 0
+	for _, event := range events {
+		if event.Kind == "housekeeping_error" {
+			failures++
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("housekeeping reported %d failures; want the inventory outage only: %+v", failures, events)
 	}
 }
 

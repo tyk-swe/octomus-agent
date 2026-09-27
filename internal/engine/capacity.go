@@ -27,6 +27,12 @@ const prCapacityFullReason = "The configured owned open-PR limit is reached; new
 // one. The older result is obsolete, not a failure.
 var errPrInventorySuperseded = errors.New("Pull request inventory became stale before persistence")
 
+// errPrPolicyChanged reports a refresh whose PR identity (repository, GitHub
+// repository, default branch or branch prefix) a configuration save changed
+// while it ran. That save already invalidated this process's observation, so
+// the result is obsolete, not a failure.
+var errPrPolicyChanged = errors.New("Pull request policy changed during refresh")
+
 type freshPrObservation struct {
 	identity          store.PrIdentity
 	inventory         model.OpenPrInventory
@@ -219,10 +225,12 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		// A refresh whose own context ended (invalidation by pause, config
 		// save or a failed run, or shutdown) is obsolete, not failed: remote
 		// captures report that as process.ErrCancelled, which does not wrap
-		// context.Canceled, and invalidation has already reset this state. A
-		// superseded refresh is obsolete too: the newer one that persisted
-		// first already settled this state.
-		if result == nil || ctx.Err() != nil || errors.Is(result, context.Canceled) || errors.Is(result, errPrInventorySuperseded) {
+		// context.Canceled, and invalidation has already reset this state. So
+		// is one whose PR identity a save changed while it ran: housekeeping's
+		// refresh is not cancelled by that save's invalidation. A superseded
+		// refresh is obsolete too: the newer one that persisted first already
+		// settled this state.
+		if result == nil || ctx.Err() != nil || errors.Is(result, context.Canceled) || errors.Is(result, errPrPolicyChanged) || errors.Is(result, errPrInventorySuperseded) {
 			return
 		}
 		a.runtimeMu.Lock()
@@ -248,7 +256,7 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		return err
 	}
 	if !store.PrIdentityOf(snapshot).Matches(live) {
-		return errors.New("Pull request policy changed during refresh")
+		return errPrPolicyChanged
 	}
 	persisted, err := a.commitPrObservationLocked(live, observed)
 	if err != nil {
