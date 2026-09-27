@@ -404,6 +404,59 @@ func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
 	}
 }
 
+// TestVerificationEvidenceKeepsTheRealEndOfLongOutput: a command whose output
+// runs far past the diagnostic capture limit reports its failure last, and the
+// saved evidence and the repair prompt keep that real end, not the end of the
+// kept head, behind the truncation marker, on stdout and on stderr.
+func TestVerificationEvidenceKeepsTheRealEndOfLongOutput(t *testing.T) {
+	// About 600 KB of progress lines, more than twice the capture limit.
+	const (
+		progress = "seq -f 'progress line %g of the long verification run' 12000; "
+		long     = progress + "echo 'FINAL FAILURE LINE'"
+		end      = "\nprogress line 12000 of the long verification run\nFINAL FAILURE LINE\nexit status: 1"
+	)
+	for _, test := range []struct {
+		name    string
+		command string
+		prefix  string
+		suffix  string
+	}{
+		{name: "stdout", command: long + "; exit 1", prefix: outputTruncatedMarker + "\n", suffix: end},
+		{name: "stderr", command: "{ " + long + "; } >&2; echo out; exit 1", prefix: "out\n[stderr]\n" + outputTruncatedMarker + "\n", suffix: end},
+		// The kept end starts inside a line longer than itself, which it
+		// drops, so the end of the kept head shows before the marker that
+		// stands where output was dropped.
+		{name: "end inside a long line", command: progress + "head -c 70000 /dev/zero | tr '\\0' A; echo; echo 'FINAL FAILURE LINE'; exit 1", prefix: outputTruncatedMarker + "\n",
+			suffix: " of the long verification run\n" + outputTruncatedMarker + "\nFINAL FAILURE LINE\nexit status: 1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, task, revision := verificationFixture(t, []string{test.command})
+			failures, err := app.verifyRevision(context.Background(), &task, revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := loadTask(t, app.Store, task.ID)
+			if len(saved.Verification) != 1 {
+				t.Fatalf("verification = %+v; want one record", saved.Verification)
+			}
+			output := saved.Verification[0].Output
+			if !strings.HasPrefix(output, test.prefix) || !strings.HasSuffix(output, test.suffix) || strings.Contains(output, "AAAA") {
+				t.Fatalf("evidence lost its marker or the command's real end: %.80q ... %q", output, output[max(len(output)-120, 0):])
+			}
+			if len(output) > verificationOutputLimit || !utf8.ValidString(output) {
+				t.Fatalf("evidence has %d bytes; want valid UTF-8 within %d", len(output), verificationOutputLimit)
+			}
+			if len(failures) != 1 || failures[0] != test.command+": "+output {
+				t.Fatalf("repair prompt failures = %q; want the saved evidence", failures)
+			}
+			prompt, err := repairPrompt(&saved, saved.ExecutionConfig(), model.Review{}, failures)
+			if err != nil || !strings.Contains(prompt, "FINAL FAILURE LINE") {
+				t.Fatalf("repair prompt lacks the command's real end (%v)", err)
+			}
+		})
+	}
+}
+
 // TestVerificationEvidenceNeverShowsASecretTheCaptureLimitCut: a command that
 // prints a credential across the diagnostic capture limit leaves only a prefix
 // of it, which redaction cannot recognise. The saved evidence and the repair
@@ -454,20 +507,17 @@ func TestVerificationEvidenceNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
 func TestBoundedTailKeepsTheEndWithinTheLimit(t *testing.T) {
 	marker := outputTruncatedMarker
 	for _, test := range []struct {
-		name             string
-		text             string
-		limit            int
-		captureTruncated bool
-		want             string
+		name  string
+		text  string
+		limit int
+		want  string
 	}{
 		{name: "fits exactly", text: strings.Repeat("x", 32), limit: 32, want: strings.Repeat("x", 32)},
 		{name: "over the limit", text: "head-" + strings.Repeat("x", 40) + "-tail", limit: 32, want: marker + "\n" + strings.Repeat("x", 8) + "-tail"},
-		{name: "capture truncated", text: "short", limit: 64, captureTruncated: true, want: "short\n" + marker},
-		{name: "both markers", text: strings.Repeat("x", 60) + "-tail", limit: 48, captureTruncated: true, want: marker + "\n" + strings.Repeat("x", 5) + "-tail\n" + marker},
 		{name: "rune boundary", text: strings.Repeat("é", 20), limit: 24, want: marker + "\n" + strings.Repeat("é", 2)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := boundedTail(test.text, test.limit, test.captureTruncated)
+			got := boundedTail(test.text, test.limit)
 			if got != test.want || len(got) > test.limit || !utf8.ValidString(got) {
 				t.Fatalf("boundedTail = %q (%d bytes); want %q within %d", got, len(got), test.want, test.limit)
 			}

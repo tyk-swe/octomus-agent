@@ -690,6 +690,65 @@ func TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret(t *testing.T) {
 	}
 }
 
+// TestTailTextNeverShowsASecretTheWindowCut: a command that prints far past
+// the diagnostic capture limit has its real end kept in a window that can
+// begin inside a secret, leaving only the rest of it, which redaction cannot
+// recognise. The tail text drops that rest, the token after a cut bearer
+// prefix and the remaining words or lines of a cut environment secret, and
+// keeps what follows through the final line, on stdout and on stderr, across
+// lines and within one long line.
+func TestTailTextNeverShowsASecretTheWindowCut(t *testing.T) {
+	for _, secret := range []struct {
+		name  string
+		print string // printf's format argument, printing text without a newline
+		text  string // what it prints
+		cut   int    // bytes of text before the window starts
+		leak  string // part of the rest that must not appear
+	}{
+		{name: "environment secret", print: `"$` + captureSecretEnv + `"`, text: captureSecret, cut: 10, leak: captureSecret[10:]},
+		{name: "URL credential", print: `'https://bot:s3cr3tpassword0123@github.com/x'`, text: "https://bot:s3cr3tpassword0123@github.com/x", cut: 22, leak: "sword0123"},
+		{name: "bearer token", print: `'Authorization: Bearer abcdefghijklmnop'`, text: "Authorization: Bearer abcdefghijklmnop", cut: len("Authorization: Bea"), leak: "abcdefghijklmnop"},
+		{name: "bearer token after a line break", print: `'Authorization: Bearer\nabcdefghijklmnop'`, text: "Authorization: Bearer\nabcdefghijklmnop", cut: len("Authorization: Be"), leak: "abcdefghijklmnop"},
+		{name: "passphrase", print: `"$` + capturePhraseEnv + `"`, text: capturePhrase, cut: len("correct hor"), leak: "battery"},
+		{name: "multi-line key", print: `"$` + captureLinesEnv + `"`, text: captureLines, cut: len("first-line-of-k"), leak: "second-line-of-key"},
+	} {
+		for _, layout := range []struct{ name, sep string }{{"lines", "\n"}, {"one line", " "}} {
+			// After the head and a gap, the window's last TailLimit bytes are
+			// the rest of text, then the words or lines KEPT-AFTER, a filler
+			// and FINAL, each followed by sep.
+			filler := process.TailLimit - (len(secret.text) - secret.cut) - len("KEPT-AFTER") - len("FINAL") - 4*len(layout.sep)
+			script := fmt.Sprintf(`head -c %d /dev/zero | tr '\0' A; echo; printf %s; printf '%%sKEPT-AFTER%%s' '%s' '%s'; head -c %d /dev/zero | tr '\0' B; printf '%%sFINAL%%s' '%s' '%s'`,
+				process.DiagnosticLimit+1000, secret.print, layout.sep, layout.sep, filler, layout.sep, layout.sep)
+			for _, stream := range []struct {
+				name   string
+				script string
+				pick   func(*process.ProcessOutput) process.Captured
+			}{
+				{name: "stdout", script: script, pick: func(out *process.ProcessOutput) process.Captured { return out.Stdout }},
+				{name: "stderr", script: "{ " + script + "; } >&2", pick: func(out *process.ProcessOutput) process.Captured { return out.Stderr }},
+			} {
+				t.Run(secret.name+" in "+layout.name+" on "+stream.name, func(t *testing.T) {
+					out, err := process.Capture(context.Background(), "bash", []string{"-c", stream.script}, t.TempDir(), 10, process.CaptureDiagnostic)
+					if err != nil {
+						t.Fatal(err)
+					}
+					captured := stream.pick(out)
+					tail := captured.TailText()
+					if !captured.Truncated || len(captured.Bytes) != process.DiagnosticLimit || len(tail) > process.TailLimit {
+						t.Fatalf("capture kept %d head bytes and %d tail bytes, truncated=%t", len(captured.Bytes), len(tail), captured.Truncated)
+					}
+					if strings.Contains(tail, secret.leak) {
+						t.Fatalf("tail text shows the cut secret's rest %q: %.80q", secret.leak, tail)
+					}
+					if !strings.HasPrefix(tail, "KEPT-AFTER"+layout.sep) || !strings.HasSuffix(tail, layout.sep+"FINAL"+layout.sep) {
+						t.Fatalf("tail text lost what followed the secret or the real end: %.80q ... %q", tail, tail[max(len(tail)-80, 0):])
+					}
+				})
+			}
+		}
+	}
+}
+
 // displayLimit mirrors the store's display bound for recorded messages, and
 // failureTextLimit the part of it a failure message may use: the rest is left
 // for the context callers wrap around a failure before recording it.
@@ -799,6 +858,40 @@ func TestFailureTextOmitsAnEmptyStderrSection(t *testing.T) {
 	if !strings.HasPrefix(text, "bash exited with exit status: 4: STDOUT-HEAD") ||
 		!strings.Contains(text, "characters omitted") || !strings.HasSuffix(text, "STDOUT-TAIL\n") {
 		t.Fatalf("failure text lost an end of stdout: %.200s", text)
+	}
+	if n := utf8.RuneCountInString(text); n > failureTextLimit {
+		t.Fatalf("failure text has %d characters; want at most %d", n, failureTextLimit)
+	}
+}
+
+// TestFailureTextKeepsTheRealEndOfTruncatedStreams: a failed command whose
+// output runs far past the diagnostic capture limit still states its cause
+// last. The failure text keeps each stream's beginning and its real end, not
+// the end of the kept head, around the truncation marker, on stdout and on
+// stderr, and still fits the bound.
+func TestFailureTextKeepsTheRealEndOfTruncatedStreams(t *testing.T) {
+	// Each stream prints about 1 MB, several times the capture limit.
+	script := `echo FIRST-STDOUT; seq -f 'stdout filler line %g' 40000; echo FINAL-STDOUT
+{ echo FIRST-STDERR; seq -f 'stderr filler line %g' 40000; echo FINAL-STDERR; } >&2
+exit 3`
+	_, err := process.RunPredicate(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10, []int{1})
+	if err == nil {
+		t.Fatal("exit 3 must fail")
+	}
+	text := err.Error()
+	stdout, stderr, ok := strings.Cut(text, "\n[stderr]\n")
+	if !ok {
+		t.Fatalf("failure text lacks a stderr section:\n%.200s", text)
+	}
+	for _, section := range []struct{ name, text, first, final string }{
+		{name: "stdout", text: stdout, first: "bash exited with exit status: 3: FIRST-STDOUT\n", final: "\nFINAL-STDOUT\n"},
+		{name: "stderr", text: stderr, first: "FIRST-STDERR\n", final: "\nFINAL-STDERR\n"},
+	} {
+		if !strings.HasPrefix(section.text, section.first) || !strings.HasSuffix(section.text, section.final) ||
+			!strings.Contains(section.text, "\n[diagnostic output truncated]\n") {
+			t.Fatalf("%s section lost its beginning, its real end or the truncation marker: %.80q ... %q",
+				section.name, section.text, section.text[max(len(section.text)-80, 0):])
+		}
 	}
 	if n := utf8.RuneCountInString(text); n > failureTextLimit {
 		t.Fatalf("failure text has %d characters; want at most %d", n, failureTextLimit)

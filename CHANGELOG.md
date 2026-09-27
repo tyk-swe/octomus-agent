@@ -52,7 +52,8 @@ the first release contains.
 - Verification evidence keeps the end of each command's stdout and stderr and its exit
   status, secret-scrubbed within 16 KiB, and marks every cut. A failed Git or GitHub
   command's error keeps both ends of long stdout and stderr around an explicit omission
-  marker, and always leaves room for stderr.
+  marker, and always leaves room for stderr. Both keep a stream's real end even past
+  the 256 KiB capture limit, from a rolling window of its last 64 KiB.
 - A command stopped by a timeout or cancellation gets `SIGTERM` and up to two seconds to
   exit before its process group is killed, so Git can remove its lock files.
 - Pull request descriptions and follow-up comments list one verification line per

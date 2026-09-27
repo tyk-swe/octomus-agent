@@ -3,8 +3,8 @@
 // group, never just the direct child.
 //
 // Diagnostics and machine output are separate contracts: diagnostic captures
-// keep a bounded preview for humans while machine captures fail closed on
-// truncation or invalid UTF-8.
+// keep a bounded preview for humans, the beginning of each stream and its real
+// end, while machine captures fail closed on truncation or invalid UTF-8.
 package process
 
 import (
@@ -87,6 +87,10 @@ const (
 	// MachineLimit bounds stdout for machine-readable output. It is distinct
 	// from the runner protocol's 16,000,000-byte bound.
 	MachineLimit = 16 * 1024 * 1024
+	// TailLimit bounds the rolling window that keeps the real end of a stream
+	// past its limit, where commands usually state their result. The window is
+	// allocated only once a stream passes its limit.
+	TailLimit = 64 * 1024
 )
 
 // CaptureMode selects the stdout bound; stderr is always diagnostic-bounded.
@@ -98,10 +102,14 @@ const (
 )
 
 // Captured is bounded output: at most limit bytes kept plus a truncation flag
-// once anything beyond the limit was observed.
+// once anything beyond the limit was observed, and then the stream's last
+// bytes, at most TailLimit of them (TailText).
 type Captured struct {
 	Bytes     []byte
 	Truncated bool
+	// tail is the rolling window's content, oldest byte first: the last bytes
+	// written after Bytes. It is empty unless Truncated.
+	tail []byte
 }
 
 // Text renders kept bytes as lossy UTF-8 (invalid sequences become U+FFFD).
@@ -125,12 +133,72 @@ func (c Captured) Text() string {
 	return ""
 }
 
-// Preview renders Text and flags truncation explicitly.
-func (c Captured) Preview() string {
-	if c.Truncated {
-		return c.Text() + "\n[diagnostic output truncated]"
+// TailText renders the real end of a truncated capture, the rolling window
+// of its last bytes, as lossy UTF-8; it is empty for a complete capture. The
+// window starts wherever the stream then was, possibly inside a secret that
+// redaction can then no longer recognise, or between a bearer prefix and its
+// token, so its partial first line is dropped, or, when the window holds no
+// newline, its partial first word, or everything when there is no whitespace
+// either. The next word goes too when what was dropped could end a bearer
+// prefix, and so do the last words or lines of a multi-word or multi-line
+// environment secret the window began inside (redact.TrimCutSecretStart).
+func (c Captured) TailText() string {
+	if !c.Truncated {
+		return ""
 	}
-	return c.Text()
+	text := strings.ToValidUTF8(string(c.tail), "\uFFFD")
+	cut, rest, found := strings.Cut(text, "\n")
+	if !found {
+		i := strings.IndexFunc(text, unicode.IsSpace)
+		if i < 0 {
+			return ""
+		}
+		cut, rest = text[:i], text[i:]
+	}
+	rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
+	if mayEndBearerPrefix(strings.TrimRightFunc(cut, unicode.IsSpace)) {
+		// Redaction recognises a bearer token only after its prefix, and
+		// the whitespace between them may include the newline just cut.
+		if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
+			rest = strings.TrimLeftFunc(rest[i:], unicode.IsSpace)
+		} else {
+			rest = ""
+		}
+	}
+	return strings.TrimLeftFunc(redact.TrimCutSecretStart(rest), unicode.IsSpace)
+}
+
+// mayEndBearerPrefix reports whether text, the part of a tail window dropped
+// before its first kept word with trailing whitespace removed, could end the
+// "Bearer" that redaction needs before a token: it is empty (the window began
+// in the whitespace after the prefix), all of it is the end of the prefix, or
+// it ends with the whole prefix.
+func mayEndBearerPrefix(text string) bool {
+	const prefix = "bearer"
+	n := min(len(text), len(prefix))
+	return (n == len(text) || n == len(prefix)) && strings.EqualFold(text[len(text)-n:], prefix[len(prefix)-n:])
+}
+
+// diagnosticTruncatedMarker stands where a truncated capture dropped output.
+const diagnosticTruncatedMarker = "[diagnostic output truncated]"
+
+// Preview renders Text and flags truncation explicitly: a truncated capture
+// is followed by a marker line, then by its real end (TailText) when that
+// holds anything.
+func (c Captured) Preview() string {
+	return joinPreview(c.Text(), c.TailText(), c.Truncated)
+}
+
+// joinPreview renders a stream's head, and for a truncated capture the marker
+// and its tail, as Preview does.
+func joinPreview(head, tail string, truncated bool) string {
+	if !truncated {
+		return head
+	}
+	if tail == "" {
+		return head + "\n" + diagnosticTruncatedMarker
+	}
+	return head + "\n" + diagnosticTruncatedMarker + "\n" + tail
 }
 
 // Status is the end state of a direct child: an exit code when the leader
@@ -218,28 +286,66 @@ var ErrCancelled = errors.New("Operation cancelled")
 // ErrSessionCancelled is the bounded() cancellation result ("Session cancelled").
 var ErrSessionCancelled = errors.New("Session cancelled")
 
-// boundedRead drains r, keeping at most limit bytes and flagging anything more.
+// boundedRead drains r, keeping at most limit bytes and flagging anything
+// more, whose last TailLimit bytes it keeps in a rolling window.
 func boundedRead(r io.Reader, limit int) (Captured, error) {
 	var kept []byte
+	var tail tailWindow
 	buf := make([]byte, 8192)
 	truncated := false
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			remaining := limit - len(kept)
-			if remaining < 0 {
-				remaining = 0
+			take := min(n, limit-len(kept))
+			kept = append(kept, buf[:take]...)
+			if take < n {
+				truncated = true
+				tail.write(buf[take:n])
 			}
-			truncated = truncated || n > remaining
-			kept = append(kept, buf[:min(n, remaining)]...)
 		}
 		if err != nil {
+			captured := Captured{Bytes: kept, Truncated: truncated, tail: tail.bytes()}
 			if err == io.EOF {
-				return Captured{kept, truncated}, nil
+				return captured, nil
 			}
-			return Captured{kept, truncated}, err
+			return captured, err
 		}
 	}
+}
+
+// tailWindow keeps the last TailLimit bytes written to it in a ring buffer
+// allocated on the first write.
+type tailWindow struct {
+	buf  []byte
+	next int // the oldest byte's position once buf is full
+}
+
+func (w *tailWindow) write(p []byte) {
+	if len(p) > TailLimit {
+		p = p[len(p)-TailLimit:]
+	}
+	if w.buf == nil {
+		w.buf = make([]byte, 0, TailLimit)
+	}
+	if room := TailLimit - len(w.buf); room > 0 {
+		n := min(room, len(p))
+		w.buf = append(w.buf, p[:n]...)
+		p = p[n:]
+	}
+	for len(p) > 0 {
+		n := copy(w.buf[w.next:], p)
+		p = p[n:]
+		w.next = (w.next + n) % TailLimit
+	}
+}
+
+// bytes returns the kept bytes oldest first, rotating the ring in place.
+func (w *tailWindow) bytes() []byte {
+	slices.Reverse(w.buf[:w.next])
+	slices.Reverse(w.buf[w.next:])
+	slices.Reverse(w.buf)
+	w.next = 0
+	return w.buf
 }
 
 type readResult struct {
@@ -426,30 +532,68 @@ func ensureSuccess(binary string, output *ProcessOutput) error {
 }
 
 // failureText renders a failed command for operators: its exit status, then
-// scrubbed stdout and stderr. Output that fits failureTextLimit is kept
-// whole, as `<stdout>\n<stderr>`. Longer output keeps both ends of each stream
-// around an explicit omission marker, in `<stdout>\n[stderr]\n<stderr>` form
-// (no section when stderr is empty); stderr may always use up to stderrShare
-// of the bound however long stdout is. Preview drops the partial line a
-// capture limit cut, and secrets are scrubbed from the remaining text before
-// anything is cut here, so no cut exposes part of a secret.
+// scrubbed stdout and stderr, each as its Preview. Output that fits
+// failureTextLimit is kept whole, as `<stdout>\n<stderr>`. Longer output keeps
+// both ends of each stream around an explicit marker, in
+// `<stdout>\n[stderr]\n<stderr>` form (no section when stderr is empty);
+// stderr may always use up to stderrShare of the bound however long stdout
+// is. Preview drops the partial lines a capture limit or its tail window cut,
+// and secrets are scrubbed from the remaining text before anything is cut
+// here, so no cut exposes part of a secret.
 func failureText(binary string, output *ProcessOutput) string {
 	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
 	budget := failureTextLimit - utf8.RuneCountInString(prefix)
-	stdout, stderr := output.Stdout.Preview(), output.Stderr.Preview()
-	if joined := redact.Secrets(stdout + "\n" + stderr); utf8.RuneCountInString(joined) <= budget {
+	if joined := redact.Secrets(output.Stdout.Preview() + "\n" + output.Stderr.Preview()); utf8.RuneCountInString(joined) <= budget {
 		return prefix + joined
 	}
-	stdout, stderr = redact.Secrets(stdout), redact.Secrets(stderr)
-	if stderr == "" {
-		return prefix + elideMiddle(stdout, budget)
+	stdout, stderr := scrubPreview(output.Stdout), scrubPreview(output.Stderr)
+	if stderr.text() == "" {
+		return prefix + stdout.elide(budget)
 	}
 	const separator = "\n[stderr]\n"
 	budget -= utf8.RuneCountInString(separator)
-	stderrRunes := utf8.RuneCountInString(stderr)
-	stderr = elideMiddle(stderr, min(stderrRunes, max(stderrShare, budget-utf8.RuneCountInString(stdout))))
-	stdout = elideMiddle(stdout, budget-utf8.RuneCountInString(stderr))
-	return prefix + stdout + separator + stderr
+	stderrText := stderr.elide(min(stderr.runes(), max(stderrShare, budget-stdout.runes())))
+	return prefix + stdout.elide(budget-utf8.RuneCountInString(stderrText)) + separator + stderrText
+}
+
+// failurePreview is one stream's Preview with secrets scrubbed from its head
+// and its tail separately, so that eliding it can keep the beginning of one
+// and the end of the other.
+type failurePreview struct {
+	head, tail string
+	truncated  bool
+}
+
+func scrubPreview(c Captured) failurePreview {
+	return failurePreview{head: redact.Secrets(c.Text()), tail: redact.Secrets(c.TailText()), truncated: c.Truncated}
+}
+
+func (p failurePreview) text() string { return joinPreview(p.head, p.tail, p.truncated) }
+
+func (p failurePreview) runes() int { return utf8.RuneCountInString(p.text()) }
+
+// elide shortens the preview to at most limit characters, keeping both of its
+// ends; limit must leave room for its markers, as elideMiddle's does. A
+// capture whose real end is kept always shows the truncation marker between
+// its head and its tail: whichever of them fits in half the room stays whole
+// while the other keeps both of its ends around an omission count
+// (elideMiddle); otherwise the beginning of the head and the end of the tail
+// remain around the truncation marker alone.
+func (p failurePreview) elide(limit int) string {
+	text := p.text()
+	if p.tail == "" || utf8.RuneCountInString(text) <= limit {
+		return elideMiddle(text, limit)
+	}
+	const marker = "\n" + diagnosticTruncatedMarker + "\n"
+	keep := max(limit-utf8.RuneCountInString(marker), 0)
+	headRunes, tailRunes := utf8.RuneCountInString(p.head), utf8.RuneCountInString(p.tail)
+	switch {
+	case headRunes <= keep/2:
+		return p.head + marker + elideMiddle(p.tail, keep-headRunes)
+	case tailRunes <= keep-keep/2:
+		return elideMiddle(p.head, keep-tailRunes) + marker + p.tail
+	}
+	return p.head[:runeOffset(p.head, keep/2)] + marker + p.tail[runeOffset(p.tail, tailRunes-(keep-keep/2)):]
 }
 
 // elideMiddle shortens text to at most limit characters, keeping its beginning

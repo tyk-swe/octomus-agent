@@ -542,7 +542,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		case outcome.intactErr != nil:
 			// The state check itself failed, for example because the command
 			// removed the repository: still evidence against this command.
-			note = "\n" + boundedTail(redact.Secrets(outcome.intactErr.Error()), verificationNoteLimit, false)
+			note = "\n" + boundedTail(redact.Secrets(outcome.intactErr.Error()), verificationNoteLimit)
 		case !outcome.intact:
 			note = "\nWorkspace or HEAD changed during this verification command"
 		}
@@ -674,56 +674,56 @@ const (
 
 // evidenceText renders the command for its verification record and the repair
 // prompt in at most limit bytes: stdout, then a [stderr] section, then the
-// exit status on failure. Each stream drops the partial line a capture limit
-// cut (process.Captured.Text), and secrets are scrubbed from the rest before
-// anything is cut here, so no cut exposes part of a secret. Each stream keeps
-// its end, where test runners and compilers report failures. stderr may use
-// half the bound however long stdout is, since it usually states the cause,
-// and any room stdout leaves; stdout may use whatever stderr leaves.
+// exit status on failure. A stream the capture truncated is its kept head, an
+// outputTruncatedMarker line where output was dropped, then its real end.
+// Both parts drop the partial lines the capture cut (process.Captured.Text
+// and TailText), and secrets are scrubbed from the rest before anything is
+// cut here, so no cut exposes part of a secret. Each stream keeps its end,
+// where test runners and compilers report failures. stderr may use half the
+// bound however long stdout is, since it usually states the cause, and any
+// room stdout leaves; stdout may use whatever stderr leaves.
 func (o checkOutcome) evidenceText(limit int) string {
 	if o.capture != nil {
-		return boundedTail(redact.Secrets(o.capture.Error()), limit, false)
+		return boundedTail(redact.Secrets(o.capture.Error()), limit)
 	}
 	clean := func(stream process.Captured) string {
-		return redact.Secrets(strings.TrimSpace(stream.Text()))
+		text := redact.Secrets(strings.TrimSpace(stream.Text()))
+		if !stream.Truncated {
+			return text
+		}
+		text += "\n" + outputTruncatedMarker
+		if tail := redact.Secrets(strings.TrimSpace(stream.TailText())); tail != "" {
+			text += "\n" + tail
+		}
+		return text
 	}
 	status := ""
 	if !o.captured.Status.Success() {
 		status = "\n" + o.captured.Status.String()
 	}
 	stdout := clean(o.captured.Stdout)
-	// stdoutWhole is what stdout needs uncut, with its capture marker.
-	stdoutWhole := len(stdout)
-	if o.captured.Stdout.Truncated {
-		stdoutWhole += len("\n" + outputTruncatedMarker)
-	}
 	stderr := ""
-	if text := clean(o.captured.Stderr); text != "" || o.captured.Stderr.Truncated {
+	if text := clean(o.captured.Stderr); text != "" {
 		const separator = "\n[stderr]\n"
-		budget := max(limit/2, limit-len(separator)-stdoutWhole-len(status))
-		stderr = separator + boundedTail(text, budget, o.captured.Stderr.Truncated)
+		budget := max(limit/2, limit-len(separator)-len(stdout)-len(status))
+		stderr = separator + boundedTail(text, budget)
 	}
-	return boundedTail(stdout, limit-len(stderr)-len(status), o.captured.Stdout.Truncated) + stderr + status
+	return boundedTail(stdout, limit-len(stderr)-len(status)) + stderr + status
 }
 
 // boundedTail keeps the end of text within limit bytes, cut on a rune
 // boundary behind an outputTruncatedMarker line when its beginning is
-// dropped. captureTruncated reports that the capture itself stopped early,
-// which a trailing marker line states. limit must leave room for both markers.
-func boundedTail(text string, limit int, captureTruncated bool) string {
-	suffix := ""
-	if captureTruncated {
-		suffix = "\n" + outputTruncatedMarker
-	}
-	if len(text)+len(suffix) <= limit {
-		return text + suffix
+// dropped. limit must leave room for the marker.
+func boundedTail(text string, limit int) string {
+	if len(text) <= limit {
+		return text
 	}
 	const prefix = outputTruncatedMarker + "\n"
-	start := len(text) - max(limit-len(prefix)-len(suffix), 0)
+	start := len(text) - max(limit-len(prefix), 0)
 	for start < len(text) && !utf8.RuneStart(text[start]) {
 		start++
 	}
-	return prefix + text[start:] + suffix
+	return prefix + text[start:]
 }
 
 // runCheckCommand runs one `bash -o pipefail -c` verification command in ws,

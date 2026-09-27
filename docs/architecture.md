@@ -72,7 +72,7 @@ The executor's changes are committed locally. Review uses a fixed comparison bas
 
 A reviewer is always a fresh session on its configured runner. A repair thread starts separately with the task’s saved configurable repair route (shipped with `medium` effort and no model, so it must be configured before a run is ready) and is resumed for subsequent repair turns. Interrupted, failed, missing, malformed, or explicitly incomplete results never count as clean reviews. Rounds and their revisions are recorded.
 
-Configured shell verification runs after a completed clean review. Every command must pass on exactly the reviewed revision. Worktree cleanliness and HEAD are checked before the first command and after each command; a command that leaves the worktree unclean (modified or staged files, or new untracked files that are not git-ignored) or moves HEAD is recorded as failed evidence, stops the remaining commands and blocks the task, so no success is attributed to a revision the command did not actually run against. Verification artifacts such as coverage reports and caches must therefore be git-ignored by the repository. Each command's evidence holds its stdout, then any stderr in a `[stderr]` section, then the exit status on failure, secret-scrubbed and bounded to 16 KiB: each stream keeps its end, stderr may use half of the bound however long stdout is, and `[output truncated]` marks any cut. A failed workspace state check adds its note, itself capped at 4 KiB, after the output; the bound leaves room for it. Repair turns receive the same text for failed commands. Commands run from the assigned workspace with Bash `pipefail`. Net-empty changes are not publishable, even if an executor made commits.
+Configured shell verification runs after a completed clean review. Every command must pass on exactly the reviewed revision. Worktree cleanliness and HEAD are checked before the first command and after each command; a command that leaves the worktree unclean (modified or staged files, or new untracked files that are not git-ignored) or moves HEAD is recorded as failed evidence, stops the remaining commands and blocks the task, so no success is attributed to a revision the command did not actually run against. Verification artifacts such as coverage reports and caches must therefore be git-ignored by the repository. Each command's evidence holds its stdout, then any stderr in a `[stderr]` section, then the exit status on failure, secret-scrubbed and bounded to 16 KiB: each stream keeps its end, even past the diagnostic capture limit, stderr may use half of the bound however long stdout is, and `[output truncated]` marks any cut. A failed workspace state check adds its note, itself capped at 4 KiB, after the output; the bound leaves room for it. Repair turns receive the same text for failed commands. Commands run from the assigned workspace with Bash `pipefail`. Net-empty changes are not publishable, even if an executor made commits.
 
 Publication requires recorded clean review and successful verification evidence for the output commit. Before writing, the core verifies repository identity, PR ownership/open state, source/default revisions, worktree cleanliness and commit ancestry. It pushes only the assigned prefixed branch, using an exact Git lease to guard the check/push race. The push destination comes from the validated configured checkout, not an agent-editable task remote. No default-branch push is generated.
 
@@ -161,13 +161,21 @@ measured root itself, and every other filesystem error except a missing or
 vanished path, still fails the measurement, and measurement never changes
 permissions.
 
-Diagnostic subprocess output retains a bounded 256 KiB preview and truncation
-flags. Before secrets are scrubbed, a truncated capture is cut back to its last
-newline (or, without one, its last whitespace or nothing), dropping the partial
-line the limit cut, together with the first words or lines of a redacted
-environment value the limit fell inside; failure texts and verification evidence
-render from that text. Machine stdout is complete up to 16 MiB or returns
-`OutputTooLarge`; invalid UTF-8 also fails explicitly. Git/GitHub machine
+Diagnostic subprocess output retains the first 256 KiB of each stream and
+truncation flags, and for a longer stream its last 64 KiB, kept in a rolling
+window allocated only once the stream passes 256 KiB. Before secrets are
+scrubbed, a truncated capture's head is cut back to its last newline (or,
+without one, its last whitespace or nothing), dropping the partial line the
+limit cut, together with the first words or lines of a redacted environment
+value the limit fell inside. Its kept end likewise drops the partial first line
+the window began inside (or, without a newline, the partial first word, and the
+next word too when the cut could separate a bearer token from its prefix),
+together with the last words or lines of a redacted environment value the window
+began inside. Failure texts and verification evidence render from that text,
+with a truncation marker where output was dropped. Machine stdout is complete up
+to 16 MiB or returns `OutputTooLarge` (a failed command's error still keeps
+the real end past that, from the same 64 KiB window); invalid UTF-8 also fails
+explicitly. Git/GitHub machine
 consumers never parse a diagnostic truncation marker. All captures retain timeout,
 draining and process-group ownership.
 
