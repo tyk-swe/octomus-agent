@@ -19,8 +19,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-// The catalog allowlists provider output and checks capabilities, provider
-// availability, and variants.
 func TestOpenCodeCatalogIsSafeAndChecksCapabilities(t *testing.T) {
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
@@ -69,8 +67,6 @@ func TestOpenCodeCatalogIsSafeAndChecksCapabilities(t *testing.T) {
 	}
 }
 
-// Sessions persist in the owned server across adapter restarts; structured
-// review output is schema-validated.
 func TestOpenCodeSessionsResumeAndStructuredOutput(t *testing.T) {
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
@@ -146,7 +142,6 @@ func TestOpenCodeSessionsResumeAndStructuredOutput(t *testing.T) {
 	}
 }
 
-// Every failure mode fails visibly and aborts the session.
 func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 	for _, mode := range []string{
 		"wrong-model", "wrong-variant", "wrong-session", "wrong-message",
@@ -187,12 +182,10 @@ func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 					t.Fatalf("%s error must name the runner failure: %v", mode, err)
 				}
 			case "malformed-structured":
-				// The same wording as Codex for the same schema violation.
 				if !strings.HasPrefix(err.Error(), "Runner returned an invalid structured result: ") {
 					t.Fatalf("%s error: %v", mode, err)
 				}
 			case "event-404":
-				// The operator can tell a protocol change from auth drift.
 				if err.Error() != `OpenCode event subscription failed with HTTP 404 Not Found: {"error": "no events"}` {
 					t.Fatalf("%s error must report the HTTP status: %v", mode, err)
 				}
@@ -201,8 +194,6 @@ func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 	}
 }
 
-// A session.error event and an errored response both name the runner's error,
-// falling back to "runtime error" when the error carries no string name.
 func TestOpenCodeErrorsNameTheRunnerFailure(t *testing.T) {
 	client := &OpenCode{}
 	for _, tc := range []struct {
@@ -230,8 +221,6 @@ func TestOpenCodeErrorsNameTheRunnerFailure(t *testing.T) {
 			}
 		})
 	}
-	// A session.error event without an error document still fails, and another
-	// session's error is ignored.
 	event := map[string]any{"type": "session.error", "properties": map[string]any{"sessionID": "ses_a"}}
 	if err := client.handleEvent(event, "ses_a", "msg_parent", route(), "/workspace"); err == nil || err.Error() != "OpenCode session failed: runtime error" {
 		t.Fatalf("session.error without an error document: %v", err)
@@ -241,7 +230,6 @@ func TestOpenCodeErrorsNameTheRunnerFailure(t *testing.T) {
 	}
 }
 
-// A turn without any completed text parts is not evidence.
 func TestOpenCodeEmptyResultIsRejected(t *testing.T) {
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
@@ -262,8 +250,6 @@ func TestOpenCodeEmptyResultIsRejected(t *testing.T) {
 	}
 }
 
-// Cancelling a turn aborts the session; closing the adapter kills the owned
-// server and its detached descendants.
 func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	f := opencodeFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -312,8 +298,6 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	}
 	stopped := testutil.WaitUntil(5*time.Second, func() bool { return !alive(childPid) && !alive(record.Pid) })
 	if alive(childPid) {
-		// Clean up the fixture's own detached group even when this regression
-		// fails.
 		_ = syscall.Kill(-childPid, syscall.SIGKILL)
 	}
 	if !stopped {
@@ -321,8 +305,6 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	}
 }
 
-// Startup failures, hangs, and policy drift are bounded; a session timeout
-// aborts the turn.
 func TestOpenCodeStartupPolicyFailuresAndTimeoutsAreBounded(t *testing.T) {
 	for _, mode := range []string{"startup-failure", "startup-hang", "wrong-policy"} {
 		t.Run(mode, func(t *testing.T) {
@@ -369,8 +351,6 @@ func TestOpenCodeStartupPolicyFailuresAndTimeoutsAreBounded(t *testing.T) {
 	}
 }
 
-// The owned server's stdout stays drained for its whole life: after one
-// over-long line ends the line reader, the server can keep logging.
 func TestOpenCodeStdoutStaysDrainedAfterOverlongLine(t *testing.T) {
 	f := opencodeFixture(t)
 	f.mode("opencode", "overlong-stdout")
@@ -381,7 +361,6 @@ func TestOpenCodeStdoutStaysDrainedAfterOverlongLine(t *testing.T) {
 	defer client.Close()
 	finished := make(chan error, 1)
 	go func() {
-		// Each request logs 8 KiB, so twenty outgrow a 64 KiB pipe.
 		for range 20 {
 			if _, err := client.Models(f.workspace); err != nil {
 				finished <- err
@@ -400,8 +379,6 @@ func TestOpenCodeStdoutStaysDrainedAfterOverlongLine(t *testing.T) {
 	}
 }
 
-// Connect failures before and after readiness report the server's redacted
-// stderr; a silent failure keeps its plain message.
 func TestOpenCodeStartupFailureReportsStderr(t *testing.T) {
 	for mode, want := range map[string]string{
 		"startup-failure":  "OpenCode exited before server readiness",
@@ -423,7 +400,6 @@ func TestOpenCodeStartupFailureReportsStderr(t *testing.T) {
 	}
 }
 
-// A redirect is never followed; the 3xx response fails closed.
 func TestOpenCodeRedirectRefusal(t *testing.T) {
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
@@ -439,7 +415,6 @@ func TestOpenCodeRedirectRefusal(t *testing.T) {
 	}
 }
 
-// Diagnostics report the server version against the protocol baseline.
 func TestOpenCodeDiagnostics(t *testing.T) {
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
@@ -471,12 +446,9 @@ func TestOpenCodeDiagnostics(t *testing.T) {
 	}
 }
 
-// The exact protocol bound: 16,000,000 bytes pass, 16,000,001 fail, for line
-// framing, SSE frames and backlogs, and JSON bodies.
 func TestProtocolMessageBound(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)
-	// Line framing: exactly MaxMessage bytes before the newline is accepted.
 	line := make([]byte, MaxMessage)
 	for i := range line {
 		line[i] = 'x'
@@ -494,8 +466,6 @@ func TestProtocolMessageBound(t *testing.T) {
 	if result := <-lines; result.err == nil {
 		t.Fatal("a line over the bound must fail")
 	}
-	// SSE frames count every line byte including the blank terminator;
-	// exactly MaxMessage is accepted.
 	payload := "data: " + `{"k":"` + strings.Repeat("a", MaxMessage-2-14) + `"}`
 	if len(payload)+2 != MaxMessage {
 		t.Fatalf("fixture math: %d", len(payload))
@@ -513,13 +483,11 @@ func TestProtocolMessageBound(t *testing.T) {
 	if event := <-sse; event.err == nil {
 		t.Fatal("a frame over the bound must fail")
 	}
-	// A backlog with no newline over the bound fails too.
 	sse = make(chan valueResult, 4)
 	go sseLoop(context.Background(), bytes.NewReader(over), sse)
 	if event := <-sse; event.err == nil {
 		t.Fatal("a backlog over the bound must fail")
 	}
-	// JSON bodies: exactly MaxMessage bytes of valid JSON parse.
 	body := `{"k":"` + strings.Repeat("a", MaxMessage-8) + `"}`
 	if len(body) != MaxMessage {
 		t.Fatalf("fixture math: %d", len(body))
@@ -531,14 +499,11 @@ func TestProtocolMessageBound(t *testing.T) {
 	if _, err := readJSONBody(bytes.NewReader([]byte(bodyOver))); err == nil {
 		t.Fatal("a body over the bound must fail")
 	}
-	// Trailing data after a valid value is rejected.
 	if _, err := readJSONBody(bytes.NewReader([]byte(`{} trailing`))); err == nil {
 		t.Fatal("trailing JSON data must fail")
 	}
 }
 
-// The same bound applies through the owned HTTP path: a response of exactly
-// MaxMessage parses and one byte more fails.
 func TestProtocolMessageBoundOverHTTP(t *testing.T) {
 	body := `{"k":"` + strings.Repeat("a", MaxMessage-8) + `"}`
 	over := `{"k":"` + strings.Repeat("a", MaxMessage-7) + `"}`
@@ -571,16 +536,10 @@ func TestProtocolMessageBoundOverHTTP(t *testing.T) {
 	}
 }
 
-// failedResponse is a non-2xx response carrying body.
 func failedResponse(body string) *http.Response {
 	return &http.Response{Status: "500 Internal Server Error", StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader(body))}
 }
 
-// A failed response's body is redacted before the reported snippet is cut, so
-// a secret straddling the snippet's end is never reported in part, wherever
-// the cut falls. When the read itself stops inside the body, the last word
-// read is dropped because redaction cannot recognise a partial secret, and
-// with it any first words of an environment secret it cut.
 func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
 	never := func() {}
 	for _, secret := range []string{"ghp_Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9", "Bearer eyJhbGciOiJIUzI1NiJ9.c2lnbmF0dXJl"} {
@@ -600,9 +559,6 @@ func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
 			}
 		}
 	}
-	// Redaction can shrink the read below the snippet limit, so the end of
-	// the read is reported too: a token cut there too short to recognise is
-	// dropped with its word.
 	token := "ghp_" + strings.Repeat("Zq9", 67)
 	whole := strings.Repeat(token+" ", 79)
 	for kept := 1; kept <= 20; kept++ {
@@ -614,9 +570,6 @@ func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
 			t.Fatalf("%d bytes of the last token read: %q", kept, err)
 		}
 	}
-	// The words before the one the read cut can be the first words of an
-	// environment passphrase, which no longer matches whole; they are dropped
-	// with it.
 	kept := len("correct horse batt")
 	pad := statusReadLimit + 1 - kept - len(" ") - len(whole)
 	body := whole + strings.Repeat("b", pad) + " " + cutPhrase + " never read"
@@ -624,16 +577,12 @@ func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
 	if err := statusError("OpenCode request failed", failedResponse(body), never); err.Error() != want {
 		t.Fatalf("a passphrase the read cut: ...%q", err.Error()[max(len(err.Error())-60, 0):])
 	}
-	// A body that fits is reported whole, secrets redacted.
 	err := statusError("OpenCode request failed", failedResponse("denied for token ghp_Zq9Zq9Zq9Zq9Zq9Zq9\n"), never)
 	if err.Error() != "OpenCode request failed with HTTP 500 Internal Server Error: denied for token [redacted]\n" {
 		t.Fatalf("whole body: %q", err)
 	}
 }
 
-// A failed response whose body stalls ends the call after statusBodyWait,
-// for a JSON round trip and for the turn's event subscription, instead of
-// holding it until the call's own deadline. The partial last word is dropped.
 func TestStalledErrorBodyEndsPromptly(t *testing.T) {
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

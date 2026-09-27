@@ -1,4 +1,3 @@
-// Package config owns configuration loading, validation, and immutable snapshots.
 package config
 
 import (
@@ -14,7 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// Return fresh slices so callers cannot mutate the service's vocabulary.
 func Categories() []string {
 	return []string{"features", "correctness", "performance", "ux-dx", "refactoring", "simplification", "tests", "dependencies", "documentation"}
 }
@@ -120,9 +118,6 @@ type NamedRoute struct {
 	Route Route
 }
 
-// RoutesFor returns cloned routes: roles in sorted key order (audits skip
-// code_reviewer), then for execution the tiers in sorted key order and the
-// repair route.
 func (c Config) RoutesFor(audit bool) []NamedRoute {
 	result := []NamedRoute{}
 	for _, key := range slices.Sorted(maps.Keys(c.Roles)) {
@@ -140,9 +135,6 @@ func (c Config) RoutesFor(audit bool) []NamedRoute {
 	return append(result, NamedRoute{"repair", c.RepairRoute.Clone()})
 }
 
-// PlanningAdmissionsRequired counts the turns of one planning pass: 1 grounding
-// turn, DiscoveryAgents discovery turns, 2 proposal reviewers (model.ReviewerSlots)
-// and 1 consolidation turn. model tests keep this in step with ReviewerSlots.
 func (c Config) PlanningAdmissionsRequired() uint64 { return c.DiscoveryAgents + 4 }
 func EqualASCII(a, b string) bool {
 	if len(a) != len(b) {
@@ -163,8 +155,6 @@ func EqualASCII(a, b string) bool {
 	return true
 }
 
-// Path identity ignores repeated separators and interior dots. It keeps '..'
-// literal and retains a leading relative '.'.
 func pathIdentity(path string) string {
 	parts := []string{}
 	if strings.HasPrefix(path, "/") {
@@ -178,9 +168,6 @@ func pathIdentity(path string) string {
 	return strings.Join(parts, "/")
 }
 
-// SamePath reports whether two paths name the same location lexically, under
-// pathIdentity. It is the one path identity the service uses: repository
-// settings, task workspaces and runner session directories.
 func SamePath(a, b string) bool { return pathIdentity(a) == pathIdentity(b) }
 func (c Config) SameRemoteIdentity(other Config) bool {
 	return SamePath(c.Repository, other.Repository) && EqualASCII(c.GitHubRepo, other.GitHubRepo) && c.DefaultBranch == other.DefaultBranch
@@ -291,7 +278,6 @@ func (c Config) ValidateBaseline() error {
 	return nil
 }
 func (c Config) validateRepository() error {
-	// Preserve symlink/.. for filesystem resolution instead of cleaning it lexically.
 	if _, err := os.Stat(c.Repository + string(os.PathSeparator) + ".git"); !filepath.IsAbs(c.Repository) || err != nil {
 		return fmt.Errorf("Repository must be an absolute path to a Git checkout")
 	}

@@ -12,9 +12,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// A step error on a later row closes the rows inside Next, after which Close
-// reports nothing. The dashboard counts must surface such an error rather than
-// return the groups read before it. sum() overflows only in the second group.
 func TestDashboardReportsMidIterationErrors(t *testing.T) {
 	s := fullOpen(t)
 	execStore(t, s, "INSERT INTO record_counts VALUES ('task','aaa',0,1),('task','zzz',0,9223372036854775807),('task','zzz',1,1)")
@@ -22,7 +19,6 @@ func TestDashboardReportsMidIterationErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "overflow") {
 		t.Fatalf("Dashboard() = %v, %v; want the integer overflow", result.Counts, err)
 	}
-	// The failed read left no open rows on the pinned connection.
 	execStore(t, s, "DELETE FROM record_counts WHERE status='zzz'")
 	result, err = s.Dashboard()
 	if err != nil || len(result.Counts) != 1 || result.Counts["aaa"] != 1 {
@@ -30,11 +26,6 @@ func TestDashboardReportsMidIterationErrors(t *testing.T) {
 	}
 }
 
-// Read-only exports decode their rows through QueryRecords and RecordAt, so
-// the rows arrive in query order, an empty read is an empty list rather than
-// null, and an error or an unreadable value on a later row fails the read
-// instead of cutting it short. Rows are decoded as they are scanned into one
-// reused buffer, so no decoded value may share memory with a later row.
 func TestQueryRecordsAndRecordAtReadCallerOwnedConnections(t *testing.T) {
 	type record struct {
 		N int `json:"n"`
@@ -67,7 +58,6 @@ func TestQueryRecordsAndRecordAtReadCallerOwnedConnections(t *testing.T) {
 		if err != nil || found == nil || found.N != 2 {
 			t.Fatalf("RecordAt = %#v, %v", found, err)
 		}
-		// json() fails while SQLite steps to row b, after row a was read.
 		values, err = QueryRecords[record](c, "SELECT CASE id WHEN 'b' THEN json('not json') ELSE data END FROM records WHERE kind='x' ORDER BY id")
 		if err == nil || values != nil || !strings.Contains(err.Error(), "malformed JSON") {
 			t.Fatalf("QueryRecords with a failing row = %#v, %v; want the step error", values, err)
@@ -97,8 +87,6 @@ func TestQueryRecordsAndRecordAtReadCallerOwnedConnections(t *testing.T) {
 	})
 }
 
-// A saved value followed by anything but white space is refused, as
-// json.Unmarshal refuses it, also when the extra text is a stray bracket.
 func TestDecodeJSONRefusesTrailingData(t *testing.T) {
 	for _, raw := range []string{`{"n":1}}`, `{"n":1}]`, `{"n":1} {}`, `{"n":1} 2`, `{"n":1}x`, `[1]]`} {
 		var value any
@@ -118,11 +106,6 @@ func TestDecodeJSONRefusesTrailingData(t *testing.T) {
 	}
 }
 
-// The scheduler reads its view twice per tick under the store mutex, so the
-// plan must reach tasks only through keyed index searches: walking every task
-// entry of an index keyed by kind alone, or building an automatic index on
-// each call, would make every tick cost grow with the whole task history.
-// Only the bounded candidate list and its bounded windows may be scanned.
 func TestSchedulingPlanNeverWalksTaskHistory(t *testing.T) {
 	s := fullOpen(t)
 	s.mu.Lock()
@@ -154,9 +137,6 @@ func TestSchedulingPlanNeverWalksTaskHistory(t *testing.T) {
 	}
 }
 
-// A saved record that no longer decodes names itself, so an operator whose
-// service paused on it can find the row, and the wrapped error keeps its
-// class for the API's status mapping.
 func TestUnreadableRecordsNameTheirIdentity(t *testing.T) {
 	s := fullOpen(t)
 	execStore(t, s, `INSERT INTO records VALUES ('task','broken','{"id":"broken","status":"executing"}')`)

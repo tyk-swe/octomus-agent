@@ -13,7 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// task creates a queued proposal against the fixture repository.
 func task() model.Task {
 	c := config.Default()
 	c.GitHubRepo = "fixture/project"
@@ -56,7 +55,6 @@ func task() model.Task {
 	}
 }
 
-// reviewTask uses a stable problem key and mixed-case repository.
 func reviewTask() model.Task {
 	t := task()
 	t.CycleID = "original-cycle"
@@ -65,7 +63,6 @@ func reviewTask() model.Task {
 	return t
 }
 
-// cycleFor carries the task's proposal in its repository.
 func cycleFor(t model.Task) model.Cycle {
 	return model.Cycle{
 		Mode:        model.CycleModeExecution,
@@ -102,8 +99,6 @@ func must(t *testing.T, err error) {
 	}
 }
 
-// raw opens a second, plain connection for test-side inspection
-// setup. It is closed with the test.
 func raw(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
@@ -139,9 +134,6 @@ func queryInt(t *testing.T, db *sql.DB, query string, args ...any) int64 {
 	return value
 }
 
-// canonical returns the compact, key-sorted JSON of a value so tests compare
-// records by content regardless of source type, keeping every number's
-// spelling so 60.0 and 60 remain distinct in fixture comparisons.
 func canonical(t *testing.T, value any) string {
 	t.Helper()
 	data, err := wirejson.Marshal(value)
@@ -166,7 +158,6 @@ func equalJSON(t *testing.T, a, b any) bool {
 	return canonical(t, a) == canonical(t, b)
 }
 
-// generic decodes a value through JSON into a generic map for field lookups.
 func generic(t *testing.T, value any) map[string]any {
 	t.Helper()
 	data, err := wirejson.Marshal(value)

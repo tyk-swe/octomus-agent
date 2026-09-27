@@ -6,17 +6,11 @@ import (
 	"io"
 )
 
-// lineResult is one newline-delimited line (without the newline) or a terminal
-// stream error. The channel closes when the stream ends or fails.
 type lineResult struct {
 	line []byte
 	err  error
 }
 
-// lineReader fragments r into newline-terminated lines with the exact per-line
-// bound: a line of limit bytes is accepted; once content or backlog is over the
-// bound the stream fails once and closes. It never uses bufio.Scanner. Closing
-// done abandons the reader so a pending send never strands the goroutine.
 func lineReader(r io.Reader, limit int, done <-chan struct{}) chan lineResult {
 	ch := make(chan lineResult)
 	go func() {
@@ -57,8 +51,6 @@ func lineReader(r io.Reader, limit int, done <-chan struct{}) chan lineResult {
 			}
 			if err != nil {
 				if err == io.EOF && len(backlog) > 0 {
-					// A trailing unterminated line is still delivered, matching
-					// end-of-input decoding.
 					if len(backlog) > limit {
 						send(over)
 						return

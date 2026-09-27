@@ -31,9 +31,6 @@ func saveConfig(t *testing.T, s *store.Store, edit func(*config.Config)) config.
 	return c
 }
 
-// startBatch opens a run-once batch from the default control, as the Run once
-// control does on a service that has not saved a control yet, and returns the
-// control the batch saved.
 func startBatch(t *testing.T, s *store.Store) model.Control {
 	t.Helper()
 	control := model.DefaultControl()
@@ -164,8 +161,6 @@ func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
 	saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = 2 })
 	first := admission("2026-09-09T23:59:59Z")
 	must(t, s.ReserveSession(0, first))
-	// A duplicate ledger id fails the admission insert after the counter moved,
-	// and the whole reservation rolls back.
 	if err := s.ReserveSession(0, first); err == nil {
 		t.Fatal("duplicate admission id was accepted")
 	}
@@ -176,7 +171,6 @@ func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
 	must(t, s.ReserveSession(0, admission("2026-09-10T00:00:00Z")))
 	must(t, s.Close())
 	s = open(t, path)
-	// Offsets convert to the UTC day.
 	must(t, s.ReserveSession(0, admission("2026-09-10T09:00:01+09:00")))
 	must(t, s.Close())
 	value := usageReport(t, path)
@@ -198,8 +192,6 @@ func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
 	}
 }
 
-// reservations measure the live operator config and the durable counter, never a
-// task's recorded config snapshot.
 func TestLivePolicySurvivesRestartAndNeverUsesTaskSnapshot(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -285,9 +277,6 @@ func TestConcurrentPlanningSessionsAppendWithoutLosingEvidence(t *testing.T) {
 	}
 }
 
-// Store half of the cancellation regressions: the SQL guard only cancels tasks
-// that have not started publishing and have no output commit, and the cancel
-// marker is an explicit record.
 func TestCancellationGuardsPublicationCheckpoints(t *testing.T) {
 	s := open(t, statePath(t))
 	for _, c := range []struct {
@@ -615,7 +604,6 @@ func TestDuplicateLookupLoadsOnlyMatchesWithoutTruncatingOrRepeatingThem(t *test
 	unrelated["id"] = "unrelated"
 	unrelated["proposal"].(map[string]any)["title"] = "Unrelated historical task"
 	unrelated["proposal"].(map[string]any)["problem_key"] = "unrelated"
-	// Identity filtering must not deserialize evidence for unrelated tasks.
 	unrelated["verification"] = "unreadable historical evidence"
 	if _, err := tx.Exec("INSERT INTO records VALUES ('task','unrelated',?1)", canonical(t, unrelated)); err != nil {
 		t.Fatal(err)
@@ -664,7 +652,6 @@ func TestProposalContentRevisionsCoverOmittedAndTruncatedEvidence(t *testing.T) 
 		if number(summary["content_revision"]) != 1 || summary["prompt"] != "" || canonical(t, summary["evidence"]) != "[]" {
 			t.Fatal(canonical(t, summary))
 		}
-		// Changes outside the proposal must not invalidate cached detail.
 		c.Status = model.CycleCompleted
 		must(t, s.Put("cycle", c.ID, c))
 		page, err = s.ProposalPage(store.HistoryQuery{})
@@ -759,7 +746,6 @@ func TestCycleSummariesCountCandidateDecisions(t *testing.T) {
 		if canonical(t, summary["decisions"]) != `{"accepted":1,"candidate":1,"deferred":0,"rejected":0}` {
 			t.Fatalf("%s", canonical(t, summary["decisions"]))
 		}
-		// Later writes keep counting candidates.
 		c.Status = model.CycleCompleted
 		must(t, s.Put("cycle", c.ID, c))
 		page, err = s.HistoryPage("cycle", store.HistoryQuery{})
@@ -773,18 +759,12 @@ func TestCycleSummariesCountCandidateDecisions(t *testing.T) {
 
 func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	s := open(t, statePath(t))
-	// A control batch in the planning phase makes CommitPlan change settings in
-	// the same transaction, so a surviving "executing" phase would prove a
-	// partial commit. A non-zero idle streak shows both control changes land in
-	// the same write.
 	control := map[string]any{
 		"paused": false, "mode": "run_once", "cycle_number": 1, "next_cycle_at": 0,
 		"error": nil, "idle_streak": 3, "context_fingerprint": "",
 		"batch": map[string]any{"id": "run-1", "phase": "planning", "cycle_id": "cycle-1"},
 	}
 	must(t, s.Put("settings", "control", control))
-	// A reconsiders entry naming a task that was never saved fails the lineage
-	// lookup after the cycle, task and decision writes already ran.
 	queued := reviewTask()
 	queued.CycleID = "cycle-1"
 	plan := cycleFor(queued)
@@ -813,8 +793,6 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 		}
 	}
 	assertEmpty(queued.ID)
-	// The supersedes lineage lookup fails the same way and must leave the same
-	// empty store behind.
 	superseding := reviewTask()
 	superseding.CycleID = "cycle-1"
 	superseding.Supersedes = []string{"missing"}
@@ -825,8 +803,6 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 		t.Fatal("plan with a missing superseded task committed")
 	}
 	assertEmpty(superseding.ID)
-	// A valid plan against the same control moves the batch to executing and
-	// records the decision memory in the same transaction.
 	valid := reviewTask()
 	valid.CycleID = "cycle-1"
 	plan = cycleFor(valid)
@@ -842,7 +818,6 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	if d, _, _ := s.GetValue("decision", "decision-1"); d == nil {
 		t.Fatal("decision memory missing")
 	}
-	// An empty plan grows the idle streak and leaves the batch phase alone.
 	empty := cycleFor(valid)
 	empty.ID = "cycle-2"
 	must(t, s.CommitPlan(empty, nil))
@@ -906,9 +881,6 @@ func TestOldAttentionSurvivesBoundedDashboardAndPages(t *testing.T) {
 	}
 }
 
-// The dashboard lists up to 300 tasks: the newest 100 active, then the newest
-// 100 queued, then the newest 300 of any status not already listed, each task
-// once.
 func TestDashboardListsRecentActiveWorkOnce(t *testing.T) {
 	s := open(t, statePath(t))
 	statuses := []model.Status{model.StatusPublished, model.StatusExecuting, model.StatusQueued, model.StatusPublished, model.StatusBlocked}
@@ -933,8 +905,6 @@ func TestDashboardListsRecentActiveWorkOnce(t *testing.T) {
 	if len(ids) != 300 {
 		t.Fatalf("%d tasks; want 300", len(ids))
 	}
-	// Executing tasks end in 1 or 6, queued in 2 or 7: the 100th executing
-	// task is t-0201, and the newest listed history begins at t-0699.
 	for index, want := range map[int]string{0: "t-0696", 99: "t-0201", 100: "t-0697", 199: "t-0202", 200: "t-0699", 201: "t-0698", 202: "t-0695", 299: "t-0534"} {
 		if ids[index] != want {
 			t.Fatalf("task %d = %s; want %s", index, ids[index], want)
@@ -942,7 +912,6 @@ func TestDashboardListsRecentActiveWorkOnce(t *testing.T) {
 	}
 }
 
-// planning validation consumes these duplicates.
 func TestUnresolvedProblemIdentitySurvivesRewording(t *testing.T) {
 	s := open(t, statePath(t))
 	old := task()
@@ -989,10 +958,6 @@ func TestPublishedWorkRemainsInDuplicateLookups(t *testing.T) {
 	}
 }
 
-// BeginCycleIfAffordable and StartBatchIfAffordable revalidate the live
-// configuration, control record and daily budget in the same transaction as
-// their writes. A stale or unaffordable request is refused without an error
-// and leaves the cycle, the control bytes and the queued task untouched.
 func TestAffordabilityChecksRefuseStaleControlWithoutWriting(t *testing.T) {
 	s := open(t, statePath(t))
 	cfg := saveConfig(t, s, func(*config.Config) {})
@@ -1076,8 +1041,6 @@ func TestAffordabilityChecksRefuseStaleControlWithoutWriting(t *testing.T) {
 		saveConfig(t, s, func(*config.Config) {})
 	})
 
-	// Matching inputs commit the cycle with its control, then the batch
-	// claims the queued task in the same transaction as the control write.
 	cycle := cycleFor(queued)
 	_, started, err := s.BeginCycleIfAffordable(cycle, next, live, fingerprint, now)
 	must(t, err)

@@ -30,8 +30,6 @@ func TestWaitUntilReportsWhetherTheConditionHeld(t *testing.T) {
 	}
 }
 
-// A live process whose command name mimics a zombie's stat line is still
-// running; once killed it is a zombie until reaped, and gone after.
 func TestProcessGoneReadsTheStateAfterTheCommandName(t *testing.T) {
 	cmd := exec.Command("/bin/sh", "-c", `printf 'x) Z 0' > /proc/self/comm && echo ready && read line`)
 	stdin, err := cmd.StdinPipe()

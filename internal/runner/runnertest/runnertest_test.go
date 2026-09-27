@@ -38,7 +38,6 @@ func TestRoutesMissingFromTheCatalogAreRejectedAsRunnerUnavailable(t *testing.T)
 	if starts := script.Starts(reviewer); len(starts) != 0 {
 		t.Fatalf("an unavailable route reached the adapter: %+v", starts)
 	}
-	// The adapter itself refuses an absent route, independent of Runners.
 	adapter, err := script.Connector()(context.Background(), config.BackendCodex, config.Default(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -222,8 +221,6 @@ func TestGatedTurnsBlockUntilReleasedOrCancelled(t *testing.T) {
 	}
 }
 
-// Scripted diagnostics report the backend with scripted versions and no
-// warning, and record one call.
 func TestScriptedDiagnostics(t *testing.T) {
 	script := runnertest.New(runnertest.CatalogFor(worker)...)
 	client, err := script.Connector()(context.Background(), config.BackendOpencode, config.Default(), t.TempDir())

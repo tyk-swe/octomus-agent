@@ -1,7 +1,3 @@
-// Package redact scrubs secrets from operator-facing text and bounds dashboard
-// display values. It is a leaf: subprocess, Git and runner code scrub their
-// output here without depending on persistence, and the store, exports and API
-// responses share the same helpers.
 package redact
 
 import (
@@ -16,35 +12,16 @@ import (
 	"unicode/utf8"
 )
 
-// TokenEnv names the operator access token variable. Its value is a secret:
-// the service authenticates API requests with it, and it never reaches a child
-// process.
 const TokenEnv = "OCTOMUS_TOKEN"
 
-// WebhookEnv names the notification destination variable; its value is a secret.
 const WebhookEnv = "OCTOMUS_NOTIFICATION_WEBHOOK_URL"
 
-// Error renders an error for an operator, with secrets scrubbed. Errors reach
-// operators through saved records and API responses, so every stored error
-// message is built here rather than formatted at each site.
 func Error(err error) string { return Text(err.Error()) }
 
-// tokenWhitespace is the character-class body for Unicode White_Space:
-// separators (\p{Z}), TAB through CR, and NEL. Every whitespace match uses it
-// because Go's \s is ASCII-only.
 const tokenWhitespace = `\p{Z}\x{0009}-\x{000D}\x{0085}`
 
-// tokenPattern matches bearer credentials, GitHub tokens and URL userinfo.
 var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-Za-z0-9._~+/=-]+|(?:gh[pousr]_|github_pat_)[A-Za-z0-9_-]{10,}|[a-z]+://[^` + tokenWhitespace + `/@]+:[^` + tokenWhitespace + `/@]+@`)
 
-// keyPattern matches sk- API keys; group 1 is the key itself. A key must start
-// a token, because ordinary words such as task-, risk- or disk- also end in
-// "sk-": it may follow anything but an ASCII letter, or an escape sequence
-// that ends in a letter in encoded text (\n, \x0b or \u003e in JSON and string
-// literals, %3D in a URL, a terminal color code such as ESC[32m, or any other
-// terminal control sequence, raw or escaped: a CSI sequence such as ESC[2K or
-// ESC[2 q, or a two-character or intermediate-byte escape such as ESC c, ESC M
-// or the character-set selection ESC(B that tput sgr0 and rmacs print).
 var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|(?:\x1b|\\(?:u001b|x1b|e|033))(?:\[[0-9:;<=>?]*[\x20-\x2f]*[A-Za-z]|[\x20-\x2f]*[\x30-\x7e])|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
 
 var (
@@ -67,17 +44,8 @@ func environmentSecrets() []string {
 	return secrets
 }
 
-// Secrets scrubs tokens and secret-bearing environment values without any
-// length limit. Persisted results must be bounded by the caller so shortening
-// is always flagged.
 func Secrets(input string) string { return scrub(input, environmentSecrets()) }
 
-// TrimCutSecretEnd removes from the end of text the complete first words or
-// lines of a secret-bearing environment value. Text cut back to whitespace
-// because a read or capture limit fell inside such a value still ends with
-// them, and they no longer match the whole value, so scrubbing alone would
-// leave them visible. Only a part that ends where the value itself has
-// whitespace is removed.
 func TrimCutSecretEnd(text string) string { return trimCutSecretEnd(text, environmentSecrets()) }
 
 func trimCutSecretEnd(text string, values []string) string {
@@ -92,11 +60,6 @@ func trimCutSecretEnd(text string, values []string) string {
 	return text[:len(text)-cut]
 }
 
-// TrimCutSecretStart mirrors TrimCutSecretEnd for text whose start was cut and
-// then advanced past whitespace, such as a kept tail that drops its partial
-// first line: it removes from the start of text the complete last words or
-// lines of a secret-bearing environment value, a part that begins where the
-// value itself has whitespace.
 func TrimCutSecretStart(text string) string {
 	return trimCutSecretStart(text, environmentSecrets())
 }
@@ -116,10 +79,7 @@ func trimCutSecretStart(text string, values []string) string {
 	return text[cut:]
 }
 
-// scrub replaces every token match and every occurrence of each secret value
-// in input with "[redacted]". All spans are found in the original text and
-// overlapping spans are replaced as one, so replacing one secret never splits
-// another and leaves the rest of it visible. Adjacent spans stay separate.
+// scrub finds all spans in the original text and merges overlaps, so replacing one secret never splits another.
 func scrub(input string, values []string) string {
 	var spans [][2]int
 	for _, match := range tokenPattern.FindAllStringIndex(input, -1) {
@@ -140,7 +100,6 @@ func scrub(input string, values []string) string {
 			}
 			start, end := from+i, from+i+len(value)
 			if last := len(spans) - 1; last >= first && start < spans[last][1] {
-				// An overlapping occurrence of the same value extends the last one.
 				spans[last][1] = end
 			} else {
 				spans = append(spans, [2]int{start, end})
@@ -167,12 +126,8 @@ func scrub(input string, values []string) string {
 	return out.String()
 }
 
-// displayTextLimit bounds every string a dashboard display value can carry,
-// counted in characters on a rune boundary.
 const displayTextLimit = 16384
 
-// boundDisplayText shortens text to the display limit, cutting on a rune
-// boundary, and reports whether anything was dropped.
 func boundDisplayText(s string) (string, bool) {
 	count := 0
 	for i := range s {
@@ -184,9 +139,6 @@ func boundDisplayText(s string) (string, bool) {
 	return s, false
 }
 
-// displayString applies the display transformation to one string and reports
-// the kinds applied: "redacted" for secret scrubbing, "shortened" for the
-// display length bound.
 func displayString(s string) (string, []string) {
 	kinds := []string{}
 	redacted := Secrets(s)
@@ -200,28 +152,17 @@ func displayString(s string) (string, []string) {
 	return display, kinds
 }
 
-// Text scrubs secrets and bounds the text to the display character limit.
 func Text(input string) string {
 	s, _ := displayString(input)
 	return s
 }
 
-// DisplayTransform records every string inside one top-level field whose
-// display value differs from the canonical saved value, so an operator can
-// tell a display preview from the stored original. Each path is a structured
-// segment list — strings for object keys, numbers for array indices — so
-// callers walk it directly rather than re-parsing a formatted path.
 type DisplayTransform struct {
 	Field string   `json:"field"`
 	Kinds []string `json:"kinds"`
 	Paths [][]any  `json:"paths"`
 }
 
-// DisplayJSON returns the display-safe form of a generic JSON object: every
-// string passes through the same redaction and length bound as JSON, and each
-// altered string is reported by field, kind and structured JSON path. The
-// result is display data only; it must never be treated as canonical
-// executable configuration.
 func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
 	transforms := map[string]*DisplayTransform{}
 	var walk func(value any, path []any, field string) any
@@ -274,8 +215,6 @@ func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
 	result := []DisplayTransform{}
 	for _, field := range fields {
 		if entry := transforms[field]; entry != nil {
-			// walk visits fields, map keys and array indices in sorted order,
-			// so Paths are already ordered; only Kinds needs sorting.
 			sort.Strings(entry.Kinds)
 			result = append(result, *entry)
 		}
@@ -283,7 +222,6 @@ func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
 	return object, result
 }
 
-// JSON scrubs every string inside a generic JSON value in place.
 func JSON(value any) any {
 	switch v := value.(type) {
 	case string:

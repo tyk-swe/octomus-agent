@@ -14,13 +14,8 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
-// serviceHelperData names the data directory a re-executed test binary runs
-// the real service in; see TestServiceHelperProcess.
 const serviceHelperData = "OCTOMUS_TEST_SERVICE_DATA"
 
-// TestServiceHelperProcess is not a test: the signal tests re-execute the test
-// binary with serviceHelperData set so the real service runs in its own
-// process, where delivered signals cannot affect the test runner.
 func TestServiceHelperProcess(t *testing.T) {
 	data, ok := os.LookupEnv(serviceHelperData)
 	if !ok {
@@ -29,14 +24,12 @@ func TestServiceHelperProcess(t *testing.T) {
 	os.Exit(run([]string{"--data-dir", data, "--listen", "127.0.0.1:0"}, os.LookupEnv, os.Stdout, os.Stderr))
 }
 
-// serviceProcess is the real service running in a child test binary.
 type serviceProcess struct {
 	command *exec.Cmd
 	done    chan struct{}
-	err     error // valid once done is closed
+	err     error
 }
 
-// exit waits up to limit for the service to exit and reports whether it did.
 func (p *serviceProcess) exit(limit time.Duration) bool {
 	select {
 	case <-p.done:
@@ -46,15 +39,11 @@ func (p *serviceProcess) exit(limit time.Duration) bool {
 	}
 }
 
-// startServiceProcess runs the service in a child process and returns once it
-// is listening. With hangupIgnored the child starts with SIGHUP ignored, as
-// nohup leaves it.
 func startServiceProcess(t *testing.T, hangupIgnored bool) *serviceProcess {
 	t.Helper()
 	args := []string{"-test.run=^TestServiceHelperProcess$"}
 	command := exec.Command(os.Args[0], args...)
 	if hangupIgnored {
-		// An ignored disposition survives exec, exactly as nohup hands it on.
 		command = exec.Command("/bin/sh", append([]string{"-c", `trap "" HUP; exec "$0" "$@"`, os.Args[0]}, args...)...)
 	}
 	env := []string{}
@@ -85,7 +74,6 @@ func startServiceProcess(t *testing.T, hangupIgnored bool) *serviceProcess {
 				close(listening)
 			}
 		}
-		// Wait closes the pipe, so it runs only after the reader saw end of file.
 		if err := command.Wait(); err != nil {
 			process.err = fmt.Errorf("%w; stderr: %s", err, strings.Join(lines, "\n"))
 		}
@@ -104,13 +92,9 @@ func startServiceProcess(t *testing.T, hangupIgnored bool) *serviceProcess {
 	return process
 }
 
-// A terminal or SSH hangup stops the foreground service through the same
-// graceful drain as SIGTERM, so owned process groups are terminated rather
-// than orphaned; under nohup the hangup stays ignored.
 func TestHangupStopsTheServiceGracefullyUnlessIgnored(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		if signal.Ignored(syscall.SIGHUP) {
-			// An inherited ignored hangup cannot be restored for the child.
 			t.Skip("the test runner itself ignores SIGHUP")
 		}
 		process := startServiceProcess(t, false)

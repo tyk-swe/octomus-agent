@@ -15,9 +15,6 @@ import (
 
 const heldToken = "operator-fixture-token-with-at-least-32-characters"
 
-// heldReceiver accepts one webhook request and holds its response until the
-// test ends after a long first delay without making the
-// test wait out the hold on cleanup.
 func heldReceiver(t *testing.T) *receiver {
 	t.Helper()
 	r := &receiver{requests: make(chan []byte, 32)}
@@ -39,8 +36,6 @@ func heldReceiver(t *testing.T) *receiver {
 	return r
 }
 
-// the control API answers while a delivery is held, and application shutdown
-// stops the worker and leaves the claimed row to retry with its event id.
 func TestHeldHTTPDoesNotBlockSchedulingAndShutdownRecoversTheRow(t *testing.T) {
 	server := heldReceiver(t)
 	state, path := testStore(t)

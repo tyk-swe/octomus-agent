@@ -46,8 +46,6 @@ const (
 
 var blockedReasonNames = []string{"budget_exhausted", "storage_limit", "stale_base", "remote_conflict", "publication_uncertain", "runner_unavailable", "invalid_review", "verification_failed", "dependency_blocked", "invalid_plan", "workspace_invalid", "retry_limit", "timeout", "unknown"}
 
-// blockedReasonMessages is the operator guidance for each reason, index-aligned
-// with blockedReasonNames; the dashboard and notifications show it.
 var blockedReasonMessages = [...]string{
 	"Daily admission budget exhausted; adjust the current limit or wait until UTC midnight",
 	"Storage admission limit reached; resolve retained workspaces or adjust the limit",

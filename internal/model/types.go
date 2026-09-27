@@ -1,4 +1,3 @@
-// Wire records use the current Go JSON field names and request defaults.
 package model
 
 import (
@@ -364,7 +363,7 @@ type Cycle struct {
 	Repository     string             `json:"repository,omitempty" wire:"default"`
 	DecisionMemory []any              `json:"decision_memory,omitempty" wire:"default"`
 	RunID          *string            `json:"run_id,omitempty" wire:"default"`
-	Lifecycle      WorkspaceLifecycle `json:"lifecycle,omitzero" wire:"default"` // omitted while both timestamps are nil
+	Lifecycle      WorkspaceLifecycle `json:"lifecycle,omitzero" wire:"default"`
 }
 
 func (v *Cycle) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }

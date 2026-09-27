@@ -20,9 +20,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-// The app-server can emit notifications before a request response; the
-// fixture already sends item/completed ahead of the turn/start result, so a
-// completed turn exercises out-of-order pre-response events.
 func TestCodexModelsAndPreResponseEvents(t *testing.T) {
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
@@ -57,9 +54,6 @@ func TestCodexModelsAndPreResponseEvents(t *testing.T) {
 	}
 }
 
-// model/list pagination follows cursors across pages and accepts an empty
-// final page, while a catalog whose empty pages keep a cursor fails instead of
-// paging forever.
 func TestCodexModelsPagination(t *testing.T) {
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
@@ -91,8 +85,6 @@ func TestCodexModelsPagination(t *testing.T) {
 	}
 }
 
-// A Codex app-server that fails while initializing reports its redacted
-// stderr with the disconnect.
 func TestCodexStartupFailureReportsStderr(t *testing.T) {
 	f := codexFixture(t)
 	f.mode("codex", "init-failure")
@@ -109,8 +101,6 @@ func TestCodexStartupFailureReportsStderr(t *testing.T) {
 	}
 }
 
-// A held turn exceeds the session limit, interrupts the turn, and the
-// unawaited interrupt response must not satisfy the next RPC.
 func TestCodexTimeoutInterruptsTurn(t *testing.T) {
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
@@ -131,7 +121,6 @@ func TestCodexTimeoutInterruptsTurn(t *testing.T) {
 		t.Fatalf("held turn must hit the session limit: %v", result.err)
 	}
 	interrupt := f.codexInterrupt()
-	// initialize, thread/start, and turn/start consumed request IDs 1-3.
 	if interrupt["id"] != float64(4) {
 		t.Fatalf("interrupt id: %v", interrupt["id"])
 	}
@@ -180,7 +169,6 @@ func TestCodexCancellationStopsTurn(t *testing.T) {
 	}
 }
 
-// Structured answers are decoded and schema-validated through Runners.
 func TestCodexStructuredOutputIsValidated(t *testing.T) {
 	f := codexFixture(t)
 	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
@@ -238,7 +226,6 @@ func TestCodexResumeVerifiesThreadIdentity(t *testing.T) {
 	}
 }
 
-// Interactive JSON-RPC requests are answered and rejected.
 func TestCodexInteractiveRequestIsRejected(t *testing.T) {
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
@@ -259,8 +246,6 @@ func TestCodexInteractiveRequestIsRejected(t *testing.T) {
 	}
 }
 
-// Diagnostics report the account state and the installed version against the
-// exact tested baseline.
 func TestCodexDiagnosticsAndAccount(t *testing.T) {
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
@@ -292,8 +277,6 @@ func TestCodexDiagnosticsAndAccount(t *testing.T) {
 	}
 }
 
-// pipedCodex is a Codex without a child: its protocol lines come from the
-// returned channel and its requests go to a discarded pipe.
 func pipedCodex(t *testing.T, ctx context.Context, timeout uint64) (*Codex, chan lineResult) {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -314,9 +297,6 @@ func pipedCodex(t *testing.T, ctx context.Context, timeout uint64) (*Codex, chan
 	return &Codex{stdin: w, lines: lines, timeout: timeout, ctx: ctx}, lines
 }
 
-// Each RPC message is bounded by the session timeout, not the whole call: a
-// silent peer times out with the per-message wording, while notifications
-// that keep arriving within the bound let a slower response still succeed.
 func TestCodexRPCPerMessageBound(t *testing.T) {
 	client, _ := pipedCodex(t, context.Background(), 1)
 	started := time.Now()
@@ -328,7 +308,6 @@ func TestCodexRPCPerMessageBound(t *testing.T) {
 		t.Fatalf("per-message bound took %v", elapsed)
 	}
 
-	// Five notifications 300 ms apart outlast one session timeout in total.
 	client, lines := pipedCodex(t, context.Background(), 1)
 	go func() {
 		for range 5 {
@@ -349,9 +328,6 @@ func TestCodexRPCPerMessageBound(t *testing.T) {
 	}
 }
 
-// backlogCodex is a pipedCodex whose protocol lines are all queued up front,
-// so no feeder outlives an early error, with a state for progress events.
-// Running out of lines reads as a disconnect.
 func backlogCodex(t *testing.T, lines ...string) *Codex {
 	t.Helper()
 	client, _ := pipedCodex(t, context.Background(), 10)
@@ -371,8 +347,6 @@ func backlogCodex(t *testing.T, lines ...string) *Codex {
 	return client
 }
 
-// notificationOf returns a compact notification line whose encoding is
-// exactly size bytes.
 func notificationOf(t *testing.T, size int) string {
 	t.Helper()
 	empty, err := marshal(map[string]any{"method": "n", "params": map[string]any{"p": ""}})
@@ -386,8 +360,6 @@ func notificationOf(t *testing.T, size int) string {
 	return line
 }
 
-// Notifications that arrive before an RPC response are queued in order up to
-// 10000 messages and 8 MiB of compact JSON; one message or byte more fails.
 func TestCodexBacklogBounds(t *testing.T) {
 	const response = `{"id":1,"result":{}}`
 	small := notificationOf(t, 64)
@@ -430,8 +402,6 @@ func TestCodexBacklogBounds(t *testing.T) {
 	}
 }
 
-// A stale response queued before turn/start's result is skipped by the turn,
-// and the backlog drains to nothing.
 func TestCodexTurnSkipsQueuedStaleResponse(t *testing.T) {
 	const thread = "019a0000-0000-7000-8000-000000000001"
 	client := backlogCodex(t,
@@ -449,8 +419,6 @@ func TestCodexTurnSkipsQueuedStaleResponse(t *testing.T) {
 	}
 }
 
-// Cancelling the owner context ends a pending receive at once with the session
-// cancellation error.
 func TestCodexReceiveObservesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	client, _ := pipedCodex(t, ctx, 60)
@@ -465,8 +433,6 @@ func TestCodexReceiveObservesCancellation(t *testing.T) {
 	}
 }
 
-// The outbound bound applies to JSON content, not the frame terminator:
-// exactly MaxMessage content bytes produce MaxMessage+1 framed bytes.
 func TestOutboundFrameBound(t *testing.T) {
 	pad := strings.Repeat("a", MaxMessage-8)
 	payload, err := framed(map[string]any{"k": pad})
@@ -481,8 +447,6 @@ func TestOutboundFrameBound(t *testing.T) {
 	}
 }
 
-// A write blocked on a full pipe must unwind with the caller's context rather
-// than stranding the goroutine.
 func TestWriteAllHonorsCancellation(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -506,8 +470,6 @@ func TestWriteAllHonorsCancellation(t *testing.T) {
 	}
 }
 
-// Deterministic fixture modes cover disconnects, missing completion, and
-// duplicate/stale/interleaved events.
 func TestCodexEventStreams(t *testing.T) {
 	for _, mode := range []string{"disconnect", "missing-completion", "duplicate", "stale", "interleaved"} {
 		t.Run(mode, func(t *testing.T) {

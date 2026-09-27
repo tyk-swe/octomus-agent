@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// readLines drains a lineReader to its close and returns the lines it sent
-// and the error that ended it, if any.
 func readLines(t *testing.T, r io.Reader, limit int) ([]string, error) {
 	t.Helper()
 	done := make(chan struct{})
@@ -40,8 +38,6 @@ func readLines(t *testing.T, r io.Reader, limit int) ([]string, error) {
 	}
 }
 
-// A final line without a newline is still delivered at end of input, under
-// the same per-line bound as every other line.
 func TestLineReaderTrailingLine(t *testing.T) {
 	boom := errors.New("connection reset")
 	for _, tc := range []struct {
@@ -69,7 +65,6 @@ func TestLineReaderTrailingLine(t *testing.T) {
 	}
 }
 
-// endless yields newline-terminated lines forever.
 type endless struct{}
 
 func (endless) Read(p []byte) (int, error) {
@@ -79,8 +74,6 @@ func (endless) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Closing done abandons an endless stream: the reader stops sending and
-// closes its channel instead of producing lines forever.
 func TestLineReaderStopsWhenAbandoned(t *testing.T) {
 	done := make(chan struct{})
 	ch := lineReader(endless{}, 16, done)

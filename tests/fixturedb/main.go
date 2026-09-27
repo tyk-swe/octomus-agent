@@ -1,4 +1,3 @@
-// Command fixturedb initializes a temporary Go state database for Python tests.
 package main
 
 import (

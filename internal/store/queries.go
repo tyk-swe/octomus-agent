@@ -1,7 +1,5 @@
 package store
 
-// Indexed operational views. Canonical evidence remains in records.data.
-
 import (
 	"database/sql"
 	"encoding/json"
@@ -15,7 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// statusList quotes statuses as a SQL IN-list literal derived from the model vocabulary.
 func statusList(statuses []model.Status) string {
 	quoted := make([]string, 0, len(statuses))
 	for _, s := range statuses {
@@ -24,7 +21,6 @@ func statusList(statuses []model.Status) string {
 	return strings.Join(quoted, ",")
 }
 
-// HistoryQuery is the dashboard's paged history filter.
 type HistoryQuery struct {
 	Before *int64
 	Limit  *int
@@ -33,7 +29,6 @@ type HistoryQuery struct {
 	Cycle  *string
 }
 
-// Page is one page of projected summaries as raw JSON documents.
 type Page struct {
 	Items      []json.RawMessage `json:"items"`
 	Counts     map[string]int64  `json:"counts"`
@@ -87,8 +82,6 @@ func page(c *sql.Conn, kind string, query HistoryQuery) (Page, error) {
 	return decodePage(rows, limit), nil
 }
 
-// pageRows reads up to n projected summaries of one record kind, newest first,
-// through the history filter. Every variant binds all five parameters.
 func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, error) {
 	status := filterAll(query.Status)
 	from, filter := "record_meta", " AND ?3=?3"
@@ -140,14 +133,12 @@ func decodePage(rows []pageRow, limit int) Page {
 	return Page{Items: items, Counts: map[string]int64{}, NextCursor: next}
 }
 
-// HistoryPage pages projected summaries of one record kind, newest first.
 func (s *Store) HistoryPage(kind string, query HistoryQuery) (Page, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return page(s.conn, kind, query)
 }
 
-// ProposalPage pages projected proposals with private prompt/evidence stripped.
 func (s *Store) ProposalPage(q HistoryQuery) (Page, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -179,7 +170,6 @@ func (s *Store) ProposalPage(q HistoryQuery) (Page, error) {
 	return result, counts.Err()
 }
 
-// ProposalDetail returns one projected proposal with its content revision.
 func (s *Store) ProposalDetail(cycle, id string) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -194,20 +184,10 @@ func (s *Store) ProposalDetail(cycle, id string) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
-// SchedulingTasks lists every active task plus a bounded queued window for the run.
 func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
 	return listRecords[model.Task](s, schedulingTasksSQL(), runID)
 }
 
-// schedulingTasksSQL selects every active task, then up to 500 queued tasks
-// that target a non-default branch or hold a PR reservation, and up to 500
-// that target the default branch without one. Every active writer must be
-// visible, regardless of the queued history size or batch.
-//
-// The three branches are disjoint (active statuses versus 'queued', and
-// complementary target predicates), so UNION ALL loses nothing. Plain UNION
-// would walk every task's metadata to merge them, and driving the final join
-// from the candidate list keeps each call's cost independent of task history.
 func schedulingTasksSQL() string {
 	return fmt.Sprintf(`WITH candidates AS (
                 SELECT id,seq FROM record_meta WHERE kind='task' AND archived IS NULL
@@ -235,7 +215,6 @@ func schedulingTasksSQL() string {
             ORDER BY candidates.seq ASC`, statusList(model.ActiveStatuses()))
 }
 
-// TasksWithStatus lists up to 500 unarchived tasks in the given statuses, oldest first.
 func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	list, err := json.Marshal(statuses)
 	if err != nil {
@@ -244,27 +223,18 @@ func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
 }
 
-// RunningCycles lists every cycle recorded as running, in no particular order.
 func (s *Store) RunningCycles() ([]model.Cycle, error) {
 	return listRecords[model.Cycle](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'")
 }
 
-// RunningBaselines lists every baseline check recorded as running, in no
-// particular order.
 func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
 	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')='running'")
 }
 
-// BaselineCleanupCandidates lists up to 100 finished baseline checks whose
-// clone is not recorded as removed, in save order starting after the check
-// whose id is after and wrapping around to the oldest (see
-// CleanupCandidates). An empty or unknown after starts at the oldest.
 func (s *Store) BaselineCleanupCandidates(after string) ([]model.BaselineCheck, error) {
 	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid<=COALESCE((SELECT rowid FROM records WHERE kind='baseline' AND id=?1),0),rowid LIMIT 100", after)
 }
 
-// LatestBaseline returns the most recently started baseline check, or nil
-// when there is none.
 func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
 	var id string
 	found, err := s.Get("settings", "baseline_latest", &id)
@@ -274,22 +244,16 @@ func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
 	return Get[model.BaselineCheck](s, "baseline", id)
 }
 
-// TasksForCycle lists every task the cycle created, archived ones included,
-// oldest first.
 func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
 	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq", id)
 }
 
-// Snapshot runs fn inside one deferred transaction on the service connection.
-// Callers use it for reads that must observe a single consistent state.
 func (s *Store) Snapshot(fn func(c *sql.Conn) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.transaction(false, fn)
 }
 
-// DuplicateTasks finds saved tasks whose title or problem identity matches an
-// accepted proposal for the same repository and target.
 func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([]model.Task, error) {
 	type identity struct {
 		title    string
@@ -312,14 +276,10 @@ func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([
 	var ids []string
 	for _, target := range order {
 		identities := targets[target]
-		// Read the covering index once per target, regardless of proposal count
-		// or evidence size. SQLite lower() cannot normalize Unicode identities.
 		rows, err := s.conn.QueryContext(background, "SELECT id,json_extract(data,'$.proposal.title'),COALESCE(json_extract(data,'$.proposal.problem_key'),'') FROM records INDEXED BY task_problem_identity WHERE kind='task' AND json_extract(data,'$.config.github_repo')=?1 COLLATE NOCASE AND json_extract(data,'$.proposal.target')=?2 AND json_extract(data,'$.status')!='cancelled' AND json_extract(data,'$.lifecycle.archived_at') IS NULL", repository, target)
 		if err != nil {
 			return nil, err
 		}
-		// rows.Err, not a later rows.Close, reports a step error: Next closes
-		// the rows when it fails, and Close then returns nil.
 		err = func() error {
 			defer rows.Close()
 			for rows.Next() {
@@ -371,9 +331,6 @@ func (s *Store) HasUnresolvedTasks() (bool, error) {
 	return exists, err
 }
 
-// txStartBatch opens a run-once batch from control inside the caller's
-// transaction: it tags every queued, unarchived task with the new batch and
-// saves the resulting control, which it returns.
 func txStartBatch(c *sql.Conn, control model.Control) (model.Control, error) {
 	id := model.ID()
 	next := control.Clone()
@@ -390,11 +347,6 @@ func txStartBatch(c *sql.Conn, control model.Control) (model.Control, error) {
 	return next, nil
 }
 
-// StartBatchIfAffordable opens a run-once batch over every queued, unarchived
-// task and saves the control, only when the live control still equals
-// *control and the live configuration can still fund a complete planning
-// pass. The checks and every side effect share one transaction; *control is
-// updated only when the batch started.
 func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (model.PlanningCapacity, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -432,9 +384,6 @@ func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (mo
 	return capacity, started, err
 }
 
-// BeginCycleIfAffordable atomically revalidates the exact live configuration,
-// the expected control record, and planning affordability before exposing a
-// running cycle or changing the RunOnce phase.
 func (s *Store) BeginCycleIfAffordable(cycle model.Cycle, control model.Control, expected model.Control, fingerprint string, at time.Time) (model.PlanningCapacity, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -479,19 +428,15 @@ func (s *Store) BeginCycleIfAffordable(cycle model.Cycle, control model.Control,
 	return capacity, started, err
 }
 
-// BatchCounts returns (pending, unresolved) member counts for a run.
 func (s *Store) BatchCounts(id string) (uint64, uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Pending work is queued plus every active status; the second list holds the
-	// unresolved-terminal statuses.
 	pending := "'queued'," + statusList(model.ActiveStatuses())
 	var p, u int64
 	err := s.conn.QueryRowContext(background, fmt.Sprintf("SELECT COALESCE(sum(status IN (%s)),0), COALESCE(sum(status IN (%s)),0) FROM batch_members WHERE run_id=?1", pending, statusList(model.UnresolvedStatuses())), id).Scan(&p, &u)
 	return uint64(p), uint64(u), err
 }
 
-// Dashboard is the one-transaction summary the dashboard polls.
 type Dashboard struct {
 	Tasks          []json.RawMessage `json:"tasks"`
 	Cycles         []json.RawMessage `json:"cycles"`
@@ -503,11 +448,6 @@ type Dashboard struct {
 	SessionsToday  int64             `json:"sessions_today"`
 }
 
-// Dashboard reads the polled dashboard summary in one transaction: task
-// counts by status, up to 300 task summaries (the newest 100 active and 100
-// queued first, then the newest others), the newest 20 cycles and 100 PR
-// records, the newest 200 events, today's sessions, the merged-PR count and
-// the newest 5 tasks that need attention.
 func (s *Store) Dashboard() (Dashboard, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -517,8 +457,6 @@ func (s *Store) Dashboard() (Dashboard, error) {
 		if err := statusCounts(c, result.Counts); err != nil {
 			return err
 		}
-		// Keep old retried work visible even when it predates the recent
-		// history window: the newest active, then queued, then any tasks.
 		active, queued := "active", "queued"
 		current, err := pageRows(c, "task", HistoryQuery{Status: &active}, 100)
 		if err != nil {
@@ -575,8 +513,6 @@ func (s *Store) Dashboard() (Dashboard, error) {
 	return result, err
 }
 
-// statusCounts adds the dashboard's task count per status to counts: archived
-// tasks count only outside the attention statuses.
 func statusCounts(c *sql.Conn, counts map[string]int64) error {
 	rows, err := c.QueryContext(background, fmt.Sprintf("SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN (%s) OR archived=0) GROUP BY status HAVING sum(count)>0", statusList(model.AttentionStatuses())))
 	if err != nil {
@@ -594,12 +530,6 @@ func statusCounts(c *sql.Conn, counts map[string]int64) error {
 	return rows.Err()
 }
 
-// CleanupCandidates lists up to 100 ids of retained records older than the
-// cutoff, in save order starting after the record whose id is after and
-// wrapping around to the oldest. A caller that passes the last id it visited
-// therefore walks every candidate across calls, so a hundred records whose
-// cleanup keeps failing cannot hide newer ones. An empty or unknown after
-// starts at the oldest.
 func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -614,25 +544,18 @@ func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) 
 	return ids, nil
 }
 
-// LatestPrOutput returns the output commit of the most recently updated
-// published task for the repository's PR number, or nil when there is none.
 func (s *Store) LatestPrOutput(repository string, number uint64) (*string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return latestPrOutputAt(s.conn, repository, number)
 }
 
-// PrObservation returns the saved record id and observation for a PR number.
 func (s *Store) PrObservation(repository string, number uint64) (string, *model.PrObservation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return prObservationAt(s.conn, repository, number)
 }
 
-// RecordPrObservation records a PR observation atomically with the
-// delivery-baseline merge. The previous observation and latest published output
-// are read under the same store lock as the write, so a stale poll can never
-// overwrite a newer `delivered_head` recorded by a concurrent publication.
 func (s *Store) RecordPrObservation(repository string, p model.PullRequest, deliveredNow bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -666,14 +589,10 @@ func (s *Store) RecordPrObservation(repository string, p model.PullRequest, deli
 	return txPut(s.conn, "pr", recordID, observation)
 }
 
-// DecisionMemory lists the newest 100 saved decisions for a repository.
 func (s *Store) DecisionMemory(repository string) ([]any, error) {
 	return listRecords[any](s, "SELECT data FROM records WHERE kind='decision' AND json_extract(data,'$.repository')=?1 COLLATE NOCASE ORDER BY rowid DESC LIMIT 100", repository)
 }
 
-// RediscoveryRequests lists cancelled tasks awaiting rediscovery for a
-// repository. Archiving a task withdraws its pending request, as it removes
-// the task from scheduling.
 func (s *Store) RediscoveryRequests(repository string) ([]any, error) {
 	return listRecords[any](s, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
 }
@@ -703,7 +622,6 @@ func prObservationAt(c *sql.Conn, repository string, number uint64) (string, *mo
 	return id, &observation, nil
 }
 
-// MarshalJSON renders a page with compact canonical formatting.
 func (p Page) MarshalJSON() ([]byte, error) {
 	type plain Page
 	return wirejson.Marshal(plain(p))

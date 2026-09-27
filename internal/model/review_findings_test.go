@@ -2,7 +2,6 @@ package model
 
 import "testing"
 
-// Repair budgets count only reviews recorded after the attempt baseline.
 func TestRepairRoundsCountFromTheAttemptBaseline(t *testing.T) {
 	round := ReviewRound{
 		SessionID:      "s",

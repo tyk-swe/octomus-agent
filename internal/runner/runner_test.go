@@ -1,7 +1,5 @@
 package runner
 
-// Runner tests use owned processes and deterministic HTTP/SSE peers. A local
-// executable shim points each client at its temporary fixture root.
 import (
 	"context"
 	"encoding/json"
@@ -34,7 +32,6 @@ func repoRoot(t *testing.T) string {
 
 func pyString(s string) string { return strconv.Quote(s) }
 
-// wrapper writes the runpy shim the fixture CLIs are launched through.
 func wrapper(t *testing.T, root, name, fixture string) string {
 	t.Helper()
 	path := filepath.Join(root, name)
@@ -71,7 +68,6 @@ func newFixture(t *testing.T, name string, configure func(shim string) config.Co
 	return &fixture{t: t, root: root, workspace: workspace, cfg: configure(shim), state: state}
 }
 
-// opencodeFixture is an OpenCode shim with no Codex installed.
 func opencodeFixture(t *testing.T) *fixture {
 	return newFixture(t, "opencode", func(shim string) config.Config {
 		cfg := config.Default()
@@ -83,7 +79,6 @@ func opencodeFixture(t *testing.T) *fixture {
 	})
 }
 
-// codexFixture is a Codex shim with no OpenCode installed.
 func codexFixture(t *testing.T) *fixture {
 	return newFixture(t, "codex", func(shim string) config.Config {
 		cfg := config.Default()
@@ -124,8 +119,6 @@ func (f *fixture) connectCodex(ctx context.Context) (*Codex, error) {
 	return ConnectCodex(ctx, f.cfg, f.workspace, f.state, "fixture")
 }
 
-// codexInterrupt waits for the fixture to record a turn/interrupt and returns
-// its first log entry.
 func (f *fixture) codexInterrupt() map[string]any {
 	f.t.Helper()
 	log := f.path("codex-interrupts.jsonl")
@@ -146,15 +139,12 @@ func (f *fixture) codexInterrupt() map[string]any {
 	return entry
 }
 
-// published reads a value a fixture writes to a file. Writers create the file
-// before they write to it, so an existing but blank file is not yet published.
 func published(path string) (string, bool) {
 	data, err := os.ReadFile(path)
 	value := strings.TrimSpace(string(data))
 	return value, err == nil && value != ""
 }
 
-// alive reports whether pid still runs: neither reaped nor a zombie.
 func alive(pid int) bool { return !testutil.ProcessGone(strconv.Itoa(pid)) }
 
 func route() config.Route {
@@ -173,8 +163,6 @@ type outcome struct {
 	err    error
 }
 
-// turnIn runs one turn off the test goroutine so the test can cancel it or
-// bound its duration.
 func turnIn(client Adapter, session string, route config.Route, cwd, prompt string, schema schemas.Schema) chan outcome {
 	ch := make(chan outcome, 1)
 	go func() {
@@ -241,8 +229,6 @@ func TestValidateRoute(t *testing.T) {
 	}
 }
 
-// The wire record always carries the nullable fields as explicit null, the
-// shape the dashboard types require.
 func TestModelWireShape(t *testing.T) {
 	data, err := json.Marshal(Model{
 		Backend:     config.BackendCodex,
@@ -271,9 +257,6 @@ func TestModelWireShape(t *testing.T) {
 	}
 }
 
-// The doctor's backends list keeps one byte shape: keys in order, the backend by
-// wire name, and warning as an explicit null when the version matches the
-// baseline.
 func TestDiagnosticsWireShape(t *testing.T) {
 	warning := "OpenCode version mismatch"
 	for _, tc := range []struct {
@@ -313,8 +296,6 @@ func TestVersionWarnings(t *testing.T) {
 	}
 }
 
-// OpenCode-only routing must never start the Codex client, and audits skip
-// execution routes.
 func TestRunnersLazyBackendsAndAuditFiltering(t *testing.T) {
 	f := opencodeFixture(t)
 	cfg := f.cfg.Clone()
@@ -343,8 +324,6 @@ func TestRunnersLazyBackendsAndAuditFiltering(t *testing.T) {
 	}
 }
 
-// Mixed-backend catalogs keep their own identities; no route falls through to
-// the other backend's catalog.
 func TestRunnersMixedBackendCatalogs(t *testing.T) {
 	f := newFixture(t, "opencode", func(shim string) config.Config {
 		cfg := config.Default()
@@ -354,7 +333,6 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 		cfg.CommandTimeoutSeconds = 2
 		return cfg
 	})
-	// The Codex shim shares the fixture root so its mode files apply here.
 	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
 	defer clients.Close()
 	if err := clients.CheckRoute(codexRoute(), f.workspace); err != nil {
@@ -380,8 +358,6 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 	}
 }
 
-// Close owns every started client: the owned server exits and Close stays
-// idempotent.
 func TestRunnersCloseOwnsClients(t *testing.T) {
 	f := opencodeFixture(t)
 	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
@@ -413,8 +389,6 @@ func TestRunnersCloseOwnsClients(t *testing.T) {
 	}
 }
 
-// Start and Turn failures keep BlockedReasonRunnerUnavailable in the chain
-// with the concrete cause.
 func TestRunnersErrorsKeepBlockedReason(t *testing.T) {
 	f := opencodeFixture(t)
 	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
@@ -436,11 +410,6 @@ func TestRunnersErrorsKeepBlockedReason(t *testing.T) {
 	}
 }
 
-// Every runner wire boundary decodes through decodeJSON. Go's decoder would
-// turn a lone surrogate or an invalid byte into U+FFFD, so decodeJSON refuses
-// them first, keeps exact number literals and refuses trailing data. Its
-// errors stay plain: a marked *wirejson.Error would turn a runner protocol
-// failure into an internal API error.
 func TestDecodeJSONStrict(t *testing.T) {
 	for _, tc := range []struct{ raw, message string }{
 		{`"\ud800"`, "unpaired high surrogate"},
@@ -462,8 +431,6 @@ func TestDecodeJSONStrict(t *testing.T) {
 			t.Errorf("decodeJSON(%s) returned a marked *wirejson.Error", tc.raw)
 		}
 	}
-	// A truncated escape followed by more data and an unterminated string
-	// are refused too; their messages come from the parsers.
 	for _, raw := range []string{`["\u12", 1]`, `"abc\`, `{"a":`} {
 		if value, err := decodeJSON([]byte(raw)); err == nil {
 			t.Errorf("decodeJSON(%s) = %v; want an error", raw, value)
@@ -487,10 +454,6 @@ func TestDecodeJSONStrict(t *testing.T) {
 	}
 }
 
-// A structured answer that repeats a key at any depth is ambiguous: the decoded
-// value would keep whichever came last, so a listed finding followed by
-// "findings":[] would read as a clean review. FinishTurn refuses it like any
-// other invalid JSON, while the same key in separate objects stays valid.
 func TestFinishTurnRejectsDuplicateKeys(t *testing.T) {
 	finding := `{"detail":"d","file":"a.go","priority":"high","title":"SQL injection"}`
 	proposal := map[string]any{}
@@ -536,12 +499,9 @@ func TestFinishTurnRejectsDuplicateKeys(t *testing.T) {
 			t.Errorf("FinishTurn(%s) = %q, %v; want %q", tc.answer, got, err, tc.want)
 		}
 	}
-	// The key scan refuses only repeated keys: a number decodeJSON keeps
-	// exactly, even one beyond float64, still reaches schema validation.
 	if got, err := FinishTurn(`{"completed":true,"summary":"s","findings":[],"n":1e400}`, schemas.ReviewSchema()); err == nil || err.Error() != "Runner returned an invalid structured result: Structured result has an unexpected field" {
 		t.Errorf("out-of-range number = %q, %v", got, err)
 	}
-	// Without a schema the answer is plain text and is returned unchanged.
 	text := `{"a":1,"a":2}`
 	if got, err := FinishTurn(text, nil); err != nil || got != text {
 		t.Fatalf("unstructured answer = %q, %v", got, err)

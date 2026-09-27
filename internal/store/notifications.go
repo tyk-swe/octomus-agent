@@ -5,18 +5,13 @@ import (
 	"time"
 )
 
-// The pending-queue cap (1000 rows) lives in the schema's notify_* triggers.
 const (
 	NotificationMaxAttempts int64 = 5
 	NotificationExpiry      int64 = 24 * 60 * 60
 )
 
-// NotificationRetryDelays is indexed by the attempt number just made; its
-// length is tied to the attempt limit.
 var NotificationRetryDelays = [NotificationMaxAttempts]int64{30, 120, 600, 1800, 1800}
 
-// NotificationDelivery is one claimed outbox row: attention evidence references,
-// never task content.
 type NotificationDelivery struct {
 	Seq        int64   `json:"seq"`
 	EventID    string  `json:"event_id"`
@@ -30,7 +25,6 @@ type NotificationDelivery struct {
 	Attempts   int64   `json:"attempts"`
 }
 
-// NotificationHealth is the operator-facing outbox summary.
 type NotificationHealth struct {
 	State           string  `json:"state"`
 	Configured      bool    `json:"configured"`
@@ -41,8 +35,6 @@ type NotificationHealth struct {
 	LastHTTPStatus  *int64  `json:"last_http_status"`
 }
 
-// ConfigureNotifications saves the destination policy and cancels pending
-// deliveries addressed elsewhere.
 func (s *Store) ConfigureNotifications(destination *string, state string, errorText *string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -61,8 +53,6 @@ func (s *Store) ConfigureNotifications(destination *string, state string, errorT
 	})
 }
 
-// ClaimNotification expires and fails stale rows, then claims the oldest due
-// delivery for the enabled destination and schedules its next attempt.
 func (s *Store) ClaimNotification(destination string, now time.Time) (*NotificationDelivery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,7 +95,6 @@ func (s *Store) ClaimNotification(destination string, now time.Time) (*Notificat
 	return claimed, err
 }
 
-// FinishNotificationDelivered marks a claimed row delivered.
 func (s *Store) FinishNotificationDelivered(seq int64, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -113,8 +102,6 @@ func (s *Store) FinishNotificationDelivered(seq int64, now time.Time) error {
 	return err
 }
 
-// FinishNotificationFailure records a failed attempt, keeping the row pending
-// only while it is retryable and under the attempt limit.
 func (s *Store) FinishNotificationFailure(seq int64, category string, httpStatus *uint16, retryable bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -131,7 +118,6 @@ func (s *Store) FinishNotificationFailure(seq int64, category string, httpStatus
 	return err
 }
 
-// NotificationHealth summarizes the policy and outbox for the dashboard.
 func (s *Store) NotificationHealth() (NotificationHealth, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -162,8 +148,6 @@ func (s *Store) NotificationHealth() (NotificationHealth, error) {
 	return health, nil
 }
 
-// rfc3339 formats a UTC instant for outbox timestamps: whole seconds when there
-// is no sub-second part, otherwise nanoseconds.
 func rfc3339(at time.Time) string {
 	at = at.UTC()
 	if at.Nanosecond() == 0 {

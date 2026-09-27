@@ -22,9 +22,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// doctorFixture saves a ready configuration for a repository whose git and gh
-// are the given shell scripts, placed first on PATH, and returns the store
-// and data directory.
 func doctorFixture(t *testing.T, git, gh string) (*store.Store, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -68,7 +65,6 @@ func doctorFixture(t *testing.T, git, gh string) (*store.Store, string) {
 
 var doctorRoute = config.NewRoute("m", "medium")
 
-// mismatchAdapter reports a version-mismatch warning with its diagnostics.
 type mismatchAdapter struct {
 	runner.Adapter
 	warning string
@@ -80,9 +76,6 @@ func (m mismatchAdapter) Diagnose(cwd string) (runner.Diagnostics, error) {
 	return diagnostics, err
 }
 
-// The command-line doctor prints each version-mismatch warning to its own
-// stderr, also when a route check fails, and the JSON result on stdout still
-// carries the warnings.
 func TestDoctorPrintsWarningsToCommandStderr(t *testing.T) {
 	state, data := doctorFixture(t, "#!/bin/sh\necho https://github.com/fixture/project.git\n", "#!/bin/sh\nexit 0\n")
 	script := runnertest.New(runnertest.CatalogFor(doctorRoute)...)
@@ -122,9 +115,6 @@ func TestDoctorPrintsWarningsToCommandStderr(t *testing.T) {
 	}
 }
 
-// An interrupted doctor stops its checks and terminates the owned process
-// group it started (here a git that never answers) instead of leaving it
-// running after the command exits.
 func TestDoctorInterruptTerminatesOwnedChildGroups(t *testing.T) {
 	root := t.TempDir()
 	pidFile := filepath.Join(root, "git.pid")
@@ -154,8 +144,6 @@ func TestDoctorInterruptTerminatesOwnedChildGroups(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
-	// Only a failing run can leave the shim's group behind; never signal a
-	// pid the passing path has already seen reaped.
 	fail := func(format string, args ...any) {
 		t.Helper()
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
@@ -170,8 +158,6 @@ func TestDoctorInterruptTerminatesOwnedChildGroups(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		fail("doctor did not stop after interruption")
 	}
-	// Capture reaps the group leader before returning, so the pid is gone
-	// rather than a zombie.
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		fail("git shim %d survived the interrupted doctor: %v", pid, err)
 	}

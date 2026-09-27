@@ -40,8 +40,6 @@ type queuedMessage struct {
 	size  int
 }
 
-// backlog keeps, in order, the notifications that arrive before an RPC
-// response, bounded to 10000 messages and 8 MiB of compact JSON.
 type backlog struct {
 	items []queuedMessage
 	bytes int
@@ -63,7 +61,6 @@ func (b *backlog) push(value map[string]any) error {
 	return nil
 }
 
-// pop removes and returns the oldest queued notification.
 func (b *backlog) pop() (map[string]any, bool) {
 	if len(b.items) == 0 {
 		return nil, false
@@ -78,24 +75,21 @@ func (b *backlog) pop() (map[string]any, bool) {
 	return queued.value, true
 }
 
-// Codex owns a `codex app-server --listen stdio://` child and speaks its
-// newline-delimited JSON-RPC protocol.
 type Codex struct {
-	child    *process.GroupChild
-	stdin    *os.File
-	stdout   *os.File
-	lines    chan lineResult
-	serial   uint64
-	pending  backlog
-	timeout  uint64
-	ctx      context.Context
-	state    *store.Store
-	entity   string
-	waitCh   chan error
-	done     chan struct{}
-	once     sync.Once
-	closeErr error
-	// binary and commandTimeout bound the Diagnose version check.
+	child          *process.GroupChild
+	stdin          *os.File
+	stdout         *os.File
+	lines          chan lineResult
+	serial         uint64
+	pending        backlog
+	timeout        uint64
+	ctx            context.Context
+	state          *store.Store
+	entity         string
+	waitCh         chan error
+	done           chan struct{}
+	once           sync.Once
+	closeErr       error
 	binary         string
 	commandTimeout uint64
 }
@@ -118,7 +112,6 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	}
 	cmd.Stdin = stdinR
 	cmd.Stdout = stdoutW
-	// Stderr is kept only as a bounded tail that explains a connect failure.
 	tail := &stderrTail{}
 	cmd.Stderr = tail
 	cmd.WaitDelay = stderrWaitDelay
@@ -129,8 +122,6 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 		stdoutW.Close()
 		return nil, fmt.Errorf("Could not start Codex app-server; install and authenticate Codex on this host: %w", err)
 	}
-	// The child holds its own pipe ends now; the parent's copies must close or
-	// the reader would never see end-of-stream.
 	stdinR.Close()
 	stdoutW.Close()
 	done := make(chan struct{})
@@ -166,8 +157,6 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	return c, nil
 }
 
-// Diagnose reports authentication state plus the installed CLI's version
-// against the tested baseline.
 func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
 	account, err := c.rpc("account/read", map[string]any{"refreshToken": false})
 	if err != nil {
@@ -190,9 +179,6 @@ func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
 	}, nil
 }
 
-// framed marshals a protocol message and applies the exact outbound bound to
-// the JSON content: MaxMessage bytes of content is accepted, one byte more is
-// rejected, and the newline terminator is not counted against the bound.
 func framed(value map[string]any) (string, error) {
 	payload, err := marshal(value)
 	if err != nil {
@@ -215,9 +201,6 @@ func (c *Codex) send(value map[string]any) error {
 	return err
 }
 
-// sendBestEffort writes without checking the owner context: cleanup requests
-// must still reach the server after operator cancellation. The caller's bound
-// supplies the write context.
 func (c *Codex) sendBestEffort(ctx context.Context, value map[string]any) error {
 	payload, err := framed(value)
 	if err != nil {
@@ -226,10 +209,6 @@ func (c *Codex) sendBestEffort(ctx context.Context, value map[string]any) error 
 	return writeAll(ctx, c.stdin, []byte(payload))
 }
 
-// writeAll observes ctx so a write blocked on a full pipe unwinds with the
-// caller instead of stranding a goroutine. A rolling write deadline of at
-// most 250ms, clipped to the context deadline, turns a blocking write into a
-// retryable timeout while the context is live.
 func writeAll(ctx context.Context, w *os.File, data []byte) error {
 	defer w.SetWriteDeadline(time.Time{})
 	for len(data) > 0 {
@@ -260,8 +239,6 @@ func writeAll(ctx context.Context, w *os.File, data []byte) error {
 	return nil
 }
 
-// receive reads one protocol message by deadline, answering and rejecting
-// interactive JSON-RPC requests. what names the bound in the timeout error.
 func (c *Codex) receive(deadline time.Time, what string) (map[string]any, error) {
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
@@ -308,9 +285,6 @@ func (c *Codex) rpc(method string, params map[string]any) (any, error) {
 	if err := c.send(map[string]any{"id": id, "method": method, "params": params}); err != nil {
 		return nil, err
 	}
-	// A turn can emit notifications before the request response; preserve
-	// their order. The whole call is bounded at 60 s and each message by the
-	// session timeout, whichever ends first.
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		bound, what := deadline, "Codex RPC timed out"
@@ -343,7 +317,6 @@ func idMatches(v any, id uint64) bool {
 	return ok && n.String() == strconv.FormatUint(id, 10)
 }
 
-// Models lists the catalog with model/list pagination.
 func (c *Codex) Models(cwd string) ([]Model, error) {
 	out := []Model{}
 	var cursor any
@@ -390,8 +363,6 @@ func (c *Codex) Models(cwd string) ([]Model, error) {
 		if cursor == nil {
 			break
 		}
-		// A continuing page must make progress: an empty page with a cursor,
-		// or a catalog past the model bound, would page forever.
 		if len(data) == 0 || len(out) >= 10000 {
 			return nil, fmt.Errorf("Invalid model pagination")
 		}
@@ -457,8 +428,6 @@ func (c *Codex) Turn(session string, route config.Route, cwd, prompt string, sch
 	return FinishTurn(answer, schema)
 }
 
-// turn starts a turn and follows it to completion; any failure after the
-// turn has started interrupts it.
 func (c *Codex) turn(thread string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
 	turn, err := c.startTurn(thread, route, cwd, prompt, schema)
 	if err != nil {
@@ -473,7 +442,6 @@ func (c *Codex) turn(thread string, route config.Route, cwd, prompt string, sche
 	return answer, nil
 }
 
-// startTurn submits turn/start and returns the new turn's identity.
 func (c *Codex) startTurn(thread string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
 	params := map[string]any{
 		"threadId":       thread,
@@ -500,8 +468,6 @@ func (c *Codex) startTurn(thread string, route config.Route, cwd, prompt string,
 	return turn, nil
 }
 
-// nextEvent checks cancellation and the turn deadline, then returns the
-// oldest queued notification or receives the next message.
 func (c *Codex) nextEvent(deadline time.Time) (map[string]any, error) {
 	if c.ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
@@ -515,8 +481,6 @@ func (c *Codex) nextEvent(deadline time.Time) (map[string]any, error) {
 	return c.receive(deadline, "Codex session time limit exceeded")
 }
 
-// awaitTurn follows the turn's events until it completes and returns the
-// final agent message.
 func (c *Codex) awaitTurn(thread, turn string, deadline time.Time) (string, error) {
 	var answer string
 	for {
@@ -540,8 +504,6 @@ func (c *Codex) awaitTurn(thread, turn string, deadline time.Time) (string, erro
 			if itemType == "agentMessage" && phase != "commentary" {
 				answer, _ = strAt(item, "text")
 			}
-			// Only record metadata, never raw tool arguments or command
-			// output from session notifications.
 			itemStatus, _ := strAt(item, "status")
 			if itemType == "" {
 				itemType = "item"
@@ -569,9 +531,6 @@ func (c *Codex) awaitTurn(thread, turn string, deadline time.Time) (string, erro
 	}
 }
 
-// interrupt sends a best-effort turn/interrupt that bypasses the owner
-// context, so it still reaches the server after operator cancellation; the
-// response is not awaited.
 func (c *Codex) interrupt(thread, turn string) {
 	c.serial++
 	id := c.serial
@@ -584,9 +543,6 @@ func (c *Codex) interrupt(thread, turn string) {
 	})
 }
 
-// Close kills the process group, closes the pipes, and joins both the line
-// reader and the child wait with a bounded cleanup. Closing done makes the
-// reader abandon pending sends so it always terminates. Idempotent.
 func (c *Codex) Close() error {
 	c.once.Do(func() {
 		close(c.done)

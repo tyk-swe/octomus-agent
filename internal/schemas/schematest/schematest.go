@@ -1,8 +1,3 @@
-// Package schematest checks structured-result schemas against the Go types
-// that decode their answers. Runners hold each answer to a schema and a
-// decoder then reads it, so a field added to only one side would fail, or be
-// silently dropped from, every turn that uses the schema. Like runnertest it
-// is imported only by tests.
 package schematest
 
 import (
@@ -16,9 +11,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
 
-// Match reports, through t.Errorf, every way schema differs from the JSON
-// form of typ: strings, booleans, arrays of a matching item, and closed
-// objects that require exactly typ's fields. path names the value in errors.
 func Match(t testing.TB, path string, schema schemas.Schema, typ reflect.Type) {
 	t.Helper()
 	switch typ.Kind() {
@@ -65,8 +57,6 @@ func Match(t testing.TB, path string, schema schemas.Schema, typ reflect.Type) {
 	}
 }
 
-// Sample is an answer that fills every schema field, with one item in each
-// list: "x" for strings and true for booleans.
 func Sample(schema schemas.Schema) any {
 	switch schema["type"] {
 	case "object":
@@ -84,8 +74,6 @@ func Sample(schema schemas.Schema) any {
 	}
 }
 
-// SameAfterDecoding decodes value into dst and fails t unless encoding dst
-// again gives back the same JSON.
 func SameAfterDecoding(t testing.TB, value, dst any) {
 	t.Helper()
 	data, err := json.Marshal(value)

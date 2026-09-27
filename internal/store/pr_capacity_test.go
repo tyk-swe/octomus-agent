@@ -10,7 +10,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// capacityPR is an owned pull request in the fixture repository.
 func capacityPR(number uint64, branch string) model.PullRequest {
 	return model.PullRequest{
 		Number: number, Title: "Owned", Branch: branch, Head: strings.Repeat("b", 40), Base: "main",
@@ -19,7 +18,6 @@ func capacityPR(number uint64, branch string) model.PullRequest {
 	}
 }
 
-// Two open PRs from one head branch into different bases consume two slots.
 func TestSharedBranchPullRequestsEachConsumeCapacity(t *testing.T) {
 	s := open(t, statePath(t))
 	saveConfig(t, s, func(c *config.Config) { c.GitHubRepo = "fixture/project"; c.MaxOpenPRs = 2 })
@@ -47,9 +45,6 @@ func TestSharedBranchPullRequestsEachConsumeCapacity(t *testing.T) {
 	}
 }
 
-// A queued new-PR task planned before its repository path was respelled in a
-// way settings accept as the same repository is admitted; a different branch
-// policy is still a different PR identity.
 func TestRespelledRepositoryPathKeepsThePrIdentity(t *testing.T) {
 	s := open(t, statePath(t))
 	queued := task()
@@ -78,8 +73,6 @@ func TestRespelledRepositoryPathKeepsThePrIdentity(t *testing.T) {
 	}
 }
 
-// with no prior delivery record, a poll adopts the newest published output
-// for that PR rather than treating the observed remote head as delivered.
 func TestPrObservationFallsBackToTheLatestPublishedOutput(t *testing.T) {
 	s := open(t, statePath(t))
 	saveConfig(t, s, func(c *config.Config) { c.GitHubRepo = "fixture/project"; c.MaxOpenPRs = 3 })

@@ -1,5 +1,3 @@
-// Run-evidence read model. Every database here is an explicitly synthetic
-// temporary fixture; no live state, credentials or runner accounts are used.
 package evidence_test
 
 import (
@@ -84,8 +82,6 @@ func entry(id, decision, reason string) map[string]any {
 	return map[string]any{"id": id, "decision": decision, "reason": reason}
 }
 
-// task carries a private workspace path, prompt, transcript, command output
-// and diagnostic text, so omission of private fields is observable.
 func task(cycleID, proposalID string) model.Task {
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
@@ -282,7 +278,6 @@ func TestCompleteCycleReportsReviewersTasksRevisionsAndChecks(t *testing.T) {
 		t.Fatalf("%v", verdicts)
 	}
 
-	// Deferred stays deferred and is never folded into rejected.
 	p2 := findProposal(t, value, "p2")
 	if p2["final_decision"] != "deferred" || get(p2, "reviewer_verdicts", 0, "decision") != "deferred" || get(p2, "reviewer_verdicts", 1, "decision") != "rejected" || len(list(p2, "linked_tasks")) != 0 {
 		t.Fatalf("%v", p2)
@@ -340,7 +335,6 @@ func TestPrivateFieldsAreOmittedFromTheExport(t *testing.T) {
 			t.Fatalf("export leaked %s", private)
 		}
 	}
-	// The facts about those records survive without the private text.
 	linked := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
 	if linked["error_recorded"] != true || get(linked, "latest_review", "latest", "summary_present") != true {
 		t.Fatalf("%v", linked)
@@ -368,21 +362,18 @@ func TestPartialCycleReportsGapsWithoutInventingOutcomes(t *testing.T) {
 	if !strings.Contains(gaps, "still recorded as running") || !strings.Contains(gaps, "no saved grounding revision") {
 		t.Fatal(gaps)
 	}
-	// Both reviewers are explicitly missing rather than inferred from the decision.
 	p1 := findProposal(t, value, "p1")
 	for slot := 0; slot < 2; slot++ {
 		if get(p1, "reviewer_verdicts", slot, "state") != "missing" || get(p1, "reviewer_verdicts", slot, "decision") != nil {
 			t.Fatalf("%v", p1["reviewer_verdicts"])
 		}
 	}
-	// Accepted planning without a task is a gap, never a claim of completed work.
 	if !containsText(list(p1, "gaps"), "acceptance is not execution") {
 		t.Fatalf("%v", p1["gaps"])
 	}
 }
 
 func TestMalformedAndMissingReviewerBatchesNeverShiftIdentities(t *testing.T) {
-	// Reviewer A's batch is unusable; reviewer B's is valid and must stay B's.
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")},
 		[]any{
 			map[string]any{"unexpected": "not an assessment list"},
@@ -407,7 +398,6 @@ func TestMalformedAndMissingReviewerBatchesNeverShiftIdentities(t *testing.T) {
 }
 
 func TestUnconfirmedAndDuplicateReviewerEvidenceStaysExplicit(t *testing.T) {
-	// A recorded but failed reviewer session cannot confirm the batch's identity.
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")},
 		[]any{batch(entry("p1", "accepted", "first"), entry("p1", "rejected", "second"))},
 		[]model.Session{reviewerSession("adversary-a", "failed")})
@@ -482,7 +472,6 @@ func TestAuditAcceptanceWithoutTasksIsNotExecution(t *testing.T) {
 	if p1["final_decision"] != "accepted" || len(list(p1, "linked_tasks")) != 0 {
 		t.Fatalf("%v", p1)
 	}
-	// An audit recommendation without a task is expected, not a gap.
 	if containsText(list(p1, "gaps"), "acceptance is not execution") {
 		t.Fatalf("%v", p1["gaps"])
 	}
@@ -494,7 +483,6 @@ func TestAuditAcceptanceWithoutTasksIsNotExecution(t *testing.T) {
 func TestLatestReviewGovernsAndIncompleteOrEmptySummariesAreNotClean(t *testing.T) {
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
 	output := "out00001"
-	// A clean round followed by a later unclean one: the latest saved review governs.
 	regressed := task("cycle-a", "p1")
 	regressed.OutputCommit = &output
 	regressed.Reviews = []model.ReviewRound{
@@ -533,10 +521,8 @@ func TestLaterFailuresMissingResultsAndMismatchedRevisionsAreNotPassing(t *testi
 	tk.Config.VerificationCommands = []string{"make check", "make test", "make never-run"}
 	tk.Reviews = []model.ReviewRound{review("out00001", true, "clean review")}
 	tk.Verification = []model.Verification{
-		// A newer failure invalidates the older pass.
 		check("make check", true, "out00001"),
 		check("make check", false, "out00001"),
-		// A pass recorded against a different revision does not transfer.
 		check("make test", true, "stale000"),
 	}
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{tk})
@@ -588,7 +574,6 @@ func TestBlockedReasonUsesTheTaskAPIVocabulary(t *testing.T) {
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{tk})
 	value := export(t, s, "cycle-a")
 	exported := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
-	// One saved reason, one spelling: the export must match what GET /api/tasks/{id} says.
 	if exported["status"] != "blocked" || exported["blocked_reason"] != saved["blocked_reason"] {
 		t.Fatalf("%v", exported)
 	}
@@ -661,9 +646,6 @@ func TestCLIExportIsReadOnlyAndErrorsExplicitly(t *testing.T) {
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
 	s, path := fixture(t, []model.Cycle{c}, []model.Task{tk})
 	dir := filepath.Dir(path)
-	// The service checkpoints its WAL on close; the export must see the same
-	// bytes and files while the service is still open, exactly as the CLI
-	// would while a service runs against the directory.
 	beforeFiles := listing(t, dir)
 	beforeBytes, err := os.ReadFile(path)
 	must(t, err)
@@ -675,7 +657,6 @@ func TestCLIExportIsReadOnlyAndErrorsExplicitly(t *testing.T) {
 		t.Fatalf("%v", value["cycle"])
 	}
 
-	// Unknown cycles and unknown state are explicit errors, not empty successful exports.
 	if _, err := evidence.ExportRun(path, "cycle-missing"); err == nil || !strings.Contains(err.Error(), "No saved cycle cycle-missing") {
 		t.Fatalf("%v", err)
 	}
@@ -702,8 +683,6 @@ func TestCLIExportIsReadOnlyAndErrorsExplicitly(t *testing.T) {
 }
 
 func TestCommittedPlanAttributesVerdictsToReviewerSlots(t *testing.T) {
-	// Records written through CommitPlan — the same path the engine uses — must
-	// attribute each saved assessment batch to the reviewer slot session labels.
 	slots := model.ReviewerSlots()
 	committed := task("cycle-slots", "p1")
 	output := "out00001"
@@ -756,9 +735,6 @@ func TestCommittedPlanAttributesVerdictsToReviewerSlots(t *testing.T) {
 	}
 }
 
-// A task whose saved proposal identity is not among the cycle's proposals is
-// counted in the run gaps only: it is never joined to a proposal by any other
-// key, and its evidence is not exported.
 func TestTasksWithoutAMatchingProposalAreCountedOnlyInRunGaps(t *testing.T) {
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
 	linked := task("cycle-a", "p1")
@@ -777,9 +753,6 @@ func TestTasksWithoutAMatchingProposalAreCountedOnlyInRunGaps(t *testing.T) {
 	}
 }
 
-// Reviewer batches are attributed positionally; every way the saved batches
-// and reviewer sessions disagree is named in the run gaps, and a consistent
-// cycle names none.
 func TestReviewerSlotInconsistenciesAreRunGaps(t *testing.T) {
 	a := reviewerSession("adversary-a", "completed")
 	aRetry := reviewerSession("adversary-a", "completed")
@@ -819,13 +792,9 @@ func TestReviewerSlotInconsistenciesAreRunGaps(t *testing.T) {
 	}
 }
 
-// Missing revision and pull-request evidence on a linked task is a task gap,
-// never inferred from the task's status.
 func TestTaskRevisionAndPublicationGapsStayExplicit(t *testing.T) {
 	output := "out00001"
 	pr := uint64(3)
-	// verified has a clean review and a passing check at its output revision,
-	// so only the gap under test can appear.
 	verified := func(tk *model.Task) {
 		tk.OutputCommit = &output
 		tk.Reviews = []model.ReviewRound{review(output, true, "clean review")}
@@ -879,8 +848,6 @@ func TestTaskRevisionAndPublicationGapsStayExplicit(t *testing.T) {
 	}
 }
 
-// A task linked to a proposal whose final decision is not accepted is kept
-// and flagged as inconsistent rather than dropped or re-labelled.
 func TestNonAcceptedProposalWithLinkedTasksIsInconsistent(t *testing.T) {
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "rejected")}, nil, nil)
 	tk := task("cycle-a", "p1")
@@ -894,9 +861,6 @@ func TestNonAcceptedProposalWithLinkedTasksIsInconsistent(t *testing.T) {
 	}
 }
 
-// Snapshot reads select tasks by cycle, so only a direct Assemble caller can
-// pass a task naming another cycle: it is counted as a gap and never joined,
-// even when its proposal ID matches.
 func TestAssembleExcludesTasksNamingAnotherCycle(t *testing.T) {
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
 	own := task("cycle-a", "p1")

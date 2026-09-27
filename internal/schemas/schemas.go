@@ -1,5 +1,3 @@
-// Package schemas validates the small structured-result vocabulary used by both
-// runners. A parseable result alone is never evidence of a completed review.
 package schemas
 
 import (
@@ -34,9 +32,6 @@ func ReviewSchema() Schema {
 	return Object(Schema{"completed": Schema{"type": "boolean"}, "summary": String(), "findings": Array(Object(Schema{"title": String(), "file": String(), "detail": String(), "priority": String()}))})
 }
 
-// Validate checks a decoded structured result against schema. Failures below
-// the root name their field path, built only from schema property names and
-// array indices, so untrusted keys are never echoed.
 func Validate(value any, schema Schema) error { return validate(value, schema, "") }
 
 func validate(value any, schema Schema, path string) error {
@@ -70,7 +65,6 @@ func validate(value any, schema Schema, path string) error {
 				return fmt.Errorf("Structured result object %s is missing required field %s", path, encoded)
 			}
 		}
-		// Visit keys in order so the first validation failure is stable.
 		keys := make([]string, 0, len(object))
 		for key := range object {
 			keys = append(keys, key)
@@ -116,7 +110,6 @@ func validate(value any, schema Schema, path string) error {
 	return nil
 }
 
-// mismatch keeps the root message unchanged and names nested fields.
 func mismatch(path, kind string) error {
 	if path == "" {
 		return fmt.Errorf("Structured result must be %s", kind)

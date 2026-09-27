@@ -13,10 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 )
 
-// codexCatalog maps each model to its supported efforts and serves it through
-// a scripted adapter, so whole-configuration route validation runs without a
-// runner process. The scripted adapter carries no replies: validation must
-// never start a session or run a turn.
 func codexCatalog(entries map[string][]string) *runner.Runners {
 	models := []runner.Model{}
 	for name, efforts := range entries {
@@ -58,8 +54,6 @@ func TestRepairRoutesAreValidated(t *testing.T) {
 		c.Tiers[tier] = config.NewRoute("available", "low")
 	}
 	r := codexCatalog(map[string][]string{"available": {"low"}})
-	// The repair route is validated against the catalog like any other route,
-	// even when every role and tier around it is satisfiable.
 	c.RepairRoute = config.NewRoute("gpt-6-astra", "medium")
 	if err := r.ValidateRoutes(c, t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "gpt-6-astra / medium") {
 		t.Fatalf("unavailable repair model must fail, got %v", err)

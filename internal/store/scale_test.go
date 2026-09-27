@@ -1,12 +1,5 @@
 package store_test
 
-// OCTOMUS_SCALE_TEST=1 enables the explicit scale checks:
-//   OCTOMUS_SCALE_TEST=1 go test ./internal/store -run 'Scale|Bounded|Duplicate' -v -count=1
-//
-// TotalAlloc measures Go heap allocation around each query. The SQLite page
-// cache lives outside the Go heap. Bounds include slack for GC work while still
-// catching full-evidence materialization.
-
 import (
 	"encoding/json"
 	"fmt"
@@ -20,7 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// heapAllocated returns the cumulative Go-heap bytes allocated so far.
 func heapAllocated() uint64 {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
@@ -82,8 +74,6 @@ func TestBoundedHistoryScale(t *testing.T) {
 		if baseline == 0 {
 			baseline = peak
 		}
-		// Allow 2x the 1,000-task baseline plus GC slack. A full-history
-		// materialization would exceed this bound by orders of magnitude.
 		if peak > baseline*2+1024*1024 {
 			t.Fatalf("Go allocations grew with full history: baseline %d peak %d", baseline, peak)
 		}
@@ -101,9 +91,6 @@ func TestDuplicateHistoryScale(t *testing.T) {
 	}
 	path := statePath(t)
 	s := open(t, path)
-	// Build the fixture from the typed task so it follows the strict record
-	// format as fields are added; a hand-written map fell behind and stopped
-	// decoding, which disabled this gate.
 	historical := task()
 	historical.Status = model.StatusPublished
 	historical.Branch = "tyk/history"
@@ -132,8 +119,6 @@ func TestDuplicateHistoryScale(t *testing.T) {
 		row, err := json.Marshal(historical)
 		must(t, err)
 		if i == 0 {
-			// Keep the rows decodable so an implementation that accidentally
-			// loads every task fails the allocation gate, not a decode.
 			var probe model.Task
 			must(t, json.Unmarshal(row, &probe))
 		}
@@ -152,11 +137,6 @@ func TestDuplicateHistoryScale(t *testing.T) {
 		t.Fatalf("duplicate lookup returned %d tasks", len(matches))
 	}
 	peak := heapAllocated() - startAlloc
-	// Loading all 2,000 tasks' 64 KiB verification outputs would allocate at
-	// least ~128 MiB; the covering-index lookup allocates under 1 MiB here
-	// (one small string triple per scanned index row). 4 MiB keeps the gate
-	// over 30x below the regression it exists to catch while absorbing driver
-	// and GC noise.
 	if peak >= 4*1024*1024 {
 		t.Fatalf("Duplicate lookup allocated historical evidence: %d bytes", peak)
 	}

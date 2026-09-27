@@ -1,6 +1,5 @@
 package httpapi
 
-// Cycle routes preserve authentication, detail and action status behavior.
 import (
 	"net/http"
 	"net/http/httptest"
@@ -24,9 +23,6 @@ func cycleRecord(id string) model.Cycle {
 	}
 }
 
-// The evidence export is authenticated like every other API read: no token and
-// a wrong token both get 401, an unknown cycle gets 404 with the expected
-// wording, and a known cycle gets the export document.
 func TestCycleEvidenceRouteRequiresAuthAndSeparatesUnknownCycles(t *testing.T) {
 	app, state := testApp(t)
 	if err := state.Put("cycle", "cycle-a", cycleRecord("cycle-a")); err != nil {
@@ -59,9 +55,6 @@ func TestCycleEvidenceRouteRequiresAuthAndSeparatesUnknownCycles(t *testing.T) {
 	}
 }
 
-// Archiving a cycle persists lifecycle.archived_at and the detail route keeps
-// serving the archived record; archiving again conflicts without rewriting
-// it, and an unrecognized action still reports 404.
 func TestCycleDetailStaysReadableAfterArchivePersistsLifecycle(t *testing.T) {
 	app, state := testApp(t)
 	if err := state.Put("cycle", "cycle-a", cycleRecord("cycle-a")); err != nil {
@@ -100,12 +93,6 @@ func TestCycleDetailStaysReadableAfterArchivePersistsLifecycle(t *testing.T) {
 	}
 }
 
-// A cycle discard admitted through the API holds no scheduler gate while its
-// planning directory is removed: pause answers through the boundary, the
-// claimed cycle conflicts a duplicate discard with 409, and the original
-// request completes the durable mark once removal finishes. The injected
-// removal barrier makes the ordering deterministic — the bounded waits detect
-// the pre-fix gate-holding deadlock rather than measuring timing.
 func TestCycleDiscardOverHTTPLeavesControlsResponsive(t *testing.T) {
 	dir := t.TempDir()
 	state := openStore(t, dir)

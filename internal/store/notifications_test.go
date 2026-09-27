@@ -13,8 +13,6 @@ import (
 
 const notifyDest = "destination-a"
 
-// putNotificationTask creates the minimal record the
-// attention triggers inspect.
 func putNotificationTask(t *testing.T, s *store.Store, id, status string, reason string) {
 	t.Helper()
 	task := map[string]any{
@@ -121,10 +119,6 @@ func TestAttentionTriggersEnqueueOneRowPerEpisode(t *testing.T) {
 	}
 }
 
-// The attention triggers name each blocked reason in SQL. Every reason the
-// model defines, "unknown" included, must reach the outbox as its own
-// category through both the insert and the update trigger, never as a
-// silent "unknown".
 func TestAttentionCategoryCoversEveryBlockedReason(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -364,9 +358,6 @@ func TestClaimExpiresDayOldRowsAndPrunesTerminalHistory(t *testing.T) {
 	}
 }
 
-// The notify_task_* triggers spell out the blocked-reason vocabulary in SQL.
-// Every model.BlockedReason must reach webhooks as its own category through
-// both the insert and the update trigger, never collapse into "unknown".
 func TestEveryBlockedReasonKeepsItsNotificationCategory(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)

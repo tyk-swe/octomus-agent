@@ -1,9 +1,3 @@
-// Package evidence is the narrow, read-only run-evidence read model.
-//
-// It reports what was saved, never what is currently true. It performs no live
-// HEAD, workspace, remote, authorization or pull-request checks, so the result is
-// recorded review/check evidence and not a publication or safety decision. Facts
-// are computed from the saved records first; display strings are redacted afterwards.
 package evidence
 
 import (
@@ -19,9 +13,6 @@ import (
 
 const SchemaVersion uint32 = 1
 
-// Limitations are what this export cannot claim. Every entry must survive
-// verbatim into every export; tests/helpers/public_payload.mjs mirrors the list
-// and tests/evidence_snapshot.py runs that gate against a real export.
 var Limitations = [9]string{
 	"Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
 	"Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
@@ -34,12 +25,7 @@ var Limitations = [9]string{
 	"Free text carried here (proposal problem, benefit, scope and evidence, and code-review findings) is model-authored and still requires manual review before sharing.",
 }
 
-// ReviewRequirement is the one sentence every export carries above its records.
 const ReviewRequirement = "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact."
-
-// ---------------------------------------------------------------------------
-// Schema
-// ---------------------------------------------------------------------------
 
 type RunEvidenceV1 struct {
 	SchemaVersion               uint32             `json:"schema_version"`
@@ -50,8 +36,7 @@ type RunEvidenceV1 struct {
 	Limitations                 [9]string          `json:"limitations"`
 	Cycle                       CycleEvidence      `json:"cycle"`
 	Proposals                   []ProposalEvidence `json:"proposals"`
-	// Explicit missing, ambiguous or stale evidence observed across the whole run.
-	Gaps []string `json:"gaps"`
+	Gaps                        []string           `json:"gaps"`
 }
 
 type CycleEvidence struct {
@@ -67,7 +52,6 @@ type CycleEvidence struct {
 }
 
 type PlanningOutcome struct {
-	// The saved cycle status verbatim; `completed` describes planning only.
 	Status                string         `json:"status"`
 	PlanningFinished      bool           `json:"planning_finished"`
 	ProposalCount         int            `json:"proposal_count"`
@@ -97,13 +81,9 @@ type ProposalEvidence struct {
 type VerdictState string
 
 const (
-	// Exactly one identifiable verdict for this proposal in this reviewer's batch.
-	VerdictRecorded VerdictState = "recorded"
-	// No batch for this slot, or the batch records no verdict for this proposal.
-	VerdictMissing VerdictState = "missing"
-	// More than one verdict for this proposal in the same batch.
+	VerdictRecorded  VerdictState = "recorded"
+	VerdictMissing   VerdictState = "missing"
 	VerdictDuplicate VerdictState = "duplicate"
-	// The batch exists but is not a usable assessment list.
 	VerdictMalformed VerdictState = "malformed"
 )
 
@@ -112,8 +92,7 @@ type ReviewerVerdict struct {
 	State    VerdictState `json:"state"`
 	Decision *string      `json:"decision"`
 	Reason   *string      `json:"reason"`
-	// Why the verdict is not a plain `recorded` value, when it is not.
-	Note *string `json:"note"`
+	Note     *string      `json:"note"`
 }
 
 type TaskEvidence struct {
@@ -151,8 +130,7 @@ type SessionRoute struct {
 }
 
 type ReviewEvidence struct {
-	RoundsRecorded int `json:"rounds_recorded"`
-	// The latest saved review round, never the last convenient passing one.
+	RoundsRecorded        int                  `json:"rounds_recorded"`
 	Latest                *ReviewRoundEvidence `json:"latest"`
 	Clean                 bool                 `json:"clean"`
 	CleanAtOutputRevision bool                 `json:"clean_at_output_revision"`
@@ -179,7 +157,6 @@ type FindingEvidence struct {
 type ChecksState string
 
 const (
-	// The task's saved execution configuration requires no verification commands.
 	ChecksNotConfigured ChecksState = "not_configured"
 	ChecksRecorded      ChecksState = "recorded"
 )
@@ -193,13 +170,10 @@ type CommandEvidence struct {
 type CommandState string
 
 const (
-	// Latest recorded result succeeded at the recorded output revision.
-	CommandPassed CommandState = "passed"
-	// Latest recorded result succeeded, but not at a recorded output revision.
+	CommandPassed                CommandState = "passed"
 	CommandPassedAtOtherRevision CommandState = "passed_at_other_revision"
 	CommandFailed                CommandState = "failed"
-	// No result is recorded for this required command. Missing is not passing.
-	CommandNoResult CommandState = "no_result"
+	CommandNoResult              CommandState = "no_result"
 )
 
 type CommandResult struct {
@@ -218,25 +192,18 @@ type PrReference struct {
 	Source string  `json:"source"`
 }
 
-// ---------------------------------------------------------------------------
-// Reviewer batch normalization
-// ---------------------------------------------------------------------------
-
 type entry struct {
 	id       string
 	decision string
 	reason   string
 }
 type batch struct {
-	// Positional reviewer slot, or -1 when there is no slot for this batch.
 	slot             int
 	index            int
 	entries          []entry
 	malformedEntries int
-	// Set when the batch itself cannot be read as an assessment list.
-	unusable *string
-	// Set when no completed session confirms this slot's identity.
-	unconfirmed bool
+	unusable         *string
+	unconfirmed      bool
 }
 
 func slotSessions(cycle model.Cycle, role string) []model.Session {
@@ -254,9 +221,6 @@ func stringField(object map[string]any, key string) (string, bool) {
 	return value, ok
 }
 
-// normalizeBatches reads the saved batches positionally and reports every
-// inconsistency instead of repairing it. Malformed batches keep their slot so
-// reviewer identities cannot shift.
 func normalizeBatches(cycle model.Cycle) ([]batch, []string) {
 	slots := model.ReviewerSlots()
 	gaps := []string{}
@@ -388,10 +352,6 @@ func verdict(batches []batch, slot int, proposalID string) ReviewerVerdict {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Task evidence
-// ---------------------------------------------------------------------------
-
 func reviewEvidence(task model.Task) ReviewEvidence {
 	var latest *ReviewRoundEvidence
 	clean := false
@@ -436,8 +396,6 @@ func commandEvidence(task model.Task) CommandEvidence {
 				recorded = append(recorded, result)
 			}
 		}
-		// The latest recorded result decides: a newer failure or a different revision
-		// invalidates an older pass.
 		out := CommandResult{Command: command, ResultsRecorded: len(recorded), State: CommandNoResult}
 		if n := len(recorded); n > 0 {
 			latest := recorded[n-1]
@@ -504,8 +462,6 @@ func taskEvidence(task model.Task) TaskEvidence {
 	if task.PRNumber != nil && task.OutputCommit == nil {
 		gaps = append(gaps, "A pull-request reference is recorded without an output revision to compare it against.")
 	}
-	// The same snake_case token the task API serializes, so one saved reason never
-	// has two spellings across the task view, the run evidence and the CLI export.
 	var blocked *string
 	if task.BlockedReason != nil {
 		blocked = str(task.BlockedReason.String())
@@ -556,12 +512,6 @@ func cloneString(s *string) *string {
 	return &copied
 }
 
-// ---------------------------------------------------------------------------
-// Assembly
-// ---------------------------------------------------------------------------
-
-// Assemble builds the representation from one already-consistent snapshot. Pure:
-// the API and the CLI share this assembler so their facts cannot diverge.
 func Assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 	batches, gaps := normalizeBatches(cycle)
 	execution := cycle.Mode == model.CycleModeExecution
@@ -600,8 +550,6 @@ func Assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 	proposals := make([]ProposalEvidence, 0, len(cycle.Proposals))
 	slots := model.ReviewerSlots()
 	for _, proposal := range cycle.Proposals {
-		// The join key is (cycle_id, proposal_id). Never a title, a proposal ID alone,
-		// or whichever task is newest.
 		var linked []model.Task
 		for _, t := range owned {
 			if t.Proposal.ID == proposal.ID {
@@ -688,27 +636,12 @@ func Assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 	}
 }
 
-// Value serializes the assembled facts, then redacts the remaining display
-// strings. Existing redaction is defense in depth here; free text still
-// requires manual review.
 func Value(cycle model.Cycle, tasks []model.Task) (map[string]any, error) {
 	return store.RedactedValue(Assemble(cycle, tasks))
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot reads
-// ---------------------------------------------------------------------------
-
-// cycleTasksQuery selects every task naming one cycle, in task id order,
-// through the record_meta projection (cycle_id is the task's saved cycle_id).
-// Without INDEXED BY the planner prefers walking every saved task in id order
-// to satisfy ORDER BY, and RunEvidence runs this read under the store mutex.
 const cycleTasksQuery = "SELECT r.data FROM record_meta m INDEXED BY meta_cycle JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY r.id"
 
-// ReadSnapshot reads the selected cycle and every task naming it from one
-// caller-owned transaction, so the cycle and its task evidence always describe
-// the same database state. This never consults the dashboard's recent task window.
-// A missing cycle is a nil cycle with no error.
 func ReadSnapshot(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, error) {
 	cycle, err := store.RecordAt[model.Cycle](c, "cycle", cycleID)
 	if err != nil || cycle == nil {
@@ -721,14 +654,10 @@ func ReadSnapshot(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, erro
 	return cycle, tasks, nil
 }
 
-// snapshotter runs fn inside one read transaction: the service store or a
-// read-only export connection.
 type snapshotter interface {
 	Snapshot(fn func(c *sql.Conn) error) error
 }
 
-// readRun reads one cycle and its tasks from a single snapshot. A missing
-// cycle is a nil cycle with no error.
 func readRun(s snapshotter, cycleID string) (cycle *model.Cycle, tasks []model.Task, err error) {
 	err = s.Snapshot(func(c *sql.Conn) error {
 		var readErr error
@@ -738,9 +667,6 @@ func readRun(s snapshotter, cycleID string) (cycle *model.Cycle, tasks []model.T
 	return cycle, tasks, err
 }
 
-// RunEvidence is the service-side export: recorded run evidence for one cycle
-// read inside one transaction on the store's connection, then assembled and
-// redacted without holding the database lock.
 func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
 	cycle, tasks, err := readRun(s, cycleID)
 	if err != nil || cycle == nil {
@@ -749,17 +675,12 @@ func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
 	return Value(*cycle, tasks)
 }
 
-// ExportRun exports one run from saved state without opening the database for
-// writing, creating directories or taking the service lock.
-// A missing state database or cycle is an explicit error, never an empty
-// successful export.
 func ExportRun(stateDB, cycleID string) (map[string]any, error) {
 	r, err := store.OpenReadOnly(stateDB, "run evidence export")
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
-	// One consistent snapshot even while the service is running.
 	cycle, tasks, err := readRun(r, cycleID)
 	if err != nil {
 		return nil, err

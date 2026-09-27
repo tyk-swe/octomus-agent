@@ -13,13 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// ledgerFixture is a minimal state database whose admissions and usage rows
-// are computed while SQLite steps through them: TEMP views shadow the main
-// tables of the same name, and a malformed raw value fails that row's step
-// (json() and json_extract() reject it), the shape of an I/O or corruption
-// error partway through a scan. Primary keys match each report query's order,
-// so rows stream from the index instead of a sorter that would evaluate them
-// all before the first row.
 func ledgerFixture(t *testing.T) *sql.Conn {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
@@ -71,8 +64,6 @@ func admissionJSON(t *testing.T, at string) string {
 	return string(data)
 }
 
-// A step error partway through the admissions or usage scan fails the report
-// instead of returning a ledger or daily table cut short at that row.
 func TestAssembleFailsWhenALedgerScanStopsWithAnError(t *testing.T) {
 	t.Run("admissions", func(t *testing.T) {
 		conn := ledgerFixture(t)
@@ -96,8 +87,6 @@ func TestAssembleFailsWhenALedgerScanStopsWithAnError(t *testing.T) {
 	})
 }
 
-// A readable ledger is reported in full, and an empty one stays an empty JSON
-// array rather than null.
 func TestAssembleReportsCompleteAndEmptyLedgers(t *testing.T) {
 	conn := ledgerFixture(t)
 	report, err := assemble(conn)
@@ -131,8 +120,6 @@ func TestAssembleReportsCompleteAndEmptyLedgers(t *testing.T) {
 	}
 }
 
-// An admission time the ledger cannot parse fails the report rather than
-// dropping that admission from the daily, cycle and task counts.
 func TestAssembleFailsOnAnUnparseableAdmissionTime(t *testing.T) {
 	conn := ledgerFixture(t)
 	insertAdmission(t, conn, "a1", "2026-09-01T00:00:00Z", admissionJSON(t, "2026-09-01T00:00:00Z"))
@@ -143,10 +130,6 @@ func TestAssembleFailsOnAnUnparseableAdmissionTime(t *testing.T) {
 	}
 }
 
-// Per-cycle rows split each cycle's admissions into planning (no task) and
-// task admissions, report wall time only for a completed cycle, name every
-// decision even when no proposal has it, and count completed sessions. Tier
-// rows cover the configured tiers only.
 func TestUsageReportAttributesAdmissionsWallTimeAndDecisionsPerCycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	s, err := store.Open(path)
@@ -260,7 +243,6 @@ func TestUsageReportAttributesAdmissionsWallTimeAndDecisionsPerCycle(t *testing.
 	if c2.ID != "c2" || c2.PlanningAdmissions != 0 || c2.TaskAdmissions != 1 || c2.RecordedCompletedSessions != 0 {
 		t.Fatalf("running cycle row: %+v", c2)
 	}
-	// A running cycle has no wall time: the field is present and null.
 	cycles, _ := value["cycles"].([]any)
 	runningRow, _ := cycles[1].(map[string]any)
 	if wall, present := runningRow["wall_seconds"]; !present || wall != nil || c2.CompletedAt != nil {
@@ -287,7 +269,6 @@ func TestUsageReportAttributesAdmissionsWallTimeAndDecisionsPerCycle(t *testing.
 	if row := byTask["t1"]; row.Tier != "M" || row.Admissions != 3 || row.RecordedCompletedSessions != 1 {
 		t.Fatalf("configured tier task row: %+v", row)
 	}
-	// A task outside the configured tiers keeps its own row and admissions.
 	if row := byTask["t2"]; row.Tier != "ZZ" || row.Admissions != 1 {
 		t.Fatalf("unknown tier task row: %+v", row)
 	}

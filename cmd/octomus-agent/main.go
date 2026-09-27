@@ -30,11 +30,8 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// stateDBName is the SQLite file inside the data directory.
 const stateDBName = "state.db"
 
-// printJSON writes two-space indented JSON with a trailing newline. Map keys
-// are sorted; struct fields keep their declaration order.
 func printJSON(stdout io.Writer, value any) error {
 	data, err := wirejson.Marshal(value)
 	if err != nil {
@@ -77,8 +74,6 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		}
 		return 0
 	}
-	// Read-only exports run before directory creation, service locking or worker
-	// startup, and need no operator token.
 	if parsed.usageReport || parsed.exportRun != nil {
 		stateDB := filepath.Join(parsed.dataDir, stateDBName)
 		var value map[string]any
@@ -104,8 +99,6 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 	return 0
 }
 
-// service owns startup: data directory, process lock, store,
-// optional doctor, token, assets, workers, listener and graceful shutdown.
 func service(parsed arguments, env func(string) (string, bool), stdout, stderr io.Writer) error {
 	if err := os.MkdirAll(parsed.dataDir, 0o700); err != nil {
 		return err
@@ -178,10 +171,6 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	return components.run(sigCtx, parsed.listen, stderr)
 }
 
-// shutdownSignals are the signals that stop the service, or an interrupted
-// doctor, gracefully. A hangup (a closed terminal or dropped SSH session) joins
-// them so owned process groups are terminated instead of orphaned, unless the
-// hangup is already ignored, as under nohup: registering it would un-ignore it.
 func shutdownSignals() []os.Signal {
 	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
 	if !signal.Ignored(syscall.SIGHUP) {
@@ -190,21 +179,10 @@ func shutdownSignals() []os.Signal {
 	return signals
 }
 
-// newHTTPServer bounds only the connection phases no handler needs: headers
-// must arrive within ReadHeaderTimeout and an idle keep-alive connection
-// closes after IdleTimeout, so stalled or abandoned clients cannot pin
-// descriptors. Read and write stay unbounded because doctor and model catalog
-// requests legitimately run for about a minute.
 func newHTTPServer(handler http.Handler) *http.Server {
 	return &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 }
 
-// runDoctor validates the saved configuration for mode and prints the result
-// to stdout. Each version-mismatch warning goes to stderr as a WARN line, also
-// when a check fails. Cancelling ctx (one of the shutdownSignals) shuts the app
-// down, which terminates every owned process group the checks started, and
-// fails the command. The shutdown finishes before runDoctor returns, so the
-// caller may close the store.
 func runDoctor(ctx context.Context, app *engine.App, mode model.CycleMode, stdout, stderr io.Writer) error {
 	shutdownDone := make(chan struct{})
 	stopShutdown := context.AfterFunc(ctx, func() {
@@ -324,11 +302,9 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	return a, "", nil
 }
 
-// parseListen parses a socket address for --listen or OCTOMUS_LISTEN.
 func parseListen(listen string) (netip.AddrPort, error) {
 	address, err := netip.ParseAddrPort(listen)
 	if err == nil && address.Addr().Zone() != "" {
-		// Scope IDs must be decimal 32-bit numbers, rather than interface names.
 		_, err = strconv.ParseUint(address.Addr().Zone(), 10, 32)
 	}
 	if err != nil {

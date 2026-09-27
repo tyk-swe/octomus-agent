@@ -1,16 +1,5 @@
 package store
 
-// A durable write that fails mid-operation is never acknowledged: the API
-// reports the error and no record, counter, or ledger entry is committed.
-//
-// These tests are internal (package store, not store_test) because the
-// deterministic disk-exhaustion injection must run on the store's pinned
-// connection: PRAGMA max_page_count is per-connection, so a second handle can
-// never constrain the writer. For the multi-statement transactions whose
-// writes are small enough to fit pre-existing page slack, an abort trigger
-// injects the same mid-transaction failure the disk-full case relies on, and
-// the whole transaction must roll back.
-
 import (
 	"errors"
 	"fmt"
@@ -24,12 +13,10 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// mustSQLiteFull requires err to be SQLite's SQLITE_FULL result, the same
-// error a genuinely full filesystem produces on write.
 func mustSQLiteFull(t *testing.T, err error) {
 	t.Helper()
 	var sq *sqlite.Error
-	if err == nil || !errors.As(err, &sq) || sq.Code()&0xff != 13 { // SQLITE_FULL
+	if err == nil || !errors.As(err, &sq) || sq.Code()&0xff != 13 {
 		t.Fatalf("write error = %v; want SQLITE_FULL", err)
 	}
 }
@@ -73,7 +60,6 @@ func fullOpen(t *testing.T) *Store {
 	return s
 }
 
-// execStore runs one statement on the store's pinned connection under its mutex.
 func execStore(t *testing.T, s *Store, query string, args ...any) {
 	t.Helper()
 	s.mu.Lock()
@@ -83,7 +69,6 @@ func execStore(t *testing.T, s *Store, query string, args ...any) {
 	}
 }
 
-// countStore counts rows on the pinned connection under its mutex.
 func countStore(t *testing.T, s *Store, query string, args ...any) int64 {
 	t.Helper()
 	s.mu.Lock()
@@ -95,9 +80,6 @@ func countStore(t *testing.T, s *Store, query string, args ...any) int64 {
 	return n
 }
 
-// freeze compacts the database, then caps its page count at the current size so
-// the next page allocation — exactly what a full disk would cause — fails with
-// SQLITE_FULL on this connection.
 func freeze(t *testing.T, s *Store) {
 	t.Helper()
 	s.mu.Lock()
@@ -118,15 +100,11 @@ func freeze(t *testing.T, s *Store) {
 	}
 }
 
-// thaw restores the default headroom; writes afterwards must succeed, proving
-// the injected limit — not corruption — caused the failures above.
 func thaw(t *testing.T, s *Store) {
 	t.Helper()
 	execStore(t, s, "PRAGMA max_page_count=1073741823")
 }
 
-// A canonical record write that needs a new page under the cap returns
-// SQLITE_FULL and commits neither the record nor its projections.
 func TestDiskFullRecordWriteAcknowledgesNothing(t *testing.T) {
 	s := fullOpen(t)
 	cfg := config.Default()
@@ -135,7 +113,6 @@ func TestDiskFullRecordWriteAcknowledgesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	doomed := fullQueuedTask(cfg)
-	// Big enough that the insert must allocate overflow pages.
 	doomed.Proposal.Prompt = strings.Repeat("x", 1<<16)
 	freeze(t, s)
 	mustSQLiteFull(t, s.Put("task", doomed.ID, doomed))
@@ -158,11 +135,6 @@ func TestDiskFullRecordWriteAcknowledgesNothing(t *testing.T) {
 	}
 }
 
-// The admission counter and its ledger live in one transaction: a disk-full
-// failure on the ledger insert — after the counter row was already written —
-// must roll the counter back too. The reservation admission transaction gets
-// the same guarantee through an abort trigger, which is the deterministic
-// injection for writes too small to need a new page.
 func TestFailedLedgerWritesRollBackTheWholeTransaction(t *testing.T) {
 	s := fullOpen(t)
 	cfg := config.Default()
@@ -179,8 +151,6 @@ func TestFailedLedgerWritesRollBackTheWholeTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Freeze, then make the admission ledger row big enough to need a new
-	// page: the counter row is written first and must roll back with it.
 	freeze(t, s)
 	big := strings.Repeat("r", 1<<16)
 	mustSQLiteFull(t, s.ReserveSession(0, NewAdmission("cycle", nil, big, cfg.Roles["discovery"])))
@@ -201,9 +171,6 @@ func TestFailedLedgerWritesRollBackTheWholeTransaction(t *testing.T) {
 		t.Fatalf("ledger after thaw: %d", ledger)
 	}
 
-	// PR admission rewrites the task, inserts the reservation and writes the
-	// status event in one transaction; aborting the reservation insert must
-	// leave the queued task untouched and record nothing.
 	execStore(t, s, `CREATE TRIGGER fail_reservation AFTER INSERT ON pr_reservations
         BEGIN SELECT RAISE(ABORT,'database or disk is full'); END`)
 	admitted, err := s.AdmitNewPrTask(&queued, inventory)
@@ -229,8 +196,6 @@ func TestFailedLedgerWritesRollBackTheWholeTransaction(t *testing.T) {
 		t.Fatalf("admission after the trigger dropped: admitted=%t err=%v", admitted, err)
 	}
 
-	// The same guarantee for a canonical record plus its projections: abort
-	// the meta insert and the records row must roll back with it.
 	execStore(t, s, `CREATE TRIGGER fail_meta AFTER INSERT ON record_meta
         BEGIN SELECT RAISE(ABORT,'database or disk is full'); END`)
 	other := fullQueuedTask(cfg)

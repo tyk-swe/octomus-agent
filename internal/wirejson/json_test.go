@@ -64,8 +64,6 @@ type decodeRecord struct {
 	A any            `json:"a" wire:"default"`
 }
 
-// Callers rely on absent fields keeping dst's values for installed defaults,
-// which is why record decoders must start from a zero value.
 func TestDecodeKeepsAbsentFieldsAndChangesDstOnlyOnSuccess(t *testing.T) {
 	stale := "stale"
 	dst := decodeRecord{P: &stale, D: "kept"}
@@ -94,9 +92,6 @@ func TestDecodeKeepsAbsentFieldsAndChangesDstOnlyOnSuccess(t *testing.T) {
 	}
 }
 
-// Go's decoder turns lone surrogates and invalid bytes into U+FFFD, so the
-// scanner must refuse them first, and must not lose track of where a string
-// ends when it meets an escaped quote or backslash.
 func TestValidStringsRefusesMalformedUnicode(t *testing.T) {
 	for _, tc := range []struct{ raw, message string }{
 		{`"\ud800"`, "unpaired high surrogate"},
@@ -118,8 +113,6 @@ func TestValidStringsRefusesMalformedUnicode(t *testing.T) {
 		if err == nil || err.Error() != tc.message {
 			t.Errorf("ValidStrings(%s) = %v; want %q", tc.raw, err, tc.message)
 		}
-		// Plain errors: the runner reports these as protocol failures, and a
-		// marked *Error would be classified as an internal codec failure.
 		var marked *Error
 		if errors.As(err, &marked) {
 			t.Errorf("ValidStrings(%s) returned a marked *Error", tc.raw)
@@ -148,7 +141,7 @@ func TestDecodeRefusesAmbiguousOrMalformedObjects(t *testing.T) {
 	for _, tc := range []struct {
 		raw     string
 		lenient bool
-		message string // empty when the text comes from encoding/json
+		message string
 	}{
 		{raw: `{"s":"x","\ud800x":1}`, lenient: true, message: "unpaired high surrogate"},
 		{raw: "{\"s\":\"x\",\"\xff\":1}", lenient: true, message: "invalid UTF-8"},
@@ -220,7 +213,6 @@ func TestDecodeAcceptsWellFormedObjects(t *testing.T) {
 		{raw: `{"s":"\\ud800"}`, want: empty(decodeRecord{S: `\ud800`})},
 		{raw: `{"s":"x","z":{"deep":["\\"]}}`, lenient: true, want: empty(decodeRecord{S: "x"})},
 		{raw: `{"s":"x","l":[],"m":{}}`, want: empty(decodeRecord{S: "x"})},
-		// Opaque values keep numbers exact rather than rounding them to float64.
 		{
 			raw:  `{"s":"x","p":"y","d":"z","l":["a","b"],"m":{"k":1,"j":2},"a":{"n":12345678901234567890,"list":[true,null,"v"]}}`,
 			want: decodeRecord{S: "x", P: &y, D: "z", L: []string{"a", "b"}, M: map[string]int{"k": 1, "j": 2}, A: map[string]any{"n": json.Number("12345678901234567890"), "list": []any{true, nil, "v"}}},
@@ -236,14 +228,12 @@ func TestDecodeAcceptsWellFormedObjects(t *testing.T) {
 		}
 	}
 
-	// An explicit null clears an optional value, where absence keeps it.
 	stale := "stale"
 	dst := decodeRecord{P: &stale, A: "stale"}
 	if err := Decode([]byte(`{"s":"x","p":null,"a":null}`), &dst, true, false); err != nil || dst.P != nil || dst.A != nil {
 		t.Fatalf("explicit nulls = %+v, %v; want P and A cleared", dst, err)
 	}
 
-	// defaultAll makes every field optional and keeps the installed values.
 	dst = decodeRecord{S: "kept", L: []string{"kept"}}
 	if err := Decode([]byte(`{"d":"x"}`), &dst, true, true); err != nil {
 		t.Fatal(err)
@@ -260,7 +250,6 @@ type strictItem struct {
 	N string `json:"n"`
 }
 
-// The receiver goes to the helper as is: Decode never calls it back.
 func (v *strictItem) UnmarshalJSON(data []byte) error { return DecodeStrict(data, v) }
 
 type outerRecord struct {
@@ -268,8 +257,6 @@ type outerRecord struct {
 	Items []strictItem `json:"items" wire:"default"`
 }
 
-// A nested type's own decoder decides its strictness, so a lenient parent
-// cannot relax a strict child, and the child's typed error keeps its path.
 func TestNestedDecodersKeepTheirOwnStrictness(t *testing.T) {
 	var outer outerRecord
 	if err := Decode([]byte(`{"item":{"n":"x"},"items":[{"n":"y"}],"ignored":true}`), &outer, false, false); err != nil {
@@ -292,9 +279,6 @@ func TestNestedDecodersKeepTheirOwnStrictness(t *testing.T) {
 	}
 }
 
-// Record UnmarshalJSON methods pass their receiver, which may hold an earlier
-// value, so each helper starts from a zero value (or the given defaults):
-// nothing from dst may survive into the result, and a refusal leaves dst alone.
 func TestDecodeHelpersStartFreshAndChangeDstOnlyOnSuccess(t *testing.T) {
 	stale := "stale"
 	populated := func() decodeRecord {
@@ -341,7 +325,6 @@ func TestDecodeHelpersStartFreshAndChangeDstOnlyOnSuccess(t *testing.T) {
 		t.Fatalf("DecodeWithDefaults(unknown field) = %v and dst %#v; want refused and dst unchanged", err, dst)
 	}
 
-	// A method that hands its receiver to a helper is not called back.
 	var item strictItem
 	if err := json.Unmarshal([]byte(`{"n":"x"}`), &item); err != nil || item.N != "x" {
 		t.Fatalf("strictItem = %#v, %v", item, err)
@@ -385,8 +368,6 @@ func TestRecordWritesEmptyContainersThatDecodeStrictly(t *testing.T) {
 
 func second(_ []byte, err error) error { return err }
 
-// Generic views feed API responses and exports, so a uint64 beyond float64's
-// exact range must keep its saved spelling instead of being rounded.
 func TestGenericKeepsExactNumbersAndMarksEncodeFailures(t *testing.T) {
 	type record struct {
 		N    uint64         `json:"n"`
@@ -448,8 +429,6 @@ type cloneRecord struct {
 	EmptyMap map[string]int
 }
 
-// Snapshot owners mutate what they receive, so a clone must share no map,
-// slice or pointer with its source, also inside opaque evidence.
 func TestCloneSharesNoMutableState(t *testing.T) {
 	build := func() cloneRecord {
 		p := "p"
@@ -485,9 +464,6 @@ func TestCloneSharesNoMutableState(t *testing.T) {
 	}
 }
 
-// Equal compares canonical Marshal output: pointers compare by what they
-// point to, a nil slice (null) differs from an empty one ([]), and a value
-// that cannot be marshalled equals nothing, not even itself.
 func TestEqualComparesMarshalOutput(t *testing.T) {
 	type nested struct {
 		P     *string  `json:"p"`
@@ -513,7 +489,6 @@ func TestEqualComparesMarshalOutput(t *testing.T) {
 	}
 }
 
-// badEnum encodes through MarshalEnum, which refuses out-of-range values.
 type badEnum struct{ value testEnum }
 
 func (b badEnum) MarshalJSON() ([]byte, error) { return MarshalEnum(b.value, testEnumNames) }

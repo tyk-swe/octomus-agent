@@ -1,5 +1,3 @@
-// Package model defines owned, durable records and their local domain behavior.
-// Call Clone when transferring a mutable record into or out of a snapshot owner.
 package model
 
 import (
@@ -55,7 +53,6 @@ func (p Proposal) SameWork(other Proposal) bool {
 	return p.Target == other.Target && (config.EqualASCII(strings.TrimSpace(p.Title), strings.TrimSpace(other.Title)) || p.ProblemIdentity() == other.ProblemIdentity())
 }
 
-// Error returns the operator guidance for b; out-of-range values read as unknown.
 func (b BlockedReason) Error() string {
 	if int(b) >= len(blockedReasonMessages) {
 		return blockedReasonMessages[BlockedReasonUnknown]
@@ -63,10 +60,6 @@ func (b BlockedReason) Error() string {
 	return blockedReasonMessages[b]
 }
 
-// BlockedReasonFromError returns the BlockedReason among err's wrapped and
-// joined causes, or BlockedReasonUnknown. A reason wraps nothing, so one wrap
-// chain holds at most one; when joined branches hold several, the causes are
-// visited depth-first in order and the last reason found wins.
 func BlockedReasonFromError(err error) BlockedReason {
 	result := BlockedReasonUnknown
 	var visit func(error)

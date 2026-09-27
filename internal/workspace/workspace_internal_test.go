@@ -8,12 +8,6 @@ import (
 	"testing"
 )
 
-// TestMakeDirsWritableSkipsSymlinkTargets pins the permission repair that lets
-// cleanup remove read-only trees: every real directory in the owned tree,
-// including ones that could not be listed or searched, gains owner access,
-// while symlinked directories — outside the root or beside the tree inside
-// it — keep their modes. It runs as any user, unlike the unprivileged
-// removal test, because root ignores the modes it changes.
 func TestMakeDirsWritableSkipsSymlinkTargets(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "tasks")
@@ -39,7 +33,6 @@ func TestMakeDirsWritableSkipsSymlinkTargets(t *testing.T) {
 	if err := os.Symlink(filepath.Join("..", "..", "task-2"), filepath.Join(tree, "mod", "sibling-link")); err != nil {
 		t.Fatal(err)
 	}
-	// Children before parents, so every mode can be applied.
 	modes := []struct {
 		path string
 		mode fs.FileMode
@@ -103,10 +96,6 @@ func TestMakeDirsWritableSkipsSymlinkTargets(t *testing.T) {
 	}
 }
 
-// TestMakeDirsWritableReachesAnyDirectoryName pins that the repair reaches
-// directories below names that are legal on Linux but not valid io/fs paths —
-// bytes that are not UTF-8, backslashes, colons — so a read-only tree under
-// such a name cannot keep blocking cleanup.
 func TestMakeDirsWritableReachesAnyDirectoryName(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "tasks")
 	tree := filepath.Join(root, "task-1")
@@ -117,7 +106,6 @@ func TestMakeDirsWritableReachesAnyDirectoryName(t *testing.T) {
 		if err := os.MkdirAll(child, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		// Children before parents, so every mode can be applied.
 		locked = append(locked, child, parent)
 	}
 	for _, dir := range locked {

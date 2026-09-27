@@ -9,7 +9,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
 
-// recorder collects the errors Match reports instead of failing the test.
 type recorder struct {
 	testing.TB
 	errors []string
@@ -31,8 +30,6 @@ type item struct {
 
 var boolean = schemas.Schema{"type": "boolean"}
 
-// Match accepts a schema that describes the type exactly, and names the path
-// of a field present on only one side or of a different kind.
 func TestMatchFindsDriftOnEitherSide(t *testing.T) {
 	exact := schemas.Object(schemas.Schema{"items": schemas.Array(schemas.Object(schemas.Schema{
 		"id": schemas.String(), "done": boolean,
@@ -69,8 +66,6 @@ func TestMatchFindsDriftOnEitherSide(t *testing.T) {
 	}
 }
 
-// A sample answer fills every field of the schema it was built from, so it
-// validates and decodes without losing a value.
 func TestSampleFillsEveryField(t *testing.T) {
 	schema := schemas.Object(schemas.Schema{"items": schemas.Array(schemas.Object(schemas.Schema{
 		"id": schemas.String(), "done": boolean,

@@ -15,8 +15,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// Acceptance criterion 9: the service connection carries the storage contract
-// (WAL, synchronous=FULL, 5s busy timeout) and every method runs on it.
 func TestConnectionSettingsMatchTheStorageContract(t *testing.T) {
 	s := open(t, statePath(t))
 	must(t, s.Snapshot(func(c *sql.Conn) error {
@@ -49,9 +47,6 @@ func TestConnectionSettingsMatchTheStorageContract(t *testing.T) {
 	}
 }
 
-// Acceptance criterion 9: a foreign write lock delays the service write until
-// it is released instead of failing immediately; the configured busy timeout
-// covers the wait.
 func TestBusyTimeoutWaitsForForeignWriters(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -85,8 +80,6 @@ func TestBusyTimeoutWaitsForForeignWriters(t *testing.T) {
 	}
 }
 
-// Acceptance criterion 6: a read-only export observes one snapshot even while
-// the service commits, and it sees committed data that only exists in the WAL.
 func TestReadOnlySnapshotIsConsistentAndIncludesWAL(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -124,11 +117,6 @@ func TestReadOnlySnapshotIsConsistentAndIncludesWAL(t *testing.T) {
 	}
 }
 
-// A panic inside a transaction callback (recovered by net/http or a task
-// worker) rolls the transaction back before it unwinds. Otherwise the pinned
-// connection would stay inside the open transaction: later autocommit writes
-// would be acknowledged without ever committing, and every later transaction
-// would fail to begin.
 func TestPanicInsideTransactionRollsBack(t *testing.T) {
 	panics := func(snapshot func(func(*sql.Conn) error) error, statement string) {
 		t.Helper()
@@ -166,9 +154,6 @@ func TestPanicInsideTransactionRollsBack(t *testing.T) {
 	}
 }
 
-// --usage-report and --export-run rely on OpenReadOnly being a real
-// SQLITE_OPEN_READONLY handle. URI metacharacters in the data directory must
-// not strip mode=ro or send the open to a different path.
 func TestReadOnlyConnectionRefusesWrites(t *testing.T) {
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "state dir ?#%25")
@@ -205,8 +190,6 @@ func usageRows(t *testing.T, path string) (int64, int64) {
 	return queryInt(t, db, "SELECT COALESCE(sum(sessions),0) FROM usage"), queryInt(t, db, "SELECT count(*) FROM admissions")
 }
 
-// Acceptance criteria 3 and 4: every failed admission leaves the counter and
-// the ledger untouched together.
 func TestFailedAdmissionsRollBackCounterAndLedgerTogether(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -247,8 +230,6 @@ func inventory(prs ...model.PullRequest) model.OpenPrInventory {
 	return model.OpenPrInventory{Repository: "fixture/project", ObservedAt: "2026-01-01T00:00:00Z", PRs: prs}
 }
 
-// Acceptance criterion 3: PR admission moves the task, its reservation and its
-// status event in one transaction, and refusals write nothing.
 func TestPrAdmissionAndReservationsShareOneTransaction(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -306,13 +287,11 @@ func TestPrAdmissionAndReservationsShareOneTransaction(t *testing.T) {
 	if observed != 0 || unrepresented != 1 || remaining != 0 {
 		t.Fatalf("%d %d %d", observed, unrepresented, remaining)
 	}
-	// A blocked task without output releases its reservation through the trigger.
 	first.Status = model.StatusBlocked
 	must(t, s.Put("task", first.ID, first))
 	if has, _ := s.HasPrReservation(first.ID); has {
 		t.Fatal("blocked task kept its reservation")
 	}
-	// Published work represented in the inventory releases on persist.
 	first.Status = model.StatusPublished
 	first.OutputCommit = str("out00001")
 	must(t, s.Put("task", first.ID, first))
@@ -356,9 +335,6 @@ func TestPrAdmissionRechecksCanonicalTaskAndLivePolicy(t *testing.T) {
 	if admitted, err := s.AdmitNewPrTask(&queued, inv); err != nil || admitted {
 		t.Fatalf("full live limit admitted work: %v, %v", admitted, err)
 	}
-	// The persisted inventory still counts the observed PR against the limit:
-	// the refused admission leaves the canonical task queued, matching
-	// a_stale_inventory_snapshot_still_counts_against_the_limit.
 	refused, err := store.Get[model.Task](s, "task", queued.ID)
 	must(t, err)
 	if refused == nil || refused.Status != model.StatusQueued {
@@ -484,8 +460,6 @@ func TestConfirmedReservationReleaseRechecksCanonicalTerminalState(t *testing.T)
 	}
 }
 
-// Acceptance criterion 3: the notification outbox is filled by triggers inside
-// the writer's transaction, so a rolled-back task write enqueues nothing.
 func TestOutboxEnqueueSharesTheWriterTransaction(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
@@ -527,8 +501,6 @@ func TestOutboxEnqueueSharesTheWriterTransaction(t *testing.T) {
 	if health.Pending != 1 {
 		t.Fatalf("%+v", health)
 	}
-	// The trigger stamps the first attempt with the database clock, so claims
-	// are due from the current wall time onward.
 	now := time.Now().UTC().Add(time.Second)
 	delivery, err := s.ClaimNotification("hook-1", now)
 	must(t, err)
@@ -551,7 +523,6 @@ func TestOutboxEnqueueSharesTheWriterTransaction(t *testing.T) {
 	if health.Pending != 0 || health.Failed != 0 || health.LastDeliveredAt == nil || health.LastError != nil {
 		t.Fatalf("%+v", health)
 	}
-	// Changing the destination cancels what is still pending.
 	other := task()
 	other.Status = model.StatusFailed
 	must(t, s.Put("task", other.ID, other))
@@ -566,7 +537,6 @@ func TestOutboxEnqueueSharesTheWriterTransaction(t *testing.T) {
 	}
 }
 
-// Events feed the retention trigger installed by the service.
 func TestEventsAreRedactedAndBounded(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
