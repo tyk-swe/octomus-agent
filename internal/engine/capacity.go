@@ -241,6 +241,9 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		a.gate.Lock()
 		defer a.gate.Unlock()
 		if live, err := a.Config(); err == nil && !store.PrIdentityOf(snapshot).Matches(live) {
+			// Report it as the policy change it is, so housekeeping treats the
+			// whole observation as obsolete rather than failed.
+			result = errPrPolicyChanged
 			return
 		}
 		a.runtimeMu.Lock()

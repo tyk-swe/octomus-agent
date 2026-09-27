@@ -237,8 +237,8 @@ func TestHousekeepingRefreshObsoletedByAPolicySaveIsNotAFailure(t *testing.T) {
 
 // A housekeeping refresh that genuinely fails for the PR identity a
 // configuration save has just replaced reports nothing about the saved policy:
-// its failure is not left as the capacity failure reason under the new
-// configuration.
+// its failure is neither left as the capacity failure reason under the new
+// configuration nor recorded as a housekeeping failure.
 func TestFailedRefreshForAReplacedPolicyIsNotTheCapacityReason(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	hold, entered, fail := holdOpenPrInventoryRead(t, fixture)
@@ -287,6 +287,16 @@ func TestFailedRefreshForAReplacedPolicyIsNotTheCapacityReason(t *testing.T) {
 	}
 	if capacity.Reason != nil && strings.Contains(*capacity.Reason, "inventory failed") {
 		t.Fatalf("the replaced policy's failure became the capacity reason: %+v", capacity)
+	}
+	system := "system"
+	events, err := fixture.state.Events(&system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "housekeeping_error" {
+			t.Fatalf("the replaced policy's failure was recorded as a housekeeping failure: %+v", event)
+		}
 	}
 }
 
