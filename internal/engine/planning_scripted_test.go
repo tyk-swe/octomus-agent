@@ -1,12 +1,5 @@
 package engine
 
-// Planning role tests (grounding, discovery, proposal review, consolidation)
-// against real local Git and the scripted runner adapter. No runner peer is
-// spawned: every planning turn consumes a scripted reply on its role's route.
-// The gh peer and the git.py identity shim stay until the GitHub port (#8).
-// Protocol-dependent planning checks (for example Codex authentication in
-// preflight) stay on the Python peers.
-
 import (
 	"context"
 	"encoding/json"
@@ -26,15 +19,11 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-// newScriptedPlanningFixture is a scripted fixture whose origin reports the
-// GitHub identity that planning preflight and grounding validate.
 func newScriptedPlanningFixture(t *testing.T) *scriptedFixture {
 	t.Helper()
 	return newScriptedFixture(t, withGitHubIdentity())
 }
 
-// fixtureProposal is the planning fixture's one concrete proposal: complete
-// feature.txt on the default branch.
 func fixtureProposal(decision, reason string) map[string]any {
 	return map[string]any{
 		"id": "d0-feature", "title": "Complete the fixture feature",
@@ -48,7 +37,6 @@ func fixtureProposal(decision, reason string) map[string]any {
 	}
 }
 
-// scriptedPlan holds the replies of one planning pass, by stage.
 type scriptedPlan struct {
 	grounding     runnertest.Reply
 	discovery     []runnertest.Reply
@@ -56,9 +44,6 @@ type scriptedPlan struct {
 	consolidation runnertest.Reply
 }
 
-// completePlan scripts a pass that accepts the fixture proposal: one discovery
-// agent proposes it, the rest find nothing, both adversaries accept it and the
-// orchestrator accepts it.
 func completePlan(t *testing.T, f *scriptedFixture) scriptedPlan {
 	t.Helper()
 	plan := scriptedPlan{
@@ -76,16 +61,12 @@ func completePlan(t *testing.T, f *scriptedFixture) scriptedPlan {
 	return plan
 }
 
-// queue scripts the plan. Grounding and consolidation share the orchestrator
-// route and run in that order. Discovery agents and adversaries run in
-// parallel, so which label consumes which reply on their routes is not fixed.
 func (p scriptedPlan) queue(f *scriptedFixture) {
 	f.script.Queue(f.routes.Orchestrator, p.grounding, p.consolidation)
 	f.script.Queue(f.routes.Discovery, p.discovery...)
 	f.script.Queue(f.routes.ProposalReviewer, p.reviews...)
 }
 
-// planningRoute is the configured route of a planning session label.
 func (f *scriptedFixture) planningRoute(label string) config.Route {
 	switch {
 	case label == "grounding" || label == "consolidation":
@@ -105,7 +86,6 @@ func roleWorkspace(f *scriptedFixture, cycleID, label string) string {
 	return filepath.Join(f.dataDir, "cycles", cycleID, label, "workspace")
 }
 
-// planningTurns returns every scripted planning turn, in no particular order.
 func (f *scriptedFixture) planningTurns() []runnertest.Call {
 	turns := []runnertest.Call{}
 	for _, route := range f.planningRoutes() {
@@ -114,7 +94,6 @@ func (f *scriptedFixture) planningTurns() []runnertest.Call {
 	return turns
 }
 
-// waitOnlyCycle waits for the single recorded cycle to leave running.
 func waitOnlyCycle(t *testing.T, state *store.Store) model.Cycle {
 	t.Helper()
 	var cycles []model.Cycle
@@ -130,9 +109,6 @@ func waitOnlyCycle(t *testing.T, state *store.Store) model.Cycle {
 	return cycles[0]
 }
 
-// assertScriptedPlanningPass checks a completed pass: one fresh session per
-// planning role on its configured route, one structured turn per role in its
-// own role clone, every successful clone removed and every client closed.
 func assertScriptedPlanningPass(t *testing.T, f *scriptedFixture, cycle model.Cycle) {
 	t.Helper()
 	want := int(f.cfg.DiscoveryAgents + 4)
@@ -201,10 +177,6 @@ func assertScriptedPlanningPass(t *testing.T, f *scriptedFixture, cycle model.Cy
 	assertNoOpenClients(t, f.script)
 }
 
-// assertPlanningRulePrompts checks that the proposing roles are told the rules
-// the core enforces on their output in mode: the enabled categories, the
-// discovery share of the candidate limit and how rediscovery requests are
-// decided.
 func assertPlanningRulePrompts(t *testing.T, f *scriptedFixture, mode model.CycleMode) {
 	t.Helper()
 	categories := fmt.Sprint(f.cfg.Categories)
@@ -258,7 +230,6 @@ func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
 	if len(cycle.Proposals) != 1 || cycle.Proposals[0].ID != "d0-feature" || cycle.Proposals[0].Decision != model.DecisionAccepted {
 		t.Fatalf("audit did not record the consolidated decision: %+v", cycle.Proposals)
 	}
-	// Roles that write proposals are told the bounds planning enforces.
 	proposing := 0
 	for _, turn := range fixture.planningTurns() {
 		if strings.HasPrefix(turn.Prompt, "Discover worthwhile") || strings.HasPrefix(turn.Prompt, "Act as final orchestrator") {
@@ -283,8 +254,6 @@ func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
 	assertAdmissions(t, fixture.state, fixture.cfg.PlanningAdmissionsRequired(), "audit")
 }
 
-// consolidationPrCapacity decodes the pr_capacity of the recorded context that
-// closes the consolidation prompt.
 func consolidationPrCapacity(t *testing.T, f *scriptedFixture) map[string]any {
 	t.Helper()
 	for _, turn := range f.script.Turns(f.routes.Orchestrator) {
@@ -311,9 +280,6 @@ func consolidationPrCapacity(t *testing.T, f *scriptedFixture) map[string]any {
 	return nil
 }
 
-// An audit runs paused, so this process holds no PR dispatch authority. The
-// planning roles still receive the capacity of the complete inventory the
-// same pass grounded on, never "no inventory has been observed".
 func TestAuditPlanningContextReportsTheGroundedPrCapacity(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -350,7 +316,6 @@ func TestAuditPlanningContextReportsTheGroundedPrCapacity(t *testing.T) {
 			if capacity["observed_at"] != *cycle.Grounding.PRCoverage.ObservedAt {
 				t.Fatalf("capacity observed at %v; grounding observed at %s", capacity["observed_at"], *cycle.Grounding.PRCoverage.ObservedAt)
 			}
-			// The context is not dispatch authority: the paused service still has none.
 			authority, err := app.PrCapacity()
 			if err != nil || authority.Status != "unavailable" || authority.Remaining != nil {
 				t.Fatalf("paused audit gained PR dispatch authority: %+v, %v", authority, err)
@@ -359,9 +324,6 @@ func TestAuditPlanningContextReportsTheGroundedPrCapacity(t *testing.T) {
 	}
 }
 
-// advanceMainDuringObservation replaces the fixture's git shim with one that,
-// once, advances main on the bare remote just before grounding reads the
-// remote default-branch head, and records the new commit in the returned path.
 func advanceMainDuringObservation(t *testing.T, f *scriptedFixture) string {
 	t.Helper()
 	fixtures := filepath.Join(repositoryRoot(t), "tests", "fixtures")
@@ -393,9 +355,6 @@ runpy.run_path(%[4]q, run_name='__main__')
 	return advanced
 }
 
-// Main can advance after the checkout's last fetch and before grounding reads
-// the remote head. Grounding records that head, so it must be local before any
-// role clones the checkout at it.
 func TestGroundingFetchesTheRemoteHeadsItObserved(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	advanced := advanceMainDuringObservation(t, fixture)
@@ -445,9 +404,6 @@ func TestRunOnceCommitsCompletePlanningQueueAndPhase(t *testing.T) {
 	assertPlanningRulePrompts(t, fixture, model.CycleModeExecution)
 }
 
-// The plan commit rewrites control (batch phase, idle streak), so it waits for
-// the scheduler gate that operator controls hold across their control
-// read-modify-write: nothing of the plan becomes durable while it is held.
 func TestPlanCommitSerializesWithTheSchedulerGate(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	plan := completePlan(t, fixture)
@@ -474,8 +430,6 @@ func TestPlanCommitSerializesWithTheSchedulerGate(t *testing.T) {
 		}
 	}()
 	consolidation.Release()
-	// Wait until the finished consolidation is recorded, then give the rest of
-	// the pass (decision fingerprints, task snapshots) time to reach its commit.
 	if !testutil.WaitUntil(30*time.Second, func() bool {
 		cycles, err := store.List[model.Cycle](fixture.state, "cycle")
 		if err != nil || len(cycles) != 1 {
@@ -544,7 +498,6 @@ func TestResumeClearsOldDelayAndNextTickStartsPlanning(t *testing.T) {
 	}
 }
 
-// planningErrors returns the planning_error events recorded for entity.
 func planningErrors(t *testing.T, state *store.Store, entity string) []model.Event {
 	t.Helper()
 	events, err := state.Events(&entity)
@@ -560,11 +513,6 @@ func planningErrors(t *testing.T, state *store.Store, entity string) []model.Eve
 	return found
 }
 
-// A failed pass commits nothing of its plan and logs one planning_error for
-// its cycle in either execution mode: Run once pauses, Continuous keeps
-// running and reports the failure in control. A failure is not an idle plan:
-// the idle streak stays as it was, and Continuous retries after the backoff
-// that streak already set.
 func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 	for _, mode := range []model.OperatingMode{model.OperatingModeRunOnce, model.OperatingModeContinuous} {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -590,7 +538,7 @@ func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 				t.Fatal(err)
 			}
 			failed := waitOnlyCycle(t, fixture.state)
-			app.wg.Wait() // Cycle status is persisted before control finalization finishes.
+			app.wg.Wait()
 			after := time.Now().Unix()
 			if failed.Status != model.CycleFailed || failed.Error == nil || !strings.Contains(*failed.Error, "invalid JSON") {
 				t.Fatalf("malformed discovery was accepted: %+v", failed)
@@ -634,7 +582,6 @@ func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
 	}
 }
 
-// allPlanningErrors returns every planning_error event, whatever its entity.
 func allPlanningErrors(t *testing.T, state *store.Store) []model.Event {
 	t.Helper()
 	events, err := state.Events(nil)
@@ -650,11 +597,6 @@ func allPlanningErrors(t *testing.T, state *store.Store) []model.Event {
 	return found
 }
 
-// A pass that graceful shutdown cuts short is recorded as restart recovery
-// records one a crash cut short: the cycle is interrupted, not failed, and
-// control is left for recovery with no error and no planning_error event.
-// Recovery then pauses a Run once whose plan never committed, and Continuous
-// plans again at once.
 func TestGracefulShutdownDuringPlanningRecordsInterruption(t *testing.T) {
 	for _, mode := range []string{"audit", "run once", "continuous"} {
 		t.Run(mode, func(t *testing.T) {
@@ -702,7 +644,6 @@ func TestGracefulShutdownDuringPlanningRecordsInterruption(t *testing.T) {
 			if cycle.Status != model.CycleInterrupted || cycle.Error == nil || *cycle.Error != interruptedPlanningMessage || cycle.CompletedAt == nil {
 				t.Fatalf("shutdown recorded the cut-short pass as %+v; want it interrupted", cycle)
 			}
-			// The cut-short turn is interrupted too, not a runner failure.
 			if len(cycle.Sessions) != 1 || cycle.Sessions[0].Status != model.SessionInterrupted {
 				t.Fatalf("shutdown recorded the cut-short turn as %+v; want one interrupted session", cycle.Sessions)
 			}
@@ -750,8 +691,6 @@ func TestGracefulShutdownDuringPlanningRecordsInterruption(t *testing.T) {
 	}
 }
 
-// An execution preflight that graceful shutdown cuts short leaves control as
-// a crash would: the Run once batch still drains and Continuous stays due.
 func TestGracefulShutdownDuringPreflightLeavesControl(t *testing.T) {
 	for _, mode := range []string{"run once", "continuous"} {
 		t.Run(mode, func(t *testing.T) {
@@ -800,8 +739,6 @@ func TestGracefulShutdownDuringPreflightLeavesControl(t *testing.T) {
 	}
 }
 
-// saveRediscoveryRequest saves a cancelled default-branch task whose operator
-// asked for a fresh assessment against current context.
 func saveRediscoveryRequest(t *testing.T, f *scriptedFixture) model.Task {
 	t.Helper()
 	task := queuedTask(f.cfg, model.ID(), f.cfg.DefaultBranch, "octomus/rediscovered")
@@ -813,8 +750,6 @@ func saveRediscoveryRequest(t *testing.T, f *scriptedFixture) model.Task {
 	return task
 }
 
-// seededRediscovery is the candidate an execution pass seeds for request, as
-// consolidation returns it with decision and reconsiders.
 func seededRediscovery(request model.Task, decision, reason string, reconsiders ...string) model.Proposal {
 	proposal := request.Proposal.Clone()
 	proposal.ID = "rediscover-" + request.ID
@@ -824,9 +759,6 @@ func seededRediscovery(request model.Task, decision, reason string, reconsiders 
 	return proposal
 }
 
-// rediscoveryPlan scripts a pass over one pending rediscovery request: both
-// adversaries assess the seeded candidate and the fixture proposal, and
-// consolidation returns proposals.
 func rediscoveryPlan(t *testing.T, f *scriptedFixture, request model.Task, proposals ...any) scriptedPlan {
 	t.Helper()
 	plan := completePlan(t, f)
@@ -841,7 +773,6 @@ func rediscoveryPlan(t *testing.T, f *scriptedFixture, request model.Task, propo
 	return plan
 }
 
-// runOncePlan starts a Run once batch and waits for its planning pass.
 func runOncePlan(t *testing.T, f *scriptedFixture) (*App, model.Cycle) {
 	t.Helper()
 	app := f.pausedApp(t)
@@ -852,14 +783,10 @@ func runOncePlan(t *testing.T, f *scriptedFixture) (*App, model.Cycle) {
 		t.Fatal(err)
 	}
 	cycle := waitOnlyCycle(t, f.state)
-	app.wg.Wait() // Cycle status is persisted before control finalization finishes.
+	app.wg.Wait()
 	return app, cycle
 }
 
-// An execution pass seeds each pending rediscovery request as a candidate
-// that every adversary assesses. Consolidation must decide the request in
-// exactly one returned proposal; otherwise the pass fails and the request
-// stays pending with no lineage recorded.
 func TestRediscoveryNeedsExactlyOneFreshDecision(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -897,9 +824,6 @@ func TestRediscoveryNeedsExactlyOneFreshDecision(t *testing.T) {
 	}
 }
 
-// Archiving a task with a pending rediscovery request withdraws the request,
-// as archiving removes the task from scheduling: later execution passes no
-// longer seed it, so they neither assess it nor fail for leaving it undecided.
 func TestArchivingWithdrawsARediscoveryRequest(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	request := saveRediscoveryRequest(t, fixture)
@@ -928,10 +852,6 @@ func TestArchivingWithdrawsARediscoveryRequest(t *testing.T) {
 	}
 }
 
-// The one decision on a rediscovery request resolves it: an accepted
-// candidate becomes a task that supersedes the cancelled one, a rejected one
-// records why the work is obsolete. Either way the request is no longer
-// pending.
 func TestRediscoveryDecisionResolvesTheRequest(t *testing.T) {
 	for _, decision := range []string{model.DecisionAccepted, model.DecisionRejected} {
 		t.Run(decision, func(t *testing.T) {
@@ -979,12 +899,8 @@ func TestRediscoveryDecisionResolvesTheRequest(t *testing.T) {
 	}
 }
 
-// Continuous planning backs off after consecutive idle plans: each idle plan
-// lengthens the streak and schedules the next cycle IdleDelay later, and a plan
-// that queues work ends the streak and returns to the ordinary interval.
 func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
-	// Three complete passes in one day.
 	fixture.configure(t, func(cfg *config.Config) { cfg.MaxSessionsPerDay = 3 * cfg.PlanningAdmissionsRequired() })
 	app := fixture.pausedApp(t)
 	if err := app.Resume(); err != nil {
@@ -997,7 +913,6 @@ func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Due now, as the backoff that the previous pass set has elapsed.
 		control.NextCycleAt = 0
 		if err := fixture.state.SaveControl(control); err != nil {
 			t.Fatal(err)
@@ -1024,7 +939,7 @@ func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
 		}) {
 			t.Fatalf("%s: planning pass did not finish", label)
 		}
-		app.wg.Wait() // Control finalization follows the cycle's terminal save.
+		app.wg.Wait()
 		control, err = app.Control()
 		if err != nil {
 			t.Fatal(err)
@@ -1048,8 +963,6 @@ func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
 		}
 	}
 
-	// A plan that queues work, here a new problem the recorded rejections do
-	// not cover, ends the streak.
 	guide := func(decision, reason string) map[string]any {
 		proposal := fixtureProposal(decision, reason)
 		proposal["id"], proposal["title"], proposal["problem_key"] = "d0-guide", "Document the feature contract", "document-feature-contract"
@@ -1091,7 +1004,7 @@ func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
 	if err != nil || len(tasks) != 0 {
 		t.Fatalf("incomplete consolidation leaked executable work: %+v, %v", tasks, err)
 	}
-	app.wg.Wait() // Cycle status is persisted before control finalization finishes.
+	app.wg.Wait()
 	control, err := app.Control()
 	if err != nil || control.Mode != model.OperatingModePaused || control.Error == nil || !strings.Contains(*control.Error, "omitted or invented") {
 		t.Fatalf("failed audit did not retain durable control evidence: %+v, %v", control, err)
@@ -1101,9 +1014,6 @@ func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
 	}
 }
 
-// Discovery refuses candidates that repeat an identity or leave one empty
-// before any adversarial review runs, so review and consolidation always
-// receive unique candidate identities.
 func TestDiscoveryRefusesDuplicateOrEmptyProposalIdentities(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1138,9 +1048,6 @@ func TestDiscoveryRefusesDuplicateOrEmptyProposalIdentities(t *testing.T) {
 	}
 }
 
-// Grounding answers with a structured envelope; every later stage receives
-// the summary text itself, not its escaped JSON. A blank summary fails the
-// pass before any discovery session is admitted.
 func TestPlanningStagesReceiveTheGroundingSummaryText(t *testing.T) {
 	t.Run("summary", func(t *testing.T) {
 		fixture := newScriptedPlanningFixture(t)
@@ -1177,7 +1084,7 @@ func TestPlanningStagesReceiveTheGroundingSummaryText(t *testing.T) {
 			t.Fatal(err)
 		}
 		cycle := waitCycle(t, fixture.state, cycleID)
-		app.wg.Wait() // Cycle status is persisted before control finalization finishes.
+		app.wg.Wait()
 		if cycle.Status != model.CycleFailed || cycle.Error == nil || *cycle.Error != "Grounding returned an empty context" {
 			got := "<nil>"
 			if cycle.Error != nil {
@@ -1193,8 +1100,6 @@ func TestPlanningStagesReceiveTheGroundingSummaryText(t *testing.T) {
 	})
 }
 
-// planningMutation is a scripted worker edit to a read-only role clone, and a
-// check that the preserved clone still shows it.
 type planningMutation struct {
 	effect    func(cwd string) error
 	preserved func(t *testing.T, workspace string)
@@ -1222,8 +1127,6 @@ func editedPlanningFile() planningMutation {
 	}
 }
 
-// committedPlanningChange leaves a clean tree at a new commit, so only the
-// revision check can catch it.
 func committedPlanningChange() planningMutation {
 	return planningMutation{
 		effect: func(cwd string) error {
@@ -1242,20 +1145,12 @@ func committedPlanningChange() planningMutation {
 	}
 }
 
-// TestPlanningRejectsAndPreservesAMutatedRoleWorkspace: a planning turn that
-// changes its role clone in any way (untracked file, tracked edit or new
-// commit) fails that role's session and the cycle, commits no work, and keeps
-// the mutated clone for inspection while successful clones are removed.
 func TestPlanningRejectsAndPreservesAMutatedRoleWorkspace(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		mutation planningMutation
-		// mutate attaches the effect to one reply of the stage under test.
-		mutate func(*scriptedPlan, func(string) error)
-		// inStage reports whether a session label belongs to that stage.
-		inStage func(label string) bool
-		// admissions is how many planning turns were admitted before the
-		// cycle failed, as a function of the discovery agent count.
+		name       string
+		mutation   planningMutation
+		mutate     func(*scriptedPlan, func(string) error)
+		inStage    func(label string) bool
 		admissions func(discovery uint64) uint64
 	}{
 		{
@@ -1352,8 +1247,6 @@ func TestPlanningRejectsAndPreservesAMutatedRoleWorkspace(t *testing.T) {
 
 func TestRemotePreflightDoesNotHoldControlLockAndRejectsChangedPolicy(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
-	// The held remote read outlives the Pause bound below, so a Pause that
-	// waited for it could not finish in time by the command timeout killing it.
 	fixture.configure(t, func(c *config.Config) { c.CommandTimeoutSeconds = 60 })
 	hold := filepath.Join(fixture.root, "reconcile-hold")
 	if err := os.WriteFile(hold, []byte("1"), 0o644); err != nil {
@@ -1402,11 +1295,6 @@ func TestRemotePreflightDoesNotHoldControlLockAndRejectsChangedPolicy(t *testing
 	}
 }
 
-// Remote observation owns ContextFingerprint and IdleStreak and may bring
-// NextCycleAt forward, always under the gate, so an observation that lands
-// during a planning preflight leaves it valid: the audit or execution pass
-// starts and keeps the observed fields. An operator-owned change (cycle
-// number, recorded error) still rejects the preflight.
 func TestPlanningPreflightSurvivesObservationButNotOperatorChanges(t *testing.T) {
 	observe := func(control *model.Control) {
 		control.ContextFingerprint = "observed-during-preflight"
@@ -1467,7 +1355,7 @@ func TestPlanningPreflightSurvivesObservationButNotOperatorChanges(t *testing.T)
 			if test.audit {
 				err = <-audit
 			}
-			app.wg.Wait() // The preflight, and any pass it started.
+			app.wg.Wait()
 
 			cycles, listErr := store.List[model.Cycle](fixture.state, "cycle")
 			if listErr != nil {
@@ -1564,7 +1452,6 @@ func TestPlanningAllowanceConsumedDuringPreflightUsesModeSemantics(t *testing.T)
 	}
 }
 
-// waitForFixtureFile waits for a fixture peer's barrier file.
 func waitForFixtureFile(t *testing.T, path, failure string) {
 	t.Helper()
 	if !testutil.WaitUntil(30*time.Second, func() bool {
@@ -1575,7 +1462,6 @@ func waitForFixtureFile(t *testing.T, path, failure string) {
 	}
 }
 
-// groundingCycle saves a running cycle for a direct grounding capture.
 func groundingCycle(t *testing.T, f *scriptedFixture, mode model.CycleMode) model.Cycle {
 	t.Helper()
 	cycle := model.Cycle{
@@ -1589,9 +1475,6 @@ func groundingCycle(t *testing.T, f *scriptedFixture, mode model.CycleMode) mode
 	return cycle
 }
 
-// An audit grounds while the service is paused. Its persisted inventory
-// supersedes an earlier refresh failure, but a paused service still gains no
-// dispatch authority from it.
 func TestPausedGroundingClearsEarlierRefreshFailure(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	app := fixture.pausedApp(t)
@@ -1616,14 +1499,10 @@ func TestPausedGroundingClearsEarlierRefreshFailure(t *testing.T) {
 	}
 }
 
-// Grounding observes open PRs as a refresh does, and its failure names the
-// observation that failed, as a refresh failure does.
 func TestGroundingNamesTheFailedPullRequestObservation(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	app := fixture.pausedApp(t)
 	cycle := groundingCycle(t, fixture, model.CycleModeAudit)
-	// The listing reports an open PR against another base repository, which
-	// the inventory refuses.
 	foreign := `[{"number": 9, "title": "Foreign", "body": "", "state": "open", "merged_at": null,
 		"head": {"ref": "feature", "sha": "abc", "repo": {"full_name": "external/project"}},
 		"base": {"ref": "main", "repo": {"full_name": "external/other"}},
@@ -1640,10 +1519,6 @@ func TestGroundingNamesTheFailedPullRequestObservation(t *testing.T) {
 	}
 }
 
-// A concurrent refresh whose fetch started after grounding's can persist a
-// newer inventory first. Grounding's older inventory is then superseded, not a
-// failure: planning continues, and neither the newer saved inventory nor the
-// observation that refresh authorized is replaced by the older one.
 func TestGroundingSupersededByANewerInventoryContinues(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
 	app := fixture.pausedApp(t)
@@ -1666,7 +1541,6 @@ func TestGroundingSupersededByANewerInventoryContinues(t *testing.T) {
 	if cycle.Grounding == nil || cycle.Grounding.Revision == "" {
 		t.Fatalf("grounding was not recorded: %+v", cycle.Grounding)
 	}
-	// Planning context stays consistent with the grounding it was built from.
 	if cycle.Grounding.PRCoverage.ObservedAt == nil || observed.ObservedAt != *cycle.Grounding.PRCoverage.ObservedAt || observed.ObservedAt == newer.ObservedAt {
 		t.Fatalf("grounding returned inventory observed at %s; grounding coverage %v", observed.ObservedAt, cycle.Grounding.PRCoverage.ObservedAt)
 	}

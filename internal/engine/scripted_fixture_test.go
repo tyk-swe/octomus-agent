@@ -1,10 +1,5 @@
 package engine
 
-// The scripted fixture runs the engine against real local Git and a scripted
-// runner adapter (package runnertest) instead of the Python Codex/OpenCode
-// peers. Replies are keyed by route, and every role has its own model, so a
-// route identifies the role that consumes a reply.
-
 import (
 	"encoding/json"
 	"os"
@@ -18,7 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// scriptedRoutes are the fixture's per-role routes. Every tier uses Executor.
 type scriptedRoutes struct {
 	Executor, Reviewer, Repair                config.Route
 	Orchestrator, Discovery, ProposalReviewer config.Route
@@ -28,9 +22,6 @@ func (r scriptedRoutes) all() []config.Route {
 	return []config.Route{r.Executor, r.Reviewer, r.Repair, r.Orchestrator, r.Discovery, r.ProposalReviewer}
 }
 
-// scriptedFixture embeds the shared local fixture, so the planning and
-// execution helpers (executionTask, saveExecutionTask, driveTask, waitCycle,
-// sessionByRole, remoteHead, publications) accept fixture.planningFixture.
 type scriptedFixture struct {
 	*planningFixture
 	script *runnertest.Script
@@ -41,19 +32,10 @@ type scriptedOption func(*scriptedSettings)
 
 type scriptedSettings struct{ githubIdentity bool }
 
-// withGitHubIdentity puts the git.py shim on PATH so origin reports as
-// github.com/fixture/project. Remote validation (doctor, planning preflight,
-// housekeeping, publication) needs it until the GitHub port (#8) lands;
-// without it Git runs unshimmed against the local bare remote.
 func withGitHubIdentity() scriptedOption {
 	return func(s *scriptedSettings) { s.githubIdentity = true }
 }
 
-// newScriptedFixture builds a bare remote plus a pushed clone, the gh peer on
-// PATH (the scheduler's PR refresh still shells out to gh) and saved settings
-// whose routes all resolve against fixture.script's catalog. The configured
-// runner binaries do not exist, so any accidental real connection fails. Git
-// is real and unshimmed unless withGitHubIdentity is given.
 func newScriptedFixture(t *testing.T, options ...scriptedOption) *scriptedFixture {
 	t.Helper()
 	settings := scriptedSettings{}
@@ -94,8 +76,6 @@ func newScriptedFixture(t *testing.T, options ...scriptedOption) *scriptedFixtur
 	}
 }
 
-// configure saves an adjusted copy of the fixture settings. Tasks snapshot the
-// configuration when built, so configure before executionTask.
 func (f *scriptedFixture) configure(t *testing.T, adjust func(*config.Config)) {
 	t.Helper()
 	cfg := f.cfg.Clone()
@@ -106,10 +86,6 @@ func (f *scriptedFixture) configure(t *testing.T, adjust func(*config.Config)) {
 	f.cfg = cfg
 }
 
-// pausedApp builds an app connected to the fixture's script without changing
-// the operating mode, with retention and observation housekeeping deferred,
-// and shuts it down when the test ends. Audits and single planning runs need
-// the service left paused.
 func (f *scriptedFixture) pausedApp(t *testing.T, options ...Option) *App {
 	t.Helper()
 	app := New(f.state, f.dataDir, append([]Option{WithRunnerConnector(f.script.Connector())}, options...)...)
@@ -118,7 +94,6 @@ func (f *scriptedFixture) pausedApp(t *testing.T, options ...Option) *App {
 	return app
 }
 
-// newApp is pausedApp resumed, so the scheduler picks up queued work.
 func (f *scriptedFixture) newApp(t *testing.T, options ...Option) *App {
 	t.Helper()
 	app := f.pausedApp(t, options...)
@@ -142,7 +117,6 @@ func assertNoOpenClients(t *testing.T, script *runnertest.Script) {
 	}
 }
 
-// mustJSON marshals a scripted structured answer.
 func mustJSON(t *testing.T, value any) string {
 	t.Helper()
 	data, err := json.Marshal(value)
@@ -152,22 +126,16 @@ func mustJSON(t *testing.T, value any) string {
 	return string(data)
 }
 
-// cleanReview is a structured reviewer answer with no findings.
 func cleanReview(summary string) string {
 	return `{"completed": true, "summary": "` + summary + `", "findings": []}`
 }
 
-// writeFile is a reply effect that writes one workspace file.
 func writeFile(name, content string) func(string) error {
 	return func(cwd string) error {
 		return os.WriteFile(filepath.Join(cwd, name), []byte(content), 0o644)
 	}
 }
 
-// TestScriptedFixtureDrivesTaskThroughRepairToPublication runs a task end to
-// end with no runner peer: the executor's edit fails verification after a
-// clean review, the repair fixes it, a fresh reviewer approves and the task
-// publishes.
 func TestScriptedFixtureDrivesTaskThroughRepairToPublication(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	fixture.configure(t, func(cfg *config.Config) {
@@ -231,10 +199,6 @@ func TestScriptedFixtureDrivesTaskThroughRepairToPublication(t *testing.T) {
 	}
 }
 
-// TestPublicationMetadataIsPublicOnly: the exact title and body delivered to
-// the GitHub peer are scrubbed of secret-shaped text — proposal fields, the
-// verification command description and the implementation summary alike —
-// while the durable task record keeps its canonical private values unchanged.
 func TestPublicationMetadataIsPublicOnly(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	fixture.configure(t, func(cfg *config.Config) {
@@ -252,9 +216,6 @@ func TestPublicationMetadataIsPublicOnly(t *testing.T) {
 	if saved.Status != model.StatusPublished || saved.OutputCommit == nil {
 		t.Fatalf("task did not publish: %+v", saved)
 	}
-	// Canonical task evidence is byte-for-byte unchanged: proposal fields,
-	// configured commands and the recorded verification command keep the
-	// private values the operator and runner actually used.
 	if saved.Proposal.Title != "Ship it "+secretToken || saved.Proposal.Problem != "Missing output; see "+secretToken {
 		t.Fatalf("canonical proposal was rewritten: %+v", saved.Proposal)
 	}
@@ -284,9 +245,6 @@ func TestPublicationMetadataIsPublicOnly(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestScriptedCatalogRejectsMissingRoute: route validation runs for real
-// against the scripted catalog, so a route absent from it blocks the task as
-// runner_unavailable before any admission, workspace or session.
 func TestScriptedCatalogRejectsMissingRoute(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	routes := fixture.routes

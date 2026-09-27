@@ -1,8 +1,3 @@
-// Package git runs Git and GitHub operations as argument vectors,
-// plus the publication safeguards that consume them. Every command goes through
-// process.RunMachine, so output bounds, UTF-8 validation, timeouts and
-// cancellation are the shared contract; no operation ever builds a shell
-// command line.
 package git
 
 import (
@@ -26,19 +21,14 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
-// blocked attaches a typed reason beneath a detailed message ("message:
-// reason"), so model.BlockedReasonFromError picks the reason.
 func blocked(reason model.BlockedReason, message string) error {
 	return fmt.Errorf("%s: %w", message, reason)
 }
 
-// reasoned places a typed reason between a detailed message and its cause
-// ("message: reason: cause"); both the reason and the cause stay in the chain.
 func reasoned(reason model.BlockedReason, message string, err error) error {
 	return fmt.Errorf("%s: %w: %w", message, reason, err)
 }
 
-// Git runs one git invocation as a machine capture; output is trimmed.
 func Git(ctx context.Context, c config.Config, cwd string, args []string) (string, error) {
 	out, err := process.RunMachine(ctx, "git", args, cwd, c.CommandTimeoutSeconds)
 	if err != nil {
@@ -47,23 +37,18 @@ func Git(ctx context.Context, c config.Config, cwd string, args []string) (strin
 	return strings.TrimSpace(out), nil
 }
 
-// gh runs one gh invocation in the configured repository checkout.
 func gh(ctx context.Context, c config.Config, args []string) (string, error) {
 	return process.RunMachine(ctx, "gh", args, c.Repository, c.CommandTimeoutSeconds)
 }
 
-// originURL returns the origin URL of a clone of the configured repository.
 func originURL(ctx context.Context, c config.Config, repo string) (string, error) {
 	return Git(ctx, c, repo, []string{"remote", "get-url", "origin"})
 }
 
-// head returns the commit a checkout currently has checked out.
 func head(ctx context.Context, c config.Config, path string) (string, error) {
 	return Git(ctx, c, path, []string{"rev-parse", "HEAD"})
 }
 
-// ghPages decodes a `gh api --paginate` response: one JSON document per page.
-// UseNumber preserves integer literals; non-integer values cannot be u64.
 func ghPages(out string, each func(page []map[string]any) error) error {
 	dec := json.NewDecoder(strings.NewReader(out))
 	dec.UseNumber()
@@ -85,7 +70,6 @@ func ghPages(out string, each func(page []map[string]any) error) error {
 	}
 }
 
-// field walks nested JSON objects; a miss or non-object yields nil.
 func field(p map[string]any, keys ...string) any {
 	var v any = p
 	for _, k := range keys {
@@ -98,13 +82,11 @@ func field(p map[string]any, keys ...string) any {
 	return v
 }
 
-// text returns the JSON string at keys, or "" for a miss or any other type.
 func text(p map[string]any, keys ...string) string {
 	s, _ := field(p, keys...).(string)
 	return s
 }
 
-// jnum accepts only non-negative integer literals.
 func jnum(v any) (uint64, bool) {
 	n, ok := v.(json.Number)
 	if !ok {
@@ -114,17 +96,11 @@ func jnum(v any) (uint64, bool) {
 	return u, err == nil
 }
 
-// ValidateRemote requires the configured checkout's origin to name the
-// configured GitHub repository over SSH or credential-free HTTPS, and gh to be
-// authenticated against github.com.
 func ValidateRemote(ctx context.Context, c config.Config) error {
 	_, err := validatedOrigin(ctx, c)
 	return err
 }
 
-// validatedOrigin performs ValidateRemote's checks and returns the exact origin
-// URL they accepted, so publication pushes to the URL that was validated
-// rather than one read again afterwards.
 func validatedOrigin(ctx context.Context, c config.Config) (string, error) {
 	remote, err := originURL(ctx, c, c.Repository)
 	if err != nil {
@@ -152,15 +128,11 @@ func validatedOrigin(ctx context.Context, c config.Config) (string, error) {
 	return remote, nil
 }
 
-// Fetch refreshes the configured checkout's view of origin.
 func Fetch(ctx context.Context, c config.Config) error {
 	_, err := Git(ctx, c, c.Repository, []string{"fetch", "--prune", "origin"})
 	return err
 }
 
-// RemoteRevision returns origin's head for branch, or nil when it is absent.
-// Only the exact ref counts: ls-remote patterns also match the tail of longer
-// ref names, so `refs/heads/a/refs/heads/main` answers a query for `main` too.
 func RemoteRevision(ctx context.Context, c config.Config, branch string) (*string, error) {
 	if !config.ValidBranch(branch) {
 		return nil, errors.New("Invalid branch")
@@ -172,7 +144,6 @@ func RemoteRevision(ctx context.Context, c config.Config, branch string) (*strin
 	if err != nil {
 		return nil, err
 	}
-	// Each line is `<oid>\t<ref>`.
 	for _, line := range strings.Split(out, "\n") {
 		if sha, ref, ok := strings.Cut(line, "\t"); ok && ref == want {
 			return &sha, nil
@@ -181,9 +152,6 @@ func RemoteRevision(ctx context.Context, c config.Config, branch string) (*strin
 	return nil, nil
 }
 
-// CloneAt creates an independent checkout at revision: no hardlinks, detached
-// HEAD, the trusted origin URL, a deterministic committer identity, and an
-// exclude rule that keeps application state out of generated commits.
 func CloneAt(ctx context.Context, c config.Config, path string, revision string) error {
 	if _, err := os.Stat(path); err == nil {
 		return errors.New("Workspace already exists; recovery must inspect it")
@@ -220,9 +188,6 @@ func CloneAt(ctx context.Context, c config.Config, path string, revision string)
 	return os.WriteFile(filepath.Join(path, ".git/info/exclude"), []byte("/.octomus/\n"), 0o666)
 }
 
-// Snapshot stages every workspace change, commits when anything changed, and
-// returns the resulting HEAD. The commit message is secret-scrubbed, as PR
-// metadata is, because it is published with the branch.
 func Snapshot(ctx context.Context, c config.Config, path string, message string) (string, error) {
 	if _, err := Git(ctx, c, path, []string{"add", "--all"}); err != nil {
 		return "", err
@@ -241,7 +206,6 @@ func Snapshot(ctx context.Context, c config.Config, path string, message string)
 	return head(ctx, c, path)
 }
 
-// clean reports whether the worktree has no pending changes.
 func clean(ctx context.Context, c config.Config, path string) (bool, error) {
 	out, err := Git(ctx, c, path, []string{"status", "--porcelain"})
 	if err != nil {
@@ -250,17 +214,12 @@ func clean(ctx context.Context, c config.Config, path string) (bool, error) {
 	return out == "", nil
 }
 
-// IsAncestor reports whether ancestor is an ancestor of descendant.
-// `merge-base --is-ancestor` reports a false predicate as exit 1; every other
-// nonzero status is a real command failure and propagates instead of reading
-// as false.
 func IsAncestor(ctx context.Context, c config.Config, cwd string, ancestor string, descendant string) (bool, error) {
 	return process.RunPredicate(ctx, "git",
 		[]string{"merge-base", "--is-ancestor", ancestor, descendant},
 		cwd, c.CommandTimeoutSeconds, []int{1})
 }
 
-// At reports whether the worktree is clean and HEAD is exactly revision.
 func At(ctx context.Context, c config.Config, path string, revision string) (bool, error) {
 	isClean, err := clean(ctx, c, path)
 	if err != nil || !isClean {
@@ -273,8 +232,6 @@ func At(ctx context.Context, c config.Config, path string, revision string) (boo
 	return actual == revision, nil
 }
 
-// OpenPrInventory reads every open pull request, paginating the API so older
-// open work is never quietly omitted.
 func OpenPrInventory(ctx context.Context, c config.Config) (model.OpenPrInventory, error) {
 	observedAt := model.Now()
 	out, err := gh(ctx, c, []string{
@@ -292,9 +249,6 @@ func OpenPrInventory(ctx context.Context, c config.Config) (model.OpenPrInventor
 	return inventory, nil
 }
 
-// ParseInventory decodes a paginated open-PR listing into a sorted, deduplicated
-// inventory, rejecting unknown states, missing identity, foreign base
-// repositories and conflicting duplicates.
 func ParseInventory(out string, c config.Config) (model.OpenPrInventory, error) {
 	prs := map[uint64]model.PullRequest{}
 	pages := 0
@@ -348,9 +302,6 @@ func ParseInventory(out string, c config.Config) (model.OpenPrInventory, error) 
 	}, nil
 }
 
-// OwnedPrDetails re-reads every owned inventory entry: an entry that changed
-// while the open inventory was being read fails rather than proceeding on
-// stale identity.
 func OwnedPrDetails(ctx context.Context, c config.Config, inventory model.OpenPrInventory) ([]model.PullRequest, error) {
 	prs := []model.PullRequest{}
 	for _, observed := range inventory.PRs {
@@ -369,7 +320,6 @@ func OwnedPrDetails(ctx context.Context, c config.Config, inventory model.OpenPr
 	return prs, nil
 }
 
-// PR reads one pull request by number.
 func PR(ctx context.Context, c config.Config, number uint64) (model.PullRequest, error) {
 	out, err := gh(ctx, c, []string{
 		"api", fmt.Sprintf("repos/%s/pulls/%d", c.GitHubRepo, number),
@@ -386,8 +336,6 @@ func PR(ctx context.Context, c config.Config, number uint64) (model.PullRequest,
 	return parsePR(p, c)
 }
 
-// prComments returns the bodies of a pull request's comments, paginated like
-// every other list read.
 func prComments(ctx context.Context, c config.Config, number uint64) ([]string, error) {
 	out, err := gh(ctx, c, []string{
 		"api", "--paginate",
@@ -406,19 +354,12 @@ func prComments(ctx context.Context, c config.Config, number uint64) ([]string, 
 	return bodies, err
 }
 
-// taskMarkerPrefix opens every task's publication marker: ownership needs any
-// task's marker, delivery identity the exact one from taskMarkerFor.
 const taskMarkerPrefix = "<!-- octomus:task:"
 
-// taskMarkerFor returns the exact publication marker for one task; delivery
-// identity, ownership and idempotency all depend on these bytes.
 func taskMarkerFor(taskID string) string {
 	return taskMarkerPrefix + taskID + " -->"
 }
 
-// TaskMarker reports whether the task's publication marker is attached to the
-// pull request: in the description when this task originated the request, or
-// in an append-only comment when it delivered a follow-up.
 func TaskMarker(ctx context.Context, c config.Config, taskID string, p model.PullRequest) (bool, error) {
 	marker := taskMarkerFor(taskID)
 	if strings.Contains(p.Body, marker) {
@@ -472,9 +413,6 @@ func parsePR(p map[string]any, c config.Config) (model.PullRequest, error) {
 	}, nil
 }
 
-// PublicationPR finds the pull request associated with a branch, if any,
-// including closed and merged requests. Multiple candidates are ambiguous and
-// must be reconciled before publication.
 func PublicationPR(ctx context.Context, c config.Config, branch string) (*model.PullRequest, error) {
 	owner, _, _ := strings.Cut(c.GitHubRepo, "/")
 	out, err := gh(ctx, c, []string{
@@ -510,10 +448,6 @@ func PublicationPR(ctx context.Context, c config.Config, branch string) (*model.
 	return &matches[0], nil
 }
 
-// ValidatePublication checks a delivered or reconciled pull request against the
-// task's recorded expectations. `marker` carries the caller's check of
-// TaskMarker: the marker may live in the description or in a follow-up comment,
-// which this synchronous check cannot fetch for itself.
 func ValidatePublication(task model.Task, p model.PullRequest, marker bool, reconcile bool) error {
 	c := task.Config
 	if !(config.EqualASCII(p.HeadRepository, c.GitHubRepo) &&
@@ -530,11 +464,6 @@ func ValidatePublication(task model.Task, p model.PullRequest, marker bool, reco
 	return nil
 }
 
-// Publish delivers a reviewed commit. Failures that already carry a typed
-// reason surface unchanged, with their own message; each reason's remedy is
-// defined by model.Task.AllowedActions. Untyped failures, where the remote
-// state is genuinely unknown, are reported as PublicationUncertain so
-// reconciliation preserves the output.
 func Publish(ctx context.Context, task model.Task) (model.PullRequest, error) {
 	pr, err := publishInner(ctx, task)
 	if err != nil {
@@ -546,8 +475,6 @@ func Publish(ctx context.Context, task model.Task) (model.PullRequest, error) {
 	return pr, nil
 }
 
-// latestVerification returns the most recent recorded result for command: the
-// only one that gates or describes publication.
 func latestVerification(task model.Task, command string) *model.Verification {
 	for i := len(task.Verification) - 1; i >= 0; i-- {
 		if task.Verification[i].Command == command {
@@ -557,13 +484,6 @@ func latestVerification(task model.Task, command string) *model.Verification {
 	return nil
 }
 
-// prBody builds the pull request text for a reviewed commit. A task that
-// already owns a pull request posts a follow-up comment rather than rewriting
-// the description, so earlier delivery notes and any maintainer conversation
-// are never replaced. The task marker makes that append idempotent: a
-// republication of the same task adds nothing. Verification lists one line per
-// configured command, from its latest result at the reviewed commit, so a
-// superseded run never contradicts the result that gated publication.
 func prBody(task model.Task, existing *model.PullRequest, commit string) string {
 	var verification []string
 	commands := task.ExecutionConfig().VerificationCommands
@@ -605,46 +525,25 @@ func prBody(task model.Task, existing *model.PullRequest, commit string) string 
 	return update
 }
 
-// Publication text must fit the remote's pull request fields without any
-// shortening: the task marker sits at the tail of the body, so a truncated
-// body would silently drop the identity reconciliation depends on. These
-// ceilings mirror GitHub's accepted title and body sizes.
 const (
 	maxPublicationTitleChars = 256
 	maxPublicationBodyChars  = 65536
 )
 
-// publicationMetadata is the public representation prepared for one delivery:
-// the title a new pull request is created with and the complete description
-// or append-only follow-up comment. Canonical task fields are never altered;
-// only the outgoing copies are scrubbed.
 type publicationMetadata struct {
 	title string
 	body  string
 }
 
-// preparePublication assembles and validates the public text for a delivery
-// that is about to write. Proposal text, command descriptions and session
-// summaries pass through the non-truncating secret scrubber — never the
-// bounded operator-message formatter, whose length cap could cut the trailing
-// marker — and the result is checked as a whole. Metadata that cannot satisfy
-// both the public-text policy and the task's delivery identity is refused
-// before any outbound write; refusal messages stay generic so the
-// operator-facing record never echoes the private text that was rejected.
 func preparePublication(task model.Task, existing *model.PullRequest, commit string) (publicationMetadata, error) {
 	refuse := func(message string) (publicationMetadata, error) {
 		return publicationMetadata{}, blocked(model.BlockedReasonWorkspaceInvalid, message)
 	}
 	title := redact.Secrets(task.Proposal.Title)
 	body := redact.Secrets(prBody(task, existing, commit))
-	// New PR titles are passed as process arguments, which cannot contain NUL;
-	// keep all public metadata free of it so refusal happens before branch push.
 	if strings.ContainsRune(title, '\x00') || strings.ContainsRune(body, '\x00') {
 		return refuse("Publication metadata contains an unsupported character")
 	}
-	// The title becomes a real title field only for a new pull request; on a
-	// follow-up it lives inside the comment body and is covered by the body
-	// checks instead.
 	if existing == nil {
 		if strings.TrimSpace(title) == "" {
 			return refuse("Publication title is empty after public-safe preparation")
@@ -666,15 +565,6 @@ func preparePublication(task model.Task, existing *model.PullRequest, commit str
 	return publicationMetadata{title: title, body: body}, nil
 }
 
-// updatePR attaches follow-up evidence to a pull request this task already
-// owns. The remote is re-read immediately before the comment: another writer
-// moving the head or closing the request between reconciliation and here means
-// the delivery no longer matches what was reviewed, so it is refused and the
-// retry reconciles against whatever is now there. The evidence itself is posted
-// as a comment rather than rewritten into the description — the body is shared,
-// maintainer-editable text with no conditional-replace API, so a check-then-
-// edit could silently drop a concurrent maintainer edit while a comment can
-// only ever append.
 func updatePR(ctx context.Context, c config.Config, task model.Task, p model.PullRequest, commit string, bodyPath string) (model.PullRequest, error) {
 	latest, err := PR(ctx, c, p.Number)
 	if err != nil {
@@ -702,18 +592,12 @@ func updatePR(ctx context.Context, c config.Config, task model.Task, p model.Pul
 	if err != nil {
 		return model.PullRequest{}, err
 	}
-	// The marker is attached by construction: it was either already present or
-	// posted by the comment above.
 	if err := ValidatePublication(task, published, true, false); err != nil {
 		return model.PullRequest{}, err
 	}
 	return published, nil
 }
 
-// createPR opens a new pull request and confirms what was actually created.
-// `gh` reports success as a URL, which is parsed rather than trusted: a URL on
-// another host, or naming another repository, means the request was not created
-// where this task believes it was.
 func createPR(ctx context.Context, c config.Config, task model.Task, title string, bodyPath string) (model.PullRequest, error) {
 	created, err := gh(ctx, c, []string{
 		"pr", "create",
@@ -742,10 +626,6 @@ func createPR(ctx context.Context, c config.Config, task model.Task, title strin
 	return published, nil
 }
 
-// parseCreatedPRURL reads the pull request number from the URL `gh pr create`
-// printed. Only an https github.com URL naming repo's pull path, with no query
-// or fragment, is accepted; anything else is a RemoteConflict, because the
-// request may exist somewhere this task does not know about.
 func parseCreatedPRURL(created string, repo string) (uint64, error) {
 	trimmed := strings.TrimSpace(created)
 	url, err := whatwg.Parse(trimmed)
@@ -753,7 +633,6 @@ func parseCreatedPRURL(created string, repo string) (uint64, error) {
 		return 0, reasoned(model.BlockedReasonRemoteConflict,
 			"PR creation returned no unambiguous URL; reconcile before retrying", err)
 	}
-	// Query and fragment components make a creation URL ambiguous.
 	if url.Scheme() != "https" || url.Hostname() != "github.com" ||
 		strings.ContainsAny(trimmed, "?#") {
 		return 0, blocked(model.BlockedReasonRemoteConflict,
@@ -834,8 +713,6 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 			return fail(err)
 		}
 		if err := ValidatePublication(task, *existing, marker, true); err == nil {
-			// Delivery already happened, even if a maintainer has since closed
-			// or merged the PR.
 			return *existing, nil
 		}
 		if !existing.OwnedOpen() || existing.Branch != task.Branch || existing.Base != c.DefaultBranch {
@@ -847,10 +724,6 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 				"Branch is already associated with another task"))
 		}
 	}
-	// The public representation is assembled and validated before the first
-	// new outbound write: a refused title or body never reaches the push below
-	// or the remote. Already-delivered reconciliation returned above, so this
-	// never gates the read-only path.
 	meta, err := preparePublication(task, existing, commit)
 	if err != nil {
 		return fail(err)
@@ -874,8 +747,6 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		} else if remote != nil {
 			return fail(model.BlockedReasonRemoteConflict)
 		}
-		// An exact lease protects the check/push race. The local ancestry must
-		// also be preserved.
 		ancestor, err := IsAncestor(ctx, c, path, task.SourceRevision, commit)
 		if err != nil {
 			return fail(err)
@@ -888,8 +759,7 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		if remote != nil {
 			expected = *remote
 		}
-		// Hooks, tag following and submodule recursion are pinned off so ambient
-		// operator configuration can never push anything but the owned branch.
+		// Hooks, tags and submodule recursion are pinned off so ambient configuration can never push anything but the owned branch.
 		if _, err := Git(ctx, c, path, []string{
 			"-c", "core.hooksPath=/dev/null",
 			"-c", "push.followTags=false",

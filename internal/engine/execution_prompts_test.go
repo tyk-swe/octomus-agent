@@ -1,10 +1,5 @@
 package engine
 
-// Task role prompts are a contract with the e2e runner fixtures, which match
-// their prefixes, and they carry required worker policy: review of the full
-// diff from the comparison base and no publication by the worker. These
-// golden tests pin every byte, so a wording change is a deliberate edit here.
-
 import (
 	"strings"
 	"testing"
@@ -13,8 +8,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// promptTask is a task whose saved text exercises the Rust Debug quoting:
-// quotes, a tab and a newline.
 func promptTask() (*model.Task, config.Config) {
 	task := &model.Task{
 		SourceRevision: "source-sha",
@@ -83,8 +76,6 @@ func TestRepairPromptIsByteStable(t *testing.T) {
 	if got != want {
 		t.Fatalf("repair prompt changed:\n got %q\nwant %q", got, want)
 	}
-	// A review with no findings (a clean review whose verification failed)
-	// still sends a JSON list, never null.
 	got, err = repairPrompt(task, cfg, model.Review{Completed: true, Summary: "Clean"}, []string{})
 	if err != nil {
 		t.Fatal(err)
@@ -94,9 +85,6 @@ func TestRepairPromptIsByteStable(t *testing.T) {
 	}
 }
 
-// TestTaskPromptsKeepFixturePrefixesAndPolicy names the parts of each prompt
-// other code and AGENTS.md depend on, so a golden update cannot silently drop
-// them.
 func TestTaskPromptsKeepFixturePrefixesAndPolicy(t *testing.T) {
 	task, cfg := promptTask()
 	repair, err := repairPrompt(task, cfg, model.Review{}, nil)

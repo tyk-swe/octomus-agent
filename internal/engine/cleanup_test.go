@@ -1,13 +1,5 @@
 package engine
 
-// Cleanup ownership regressions: managed-directory removal runs with the
-// scheduler gate released behind an exclusive in-memory (kind, id) claim, so
-// unrelated controls stay responsive while conflicting workspace users get an
-// explicit conflict. The injected removal seam makes the
-// admission → hold → release ordering deterministic; bounded waits are
-// deadlock detectors for controls that must complete, not timing
-// measurements. None of this is production latency evidence.
-
 import (
 	"context"
 	"errors"
@@ -30,10 +22,6 @@ import (
 
 const cleanupOldTimestamp = "2020-01-01T00:00:00Z"
 
-// removalBarrier is the WithWorkspaceRemoval seam used as a deterministic
-// hold: removing the blocked path signals entered, then finishes through the
-// real managed-directory checks once Release is called. Other paths delegate
-// immediately.
 type removalBarrier struct {
 	blocked     string
 	entered     chan struct{}
@@ -57,9 +45,6 @@ func (b *removalBarrier) remove(root, path string) error {
 	return workspace.RemoveOwnedDir(root, path)
 }
 
-// failOnceRemoval is a WithWorkspaceRemoval seam whose next removal of target
-// fails with message; every other removal goes through the real
-// managed-directory checks. Storing true in the returned flag re-arms it.
 func failOnceRemoval(target, message string) (Option, *atomic.Bool) {
 	fail := &atomic.Bool{}
 	fail.Store(true)
@@ -71,7 +56,6 @@ func failOnceRemoval(target, message string) (Option, *atomic.Bool) {
 	}), fail
 }
 
-// wait confirms removal of the blocked path was admitted and is in flight.
 func (b *removalBarrier) wait(t *testing.T) {
 	t.Helper()
 	select {
@@ -81,15 +65,10 @@ func (b *removalBarrier) wait(t *testing.T) {
 	}
 }
 
-// Release lets the held removal finish; idempotent so cleanup paths can call
-// it unconditionally.
 func (b *removalBarrier) Release() {
 	b.releaseOnce.Do(func() { close(b.release) })
 }
 
-// completesDuring runs an operation while a removal is held at the barrier
-// and returns its result. The bounded wait fails on the pre-fix behavior,
-// where removal held the scheduler gate and this call could never finish.
 func completesDuring(t *testing.T, label string, run func() error) error {
 	t.Helper()
 	done := make(chan error, 1)
@@ -103,9 +82,6 @@ func completesDuring(t *testing.T, label string, run func() error) error {
 	}
 }
 
-// discardableTask builds an archived, terminal task with an owned workspace
-// directory under dataDir/tasks/<id> — eligible for explicit discard and for
-// retention cleanup.
 func discardableTask(t *testing.T, cfg config.Config, dataDir, id string) model.Task {
 	t.Helper()
 	task := queuedTask(cfg, id, cfg.DefaultBranch, cfg.BranchPrefix+id)
@@ -122,8 +98,6 @@ func discardableTask(t *testing.T, cfg config.Config, dataDir, id string) model.
 	return task
 }
 
-// discardableCycle builds a completed, archived cycle with an owned planning
-// directory under dataDir/cycles/<id>.
 func discardableCycle(t *testing.T, dataDir string) model.Cycle {
 	t.Helper()
 	cycle := model.Cycle{
@@ -143,8 +117,6 @@ func discardableCycle(t *testing.T, dataDir string) model.Cycle {
 	return cycle
 }
 
-// discardableBaseline builds a terminal check with an owned clone under
-// dataDir/baselines/<id>.
 func discardableBaseline(t *testing.T, cfg config.Config, dataDir string) model.BaselineCheck {
 	t.Helper()
 	check := makeCheck(cfg, model.BaselineStatusFailed)
@@ -174,12 +146,6 @@ func cleanupEvents(t *testing.T, state *store.Store, id string) []model.Event {
 	return cleanup
 }
 
-// The ticket's core regression: an operator discard admitted and held inside
-// managed removal must not hold the scheduler gate. Pause completes through
-// the operator boundary, the claimed task conflicts every action including a
-// second discard, an unrelated discard proceeds independently, and a
-// concurrent lifecycle write survives finalization. On the pre-fix
-// gate-holding removal the pause wait deadlocks and fails.
 func TestDiscardReleasesTheGateAndClaimsTheWorkspace(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -206,8 +172,6 @@ func TestDiscardReleasesTheGateAndClaimsTheWorkspace(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("pause during held removal: %v", err)
 	}
-	// The claimed target conflicts every action — including a second
-	// cleanup — without waiting on the held removal.
 	for _, action := range []string{"discard", "archive", "cancel", "retry"} {
 		if err := app.TaskAction(context.Background(), task.ID, action); err == nil || !IsActionConflict(err) {
 			t.Fatalf("%s on a claimed task = %v; want a conflict", action, err)
@@ -216,9 +180,6 @@ func TestDiscardReleasesTheGateAndClaimsTheWorkspace(t *testing.T) {
 	if err := app.TaskAction(context.Background(), other.ID, "discard"); err != nil {
 		t.Fatalf("unrelated discard during held removal: %v", err)
 	}
-	// Unrelated lifecycle evidence landing mid-removal must survive
-	// finalization: the mark is applied to the current durable record, not a
-	// stale copy of it.
 	current, err := store.Get[model.Task](state, "task", task.ID)
 	if err != nil || current == nil {
 		t.Fatalf("reload task: %v", err)
@@ -254,10 +215,6 @@ func TestDiscardReleasesTheGateAndClaimsTheWorkspace(t *testing.T) {
 	}
 }
 
-// Retention removes task, cycle and baseline workspaces through the same
-// ownership contract: the gate is not held across deletion, a target claimed
-// by the running cleanup conflicts a duplicate operator discard, a concurrent
-// pass skips it silently, and every candidate still ends honestly marked.
 func TestRetentionCleansUpOffTheGateAndSkipsClaimedTargets(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -294,8 +251,6 @@ func TestRetentionCleansUpOffTheGateAndSkipsClaimedTargets(t *testing.T) {
 	}); err == nil || !IsActionConflict(err) {
 		t.Fatalf("discard of a retention-claimed task = %v; want a conflict", err)
 	}
-	// A second retention pass must not wait on the held target or report it as
-	// a cleanup failure; other candidates proceed independently.
 	if err := completesDuring(t, "concurrent retention", func() error { return app.retention(cfg) }); err != nil {
 		t.Fatalf("concurrent retention: %v", err)
 	}
@@ -332,10 +287,6 @@ func TestRetentionCleansUpOffTheGateAndSkipsClaimedTargets(t *testing.T) {
 	}
 }
 
-// A claimed cycle refuses a second cleanup and any other action while its
-// planning directory is held inside removal; controls stay responsive and the
-// in-flight discard remains tracked service work that Shutdown waits out and
-// lets finalize.
 func TestCycleDiscardClaimsConflictsAndShutdownWaits(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -361,8 +312,6 @@ func TestCycleDiscardClaimsConflictsAndShutdownWaits(t *testing.T) {
 		}
 	}
 
-	// The held discard is owned service work: shutdown cannot return while it
-	// is still inside removal, and it must finish finalizing afterwards.
 	shutdownDone := make(chan struct{})
 	go func() {
 		app.Shutdown()
@@ -394,11 +343,6 @@ func TestCycleDiscardClaimsConflictsAndShutdownWaits(t *testing.T) {
 	}
 }
 
-// Archive and discard each happen once. Repeating either, or archiving after
-// the discard, conflicts instead of rewriting the recorded lifecycle time or
-// adding another operator event, and a repeated discard never reaches
-// workspace removal. discardTask and discardCycle hold the same rule for every
-// caller, not only the operator controls.
 func TestLifecycleArchiveAndDiscardHappenOnce(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -493,10 +437,6 @@ func TestLifecycleArchiveAndDiscardHappenOnce(t *testing.T) {
 	}
 }
 
-// Baseline cleanup claims the check, dedupes a second cleanup instead of
-// waiting, keeps the terminal-check cancel refusal honest, and applies only
-// the cleanup fields to the current durable record so a write that lands
-// mid-removal survives.
 func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -526,8 +466,6 @@ func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *tes
 	if err := app.CancelBaseline(check.ID); err == nil || !IsActionConflict(err) {
 		t.Fatalf("cancel on a terminal claimed check = %v; want a conflict", err)
 	}
-	// A write landing mid-removal — e.g. the worker's last evidence — must
-	// survive finalization.
 	current, err := store.Get[model.BaselineCheck](state, "baseline", check.ID)
 	if err != nil || current == nil {
 		t.Fatalf("reload check: %v", err)
@@ -561,9 +499,6 @@ func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *tes
 	}
 }
 
-// A failed removal records a redacted cleanup error, never marks the check
-// removed, stays a cleanup candidate and retries cleanly once the removal
-// works.
 func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -617,9 +552,6 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 	}
 }
 
-// A failed operator discard reports the error without marking the record, and
-// the same failure through retention lands as a redacted cleanup event while
-// the record stays a candidate — a later pass completes it.
 func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -650,8 +582,6 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 		t.Fatal("failed discard leaked its claim")
 	}
 
-	// The same failure through retention records a redacted cleanup_error
-	// event and leaves the record a candidate.
 	fail.Store(true)
 	if err := app.retention(cfg); err != nil {
 		t.Fatalf("retention: %v", err)
@@ -684,12 +614,6 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 	}
 }
 
-// A cleanup that keeps failing the same way is one cleanup_error event, not
-// one per retention pass: a task, a cycle and a baseline whose identity is
-// permanently refused each report once across passes. A changed message is
-// reported at once, an unchanged one again after a day, and a pass that
-// finally discards the target writes nothing more and forgets the failure. An
-// operator discard, which retention never revisits, forgets it too.
 func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -787,10 +711,6 @@ func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
 	}
 }
 
-// Retention reads at most 100 candidates per pass, oldest first. More than
-// that many old tasks whose cleanup is permanently refused must not hide a
-// newer reclaimable one: the next pass resumes after the last candidate the
-// previous one visited, so the newer task is discarded on the second pass.
 func TestRetentionReachesCandidatesBehindAFullWindowOfFailures(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -838,16 +758,12 @@ func TestRetentionReachesCandidatesBehindAFullWindowOfFailures(t *testing.T) {
 	}
 }
 
-// An owner-path refusal is preserved end to end: the foreign directory is not
-// removed, the record is not marked, and the refusal is reported rather than
-// claimed as success.
 func TestDiscardRefusesAnUnownedPathWithoutMarking(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
 	task := discardableTask(t, cfg, dataDir, "unowned")
-	// The recorded workspace points outside the task's owned directory.
 	external := t.TempDir()
 	task.Workspace = filepath.Join(external, "workspace")
 	if err := os.MkdirAll(task.Workspace, 0o755); err != nil {
@@ -874,11 +790,6 @@ func TestDiscardRefusesAnUnownedPathWithoutMarking(t *testing.T) {
 	}
 }
 
-// A workspace removal that panics runs with the gate released; the operator
-// request that owns it is recovered per request by net/http. The gate must
-// come back balanced, so the request's own release neither deadlocks later
-// controls nor unlocks an unlocked gate, and the cleanup claim must be
-// released, so the next discard is not refused as already in progress.
 func TestWorkspaceRemovalPanicReleasesTheGateAndClaim(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -928,9 +839,6 @@ func TestWorkspaceRemovalPanicReleasesTheGateAndClaim(t *testing.T) {
 	}
 }
 
-// A claim excludes every workspace user, not only a second cleanup: retry,
-// cancel and reconcile conflict on claimed records, and execution admission
-// leaves a claimed queued task queued until the claim is released.
 func TestCleanupClaimConflictsTaskActionsAndExecutionAdmission(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -975,7 +883,6 @@ func TestCleanupClaimConflictsTaskActionsAndExecutionAdmission(t *testing.T) {
 			t.Fatalf("%s on a claimed task = %v; want the cleanup conflict", action, err)
 		}
 	}
-	// Reconcile is eligible on this record, so the claim itself is the refusal.
 	if err := app.TaskAction(context.Background(), reconcilable.ID, "reconcile"); err == nil ||
 		!IsActionConflict(err) || !strings.Contains(err.Error(), "cleanup") {
 		t.Fatalf("reconcile on a claimed task = %v; want the cleanup conflict", err)
@@ -1012,9 +919,6 @@ func TestCleanupClaimConflictsTaskActionsAndExecutionAdmission(t *testing.T) {
 	}
 }
 
-// A removal abandoned mid-delete — the durable state a crash leaves — is not
-// marked, holds no claim across a restart, and the restarted service finishes
-// the partial tree through the normal cleanup path.
 func TestInterruptedCleanupLeavesNoClaimAndRetriesAfterRestart(t *testing.T) {
 	state := testStore(t)
 	dataDir := t.TempDir()
@@ -1030,7 +934,6 @@ func TestInterruptedCleanupLeavesNoClaimAndRetriesAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := filepath.Join(dataDir, "tasks", task.ID)
-	// The interrupted removal deleted part of the tree before dying.
 	first := New(state, dataDir, WithWorkspaceRemoval(func(root, path string) error {
 		if path == owner {
 			if err := os.Remove(filepath.Join(task.Workspace, "evidence.txt")); err != nil {
@@ -1052,8 +955,6 @@ func TestInterruptedCleanupLeavesNoClaimAndRetriesAfterRestart(t *testing.T) {
 	}
 	first.Shutdown()
 
-	// The restarted service inherits no claim and no false completion; the
-	// next cleanup pass finishes the partial tree honestly.
 	restarted := New(state, dataDir)
 	t.Cleanup(restarted.Shutdown)
 	if err := restarted.retention(cfg); err != nil {
@@ -1075,11 +976,6 @@ func TestInterruptedCleanupLeavesNoClaimAndRetriesAfterRestart(t *testing.T) {
 	}
 }
 
-// A housekeeping pass still running at shutdown stops at its next step
-// boundary: the storage walk and remote observation that remain are obsolete,
-// and their cancellation is not a housekeeping failure for the event log. The
-// removal barrier holds retention until Shutdown has cancelled the service,
-// so the order is deterministic.
 func TestHousekeepingShutdownRecordsNoCancellationError(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	cycle := discardableCycle(t, fixture.dataDir)
@@ -1088,7 +984,6 @@ func TestHousekeepingShutdownRecordsNoCancellationError(t *testing.T) {
 	}
 	barrier := newRemovalBarrier(t, filepath.Join(fixture.dataDir, "cycles", cycle.ID))
 	app := New(fixture.state, fixture.dataDir, WithWorkspaceRemoval(barrier.remove))
-	// Retention and observation are both due on the first tick.
 	if err := app.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -1115,7 +1010,6 @@ func TestHousekeepingShutdownRecordsNoCancellationError(t *testing.T) {
 			t.Fatalf("shutdown recorded a housekeeping failure: %+v", event)
 		}
 	}
-	// The removal already in flight still finalizes its record.
 	saved, err := store.Get[model.Cycle](fixture.state, "cycle", cycle.ID)
 	if err != nil || saved == nil || saved.Lifecycle.DiscardedAt == nil {
 		t.Fatalf("held retention cleanup did not finalize: %+v, %v", saved, err)
@@ -1125,10 +1019,6 @@ func TestHousekeepingShutdownRecordsNoCancellationError(t *testing.T) {
 	}
 }
 
-// Retention reads its candidate list without the gate. A record the operator
-// discards after that read, while retention is still busy with an earlier
-// candidate, is skipped on retention's gated re-read: its discarded_at keeps
-// the operator's time and no cleanup failure is reported.
 func TestRetentionSkipsRecordsDiscardedDuringThePass(t *testing.T) {
 	for _, kind := range []string{"task", "cycle"} {
 		t.Run(kind, func(t *testing.T) {
@@ -1207,7 +1097,6 @@ func TestRetentionSkipsRecordsDiscardedDuringThePass(t *testing.T) {
 	}
 }
 
-// waitHousekeeping waits for the running housekeeping pass to finish.
 func waitHousekeeping(t *testing.T, app *App) {
 	t.Helper()
 	if !testutil.WaitUntil(30*time.Second, func() bool {
@@ -1219,19 +1108,13 @@ func waitHousekeeping(t *testing.T, app *App) {
 	}
 }
 
-// Retention, the storage walk and the remote observation are independent
-// housekeeping steps: a failed retention is reported, and the storage
-// measurement and the observation due in the same pass still run.
 func TestHousekeepingContinuesPastAFailedRetention(t *testing.T) {
 	fixture := newPlanningFixture(t)
-	// A finished baseline record that is not a valid check fails retention's
-	// candidate read on every pass.
 	if err := fixture.state.Put("baseline", "unreadable", map[string]any{"status": "failed", "workspace_removed": false}); err != nil {
 		t.Fatal(err)
 	}
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
-	// Retention and observation are both due on the first tick.
 	if err := app.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -1259,16 +1142,12 @@ func TestHousekeepingContinuesPastAFailedRetention(t *testing.T) {
 	}
 }
 
-// housekeepingTimers reads when retention and observation last started.
 func housekeepingTimers(app *App) (retention, observe time.Time) {
 	app.runtimeMu.Lock()
 	defer app.runtimeMu.Unlock()
 	return app.runtime.lastRetention, app.runtime.lastObserve
 }
 
-// Retention (with the storage walk) runs every 15 minutes and the remote
-// observation every 5, each only when due: a pass started for one step leaves
-// the other step, and its timer, alone.
 func TestHousekeepingRunsOnlyTheDueSteps(t *testing.T) {
 	for _, due := range []string{"observation", "retention"} {
 		t.Run(due, func(t *testing.T) {
@@ -1279,7 +1158,6 @@ func TestHousekeepingRunsOnlyTheDueSteps(t *testing.T) {
 			}
 			app := New(fixture.state, fixture.dataDir)
 			t.Cleanup(app.Shutdown)
-			// The step that is not due ran moments ago.
 			recent := time.Now().Add(-time.Minute)
 			app.runtimeMu.Lock()
 			if due == "observation" {
@@ -1323,9 +1201,6 @@ func TestHousekeepingRunsOnlyTheDueSteps(t *testing.T) {
 	}
 }
 
-// Only one housekeeping pass runs at a time: while a pass is still working,
-// a Tick for which both steps are due again starts nothing and leaves their
-// timers alone. The next Tick after the pass ends starts the next one.
 func TestHousekeepingRunsOneJobAtATime(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	cycle := discardableCycle(t, fixture.dataDir)
@@ -1334,14 +1209,10 @@ func TestHousekeepingRunsOneJobAtATime(t *testing.T) {
 	}
 	barrier := newRemovalBarrier(t, filepath.Join(fixture.dataDir, "cycles", cycle.ID))
 	app := New(fixture.state, fixture.dataDir, WithWorkspaceRemoval(barrier.remove))
-	// Shutdown waits for the held pass, so a failure before the release below
-	// must release it first rather than hang.
 	t.Cleanup(func() {
 		barrier.Release()
 		app.Shutdown()
 	})
-	// Retention and observation are both due on the first tick; retention then
-	// holds the pass inside the cycle's removal.
 	if err := app.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -1367,10 +1238,6 @@ func TestHousekeepingRunsOneJobAtATime(t *testing.T) {
 	waitHousekeeping(t, app)
 }
 
-// Housekeeping's storage pass reports each runner transcript directory as
-// measured, unavailable (missing or not a directory) or unconfigured, and the
-// total as measured only when every runner was, partial when some were, and
-// unavailable when none was: an empty directory is measured, not missing.
 func TestRunnerStorageDistinguishesUnavailableFromEmpty(t *testing.T) {
 	state := testStore(t)
 	app := New(state, t.TempDir())
@@ -1393,7 +1260,6 @@ func TestRunnerStorageDistinguishesUnavailableFromEmpty(t *testing.T) {
 		TaskBytes         uint64      `json:"task_bytes"`
 		PlanningBytes     uint64      `json:"planning_bytes"`
 	}
-	// The dashboard reads the saved summary under exactly these keys.
 	const message = `"message":"Runner storage reported separately. Application admission measures the data directory."`
 	for _, test := range []struct {
 		name       string

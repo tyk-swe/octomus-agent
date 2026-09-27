@@ -1,10 +1,5 @@
 package engine
 
-// Scheduler ticks and task completion: a tick after shutdown changes nothing,
-// a finished task's context is cancelled, Run once admits work whose
-// dependency was published earlier, and a planning preflight refuses a runner
-// without authentication before any side effect.
-
 import (
 	"context"
 	"errors"

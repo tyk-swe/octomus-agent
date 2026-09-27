@@ -8,24 +8,15 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// Every scheduler pause follows the operator pause's contract: the
-// process-local PR observation stops authorizing or reporting capacity, and a
-// refresh in flight is cancelled, so its result cannot authorize new-PR work
-// after a resume.
 func TestSchedulerPausesInvalidatePrObservations(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		phase model.BatchPhase
-		// failure is the error the pass fails with, which Run hands to fail.
+		name    string
+		phase   model.BatchPhase
 		failure string
 		event   string
 	}{
-		// An executing batch with no pending members finishes the run.
 		{name: "run once completes", phase: model.BatchPhaseExecuting, event: "run_complete"},
-		// A draining batch plans next; its preflight fails on the fixture
-		// checkout, which has no origin.
 		{name: "run once preflight fails", phase: model.BatchPhaseDraining, event: "planning_error"},
-		// A run once without its durable batch fails the pass itself.
 		{name: "scheduling pass fails", failure: "Run once is missing its durable batch", event: "error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,11 +50,11 @@ func TestSchedulerPausesInvalidatePrObservations(t *testing.T) {
 				if err == nil || err.Error() != tc.failure {
 					t.Fatalf("pass error = %v; want %q", err, tc.failure)
 				}
-				app.fail(err) // As Run does with a failed pass.
+				app.fail(err)
 			case err != nil:
 				t.Fatal(err)
 			}
-			app.wg.Wait() // The preflight pauses from its own goroutine.
+			app.wg.Wait()
 
 			paused, err := app.Control()
 			if err != nil || paused.Mode != model.OperatingModePaused || !paused.Paused || paused.Batch != nil {

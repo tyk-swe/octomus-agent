@@ -22,24 +22,10 @@ import (
 )
 
 const (
-	// retentionInterval and observeInterval pace the housekeeping passes.
-	retentionInterval = 15 * time.Minute
-	observeInterval   = 5 * time.Minute
-	// observationLifetime is how long a remote observation (open-PR inventory
-	// or default-branch revision) stays fresh for the dashboard. Each is
-	// stamped only after its pass's earlier steps (retention, the storage walk,
-	// the PR refresh), so a lifetime equal to observeInterval let a healthy
-	// service flip to stale while the next, slower pass was still running.
-	// Dispatch authority is separate and shorter (prAdmissionLifetime).
-	observationLifetime = 2 * observeInterval
-	// maxRetainDays is the configured retain_completed_days maximum; retention
-	// clamps to it so an unvalidated value cannot overflow the cutoff duration.
-	maxRetainDays = 36500
-	// cleanupReportInterval is how long retention stays quiet about a target
-	// whose cleanup keeps failing with the same message. Some refusals are
-	// permanent (a symlinked data directory, a workspace outside the task's
-	// owned directory); an event every pass would crowd real history out of
-	// the bounded event log.
+	retentionInterval     = 15 * time.Minute
+	observeInterval       = 5 * time.Minute
+	observationLifetime   = 2 * observeInterval
+	maxRetainDays         = 36500
 	cleanupReportInterval = 24 * time.Hour
 )
 
@@ -51,14 +37,8 @@ type storageUsage struct {
 	RunnerTranscripts runnerTranscripts `json:"runner_transcripts"`
 }
 
-// runnerStorageMessage tells the operator that runner transcript storage is
-// informational: storage admission measures only the data directory.
 const runnerStorageMessage = "Runner storage reported separately. Application admission measures the data directory."
 
-// runnerTranscripts is the dashboard's runner transcript storage summary.
-// Bytes totals the measured runners and is null when none was measured.
-// Fields are declared in key order, so the saved JSON keeps the sorted key
-// order it has always had.
 type runnerTranscripts struct {
 	Bytes   *uint64                  `json:"bytes"`
 	Message string                   `json:"message"`
@@ -66,15 +46,11 @@ type runnerTranscripts struct {
 	Status  string                   `json:"status"`
 }
 
-// runnerStorage is one runner's transcript storage: Bytes is set only when
-// Status is "measured".
 type runnerStorage struct {
 	Bytes  *uint64 `json:"bytes"`
 	Status string  `json:"status"`
 }
 
-// maybeStartHousekeeping may be called while gate is held. It only starts an
-// owned background job; all filesystem and remote work happens after return.
 func (a *App) maybeStartHousekeeping(cfg config.Config) {
 	now := time.Now()
 	a.runtimeMu.Lock()
@@ -104,11 +80,6 @@ func (a *App) maybeStartHousekeeping(cfg config.Config) {
 			a.runtime.housekeeping = false
 			a.runtimeMu.Unlock()
 		}()
-		// Retention, the storage walk and the remote observation are
-		// independent: a failed step is reported and the later steps still
-		// run. Once the service is stopping, the remaining steps are obsolete:
-		// the pass ends at the next step boundary, and an interrupted step's
-		// cancellation is not a housekeeping failure.
 		report := func(err error) {
 			if err != nil && a.ctx.Err() == nil {
 				_ = a.Store.Event("system", "housekeeping_error", redact.Error(err))
@@ -148,8 +119,6 @@ func (a *App) retention(cfg config.Config) error {
 			return nil
 		}
 		a.advanceRetentionCursor(cleanupBaseline, check.ID)
-		// The gate covers only the eligibility re-read; removeBaselineWorkspace
-		// claims the check and removes its clone without the scheduler gate.
 		a.gate.Lock()
 		current, loadErr := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
 		terminal := current != nil && current.Status != model.BaselineStatusRunning
@@ -179,8 +148,6 @@ func (a *App) retention(cfg config.Config) error {
 			a.gate.Lock()
 			err := a.retainCandidateLocked(kind, id)
 			a.gate.Unlock()
-			// A conflict means another cleanup already owns this target —
-			// success in progress, not a cleanup failure to report.
 			if err == nil {
 				a.clearCleanupReport(kind, id)
 			} else if !IsActionConflict(err) {
@@ -193,33 +160,23 @@ func (a *App) retention(cfg config.Config) error {
 	return nil
 }
 
-// retentionCursor returns the candidate of kind that retention visited last;
-// the next candidate window starts after it and wraps around to the oldest.
 func (a *App) retentionCursor(kind cleanupKind) string {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	return a.runtime.retentionCursors[kind]
 }
 
-// advanceRetentionCursor records id as the candidate of kind that retention
-// visited last.
 func (a *App) advanceRetentionCursor(kind cleanupKind, id string) {
 	a.runtimeMu.Lock()
 	a.runtime.retentionCursors[kind] = id
 	a.runtimeMu.Unlock()
 }
 
-// cleanupReport is the last cleanup failure retention reported for a target:
-// its redacted message and when the event was written.
 type cleanupReport struct {
 	message string
 	at      time.Time
 }
 
-// reportCleanupFailure writes a cleanup_error event for a retention target
-// unless the same message was reported for it within cleanupReportInterval.
-// A changed message is reported at once. The memory is per process, so a
-// restart reports a lasting failure once more.
 func (a *App) reportCleanupFailure(kind cleanupKind, id string, err error) error {
 	message := redact.Error(err)
 	key := cleanupKey{kind: kind, id: id}
@@ -233,27 +190,18 @@ func (a *App) reportCleanupFailure(kind cleanupKind, id string, err error) error
 	a.runtime.cleanupReports[key] = cleanupReport{message: message, at: now}
 	a.runtimeMu.Unlock()
 	if eventErr := a.Store.Event(id, "cleanup_error", message); eventErr != nil {
-		// Nothing was recorded, so the next pass reports it again.
 		a.clearCleanupReport(kind, id)
 		return eventErr
 	}
 	return nil
 }
 
-// clearCleanupReport forgets a target's reported failure once a retention
-// pass meets it without one, so a later failure is reported at once, and once
-// any caller discards it, since retention never visits a discarded record
-// again.
 func (a *App) clearCleanupReport(kind cleanupKind, id string) {
 	a.runtimeMu.Lock()
 	delete(a.runtime.cleanupReports, cleanupKey{kind: kind, id: id})
 	a.runtimeMu.Unlock()
 }
 
-// retainCandidateLocked discards one task or cycle retention candidate if it
-// is still eligible. The candidate list was read without the gate: the re-read
-// under it skips a record the operator discarded meanwhile, so its
-// discarded_at is never rewritten. Callers hold the gate.
 func (a *App) retainCandidateLocked(kind cleanupKind, id string) error {
 	if kind == cleanupTask {
 		task, err := store.Get[model.Task](a.Store, "task", id)
@@ -275,8 +223,6 @@ func (a *App) retainCandidateLocked(kind cleanupKind, id string) error {
 	return a.discardCycle(cycle)
 }
 
-// cleanupKind names the durable entity kind a cleanup claim owns. Each kind
-// maps to one managed root, so the kind is part of the ownership unit.
 type cleanupKind string
 
 const (
@@ -285,21 +231,11 @@ const (
 	cleanupBaseline cleanupKind = "baseline"
 )
 
-// cleanupKey identifies one managed-directory cleanup claim by durable entity
-// kind and ID — each kind owns a distinct root, so the pair is the honest
-// ownership unit (a path alone cannot distinguish a task from a cycle).
 type cleanupKey struct {
 	kind cleanupKind
 	id   string
 }
 
-// claimCleanup takes exclusive cleanup ownership of (kind, id) and reports
-// whether it was free. Callers claim while the scheduler gate is held so
-// eligibility and ownership are one atomic admission — except
-// removeBaselineWorkspace, which claims first because its callers already
-// serialized eligibility: retention re-reads the record under the gate and the
-// finished check's worker owns its record. The map itself sits under
-// runtimeMu.
 func (a *App) claimCleanup(kind cleanupKind, id string) bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
@@ -311,9 +247,6 @@ func (a *App) claimCleanup(kind cleanupKind, id string) bool {
 	return true
 }
 
-// cleanupClaimed reports whether (kind, id) is owned by an in-flight cleanup.
-// Callers hold the scheduler gate; a claimed kind may be working gate-free
-// under the baseline entry point (see claimCleanup).
 func (a *App) cleanupClaimed(kind cleanupKind, id string) bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
@@ -321,22 +254,12 @@ func (a *App) cleanupClaimed(kind cleanupKind, id string) bool {
 	return owned
 }
 
-// releaseCleanup drops the claim. Releasing under the gate hold that wrote
-// the final durable state leaves no gap between "removal finished" and
-// "record marked" that a conflicting action could slip through.
 func (a *App) releaseCleanup(kind cleanupKind, id string) {
 	a.runtimeMu.Lock()
 	delete(a.runtime.cleanups, cleanupKey{kind: kind, id: id})
 	a.runtimeMu.Unlock()
 }
 
-// discardTask removes only the task's owned direct-child directory and marks
-// the durable record after successful removal. Callers hold a.gate and get it
-// back held: eligibility and the cleanup claim are checked under the gate,
-// the recursive deletion runs with it released so unrelated controls stay
-// responsive, and finalization re-reads the durable record so only the
-// cleanup-owned field changes. A record already discarded conflicts, so its
-// discarded_at is written once.
 func (a *App) discardTask(task *model.Task) error {
 	if task.Status.Active() || task.Status == model.StatusQueued {
 		return errors.New("Active or queued workspaces cannot be discarded")
@@ -355,8 +278,6 @@ func (a *App) discardTask(task *model.Task) error {
 	if !a.claimCleanup(cleanupTask, task.ID) {
 		return conflictError("Workspace cleanup is already in progress for this task")
 	}
-	// Released on every exit, including removal failure and finalization
-	// error, so a claim can never strand the record.
 	defer a.releaseCleanup(cleanupTask, task.ID)
 	if owner != "" {
 		var removeErr error
@@ -372,8 +293,6 @@ func (a *App) discardTask(task *model.Task) error {
 	if current == nil {
 		return nil
 	}
-	// A record that resumed work while the gate was released is not marked;
-	// the claim normally prevents this, so treat it as an operator conflict.
 	if current.Status.Active() || current.Status == model.StatusQueued {
 		return conflictError("Task resumed work during workspace cleanup; inspect it before discarding")
 	}
@@ -387,10 +306,6 @@ func (a *App) discardTask(task *model.Task) error {
 	return nil
 }
 
-// discardCycle removes a UUID-named planning directory and records disposal,
-// under the same gate contract as discardTask: callers hold a.gate and the
-// filesystem removal runs with it released. A record already discarded
-// conflicts, so its discarded_at is written once.
 func (a *App) discardCycle(cycle *model.Cycle) error {
 	if cycle.Status == model.CycleRunning {
 		return errors.New("Running planning work cannot be discarded")
@@ -481,10 +396,6 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if err := gitops.ValidateRemote(ctx, cfg); err != nil {
 		return err
 	}
-	// A superseded refresh means a concurrent one saved a newer complete
-	// inventory first; the observation continues with that saved inventory.
-	// A PR policy saved while the refresh ran makes the whole observation
-	// obsolete, as a changed remote does at its commit below.
 	if err := a.refreshPRs(ctx, cfg); errors.Is(err, errPrPolicyChanged) {
 		return nil
 	} else if err != nil && !errors.Is(err, errPrInventorySuperseded) {
@@ -546,8 +457,6 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 		revisionValue = *revision
 	}
 	fingerprint := contextFingerprint(revisionValue, inventory.PRs)
-	// One gate section commits the whole observation. A configuration that no
-	// longer describes the observed remote makes it obsolete, not failed.
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	live, err := a.Config()
@@ -575,9 +484,6 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	return a.Store.SaveControl(control)
 }
 
-// applyContextFingerprint records the observed remote context. A change from
-// the previously observed context ends the idle streak and pulls a backed-off
-// next cycle forward to the ordinary interval from now.
 func applyContextFingerprint(control *model.Control, fingerprint string, now time.Time, interval uint64) {
 	if control.ContextFingerprint != "" && control.ContextFingerprint != fingerprint {
 		if control.IdleStreak > 1 {

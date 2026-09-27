@@ -1,9 +1,5 @@
 package engine
 
-// Execution and publication lifecycle tests against deterministic local
-// fixture peers: real local Git, a Python app-server peer, and a Python GitHub
-// peer. No network requests or model calls.
-
 import (
 	"context"
 	"encoding/json"
@@ -24,8 +20,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-// newExecutionFixture mirrors newPlanningFixture but places the data directory
-// at .octomus so the fixture's task-workspace fault injection applies.
 func newExecutionFixture(t *testing.T) *planningFixture {
 	t.Helper()
 	fixture := newPlanningFixture(t)
@@ -62,8 +56,6 @@ func saveExecutionTask(t *testing.T, fixture *planningFixture, task model.Task) 
 	}
 }
 
-// driveTask ticks the scheduler until the durable task reaches a terminal or
-// blocked status, then returns the final record.
 func driveTask(t *testing.T, fixture *planningFixture, app *App, taskID string) model.Task {
 	t.Helper()
 	task, err := driveTaskResult(fixture, app, taskID)
@@ -160,15 +152,12 @@ func TestExecutionDeliversFullLifecycle(t *testing.T) {
 			t.Fatalf("verification evidence not bound to output commit: %+v", v)
 		}
 	}
-	// The reviewed commit, verified commit, output checkpoint and delivered PR
-	// head must all agree.
 	if saved.Reviews[2].Revision != *saved.OutputCommit {
 		t.Fatalf("clean review revision %s != output checkpoint %s", saved.Reviews[2].Revision, *saved.OutputCommit)
 	}
 	if saved.Error != nil || saved.BlockedReason != nil {
 		t.Fatalf("published task retained failure evidence: %+v", saved)
 	}
-	// Remote branch holds the output commit and the PR is open with the marker.
 	remote := remoteHead(t, fixture, saved.Branch)
 	if remote != *saved.OutputCommit {
 		t.Fatalf("remote branch = %s, want output %s", remote, *saved.OutputCommit)
@@ -189,9 +178,6 @@ func TestExecutionDeliversFullLifecycle(t *testing.T) {
 	}
 }
 
-// verificationFixture builds a real workspace at one commit with a tracked
-// impl.txt, then runs verifyRevision against it — the F1/F6 review-findings
-// regression setup.
 func verificationFixture(t *testing.T, commands []string) (*App, model.Task, string) {
 	t.Helper()
 	fixture := newExecutionFixture(t)
@@ -221,9 +207,6 @@ func verificationFixture(t *testing.T, commands []string) (*App, model.Task, str
 	return app, task, revision
 }
 
-// F1: a verification command that changes a tracked file or moves HEAD is the
-// run's single recorded failure, naming the command and the mutation; later
-// commands, including one that would restore the file, never run.
 func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 	for _, commands := range [][]string{
 		{"printf 1 > impl.txt", "test \"$(cat impl.txt)\" = 1", "git checkout -- impl.txt"},
@@ -247,9 +230,6 @@ func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 	}
 }
 
-// Cancelling verification mid-command stops the run with the shared
-// process.ErrCancelled sentinel rather than a look-alike error, and records no
-// evidence for the interrupted command or the ones after it.
 func TestVerificationCancelledMidCommandReturnsTheCancellationSentinel(t *testing.T) {
 	started := filepath.Join(t.TempDir(), "started")
 	app, task, revision := verificationFixture(t, []string{"touch '" + started + "' && sleep 30", "true"})
@@ -280,12 +260,7 @@ func TestVerificationCancelledMidCommandReturnsTheCancellationSentinel(t *testin
 	}
 }
 
-// A command that leaves the workspace state check unable to run is recorded
-// as failed evidence naming the check's failure, and stops the run.
 func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
-	// Replace the repository with a dangling gitdir link rather than only
-	// removing it: git would otherwise walk up and inspect any repository that
-	// happens to contain the test's temporary directory.
 	breaking := "rm -rf .git && printf 'gitdir: /nonexistent\\n' > .git"
 	app, task, revision := verificationFixture(t, []string{breaking, "true"})
 	_, err := app.verifyRevision(context.Background(), &task, revision)
@@ -305,8 +280,6 @@ func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
 	}
 }
 
-// F1: worktree mutation evidence names the mutation; F6: successful commands
-// keep both output streams.
 func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
 	app, task, revision := verificationFixture(t, []string{"printf 1 > impl.txt", "true"})
 	_, err := app.verifyRevision(context.Background(), &task, revision)
@@ -337,10 +310,6 @@ func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
 	}
 }
 
-// Verification evidence is bounded and says so: each stream keeps its end,
-// where runners report the failure, stderr survives however long stdout is,
-// a failure ends with its exit status, and a state-check note is never cut.
-// The repair prompt receives the same text.
 func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
 	long := "head -c 20000 /dev/zero | tr '\\0' a; echo; echo TAIL-OF'-STDOUT'; "
 	for _, test := range []struct {
@@ -354,8 +323,6 @@ func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
 		{name: "long failure", command: long + "echo FAIL'URE-DETAIL' >&2; exit 1", want: []string{"TAIL-OF-STDOUT", "\n[stderr]\nFAILURE-DETAIL", outputTruncatedMarker}, suffix: "\nexit status: 1"},
 		{name: "long success", command: long + "echo PASS'-WARNING' >&2", success: true, want: []string{"TAIL-OF-STDOUT", "\n[stderr]\nPASS-WARNING", outputTruncatedMarker}},
 		{name: "long stderr", command: "{ head -c 20000 /dev/zero | tr '\\0' e; echo; echo STDERR'-TAIL'; } >&2; echo STDOUT'-KEPT'; exit 3", want: []string{"STDOUT-KEPT\n[stderr]\n" + outputTruncatedMarker, "STDERR-TAIL"}, suffix: "\nexit status: 3"},
-		// stderr keeps the room short stdout leaves, so a compiler's first
-		// error survives when the whole report fits the bound.
 		{name: "stderr within the room stdout leaves", command: "{ echo STDERR'-HEAD'; head -c 12000 /dev/zero | tr '\\0' e; echo; echo STDERR'-TAIL'; } >&2; echo out; exit 1", want: []string{"out\n[stderr]\nSTDERR-HEAD", "STDERR-TAIL"}, absent: []string{outputTruncatedMarker}, suffix: "\nexit status: 1"},
 		{name: "short failure", command: "echo out; echo err >&2; exit 3", want: []string{"out\n[stderr]\nerr\nexit status: 3"}},
 		{name: "secret", command: "echo token=ghp_abcdefghij0123456789; exit 2", want: []string{"token=[redacted]"}},
@@ -404,12 +371,7 @@ func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
 	}
 }
 
-// TestVerificationEvidenceKeepsTheRealEndOfLongOutput: a command whose output
-// runs far past the diagnostic capture limit reports its failure last, and the
-// saved evidence and the repair prompt keep that real end, not the end of the
-// kept head, behind the truncation marker, on stdout and on stderr.
 func TestVerificationEvidenceKeepsTheRealEndOfLongOutput(t *testing.T) {
-	// About 600 KB of progress lines, more than twice the capture limit.
 	const (
 		progress = "seq -f 'progress line %g of the long verification run' 12000; "
 		long     = progress + "echo 'FINAL FAILURE LINE'"
@@ -423,9 +385,6 @@ func TestVerificationEvidenceKeepsTheRealEndOfLongOutput(t *testing.T) {
 	}{
 		{name: "stdout", command: long + "; exit 1", prefix: outputTruncatedMarker + "\n", suffix: end},
 		{name: "stderr", command: "{ " + long + "; } >&2; echo out; exit 1", prefix: "out\n[stderr]\n" + outputTruncatedMarker + "\n", suffix: end},
-		// The kept end starts inside a line longer than itself, which it
-		// drops, so the end of the kept head shows before the marker that
-		// stands where output was dropped.
 		{name: "end inside a long line", command: progress + "head -c 70000 /dev/zero | tr '\\0' A; echo; echo 'FINAL FAILURE LINE'; exit 1", prefix: outputTruncatedMarker + "\n",
 			suffix: " of the long verification run\n" + outputTruncatedMarker + "\nFINAL FAILURE LINE\nexit status: 1"},
 	} {
@@ -457,19 +416,11 @@ func TestVerificationEvidenceKeepsTheRealEndOfLongOutput(t *testing.T) {
 	}
 }
 
-// TestVerificationEvidenceNeverShowsASecretTheCaptureLimitCut: a command that
-// prints a credential across the diagnostic capture limit leaves only a prefix
-// of it, which redaction cannot recognise. The saved evidence and the repair
-// prompt drop the line the limit cut, keep the complete lines before it and
-// still mark the truncation; a capture that is one unbroken line keeps none
-// of it.
 func TestVerificationEvidenceNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
 	const (
 		credential = "'https://bot:s3cr3tpassword0123@github.com/x'"
 		leak       = "s3cr3tpass"
 	)
-	// The limit keeps "https://bot:s3cr3tpass" (22 bytes) of the credential
-	// line, short of the '@' the URL pattern needs.
 	cutLine := func(before int) string {
 		return fmt.Sprintf("head -c %d /dev/zero | tr '\\0' A; printf '%%s\\n' %s", process.DiagnosticLimit-before-22, credential)
 	}
@@ -525,9 +476,6 @@ func TestBoundedTailKeepsTheEndWithinTheLimit(t *testing.T) {
 	}
 }
 
-// TestVerificationArtifactMustBeGitIgnored: worktree cleanliness includes new
-// untracked files, so a command that leaves an artifact behind fails
-// verification as a workspace mutation unless Git ignores the artifact.
 func TestVerificationArtifactMustBeGitIgnored(t *testing.T) {
 	commands := []string{"printf report > coverage.out", "true"}
 	app, task, revision := verificationFixture(t, commands)
@@ -559,7 +507,6 @@ func TestVerificationArtifactMustBeGitIgnored(t *testing.T) {
 	}
 }
 
-// writeFixtureMode arms a deterministic fixture-peer mode file.
 func writeFixtureMode(t *testing.T, fixture *planningFixture, name string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(fixture.root, name), []byte("1"), 0o600); err != nil {
@@ -611,8 +558,6 @@ func newExecutionApp(t *testing.T, fixture *planningFixture) *App {
 	return app
 }
 
-// TestExecutionRemoteConflictBlocksStaleBase: the target head moved under the
-// reviewed work; publication refuses the stale context.
 func TestExecutionRemoteConflictBlocksStaleBase(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	writeFixtureMode(t, fixture, "remote-conflict")
@@ -638,9 +583,6 @@ func TestExecutionRemoteConflictBlocksStaleBase(t *testing.T) {
 	}
 }
 
-// heldUploadPack points the fixture checkout's upload-pack at a script that
-// records entry and holds while fixture.root/hold exists — the deterministic
-// remote-preflight gate under test.
 func heldUploadPack(t *testing.T, fixture *planningFixture) {
 	t.Helper()
 	script := "#!/bin/sh\nfixture_dir=$(dirname \"$0\")\ntouch \"$fixture_dir/entered-$$\"\nwhile [ -e \"$fixture_dir/hold\" ]; do sleep 0.02; done\nif [ -e \"$fixture_dir/fail\" ]; then exit 1; fi\nexec git-upload-pack \"$@\"\n"
@@ -681,9 +623,6 @@ func releasePreflight(t *testing.T, fixture *planningFixture) {
 	}
 }
 
-// checkpointedTask builds the durable publication-checkpoint state: a real
-// workspace whose HEAD is the recorded output commit with clean review and
-// successful verification evidence.
 func checkpointedTask(t *testing.T, fixture *planningFixture, target string) model.Task {
 	t.Helper()
 	cfg := fixture.cfg.Clone()
@@ -716,9 +655,6 @@ func checkpointedTask(t *testing.T, fixture *planningFixture, target string) mod
 	return task
 }
 
-// seedFixturePR records a checkpointed task's delivery on the fixture remote:
-// its output commit pushed to the task branch and PR 1 for that branch, marked
-// with the task, in the given state.
 func seedFixturePR(t *testing.T, fixture *planningFixture, task model.Task, state string) {
 	t.Helper()
 	git(t, task.Workspace, "push", filepath.Join(fixture.root, "remote.git"), *task.OutputCommit+":refs/heads/"+task.Branch)
@@ -738,10 +674,6 @@ func seedFixturePR(t *testing.T, fixture *planningFixture, task model.Task, stat
 	}
 }
 
-// TestExecutionRestartReconcilesPublicationCheckpoint: a durable publishing
-// checkpoint plus an intact workspace is requeued and delivered without
-// duplicating remote writes — covering both the lost-acknowledgement and the
-// never-created variants.
 func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 	t.Run("push landed without PR", func(t *testing.T) {
 		fixture := newExecutionFixture(t)
@@ -753,7 +685,6 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 		if err := app.Recover(); err != nil {
 			t.Fatal(err)
 		}
-		// The checkpoint is requeued rather than restarted from scratch.
 		queued, err := store.Get[model.Task](fixture.state, "task", task.ID)
 		if err != nil || queued == nil || queued.Status != model.StatusQueued {
 			t.Fatalf("checkpoint recovery = %+v, %v", queued, err)
@@ -776,8 +707,6 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 		fixture := newExecutionFixture(t)
 		task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
 		task.Status = model.StatusPublishing
-		// The remote already has the pushed branch and the created PR; only the
-		// client's acknowledgement was lost.
 		seedFixturePR(t, fixture, task, "open")
 		saveExecutionTask(t, fixture, task)
 		app := New(fixture.state, fixture.dataDir)
@@ -800,8 +729,6 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 		fixture := newExecutionFixture(t)
 		task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
 		task.Status = model.StatusPublishing
-		// The delivered PR was closed before the checkpoint reconciled: the
-		// closed match is explicit reconcile evidence, not a new write.
 		seedFixturePR(t, fixture, task, "closed")
 		saveExecutionTask(t, fixture, task)
 		app := New(fixture.state, fixture.dataDir)
@@ -822,10 +749,6 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 	})
 }
 
-// TestExecutionShutdownDuringPublicationRequeuesCheckpoint: a graceful stop
-// while publication checks run is not a publication outcome. The recorded
-// checkpoint stays active for restart recovery, which delivers it exactly once
-// without another model turn.
 func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
@@ -875,8 +798,6 @@ func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
 	}
 }
 
-// existingPrBranch builds the existing-owned-PR remote state: the octomus/
-// branch with earlier delivered work plus its open fixture PR.
 func existingPrBranch(t *testing.T, fixture *planningFixture) string {
 	t.Helper()
 	work := filepath.Join(fixture.root, "existing-work")
@@ -908,9 +829,6 @@ func existingPrBranch(t *testing.T, fixture *planningFixture) string {
 	return head
 }
 
-// TestExecutionExistingPrAppendsComment: delivering onto an owned open PR
-// appends a follow-up comment; the maintainer-visible description is never
-// rewritten and no second PR is created.
 func TestExecutionExistingPrAppendsComment(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	head := existingPrBranch(t, fixture)
@@ -942,8 +860,6 @@ func TestExecutionExistingPrAppendsComment(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(saved.Workspace, "earlier.txt")); err != nil {
 		t.Fatalf("earlier work missing from the workspace: %v", err)
 	}
-	// Follow-up reviews cover the whole PR: the comparison base is the merge
-	// base of the recorded default revision and the PR head, on every round.
 	if base := git(t, saved.Workspace, "merge-base", saved.DefaultRevision, head); saved.ComparisonBase != base {
 		t.Fatalf("comparison base = %q; want merge base %s", saved.ComparisonBase, base)
 	}
@@ -957,9 +873,6 @@ func TestExecutionExistingPrAppendsComment(t *testing.T) {
 	}
 }
 
-// TestExecutionDependenciesOrderAndRollback: the dependent task rebases onto
-// the published dependency output; when the remote rewinds the delivered head,
-// the dependent blocks instead of building on vanished work.
 func TestExecutionDependenciesOrderAndRollback(t *testing.T) {
 	t.Run("orders onto dependency output", func(t *testing.T) {
 		fixture := newExecutionFixture(t)
@@ -1026,16 +939,8 @@ func TestExecutionDependenciesOrderAndRollback(t *testing.T) {
 		if delivered.Status != model.StatusPublished {
 			t.Fatalf("dependency delivery = %+v", delivered)
 		}
-		// The remote rewinds the delivered head; the dependent must not build
-		// on vanished work. The delivered commit is fetched into the trusted
-		// checkout first — the same guarantee the fixture's lazy rollback makes
-		// (the ancestry check requires the object locally).
 		git(t, fixture.repo, "fetch", filepath.Join(fixture.root, "remote.git"), "octomus/existing")
 		git(t, fixture.root, "--git-dir", filepath.Join(fixture.root, "remote.git"), "update-ref", "refs/heads/octomus/existing", head)
-		// The rewound head is the dependent's recorded source, so the preflight
-		// authorizes it; initialization then finds the dependency output is no
-		// longer an ancestor of the head. That is a dependency block, whose
-		// remedy differs from a stale base's.
 		saved := driveTask(t, fixture, app, second.ID)
 		if !blockedAs(saved, model.BlockedReasonDependencyBlocked) {
 			t.Fatalf("rollback dependent outcome = %+v; want dependency_blocked", saved)
@@ -1046,8 +951,6 @@ func TestExecutionDependenciesOrderAndRollback(t *testing.T) {
 	})
 }
 
-// TestExecutionWorkerPanicBlocks: a dying worker cannot leave a durable active
-// task; the task-guard writes the terminal record.
 func TestExecutionWorkerPanicBlocks(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	task := executionTask(t, fixture, fixture.cfg.DefaultBranch)
@@ -1066,19 +969,13 @@ func TestExecutionWorkerPanicBlocks(t *testing.T) {
 	}
 }
 
-// TestRunJoinedReturnsTheCallbacksOwnResult: supervision and publication
-// reconciliation both learn how their callback actually ended. A callback
-// that finishes within the cleanup grace after the deadline fired keeps its
-// own result, and a panic on the deadline goroutine comes back as an error.
-// (TestExecutionTimeoutJoinsCallbackBeforeFinalizing covers the join past the
-// grace through supervision.)
 func TestRunJoinedReturnsTheCallbacksOwnResult(t *testing.T) {
 	for _, want := range []error{nil, errors.New("late failure")} {
 		ctx, cancel := context.WithCancel(context.Background())
 		result, err := runJoined(ctx, cancel, 100*time.Millisecond, "Callback panicked", func() error {
-			<-ctx.Done() // The deadline cancels the callback's scope ...
+			<-ctx.Done()
 			time.Sleep(50 * time.Millisecond)
-			return want // ... and it still finishes within the grace.
+			return want
 		})
 		cancel()
 		if !result.Expired || result.AlreadyCancelled {
@@ -1096,10 +993,6 @@ func TestRunJoinedReturnsTheCallbacksOwnResult(t *testing.T) {
 	}
 }
 
-// TestSupervisionNeverDemotesRecordedPublication: once the worker durably
-// records a delivery, neither a task deadline that fired while it finished
-// nor a bookkeeping failure after the published write may rewrite the task
-// as blocked.
 func TestSupervisionNeverDemotesRecordedPublication(t *testing.T) {
 	supervise := func(t *testing.T, execute func(*App) func(context.Context, *model.Task) error) (*App, model.Task, error) {
 		t.Helper()
@@ -1107,7 +1000,6 @@ func TestSupervisionNeverDemotesRecordedPublication(t *testing.T) {
 		cfg := testConfig(t.TempDir())
 		task := queuedTask(cfg, model.ID(), cfg.DefaultBranch, "octomus/delivered")
 		task.Status = model.StatusPublishing
-		// The snapshot carries the deadline; settings validation does not apply.
 		task.Config.TaskTimeoutSeconds = 1
 		if err := state.Put("task", task.ID, task); err != nil {
 			t.Fatal(err)
@@ -1135,7 +1027,6 @@ func TestSupervisionNeverDemotesRecordedPublication(t *testing.T) {
 	t.Run("published after the deadline fired", func(t *testing.T) {
 		app, saved, err := supervise(t, func(app *App) func(context.Context, *model.Task) error {
 			return func(_ context.Context, task *model.Task) error {
-				// Outlive the one-second deadline but not the cleanup grace.
 				time.Sleep(1500 * time.Millisecond)
 				return app.transition(task, model.StatusPublished)
 			}
@@ -1172,17 +1063,12 @@ func TestSupervisionNeverDemotesRecordedPublication(t *testing.T) {
 	})
 }
 
-// TestSupervisionReportsOperatorCancelOverLateDeadline: a worker that was
-// cancelled by the operator and then outlived its deadline ended because of
-// the cancel. The record says so instead of a time limit, and the deadline
-// stays in the error event.
 func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	task := queuedTask(cfg, model.ID(), cfg.DefaultBranch, "octomus/cancelled")
 	task.Status = model.StatusExecuting
 	task.Sessions = []model.Session{{ID: "executor-thread", Role: "executor", Status: model.SessionRunning}}
-	// The snapshot carries the deadline; settings validation does not apply.
 	task.Config.TaskTimeoutSeconds = 1
 	if err := state.Put("task", task.ID, task); err != nil {
 		t.Fatal(err)
@@ -1196,8 +1082,6 @@ func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
 	cancel()
 
 	err := app.superviseExecution(cancelled, task, func(ctx context.Context, _ *model.Task) error {
-		// Ignore the cancel long enough for the deadline to fire as well: two
-		// seconds past the one-second limit, inside the deadline grace.
 		time.Sleep(3 * time.Second)
 		return ctx.Err()
 	})
@@ -1216,10 +1100,6 @@ func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
 	}
 }
 
-// TestExecutionDeliversFullLifecycleViaOpenCode runs the same
-// executor → fresh reviews → persistent repair → verification → publication
-// lifecycle through the OpenCode HTTP/SSE fixture peer, so both runners are
-// held to the whole lifecycle.
 func TestExecutionDeliversFullLifecycleViaOpenCode(t *testing.T) {
 	fixture := newExecutionFixture(t)
 	opencode := filepath.Join(fixture.root, "opencode")

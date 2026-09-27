@@ -21,13 +21,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-// captureSecretEnv, capturePhraseEnv and captureLinesEnv name secret-bearing
-// variables that commands inherit, as verification commands inherit the
-// service's environment: a single token, a multi-word passphrase and a
-// multi-line key. captureBearerEnv is a passphrase that ends like a bearer
-// prefix, and captureMarkEnv one whose last word is punctuation that a
-// terminal escape sequence may also hold. The redactor reads the environment
-// once per process, so TestMain exports them before any test.
 const (
 	captureSecretEnv = "CAPTURE_TEST_API_KEY"
 	captureSecret    = "s3cr3tValue-0123456789"
@@ -50,9 +43,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// waitForPid returns the pid a fixture command writes to path once the value
-// has fully landed: the shell creates the file before `echo` writes it, and
-// an empty pid would name /proc/stat rather than a process.
 func waitForPid(t *testing.T, path string) string {
 	t.Helper()
 	var pid string
@@ -70,13 +60,11 @@ func waitForPid(t *testing.T, path string) string {
 	return pid
 }
 
-// processReaped reports whether a waited child left no trace at all.
 func processReaped(pid string) bool {
 	_, err := os.ReadFile("/proc/" + pid + "/stat")
 	return errors.Is(err, os.ErrNotExist)
 }
 
-// cleanupGroup terminates fixture process groups even after a failed assertion.
 func cleanupGroup(t *testing.T, pidFile string) {
 	t.Cleanup(func() {
 		if data, err := os.ReadFile(pidFile); err == nil {
@@ -87,7 +75,6 @@ func cleanupGroup(t *testing.T, pidFile string) {
 	})
 }
 
-// inheritedPipe checks that a descendant holding a captured pipe cannot stall capture.
 func inheritedPipe(t *testing.T, pipe string, exitCode int) {
 	t.Helper()
 	if _, err := os.Stat("/proc/self"); err != nil {
@@ -117,7 +104,6 @@ sys.stderr.write('e' * 131072 + 'stderr end\n')
 sys.stderr.flush()
 sys.exit(int(sys.argv[2]))
 `
-	// The descendant outlives this generous deadline unless group cleanup runs.
 	type result struct {
 		out *process.ProcessOutput
 		err error
@@ -158,8 +144,6 @@ sys.exit(int(sys.argv[2]))
 	if !testutil.WaitUntil(5*time.Second, func() bool { return testutil.ProcessGone(pid) }) {
 		t.Fatal("descendant survived leader completion")
 	}
-	// The leader was successfully started, so it must have been reaped: its
-	// proc entry is gone entirely rather than lingering as a zombie.
 	leaderData, err := os.ReadFile(filepath.Join(temp, "group.pid"))
 	if err != nil {
 		t.Fatalf("leader never wrote its pid: %v", err)
@@ -174,7 +158,6 @@ func TestInheritedStdoutNonzeroExit(t *testing.T) { inheritedPipe(t, "stdout", 2
 func TestInheritedStderrZeroExit(t *testing.T)    { inheritedPipe(t, "stderr", 0) }
 func TestInheritedStderrNonzeroExit(t *testing.T) { inheritedPipe(t, "stderr", 23) }
 
-// Cancellation terminates the shell and its background sleeper.
 func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 	temp := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -195,9 +178,6 @@ func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 	}
 }
 
-// TestDeadlineExpirationKillsTheProcessGroup covers the other early-return
-// path: when the command's own deadline elapses, its group is terminated and
-// the error reports the elapsed deadline.
 func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
 	temp := t.TempDir()
 	done := make(chan error, 1)
@@ -220,9 +200,6 @@ func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
 	}
 }
 
-// TestStoppedGroupsCanCleanUp: cancellation and deadline expiry signal a
-// running command's group with SIGTERM before killing it, so tools such as
-// Git can run their own cleanup (removing index and ref lock files) first.
 func TestStoppedGroupsCanCleanUp(t *testing.T) {
 	script := "trap 'touch cleaned; exit 1' TERM; touch started; sleep 30 & wait"
 	for _, tc := range []struct {
@@ -232,7 +209,6 @@ func TestStoppedGroupsCanCleanUp(t *testing.T) {
 		want    string
 	}{
 		{name: "cancellation", seconds: 30, cancel: true, want: "Operation cancelled"},
-		// The limit leaves bash ample time to install its trap under load.
 		{name: "deadline", seconds: 3, want: "Command timed out"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -268,9 +244,6 @@ func TestStoppedGroupsCanCleanUp(t *testing.T) {
 	}
 }
 
-// TestTermIgnoringGroupIsStillKilled: a group that ignores SIGTERM is killed
-// once the short cleanup grace ends, so a stopped command always returns
-// promptly and leaves nothing running.
 func TestTermIgnoringGroupIsStillKilled(t *testing.T) {
 	temp := t.TempDir()
 	cleanupGroup(t, filepath.Join(temp, "leader.pid"))
@@ -305,8 +278,6 @@ func TestTermIgnoringGroupIsStillKilled(t *testing.T) {
 	}
 }
 
-// TestCleanupLeavesUnrelatedProcessesUntouched pins acceptance criterion 8:
-// terminating one owned group must not signal processes outside it.
 func TestCleanupLeavesUnrelatedProcessesUntouched(t *testing.T) {
 	temp := t.TempDir()
 	sleeper := exec.Command("sleep", "30")
@@ -334,8 +305,6 @@ func TestCleanupLeavesUnrelatedProcessesUntouched(t *testing.T) {
 	}
 }
 
-// TestStartupFailureLeaksNothing covers spawn failures: the command reports
-// cleanly and leaves no goroutines or descriptors behind.
 func TestStartupFailureLeaksNothing(t *testing.T) {
 	temp := t.TempDir()
 	if _, err := os.Stat("/proc/self/fd"); err != nil {
@@ -348,8 +317,6 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 		}
 		return len(entries)
 	}
-	// Warm up several times so lazy global state and transient descriptors are
-	// counted in the baseline; a leak only ever grows the count.
 	for i := 0; i < 3; i++ {
 		_, _ = process.Capture(context.Background(), "octomus-no-such-binary", nil, temp, 10, process.CaptureDiagnostic)
 		_, _ = process.RunMachine(context.Background(), "true", nil, temp, 10)
@@ -377,12 +344,8 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 	}
 }
 
-// TestChildEnvironmentIsScrubbed pins acceptance criterion 6 plus the Git
-// terminal-prompt guard.
 func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	temp := t.TempDir()
-	// The names come from the constants the service reads its secrets from, so
-	// renaming a variable cannot leave the scrubbed name behind.
 	t.Setenv(redact.TokenEnv, "test-token-value-that-must-not-leak")
 	t.Setenv(redact.WebhookEnv, "https://example.invalid/hook")
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
@@ -397,10 +360,6 @@ func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	}
 }
 
-// TestChildEnvironmentDropsGitRepositoryLocation pins that a service started
-// from a Git hook or a shell with repository-locating variables exported still
-// runs every child git against its own working directory, while the operator's
-// deliberate GIT_CONFIG_* channel reaches children unchanged.
 func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
 	temp := t.TempDir()
 	located := []string{
@@ -429,7 +388,6 @@ func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
 	if out != want.String() {
 		t.Fatalf("child environment = %q; want %q", out, want.String())
 	}
-	// A child git works on its own directory and still reads the config channel.
 	if _, err := process.RunMachine(context.Background(), "git", []string{"init", "--quiet"}, temp, 10); err != nil {
 		t.Fatalf("git init under exported GIT_DIR: %v", err)
 	}
@@ -442,8 +400,6 @@ func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
 	}
 }
 
-// Large valid output parses, oversized or non-UTF-8 output fails explicitly,
-// and diagnostic capture truncates at the documented limit.
 func TestMachineCaptureNeverCorruptsSuccessfulJSON(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
@@ -483,23 +439,18 @@ func TestMachineCaptureNeverCorruptsSuccessfulJSON(t *testing.T) {
 	}
 }
 
-// Nonzero status and signal termination are failures regardless of what
-// was written to stdout.
 func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
-	// Empty stdout plus exit 1 is a failed command, not a successful empty result.
 	if _, err := process.RunMachine(ctx, "python3",
 		[]string{"-c", "import sys; sys.exit(1)"}, tmp, 10); err == nil {
 		t.Fatal("exit 1 with empty stdout must fail")
 	}
-	// Well-formed JSON on stdout does not rescue a nonzero status.
 	if _, err := process.RunMachine(ctx, "python3",
 		[]string{"-c", "import json, sys; print(json.dumps({'ok': True})); sys.exit(7)"},
 		tmp, 10); err == nil {
 		t.Fatal("exit 7 after valid JSON must fail")
 	}
-	// Signal termination cannot read as a successful capture either.
 	_, err := process.RunMachine(ctx, "python3",
 		[]string{"-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"},
 		tmp, 10)
@@ -511,9 +462,6 @@ func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 	}
 }
 
-// TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses: success is true,
-// a documented false status is false, and every other outcome — unexpected
-// status, signal, spawn failure — is an error.
 func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
@@ -525,12 +473,10 @@ func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 		[]string{"-c", "import sys; sys.exit(1)"}, tmp, 10, []int{1}); err != nil || ok {
 		t.Fatalf("documented false status = %v, %v; want false", ok, err)
 	}
-	// An unexpected status is a command failure, never a false predicate.
 	if _, err := process.RunPredicate(ctx, "python3",
 		[]string{"-c", "import sys; sys.exit(2)"}, tmp, 10, []int{1}); err == nil {
 		t.Fatal("undocumented status must be an error")
 	}
-	// Signal termination has no code, so it cannot match the false list.
 	if _, err := process.RunPredicate(ctx, "python3",
 		[]string{"-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"},
 		tmp, 10, []int{1, 9}); err == nil {
@@ -546,8 +492,6 @@ func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 	}
 }
 
-// A signal-terminated process reports its status by signal number and name,
-// the wording failure messages carry.
 func TestSignalStatusFormat(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
@@ -562,10 +506,6 @@ func TestSignalStatusFormat(t *testing.T) {
 	}
 }
 
-// TestCapturedTextDropsThePartialLineACaptureCut pins the rule every caller
-// relies on before scrubbing: kept bytes of a truncated capture lose the line
-// the limit cut, or, when they hold no newline, the word it cut, or everything
-// when there is no whitespace either. Complete captures are left whole.
 func TestCapturedTextDropsThePartialLineACaptureCut(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -600,18 +540,13 @@ func TestCapturedTextDropsThePartialLineACaptureCut(t *testing.T) {
 	}
 }
 
-// TestFailureTextNeverShowsASecretTheCaptureLimitCut: a command that prints a
-// secret across the diagnostic capture limit leaves only a prefix of it, which
-// redaction cannot recognise. The failure text drops that partial line, keeps
-// the complete line before it and still flags the truncation, on stdout and
-// on stderr, for an environment secret and a URL credential.
 func TestFailureTextNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
-	const kept = "KEPT-LINE\n" // what `echo KEPT-LINE` prints
+	const kept = "KEPT-LINE\n"
 	for _, secret := range []struct {
 		name  string
-		print string // shell words printing the secret-bearing line
-		cut   int    // bytes of that line kept before the limit
-		leak  string // the kept prefix that must not appear
+		print string
+		cut   int
+		leak  string
 	}{
 		{name: "environment secret", print: `"$` + captureSecretEnv + `"`, cut: 10, leak: captureSecret[:10]},
 		{name: "URL credential", print: `'https://bot:s3cr3tpassword0123@github.com/x'`, cut: 22, leak: "s3cr3tpass"},
@@ -648,18 +583,13 @@ func TestFailureTextNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
 	}
 }
 
-// TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret: a capture limit
-// that falls after the first word of an environment passphrase or the first
-// line of a multi-line environment key leaves those complete words or lines
-// before the partial one it cut. They no longer match the whole value, so the
-// failure text drops them with the cut, on stdout and on stderr.
 func TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret(t *testing.T) {
 	const assignment = "KEY="
 	for _, secret := range []struct {
 		name string
 		env  string
-		cut  int    // bytes of the value kept before the limit
-		leak string // its complete first word or line
+		cut  int
+		leak string
 	}{
 		{name: "passphrase", env: capturePhraseEnv, cut: len("correct horse batt"), leak: "correct"},
 		{name: "multi-line key", env: captureLinesEnv, cut: len("first-line-of-key\nsecond-"), leak: "first-line-of-key"},
@@ -696,20 +626,13 @@ func TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret(t *testing.T) {
 	}
 }
 
-// TestTailTextNeverShowsASecretTheWindowCut: a command that prints far past
-// the diagnostic capture limit has its real end kept in a window that can
-// begin inside a secret, leaving only the rest of it, which redaction cannot
-// recognise. The tail text drops that rest, the token after a cut bearer
-// prefix and the remaining words or lines of a cut environment secret, and
-// keeps what follows through the final line, on stdout and on stderr, across
-// lines and within one long line.
 func TestTailTextNeverShowsASecretTheWindowCut(t *testing.T) {
 	for _, secret := range []struct {
 		name  string
-		print string // printf's format argument, printing text without a newline
-		text  string // what it prints
-		cut   int    // bytes of text before the window starts
-		leak  string // part of the rest that must not appear
+		print string
+		text  string
+		cut   int
+		leak  string
 	}{
 		{name: "environment secret", print: `"$` + captureSecretEnv + `"`, text: captureSecret, cut: 10, leak: captureSecret[10:]},
 		{name: "URL credential", print: `'https://bot:s3cr3tpassword0123@github.com/x'`, text: "https://bot:s3cr3tpassword0123@github.com/x", cut: 22, leak: "sword0123"},
@@ -720,9 +643,6 @@ func TestTailTextNeverShowsASecretTheWindowCut(t *testing.T) {
 		{name: "multi-line key", print: `"$` + captureLinesEnv + `"`, text: captureLines, cut: len("first-line-of-k"), leak: "second-line-of-key"},
 	} {
 		for _, layout := range []struct{ name, sep string }{{"lines", "\n"}, {"one line", " "}} {
-			// After the head and a gap, the window's last TailLimit bytes are
-			// the rest of text, then the words or lines KEPT-AFTER, a filler
-			// and FINAL, each followed by sep.
 			filler := process.TailLimit - (len(secret.text) - secret.cut) - len("KEPT-AFTER") - len("FINAL") - 4*len(layout.sep)
 			script := fmt.Sprintf(`head -c %d /dev/zero | tr '\0' A; echo; printf %s; printf '%%sKEPT-AFTER%%s' '%s' '%s'; head -c %d /dev/zero | tr '\0' B; printf '%%sFINAL%%s' '%s' '%s'`,
 				process.DiagnosticLimit+1000, secret.print, layout.sep, layout.sep, filler, layout.sep, layout.sep)
@@ -756,16 +676,11 @@ func TestTailTextNeverShowsASecretTheWindowCut(t *testing.T) {
 	}
 }
 
-// displayLimit mirrors the store's display bound for recorded messages, and
-// failureTextLimit the part of it a failure message may use: the rest is left
-// for the context callers wrap around a failure before recording it.
 const (
 	displayLimit     = 16384
 	failureTextLimit = displayLimit - 1024
 )
 
-// TestFailureTextFitsWhole: a failure whose output fits the display bound is
-// reported exactly as before — the status, stdout, a newline, then stderr.
 func TestFailureTextFitsWhole(t *testing.T) {
 	_, err := process.RunMachine(context.Background(), "bash",
 		[]string{"-c", "printf o; printf e >&2; exit 3"}, t.TempDir(), 10)
@@ -774,10 +689,6 @@ func TestFailureTextFitsWhole(t *testing.T) {
 	}
 }
 
-// TestFailureTextKeepsStderrAndStdoutEnds: bulk stdout never pushes the cause
-// out of a failure message. The recorded text keeps stderr, both ends of
-// stdout with an explicit omission marker, scrubs secrets, and fits the
-// display bound so storing it cuts nothing more.
 func TestFailureTextKeepsStderrAndStdoutEnds(t *testing.T) {
 	script := `echo STDOUT-HEAD
 for i in $(seq 800); do echo "page $i token ghp_abcdefghijklmnopqrstuvwxyz0123456789 filler filler"; done
@@ -803,8 +714,6 @@ exit 1`
 	if redact.Error(err) != text {
 		t.Fatal("recording the failure text must not shorten it further")
 	}
-	// Callers wrap failures in context before recording them; the recorded
-	// message must still end with the cause.
 	for _, wrapped := range []error{
 		fmt.Errorf("Open pull request inventory failed: %w", err),
 		fmt.Errorf("Repository remote preflight failed: %w",
@@ -816,9 +725,6 @@ exit 1`
 	}
 }
 
-// TestFailureTextBoundsLargeStderr: when both streams are large, each keeps
-// its beginning and end, stderr keeps a fixed share of the bound, and the
-// whole message still fits it.
 func TestFailureTextBoundsLargeStderr(t *testing.T) {
 	script := `echo STDOUT-HEAD; head -c 40000 /dev/zero | tr '\0' o; echo; echo STDOUT-TAIL
 { echo STDERR-HEAD; head -c 40000 /dev/zero | tr '\0' e; echo; echo STDERR-TAIL; } >&2
@@ -850,8 +756,6 @@ exit 2`
 	}
 }
 
-// TestFailureTextOmitsAnEmptyStderrSection: a large failure with nothing on
-// stderr is elided without an empty stderr section.
 func TestFailureTextOmitsAnEmptyStderrSection(t *testing.T) {
 	script := `echo STDOUT-HEAD; head -c 40000 /dev/zero | tr '\0' o; echo; echo STDOUT-TAIL; exit 4`
 	_, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10)
@@ -871,13 +775,7 @@ func TestFailureTextOmitsAnEmptyStderrSection(t *testing.T) {
 	}
 }
 
-// TestFailureTextKeepsTheRealEndOfTruncatedStreams: a failed command whose
-// output runs far past the diagnostic capture limit still states its cause
-// last. The failure text keeps each stream's beginning and its real end, not
-// the end of the kept head, around the truncation marker, on stdout and on
-// stderr, and still fits the bound.
 func TestFailureTextKeepsTheRealEndOfTruncatedStreams(t *testing.T) {
-	// Each stream prints about 1 MB, several times the capture limit.
 	script := `echo FIRST-STDOUT; seq -f 'stdout filler line %g' 40000; echo FINAL-STDOUT
 { echo FIRST-STDERR; seq -f 'stderr filler line %g' 40000; echo FINAL-STDERR; } >&2
 exit 3`
@@ -905,9 +803,6 @@ exit 3`
 	}
 }
 
-// TestShellCheckRetainsBashPipefail pins the one place a shell remains:
-// operator-configured verification runs through `bash -o pipefail -c`, so a
-// failing pipeline member fails the check even when the last stage succeeds.
 func TestShellCheckRetainsBashPipefail(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
@@ -924,8 +819,6 @@ func TestShellCheckRetainsBashPipefail(t *testing.T) {
 	}
 }
 
-// TestWithDeadline: expiry cancels the context and distinguishes a genuine
-// deadline from an already-cancelled session.
 func TestWithDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -941,8 +834,6 @@ func TestWithDeadline(t *testing.T) {
 	if done.Expired || done.Output != "finished" {
 		t.Fatalf("completed work = %+v; want its output without expiry", done)
 	}
-	// When the context is already cancelled but the work still outlives the
-	// limit, expiry reports AlreadyCancelled rather than a genuine deadline.
 	cancelledCtx, cancelCancelled := context.WithCancel(context.Background())
 	cancelCancelled()
 	cancelled := process.WithDeadline(cancelledCtx, cancelCancelled,
@@ -955,15 +846,12 @@ func TestWithDeadline(t *testing.T) {
 	}
 }
 
-// TestBoundedKeepsCallersWording covers the bounded helper: caller-supplied
-// timeout text, session cancellation distinct from expiry, and pass-through
-// results.
 func TestBoundedKeepsCallersWording(t *testing.T) {
 	ctx := context.Background()
 	cleaned := make(chan struct{})
 	_, err := process.BoundedAt(ctx, time.Now().Add(20*time.Millisecond), "Check timed out", func(workCtx context.Context) (int, error) {
 		<-workCtx.Done()
-		time.Sleep(20 * time.Millisecond) // cleanup must finish before BoundedAt returns
+		time.Sleep(20 * time.Millisecond)
 		close(cleaned)
 		return 0, workCtx.Err()
 	})

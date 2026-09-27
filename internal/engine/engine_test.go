@@ -19,13 +19,11 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// testStore opens a store in a fresh temporary directory; see openStore.
 func testStore(t *testing.T) *store.Store {
 	t.Helper()
 	return openStore(t, t.TempDir())
 }
 
-// openStore opens dir/state.db and closes it when the test ends.
 func openStore(t *testing.T, dir string) *store.Store {
 	t.Helper()
 	state, err := store.Open(filepath.Join(dir, "state.db"))
@@ -94,8 +92,6 @@ func ownedPR(branch string) model.PullRequest {
 	}
 }
 
-// deferHousekeeping marks retention and observation as just run, so a test's
-// ticks start no housekeeping pass until those intervals elapse.
 func deferHousekeeping(app *App) {
 	app.runtime.lastRetention = time.Now()
 	app.runtime.lastObserve = time.Now()
@@ -225,10 +221,6 @@ func TestPlanningAdmissionBudgetIsAtomicUnderConcurrency(t *testing.T) {
 	}
 }
 
-// TestRunOnceAffordabilityAndMembershipAreAtomic: the operator's run once
-// starts its batch, tags the queued members and saves the control in the
-// transaction that checks planning affordability, answers with that saved
-// control and wakes the scheduler. An unaffordable request changes nothing.
 func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -308,11 +300,6 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	}
 }
 
-// TestRunOnceStaleControlIsAConflict: the store refuses to start a batch from
-// a control record that changed after the caller read it. While planning is
-// still affordable, that refusal must reach the operator as a conflict rather
-// than as a run once that reports success without starting, and it must not
-// tag queued work or rewrite the live control.
 func TestRunOnceStaleControlIsAConflict(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -330,8 +317,6 @@ func TestRunOnceStaleControlIsAConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A write that did not pass through the gate changes the live record
-	// after the request read it.
 	live := stale.Clone()
 	message := "Recorded while run once was deciding"
 	live.Error = &message
@@ -531,11 +516,6 @@ func TestRecoverySeedsOnlyResumableAndCheckpointedPrReservations(t *testing.T) {
 	}
 }
 
-// TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget: an interrupted
-// publication whose retry budget is spent still holds reviewed and verified
-// output. Recovery blocks it for reconciliation, which publishes without
-// another attempt or model turn, instead of as a retry limit whose only retry
-// is refused. Work without a checkpoint keeps the retry limit.
 func TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -961,9 +941,6 @@ func TestRunnerExitBlocksStillActiveTask(t *testing.T) {
 	}
 }
 
-// A nil task runner keeps the supervised production lifecycle, as nil keeps
-// the production default for the other options, rather than leaving dispatch
-// with no runner for the tasks it admits.
 func TestNilTaskRunnerKeepsTheProductionRunner(t *testing.T) {
 	a := New(testStore(t), t.TempDir(), WithTaskRunner(nil))
 	t.Cleanup(a.Shutdown)
@@ -1199,9 +1176,6 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 	}
 }
 
-// TestSameCycleProposalsSharingAProblemKeyAreDuplicates: accepted proposals in
-// one cycle that share a problem key are duplicates regardless of wording,
-// while distinct problem keys are accepted together.
 func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	grounding := model.Grounding{Revision: "rev"}

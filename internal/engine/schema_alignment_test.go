@@ -8,10 +8,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/schemas/schematest"
 )
 
-// Planning roles answer to these schemas and the engine decodes the answers
-// into its own documents. Assessments and grounding decode without strict
-// field checks, so a field added to only one side would be silently dropped
-// or left empty rather than refused.
 func TestPlanningSchemasMatchTheirDocuments(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

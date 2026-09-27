@@ -7,11 +7,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// TestParseCreatedPRURLAcceptsOnlyThisRepositorysPullURL: the URL `gh pr
-// create` prints is the only evidence of where a new pull request landed, so
-// only an https github.com pull URL for the configured repository yields a
-// number. Every other shape is a RemoteConflict naming why, because the request
-// may exist somewhere this task does not know about.
 func TestParseCreatedPRURLAcceptsOnlyThisRepositorysPullURL(t *testing.T) {
 	const repo = "fixture/project"
 	accepted := []struct {

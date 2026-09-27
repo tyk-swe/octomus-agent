@@ -1,8 +1,5 @@
 package engine
 
-// External context is bounded over the parsed inventory. Task targets bind
-// only eligible owned open pull requests.
-
 import (
 	"encoding/json"
 	"fmt"
@@ -61,8 +58,6 @@ func prContextPR(t *testing.T, raw map[string]any) model.PullRequest {
 	return pr
 }
 
-// TestExternalContextBoundsCountsAndTruncatesUTF8 ports
-// external_context_bounds_counts_and_truncates_utf8.
 func TestExternalContextBoundsCountsAndTruncatesUTF8(t *testing.T) {
 	entries := []map[string]any{}
 	for n := 1; n <= 130; n++ {
@@ -135,8 +130,6 @@ func TestExternalContextBoundsCountsAndTruncatesUTF8(t *testing.T) {
 	}
 }
 
-// TestExternalContextSortsUnsortedInventories ports
-// external_context_sorts_unsorted_inventories.
 func TestExternalContextSortsUnsortedInventories(t *testing.T) {
 	externalPR := func(number int) model.PullRequest {
 		return prContextPR(t, map[string]any{
@@ -168,8 +161,6 @@ func TestExternalContextSortsUnsortedInventories(t *testing.T) {
 		t.Fatalf("coverage = %+v", coverage)
 	}
 
-	// The count bound applies after sorting: a reversed listing keeps the
-	// lowest-numbered pull requests, not the first ones listed.
 	inventory.PRs = nil
 	for n := 105; n >= 1; n-- {
 		inventory.PRs = append(inventory.PRs, externalPR(n))
@@ -186,8 +177,6 @@ func TestExternalContextSortsUnsortedInventories(t *testing.T) {
 	}
 }
 
-// TestTargetResolutionRejectsExternalAndClosedPRs ports
-// target_resolution_rejects_external_and_closed_prs.
 func TestTargetResolutionRejectsExternalAndClosedPRs(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	pr := func(state string, owned bool, baseRepo string) model.PullRequest {
@@ -221,9 +210,6 @@ func TestTargetResolutionRejectsExternalAndClosedPRs(t *testing.T) {
 	}
 }
 
-// TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder: target resolution binds
-// a branch's owned PR regardless of listing order, rejects unowned and
-// ambiguous matches, and never binds the default branch as a PR.
 func TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	fork := ownedPR("octomus/fix")

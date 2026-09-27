@@ -81,9 +81,6 @@ func TestBaselineValidationAcceptsUnroutedModelsButRequiresRepositoryAndCommands
 	}
 }
 
-// TestStartBaselineRejectsStaleRevisionBeforeWork verifies admission compares
-// the caller's expected revision with the live canonical fingerprint before a
-// check record, clone directory or worker exists.
 func TestStartBaselineRejectsStaleRevisionBeforeWork(t *testing.T) {
 	app, cfg := baselineApp(t)
 	fingerprint, err := cfg.Fingerprint()
@@ -223,9 +220,6 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 	_, cfg := baselineApp(t)
 	ctx := context.Background()
 	revision := git(t, cfg.Repository, "rev-parse", "HEAD")
-	// 20 KiB of ASCII output plus a failure status line: above the 16 KiB
-	// per-command cap but far below capture's diagnostic limit. The persisted
-	// evidence must flag the shortened tail, not record it as complete.
 	outcome := runCheckCommand(ctx, cfg, cfg.Repository, "yes x | head -c 20480; exit 3", revision)
 	text, diagnosticTruncated, success := commandOutput(outcome.captured, outcome.capture)
 	if success || diagnosticTruncated {
@@ -234,8 +228,6 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 	if !strings.Contains(text, "exit status: 3") {
 		t.Fatalf("status line missing: %.60s", text)
 	}
-	// The exact composition executeBaseline applies per command: the 16 KiB
-	// per-command bound inside the 1 MiB aggregate budget.
 	output, truncated := boundedOutput(redact.Secrets(text), 16*1024, diagnosticTruncated)
 	if !truncated {
 		t.Fatal("shortened output must be flagged")
@@ -243,7 +235,6 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 	if !strings.HasSuffix(output, "[output truncated]") || len(output) > 16*1024 {
 		t.Fatalf("bounded: %d %q", len(output), output[len(output)-30:])
 	}
-	// Secret scrubbing still applies within the kept bytes.
 	redacted, _ := boundedOutput(redact.Secrets("token ghp_abcdefghijklmnop"), 16*1024, false)
 	if !strings.Contains(redacted, "[redacted]") || strings.Contains(redacted, "ghp_") {
 		t.Fatalf("redaction: %q", redacted)
@@ -340,8 +331,6 @@ func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing
 	if status, _ := app.BaselineView(nil); status["revision_status"] != "unknown" {
 		t.Fatalf("expired observation: %v", status["revision_status"])
 	}
-	// An observation older than one housekeeping interval stays comparable
-	// until the next, possibly slower, pass has had time to replace it.
 	observation.Revision = revision
 	observation.ObservedAt = time.Now().UTC().Add(-(observeInterval + time.Minute)).Format(time.RFC3339)
 	setObservation(app, observation)
@@ -384,7 +373,6 @@ func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing
 	if view["config_matches"] != false || view["revision_status"] != "unknown" {
 		t.Fatalf("changed config: %v %v", view["config_matches"], view["revision_status"])
 	}
-	// The last observation describes the old branch, not the live target.
 	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs != nil {
 		t.Fatalf("observation of another target was shown as the live one: %v", obs)
 	}
@@ -414,8 +402,6 @@ func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
 	check := makeCheck(cfg, model.BaselineStatusFailed)
 	completed := model.Now()
 	check.CompletedAt = &completed
-	// Production only ever cleans a persisted record; the cleanup finalization
-	// re-reads it, so the check must exist in the store first.
 	if err := app.Store.Put("baseline", check.ID, check); err != nil {
 		t.Fatal(err)
 	}

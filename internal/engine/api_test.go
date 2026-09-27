@@ -16,10 +16,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// controlFixture builds an app whose saved configuration names every route,
-// so it counts as ready, and applies scenario: "continuous" saves continuous
-// mode, while "task", "execution" and "audit" install that runtime work
-// directly, with no worker behind it.
 func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
 	t.Helper()
 	state := testStore(t)
@@ -107,7 +103,6 @@ func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(
 	for _, scenario := range []string{"continuous", "task", "execution", "idle"} {
 		for _, action := range []string{"audit", "cycle", "resume", "pause"} {
 			if scenario == "idle" && action == "audit" {
-				// An accepted audit launches planning; integration coverage lives elsewhere.
 				continue
 			}
 			t.Run(scenario+"/"+action, func(t *testing.T) {
@@ -145,12 +140,6 @@ func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(
 	}
 }
 
-// ControlAction checks paused, idle operation under the gate, then releases
-// it before StartAudit admits the audit. A launch or mode change landing in
-// that window is refused there as ErrBusy or ErrNotPaused, and those refusals
-// are the same conflict the gate-held check reports, not a bad request. Run
-// once never releases the gate, so its refusal of the same states is that
-// gate-held conflict.
 func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
 	for _, test := range []struct {
 		scenario string
@@ -180,11 +169,6 @@ func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
 	}
 }
 
-// An operator request that panics while it holds the gate is recovered per
-// request by net/http, so the process lives on: the request must still
-// release the gate, or every later tick, control and task action, and
-// Shutdown, blocks forever. A missing store panics on the request's first
-// durable read, under the gate.
 func TestOperatorPanicUnderTheGateReleasesIt(t *testing.T) {
 	for name, request := range map[string]func(*App){
 		"control action": func(app *App) { _, _ = app.ControlAction("pause") },
@@ -214,9 +198,6 @@ func TestOperatorPanicUnderTheGateReleasesIt(t *testing.T) {
 	}
 }
 
-// TestAuditControlRecordsOneOperatorEvent: one operator click that starts an
-// audit is recorded once, on the cycle it started, and the response is the
-// still-paused control record.
 func TestAuditControlRecordsOneOperatorEvent(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	app := fixture.pausedApp(t)
@@ -231,8 +212,6 @@ func TestAuditControlRecordsOneOperatorEvent(t *testing.T) {
 	if err != nil || len(cycles) != 1 || cycles[0].Mode != model.CycleModeAudit {
 		t.Fatalf("audit cycles = %+v, %v", cycles, err)
 	}
-	// No planning replies are scripted, so the audit ends at its first role;
-	// only the launch is under test.
 	waitCycle(t, fixture.state, cycles[0].ID)
 	events, err := fixture.state.Events(nil)
 	if err != nil {
@@ -251,8 +230,6 @@ func TestAuditControlRecordsOneOperatorEvent(t *testing.T) {
 
 func TestBaselineGateBlocksControlsConfigAndReconcile(t *testing.T) {
 	app, cfg := baselineApp(t)
-	// A synthetic live slot exercises every gate deterministically; the real
-	// worker's lifecycle is covered by the check-lifecycle tests.
 	app.runtimeMu.Lock()
 	app.runtime.baseline = &baselineJob{id: "synthetic", cancel: func() {}}
 	app.runtimeMu.Unlock()
@@ -267,7 +244,6 @@ func TestBaselineGateBlocksControlsConfigAndReconcile(t *testing.T) {
 	if _, err := app.ControlAction("pause"); err != nil {
 		t.Fatalf("pause during baseline: %v", err)
 	}
-	// The seeded publication-uncertain task makes reconcile a live action.
 	reason := model.BlockedReasonPublicationUncertain
 	task := model.Task{
 		ID: "task-seed", CycleID: "cycle-seed",
@@ -285,10 +261,6 @@ func TestBaselineGateBlocksControlsConfigAndReconcile(t *testing.T) {
 	}
 }
 
-// TestSaveConfigRevisionGatePreservesCanonicalValues covers the optimistic
-// concurrency contract: a stale revision conflicts without touching the saved
-// record, a partial patch replaces only the named fields, and the returned
-// view carries the new canonical revision plus display-transformation metadata.
 func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
 	app, _ := controlFixture(t, "idle")
 	live, err := app.Config()
@@ -307,9 +279,6 @@ func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
 	if after, err := app.Config(); err != nil || after.DefaultBranch != live.DefaultBranch {
 		t.Fatalf("stale save changed config: %v", err)
 	}
-	// A partial patch replaces only the named fields; canonical values the
-	// operator did not touch survive byte-for-byte, including values whose
-	// served display form is transformed.
 	command := "echo ghp_syntheticsecrettoken123"
 	patch = map[string]json.RawMessage{
 		"verification_commands": json.RawMessage(`["` + command + `"]`),
@@ -344,11 +313,9 @@ func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
 	if got := fields["verification_commands"]; len(got) != 1 || got[0] != "redacted" {
 		t.Fatalf("transforms: %+v", view.TransformedFields)
 	}
-	// Replaying the consumed revision conflicts; the saved record stays put.
 	if _, err := app.SaveConfig(revision, patch); err == nil || !IsActionConflict(err) {
 		t.Fatalf("replayed revision: %v", err)
 	}
-	// Unknown fields and duplicate keys inside the patch are typed rejections.
 	for name, body := range map[string]map[string]json.RawMessage{
 		"unknown field":  {"nonsense": json.RawMessage(`1`)},
 		"duplicate keys": {"runner_storage_paths": json.RawMessage(`{"codex":"/a","codex":"/b"}`)},
@@ -367,10 +334,6 @@ func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
 	}
 }
 
-// TestStateViewReportsBaselineSummaryWithoutCommands: the state view
-// summarizes the latest baseline check, with the configuration revision it
-// ran under and whether that still matches the saved configuration, but never
-// its command evidence, and a finished check is not reported as active.
 func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
 	app, cfg := baselineApp(t)
 	fingerprint, err := cfg.Fingerprint()
@@ -498,14 +461,11 @@ func TestStateViewRetainsRuntimeAuditActivity(t *testing.T) {
 	}
 }
 
-// TestStateViewStatusPrecedence pins the dashboard status order: an audit
-// wins, then paused, then a recorded error, then active work, then idle.
 func TestStateViewStatusPrecedence(t *testing.T) {
 	for _, check := range []struct {
-		name       string
-		continuous bool
-		err        bool
-		// runtime is the in-memory work: "task", "audit preflight" or "".
+		name         string
+		continuous   bool
+		err          bool
 		runtime      string
 		storedCycle  bool
 		wantStatus   string
@@ -540,7 +500,6 @@ func TestStateViewStatusPrecedence(t *testing.T) {
 			}
 			app.runtimeMu.Unlock()
 			if check.storedCycle {
-				// A committed cycle is durable before its runtime slot exists.
 				cycle := model.Cycle{
 					Mode: model.CycleModeExecution, ID: "committed-cycle", Number: 1,
 					Status: model.CycleRunning, StartedAt: model.Now(),
@@ -562,8 +521,6 @@ func TestStateViewStatusPrecedence(t *testing.T) {
 	}
 }
 
-// Recovery and the worker guard both end interrupted episodes as blocked,
-// which the enabled outbox captures once per episode.
 func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
 	dir := t.TempDir()
 	state := openStore(t, dir)
@@ -609,7 +566,6 @@ func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
 	if err := state.Put("task", guarded.ID, guarded); err != nil {
 		t.Fatal(err)
 	}
-	// The worker guard's durable effect: a still-active task ends blocked.
 	if err := app.setTaskError(&guarded, errors.New("Task worker exited unexpectedly; inspect the preserved workspace")); err != nil {
 		t.Fatal(err)
 	}
@@ -624,9 +580,6 @@ func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
 	}
 }
 
-// mismatchAdapter reports its backend's diagnostics with a version-mismatch
-// warning, standing in for a runner whose installed version differs from the
-// tested baseline.
 type mismatchAdapter struct {
 	runner.Adapter
 	warning string
@@ -638,8 +591,6 @@ func (m mismatchAdapter) Diagnose(cwd string) (runner.Diagnostics, error) {
 	return diagnostics, err
 }
 
-// catalogFailingAdapter is a mismatched runner whose model catalog request
-// fails, as an incompatible protocol version can make it.
 type catalogFailingAdapter struct {
 	mismatchAdapter
 }
@@ -648,10 +599,6 @@ func (catalogFailingAdapter) Models(string) ([]runner.Model, error) {
 	return nil, errors.New("model/list: unexpected response shape")
 }
 
-// The doctor lists each backend's diagnostics in the one wire shape the
-// dashboard and CLI read, names the observed Codex version, and returns
-// version-mismatch warnings as data, also when a route check or the catalog
-// request fails, for the command-line doctor to print.
 func TestDoctorReportsBackendDiagnosticsAndWarnings(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	app := fixture.pausedApp(t)

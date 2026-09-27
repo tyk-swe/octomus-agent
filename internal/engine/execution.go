@@ -1,9 +1,3 @@
-// execution.go owns the task lifecycle once the scheduler admits a task: a
-// deadline-supervised executor run, a fresh full-diff review per round,
-// persistent repair sessions, bounded verification evidence, an output
-// checkpoint, and publication through the guarded git layer. Every transition
-// is durable before remote or runner work resumes so a restart never loses why
-// a task ended where it did.
 package engine
 
 import (
@@ -32,10 +26,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
-// superviseTask runs one task to a terminal durable state and records why it
-// ended there: a deadline, a cancellation and a failure are all distinguishable
-// afterwards, because a task that simply stopped being mentioned would be
-// indistinguishable from one still running. This is the production TaskRunner.
 func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	return a.superviseExecution(ctx, task, a.execute)
 }
@@ -44,21 +34,13 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	workCtx, workCancel := context.WithCancel(ctx)
 	defer workCancel()
 	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
-	// The callback owns mutable task state and durable writes. runJoined waits
-	// for it to return, so terminal evidence is recorded, and runTask releases
-	// runtime and shutdown ownership, only after its last write.
 	result, executeErr := runJoined(ctx, workCancel, limit, "Task worker panicked", func() error {
 		return execute(workCtx, &task)
 	})
-	// execute succeeds only after publication is durably recorded, so a
-	// deadline that expired during that final bookkeeping is not an outcome.
 	if executeErr == nil {
 		return nil
 	}
 	if task.Status == model.StatusPublished {
-		// Delivery was recorded and only bookkeeping after it failed: keep the
-		// published record. runTask still blocks the task if the published
-		// status itself never became durable.
 		_ = a.Store.Event(task.ID, "error", executeErr.Error())
 		return executeErr
 	}
@@ -68,18 +50,9 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 		taskErr = errors.New("Task time limit exceeded")
 	}
 	message := taskErr.Error()
-	// Read the shutdown scope before the cancel marker. Shutdown cancels it
-	// under the gate, which an operator cancel holds until its marker is
-	// durable, so a cancel that preceded the shutdown is always seen.
 	shuttingDown := a.ctx.Err() != nil
 	operatorCancelled, _ := a.Store.MarkerSet("cancel", task.ID)
 	if shuttingDown && !operatorCancelled && !timedOut && task.Status.Active() && workspace.Initialized(task) {
-		// A service shutdown is not a task outcome. Leave the initialized
-		// record active with its sessions running, exactly as after a crash:
-		// restart recovery interrupts the sessions and requeues the task
-		// within its retry budget. Work stopped before initialization is
-		// blocked below and stays retryable; recovery could only report it
-		// as an invalid workspace.
 		if err := a.saveTask(&task); err != nil {
 			_ = a.Store.Event(task.ID, "worker_error", redact.Error(err))
 		}
@@ -90,16 +63,11 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 		status = model.StatusCancelled
 	}
 	if status == model.StatusCancelled {
-		// Only an operator cancel stops a worker outside shutdown and its
-		// deadline. Whatever the interrupted step returned, or a deadline that
-		// fired after the cancel, is not why the task ended; that cause stays
-		// in the error event below.
 		task.BlockedReason = nil
 		task.Error = stringPointer("Cancelled by the operator")
 	} else {
 		recordTaskError(&task, taskErr)
 		if result.Expired {
-			// The time-limit error carries no blocked reason of its own.
 			task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
 		}
 	}
@@ -110,16 +78,8 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	return a.Store.Event(task.ID, "error", message)
 }
 
-// runJoined runs fn under limit through process.WithDeadline, then waits for
-// fn to return even past WithDeadline's bounded cleanup grace: fn may still be
-// writing durable state or remote publication, and its caller must not record
-// an outcome or release ownership beside it. It returns WithDeadline's result
-// together with fn's own result, which WithDeadline drops when the deadline
-// fires first. fn runs on WithDeadline's goroutine, beyond every caller's
-// recovery boundary, so a panic comes back as an error prefixed by panicked.
 func runJoined(ctx context.Context, cancel context.CancelFunc, limit time.Duration, panicked string, fn func() error) (process.Deadline[error], error) {
 	done := make(chan struct{})
-	// Written before done closes and read only after the join.
 	var fnErr error
 	result := process.WithDeadline(ctx, cancel, limit, func() (err error) {
 		defer close(done)
@@ -135,8 +95,6 @@ func runJoined(ctx context.Context, cancel context.CancelFunc, limit time.Durati
 	return result, fnErr
 }
 
-// execute drives the admitted task through executor → snapshot → review →
-// verification/repair rounds → output checkpoint → publication.
 func (a *App) execute(ctx context.Context, task *model.Task) error {
 	cfg := task.ExecutionConfig()
 	task.Error = nil
@@ -155,7 +113,6 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	if err := client.ValidateRoutes(cfg, a.DataDir, false); err != nil {
 		return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
 	}
-	// Initialization reserves the first executor admission, including on retries.
 	admissionReserved := task.ExecutionSession == nil
 	if admissionReserved {
 		if err := a.initializeTask(ctx, task); err != nil {
@@ -203,9 +160,6 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 				return err
 			}
 			if len(verificationErrors) == 0 {
-				// Main movement changes the integration context; never silently publish an obsolete review.
-				// Publication refuses a moved default branch for every task, so check it before the
-				// checkpoint for existing-PR work too. A new-PR task's source is the default revision.
 				def, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
 				if err != nil {
 					return err
@@ -235,8 +189,6 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	}
 }
 
-// publishReviewed is the shared publication tail once a task's output is
-// recorded: transition, publish, record.
 func (a *App) publishReviewed(ctx context.Context, task *model.Task) error {
 	if err := a.transition(task, model.StatusPublishing); err != nil {
 		return err
@@ -248,8 +200,6 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task) error {
 	return a.published(task, p)
 }
 
-// publishedDependency returns a dependency that is recorded published;
-// anything else blocks the dependent.
 func (a *App) publishedDependency(id string) (model.Task, error) {
 	dependency, err := store.Get[model.Task](a.Store, "task", id)
 	if err != nil {
@@ -264,9 +214,6 @@ func (a *App) publishedDependency(id string) (model.Task, error) {
 	return *dependency, nil
 }
 
-// ensureWorkspaceAt requires the recorded workspace to still sit cleanly at
-// `revision`; anything else means recorded evidence does not describe the
-// current tree.
 func ensureWorkspaceAt(ctx context.Context, cfg config.Config, ws, revision string) error {
 	at, err := gitops.At(ctx, cfg, ws, revision)
 	if err != nil {
@@ -278,8 +225,6 @@ func ensureWorkspaceAt(ctx context.Context, cfg config.Config, ws, revision stri
 	return nil
 }
 
-// retryPreflight revalidates a task's remote and workspace prerequisites under
-// its live attempt policy before a retry or reconciliation resumes work.
 func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 	c := task.ExecutionConfig()
 	if task.Lifecycle.DiscardedAt != nil || task.Lifecycle.ArchivedAt != nil {
@@ -309,9 +254,6 @@ func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 	if !authorized {
 		return model.BlockedReasonStaleBase
 	}
-	// A task that started work must still hold its initialized workspace; one
-	// whose initialization was recorded but never started a session may resume
-	// only in a fully initialized clone at its source revision.
 	if task.ExecutionSession != nil && !workspace.Initialized(*task) {
 		return model.BlockedReasonWorkspaceInvalid
 	}
@@ -321,11 +263,6 @@ func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 	return nil
 }
 
-// validateRecordedWorkspace accepts a recorded workspace only when it is the
-// task's own managed clone, initialization recorded its comparison base, and
-// the clone sits cleanly at the task's source revision. Partial clones and
-// edits made before a session was recorded are preserved for operator
-// inspection, never reused.
 func (a *App) validateRecordedWorkspace(ctx context.Context, task *model.Task) error {
 	ws := a.taskWorkspace(task.ID)
 	if !config.SamePath(task.Workspace, ws) || task.ComparisonBase == "" {
@@ -337,9 +274,6 @@ func (a *App) validateRecordedWorkspace(ctx context.Context, task *model.Task) e
 	return ensureWorkspaceAt(ctx, task.ExecutionConfig(), ws, task.SourceRevision)
 }
 
-// initializeTask prepares a task's workspace and reserves its first executor
-// admission before the clone; the executor invocation then starts the fresh
-// session under that reservation.
 func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 	cfg := task.ExecutionConfig()
 	if err := gitops.Fetch(ctx, cfg); err != nil {
@@ -353,10 +287,6 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 		return model.BlockedReasonStaleBase
 	}
 	current := *remote
-	// Declared dependencies are validated against the selected head on every
-	// initialization, not only when the head moved: a branch reset back to the
-	// recorded source would otherwise skip the check entirely while the
-	// scheduler still regards the dependency as delivered.
 	dependencyOutputs := []string{}
 	for _, identity := range task.Proposal.Dependencies {
 		dependency, err := a.publishedDependency(identity)
@@ -379,8 +309,6 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 		dependencyOutputs = append(dependencyOutputs, *dependency.OutputCommit)
 	}
 	if current != task.SourceRevision {
-		// Only the recorded source may advance, and only onto a dependency's
-		// recorded output; any other remote movement remains a stale base.
 		if !slices.Contains(dependencyOutputs, current) {
 			return model.BlockedReasonStaleBase
 		}
@@ -421,9 +349,6 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if task.PRNumber != nil {
-			// The default revision was verified against the remote above and is
-			// in the clone's object store; re-reading the remote here could name
-			// a commit pushed after the fetch that the clone does not have.
 			task.ComparisonBase, err = gitops.Git(ctx, cfg, ws, []string{"merge-base", task.DefaultRevision, task.SourceRevision})
 			if err != nil {
 				return err
@@ -433,8 +358,6 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 		}
 		return a.saveTask(task)
 	}
-	// A failed runner start can be retried in a fully initialized clone, at
-	// the source revision after any dependency advance above.
 	return a.validateRecordedWorkspace(ctx, task)
 }
 
@@ -453,10 +376,6 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 	return err
 }
 
-// executorPrompt is the executor's task prompt. Its "Implement this accepted
-// task" prefix is matched by the e2e runner fixtures (tests/fixtures), and it
-// carries required policy: the full comparison base and no publication by
-// the worker.
 func executorPrompt(task *model.Task, cfg config.Config) string {
 	return fmt.Sprintf(
 		"Implement this accepted task end to end in this workspace. Source revision: %s. Full comparison base: %s. Existing PR: %s. Preserve existing accumulated branch behavior; inspect its full diff. Do not push, publish, merge or deploy. Required repository verification commands: %s. Objective and constraints:\n%s\nProblem: %s\nBenefit: %s\nScope: %s\nEvidence: %s\nReturn a concise summary of actual changes, verification and material risks or migration notes.",
@@ -504,21 +423,12 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	return review, nil
 }
 
-// reviewPrompt is a fresh reviewer's prompt for revision. Its "Perform a
-// fresh code review" prefix is matched by the e2e runner fixtures, and it
-// requires the full diff from the comparison base, never only the last commit.
 func reviewPrompt(task *model.Task, revision string) string {
 	return fmt.Sprintf(
 		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
 		task.ComparisonBase, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
 }
 
-// verifyRevision runs every configured verification command against exactly
-// `revision`. Worktree and HEAD are checked before the first command and after
-// each one, so a command that leaves the worktree unclean (including a new
-// untracked file that is not git-ignored) or moves HEAD, or leaves the check
-// itself unable to run, is recorded as failed evidence and stops the run
-// instead of lending its success to the reviewed revision.
 func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision string) ([]string, error) {
 	cfg := task.ExecutionConfig()
 	ws := task.Workspace
@@ -535,13 +445,9 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 			return nil, process.ErrCancelled
 		}
 		failed := outcome.failed()
-		// The state-check note follows the command's evidence, which is
-		// bounded to leave room for it, so no bound ever cuts the note.
 		note := ""
 		switch {
 		case outcome.intactErr != nil:
-			// The state check itself failed, for example because the command
-			// removed the repository: still evidence against this command.
 			note = "\n" + boundedTail(redact.Secrets(outcome.intactErr.Error()), verificationNoteLimit)
 		case !outcome.intact:
 			note = "\nWorkspace or HEAD changed during this verification command"
@@ -575,8 +481,6 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	if err != nil {
 		return err
 	}
-	// The repair thread persists across rounds: the first repair starts it and
-	// every later round resumes it.
 	_, err = a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "repair", route: cfg.RepairRoute, workspace: task.Workspace,
 		resume: task.RepairSession, keep: func(session string) { task.RepairSession = &session },
@@ -585,10 +489,6 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	return err
 }
 
-// repairPrompt is a repair round's prompt: the review's findings as JSON (an
-// empty list when there are none) and the failed verification output. Its
-// "Repair actionable findings" prefix is matched by the e2e runner fixtures,
-// and it carries the no-publication policy.
 func repairPrompt(task *model.Task, cfg config.Config, review model.Review, verificationErrors []string) (string, error) {
 	findings := review.Findings
 	if findings == nil {
@@ -631,7 +531,6 @@ func (a *App) transition(task *model.Task, status model.Status) error {
 	return a.Store.Event(task.ID, "status", statusEventName(status))
 }
 
-// statusEventName renders the saved status event name ("Reviewing", "Published", ...).
 func statusEventName(status model.Status) string {
 	name := status.String()
 	if name == "" {
@@ -644,9 +543,6 @@ func (a *App) taskWorkspace(taskID string) string {
 	return filepath.Join(a.DataDir, "tasks", taskID, "workspace")
 }
 
-// checkOutcome is one verification command's captured result plus the
-// workspace-integrity check that follows it. intactErr carries the check's own
-// failure so each caller decides whether it is evidence or fatal.
 type checkOutcome struct {
 	captured  *process.ProcessOutput
 	capture   error
@@ -654,34 +550,16 @@ type checkOutcome struct {
 	intactErr error
 }
 
-// failed reports a command failure: a capture failure or a nonzero exit.
 func (o checkOutcome) failed() bool {
 	return o.capture != nil || !o.captured.Status.Success()
 }
 
 const (
-	// verificationOutputLimit bounds one command's verification evidence, in
-	// bytes, so a saved record always fits the 16,384-character display bound
-	// and any shortening is marked in the text itself.
 	verificationOutputLimit = 16 * 1024
-	// verificationNoteLimit bounds a failed state check's text appended to
-	// that evidence.
-	verificationNoteLimit = 4096
-	// outputTruncatedMarker marks command evidence that a bound or the
-	// capture shortened.
-	outputTruncatedMarker = "[output truncated]"
+	verificationNoteLimit   = 4096
+	outputTruncatedMarker   = "[output truncated]"
 )
 
-// evidenceText renders the command for its verification record and the repair
-// prompt in at most limit bytes: stdout, then a [stderr] section, then the
-// exit status on failure. A stream the capture truncated is its kept head, an
-// outputTruncatedMarker line where output was dropped, then its real end.
-// Both parts drop the partial lines the capture cut (process.Captured.Text
-// and TailText), and secrets are scrubbed from the rest before anything is
-// cut here, so no cut exposes part of a secret. Each stream keeps its end,
-// where test runners and compilers report failures. stderr may use half the
-// bound however long stdout is, since it usually states the cause, and any
-// room stdout leaves; stdout may use whatever stderr leaves.
 func (o checkOutcome) evidenceText(limit int) string {
 	if o.capture != nil {
 		return boundedTail(redact.Secrets(o.capture.Error()), limit)
@@ -711,9 +589,6 @@ func (o checkOutcome) evidenceText(limit int) string {
 	return boundedTail(stdout, limit-len(stderr)-len(status)) + stderr + status
 }
 
-// boundedTail keeps the end of text within limit bytes, cut on a rune
-// boundary behind an outputTruncatedMarker line when its beginning is
-// dropped. limit must leave room for the marker.
 func boundedTail(text string, limit int) string {
 	if len(text) <= limit {
 		return text
@@ -726,11 +601,6 @@ func boundedTail(text string, limit int) string {
 	return prefix + text[start:]
 }
 
-// runCheckCommand runs one `bash -o pipefail -c` verification command in ws,
-// then checks the workspace still sits at revision. The integrity read is
-// skipped once ctx fires: it needs a live process and could only report the
-// cancellation rather than the workspace state, so the outcome's integrity
-// fields are meaningful only while ctx is live, and callers check ctx first.
 func runCheckCommand(ctx context.Context, cfg config.Config, ws, command, revision string) checkOutcome {
 	captured, captureErr := process.ShellCheck(ctx, command, ws, cfg.CommandTimeoutSeconds)
 	outcome := checkOutcome{captured: captured, capture: captureErr}
@@ -749,11 +619,6 @@ func sourcePtrEqual(a, b *string) bool {
 	return *a == *b
 }
 
-// debugOption, debugList and debugString render prompt values in Rust's Debug
-// notation. The service was ported from Rust and its runner fixtures match
-// the prompts it produced, so the notation is kept for byte-stable prompts.
-
-// debugOption renders a saved optional value as `Some("…")` or `None`.
 func debugOption(value *string) string {
 	if value == nil {
 		return "None"
@@ -761,7 +626,6 @@ func debugOption(value *string) string {
 	return "Some(" + debugString(*value) + ")"
 }
 
-// debugList renders a saved string list as `["a", "b"]`.
 func debugList(values []string) string {
 	parts := make([]string, len(values))
 	for i, v := range values {
@@ -770,7 +634,6 @@ func debugList(values []string) string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
-// debugString quotes a saved string with escapes and `\u{…}` for non-printable runes.
 func debugString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')

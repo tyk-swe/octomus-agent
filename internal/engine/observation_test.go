@@ -14,9 +14,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-// holdRemoteRevisionRead replaces the fixture's git shim with one that, while
-// the returned hold file exists, parks the remote default-branch head read
-// after touching the returned entered file.
 func holdRemoteRevisionRead(t *testing.T, f *planningFixture) (hold, entered string) {
 	t.Helper()
 	fixtures := filepath.Join(repositoryRoot(t), "tests", "fixtures")
@@ -44,10 +41,6 @@ runpy.run_path(%[5]q, run_name='__main__')
 	return hold, entered
 }
 
-// A configuration saved for another remote while a housekeeping observation
-// is in flight makes that observation obsolete: it finishes without an error
-// (so no housekeeping_error) and commits none of its parts, neither the
-// default-branch revision nor the context fingerprint.
 func TestObservationObsoletedByARemoteChangeCommitsNothing(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	hold, entered := holdRemoteRevisionRead(t, fixture)
@@ -85,10 +78,6 @@ func TestObservationObsoletedByARemoteChangeCommitsNothing(t *testing.T) {
 	}
 }
 
-// holdOpenPrInventoryRead replaces the fixture's gh peer with one that, while
-// the returned hold file exists, parks the open-PR inventory read after
-// touching the returned entered file, and while the returned fail file
-// exists, fails that read.
 func holdOpenPrInventoryRead(t *testing.T, f *planningFixture) (hold, entered, fail string) {
 	t.Helper()
 	fixtures := filepath.Join(repositoryRoot(t), "tests", "fixtures")
@@ -120,18 +109,11 @@ runpy.run_path(%[6]q, run_name='__main__')
 	return hold, entered, fail
 }
 
-// A configuration save that changes the PR identity while a housekeeping
-// observation's inventory refresh is in flight makes that refresh obsolete,
-// as a pause or save makes a dispatch refresh: its result is not recorded as
-// the capacity failure reason, the pass records no housekeeping_error and
-// commits nothing, and the next observation under the saved policy completes.
-// A genuine inventory failure in a later pass is still reported.
 func TestHousekeepingRefreshObsoletedByAPolicySaveIsNotAFailure(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	hold, entered, fail := holdOpenPrInventoryRead(t, fixture)
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
-	// Only the remote observation runs in this pass.
 	app.runtimeMu.Lock()
 	app.runtime.lastRetention = time.Now()
 	app.runtimeMu.Unlock()
@@ -190,7 +172,6 @@ func TestHousekeepingRefreshObsoletedByAPolicySaveIsNotAFailure(t *testing.T) {
 		t.Fatalf("obsolete observation recorded a context fingerprint: %+v, %v", control, err)
 	}
 
-	// The next observation under the saved policy completes normally.
 	saved, err := app.Config()
 	if err != nil {
 		t.Fatal(err)
@@ -235,10 +216,6 @@ func TestHousekeepingRefreshObsoletedByAPolicySaveIsNotAFailure(t *testing.T) {
 	}
 }
 
-// A housekeeping refresh that genuinely fails for the PR identity a
-// configuration save has just replaced reports nothing about the saved policy:
-// its failure is neither left as the capacity failure reason under the new
-// configuration nor recorded as a housekeeping failure.
 func TestFailedRefreshForAReplacedPolicyIsNotTheCapacityReason(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	hold, entered, fail := holdOpenPrInventoryRead(t, fixture)
@@ -266,7 +243,6 @@ func TestFailedRefreshForAReplacedPolicyIsNotTheCapacityReason(t *testing.T) {
 	if _, err := app.SaveConfig(revision, patch); err != nil {
 		t.Fatal(err)
 	}
-	// The held read of the replaced policy's inventory now fails for real.
 	if err := os.WriteFile(fail, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -300,8 +276,6 @@ func TestFailedRefreshForAReplacedPolicyIsNotTheCapacityReason(t *testing.T) {
 	}
 }
 
-// A current observation commits the default-branch revision together with the
-// context fingerprint.
 func TestObservationRecordsTheDefaultBranchWithItsContext(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
@@ -322,9 +296,6 @@ func TestObservationRecordsTheDefaultBranchWithItsContext(t *testing.T) {
 	}
 }
 
-// A changed remote context ends the idle streak and pulls only an extended
-// backoff forward to the ordinary interval; the first observation and an
-// unchanged context leave the schedule alone.
 func TestContextFingerprintShortensOnlyExtendedIdleBackoff(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	const interval = 1800

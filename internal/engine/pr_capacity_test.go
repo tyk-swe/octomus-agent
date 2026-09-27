@@ -14,8 +14,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// refreshLive runs one complete PR refresh against the live saved
-// configuration, as housekeeping and dispatch do.
 func refreshLive(app *App) error {
 	cfg, err := app.Config()
 	if err != nil {
@@ -24,8 +22,6 @@ func refreshLive(app *App) error {
 	return app.refreshPRs(context.Background(), cfg)
 }
 
-// persisted inventory is evidence only; capacity is reported as remaining only
-// while this process holds a fresh, error-free observation under the live policy.
 func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -52,7 +48,6 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 		t.Fatalf("persisted inventory alone authorized capacity: %+v, %v", capacity, err)
 	}
 
-	// A current-process observation of the persisted inventory makes it ready.
 	a.runtimeMu.Lock()
 	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now()}
 	a.runtimeMu.Unlock()
@@ -64,7 +59,6 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 		t.Fatalf("capacity lost the observation time: %+v", capacity)
 	}
 
-	// A refresh failure revokes the fresh observation's authority.
 	a.runtimeMu.Lock()
 	a.runtime.prRefreshError = "network refused"
 	a.runtimeMu.Unlock()
@@ -73,8 +67,6 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 		t.Fatalf("refresh failure did not revoke capacity with its reason: %+v, %v", capacity, err)
 	}
 
-	// An observation older than one housekeeping interval stays fresh until
-	// the next, possibly slower, observation pass has had time to land.
 	a.runtimeMu.Lock()
 	a.runtime.prRefreshError = ""
 	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(observeInterval + time.Minute))}
@@ -84,7 +76,6 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 		t.Fatalf("observation within its lifetime was reported stale: %+v, %v", capacity, err)
 	}
 
-	// An observation older than its lifetime is stale.
 	a.runtimeMu.Lock()
 	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(prObservationLifetime + time.Second))}
 	a.runtimeMu.Unlock()
@@ -93,7 +84,6 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 		t.Fatalf("stale observation authorized capacity: %+v, %v", capacity, err)
 	}
 
-	// An observation made under a different branch prefix is not current policy.
 	otherIdentity := store.PrIdentityOf(cfg)
 	otherIdentity.BranchPrefix = "other/"
 	a.runtimeMu.Lock()
@@ -104,7 +94,6 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 		t.Fatalf("observation under changed policy was not reported as such: %+v, %v", capacity, err)
 	}
 
-	// An inventory for another repository is refused and leaves the evidence.
 	wrongRepo := inventory.Clone()
 	wrongRepo.Repository = "other/project"
 	if persisted, err := state.PersistPrInventory(wrongRepo, nil); err != nil || persisted {
@@ -116,8 +105,6 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 	}
 }
 
-// an in-flight refresh reports refreshing, a failed one reports its error, and
-// the next complete observation clears that error and restores ready capacity.
 func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
@@ -135,7 +122,6 @@ func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T)
 		t.Fatalf("in-flight refresh was not reported: %+v, %v", capacity, err)
 	}
 
-	// The refresh finished with a failure.
 	app.runtimeMu.Lock()
 	app.runtime.prRefresh = nil
 	app.runtime.prRefreshError = "fixture gh failure"
@@ -145,7 +131,6 @@ func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T)
 		t.Fatalf("failed refresh did not report its error: %+v, %v", capacity, err)
 	}
 
-	// A complete observation of the empty fixture inventory clears the failure.
 	if err := refreshLive(app); err != nil {
 		t.Fatal(err)
 	}
@@ -155,9 +140,6 @@ func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T)
 	}
 }
 
-// a refresh whose own context was cancelled (pause, configuration save,
-// shutdown) is obsolete: its interrupted remote capture reports "Operation
-// cancelled", which must not become the capacity failure reason.
 func TestCancelledRefreshIsNotRecordedAsFailure(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
@@ -182,9 +164,6 @@ func TestCancelledRefreshIsNotRecordedAsFailure(t *testing.T) {
 	}
 }
 
-// while paused, a successful housekeeping refresh supersedes an earlier refresh
-// failure: the failure no longer describes the remote, but the paused service
-// still gains no dispatch authority from the new observation.
 func TestPausedRefreshClearsEarlierFailureWithoutAuthorizingDispatch(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
@@ -210,10 +189,6 @@ func TestPausedRefreshClearsEarlierFailureWithoutAuthorizingDispatch(t *testing.
 	}
 }
 
-// a housekeeping observation whose refresh was superseded by a concurrent one
-// that saved a newer complete inventory first is not a failure: the older
-// inventory is refused, no refresh failure is recorded, and the observation
-// finishes with the newer saved inventory.
 func TestObservationContinuesWithASupersedingInventory(t *testing.T) {
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
@@ -241,9 +216,6 @@ func TestObservationContinuesWithASupersedingInventory(t *testing.T) {
 	}
 }
 
-// archiving an uncertain checkpoint ends at cancelled; the durable reservation
-// it left behind can only be resolved by remote inspection, so recovery must
-// not resurrect a released one. Published work is never reseeded either.
 func TestCancelledCheckpointsAreNeverReseeded(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -300,8 +272,6 @@ func TestPauseCancelsHeldCapacityRefreshAndRejectsItsResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.wg.Wait()
-	// The pause made the held refresh obsolete; its cancellation is not a
-	// remote inventory failure to report for the rest of the pause.
 	app.runtimeMu.Lock()
 	refreshError := app.runtime.prRefreshError
 	app.runtimeMu.Unlock()
@@ -369,8 +339,6 @@ func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
 	if err != nil || saved.Status != model.StatusQueued {
 		t.Fatalf("refresh failure changed queued work: %+v, %v", saved, err)
 	}
-	// A later complete observation clears the failure and restores ready
-	// capacity — capacity_reports_refresh_state_and_clears_error_after_observation.
 	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("[]"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +407,6 @@ func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
 	if err := app.Resume(); err != nil {
 		t.Fatal(err)
 	}
-	// The first pass fetches an inventory; the next admits both available slots.
 	if err := app.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -459,8 +426,6 @@ func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
 		t.Fatalf("consuming admission evidence lost dashboard capacity: %+v, %v", capacity, err)
 	}
 
-	// Another owned PR now fills the last slot alongside our two reservations.
-	// The scheduler must observe it before admitting the next batch.
 	git(t, fixture.root, "--git-dir", filepath.Join(fixture.root, "remote.git"), "branch", "tyk/another-session", "main")
 	pr := `[{"number":7,"title":"Other owned work","body":"<!-- octomus:task:other -->","head":{"ref":"tyk/another-session","sha":"","repo":{"full_name":"fixture/project"}},"base":{"ref":"main","repo":{"full_name":"fixture/project"}},"html_url":"https://github.com/fixture/project/pull/7","state":"open","merged_at":null,"additions":1,"deletions":0,"created_at":"2026-09-07T00:00:00Z"}]`
 	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte(pr), 0o600); err != nil {
@@ -487,12 +452,6 @@ func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
 	}
 }
 
-// A new-PR admission refused while capacity remains consumed its inventory,
-// so the next refresh waits out the retry delay, as it does at full
-// capacity: a refusal with a persistent cause no longer re-reads the whole
-// open-PR inventory on every tick. A repository path respelled in a way
-// settings accept as the same repository is not such a cause: work planned
-// under the old spelling is admitted.
 func TestRefusedAdmissionPacesInventoryRefreshes(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -530,8 +489,6 @@ func TestRefusedAdmissionPacesInventoryRefreshes(t *testing.T) {
 			if err := app.Resume(); err != nil {
 				t.Fatal(err)
 			}
-			// Ticks stop once the task is admitted: with no queued work left a
-			// tick would start a planning pass.
 			for i := 0; i < 8 && len(started) == 0; i++ {
 				if err := app.Tick(); err != nil {
 					t.Fatal(err)

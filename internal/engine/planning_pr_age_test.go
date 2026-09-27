@@ -53,9 +53,6 @@ func writeMaintenancePRFixture(t *testing.T, fixture *scriptedFixture, prs []mai
 	}
 }
 
-// The audit entry point records the same grounding that discovery receives.
-// These cases also exercise configuration validation, owned PR parsing, and
-// the independent changed-line maintenance rule.
 func TestAuditGroundingOwnedPRAgeThresholds(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

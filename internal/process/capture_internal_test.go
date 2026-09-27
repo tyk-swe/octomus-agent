@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// TestBoundedReadKeepsTheHeadAndTheRealEnd: a stream past its limit keeps its
-// first limit bytes and its last TailLimit bytes in order, whatever the read
-// sizes, and a stream within its limit never allocates the tail window.
 func TestBoundedReadKeepsTheHeadAndTheRealEnd(t *testing.T) {
 	var stream bytes.Buffer
 	for i := 0; stream.Len() < 3*TailLimit; i++ {
@@ -38,10 +35,6 @@ func TestBoundedReadKeepsTheHeadAndTheRealEnd(t *testing.T) {
 	}
 }
 
-// TestTailWindowKeepsTheLastBytesAcrossWraps: writes of every size, including
-// one larger than the window and ones that wrap the ring, leave exactly the
-// last TailLimit bytes, oldest first, and reading them in between (which
-// reorders the ring in place) leaves later writes correct.
 func TestTailWindowKeepsTheLastBytesAcrossWraps(t *testing.T) {
 	var window tailWindow
 	var written []byte
@@ -57,18 +50,6 @@ func TestTailWindowKeepsTheLastBytesAcrossWraps(t *testing.T) {
 	}
 }
 
-// TestTailTextDropsThePartialFirstLineAWindowCut pins the rule every caller
-// relies on before scrubbing the real end of a truncated capture: the window
-// loses the line it began inside, or, when it holds no newline, the word, or
-// everything when there is no whitespace either. Then, as often as needed,
-// the next word goes when what was dropped could end a bearer prefix or the
-// word is an API key after a cut terminal escape sequence, since redaction
-// would no longer recognise either token, and so do the remaining words or
-// lines of an environment secret the window began inside (the passphrases
-// and the multi-line key TestMain exports), with the rest of the word such a
-// secret ends in. A dropped word that could itself be such context takes the
-// token after it along, and a whole prefix that is not dropped stays for
-// redaction. A complete capture has no tail text.
 func TestTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -117,12 +98,6 @@ func TestTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
 	}
 }
 
-// TestTailTextStaysLinearInEscapeIntermediates: a window full of the last word
-// of an environment secret TestMain exports, punctuation that a terminal
-// escape sequence's intermediate bytes may also be, loses one word at a time,
-// and every word could still start the rest of such a sequence before a key.
-// Scanning the remaining run again for each word took about a minute here;
-// scanning it once keeps the real end in a fraction of a second.
 func TestTailTextStaysLinearInEscapeIntermediates(t *testing.T) {
 	tail := "x " + strings.Repeat("! ", TailLimit/2-8) + "kept"
 	start := time.Now()

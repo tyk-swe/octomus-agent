@@ -1,12 +1,5 @@
 package engine
 
-// Execution lifecycle tests on the scripted runner adapter (package
-// runnertest) with real local Git: review, verification and repair budgets,
-// cancellation, task deadlines, executor-start retry and restart re-queue.
-// Replies are keyed by route, never by prompt text. Only the tests that reach
-// publication put the git.py shim on PATH (withGitHubIdentity), because remote
-// validation still needs a github.com origin until the GitHub port (#8).
-
 import (
 	"context"
 	"errors"
@@ -28,7 +21,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// tickUntil ticks the scheduler, without joining workers, until done closes.
 func tickUntil(t *testing.T, app *App, done <-chan struct{}, label string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -45,7 +37,6 @@ func tickUntil(t *testing.T, app *App, done <-chan struct{}, label string) {
 	t.Fatalf("%s was not reached", label)
 }
 
-// loadTask reads the durable task record.
 func loadTask(t *testing.T, state *store.Store, id string) model.Task {
 	t.Helper()
 	task, err := store.Get[model.Task](state, "task", id)
@@ -59,8 +50,6 @@ func blockedAs(task model.Task, reason model.BlockedReason) bool {
 	return task.Status == model.StatusBlocked && task.BlockedReason != nil && *task.BlockedReason == reason
 }
 
-// assertUnpublished checks that neither the task record nor the GitHub peer
-// saw a publication.
 func assertUnpublished(t *testing.T, fixture *scriptedFixture, task model.Task) {
 	t.Helper()
 	if task.OutputCommit != nil || task.PRNumber != nil || len(publications(t, fixture.planningFixture)) != 0 {
@@ -68,16 +57,10 @@ func assertUnpublished(t *testing.T, fixture *scriptedFixture, task model.Task) 
 	}
 }
 
-// TestExecutionMalformedAndIncompleteReviewsNeverPublish: a reviewer answer
-// that is unparseable, schema-invalid, incomplete or clean without a summary
-// never counts as a clean review; the task blocks before verification.
 func TestExecutionMalformedAndIncompleteReviewsNeverPublish(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		answer string
-		// reasons are the acceptable blocked reasons: a structurally broken
-		// answer fails the structured turn itself (runner_unavailable), while
-		// a well-formed but unusable review is an invalid review.
+		name    string
+		answer  string
 		reasons []model.BlockedReason
 	}{
 		{"malformed", "The change looks fine to me.", []model.BlockedReason{model.BlockedReasonInvalidReview, model.BlockedReasonRunnerUnavailable}},
@@ -121,11 +104,6 @@ func TestExecutionMalformedAndIncompleteReviewsNeverPublish(t *testing.T) {
 	}
 }
 
-// TestExecutionReviewerWorkspaceEditBlocks: a reviewer must not modify the
-// workspace. A clean answer from a reviewer that left a new file behind is not
-// recorded as a review round, because it would no longer describe the tree at
-// the reviewed revision; the task blocks as workspace_invalid before any
-// verification, and the failed reviewer session keeps the rejected answer.
 func TestExecutionReviewerWorkspaceEditBlocks(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	fixture.configure(t, func(cfg *config.Config) {
@@ -156,9 +134,6 @@ func TestExecutionReviewerWorkspaceEditBlocks(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionFailedVerificationExhaustsRepairBudget: every review is clean
-// but verification fails every time; the repair budget, not the reviewer,
-// decides the outcome, and one persistent repair thread carries every round.
 func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	fixture.configure(t, func(cfg *config.Config) {
@@ -169,8 +144,6 @@ func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
 	routes, script := fixture.routes, fixture.script
 	script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature.txt", Effect: writeFile("feature.txt", "draft\n")})
 	script.Answer(routes.Reviewer, cleanReview("Round one"), cleanReview("Round two"), cleanReview("Round three"))
-	// Each repair makes progress, so only the repair budget can end the task.
-	// The third reply must stay unconsumed.
 	script.Queue(routes.Repair,
 		runnertest.Reply{Answer: "Repair one", Effect: writeFile("feature.txt", "repair one\n")},
 		runnertest.Reply{Answer: "Repair two", Effect: writeFile("feature.txt", "repair two\n")},
@@ -198,8 +171,6 @@ func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
 	if len(revisions) != 3 {
 		t.Fatalf("every repair must progress to a new revision: %+v", saved.Reviews)
 	}
-	// Each fresh reviewer is asked for the full diff at its own round's
-	// revision, and each repair is handed the failed verification.
 	reviewTurns := script.Turns(routes.Reviewer)
 	for i, round := range saved.Reviews {
 		if !strings.Contains(reviewTurns[i].Prompt, "git diff "+saved.ComparisonBase+" HEAD. Recorded HEAD: "+round.Revision+".") {
@@ -227,9 +198,6 @@ func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionNoProgressLimitStopsIdenticalRepairs: a repair that reproduces
-// the same tree yields the identical snapshot revision; the no-progress
-// budget, not the repair cap, ends the task.
 func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	fixture.configure(t, func(cfg *config.Config) {
@@ -240,7 +208,6 @@ func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
 	routes, script := fixture.routes, fixture.script
 	script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature.txt", Effect: writeFile("feature.txt", "draft\n")})
 	script.Answer(routes.Reviewer, cleanReview("Round one"), cleanReview("Round two"), cleanReview("Round three"))
-	// The first repair progresses; the second rewrites identical output.
 	script.Queue(routes.Repair,
 		runnertest.Reply{Answer: "Wrote fixed output", Effect: writeFile("feature.txt", "fixed\n")},
 		runnertest.Reply{Answer: "Rewrote fixed output", Effect: writeFile("feature.txt", "fixed\n")},
@@ -269,14 +236,9 @@ func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionRepairPromptCarriesRoundEvidence: a repair turn is handed what
-// its round found. A clean review whose verification failed passes the
-// failing command with its output and no findings; a review with findings
-// skips verification and passes the findings as JSON with no failures.
 func TestExecutionRepairPromptCarriesRoundEvidence(t *testing.T) {
 	t.Run("verification failure", func(t *testing.T) {
 		fixture := newScriptedFixture(t)
-		// The output FAIL-42 does not appear in the command text itself.
 		failing := "echo FAIL-$((40+2)); false"
 		fixture.configure(t, func(cfg *config.Config) {
 			cfg.VerificationCommands = []string{failing}
@@ -344,10 +306,6 @@ func TestExecutionRepairPromptCarriesRoundEvidence(t *testing.T) {
 	})
 }
 
-// TestExecutionWithoutChangesBlocksBeforeReview: an executor that leaves no
-// change against the source revision, whether it commits nothing or only
-// commits that cancel out, blocks as verification_failed with an error that
-// says so, and no reviewer or repair turn is spent on it.
 func TestExecutionWithoutChangesBlocksBeforeReview(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -391,9 +349,6 @@ func TestExecutionWithoutChangesBlocksBeforeReview(t *testing.T) {
 	}
 }
 
-// TestExecutionCancellationDuringTurn: the operator cancel reaches a running
-// executor turn; the durable outcome is cancelled, not failed, and the turn's
-// session is not recorded as completed.
 func TestExecutionCancellationDuringTurn(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	routes, script := fixture.routes, fixture.script
@@ -418,8 +373,6 @@ func TestExecutionCancellationDuringTurn(t *testing.T) {
 	if marked, err := fixture.state.MarkerSet("cancel", task.ID); err != nil || !marked {
 		t.Fatalf("cancel marker = %v, %v", marked, err)
 	}
-	// The record names the operator cancel, not the runner error the
-	// interrupted turn happened to return; that cause stays in the events.
 	if saved.Error == nil || *saved.Error != "Cancelled by the operator" || saved.BlockedReason != nil {
 		t.Fatalf("cancelled task error = %q, reason = %v", optionalText(saved.Error), saved.BlockedReason)
 	}
@@ -438,9 +391,6 @@ func TestExecutionCancellationDuringTurn(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionTaskTimeout: the task deadline fires while an executor turn is
-// in flight; the durable outcome is a timed-out block, not a runner failure or
-// a cancellation, and the running session is failed.
 func TestExecutionTaskTimeout(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	routes, script := fixture.routes, fixture.script
@@ -448,8 +398,6 @@ func TestExecutionTaskTimeout(t *testing.T) {
 	t.Cleanup(gate.Release)
 	script.Queue(routes.Executor, runnertest.Reply{Answer: "Never delivered", Gate: gate})
 	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
-	// The task snapshot carries the deadline; settings validation does not
-	// apply to it, so the test need not wait out the ten-second minimum.
 	task.Config.TaskTimeoutSeconds = 3
 	saveExecutionTask(t, fixture.planningFixture, task)
 	app := fixture.newApp(t)
@@ -490,18 +438,12 @@ func TestExecutionTaskTimeout(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionTimeoutJoinsCallbackBeforeFinalizing: an executor turn that
-// ignores cancellation outlives the task deadline and its cleanup grace. The
-// worker must keep runtime ownership and leave the durable record alone until
-// the turn returns, then record the timeout on top of the turn's late write.
 func TestExecutionTimeoutJoinsCallbackBeforeFinalizing(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	routes, script := fixture.routes, fixture.script
 	entered, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	releaseTurn := func() { releaseOnce.Do(func() { close(release) }) }
-	// The effect models non-cancellable runner work: it ignores the task's
-	// context entirely. The route has one reply, so it runs once.
 	script.Queue(routes.Executor, runnertest.Reply{Answer: "Late executor answer", Effect: func(string) error {
 		close(entered)
 		<-release
@@ -511,10 +453,9 @@ func TestExecutionTimeoutJoinsCallbackBeforeFinalizing(t *testing.T) {
 	task.Config.TaskTimeoutSeconds = 2
 	saveExecutionTask(t, fixture.planningFixture, task)
 	app := fixture.newApp(t)
-	t.Cleanup(releaseTurn) // Runs before the app's Shutdown cleanup.
+	t.Cleanup(releaseTurn)
 
 	tickUntil(t, app, entered, "non-cancellable executor turn")
-	// Exceed the task deadline plus WithDeadline's eight-second grace.
 	time.Sleep(11 * time.Second)
 	if app.Drained() {
 		t.Fatal("the worker released runtime ownership while its turn could still write")
@@ -531,7 +472,6 @@ func TestExecutionTimeoutJoinsCallbackBeforeFinalizing(t *testing.T) {
 	if !blockedAs(saved, model.BlockedReasonTimeout) || saved.Error == nil || !strings.Contains(*saved.Error, "time limit") {
 		t.Fatalf("timeout evidence lost to the late write: %+v", saved)
 	}
-	// The turn's late write is kept, underneath the terminal timeout record.
 	executors := sessionByRole(saved, "executor")
 	if len(executors) != 1 || executors[0].Status != model.SessionCompleted || executors[0].Summary != "Late executor answer" {
 		t.Fatalf("late executor write = %+v", executors)
@@ -545,10 +485,6 @@ func TestExecutionTimeoutJoinsCallbackBeforeFinalizing(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionDeadlineCallbackPanicBlocks: a panic inside the executor turn
-// runs on the deadline callback's goroutine, beyond the worker's own recovery;
-// supervision still blocks the task, fails the running session and records the
-// panic.
 func TestExecutionDeadlineCallbackPanicBlocks(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	routes, script := fixture.routes, fixture.script
@@ -570,10 +506,6 @@ func TestExecutionDeadlineCallbackPanicBlocks(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionFailedExecutorStartRetries: a runner start failure keeps the
-// reserved admission and the initialized clone, blocks without a session, and
-// an operator retry redelivers in the same clone with exactly one new executor
-// admission.
 func TestExecutionFailedExecutorStartRetries(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	routes, script := fixture.routes, fixture.script
@@ -622,9 +554,6 @@ func TestExecutionFailedExecutorStartRetries(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionRestartRequeuesInitializedTask: a task that died mid-execution
-// with an intact workspace is re-queued on restart and resumes its executor
-// session instead of starting over.
 func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	fixture.configure(t, func(cfg *config.Config) {
@@ -637,8 +566,6 @@ func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
 	if err := gitops.CloneAt(ctx, fixture.cfg, ws, task.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
-	// The previous process started the executor thread; the runner still
-	// knows it, so a resume can succeed.
 	previous, err := script.Connector()(ctx, routes.Executor.Backend, fixture.cfg, ws)
 	if err != nil {
 		t.Fatal(err)
@@ -685,7 +612,6 @@ func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
 	if executors := sessionByRole(saved, "executor"); len(executors) != 1 || executors[0].Status != model.SessionCompleted || executors[0].Summary != "Created feature.txt" {
 		t.Fatalf("resumed executor session = %+v", executors)
 	}
-	// The seeding start plus exactly one engine start, which resumed the thread.
 	starts := script.Starts(routes.Executor)
 	if len(starts) != 2 || starts[1].Resume == nil || *starts[1].Resume != thread || starts[1].Cwd != ws {
 		t.Fatalf("executor starts = %+v; want one resume of %s", starts, thread)
@@ -697,9 +623,6 @@ func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// advanceRemoteMain lands an external commit on the fixture remote's main,
-// as a maintainer merge would. It reports errors instead of failing the test
-// so it can run inside a scripted reply effect.
 func advanceRemoteMain(fixture *scriptedFixture) error {
 	remote := filepath.Join(fixture.root, "remote.git")
 	git := func(args ...string) (string, error) {
@@ -721,7 +644,6 @@ func advanceRemoteMain(fixture *scriptedFixture) error {
 	return err
 }
 
-// existingPrTask is a follow-up task on the fixture's owned open PR #42.
 func existingPrTask(t *testing.T, fixture *scriptedFixture) model.Task {
 	t.Helper()
 	head := existingPrBranch(t, fixture.planningFixture)
@@ -735,10 +657,6 @@ func existingPrTask(t *testing.T, fixture *scriptedFixture) model.Task {
 	return task
 }
 
-// TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint: publication refuses
-// every task whose default branch moved, so an existing-PR task whose main
-// moved during execution blocks as a stale base before recording an output
-// checkpoint that could never publish, and keeps its cancel action.
 func TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	routes, script := fixture.routes, fixture.script
@@ -768,20 +686,12 @@ func TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionExistingPrComparisonBaseSurvivesMainMovingAfterClone: an
-// existing-PR task compares against the merge base of its verified default
-// revision. Main moving while the workspace is cloned must not replace that
-// base with a commit the clone never fetched; the move surfaces as a stale
-// base before the output checkpoint instead.
 func TestExecutionExistingPrComparisonBaseSurvivesMainMovingAfterClone(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	routes, script := fixture.routes, fixture.script
 	task := existingPrTask(t, fixture)
 	ws := filepath.Join(fixture.dataDir, "tasks", task.ID, "workspace")
 	moved := filepath.Join(fixture.root, "main-moved")
-	// Every remote read of the configured checkout goes through this
-	// upload-pack. The first one after the task clone exists finds main
-	// already moved, as if a maintainer merged while the clone ran.
 	uploadPack := filepath.Join(fixture.root, "moving-upload-pack")
 	remote := filepath.Join(fixture.root, "remote.git")
 	body := fmt.Sprintf(`#!/bin/sh
@@ -820,7 +730,6 @@ exec git-upload-pack "$@"
 	assertNoOpenClients(t, script)
 }
 
-// taskEventKinds lists the kinds of a task's recorded events.
 func taskEventKinds(t *testing.T, state *store.Store, id string) map[string]int {
 	t.Helper()
 	events, err := state.Events(&id)
@@ -834,7 +743,6 @@ func taskEventKinds(t *testing.T, state *store.Store, id string) map[string]int 
 	return kinds
 }
 
-// optionalText renders an optional saved string for a failure message.
 func optionalText(value *string) string {
 	if value == nil {
 		return "<nil>"
@@ -842,8 +750,6 @@ func optionalText(value *string) string {
 	return *value
 }
 
-// hasEvent reports whether an entity recorded an event of kind whose message
-// contains text.
 func hasEvent(t *testing.T, state *store.Store, id, kind, text string) bool {
 	t.Helper()
 	events, err := state.Events(&id)
@@ -858,10 +764,6 @@ func hasEvent(t *testing.T, state *store.Store, id, kind, text string) bool {
 	return false
 }
 
-// TestExecutionShutdownLeavesInitializedTaskForRecovery: a graceful stop
-// during an executor turn is not a task outcome. The initialized task keeps
-// its active record and running session, as after a crash, so restart
-// recovery requeues it and the executor thread resumes to deliver once.
 func TestExecutionShutdownLeavesInitializedTaskForRecovery(t *testing.T) {
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	routes, script := fixture.routes, fixture.script
@@ -923,10 +825,6 @@ func TestExecutionShutdownLeavesInitializedTaskForRecovery(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-// TestExecutionShutdownBeforeInitializationStaysRetryable: a graceful stop
-// while the remote preflight of a never-initialized task runs has no
-// workspace for recovery to resume, so the task is blocked and keeps its
-// retry action; restart recovery leaves that block alone.
 func TestExecutionShutdownBeforeInitializationStaysRetryable(t *testing.T) {
 	fixture := newScriptedFixture(t)
 	heldUploadPack(t, fixture.planningFixture)

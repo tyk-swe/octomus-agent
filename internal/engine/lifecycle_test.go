@@ -13,12 +13,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-// Acceptance criterion 7: repeated start → activity → cancel/shutdown cycles
-// leave no owned children and return the descriptor and goroutine population
-// to baseline. Each iteration boots a fresh store and app, dispatches a real
-// task into a blocking runner, lets housekeeping start its owned git
-// subprocesses, then stops the service alternately through the parent context
-// and through Shutdown directly.
 func TestRepeatedLifecycleLeavesNoLeaks(t *testing.T) {
 	if _, err := os.Stat("/proc/self/fd"); err != nil {
 		t.Skip("requires /proc")
@@ -39,7 +33,7 @@ func TestRepeatedLifecycleLeavesNoLeaks(t *testing.T) {
 		cfg := testConfig(filepath.Join(dir, "checkout"))
 		control := model.DefaultControl()
 		control.SetMode(model.OperatingModeContinuous)
-		control.NextCycleAt = time.Now().Unix() + 3600 // no planning cycle during the loop
+		control.NextCycleAt = time.Now().Unix() + 3600
 		saveSettings(t, state, cfg, control)
 		started := make(chan string, 1)
 		app := New(state, dir, WithTaskRunner(TaskRunnerFunc(func(ctx context.Context, task model.Task) error {
@@ -47,7 +41,6 @@ func TestRepeatedLifecycleLeavesNoLeaks(t *testing.T) {
 			<-ctx.Done()
 			return ctx.Err()
 		})))
-		// A non-default-branch target dispatches without a PR inventory.
 		task := queuedTask(cfg, "leak-check", "octomus/existing", "octomus/existing")
 		if err := state.Put("task", task.ID, task); err != nil {
 			t.Fatal(err)
@@ -63,9 +56,9 @@ func TestRepeatedLifecycleLeavesNoLeaks(t *testing.T) {
 			t.Fatal("the queued task never dispatched")
 		}
 		if iteration%2 == 0 {
-			cancel() // service-level shutdown: Run observes ctx and drains itself
+			cancel()
 		} else {
-			app.Shutdown() // operator stop while the runner is still active
+			app.Shutdown()
 		}
 		select {
 		case err := <-done:
@@ -83,8 +76,6 @@ func TestRepeatedLifecycleLeavesNoLeaks(t *testing.T) {
 			t.Fatalf("iteration %d: %v", iteration, err)
 		}
 	}
-	// Warm up so lazy runtime state and transient descriptors are counted in
-	// the baseline; a leak only ever grows the count.
 	for i := 0; i < 3; i++ {
 		lifecycle(t, i)
 	}
@@ -93,8 +84,6 @@ func TestRepeatedLifecycleLeavesNoLeaks(t *testing.T) {
 	for i := 3; i < 18; i++ {
 		lifecycle(t, i)
 	}
-	// A bounded settle forgives asynchronous finalizers without masking a real
-	// leak, which only grows.
 	var extraFDs, extraG int
 	if !testutil.WaitUntil(10*time.Second, func() bool {
 		runtime.GC()

@@ -7,11 +7,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-// TestReasonHelpersKeepMessageReasonAndCause pins the shape of typed
-// publication refusals that task errors, the dashboard and notifications show:
-// the detailed message first, then the reason sentence, then any cause; the
-// reason classifies the refusal unless the cause carries a deeper one, and the
-// cause stays reachable.
 func TestReasonHelpersKeepMessageReasonAndCause(t *testing.T) {
 	reason := model.BlockedReasonRemoteConflict
 	refusal := blocked(reason, "Invalid PR creation URL")
@@ -37,8 +32,6 @@ func TestReasonHelpersKeepMessageReasonAndCause(t *testing.T) {
 		t.Fatal("reasoned must wrap both its reason and its cause")
 	}
 
-	// A cause that is itself a typed refusal is the deeper, more specific
-	// classification.
 	nested := reasoned(reason, "Outer", blocked(model.BlockedReasonStaleBase, "Inner"))
 	if got := model.BlockedReasonFromError(nested); got != model.BlockedReasonStaleBase {
 		t.Fatalf("nested reason = %v; want the cause's %v", got, model.BlockedReasonStaleBase)
