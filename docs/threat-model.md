@@ -47,6 +47,10 @@ It has constant-time token-hash comparison and a shared failed-authentication
 backoff (100 ms, doubling to one second; resets after 60 seconds without failures).
 Valid tokens bypass this delay. Concurrent requests can bypass its practical
 throttling effect, so it is a deterrent rather than protection for public exposure.
+Request headers must arrive within 10 seconds, idle keep-alive connections close after
+two minutes and request bodies are limited to 256 KiB. Reading a body and writing a
+response have no time limit, because connection checks and model catalogs can take
+about a minute.
 
 Authenticated mutations require a JSON content type; no cross-origin access policy
 is enabled. Security headers reduce browser attack surface but cannot secure a
@@ -58,7 +62,8 @@ environment and restart; old tokens then fail.
 
 The filter replaces common bearer tokens, selected GitHub/OpenAI key patterns,
 credential-bearing URL prefixes, and environment values of at least eight
-characters whose variable names contain TOKEN, SECRET, PASSWORD or API_KEY. It
+characters whose variable names contain TOKEN, SECRET, PASSWORD or API_KEY, as well
+as the attention webhook URL. It
 bounds each returned string to 16,384 characters. Events and dashboard JSON pass
 through redaction; this is not an encryption or data-loss-prevention system.
 

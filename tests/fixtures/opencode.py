@@ -24,6 +24,9 @@ if sys.argv[1:] == ['--version']:
     sys.exit(0)
 if mode() == 'startup-failure':
     sys.exit(1)
+if mode() == 'startup-stderr':
+    print('fixture startup failure token=ghp_fixtureStartupSecret0001', file=sys.stderr, flush=True)
+    sys.exit(1)
 if mode() == 'startup-hang':
     time.sleep(120)
 assert sys.argv[1] == 'serve'
@@ -77,6 +80,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def setup_request(self):
+        if mode() == 'overlong-stdout':
+            # Server logs keep reaching stdout after readiness.
+            print('x' * 8191, flush=True)
         expected = 'Basic ' + base64.b64encode(f"{os.environ['OPENCODE_SERVER_USERNAME']}:{os.environ['OPENCODE_SERVER_PASSWORD']}".encode()).decode()
         if self.headers.get('Authorization') != expected:
             self.send_json({'error': 'unauthorized'}, 401)
@@ -100,7 +106,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.setup_request():
             return
-        if self.parts == ['global', 'health']:
+        if self.parts == ['global', 'health'] and mode() == 'unhealthy-stderr':
+            print('fixture health failure token=ghp_fixtureStartupSecret0001', file=sys.stderr, flush=True)
+            self.send_json({'healthy': False, 'version': '1.18.30'})
+        elif self.parts == ['global', 'health']:
             self.send_json({'healthy': True, 'version': '0.0.0-fixture' if mode() == 'version-mismatch' else '1.18.30'})
         elif self.parts == ['config']:
             self.send_json({**policy, 'share': 'auto'} if mode() == 'wrong-policy' else policy)
@@ -125,6 +134,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(info)
             else:
                 self.send_json({'error': 'missing session'}, 404)
+        elif self.parts == ['event'] and mode() == 'event-404':
+            self.send_json({'error': 'no events'}, 404)
         elif self.parts == ['event']:
             events = queue.Queue()
             with lock:
@@ -289,4 +300,7 @@ port = int(sys.argv[sys.argv.index('--port') + 1])
 server = Server(('127.0.0.1', port), Handler)
 log('opencode-pids.jsonl', {'pid': os.getpid()})
 print(f'opencode server listening on http://127.0.0.1:{server.server_port}', flush=True)
+if mode() == 'overlong-stdout':
+    # One stdout line over the adapter's 16 KiB readiness line bound.
+    print('z' * 20000, flush=True)
 server.serve_forever()

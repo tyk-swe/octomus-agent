@@ -138,7 +138,9 @@ def embedding_contracts():
     with tempfile.TemporaryDirectory(prefix='octomus-binary-embed-') as directory:
         root = Path(directory)
         shutil.copy2(PROJECT / 'web/embed.go', root / 'embed.go')
-        (root / 'go.mod').write_text('module embedded-contract\n\ngo 1.27.1\n')
+        # go.mod is the single source of the language version.
+        version = re.search(r'^go (\S+)$', (PROJECT / 'go.mod').read_text(), re.M).group(1)
+        (root / 'go.mod').write_text(f'module embedded-contract\n\ngo {version}\n')
         for stage in ['absent', 'entrypoint-only', 'complete', 'bundle-without-entrypoint']:
             if stage == 'entrypoint-only':
                 (root / 'build').mkdir()

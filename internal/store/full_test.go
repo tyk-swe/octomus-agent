@@ -1,15 +1,15 @@
 package store
 
 // A durable write that fails mid-operation is never acknowledged: the API
-// reports the error and no
-// record, counter, or ledger entry is committed.
+// reports the error and no record, counter, or ledger entry is committed.
 //
 // These tests are internal (package store, not store_test) because the
 // deterministic disk-exhaustion injection must run on the store's pinned
 // connection: PRAGMA max_page_count is per-connection, so a second handle can
 // never constrain the writer. For the multi-statement transactions whose
 // writes are small enough to fit pre-existing page slack, an abort trigger
-// injects the same mid-transaction failure the disk-full case depends on —
+// injects the same mid-transaction failure the disk-full case relies on, and
+// the whole transaction must roll back.
 
 import (
 	"errors"

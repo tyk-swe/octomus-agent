@@ -3,8 +3,8 @@
 // group, never just the direct child.
 //
 // Diagnostics and machine output are separate contracts: diagnostic captures
-// keep a bounded preview for humans while machine captures fail closed on
-// truncation or invalid UTF-8.
+// keep a bounded preview for humans, the beginning of each stream and its real
+// end, while machine captures fail closed on truncation or invalid UTF-8.
 package process
 
 import (
@@ -14,23 +14,23 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
-	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"golang.org/x/sys/unix"
 )
 
-// TokenEnv is the operator-token variable removed from every child environment;
-// it must not reach child processes.
-const TokenEnv = "OCTOMUS_TOKEN"
-
 // Command builds an owned command: a new process group (pgid = child pid), the
-// service's secret environment removed, Git prompting disabled, and stdin on the
-// null device. Callers override Stdin/Stdout/Stderr before Start as needed.
+// service's secret environment and Git's repository-locating variables
+// removed, Git prompting disabled, and stdin on the null device. Callers
+// override Stdin/Stdout/Stderr before Start as needed.
 func Command(binary string, cwd string) *exec.Cmd {
 	cmd := exec.Command(binary)
 	cmd.Dir = cwd
@@ -39,7 +39,16 @@ func Command(binary string, cwd string) *exec.Cmd {
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {
-		case TokenEnv, store.WebhookEnv, "GIT_TERMINAL_PROMPT":
+		case redact.TokenEnv, redact.WebhookEnv, "GIT_TERMINAL_PROMPT":
+			continue
+		// Repository-locating Git variables (as exported into Git hooks) would
+		// redirect every child git away from cmd.Dir; Git itself clears them
+		// before entering another repository. The GIT_CONFIG* channels are the
+		// operator's deliberate configuration and pass through.
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_COMMON_DIR",
+			"GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+			"GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_NO_REPLACE_OBJECTS",
+			"GIT_REPLACE_REF_BASE":
 			continue
 		}
 		env = append(env, entry)
@@ -49,9 +58,9 @@ func Command(binary string, cwd string) *exec.Cmd {
 }
 
 // GroupChild owns a started process and its recorded process group. Close kills
-// the group first and then the leader; the stored group id stays meaningful even
-// after Wait reaps the leader, so cleanup also terminates background descendants
-// after normal completion.
+// the group first and then the leader, so background descendants die even after
+// the leader completed normally. The group id stays reserved only while some
+// member is alive: once the whole group has exited, the kernel may reuse it.
 type GroupChild struct {
 	Cmd  *exec.Cmd
 	pgid int
@@ -79,6 +88,10 @@ const (
 	// MachineLimit bounds stdout for machine-readable output. It is distinct
 	// from the runner protocol's 16,000,000-byte bound.
 	MachineLimit = 16 * 1024 * 1024
+	// TailLimit bounds the rolling window that keeps the real end of a stream
+	// past its limit, where commands usually state their result. The window is
+	// allocated only once a stream passes its limit.
+	TailLimit = 64 * 1024
 )
 
 // CaptureMode selects the stdout bound; stderr is always diagnostic-bounded.
@@ -90,25 +103,140 @@ const (
 )
 
 // Captured is bounded output: at most limit bytes kept plus a truncation flag
-// once anything beyond the limit was observed.
+// once anything beyond the limit was observed, and then the stream's last
+// bytes, at most TailLimit of them (TailText).
 type Captured struct {
 	Bytes     []byte
 	Truncated bool
+	// tail is the rolling window's content, oldest byte first: the last bytes
+	// written after Bytes. It is empty unless Truncated.
+	tail []byte
 }
 
-// Preview renders kept bytes as lossy UTF-8 (invalid sequences become U+FFFD)
-// and flags truncation explicitly.
-func (c Captured) Preview() string {
+// Text renders kept bytes as lossy UTF-8 (invalid sequences become U+FFFD).
+// A truncated capture stops wherever the limit fell, possibly inside a secret
+// that redaction can then no longer recognise, so its partial last line is
+// dropped: the text is cut back to its last newline, or to its last
+// whitespace when the kept bytes hold no newline, or to nothing. The first
+// words or lines of a multi-word or multi-line environment secret the limit
+// cut are dropped with it (redact.TrimCutSecretEnd).
+func (c Captured) Text() string {
 	text := strings.ToValidUTF8(string(c.Bytes), "\uFFFD")
-	if c.Truncated {
-		return text + "\n[diagnostic output truncated]"
+	if !c.Truncated {
+		return text
 	}
-	return text
+	if i := strings.LastIndexByte(text, '\n'); i >= 0 {
+		return redact.TrimCutSecretEnd(text[:i])
+	}
+	if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
+		return redact.TrimCutSecretEnd(text[:i])
+	}
+	return ""
 }
 
-// Status is the end state of a direct child, matching std::process::ExitStatus:
-// an exit code when the leader exited normally, or the terminating signal when
-// it was killed. Code reports false for signal termination, never a placeholder.
+// TailText renders the real end of a truncated capture, the rolling window
+// of its last bytes, as lossy UTF-8; it is empty for a complete capture. The
+// window starts wherever the stream then was, possibly inside a secret that
+// redaction can then no longer recognise, so its partial first line is
+// dropped, or, when the window holds no newline, its partial first word, or
+// everything when there is no whitespace either. Redaction also recognises
+// some tokens only after context that may have been dropped: a bearer token
+// after "Bearer" and whitespace, an API key after a terminal escape sequence
+// that holds spaces, and the later words or lines of a multi-word or
+// multi-line environment secret after its first ones. So, repeatedly, the
+// kept text loses its first word while what was dropped just before it could
+// end a bearer prefix, loses such a key and the rest of its sequence, and
+// loses the later part of such an environment secret
+// (redact.TrimCutSecretStart) with the rest of the word it ends in, which may
+// belong to a token redaction recognises only with that part.
+func (c Captured) TailText() string {
+	if !c.Truncated {
+		return ""
+	}
+	text := strings.ToValidUTF8(string(c.tail), "\uFFFD")
+	dropped, rest, found := strings.Cut(text, "\n")
+	if !found {
+		i := strings.IndexFunc(text, unicode.IsSpace)
+		if i < 0 {
+			return ""
+		}
+		dropped, rest = text[:i], text[i:]
+	}
+	// run is where the escape sequence intermediate bytes the kept text
+	// starts with end in text. Each run is scanned once, not once per word
+	// dropped inside it, so the loop stays linear.
+	run := 0
+	for {
+		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
+		at := len(text) - len(rest)
+		if at >= run {
+			run = at + len(rest) - len(strings.TrimLeft(rest, escapeIntermediates))
+		}
+		// A word to drop ends at the first whitespace from `from` on.
+		from := -1
+		if key := cutEscapeKey.FindStringIndex(text[run:]); key != nil {
+			from = run - at + key[1]
+		} else if mayEndBearerPrefix(strings.TrimRightFunc(dropped, unicode.IsSpace)) {
+			from = 0
+		} else if trimmed := redact.TrimCutSecretStart(rest); len(trimmed) < len(rest) {
+			from = len(rest) - len(trimmed)
+		}
+		if from < 0 {
+			return rest
+		}
+		i := strings.IndexFunc(rest[from:], unicode.IsSpace)
+		if i < 0 {
+			return ""
+		}
+		dropped, rest = rest[:from+i], rest[from+i:]
+	}
+}
+
+// escapeIntermediates are the intermediate bytes of a terminal escape
+// sequence, spaces among them, which can come before its last byte.
+const escapeIntermediates = " !\"#$%&'()*+,-./"
+
+// cutEscapeKey matches, after the escapeIntermediates kept text starts with,
+// an API key redaction recognises only after a terminal escape sequence whose
+// last byte is a letter: that letter, then the key (redact's key pattern).
+var cutEscapeKey = regexp.MustCompile(`(?i)^[a-z]sk-[a-z0-9_-]{10}`)
+
+// mayEndBearerPrefix reports whether text, dropped just before the kept text
+// and with trailing whitespace removed, could end the "Bearer" that redaction
+// needs before a token: it is empty (the window began in the whitespace after
+// the prefix), all of it is the end of the prefix (the window began inside
+// it), or it ends with the whole prefix.
+func mayEndBearerPrefix(text string) bool {
+	const prefix = "bearer"
+	n := min(len(text), len(prefix))
+	return (n == len(text) || n == len(prefix)) && strings.EqualFold(text[len(text)-n:], prefix[len(prefix)-n:])
+}
+
+// diagnosticTruncatedMarker stands where a truncated capture dropped output.
+const diagnosticTruncatedMarker = "[diagnostic output truncated]"
+
+// Preview renders Text and flags truncation explicitly: a truncated capture
+// is followed by a marker line, then by its real end (TailText) when that
+// holds anything.
+func (c Captured) Preview() string {
+	return joinPreview(c.Text(), c.TailText(), c.Truncated)
+}
+
+// joinPreview renders a stream's head, and for a truncated capture the marker
+// and its tail, as Preview does.
+func joinPreview(head, tail string, truncated bool) string {
+	if !truncated {
+		return head
+	}
+	if tail == "" {
+		return head + "\n" + diagnosticTruncatedMarker
+	}
+	return head + "\n" + diagnosticTruncatedMarker + "\n" + tail
+}
+
+// Status is the end state of a direct child: an exit code when the leader
+// exited normally, or the terminating signal when it was killed. Code reports
+// false for signal termination, never a placeholder.
 type Status struct {
 	state *os.ProcessState
 }
@@ -125,72 +253,11 @@ func (s Status) Code() (int, bool) {
 	return code, code >= 0
 }
 
-// signalString returns a searchable Linux signal name in
-// parentheses for known signals, nothing for unrecognized ones.
+// signalString returns the searchable signal name in parentheses for known
+// signals, nothing for unrecognized ones.
 func signalString(signal int) string {
-	switch syscall.Signal(signal) {
-	case syscall.SIGHUP:
-		return " (SIGHUP)"
-	case syscall.SIGINT:
-		return " (SIGINT)"
-	case syscall.SIGQUIT:
-		return " (SIGQUIT)"
-	case syscall.SIGILL:
-		return " (SIGILL)"
-	case syscall.SIGTRAP:
-		return " (SIGTRAP)"
-	case syscall.SIGABRT:
-		return " (SIGABRT)"
-	case syscall.SIGBUS:
-		return " (SIGBUS)"
-	case syscall.SIGFPE:
-		return " (SIGFPE)"
-	case syscall.SIGKILL:
-		return " (SIGKILL)"
-	case syscall.SIGUSR1:
-		return " (SIGUSR1)"
-	case syscall.SIGSEGV:
-		return " (SIGSEGV)"
-	case syscall.SIGUSR2:
-		return " (SIGUSR2)"
-	case syscall.SIGPIPE:
-		return " (SIGPIPE)"
-	case syscall.SIGALRM:
-		return " (SIGALRM)"
-	case syscall.SIGTERM:
-		return " (SIGTERM)"
-	case syscall.SIGSTKFLT:
-		return " (SIGSTKFLT)"
-	case syscall.SIGCHLD:
-		return " (SIGCHLD)"
-	case syscall.SIGCONT:
-		return " (SIGCONT)"
-	case syscall.SIGSTOP:
-		return " (SIGSTOP)"
-	case syscall.SIGTSTP:
-		return " (SIGTSTP)"
-	case syscall.SIGTTIN:
-		return " (SIGTTIN)"
-	case syscall.SIGTTOU:
-		return " (SIGTTOU)"
-	case syscall.SIGURG:
-		return " (SIGURG)"
-	case syscall.SIGXCPU:
-		return " (SIGXCPU)"
-	case syscall.SIGXFSZ:
-		return " (SIGXFSZ)"
-	case syscall.SIGVTALRM:
-		return " (SIGVTALRM)"
-	case syscall.SIGPROF:
-		return " (SIGPROF)"
-	case syscall.SIGWINCH:
-		return " (SIGWINCH)"
-	case syscall.SIGIO:
-		return " (SIGIO)"
-	case syscall.SIGPWR:
-		return " (SIGPWR)"
-	case syscall.SIGSYS:
-		return " (SIGSYS)"
+	if name := unix.SignalName(syscall.Signal(signal)); name != "" {
+		return " (" + name + ")"
 	}
 	return ""
 }
@@ -252,28 +319,66 @@ var ErrCancelled = errors.New("Operation cancelled")
 // ErrSessionCancelled is the bounded() cancellation result ("Session cancelled").
 var ErrSessionCancelled = errors.New("Session cancelled")
 
-// boundedRead drains r, keeping at most limit bytes and flagging anything more.
+// boundedRead drains r, keeping at most limit bytes and flagging anything
+// more, whose last TailLimit bytes it keeps in a rolling window.
 func boundedRead(r io.Reader, limit int) (Captured, error) {
 	var kept []byte
+	var tail tailWindow
 	buf := make([]byte, 8192)
 	truncated := false
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			remaining := limit - len(kept)
-			if remaining < 0 {
-				remaining = 0
+			take := min(n, limit-len(kept))
+			kept = append(kept, buf[:take]...)
+			if take < n {
+				truncated = true
+				tail.write(buf[take:n])
 			}
-			truncated = truncated || n > remaining
-			kept = append(kept, buf[:min(n, remaining)]...)
 		}
 		if err != nil {
+			captured := Captured{Bytes: kept, Truncated: truncated, tail: tail.bytes()}
 			if err == io.EOF {
-				return Captured{kept, truncated}, nil
+				return captured, nil
 			}
-			return Captured{kept, truncated}, err
+			return captured, err
 		}
 	}
+}
+
+// tailWindow keeps the last TailLimit bytes written to it in a ring buffer
+// allocated on the first write.
+type tailWindow struct {
+	buf  []byte
+	next int // the oldest byte's position once buf is full
+}
+
+func (w *tailWindow) write(p []byte) {
+	if len(p) > TailLimit {
+		p = p[len(p)-TailLimit:]
+	}
+	if w.buf == nil {
+		w.buf = make([]byte, 0, TailLimit)
+	}
+	if room := TailLimit - len(w.buf); room > 0 {
+		n := min(room, len(p))
+		w.buf = append(w.buf, p[:n]...)
+		p = p[n:]
+	}
+	for len(p) > 0 {
+		n := copy(w.buf[w.next:], p)
+		p = p[n:]
+		w.next = (w.next + n) % TailLimit
+	}
+}
+
+// bytes returns the kept bytes oldest first, rotating the ring in place.
+func (w *tailWindow) bytes() []byte {
+	slices.Reverse(w.buf[:w.next])
+	slices.Reverse(w.buf[w.next:])
+	slices.Reverse(w.buf)
+	w.next = 0
+	return w.buf
 }
 
 type readResult struct {
@@ -285,9 +390,15 @@ type readResult struct {
 // the read ends both finish promptly, so readers always join within it.
 const cleanupGrace = 30 * time.Second
 
+// terminateGrace bounds how long a signalled leader may run its own cleanup
+// before its group is killed.
+const terminateGrace = 2 * time.Second
+
 // Capture runs binary to completion, deadline expiry, or cancellation. The
 // leader is always reaped; owned descendants are killed when it finishes, on
 // timeout, or on cancellation, so an inheriting child cannot hold the pipes.
+// On timeout or cancellation a still-running leader's group is sent SIGTERM
+// first; the group is killed once the leader exits or terminateGrace elapses.
 func Capture(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (*ProcessOutput, error) {
 	if ctx.Err() != nil {
 		return nil, ErrCancelled
@@ -352,6 +463,28 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 	// are buffered, the deferred closes are idempotent, and the goroutines
 	// unwind on their own and orphaned processes are reaped.
 	terminate := func() {
+		// A still-running leader's group first gets SIGTERM so Git and similar
+		// tools can remove their lock files; whatever remains is killed after
+		// terminateGrace. A reaped leader's group gets no SIGTERM: Close already
+		// killed it, and its id may since have been reused.
+		if !haveWait {
+			_ = syscall.Kill(-child.pgid, syscall.SIGTERM)
+			grace := time.NewTimer(terminateGrace)
+		term:
+			for !haveWait {
+				select {
+				case <-waitCh:
+					haveWait = true
+				case <-outCh:
+					haveOut = true
+				case <-errCh:
+					haveErr = true
+				case <-grace.C:
+					break term
+				}
+			}
+			grace.Stop()
+		}
 		child.Close()
 		deadline := time.NewTimer(cleanupGrace)
 		defer deadline.Stop()
@@ -408,34 +541,128 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 	}, nil
 }
 
+const (
+	// failureTextLimit bounds a failure message, in characters. The store cuts
+	// recorded messages at 16,384 characters, and callers usually wrap a
+	// failure in context first ("Open pull request inventory failed: ", a
+	// blocked reason), so the message leaves room for that context: recording
+	// a wrapped failure then never cuts the stderr tail that states the cause.
+	failureTextLimit = 16384 - 1024
+	// stderrShare is the part of an over-long failure message stderr may always
+	// claim, however much stdout there was: stderr usually carries the cause
+	// (an HTTP error, a "fatal:" line) while stdout carries bulk output.
+	stderrShare = 4096
+	// elisionReserve is room for elideMiddle's marker at any omitted count a
+	// capture can produce.
+	elisionReserve = 48
+)
+
 func ensureSuccess(binary string, output *ProcessOutput) error {
-	if !output.Status.Success() {
-		return fmt.Errorf("%s exited with %s: %s", binary, output.Status,
-			store.Redact(output.Stdout.Preview()+"\n"+output.Stderr.Preview()))
+	if output.Status.Success() {
+		return nil
 	}
-	return nil
+	return errors.New(failureText(binary, output))
 }
 
-// DiagnosticText renders human-readable evidence: bounded stdout, with bounded
-// stderr appended when present.
-func DiagnosticText(binary string, output *ProcessOutput) (string, error) {
-	if err := ensureSuccess(binary, output); err != nil {
-		return "", err
+// failureText renders a failed command for operators: its exit status, then
+// scrubbed stdout and stderr, each as its Preview. Output that fits
+// failureTextLimit is kept whole, as `<stdout>\n<stderr>`. Longer output keeps
+// both ends of each stream around an explicit marker, in
+// `<stdout>\n[stderr]\n<stderr>` form (no section when stderr is empty);
+// stderr may always use up to stderrShare of the bound however long stdout
+// is. Preview drops the partial lines a capture limit or its tail window cut,
+// and secrets are scrubbed from the remaining text before anything is cut
+// here, so no cut exposes part of a secret.
+func failureText(binary string, output *ProcessOutput) string {
+	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
+	budget := failureTextLimit - utf8.RuneCountInString(prefix)
+	if joined := redact.Secrets(output.Stdout.Preview() + "\n" + output.Stderr.Preview()); utf8.RuneCountInString(joined) <= budget {
+		return prefix + joined
 	}
-	text := strings.TrimSpace(output.Stdout.Preview())
-	if stderr := strings.TrimSpace(output.Stderr.Preview()); stderr != "" {
-		text += "\n[stderr]\n" + stderr
+	stdout, stderr := scrubPreview(output.Stdout), scrubPreview(output.Stderr)
+	if stderr.text() == "" {
+		return prefix + stdout.elide(budget)
 	}
-	return text, nil
+	const separator = "\n[stderr]\n"
+	budget -= utf8.RuneCountInString(separator)
+	stderrText := stderr.elide(min(stderr.runes(), max(stderrShare, budget-stdout.runes())))
+	return prefix + stdout.elide(budget-utf8.RuneCountInString(stderrText)) + separator + stderrText
 }
 
-func checked(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (string, error) {
-	output, err := Capture(ctx, binary, args, cwd, seconds, mode)
+// failurePreview is one stream's Preview with secrets scrubbed from its head
+// and its tail separately, so that eliding it can keep the beginning of one
+// and the end of the other.
+type failurePreview struct {
+	head, tail string
+	truncated  bool
+}
+
+func scrubPreview(c Captured) failurePreview {
+	return failurePreview{head: redact.Secrets(c.Text()), tail: redact.Secrets(c.TailText()), truncated: c.Truncated}
+}
+
+func (p failurePreview) text() string { return joinPreview(p.head, p.tail, p.truncated) }
+
+func (p failurePreview) runes() int { return utf8.RuneCountInString(p.text()) }
+
+// elide shortens the preview to at most limit characters, keeping both of its
+// ends; limit must leave room for its markers, as elideMiddle's does. A
+// capture whose real end is kept always shows the truncation marker between
+// its head and its tail: whichever of them fits in half the room stays whole
+// while the other keeps both of its ends around an omission count
+// (elideMiddle); otherwise the beginning of the head and the end of the tail
+// remain around the truncation marker alone.
+func (p failurePreview) elide(limit int) string {
+	text := p.text()
+	if p.tail == "" || utf8.RuneCountInString(text) <= limit {
+		return elideMiddle(text, limit)
+	}
+	const marker = "\n" + diagnosticTruncatedMarker + "\n"
+	keep := max(limit-utf8.RuneCountInString(marker), 0)
+	headRunes, tailRunes := utf8.RuneCountInString(p.head), utf8.RuneCountInString(p.tail)
+	switch {
+	case headRunes <= keep/2:
+		return p.head + marker + elideMiddle(p.tail, keep-headRunes)
+	case tailRunes <= keep-keep/2:
+		return elideMiddle(p.head, keep-tailRunes) + marker + p.tail
+	}
+	return p.head[:runeOffset(p.head, keep/2)] + marker + p.tail[runeOffset(p.tail, tailRunes-(keep-keep/2)):]
+}
+
+// elideMiddle shortens text to at most limit characters, keeping its beginning
+// and end around a marker that states how many characters were omitted. limit
+// must leave room for the marker (elisionReserve).
+func elideMiddle(text string, limit int) string {
+	total := utf8.RuneCountInString(text)
+	if total <= limit {
+		return text
+	}
+	keep := max(limit-elisionReserve, 0)
+	head := keep / 2
+	tail := keep - head
+	return text[:runeOffset(text, head)] +
+		fmt.Sprintf("\n[... %d characters omitted ...]\n", total-keep) +
+		text[runeOffset(text, total-tail):]
+}
+
+// runeOffset returns the byte offset at which the nth character of s starts,
+// or len(s) when s has no more than n characters.
+func runeOffset(s string, n int) int {
+	for i := range s {
+		if n == 0 {
+			return i
+		}
+		n--
+	}
+	return len(s)
+}
+
+// RunMachine executes a command whose stdout is machine output: fail closed on
+// any command failure, truncation past the machine ceiling, or invalid UTF-8.
+func RunMachine(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
+	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureMachine)
 	if err != nil {
 		return "", err
-	}
-	if mode == CaptureDiagnostic {
-		return DiagnosticText(binary, output)
 	}
 	if err := ensureSuccess(binary, output); err != nil {
 		return "", err
@@ -449,18 +676,6 @@ func checked(ctx context.Context, binary string, args []string, cwd string, seco
 	return string(output.Stdout.Bytes), nil
 }
 
-// Run executes a command for human-readable evidence, keeping bounded stdout
-// and stderr on success.
-func Run(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
-	return checked(ctx, binary, args, cwd, seconds, CaptureDiagnostic)
-}
-
-// RunMachine executes a command whose stdout is machine output: fail closed on
-// any command failure, truncation past the machine ceiling, or invalid UTF-8.
-func RunMachine(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
-	return checked(ctx, binary, args, cwd, seconds, CaptureMachine)
-}
-
 // ShellCheck runs one operator-configured verification command through
 // `bash -o pipefail -c` — the single place a shell is ever constructed — so a
 // pipeline fails when any stage fails. The caller inspects the diagnostic
@@ -472,9 +687,10 @@ func ShellCheck(ctx context.Context, command string, cwd string, seconds uint64)
 // RunPredicate executes a command whose exit status is itself the answer.
 // Success means true, falseCodes are the documented "predicate is false"
 // statuses, and every other failure — spawn, timeout, signal, an unexpected
-// code — still fails closed rather than reading as a false predicate.
+// code — still fails closed rather than reading as a false predicate. Output
+// is kept only as diagnostic evidence for such a failure.
 func RunPredicate(ctx context.Context, binary string, args []string, cwd string, seconds uint64, falseCodes []int) (bool, error) {
-	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureMachine)
+	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureDiagnostic)
 	if err != nil {
 		return false, err
 	}
@@ -484,19 +700,18 @@ func RunPredicate(ctx context.Context, binary string, args []string, cwd string,
 	if code, ok := output.Status.Code(); ok && slices.Contains(falseCodes, code) {
 		return false, nil
 	}
-	if err := ensureSuccess(binary, output); err != nil {
-		return false, err
-	}
-	return false, nil
+	return false, ensureSuccess(binary, output)
 }
 
 // deadlineGrace is the bounded window for a cancelled future to unwind before
 // the caller reports expiry.
 const deadlineGrace = 8 * time.Second
 
-// Deadline reports how fn finished relative to the limit: Done carries fn's
-// output, Expired reports whether ctx was already cancelled before the expiry
-// cancellation fired.
+// Deadline reports how fn finished relative to the limit. Output carries fn's
+// result when it returned within the limit. Expired reports that the limit
+// elapsed first (Output is then the zero value). AlreadyCancelled reports that
+// ctx was already cancelled when the limit elapsed, separating an operator
+// cancellation from a genuine deadline.
 type Deadline[T any] struct {
 	Output           T
 	Expired          bool

@@ -162,9 +162,6 @@
     width: 18px;
     height: 18px;
   }
-  .tabs {
-    overflow-x: auto;
-  }
   .sidebar {
     visibility: hidden;
     top: 60px;
@@ -192,8 +189,6 @@
   .topbar {
     height: 60px;
     padding: 0 18px;
-    position: sticky;
-    top: 0;
     z-index: 25;
     background: rgb(255 250 240 / 0.88);
   }
@@ -248,12 +243,6 @@
     max-width: 240px;
     line-height: 1.35;
     font-size: 22px;
-  }
-  .stats-grid {
-    gap: 10px;
-  }
-  .stat {
-    padding: 16px;
   }
   .stat > strong {
     font-size: 28px;
@@ -349,9 +338,6 @@
   }
   .settings-actions {
     gap: 15px;
-  }
-  .settings-section .section-heading .button {
-    padding: 6px;
   }
   .category-options {
     padding: 0 20px;
@@ -476,11 +462,4 @@
     transition-duration: 0s !important;
     scroll-behavior: auto !important;
   }
-}
-
-.live-indicator.offline {
-  color: #8b5b35;
-}
-.live-indicator.offline span {
-  background: #b27b45;
 }

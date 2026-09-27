@@ -10,6 +10,8 @@ import uuid
 from worker import mode as worker_mode
 
 root = Path(os.environ['OCTOMUS_FIXTURE'])
+# The service strips its operator token and webhook URL from every child.
+assert 'OCTOMUS_TOKEN' not in os.environ
 assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 if sys.argv[1:] == ['--version']:
     print('codex-cli ' + ((root / 'version').read_text().strip() if (root / 'version').exists() else '0.153.4'))
@@ -18,6 +20,12 @@ threads = root / 'threads'
 threads.mkdir(exist_ok=True)
 def mode():
     return worker_mode('codex')
+
+if mode() == 'init-failure':
+    # The app-server rejects its configuration while initializing.
+    sys.stdin.readline()
+    print('fixture init failure token=ghp_fixtureStartupSecret0001', file=sys.stderr, flush=True)
+    sys.exit(2)
 
 def emit(value):
     print(json.dumps(value), flush=True)
@@ -46,6 +54,14 @@ for line in sys.stdin:
         continue
     if method == 'account/read':
         result = {'account': None, 'requiresOpenaiAuth': True} if mode() == 'no-auth' else {'account': {'type': 'apiKey'}, 'requiresOpenaiAuth': True}
+    elif method == 'model/list' and mode() == 'paged':
+        # One model per page, then an empty final page with a null cursor.
+        pages = {None: (['gpt-6-astra'], '1'), '1': (['gpt-5.6-luna'], '2'), '2': ([], None)}
+        names, following = pages[params.get('cursor')]
+        result = {'data': [{'model': m, 'displayName': m, 'supportedReasoningEfforts': [{'reasoningEffort': 'medium'}]} for m in names], 'nextCursor': following}
+    elif method == 'model/list' and mode() == 'empty-pages':
+        # A misbehaving catalog: empty pages whose cursor never ends.
+        result = {'data': [], 'nextCursor': 'x'}
     elif method == 'model/list':
         result = {'data': [{'model': m, 'displayName': m, 'supportedReasoningEfforts': [{'reasoningEffort': e} for e in ['low', 'medium', 'high', 'xhigh', 'max']]} for m in ['gpt-6-astra', 'gpt-5.6-luna']], 'nextCursor': None}
     elif method in ['thread/start', 'thread/resume']:

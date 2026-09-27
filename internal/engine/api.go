@@ -4,24 +4,22 @@
 package engine
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
+	"maps"
 	"sort"
 	"strings"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// Not-found and unknown-action errors the HTTP layer maps to 404, matching
-// not-found responses.
+// Errors for an unknown record or action, which the HTTP layer maps to 404.
 var (
 	ErrCycleNotFound      = errors.New("Cycle not found")
 	ErrUnknownControl     = errors.New("Unknown control")
@@ -31,150 +29,117 @@ var (
 	ErrProposalNotFound   = errors.New("Proposal not found")
 )
 
-// genericMap re-encodes a typed record as generic JSON with exact numbers so
-// response assembly preserves the store's saved spelling.
-func genericMap(value any) (map[string]any, error) {
-	data, err := wirejson.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var result map[string]any
-	if err := decoder.Decode(&result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// ControlAction runs the conflict check under the scheduler gate, then the durable mode transition and its
-// operator event. The response is the serialized control record (plus
-// planning_capacity for resume), exactly as the dashboard reads it.
+// ControlAction runs the conflict check under the scheduler gate, then the
+// durable mode transition and its operator event. The response is the
+// serialized control record (plus planning_capacity for resume), exactly as
+// the dashboard reads it.
 func (a *App) ControlAction(action string) (map[string]any, error) {
 	a.gate.Lock()
+	defer a.gate.Unlock()
 	control, err := a.Control()
 	if err != nil {
-		a.gate.Unlock()
 		return nil, err
 	}
-	a.runtimeMu.Lock()
-	baselineActive := a.runtime.baseline != nil
-	idle := a.runtime.idle()
-	auditActive := a.runtime.cycle != nil && a.runtime.cycle.mode == model.CycleModeAudit ||
-		a.runtime.preflight && a.runtime.preflightMode == model.CycleModeAudit
-	a.runtimeMu.Unlock()
-	if ((action == "audit" || action == "cycle") && (!control.Paused || !idle)) ||
-		((action == "resume" || action == "cycle") && auditActive) ||
-		(action == "resume" && baselineActive) {
-		a.gate.Unlock()
-		var message string
-		if baselineActive {
-			message = "Wait for the baseline check to finish."
-		} else {
-			switch action {
-			case "audit":
-				message = "Audits require paused operation with no active work. Pause the service and wait for active work to finish."
-			case "cycle":
-				message = "Run once requires paused operation with no active work. Pause the service and wait for active work to finish."
-			default:
-				message = "Wait for the audit to finish before starting continuous operation."
-			}
-		}
-		return nil, conflictError(message)
+	if err := a.controlConflict(action, control); err != nil {
+		return nil, err
 	}
-	if action == "audit" {
+	switch action {
+	case "audit":
 		// Audit includes a remote preflight, so the gate drops for remote work
-		// and the launch itself revalidates paused and idle state.
-		a.gate.Unlock()
-		_, err := a.StartAudit(a.ctx)
-		a.gate.Lock()
+		// and the launch itself revalidates paused and idle state. The launch
+		// records the operator event on the cycle it starts.
+		a.withoutGate(func() { _, err = a.StartAudit(a.ctx) })
 		if err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
-		if err := a.Store.Event("system", "operator", "audit"); err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 		control, err = a.Control()
 		if err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
-		body, err := genericMap(control)
-		a.gate.Unlock()
-		return body, err
-	}
-	body := map[string]any{}
-	switch action {
+		return wirejson.GenericMap(control)
 	case "pause":
-		control.SetMode(model.OperatingModePaused)
-		a.invalidatePrObservation()
+		if err := a.pauseLocked(&control, nil); err != nil {
+			return nil, err
+		}
 	case "resume":
 		if err := a.enterContinuous(&control); err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 	case "cycle":
 		cfg, err := a.Config()
 		if err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 		if err := cfg.Validate(true); err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
-		capacity, err := a.Store.PlanningCapacity()
-		if err != nil {
-			a.gate.Unlock()
+		// Saves the batch's control itself, in the transaction that checks
+		// planning affordability.
+		if err := a.startRunOnceBatch(&control); err != nil {
 			return nil, err
 		}
-		if err := capacity.EnsureAvailable(); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
-		if err := a.Store.StartBatch(&control); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
+		a.notify()
 	default:
-		a.gate.Unlock()
 		return nil, ErrUnknownControl
 	}
-	if action != "resume" {
-		if err := a.Store.SaveControl(control); err != nil {
-			a.gate.Unlock()
-			return nil, err
-		}
-	}
 	if err := a.Store.Event("system", "operator", action); err != nil {
-		a.gate.Unlock()
 		return nil, err
 	}
-	body, err = genericMap(control)
+	body, err := wirejson.GenericMap(control)
 	if err != nil {
-		a.gate.Unlock()
 		return nil, err
 	}
 	if action == "resume" {
 		capacity, err := a.Store.PlanningCapacity()
 		if err != nil {
-			a.gate.Unlock()
 			return nil, err
 		}
 		body["planning_capacity"] = capacity
 	}
-	a.gate.Unlock()
 	return body, nil
 }
 
-// CycleAction handles running cycles
-// conflict, archive stamps the lifecycle and discard requires the archive.
+// controlConflict returns the conflict that refuses action in the current
+// runtime and durable mode, or nil. Audit and run once need paused operation
+// with no active work, and neither run once nor resume may start beside an
+// audit; resume also waits for a baseline check. Callers hold the gate.
+func (a *App) controlConflict(action string, control model.Control) error {
+	a.runtimeMu.Lock()
+	baselineActive := a.runtime.baseline != nil
+	idle := a.runtime.idle()
+	auditActive := a.runtime.auditActive()
+	a.runtimeMu.Unlock()
+	refused := (action == "audit" || action == "cycle") && (!control.Paused || !idle) ||
+		(action == "resume" || action == "cycle") && auditActive ||
+		action == "resume" && baselineActive
+	switch {
+	case !refused:
+		return nil
+	case baselineActive:
+		return conflictError("Wait for the baseline check to finish.")
+	case action == "audit":
+		return conflictError("Audits require paused operation with no active work. Pause the service and wait for active work to finish.")
+	case action == "cycle":
+		return conflictError("Run once requires paused operation with no active work. Pause the service and wait for active work to finish.")
+	default:
+		return conflictError("Wait for the audit to finish before starting continuous operation.")
+	}
+}
+
+// CycleAction applies an operator action to a finished cycle: archive stamps
+// its lifecycle, and discard, allowed only once it is archived, removes its
+// planning workspaces. Each happens once: repeating either conflicts rather
+// than rewriting the recorded lifecycle time. Any other action name is
+// ErrUnknownCycleAction before any state is read. A running cycle or an
+// in-flight cleanup conflicts.
+//
 // Discard removes the managed directory with the gate released; the call is
 // registered service work from admission so Shutdown waits out an in-flight
 // removal instead of abandoning it mid-delete.
 func (a *App) CycleAction(id, action string) error {
+	if action != "archive" && action != "discard" {
+		return ErrUnknownCycleAction
+	}
 	a.gate.Lock()
 	if err := a.ctx.Err(); err != nil {
 		a.gate.Unlock()
@@ -198,6 +163,9 @@ func (a *App) CycleAction(id, action string) error {
 	}
 	switch action {
 	case "archive":
+		if cycle.Lifecycle.ArchivedAt != nil {
+			return conflictError("The cycle is already archived")
+		}
 		now := model.Now()
 		cycle.Lifecycle.ArchivedAt = &now
 		if err := a.Store.Put("cycle", id, *cycle); err != nil {
@@ -207,11 +175,9 @@ func (a *App) CycleAction(id, action string) error {
 		if cycle.Lifecycle.ArchivedAt == nil {
 			return conflictError("Archive the cycle before discarding its workspace")
 		}
-		if err := a.DiscardCycle(cycle); err != nil {
+		if err := a.discardCycle(cycle); err != nil {
 			return err
 		}
-	default:
-		return ErrUnknownCycleAction
 	}
 	return a.Store.Event(id, "operator", action)
 }
@@ -221,9 +187,9 @@ func (a *App) CycleAction(id, action string) error {
 // display transformation changed. The revision identifies canonical executable
 // state; the displayed values are previews and are never written back.
 type SettingsView struct {
-	Config            map[string]any           `json:"config"`
-	Revision          string                   `json:"revision"`
-	TransformedFields []store.DisplayTransform `json:"transformed_fields"`
+	Config            map[string]any            `json:"config"`
+	Revision          string                    `json:"revision"`
+	TransformedFields []redact.DisplayTransform `json:"transformed_fields"`
 }
 
 // NewSettingsView builds the display view of one canonical configuration: the
@@ -234,11 +200,11 @@ func NewSettingsView(c config.Config) (*SettingsView, error) {
 	if err != nil {
 		return nil, err
 	}
-	generic, err := genericMap(c)
+	generic, err := wirejson.GenericMap(c)
 	if err != nil {
 		return nil, err
 	}
-	display, fields := store.DisplayJSON(generic)
+	display, fields := redact.DisplayJSON(generic)
 	return &SettingsView{Config: display, Revision: revision, TransformedFields: fields}, nil
 }
 
@@ -262,7 +228,7 @@ func (e *ConfigPatchError) Error() string { return e.inner.Error() }
 // decodes through the strict typed boundary exactly like a complete request:
 // unknown fields, duplicate keys and invalid values are all rejected there.
 func mergeConfigPatch(live config.Config, patch map[string]json.RawMessage) (config.Config, error) {
-	generic, err := genericMap(live)
+	generic, err := wirejson.GenericMap(live)
 	if err != nil {
 		return config.Config{}, err
 	}
@@ -316,6 +282,10 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix {
+		// HasUnresolvedTasks counts every unarchived task not yet published
+		// or cancelled: queued and active work too, unlike
+		// model.UnresolvedStatuses. All of it still depends on the old
+		// repository identity and branch policy.
 		unresolved, err := a.Store.HasUnresolvedTasks()
 		if err != nil {
 			return nil, err
@@ -334,22 +304,25 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	return NewSettingsView(c)
 }
 
-// DoctorFor mirrors doctor_for: validate for the requested mode, check the
-// remote, then connect each required backend and validate every route against
-// the discovered catalog. The result names which Codex version was observed
-// when the codex backend answered.
-func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any, error) {
+// DoctorFor validates cfg for mode, checks the remote, then connects each
+// backend the mode's routes use and validates every route against that
+// backend's discovered catalog, reporting every route and backend failure
+// together. The result names which Codex version was observed when the codex
+// backend answered. Version-mismatch warnings are also returned on their own,
+// even when a check fails, so the command-line doctor can print them for its
+// operator; the service never writes them to its own output.
+func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
 	if mode == model.CycleModeAudit {
 		if err := cfg.ValidateAudit(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else {
 		if err := cfg.Validate(true); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if err := gitops.ValidateRemote(a.ctx, cfg); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	routes := cfg.RoutesFor(mode == model.CycleModeAudit)
 	seen := map[config.Backend]bool{}
@@ -361,7 +334,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 		}
 	}
 	sort.Slice(backends, func(i, j int) bool { return backends[i] < backends[j] })
-	diagnostics := []map[string]any{}
+	diagnostics := []runner.Diagnostics{}
 	models := []runner.Model{}
 	warnings := []string{}
 	errs := []string{}
@@ -372,9 +345,14 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 				return err
 			}
 			defer client.Close()
-			diagnostic, err := client.Diagnostics(a.DataDir)
+			diagnostic, err := client.Diagnose(a.DataDir)
 			if err != nil {
 				return err
+			}
+			// A version mismatch often explains why the catalog request or a
+			// route check fails, so it is kept before either runs.
+			if diagnostic.Warning != nil && *diagnostic.Warning != "" {
+				warnings = append(warnings, *diagnostic.Warning)
 			}
 			catalog, err := client.Models(a.DataDir)
 			if err != nil {
@@ -388,10 +366,6 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 					errs = append(errs, named.Name+": "+err.Error())
 				}
 			}
-			if warning, ok := diagnostic["warning"].(string); ok && warning != "" {
-				fmt.Fprintf(os.Stderr, "WARN %s\n", warning)
-				warnings = append(warnings, warning)
-			}
 			models = append(models, catalog...)
 			diagnostics = append(diagnostics, diagnostic)
 			return nil
@@ -401,7 +375,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 		}
 	}
 	if len(errs) > 0 {
-		return nil, errors.New(strings.Join(errs, "; "))
+		return nil, warnings, errors.New(strings.Join(errs, "; "))
 	}
 	modeName := "all"
 	if mode == model.CycleModeAudit {
@@ -416,17 +390,18 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 		"warnings": warnings, "message": message,
 	}
 	for _, diagnostic := range diagnostics {
-		if diagnostic["backend"] == "codex" {
-			result["codex_version"] = diagnostic["version"]
+		if diagnostic.Backend == config.BackendCodex {
+			result["codex_version"] = diagnostic.Version
 			result["tested_codex_version"] = runner.CodexTestedVersion
 			break
 		}
 	}
-	return result, nil
+	return result, warnings, nil
 }
 
-// ModelCatalog mirrors model_catalog: validate the binary override, patch the
-// matching backend's binary on a config copy and list the discovered models.
+// ModelCatalog lists the models a backend reports when run from binary. The
+// override is validated and applied to a copy of the saved configuration only;
+// it is never saved.
 func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Model, error) {
 	if err := config.ValidateBinary(binary); err != nil {
 		return nil, err
@@ -471,7 +446,7 @@ func (a *App) StateView() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	prCapacity, err := a.PrCapacity()
+	prCapacity, err := a.prCapacity(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -488,8 +463,8 @@ func (a *App) StateView() (map[string]any, error) {
 	if a.runtime.cycle != nil {
 		mode := a.runtime.cycle.mode
 		cycleMode = &mode
-	} else if a.runtime.preflight {
-		mode := a.runtime.preflightMode
+	} else if a.runtime.preflight != nil {
+		mode := *a.runtime.preflight
 		cycleMode = &mode
 	}
 	activeTasks := len(a.runtime.tasks)
@@ -499,7 +474,7 @@ func (a *App) StateView() (map[string]any, error) {
 	// A committed running cycle is durable before its runtime slot is assigned.
 	// Read it from the same snapshot as the visible cycles: a later store query
 	// could see its terminal status and contradict the returned cycle summary.
-	if !cycleActive || cycleMode == nil {
+	if !cycleActive {
 		for _, raw := range snapshot.Cycles {
 			var cycle struct {
 				Mode   model.CycleMode `json:"mode"`
@@ -530,11 +505,11 @@ func (a *App) StateView() (map[string]any, error) {
 	case cycleActive || activeTasks > 0:
 		status = "running"
 	}
-	view, err := genericMap(snapshot)
+	view, err := wirejson.GenericMap(snapshot)
 	if err != nil {
 		return nil, err
 	}
-	controlJSON, err := genericMap(control)
+	controlJSON, err := wirejson.GenericMap(control)
 	if err != nil {
 		return nil, err
 	}
@@ -547,18 +522,16 @@ func (a *App) StateView() (map[string]any, error) {
 			"completed_at":    latest.CompletedAt,
 			"error":           latest.Error,
 			"config_revision": latest.ConfigFingerprint,
-			"config_matches":  a.BaselineConfigMatches(latest, cfg),
-			"revision_status": a.BaselineRevisionStatus(latest, cfg),
+			"config_matches":  baselineConfigMatches(latest, cfg),
+			"revision_status": a.baselineRevisionStatus(latest, cfg),
 		}
 	}
-	storage, found, err := a.Store.GetValue("settings", "storage")
+	// A missing record reads as nil.
+	storage, _, err := a.Store.GetValue("settings", "storage")
 	if err != nil {
 		return nil, err
 	}
-	if !found {
-		storage = nil
-	}
-	for key, value := range map[string]any{
+	maps.Copy(view, map[string]any{
 		"status":            status,
 		"control":           controlJSON,
 		"repository":        cfg.GitHubRepo,
@@ -575,8 +548,6 @@ func (a *App) StateView() (map[string]any, error) {
 		"storage":           storage,
 		"planning_capacity": planningCapacity,
 		"pr_capacity":       prCapacity,
-	} {
-		view[key] = value
-	}
+	})
 	return view, nil
 }

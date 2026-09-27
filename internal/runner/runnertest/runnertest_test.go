@@ -221,3 +221,28 @@ func TestGatedTurnsBlockUntilReleasedOrCancelled(t *testing.T) {
 		t.Fatalf("cancelled turn = %+v", r)
 	}
 }
+
+// Scripted diagnostics report the backend with scripted versions and no
+// warning, and record one call.
+func TestScriptedDiagnostics(t *testing.T) {
+	script := runnertest.New(runnertest.CatalogFor(worker)...)
+	client, err := script.Connector()(context.Background(), config.BackendOpencode, config.Default(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	diagnostics, err := client.Diagnose("cwd")
+	want := runner.Diagnostics{Backend: config.BackendOpencode, ProtocolVersion: "scripted", Version: "scripted"}
+	if err != nil || diagnostics != want {
+		t.Fatalf("diagnostics = %+v, %v; want %+v", diagnostics, err, want)
+	}
+	recorded := 0
+	for _, call := range script.Calls() {
+		if call.Kind == runnertest.CallDiagnostics {
+			recorded++
+		}
+	}
+	if recorded != 1 {
+		t.Fatalf("recorded %d diagnostics calls; want 1", recorded)
+	}
+}

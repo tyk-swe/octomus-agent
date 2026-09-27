@@ -5,8 +5,9 @@ cycle and the tasks that cycle produced. It answers "what review and check evide
 on record for this run?" — nothing more.
 
 **Every export requires review before sharing.** It is a private operator artifact, not
-a public-safe or publication-approved one. Exports are never written to `web/static` and
-are never marked public-safe automatically.
+a public-safe or publication-approved one. The service writes no export to disk: the CLI
+prints it to stdout, the API returns it in the response, and the Inspect run panel saves a
+file only when you download it. Exports are never marked public-safe automatically.
 
 ## What this is not
 
@@ -36,8 +37,9 @@ The same nine caveats ship inside each export as `limitations`:
 | HTTP | `GET /api/cycles/{id}/evidence` with `Authorization: Bearer <operator token>` |
 | CLI | `octomus-agent --data-dir <dir> --export-run <cycle-id>` |
 
-Both share one assembler (`octomus_agent::evidence::assemble`) and one snapshot reader,
-so their output is identical apart from `generated_at`.
+Both share one snapshot reader (`evidence.ReadSnapshot`) and one assembler
+(`evidence.Assemble`, redacted by `evidence.Value`) in `internal/evidence`, so their
+output is identical apart from `generated_at`.
 
 The HTTP route sits inside the existing authenticated API router, so it inherits the
 operator token check, the authentication backoff and the response-wide redaction pass.
@@ -129,13 +131,14 @@ RunEvidenceV1
       pull_request: number, url, source
 ```
 
-`Option` fields serialize as `null` rather than being omitted, so the key set is stable.
+Nullable fields serialize as `null` rather than being omitted, so the key set is stable.
 The TypeScript mirror is `RunEvidenceV1` in `web/src/lib/types.ts`.
 
 ### Reviewer verdicts
 
-Proposal assessments are stored as untyped JSON batches on the cycle, pushed in role
-order by `review_proposals`/`attach`, with reviewer identity recorded separately as
+Proposal assessments are stored as untyped JSON batches on the cycle, appended in
+reviewer-slot order by `reviewProposals` (`internal/engine/planning.go`), with reviewer
+identity recorded separately as
 `adversary-a` / `adversary-b` sessions. Reviewer slots here are therefore **positional
 and fixed**: a malformed batch keeps its slot instead of shifting the next batch into the
 missing reviewer's identity.
@@ -190,7 +193,7 @@ all facts are computed, so redacting a display string can never change a reporte
 
 Two joins stay outside the export. Tasks whose saved proposal ID is not among the
 cycle's proposals are counted only in the run-level `gaps`; their review and check
-evidence is not exported. The overview's "Tasks from this run" counts come from the
+evidence is not exported. The overview's "Recent tasks from this run" counts come from the
 dashboard's bounded recent-task window, not from this scan; the Inspect run panel is
 the complete view.
 

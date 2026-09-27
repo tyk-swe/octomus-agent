@@ -2,10 +2,10 @@ package httpapi
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,20 +14,42 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 const token = "operator-fixture-token-with-at-least-32-characters"
 
-func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store) {
+// openStore opens dir/state.db and closes it when the test ends.
+func openStore(t *testing.T, dir string) *store.Store {
 	t.Helper()
-	dir := t.TempDir()
 	state, err := store.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = state.Close() })
+	return state
+}
+
+func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	state := openStore(t, dir)
 	return engine.New(state, dir, options...), state
+}
+
+// git runs the host Git (/usr/bin/git, never the fixture shim on PATH) in dir
+// with the service's child environment, so a GIT_DIR, GIT_INDEX_FILE or
+// GIT_WORK_TREE that a Git hook exports to the test run cannot redirect
+// fixture setup into another repository.
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := process.Command("/usr/bin/git", dir)
+	cmd.Args = append(cmd.Args, args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
 }
 
 // baselineFixture uses a real local git
@@ -39,21 +61,14 @@ func baselineFixture(t *testing.T) (*engine.App, *store.Store, config.Config) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %s", args, out)
-		}
-	}
-	run("init", "-b", "main")
-	run("config", "user.name", "Fixture")
-	run("config", "user.email", "fixture@example.com")
+	git(t, repo, "init", "-b", "main")
+	git(t, repo, "config", "user.name", "Fixture")
+	git(t, repo, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run("add", ".")
-	run("commit", "-m", "initial")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
 	cfg := config.Default()
 	cfg.Repository = repo
 	cfg.GitHubRepo = "fixture/project"
@@ -85,35 +100,24 @@ func githubFixture(t *testing.T, commands []string) (*engine.App, *store.Store, 
 			t.Fatal(err)
 		}
 	}
-	run := func(cwd string, args ...string) {
-		cmd := exec.Command("/usr/bin/git", args...)
-		cmd.Dir = cwd
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %s", args, out)
-		}
-	}
 	remote := filepath.Join(root, "remote.git")
 	checkout := filepath.Join(root, "checkout")
-	run(root, "init", "--bare", remote)
-	run(root, "init", "-b", "main", checkout)
-	run(checkout, "config", "user.name", "Fixture")
-	run(checkout, "config", "user.email", "fixture@example.com")
+	git(t, root, "init", "--bare", remote)
+	git(t, root, "init", "-b", "main", checkout)
+	git(t, checkout, "config", "user.name", "Fixture")
+	git(t, checkout, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run(checkout, "add", ".")
-	run(checkout, "commit", "-m", "initial")
-	run(checkout, "remote", "add", "origin", remote)
-	run(checkout, "push", "-u", "origin", "main")
-	run(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	git(t, checkout, "add", ".")
+	git(t, checkout, "commit", "-m", "initial")
+	git(t, checkout, "remote", "add", "origin", remote)
+	git(t, checkout, "push", "-u", "origin", "main")
+	git(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
 	t.Setenv("OCTOMUS_FIXTURE", root)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	data := t.TempDir()
-	state, err := store.Open(filepath.Join(data, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = state.Close() })
+	state := openStore(t, data)
 	cfg := config.Default()
 	cfg.Repository = checkout
 	cfg.GitHubRepo = "fixture/project"
@@ -239,6 +243,47 @@ func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
 	if response.Body.String() != "override dashboard" {
 		t.Fatalf("override: %q", response.Body.String())
 	}
+	// Both asset sources share one boundary: the method is checked before the
+	// path, and an unsafe path is refused before any file is looked up.
+	for name, assets := range map[string]http.Handler{"embedded": router, "override": Router(app, token, override, "test")} {
+		for _, uri := range []string{"/", "/%2e%2e/go.mod"} {
+			response := request(t, assets, "POST", uri, "", false)
+			if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" || response.Body.Len() != 0 {
+				t.Fatalf("%s POST %s: %d allow %q body %q", name, uri, response.Code, response.Header().Get("Allow"), response.Body.String())
+			}
+		}
+		for _, method := range []string{"GET", "HEAD"} {
+			response := request(t, assets, method, "/%2e%2e/go.mod", "", false)
+			if response.Code != http.StatusBadRequest || response.Header().Get("Allow") != "" || response.Body.Len() != 0 {
+				t.Fatalf("%s %s traversal: %d allow %q body %q", name, method, response.Code, response.Header().Get("Allow"), response.Body.String())
+			}
+		}
+	}
+	// Index pages in an override are HTML under their resolved name, not the
+	// extensionless request path: nosniff would otherwise make browsers
+	// download them.
+	indexed := t.TempDir()
+	for name, body := range map[string]string{"200.html": "fallback", "index.html": "root index", "sub/index.html": "sub index"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(indexed, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(indexed, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	indexedRouter := Router(app, token, indexed, "test")
+	for _, check := range []struct{ uri, body string }{
+		{"/", "root index"},
+		{"/sub", "sub index"},
+		{"/sub/", "sub index"},
+		{"/missing", "fallback"},
+	} {
+		response := request(t, indexedRouter, "GET", check.uri, "", false)
+		if response.Code != http.StatusOK || response.Body.String() != check.body ||
+			response.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+			t.Fatalf("%s: %d %q %q", check.uri, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+		}
+	}
 }
 
 func TestValidAuthenticationBypassesPendingFailureDelay(t *testing.T) {
@@ -262,7 +307,7 @@ func TestValidAuthenticationBypassesPendingFailureDelay(t *testing.T) {
 	}
 }
 
-// TestControlPauseResumeCycleThroughHTTP covers the control surface at the
+// TestControlActionsThroughHTTP covers the control surface at the
 // wire layer: pause and run-once batch work under the default paused control
 // while a malformed action and a content-type miss keep their statuses.
 func TestControlActionsThroughHTTP(t *testing.T) {
@@ -351,6 +396,45 @@ func TestUnknownCycleActionsAreNotReportedAsArchiveConflicts(t *testing.T) {
 	}
 }
 
+// An unrecognized action on an existing task, or on a cycle that is still
+// running, reports 404 before any eligibility check; a known action on the
+// same running cycle still conflicts.
+func TestUnknownActionsOnLiveRecordsAreNotFound(t *testing.T) {
+	app, state := testApp(t)
+	task := queuedTask(config.Default())
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	running := cycleRecord("cycle-running")
+	running.Status = model.CycleRunning
+	if err := state.Put("cycle", running.ID, running); err != nil {
+		t.Fatal(err)
+	}
+	router := Router(app, token, "", "test")
+	response := call(t, router, "POST", "/api/tasks/"+task.ID+"/bogus", "{}")
+	if response.Code != http.StatusNotFound || decode(t, response)["error"] != "Unknown task action" {
+		t.Fatalf("bogus task action: %d %s", response.Code, response.Body.String())
+	}
+	response = call(t, router, "POST", "/api/cycles/"+running.ID+"/bogus", "{}")
+	if response.Code != http.StatusNotFound || decode(t, response)["error"] != "Unknown cycle action" {
+		t.Fatalf("bogus action on a running cycle: %d %s", response.Code, response.Body.String())
+	}
+	response = call(t, router, "POST", "/api/cycles/"+running.ID+"/archive", "{}")
+	if response.Code != http.StatusConflict || decode(t, response)["error"] != "Wait for planning to finish" {
+		t.Fatalf("archive on a running cycle: %d %s", response.Code, response.Body.String())
+	}
+}
+
+// The paused-and-idle refusals StartAudit reports after ControlAction has
+// released the gate answer the same 409 as the gate-held check, never 400.
+func TestControlRaceRefusalsAreConflicts(t *testing.T) {
+	for _, err := range []error{engine.ErrBusy, engine.ErrNotPaused} {
+		if status := apiStatus(err); status != http.StatusConflict {
+			t.Fatalf("%q: status %d; want 409", err, status)
+		}
+	}
+}
+
 func TestBaselineAPIAuthenticationRoutesAndMissingRecords(t *testing.T) {
 	app, _, _ := baselineFixture(t)
 	router := Router(app, token, "", "test")
@@ -374,8 +458,33 @@ func TestBaselineAPIAuthenticationRoutesAndMissingRecords(t *testing.T) {
 	if response := call(t, router, "POST", "/api/baseline-checks/no-such-check/cancel", "{}"); response.Code != http.StatusConflict {
 		t.Fatalf("missing cancel: %d", response.Code)
 	}
-	if response := call(t, router, "POST", "/api/baseline-checks/latest", "{}"); response.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("wrong method: %d", response.Code)
+	if response := call(t, router, "POST", "/api/baseline-checks/latest", "{}"); response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET" {
+		t.Fatalf("wrong method: %d allow %q", response.Code, response.Header().Get("Allow"))
+	}
+}
+
+// A 405 names every method the matched path answers, once each and in route
+// order, after authentication and the content-type rule have run.
+func TestMethodNotAllowedNamesThePathMethods(t *testing.T) {
+	app, _ := testApp(t)
+	router := Router(app, token, "", "test")
+	for _, check := range []struct{ method, path, allow string }{
+		{"DELETE", "/api/state", "GET"},
+		{"DELETE", "/api/config", "GET, PUT"},
+		{"PATCH", "/api/cycles/cycle-1/evidence", "GET, POST"},
+		{"GET", "/api/cycles/cycle-1/archive", "POST"},
+		{"DELETE", "/api/baseline-checks/latest", "GET"},
+		{"GET", "/api/doctor", "POST"},
+	} {
+		response := call(t, router, check.method, check.path, "{}")
+		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != check.allow || response.Body.Len() != 0 {
+			t.Fatalf("%s %s: %d allow %q body %q", check.method, check.path, response.Code, response.Header().Get("Allow"), response.Body.String())
+		}
+	}
+	// Unauthenticated requests learn nothing about the path's methods.
+	response := request(t, router, "DELETE", "/api/config", "{}", false)
+	if response.Code != http.StatusUnauthorized || response.Header().Get("Allow") != "" {
+		t.Fatalf("unauthenticated: %d allow %q", response.Code, response.Header().Get("Allow"))
 	}
 }
 
@@ -485,7 +594,7 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	if response := call(t, router, "POST", "/api/baseline-checks/"+id+"/cancel", "{}"); response.Code != http.StatusOK {
 		t.Fatalf("cancel: %d %s", response.Code, response.Body.String())
 	}
-	finished := waitBaseline(t, state, id)
+	finished := waitBaseline(t, router, state, id)
 	if finished.Status != model.BaselineStatusCancelled {
 		t.Fatalf("status %s", finished.Status)
 	}
@@ -521,21 +630,23 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	}
 }
 
-func waitBaseline(t *testing.T, state *store.Store, id string) *model.BaselineCheck {
+// waitBaseline waits until the check has fully settled. The worker records the
+// terminal status, then the owned-workspace cleanup outcome, and releases the
+// service's baseline slot last, as it exits; eligibility read before that
+// still reports the check as running. The returned record is the final one.
+func waitBaseline(t *testing.T, router http.Handler, state *store.Store, id string) *model.BaselineCheck {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		check, err := store.Get[model.BaselineCheck](state, "baseline", id)
-		// The terminal record lands before owned-workspace cleanup completes;
-		// wait for both so the returned check is the fully settled record.
-		if err == nil && check != nil && check.Status != model.BaselineStatusRunning &&
-			(check.WorkspaceRemoved || check.CleanupError != nil) {
-			return check
-		}
-		time.Sleep(20 * time.Millisecond)
+	var check *model.BaselineCheck
+	if !testutil.WaitUntil(10*time.Second, func() bool {
+		var err error
+		check, err = store.Get[model.BaselineCheck](state, "baseline", id)
+		cleaned := err == nil && check != nil && check.Status != model.BaselineStatusRunning &&
+			(check.WorkspaceRemoved || check.CleanupError != nil)
+		return cleaned && decode(t, call(t, router, "GET", "/api/state", ""))["baseline_active"] == false
+	}) {
+		t.Fatal("baseline check did not finish")
 	}
-	t.Fatal("baseline check did not finish")
-	return nil
+	return check
 }
 
 // queuedTask seeds a blocked task: publication
@@ -560,3 +671,133 @@ func queuedTask(cfg config.Config) model.Task {
 }
 
 func stringPointer(s string) *string { return &s }
+
+// Every JSON body route answers extraction failures once, as text: an
+// oversized body at 413, malformed JSON at 400 and a body of the wrong shape
+// at 422, before any handler work runs.
+func TestBodyRejectionsKeepTheirPlainTextForm(t *testing.T) {
+	app, state := testApp(t)
+	router := Router(app, token, "", "test")
+	oversized := `{"expected_revision":"` + strings.Repeat("a", bodyLimit) + `"}`
+	for _, route := range []struct{ method, path string }{
+		{"PUT", "/api/config"},
+		{"POST", "/api/baseline-checks"},
+		{"POST", "/api/model-catalog"},
+	} {
+		for _, check := range []struct {
+			body, prefix string
+			status       int
+		}{
+			{oversized, "Failed to buffer the request body: length limit exceeded", http.StatusRequestEntityTooLarge},
+			{"{bad", "Failed to parse the request body as JSON: ", http.StatusBadRequest},
+			{`{"bogus":1}`, `Failed to deserialize the JSON body into the target type: unknown field "bogus"`, http.StatusUnprocessableEntity},
+		} {
+			response := call(t, router, route.method, route.path, check.body)
+			text := response.Body.String()
+			if response.Code != check.status || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+				!strings.HasPrefix(text, check.prefix) || strings.Count(text, "Failed to") != 1 {
+				t.Fatalf("%s %s %d: %d %q %q", route.method, route.path, check.status, response.Code, response.Header().Get("Content-Type"), text)
+			}
+		}
+	}
+	if raw, found, err := state.GetRaw("settings", "config"); err != nil || found {
+		t.Fatalf("rejected saves wrote a configuration: %s %v", raw, err)
+	}
+	if latest, err := state.LatestBaseline(); err != nil || latest != nil {
+		t.Fatalf("rejected starts persisted a check: %v %v", latest, err)
+	}
+}
+
+// Responses keep integers exact through redaction, and a value that cannot be
+// encoded becomes a JSON 500 rather than a partial or empty body.
+func TestWriteJSONKeepsExactNumbersAndReportsEncodeFailures(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeJSON(recorder, http.StatusCreated, map[string]any{"count": uint64(1<<63 + 1), "note": "ok"})
+	if recorder.Code != http.StatusCreated || recorder.Header().Get("Content-Type") != "application/json" ||
+		recorder.Body.String() != `{"count":9223372036854775809,"note":"ok"}` {
+		t.Fatalf("encoded: %d %q %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	writeJSON(recorder, http.StatusOK, map[string]any{"ratio": math.Inf(1)})
+	if recorder.Code != http.StatusInternalServerError || recorder.Header().Get("Content-Type") != "application/json" ||
+		recorder.Body.String() != `{"error":"The response could not be encoded"}` {
+		t.Fatalf("unencodable: %d %q %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+	}
+}
+
+// The request boundary holds on every path: an oversized body is refused before
+// it can replace a saved configuration, malformed query values are plain-text
+// 400s, and every response, including rejections, carries the security headers.
+func TestHTTPBoundaryRejectionsAndSecurityHeaders(t *testing.T) {
+	app, state := testApp(t)
+	router := Router(app, token, "", "test")
+	cfg := config.Default()
+	cfg.GitHubRepo = "fixture/project"
+	if err := state.Put("settings", "config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := cfg.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, _, err := state.GetRaw("settings", "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized := `{"expected_revision":"` + revision + `","config":{"github_repo":"` + strings.Repeat("x", 300*1024) + `"}}`
+	response := call(t, router, "PUT", "/api/config", oversized)
+	if response.Code != http.StatusRequestEntityTooLarge || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		!strings.Contains(response.Body.String(), "length limit exceeded") {
+		t.Fatalf("oversized save: %d %q %.200q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+	if after, _, err := state.GetRaw("settings", "config"); err != nil || string(after) != string(saved) {
+		t.Fatalf("oversized save changed the configuration: %v", err)
+	}
+	if view := decode(t, call(t, router, "GET", "/api/config", "")); view["revision"] != revision {
+		t.Fatalf("revision after oversized save: %v", view["revision"])
+	}
+
+	type rejection struct{ method, path, body, want string }
+	var rejections []rejection
+	for _, history := range []string{"/api/tasks", "/api/cycles", "/api/prs", "/api/proposals"} {
+		rejections = append(rejections,
+			rejection{"GET", history + "?before=x", "", "Invalid query string: "},
+			rejection{"GET", history + "?limit=-1", "", "Invalid query string: "})
+	}
+	rejections = append(rejections, rejection{"POST", "/api/doctor?mode=bogus", "{}", "Invalid query string: invalid value for `mode`"})
+	for _, check := range rejections {
+		response := call(t, router, check.method, check.path, check.body)
+		if response.Code != http.StatusBadRequest || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+			!strings.HasPrefix(response.Body.String(), check.want) {
+			t.Fatalf("%s %s: %d %q %q", check.method, check.path, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+		}
+	}
+
+	for _, check := range []struct {
+		name     string
+		response *httptest.ResponseRecorder
+		status   int
+	}{
+		{"dashboard", request(t, router, "GET", "/", "", false), http.StatusOK},
+		{"asset miss", request(t, router, "GET", "/_app/missing.js", "", false), http.StatusNotFound},
+		{"health", request(t, router, "GET", "/healthz", "", false), http.StatusOK},
+		{"state", call(t, router, "GET", "/api/state", ""), http.StatusOK},
+		{"unauthenticated", request(t, router, "GET", "/api/state", "", false), http.StatusUnauthorized},
+		{"body rejection", call(t, router, "PUT", "/api/config", "{bad"), http.StatusBadRequest},
+		{"unknown route", call(t, router, "GET", "/api/missing", ""), http.StatusNotFound},
+	} {
+		h := check.response.Header()
+		csp := h.Get("content-security-policy")
+		if check.response.Code != check.status ||
+			h.Get("x-content-type-options") != "nosniff" ||
+			h.Get("x-frame-options") != "DENY" ||
+			h.Get("referrer-policy") != "no-referrer" ||
+			h.Get("cache-control") != "no-store" ||
+			!strings.HasPrefix(csp, "default-src 'self';") ||
+			!strings.Contains(csp, "frame-ancestors 'none'") ||
+			!strings.Contains(csp, "base-uri 'self'") ||
+			!strings.Contains(csp, "form-action 'self'") {
+			t.Fatalf("%s: %d headers %v", check.name, check.response.Code, h)
+		}
+	}
+}

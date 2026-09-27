@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,33 +14,60 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-// waitUntil polls ready every 10 ms until it holds or timeout elapses.
-func waitUntil(timeout time.Duration, ready func() bool) bool {
-	deadline := time.Now().Add(timeout)
-	for {
-		if ready() {
-			return true
+// captureSecretEnv, capturePhraseEnv and captureLinesEnv name secret-bearing
+// variables that commands inherit, as verification commands inherit the
+// service's environment: a single token, a multi-word passphrase and a
+// multi-line key. captureBearerEnv is a passphrase that ends like a bearer
+// prefix, and captureMarkEnv one whose last word is punctuation that a
+// terminal escape sequence may also hold. The redactor reads the environment
+// once per process, so TestMain exports them before any test.
+const (
+	captureSecretEnv = "CAPTURE_TEST_API_KEY"
+	captureSecret    = "s3cr3tValue-0123456789"
+	capturePhraseEnv = "CAPTURE_TEST_PASSWORD"
+	capturePhrase    = "correct horse battery staple"
+	captureLinesEnv  = "CAPTURE_TEST_SECRET"
+	captureLines     = "first-line-of-key\nsecond-line-of-key\nthird-line"
+	captureBearerEnv = "CAPTURE_TEST_BEARER_SECRET"
+	captureBearer    = "opaque value then tokenbearer"
+	captureMarkEnv   = "CAPTURE_TEST_MARK_PASSWORD"
+	captureMark      = "ends with a mark !"
+)
+
+func TestMain(m *testing.M) {
+	for name, value := range map[string]string{captureSecretEnv: captureSecret, capturePhraseEnv: capturePhrase, captureLinesEnv: captureLines, captureBearerEnv: captureBearer, captureMarkEnv: captureMark} {
+		if err := os.Setenv(name, value); err != nil {
+			panic(err)
 		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
+	os.Exit(m.Run())
 }
 
-// processGone reports whether pid no longer runs: the proc entry is gone or it
-// is a zombie awaiting its parent's reap.
-func processGone(pid string) bool {
-	stat, err := os.ReadFile("/proc/" + pid + "/stat")
-	if err != nil {
-		return errors.Is(err, os.ErrNotExist)
+// waitForPid returns the pid a fixture command writes to path once the value
+// has fully landed: the shell creates the file before `echo` writes it, and
+// an empty pid would name /proc/stat rather than a process.
+func waitForPid(t *testing.T, path string) string {
+	t.Helper()
+	var pid string
+	if !testutil.WaitUntil(5*time.Second, func() bool {
+		data, err := os.ReadFile(path)
+		if err != nil || !strings.HasSuffix(string(data), "\n") {
+			return false
+		}
+		pid = strings.TrimSpace(string(data))
+		_, err = strconv.Atoi(pid)
+		return err == nil
+	}) {
+		t.Fatalf("the command never wrote %s", filepath.Base(path))
 	}
-	fields := strings.Fields(string(stat))
-	return len(fields) > 2 && fields[2] == "Z"
+	return pid
 }
 
 // processReaped reports whether a waited child left no trace at all.
@@ -127,7 +155,7 @@ sys.exit(int(sys.argv[2]))
 		t.Fatalf("descendant never wrote its pid: %v", err)
 	}
 	pid := strings.TrimSpace(string(childData))
-	if !waitUntil(5*time.Second, func() bool { return processGone(pid) }) {
+	if !testutil.WaitUntil(5*time.Second, func() bool { return testutil.ProcessGone(pid) }) {
 		t.Fatal("descendant survived leader completion")
 	}
 	// The leader was successfully started, so it must have been reaped: its
@@ -153,27 +181,16 @@ func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := process.Run(ctx, "bash",
+		_, err := process.RunMachine(ctx, "bash",
 			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, 10)
 		done <- err
 	}()
-	pidFile := filepath.Join(temp, "child.pid")
-	if !waitUntil(time.Second, func() bool {
-		_, err := os.Stat(pidFile)
-		return err == nil
-	}) {
-		t.Fatal("the command did not start its child process")
-	}
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid := strings.TrimSpace(string(data))
+	pid := waitForPid(t, filepath.Join(temp, "child.pid"))
 	cancel()
 	if err := <-done; err == nil {
 		t.Fatal("cancellation must fail the command")
 	}
-	if !waitUntil(time.Second, func() bool { return processGone(pid) }) {
+	if !testutil.WaitUntil(time.Second, func() bool { return testutil.ProcessGone(pid) }) {
 		t.Fatal("Child process survived cancellation")
 	}
 }
@@ -189,18 +206,7 @@ func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
 			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, 1, process.CaptureDiagnostic)
 		done <- err
 	}()
-	pidFile := filepath.Join(temp, "child.pid")
-	if !waitUntil(time.Second, func() bool {
-		_, err := os.Stat(pidFile)
-		return err == nil
-	}) {
-		t.Fatal("the command did not start its child process")
-	}
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid := strings.TrimSpace(string(data))
+	pid := waitForPid(t, filepath.Join(temp, "child.pid"))
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "Command timed out") {
@@ -209,8 +215,93 @@ func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("capture did not return after its deadline")
 	}
-	if !waitUntil(time.Second, func() bool { return processGone(pid) }) {
+	if !testutil.WaitUntil(time.Second, func() bool { return testutil.ProcessGone(pid) }) {
 		t.Fatal("Child process survived deadline expiration")
+	}
+}
+
+// TestStoppedGroupsCanCleanUp: cancellation and deadline expiry signal a
+// running command's group with SIGTERM before killing it, so tools such as
+// Git can run their own cleanup (removing index and ref lock files) first.
+func TestStoppedGroupsCanCleanUp(t *testing.T) {
+	script := "trap 'touch cleaned; exit 1' TERM; touch started; sleep 30 & wait"
+	for _, tc := range []struct {
+		name    string
+		seconds uint64
+		cancel  bool
+		want    string
+	}{
+		{name: "cancellation", seconds: 30, cancel: true, want: "Operation cancelled"},
+		// The limit leaves bash ample time to install its trap under load.
+		{name: "deadline", seconds: 3, want: "Command timed out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			temp := t.TempDir()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := process.Capture(ctx, "bash", []string{"-c", script}, temp, tc.seconds, process.CaptureDiagnostic)
+				done <- err
+			}()
+			if !testutil.WaitUntil(5*time.Second, func() bool {
+				_, err := os.Stat(filepath.Join(temp, "started"))
+				return err == nil
+			}) {
+				t.Fatal("the command did not start")
+			}
+			if tc.cancel {
+				cancel()
+			}
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("capture error = %v; want %s", err, tc.want)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("capture did not return")
+			}
+			if _, err := os.Stat(filepath.Join(temp, "cleaned")); err != nil {
+				t.Fatalf("the command's TERM cleanup never ran: %v", err)
+			}
+		})
+	}
+}
+
+// TestTermIgnoringGroupIsStillKilled: a group that ignores SIGTERM is killed
+// once the short cleanup grace ends, so a stopped command always returns
+// promptly and leaves nothing running.
+func TestTermIgnoringGroupIsStillKilled(t *testing.T) {
+	temp := t.TempDir()
+	cleanupGroup(t, filepath.Join(temp, "leader.pid"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := process.Capture(ctx, "bash", []string{"-c",
+			"trap '' TERM; echo $$ > leader.pid; sleep 30 & echo $! > child.pid; wait"},
+			temp, 30, process.CaptureDiagnostic)
+		done <- err
+	}()
+	leader := waitForPid(t, filepath.Join(temp, "leader.pid"))
+	child := waitForPid(t, filepath.Join(temp, "child.pid"))
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, process.ErrCancelled) {
+			t.Fatalf("capture error = %v; want Operation cancelled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a TERM-ignoring group must still be killed after the grace")
+	}
+	if elapsed := time.Since(started); elapsed > 8*time.Second {
+		t.Fatalf("cancellation took %v; want the short grace then a kill", elapsed)
+	}
+	for _, pid := range []string{leader, child} {
+		if !testutil.WaitUntil(time.Second, func() bool { return testutil.ProcessGone(pid) }) {
+			t.Fatalf("process %s survived cancellation", pid)
+		}
 	}
 }
 
@@ -261,7 +352,7 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 	// counted in the baseline; a leak only ever grows the count.
 	for i := 0; i < 3; i++ {
 		_, _ = process.Capture(context.Background(), "octomus-no-such-binary", nil, temp, 10, process.CaptureDiagnostic)
-		_, _ = process.Run(context.Background(), "true", nil, temp, 10)
+		_, _ = process.RunMachine(context.Background(), "true", nil, temp, 10)
 	}
 	runtime.GC()
 	beforeFDs, beforeG := fds(), runtime.NumGoroutine()
@@ -273,7 +364,7 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 		}
 	}
 	for i := 0; i < 10; i++ {
-		if _, err := process.Run(context.Background(), "true", nil, temp, 10); err != nil {
+		if _, err := process.RunMachine(context.Background(), "true", nil, temp, 10); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -290,17 +381,64 @@ func TestStartupFailureLeaksNothing(t *testing.T) {
 // terminal-prompt guard.
 func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	temp := t.TempDir()
-	t.Setenv("OCTOMUS_TOKEN", "test-token-value-that-must-not-leak")
-	t.Setenv("OCTOMUS_NOTIFICATION_WEBHOOK_URL", "https://example.invalid/hook")
+	// The names come from the constants the service reads its secrets from, so
+	// renaming a variable cannot leave the scrubbed name behind.
+	t.Setenv(redact.TokenEnv, "test-token-value-that-must-not-leak")
+	t.Setenv(redact.WebhookEnv, "https://example.invalid/hook")
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
-	out, err := process.Run(context.Background(), "bash", []string{"-c",
-		`printf 't=%s w=%s g=%s' "${OCTOMUS_TOKEN-unset}" "${OCTOMUS_NOTIFICATION_WEBHOOK_URL-unset}" "$GIT_TERMINAL_PROMPT"`},
-		temp, 10)
+	script := fmt.Sprintf(`printf 't=%%s w=%%s g=%%s' "${%s-unset}" "${%s-unset}" "$GIT_TERMINAL_PROMPT"`,
+		redact.TokenEnv, redact.WebhookEnv)
+	out, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, temp, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out != "t=unset w=unset g=0" {
 		t.Fatalf("child environment = %q; want secrets removed and GIT_TERMINAL_PROMPT=0", out)
+	}
+}
+
+// TestChildEnvironmentDropsGitRepositoryLocation pins that a service started
+// from a Git hook or a shell with repository-locating variables exported still
+// runs every child git against its own working directory, while the operator's
+// deliberate GIT_CONFIG_* channel reaches children unchanged.
+func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
+	temp := t.TempDir()
+	located := []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_COMMON_DIR",
+		"GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+		"GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_NO_REPLACE_OBJECTS",
+		"GIT_REPLACE_REF_BASE",
+	}
+	for _, key := range located {
+		t.Setenv(key, filepath.Join(temp, "decoy", strings.ToLower(key)))
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "user.name")
+	t.Setenv("GIT_CONFIG_VALUE_0", "Kept Operator")
+	script := `for key in "$@"; do printf '%s=%s ' "$key" "${!key-unset}"; done`
+	out, err := process.RunMachine(context.Background(), "bash",
+		append([]string{"-c", script, "env"}, append(located, "GIT_CONFIG_COUNT")...), temp, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want strings.Builder
+	for _, key := range located {
+		want.WriteString(key + "=unset ")
+	}
+	want.WriteString("GIT_CONFIG_COUNT=1 ")
+	if out != want.String() {
+		t.Fatalf("child environment = %q; want %q", out, want.String())
+	}
+	// A child git works on its own directory and still reads the config channel.
+	if _, err := process.RunMachine(context.Background(), "git", []string{"init", "--quiet"}, temp, 10); err != nil {
+		t.Fatalf("git init under exported GIT_DIR: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(temp, ".git", "HEAD")); err != nil {
+		t.Fatalf("git init did not create the repository in its working directory: %v", err)
+	}
+	name, err := process.RunMachine(context.Background(), "git", []string{"config", "user.name"}, temp, 10)
+	if err != nil || strings.TrimSpace(name) != "Kept Operator" {
+		t.Fatalf("git config user.name = %q, %v; want the GIT_CONFIG_* value", name, err)
 	}
 }
 
@@ -373,8 +511,9 @@ func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 	}
 }
 
-// TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses ports the
-// every other outcome — unexpected status, signal, spawn failure — is an error.
+// TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses: success is true,
+// a documented false status is false, and every other outcome — unexpected
+// status, signal, spawn failure — is an error.
 func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
@@ -407,29 +546,12 @@ func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 	}
 }
 
-// TestDiagnosticTextAndStatusFormat pins the human-readable evidence contract:
-// bounded stdout, an appended [stderr] section, and process exit-status wording.
-func TestDiagnosticTextAndStatusFormat(t *testing.T) {
+// A signal-terminated process reports its status by signal number and name,
+// the wording failure messages carry.
+func TestSignalStatusFormat(t *testing.T) {
 	tmp := t.TempDir()
 	ctx := context.Background()
-	out, err := process.Capture(ctx, "bash",
-		[]string{"-c", "printf 'o'; printf 'e' >&2"}, tmp, 10, process.CaptureDiagnostic)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if text, err := process.DiagnosticText("bash", out); err != nil || text != "o\n[stderr]\ne" {
-		t.Fatalf("diagnostic text = %q, %v; want stdout plus a stderr section", text, err)
-	}
-	out, err = process.Capture(ctx, "bash",
-		[]string{"-c", "printf 'o'; printf 'e' >&2; exit 3"}, tmp, 10, process.CaptureDiagnostic)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := process.DiagnosticText("bash", out); err == nil ||
-		!strings.HasPrefix(err.Error(), "bash exited with exit status: 3: o") {
-		t.Fatalf("failure text = %v; want the process status wording", err)
-	}
-	out, err = process.Capture(ctx, "python3",
+	out, err := process.Capture(ctx, "python3",
 		[]string{"-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"},
 		tmp, 10, process.CaptureDiagnostic)
 	if err != nil {
@@ -437,6 +559,349 @@ func TestDiagnosticTextAndStatusFormat(t *testing.T) {
 	}
 	if got := out.Status.String(); got != "signal: 9 (SIGKILL)" {
 		t.Fatalf("status = %q; want signal: 9 (SIGKILL)", got)
+	}
+}
+
+// TestCapturedTextDropsThePartialLineACaptureCut pins the rule every caller
+// relies on before scrubbing: kept bytes of a truncated capture lose the line
+// the limit cut, or, when they hold no newline, the word it cut, or everything
+// when there is no whitespace either. Complete captures are left whole.
+func TestCapturedTextDropsThePartialLineACaptureCut(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		bytes     string
+		truncated bool
+		want      string
+	}{
+		{name: "complete capture", bytes: "line one\npartial https://bot:s3cr3t", want: "line one\npartial https://bot:s3cr3t"},
+		{name: "cut inside a line", bytes: "line one\nline two\nkey s3cr3tVal", truncated: true, want: "line one\nline two"},
+		{name: "cut after a newline", bytes: "line one\n", truncated: true, want: "line one"},
+		{name: "one line with words", bytes: "word one\u2003https://bot:s3cr3tpass", truncated: true, want: "word one"},
+		{name: "one unbroken token", bytes: "https://bot:s3cr3tpass", truncated: true, want: ""},
+		{name: "cut inside a character", bytes: "done\nnext \xe2\x82", truncated: true, want: "done"},
+		{name: "cut inside a passphrase", bytes: "PASS=correct horse batt", truncated: true, want: "PASS="},
+		{name: "cut inside a multi-line key", bytes: "done\nKEY=first-line-of-key\nsecond-line-of-key\nthi", truncated: true, want: "done\nKEY="},
+		{name: "complete passphrase", bytes: "PASS=correct horse battery staple", want: "PASS=correct horse battery staple"},
+		{name: "invalid bytes kept whole", bytes: "bad \xff", want: "bad \uFFFD"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			captured := process.Captured{Bytes: []byte(test.bytes), Truncated: test.truncated}
+			if got := captured.Text(); got != test.want {
+				t.Fatalf("Text() = %q; want %q", got, test.want)
+			}
+			want := test.want
+			if test.truncated {
+				want += "\n[diagnostic output truncated]"
+			}
+			if got := captured.Preview(); got != want {
+				t.Fatalf("Preview() = %q; want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestFailureTextNeverShowsASecretTheCaptureLimitCut: a command that prints a
+// secret across the diagnostic capture limit leaves only a prefix of it, which
+// redaction cannot recognise. The failure text drops that partial line, keeps
+// the complete line before it and still flags the truncation, on stdout and
+// on stderr, for an environment secret and a URL credential.
+func TestFailureTextNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
+	const kept = "KEPT-LINE\n" // what `echo KEPT-LINE` prints
+	for _, secret := range []struct {
+		name  string
+		print string // shell words printing the secret-bearing line
+		cut   int    // bytes of that line kept before the limit
+		leak  string // the kept prefix that must not appear
+	}{
+		{name: "environment secret", print: `"$` + captureSecretEnv + `"`, cut: 10, leak: captureSecret[:10]},
+		{name: "URL credential", print: `'https://bot:s3cr3tpassword0123@github.com/x'`, cut: 22, leak: "s3cr3tpass"},
+	} {
+		lines := fmt.Sprintf(`echo KEPT-LINE; head -c %d /dev/zero | tr '\0' A; printf '%%s\n' %s`,
+			process.DiagnosticLimit-len(kept)-secret.cut, secret.print)
+		for _, stream := range []struct {
+			name string
+			run  func(script string) error
+		}{
+			{name: "predicate stdout", run: func(script string) error {
+				_, err := process.RunPredicate(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10, []int{1})
+				return err
+			}},
+			{name: "machine stderr", run: func(script string) error {
+				_, err := process.RunMachine(context.Background(), "bash", []string{"-c", "{ " + script + "; } >&2"}, t.TempDir(), 10)
+				return err
+			}},
+		} {
+			t.Run(secret.name+" on "+stream.name, func(t *testing.T) {
+				err := stream.run(lines + "; exit 3")
+				if err == nil {
+					t.Fatal("exit 3 must fail")
+				}
+				text := err.Error()
+				if strings.Contains(text, secret.leak) {
+					t.Fatalf("failure text shows the cut secret prefix %q: ...%q", secret.leak, text[max(len(text)-80, 0):])
+				}
+				if !strings.Contains(text, "KEPT-LINE\n[diagnostic output truncated]") {
+					t.Fatalf("failure text lost the complete line or the truncation flag: ...%q", text[max(len(text)-80, 0):])
+				}
+			})
+		}
+	}
+}
+
+// TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret: a capture limit
+// that falls after the first word of an environment passphrase or the first
+// line of a multi-line environment key leaves those complete words or lines
+// before the partial one it cut. They no longer match the whole value, so the
+// failure text drops them with the cut, on stdout and on stderr.
+func TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret(t *testing.T) {
+	const assignment = "KEY="
+	for _, secret := range []struct {
+		name string
+		env  string
+		cut  int    // bytes of the value kept before the limit
+		leak string // its complete first word or line
+	}{
+		{name: "passphrase", env: capturePhraseEnv, cut: len("correct horse batt"), leak: "correct"},
+		{name: "multi-line key", env: captureLinesEnv, cut: len("first-line-of-key\nsecond-"), leak: "first-line-of-key"},
+	} {
+		script := fmt.Sprintf(`head -c %d /dev/zero | tr '\0' A; printf '%s%%s\n' "$%s"`,
+			process.DiagnosticLimit-len(assignment)-secret.cut, assignment, secret.env)
+		for _, stream := range []struct {
+			name string
+			run  func(script string) error
+		}{
+			{name: "predicate stdout", run: func(script string) error {
+				_, err := process.RunPredicate(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10, []int{1})
+				return err
+			}},
+			{name: "machine stderr", run: func(script string) error {
+				_, err := process.RunMachine(context.Background(), "bash", []string{"-c", "{ " + script + "; } >&2"}, t.TempDir(), 10)
+				return err
+			}},
+		} {
+			t.Run(secret.name+" on "+stream.name, func(t *testing.T) {
+				err := stream.run(script + "; exit 3")
+				if err == nil {
+					t.Fatal("exit 3 must fail")
+				}
+				text := err.Error()
+				if strings.Contains(text, secret.leak) {
+					t.Fatalf("failure text shows the cut secret's first part %q: ...%q", secret.leak, text[max(len(text)-80, 0):])
+				}
+				if !strings.HasSuffix(text, "A"+assignment+"\n[diagnostic output truncated]") {
+					t.Fatalf("failure text lost the text before the secret or the truncation flag: ...%q", text[max(len(text)-80, 0):])
+				}
+			})
+		}
+	}
+}
+
+// TestTailTextNeverShowsASecretTheWindowCut: a command that prints far past
+// the diagnostic capture limit has its real end kept in a window that can
+// begin inside a secret, leaving only the rest of it, which redaction cannot
+// recognise. The tail text drops that rest, the token after a cut bearer
+// prefix and the remaining words or lines of a cut environment secret, and
+// keeps what follows through the final line, on stdout and on stderr, across
+// lines and within one long line.
+func TestTailTextNeverShowsASecretTheWindowCut(t *testing.T) {
+	for _, secret := range []struct {
+		name  string
+		print string // printf's format argument, printing text without a newline
+		text  string // what it prints
+		cut   int    // bytes of text before the window starts
+		leak  string // part of the rest that must not appear
+	}{
+		{name: "environment secret", print: `"$` + captureSecretEnv + `"`, text: captureSecret, cut: 10, leak: captureSecret[10:]},
+		{name: "URL credential", print: `'https://bot:s3cr3tpassword0123@github.com/x'`, text: "https://bot:s3cr3tpassword0123@github.com/x", cut: 22, leak: "sword0123"},
+		{name: "bearer token", print: `'Authorization: Bearer abcdefghijklmnop'`, text: "Authorization: Bearer abcdefghijklmnop", cut: len("Authorization: Bea"), leak: "abcdefghijklmnop"},
+		{name: "bearer token after a line break", print: `'Authorization: Bearer\nabcdefghijklmnop'`, text: "Authorization: Bearer\nabcdefghijklmnop", cut: len("Authorization: Be"), leak: "abcdefghijklmnop"},
+		{name: "passphrase", print: `"$` + capturePhraseEnv + `"`, text: capturePhrase, cut: len("correct hor"), leak: "battery"},
+		{name: "URL credential after a passphrase", print: `"$` + capturePhraseEnv + `://bot:s3cr3tpassword0123@github.com/x"`, text: capturePhrase + "://bot:s3cr3tpassword0123@github.com/x", cut: len("correct hor"), leak: "sword0123"},
+		{name: "multi-line key", print: `"$` + captureLinesEnv + `"`, text: captureLines, cut: len("first-line-of-k"), leak: "second-line-of-key"},
+	} {
+		for _, layout := range []struct{ name, sep string }{{"lines", "\n"}, {"one line", " "}} {
+			// After the head and a gap, the window's last TailLimit bytes are
+			// the rest of text, then the words or lines KEPT-AFTER, a filler
+			// and FINAL, each followed by sep.
+			filler := process.TailLimit - (len(secret.text) - secret.cut) - len("KEPT-AFTER") - len("FINAL") - 4*len(layout.sep)
+			script := fmt.Sprintf(`head -c %d /dev/zero | tr '\0' A; echo; printf %s; printf '%%sKEPT-AFTER%%s' '%s' '%s'; head -c %d /dev/zero | tr '\0' B; printf '%%sFINAL%%s' '%s' '%s'`,
+				process.DiagnosticLimit+1000, secret.print, layout.sep, layout.sep, filler, layout.sep, layout.sep)
+			for _, stream := range []struct {
+				name   string
+				script string
+				pick   func(*process.ProcessOutput) process.Captured
+			}{
+				{name: "stdout", script: script, pick: func(out *process.ProcessOutput) process.Captured { return out.Stdout }},
+				{name: "stderr", script: "{ " + script + "; } >&2", pick: func(out *process.ProcessOutput) process.Captured { return out.Stderr }},
+			} {
+				t.Run(secret.name+" in "+layout.name+" on "+stream.name, func(t *testing.T) {
+					out, err := process.Capture(context.Background(), "bash", []string{"-c", stream.script}, t.TempDir(), 10, process.CaptureDiagnostic)
+					if err != nil {
+						t.Fatal(err)
+					}
+					captured := stream.pick(out)
+					tail := captured.TailText()
+					if !captured.Truncated || len(captured.Bytes) != process.DiagnosticLimit || len(tail) > process.TailLimit {
+						t.Fatalf("capture kept %d head bytes and %d tail bytes, truncated=%t", len(captured.Bytes), len(tail), captured.Truncated)
+					}
+					if strings.Contains(tail, secret.leak) {
+						t.Fatalf("tail text shows the cut secret's rest %q: %.80q", secret.leak, tail)
+					}
+					if !strings.HasPrefix(tail, "KEPT-AFTER"+layout.sep) || !strings.HasSuffix(tail, layout.sep+"FINAL"+layout.sep) {
+						t.Fatalf("tail text lost what followed the secret or the real end: %.80q ... %q", tail, tail[max(len(tail)-80, 0):])
+					}
+				})
+			}
+		}
+	}
+}
+
+// displayLimit mirrors the store's display bound for recorded messages, and
+// failureTextLimit the part of it a failure message may use: the rest is left
+// for the context callers wrap around a failure before recording it.
+const (
+	displayLimit     = 16384
+	failureTextLimit = displayLimit - 1024
+)
+
+// TestFailureTextFitsWhole: a failure whose output fits the display bound is
+// reported exactly as before — the status, stdout, a newline, then stderr.
+func TestFailureTextFitsWhole(t *testing.T) {
+	_, err := process.RunMachine(context.Background(), "bash",
+		[]string{"-c", "printf o; printf e >&2; exit 3"}, t.TempDir(), 10)
+	if err == nil || err.Error() != "bash exited with exit status: 3: o\ne" {
+		t.Fatalf("failure text = %v; want the unchanged small-failure form", err)
+	}
+}
+
+// TestFailureTextKeepsStderrAndStdoutEnds: bulk stdout never pushes the cause
+// out of a failure message. The recorded text keeps stderr, both ends of
+// stdout with an explicit omission marker, scrubs secrets, and fits the
+// display bound so storing it cuts nothing more.
+func TestFailureTextKeepsStderrAndStdoutEnds(t *testing.T) {
+	script := `echo STDOUT-HEAD
+for i in $(seq 800); do echo "page $i token ghp_abcdefghijklmnopqrstuvwxyz0123456789 filler filler"; done
+echo STDOUT-TAIL
+echo 'gh: API rate limit exceeded (HTTP 403)' >&2
+exit 1`
+	_, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10)
+	if err == nil {
+		t.Fatal("exit 1 must fail")
+	}
+	text := err.Error()
+	for _, want := range []string{"bash exited with exit status: 1: STDOUT-HEAD", "STDOUT-TAIL", "characters omitted", "[stderr]\ngh: API rate limit exceeded (HTTP 403)"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("failure text lacks %q:\n%.300s", want, text)
+		}
+	}
+	if strings.Contains(text, "ghp_") {
+		t.Fatal("failure text leaked a token")
+	}
+	if n := utf8.RuneCountInString(text); n > failureTextLimit {
+		t.Fatalf("failure text has %d characters; want at most %d", n, failureTextLimit)
+	}
+	if redact.Error(err) != text {
+		t.Fatal("recording the failure text must not shorten it further")
+	}
+	// Callers wrap failures in context before recording them; the recorded
+	// message must still end with the cause.
+	for _, wrapped := range []error{
+		fmt.Errorf("Open pull request inventory failed: %w", err),
+		fmt.Errorf("Repository remote preflight failed: %w",
+			fmt.Errorf("%w: %w", errors.New("Publication result is uncertain; reconcile the preserved output commit"), err)),
+	} {
+		if recorded := redact.Error(wrapped); !strings.HasSuffix(recorded, "[stderr]\ngh: API rate limit exceeded (HTTP 403)\n") {
+			t.Fatalf("recorded wrapped failure lost the stderr cause: ...%q", recorded[max(len(recorded)-120, 0):])
+		}
+	}
+}
+
+// TestFailureTextBoundsLargeStderr: when both streams are large, each keeps
+// its beginning and end, stderr keeps a fixed share of the bound, and the
+// whole message still fits it.
+func TestFailureTextBoundsLargeStderr(t *testing.T) {
+	script := `echo STDOUT-HEAD; head -c 40000 /dev/zero | tr '\0' o; echo; echo STDOUT-TAIL
+{ echo STDERR-HEAD; head -c 40000 /dev/zero | tr '\0' e; echo; echo STDERR-TAIL; } >&2
+exit 2`
+	_, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10)
+	if err == nil {
+		t.Fatal("exit 2 must fail")
+	}
+	text := err.Error()
+	stdout, stderr, ok := strings.Cut(text, "\n[stderr]\n")
+	if !ok {
+		t.Fatalf("failure text lacks a stderr section:\n%.200s", text)
+	}
+	for _, want := range []string{"STDOUT-HEAD", "STDOUT-TAIL", "characters omitted"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout section lacks %q", want)
+		}
+	}
+	for _, want := range []string{"STDERR-HEAD", "STDERR-TAIL", "characters omitted"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr section lacks %q", want)
+		}
+	}
+	if n := utf8.RuneCountInString(stderr); n < 4000 || n > 4096 {
+		t.Fatalf("stderr section has %d characters; want its fixed share", n)
+	}
+	if n := utf8.RuneCountInString(text); n > failureTextLimit || n < failureTextLimit-64 {
+		t.Fatalf("failure text has %d characters; want the bound used, not exceeded", n)
+	}
+}
+
+// TestFailureTextOmitsAnEmptyStderrSection: a large failure with nothing on
+// stderr is elided without an empty stderr section.
+func TestFailureTextOmitsAnEmptyStderrSection(t *testing.T) {
+	script := `echo STDOUT-HEAD; head -c 40000 /dev/zero | tr '\0' o; echo; echo STDOUT-TAIL; exit 4`
+	_, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10)
+	if err == nil {
+		t.Fatal("exit 4 must fail")
+	}
+	text := err.Error()
+	if strings.Contains(text, "[stderr]") {
+		t.Fatalf("failure text carries an empty stderr section: %.200s", text)
+	}
+	if !strings.HasPrefix(text, "bash exited with exit status: 4: STDOUT-HEAD") ||
+		!strings.Contains(text, "characters omitted") || !strings.HasSuffix(text, "STDOUT-TAIL\n") {
+		t.Fatalf("failure text lost an end of stdout: %.200s", text)
+	}
+	if n := utf8.RuneCountInString(text); n > failureTextLimit {
+		t.Fatalf("failure text has %d characters; want at most %d", n, failureTextLimit)
+	}
+}
+
+// TestFailureTextKeepsTheRealEndOfTruncatedStreams: a failed command whose
+// output runs far past the diagnostic capture limit still states its cause
+// last. The failure text keeps each stream's beginning and its real end, not
+// the end of the kept head, around the truncation marker, on stdout and on
+// stderr, and still fits the bound.
+func TestFailureTextKeepsTheRealEndOfTruncatedStreams(t *testing.T) {
+	// Each stream prints about 1 MB, several times the capture limit.
+	script := `echo FIRST-STDOUT; seq -f 'stdout filler line %g' 40000; echo FINAL-STDOUT
+{ echo FIRST-STDERR; seq -f 'stderr filler line %g' 40000; echo FINAL-STDERR; } >&2
+exit 3`
+	_, err := process.RunPredicate(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10, []int{1})
+	if err == nil {
+		t.Fatal("exit 3 must fail")
+	}
+	text := err.Error()
+	stdout, stderr, ok := strings.Cut(text, "\n[stderr]\n")
+	if !ok {
+		t.Fatalf("failure text lacks a stderr section:\n%.200s", text)
+	}
+	for _, section := range []struct{ name, text, first, final string }{
+		{name: "stdout", text: stdout, first: "bash exited with exit status: 3: FIRST-STDOUT\n", final: "\nFINAL-STDOUT\n"},
+		{name: "stderr", text: stderr, first: "FIRST-STDERR\n", final: "\nFINAL-STDERR\n"},
+	} {
+		if !strings.HasPrefix(section.text, section.first) || !strings.HasSuffix(section.text, section.final) ||
+			!strings.Contains(section.text, "\n[diagnostic output truncated]\n") {
+			t.Fatalf("%s section lost its beginning, its real end or the truncation marker: %.80q ... %q",
+				section.name, section.text, section.text[max(len(section.text)-80, 0):])
+		}
+	}
+	if n := utf8.RuneCountInString(text); n > failureTextLimit {
+		t.Fatalf("failure text has %d characters; want at most %d", n, failureTextLimit)
 	}
 }
 
@@ -459,8 +924,8 @@ func TestShellCheckRetainsBashPipefail(t *testing.T) {
 	}
 }
 
-// TestWithDeadline ports the deadline helper: expiry cancels the context and
-// distinguishes a genuine deadline from an already-cancelled session.
+// TestWithDeadline: expiry cancels the context and distinguishes a genuine
+// deadline from an already-cancelled session.
 func TestWithDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -474,10 +939,10 @@ func TestWithDeadline(t *testing.T) {
 	done := process.WithDeadline(context.Background(), context.CancelFunc(func() {}),
 		time.Minute, func() string { return "finished" })
 	if done.Expired || done.Output != "finished" {
-		t.Fatalf("completed work = %+v; want Done with the output", done)
+		t.Fatalf("completed work = %+v; want its output without expiry", done)
 	}
 	// When the context is already cancelled but the work still outlives the
-	// limit, expiry reports already_cancelled rather than a genuine deadline.
+	// limit, expiry reports AlreadyCancelled rather than a genuine deadline.
 	cancelledCtx, cancelCancelled := context.WithCancel(context.Background())
 	cancelCancelled()
 	cancelled := process.WithDeadline(cancelledCtx, cancelCancelled,

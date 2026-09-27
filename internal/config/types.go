@@ -13,18 +13,13 @@ type Route struct {
 	Variant  *string `json:"variant,omitempty" wire:"default"`
 }
 
-func (v *Route) UnmarshalJSON(data []byte) error {
-	type plain Route
-	decoded := plain{}
-	if err := wirejson.Decode(data, &decoded, true, false); err != nil {
-		return err
-	}
-	*v = Route(decoded)
-	return nil
-}
-func (v Route) MarshalJSON() ([]byte, error) { type plain Route; return wirejson.Record(plain(v)) }
-func (v Route) Clone() Route                 { return wirejson.Clone(v) }
+func (v *Route) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
+func (v Route) MarshalJSON() ([]byte, error)     { type plain Route; return wirejson.Record(plain(v)) }
+func (v Route) Clone() Route                     { return wirejson.Clone(v) }
 
+// Config is the saved operator policy. Its JSON field names are the operator
+// contract; validateMode enforces every field's accepted range and units, and
+// docs/configuration.md describes each field.
 type Config struct {
 	Repository             string            `json:"repository"`
 	GitHubRepo             string            `json:"github_repo"`
@@ -58,14 +53,9 @@ type Config struct {
 	RetainEvents           uint64            `json:"retain_events"`
 }
 
+// UnmarshalJSON decodes strictly; absent fields take their Default() values.
 func (v *Config) UnmarshalJSON(data []byte) error {
-	type plain Config
-	decoded := plain(Default())
-	if err := wirejson.Decode(data, &decoded, true, true); err != nil {
-		return err
-	}
-	*v = Config(decoded)
-	return nil
+	return wirejson.DecodeWithDefaults(data, v, Default())
 }
 func (v Config) MarshalJSON() ([]byte, error) { type plain Config; return wirejson.Record(plain(v)) }
 func (v Config) Clone() Config                { return wirejson.Clone(v) }

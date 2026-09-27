@@ -18,7 +18,9 @@ var schemaSQL string
 
 const taskSummary = "json_object('id',NEW.id,'cycle_id',json_extract(NEW.data,'$.cycle_id'),'title',substr(json_extract(NEW.data,'$.proposal.title'),1,200),'category',json_extract(NEW.data,'$.proposal.category'),'tier',json_extract(NEW.data,'$.proposal.tier'),'target',json_extract(NEW.data,'$.proposal.target'),'branch',json_extract(NEW.data,'$.branch'),'status',json_extract(NEW.data,'$.status'),'pr_url',json_extract(NEW.data,'$.pr_url'),'pr_number',json_extract(NEW.data,'$.pr_number'),'error',substr(json_extract(NEW.data,'$.error'),1,512),'blocked_reason',json_extract(NEW.data,'$.blocked_reason'),'created_at',json_extract(NEW.data,'$.created_at'),'updated_at',json_extract(NEW.data,'$.updated_at'),'lifecycle',json(COALESCE(json_extract(NEW.data,'$.lifecycle'),'{}')),'superseded_by',json(COALESCE(json_extract(NEW.data,'$.superseded_by'),'[]')))"
 
-// Keep the projection's decision counts aligned with the Go model vocabulary.
+// cycleSummary builds the cycle projection's summary object. Its decision
+// counts are generated from model.Decisions, so they stay aligned with the Go
+// model vocabulary.
 func cycleSummary() string {
 	decisions := make([]string, 0, 4)
 	for _, decision := range model.Decisions() {
@@ -74,30 +76,21 @@ func userVersion(ctx context.Context, c *sql.Conn) (int64, error) {
 }
 
 func unsupportedSchema(version int64) error {
-	return fmt.Errorf("State database schema version %d is unsupported; this release requires a fresh version-7 data directory. Back up existing state before changing data directories", version)
+	return fmt.Errorf("State database schema version %d is unsupported; this release requires a fresh version-%d data directory. Back up existing state before changing data directories", version, SupportedSchemaVersion)
 }
 
-func createSchema(ctx context.Context, c *sql.Conn) (err error) {
-	if _, err = c.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_, _ = c.ExecContext(context.Background(), "ROLLBACK")
-		}
-	}()
-	if _, err = c.ExecContext(ctx, schemaSQL); err != nil {
-		return err
-	}
-	for _, name := range []string{"insert", "update"} {
-		ddl := fmt.Sprintf("CREATE TRIGGER project_record_%s AFTER %s ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN %s END;", name, strings.ToUpper(name), projection())
-		if _, err = c.ExecContext(ctx, ddl); err != nil {
+func createSchema(ctx context.Context, c *sql.Conn) error {
+	return runTx(c, "BEGIN IMMEDIATE", func(c *sql.Conn) error {
+		if _, err := c.ExecContext(ctx, schemaSQL); err != nil {
 			return err
 		}
-	}
-	if _, err = c.ExecContext(ctx, "PRAGMA user_version=7"); err != nil {
+		for _, name := range []string{"insert", "update"} {
+			ddl := fmt.Sprintf("CREATE TRIGGER project_record_%s AFTER %s ON records WHEN NEW.kind IN ('task','cycle','pr') BEGIN %s END;", name, strings.ToUpper(name), projection())
+			if _, err := c.ExecContext(ctx, ddl); err != nil {
+				return err
+			}
+		}
+		_, err := c.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SupportedSchemaVersion))
 		return err
-	}
-	_, err = c.ExecContext(ctx, "COMMIT")
-	return err
+	})
 }

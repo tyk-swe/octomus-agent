@@ -1,10 +1,10 @@
 package store
 
 import (
-	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +24,8 @@ type PrReservation struct {
 
 // PrIdentity is the configuration a PR inventory was observed under. A task
 // admitted under a different identity cannot consume that inventory's capacity.
+// Repository paths compare as config.SameRemoteIdentity compares them, so a
+// respelling that settings accept as the same repository never strands work.
 type PrIdentity struct {
 	Repository    string
 	GitHubRepo    string
@@ -31,11 +33,13 @@ type PrIdentity struct {
 	BranchPrefix  string
 }
 
+// PrIdentityOf returns the identity c observes PR inventories under, with the
+// GitHub repository lowercased.
 func PrIdentityOf(c config.Config) PrIdentity {
 	return PrIdentity{Repository: c.Repository, GitHubRepo: strings.ToLower(c.GitHubRepo), DefaultBranch: c.DefaultBranch, BranchPrefix: c.BranchPrefix}
 }
 func (p PrIdentity) Matches(c config.Config) bool {
-	return p.Repository == c.Repository && config.EqualASCII(c.GitHubRepo, p.GitHubRepo) && p.DefaultBranch == c.DefaultBranch && p.BranchPrefix == c.BranchPrefix
+	return config.SamePath(p.Repository, c.Repository) && config.EqualASCII(c.GitHubRepo, p.GitHubRepo) && p.DefaultBranch == c.DefaultBranch && p.BranchPrefix == c.BranchPrefix
 }
 
 // errRollback aborts a transaction that ends without a caller-visible error.
@@ -118,6 +122,8 @@ func PrUnion(inventory model.OpenPrInventory, reservations []PrReservation, limi
 	return observed, unrepresented, remaining
 }
 
+// HasPrReservation reports whether the task holds an open-PR capacity
+// reservation.
 func (s *Store) HasPrReservation(taskID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,6 +135,8 @@ func (s *Store) HasPrReservation(taskID string) (bool, error) {
 	return err == nil, err
 }
 
+// PrReservations lists the open-PR capacity reservations held for the
+// repository, matched case-insensitively, in no particular order.
 func (s *Store) PrReservations(repository string) ([]PrReservation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,20 +145,16 @@ func (s *Store) PrReservations(repository string) ([]PrReservation, error) {
 
 // PrReservationCandidates lists tasks that may still hold or need a reservation.
 func (s *Store) PrReservationCandidates() ([]model.Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, fmt.Sprintf(`SELECT r.data FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
+	return listRecords[model.Task](s, fmt.Sprintf(`SELECT r.data FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
                 WHERE m.kind='task' AND (
                     m.status IN (%s)
                     OR (m.status='queued' AND json_extract(r.data,'$.execution_session') IS NOT NULL)
                     OR (m.status!='published' AND json_extract(r.data,'$.output_commit') IS NOT NULL)
                 )`, statusList(model.ActiveStatuses())))
-	if err != nil {
-		return nil, err
-	}
-	return decodeTasks(raw)
 }
 
+// SeedPrReservation reserves open-PR capacity for the task's branch. It is
+// idempotent: a reservation the task already holds is kept unchanged.
 func (s *Store) SeedPrReservation(task model.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -177,7 +181,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 		if err != nil {
 			return err
 		}
-		if saved == nil || !sameJSON(*saved, inventory) {
+		if saved == nil || !wirejson.Equal(*saved, inventory) {
 			return errRollback
 		}
 		if task.Proposal.Target != task.Config.DefaultBranch || !PrIdentityOf(task.Config).Matches(cfg) {
@@ -188,7 +192,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 		if err != nil {
 			return err
 		}
-		if !found || canonical.Status != model.StatusQueued || !sameJSON(canonical, *task) {
+		if !found || canonical.Status != model.StatusQueued || !wirejson.Equal(canonical, *task) {
 			return errRollback
 		}
 		reservations, err := reservationRows(c, cfg.GitHubRepo)
@@ -207,7 +211,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now()); err != nil {
 			return err
 		}
-		if _, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,'status',?3)", model.Now(), next.ID, "Executing"); err != nil {
+		if err := txEvent(c, next.ID, "status", "Executing"); err != nil {
 			return err
 		}
 		admitted = true
@@ -242,11 +246,11 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 		if existing != nil && config.EqualASCII(existing.Repository, inventory.Repository) {
 			previous, err := time.Parse(time.RFC3339, existing.ObservedAt)
 			if err != nil {
-				return fmt.Errorf("Saved PR inventory timestamp is invalid: %s", chronoParseError(err))
+				return fmt.Errorf("Saved PR inventory timestamp is invalid: %s", invalidTimestamp)
 			}
 			candidate, err := time.Parse(time.RFC3339, inventory.ObservedAt)
 			if err != nil {
-				return fmt.Errorf("PR inventory timestamp is invalid: %s", chronoParseError(err))
+				return fmt.Errorf("PR inventory timestamp is invalid: %s", invalidTimestamp)
 			}
 			if candidate.Before(previous) {
 				return errRollback
@@ -266,7 +270,7 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 			return err
 		}
 		for _, reservation := range reservations {
-			if contains(released, reservation.TaskID) {
+			if slices.Contains(released, reservation.TaskID) {
 				var task model.Task
 				found, err := txGet(c, "task", reservation.TaskID, &task)
 				if err != nil {
@@ -301,43 +305,6 @@ func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []s
 	return err == nil, err
 }
 
-// sameJSON compares two records by their canonical serialization, the way the
-// Compare JSON values by content.
-func sameJSON(a, b any) bool {
-	left, err := wirejson.Marshal(a)
-	if err != nil {
-		return false
-	}
-	right, err := wirejson.Marshal(b)
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(left, right)
-}
-
-// chronoParseError keeps the operator-facing wording of a timestamp failure
-// short and free of Go's parse-layout diagnostics.
-func chronoParseError(err error) string {
-	return "input contains invalid characters"
-}
-
-func contains(values []string, value string) bool {
-	for _, v := range values {
-		if v == value {
-			return true
-		}
-	}
-	return false
-}
-
-func decodeTasks(raw [][]byte) ([]model.Task, error) {
-	tasks := make([]model.Task, 0, len(raw))
-	for _, data := range raw {
-		var task model.Task
-		if err := decodeJSON(data, &task); err != nil {
-			return nil, err
-		}
-		tasks = append(tasks, task)
-	}
-	return tasks, nil
-}
+// invalidTimestamp is the operator-facing reason for an unparseable inventory
+// timestamp, kept short and free of Go's parse-layout diagnostics.
+const invalidTimestamp = "input contains invalid characters"

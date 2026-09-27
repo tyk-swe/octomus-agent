@@ -3,7 +3,9 @@
 // all pass through invoke, which owns storage measurement and the daily
 // admission, session start or resume, the session record lifecycle, the turn
 // itself and redaction. Callers build prompts and interpret answers; they
-// never reserve admissions, resume threads or mark session records.
+// never resume threads or mark session records. Only executor initialization
+// reserves an admission itself, for the first executor turn, which it then
+// invokes as reserved.
 package engine
 
 import (
@@ -13,6 +15,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -63,63 +66,75 @@ type invocation struct {
 	ownsClients bool
 }
 
-// invoke runs one role turn and returns the session identity and the raw
-// answer, or the classified error that ended the turn.
-func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocation) (session, answer string, err error) {
-	closed := false
-	closeClients := func() error {
-		if !inv.ownsClients || closed {
-			return nil
-		}
-		closed = true
-		return clients.Close()
+// invoke runs one role turn and returns the raw answer, or the classified
+// error that ended the turn.
+func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocation) (answer string, err error) {
+	// Only an owned scope is closed here: a task's turns share the client
+	// scope that execute owns and closes. Close is idempotent and returns its
+	// first result again, so the cycle path below may close first.
+	if inv.ownsClients {
+		defer func() { _ = clients.Close() }()
 	}
-	defer func() { _ = closeClients() }()
+	// A turn whose owner is already cancelled could only fail at session
+	// start; refuse it before it measures storage or spends an admission.
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("Operation cancelled: %w", err)
+	}
 
 	var resume *string
 	if inv.resume != nil {
 		if inv.reserved {
-			return "", "", fmt.Errorf("A resumed %s turn cannot use a reserved admission", inv.role)
+			return "", fmt.Errorf("A resumed %s turn cannot use a reserved admission", inv.role)
 		}
 		identity := *inv.resume
 		resume = &identity
 		// A resumed thread must still have its record before any admission.
 		if _, err := sessionMut(inv.task, identity, inv.role); err != nil {
-			return "", "", err
+			return "", err
 		}
 	}
 	if !inv.reserved {
 		if err := a.admit(inv.cycleID, inv.task, inv.role, inv.route); err != nil {
-			return "", "", err
+			return "", err
 		}
 	}
 	if inv.prepare != nil {
 		if err := inv.prepare(); err != nil {
-			return "", "", err
+			return "", err
 		}
 	}
-	session, err = clients.Start(inv.route, inv.workspace, resume)
+	session, err := clients.Start(inv.route, inv.workspace, resume)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 
 	if inv.task == nil {
 		record := model.NewSession(session, inv.role, inv.route)
 		_ = a.Store.Event(inv.cycleID, "session_started", fmt.Sprintf("%s: %s · %s", inv.role, session, inv.route))
 		answer, summary, turnErr := a.turn(clients, inv, session)
-		if closeErr := closeClients(); turnErr == nil && closeErr != nil {
-			turnErr = closeErr
+		// The scope closes before the record is finalized, so a close failure
+		// fails an otherwise good turn.
+		if inv.ownsClients {
+			if closeErr := clients.Close(); turnErr == nil && closeErr != nil {
+				turnErr = closeErr
+			}
 		}
-		if turnErr == nil {
-			record.MarkCompleted(store.Redact(summary))
-		} else {
-			record.MarkFailed(store.ErrorMessage(turnErr))
+		switch {
+		case turnErr == nil:
+			record.MarkCompleted(redact.Text(summary))
+		case a.ctx.Err() != nil:
+			// Shutdown cut the turn short; the runner did not fail it. The
+			// record says so, as restart recovery says of a crash.
+			record.MarkInterrupted()
+			answer = ""
+		default:
+			record.MarkFailed(redact.Error(turnErr))
 			answer = ""
 		}
 		if err := a.Store.AppendCycleSession(inv.cycleID, record); err != nil {
-			return session, answer, errors.Join(turnErr, err)
+			return answer, errors.Join(turnErr, err)
 		}
-		return session, answer, turnErr
+		return answer, turnErr
 	}
 
 	task := inv.task
@@ -131,23 +146,23 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	} else {
 		record, err := sessionMut(task, session, inv.role)
 		if err != nil {
-			return session, "", err
+			return "", err
 		}
 		record.MarkRunning()
 	}
 	if err := a.saveTask(task); err != nil {
-		return session, "", err
+		return "", err
 	}
 	answer, summary, err := a.turn(clients, inv, session)
 	if err != nil {
-		return session, "", err
+		return "", err
 	}
 	record, err := sessionMut(task, session, inv.role)
 	if err != nil {
-		return session, "", err
+		return "", err
 	}
-	record.MarkCompleted(store.Redact(summary))
-	return session, answer, a.saveTask(task)
+	record.MarkCompleted(redact.Text(summary))
+	return answer, a.saveTask(task)
 }
 
 // turn runs the prompt on a started session and applies the judge, returning
@@ -165,7 +180,7 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 		if err != nil {
 			return "", "", err
 		}
-		record.Summary = store.Redact(answer)
+		record.Summary = redact.Text(answer)
 		if err := a.saveTask(inv.task); err != nil {
 			return "", "", err
 		}

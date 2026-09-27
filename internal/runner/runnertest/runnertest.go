@@ -311,14 +311,14 @@ func (c *client) Models(cwd string) ([]runner.Model, error) {
 	return c.models(), nil
 }
 
-func (c *client) Diagnostics(cwd string) (map[string]any, error) {
+func (c *client) Diagnose(cwd string) (runner.Diagnostics, error) {
 	c.script.mu.Lock()
 	defer c.script.mu.Unlock()
 	c.record(Call{Kind: CallDiagnostics, Cwd: cwd})
 	if err := c.usable(); err != nil {
-		return nil, err
+		return runner.Diagnostics{}, err
 	}
-	return map[string]any{"backend": c.backend.Slug(), "version": "scripted", "protocol_version": "scripted", "warning": nil}, nil
+	return runner.Diagnostics{Backend: c.backend, ProtocolVersion: "scripted", Version: "scripted"}, nil
 }
 
 // Start rejects routes absent from the catalog, then resumes resume (which must

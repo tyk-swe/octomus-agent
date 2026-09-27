@@ -5,14 +5,15 @@ import (
 	"time"
 )
 
+// The pending-queue cap (1000 rows) lives in the schema's notify_* triggers.
 const (
-	NotificationQueueCap    int64 = 1000
 	NotificationMaxAttempts int64 = 5
 	NotificationExpiry      int64 = 24 * 60 * 60
 )
 
-// NotificationRetryDelays is indexed by the attempt number just made.
-var NotificationRetryDelays = [5]int64{30, 120, 600, 1800, 1800}
+// NotificationRetryDelays is indexed by the attempt number just made; its
+// length is tied to the attempt limit.
+var NotificationRetryDelays = [NotificationMaxAttempts]int64{30, 120, 600, 1800, 1800}
 
 // NotificationDelivery is one claimed outbox row: attention evidence references,
 // never task content.
@@ -161,8 +162,8 @@ func (s *Store) NotificationHealth() (NotificationHealth, error) {
 	return health, nil
 }
 
-// rfc3339 matches chrono's `to_rfc3339` for a UTC instant: seconds precision
-// only when the instant has no sub-second part, otherwise nanoseconds.
+// rfc3339 formats a UTC instant for outbox timestamps: whole seconds when there
+// is no sub-second part, otherwise nanoseconds.
 func rfc3339(at time.Time) string {
 	at = at.UTC()
 	if at.Nanosecond() == 0 {

@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -115,6 +117,60 @@ func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 	}
 }
 
+// TestAdmissionMeasuresPastUnreadableWorkspaceDirectories: a directory that a
+// worker or verification command left without read or search permission inside
+// a retained workspace neither refuses every later turn's admission nor fails
+// every housekeeping storage pass; both measure the bytes they can read and
+// leave the directory's mode alone. Root ignores directory modes, so the test
+// needs an unprivileged user.
+func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	state := testStore(t)
+	data := t.TempDir()
+	app := New(state, data)
+	t.Cleanup(app.Shutdown)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	workspaceDir := filepath.Join(data, "tasks", "t1", "workspace")
+	locked := filepath.Join(workspaceDir, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readable := []byte("readable workspace bytes")
+	if err := os.WriteFile(filepath.Join(workspaceDir, "notes.txt"), readable, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "inner", "hidden.txt"), []byte("hidden"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	if err := app.admit("cycle-1", nil, "discovery", cfg.Roles["discovery"]); err != nil {
+		t.Fatalf("admission with an unreadable workspace directory = %v; want a reserved session", err)
+	}
+	if used, err := state.SessionsToday(); err != nil || used != 1 {
+		t.Fatalf("sessions today = %d, %v; want 1", used, err)
+	}
+	if err := app.measureStorage(cfg); err != nil {
+		t.Fatalf("storage measurement with an unreadable workspace directory = %v", err)
+	}
+	saved, err := store.Get[storageUsage](state, "settings", "storage")
+	if err != nil || saved == nil {
+		t.Fatalf("saved storage = %+v, %v", saved, err)
+	}
+	if saved.TaskBytes != uint64(len(readable)) || saved.ApplicationBytes < saved.TaskBytes {
+		t.Fatalf("saved storage = %+v; want %d readable task bytes", saved, len(readable))
+	}
+	if info, err := os.Lstat(locked); err != nil || info.Mode().Perm() != 0 {
+		t.Fatalf("measurement changed the locked directory: %v, %v; want mode 0", info, err)
+	}
+}
+
 // TestInvocationRejectsReservedResume: a reserved admission covers only a
 // fresh session's first turn, so a resumed turn marked reserved is refused
 // before it reaches the runner rather than running unadmitted.
@@ -129,7 +185,7 @@ func TestInvocationRejectsReservedResume(t *testing.T) {
 	task := &model.Task{ID: "reserved-resume", CycleID: "cycle", ExecutionSession: &thread,
 		Sessions: []model.Session{{ID: thread, Role: "executor", Status: model.SessionRunning}}}
 
-	_, _, err := app.invoke(context.Background(), clients, invocation{
+	_, err := app.invoke(context.Background(), clients, invocation{
 		cycleID: task.CycleID, task: task, role: "executor", route: config.NewRoute("scripted-executor", "medium"),
 		workspace: t.TempDir(), resume: task.ExecutionSession, prompt: "unused", reserved: true,
 	})
@@ -140,6 +196,87 @@ func TestInvocationRejectsReservedResume(t *testing.T) {
 		t.Fatalf("a refused turn reached the runner: %+v", calls)
 	}
 	assertAdmissions(t, state, 0, "a refused turn admits nothing")
+}
+
+// TestInvocationSkipsCancelledOwner: a turn whose owner is already cancelled
+// is refused before it measures storage, reserves a daily admission, prepares
+// a workspace or reaches the runner, and an owned client scope still closes.
+func TestInvocationSkipsCancelledOwner(t *testing.T) {
+	state := testStore(t)
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	script := runnertest.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clients := runner.New(ctx, config.Default(), script.Connector())
+	prepared := false
+
+	answer, err := app.invoke(ctx, clients, invocation{
+		cycleID: "cycle", role: "discovery-0", route: config.NewRoute("scripted-discovery", "medium"),
+		workspace: t.TempDir(), prompt: "unused", ownsClients: true,
+		prepare: func() error { prepared = true; return nil },
+	})
+	if err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "Operation cancelled") {
+		t.Fatalf("cancelled owner error = %v", err)
+	}
+	if answer != "" || prepared {
+		t.Fatalf("a cancelled turn answered %q or prepared its workspace (%v)", answer, prepared)
+	}
+	if calls := script.Calls(); len(calls) != 0 {
+		t.Fatalf("a cancelled turn reached the runner: %+v", calls)
+	}
+	assertAdmissions(t, state, 0, "a cancelled owner admits nothing")
+	assertNoOpenClients(t, script)
+}
+
+// TestInvocationCloseFailureFailsPlanningTurn: a planning turn owns its client
+// scope and closes it before its record is finalized, so a scope that fails
+// to close fails an otherwise good turn. The answer is discarded and the cycle
+// records the role's session as failed with the close error.
+func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
+	state := testStore(t)
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	cycleID := "close-failure-cycle"
+	cycle := model.Cycle{
+		Mode: model.CycleModeAudit, ID: cycleID, Number: 1, Status: model.CycleRunning, StartedAt: model.Now(),
+		Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
+	}
+	if err := state.Put("cycle", cycleID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	route := config.NewRoute("scripted-discovery", "medium")
+	script := runnertest.New(runnertest.CatalogFor(route)...)
+	script.Answer(route, "Discovered")
+	// FailClose applies to the backend's next close, so the turn is invoked
+	// directly: a full planning cycle's preflight could consume it first.
+	script.FailClose(route.Backend, errors.New("fixture close"))
+	clients := runner.New(context.Background(), config.Default(), script.Connector())
+
+	answer, err := app.invoke(context.Background(), clients, invocation{
+		cycleID: cycleID, role: "discovery-0", route: route, workspace: t.TempDir(),
+		prompt: "Discover", ownsClients: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "fixture close") {
+		t.Fatalf("close failure error = %v", err)
+	}
+	if answer != "" {
+		t.Fatalf("a turn whose clients failed to close kept its answer %q", answer)
+	}
+	turns := script.Turns(route)
+	if len(turns) != 1 {
+		t.Fatalf("turns = %+v; want the one discovery turn", turns)
+	}
+	saved, err := store.Get[model.Cycle](state, "cycle", cycleID)
+	if err != nil || saved == nil {
+		t.Fatalf("load cycle: %+v, %v", saved, err)
+	}
+	if len(saved.Sessions) != 1 || saved.Sessions[0].ID != turns[0].Session || saved.Sessions[0].Role != "discovery-0" ||
+		saved.Sessions[0].Status != model.SessionFailed || !strings.Contains(saved.Sessions[0].Summary, "fixture close") {
+		t.Fatalf("cycle sessions = %+v; want the discovery session failed with the close error", saved.Sessions)
+	}
+	assertAdmissions(t, state, 1, "the one discovery turn")
+	assertNoOpenClients(t, script)
 }
 
 // secretToken is secret-shaped: the store's redaction replaces it.

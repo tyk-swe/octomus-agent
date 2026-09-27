@@ -1,6 +1,5 @@
-<script lang="ts">
-  let { name, size = 20 }: { name: string; size?: number } = $props();
-  const paths: Record<string, string> = {
+<script module lang="ts">
+  const paths = {
     overview: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
     queue: 'M9 6h12M9 12h12M9 18h12M3 6h.01M3 12h.01M3 18h.01',
     proposals: 'M9 18h6M10 22h4M8 14c-5-5-2-12 4-12s9 7 4 12l-1 2H9z',
@@ -27,7 +26,13 @@
     menu: 'M3 6h18M3 12h18M3 18h18',
     logout: 'M9 3H3v18h6M10 12h11m-4-4 4 4-4 4',
     copy: 'M9 9h11v11H9zM15 9V4H4v11h5'
-  };
+  } as const;
+  /** Every icon the dashboard draws; a name outside this set fails the type check. */
+  export type IconName = keyof typeof paths;
+</script>
+
+<script lang="ts">
+  let { name, size = 20 }: { name: IconName; size?: number } = $props();
 </script>
 
 <svg
@@ -39,5 +44,5 @@
   stroke-width="1.65"
   stroke-linecap="round"
   stroke-linejoin="round"
-  aria-hidden="true"><path d={paths[name] ?? paths.activity} /></svg
+  aria-hidden="true"><path d={paths[name]} /></svg
 >

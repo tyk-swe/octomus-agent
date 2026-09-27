@@ -2,9 +2,12 @@ package store_test
 
 import (
 	"fmt"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -115,6 +118,35 @@ func TestAttentionTriggersEnqueueOneRowPerEpisode(t *testing.T) {
 	rows = pendingRows(t, path)
 	if len(rows) != 3 || rows[2]["category"] != "unknown" {
 		t.Fatalf("%+v", rows)
+	}
+}
+
+// The attention triggers name each blocked reason in SQL. Every reason the
+// model defines, "unknown" included, must reach the outbox as its own
+// category through both the insert and the update trigger, never as a
+// silent "unknown".
+func TestAttentionCategoryCoversEveryBlockedReason(t *testing.T) {
+	path := statePath(t)
+	s := open(t, path)
+	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
+	want := []string{}
+	for r := model.BlockedReason(0); r.String() != ""; r++ {
+		putNotificationTask(t, s, "insert-"+r.String(), "blocked", r.String())
+		putNotificationTask(t, s, "update-"+r.String(), "queued", "")
+		putNotificationTask(t, s, "update-"+r.String(), "blocked", r.String())
+		want = append(want, r.String(), r.String())
+	}
+	if len(want) < 2*int(model.BlockedReasonUnknown+1) {
+		t.Fatalf("only %d reasons were enumerated", len(want)/2)
+	}
+	rows := pendingRows(t, path)
+	if len(rows) != len(want) {
+		t.Fatalf("%d pending rows; want %d", len(rows), len(want))
+	}
+	for i, row := range rows {
+		if row["category"] != want[i] || row["action"] != "inspect_task" {
+			t.Fatalf("row %d %+v; want category %q", i, row, want[i])
+		}
 	}
 }
 
@@ -329,5 +361,40 @@ func TestClaimExpiresDayOldRowsAndPrunesTerminalHistory(t *testing.T) {
 	terminal := queryInt(t, db, "SELECT count(*) FROM notification_outbox WHERE status!='pending'")
 	if terminal != 3 {
 		t.Fatalf("terminal history prunes to retain_events: %d", terminal)
+	}
+}
+
+// The notify_task_* triggers spell out the blocked-reason vocabulary in SQL.
+// Every model.BlockedReason must reach webhooks as its own category through
+// both the insert and the update trigger, never collapse into "unknown".
+func TestEveryBlockedReasonKeepsItsNotificationCategory(t *testing.T) {
+	path := statePath(t)
+	s := open(t, path)
+	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
+	categories := func(rows []map[string]any) []string {
+		out := make([]string, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, row["category"].(string))
+		}
+		return out
+	}
+	var want []string
+	for reason := model.BlockedReason(0); reason.String() != ""; reason++ {
+		putNotificationTask(t, s, fmt.Sprintf("insert-%d", reason), "blocked", reason.String())
+		want = append(want, reason.String())
+	}
+	if !slices.Contains(want, model.BlockedReasonUnknown.String()) {
+		t.Fatalf("blocked reason vocabulary: %v", want)
+	}
+	if got := categories(pendingRows(t, path)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("insert trigger categories:\n got %v\nwant %v", got, want)
+	}
+	for reason := model.BlockedReason(0); reason.String() != ""; reason++ {
+		id := fmt.Sprintf("update-%d", reason)
+		putNotificationTask(t, s, id, "executing", "")
+		putNotificationTask(t, s, id, "blocked", reason.String())
+	}
+	if got := categories(pendingRows(t, path))[len(want):]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("update trigger categories:\n got %v\nwant %v", got, want)
 	}
 }

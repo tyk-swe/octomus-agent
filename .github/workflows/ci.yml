@@ -54,15 +54,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
+      # internal/runner does not embed the dashboard, so this job neither builds
+      # it nor shares the verify job's web/package-lock.json npm cache (a cache
+      # saved here, without web dependencies, would pin that key for verify).
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: npm ci --prefix web && npm run build --prefix web
       - name: Install pinned client
         run: |
           if [ '${{ matrix.backend }}' = codex ]; then

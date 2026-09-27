@@ -16,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func contract(t *testing.T, backend config.Backend, binary string) {
@@ -38,21 +39,22 @@ func contract(t *testing.T, backend config.Backend, binary string) {
 		owned.Close()
 		select {
 		case err := <-providerWait:
-			if err != nil && !strings.Contains(err.Error(), "signal: killed") {
+			if err != nil && !killed(err) {
 				t.Errorf("the synthetic provider exited abnormally: %v", err)
 			}
 		case <-time.After(5 * time.Second):
 			t.Error("the synthetic provider was not reaped")
 		}
 	})
-	if !waitUntil(5*time.Second, func() bool { return fileExists(filepath.Join(root, "provider-port")) }) {
+	var port string
+	if !testutil.WaitUntil(5*time.Second, func() bool {
+		var ok bool
+		port, ok = published(filepath.Join(root, "provider-port"))
+		return ok
+	}) {
 		t.Fatal("the synthetic provider never published its port")
 	}
-	port, err := os.ReadFile(filepath.Join(root, "provider-port"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := fmt.Sprintf("http://127.0.0.1:%s/v1", strings.TrimSpace(string(port)))
+	base := fmt.Sprintf("http://127.0.0.1:%s/v1", port)
 	providerConfig := filepath.Join(root, "provider.json")
 	policy, err := json.Marshal(map[string]any{
 		"enabled_providers": []string{"contract"},
@@ -230,7 +232,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 		t.Fatalf("resume changed session identity: %q", resumed)
 	}
 	turn := turnIn(client, session, route, workspace, "CANCEL_CONTRACT_TURN", nil)
-	if !waitUntil(10*time.Second, func() bool { return fileExists(filepath.Join(root, "turn-entered")) }) {
+	if !testutil.WaitUntil(10*time.Second, func() bool { return fileExists(filepath.Join(root, "turn-entered")) }) {
 		t.Fatal("controlled cancellation request never reached the provider")
 	}
 	cancel()

@@ -1,0 +1,304 @@
+// Package redact scrubs secrets from operator-facing text and bounds dashboard
+// display values. It is a leaf: subprocess, Git and runner code scrub their
+// output here without depending on persistence, and the store, exports and API
+// responses share the same helpers.
+package redact
+
+import (
+	"cmp"
+	"os"
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
+	"unicode"
+	"unicode/utf8"
+)
+
+// TokenEnv names the operator access token variable. Its value is a secret:
+// the service authenticates API requests with it, and it never reaches a child
+// process.
+const TokenEnv = "OCTOMUS_TOKEN"
+
+// WebhookEnv names the notification destination variable; its value is a secret.
+const WebhookEnv = "OCTOMUS_NOTIFICATION_WEBHOOK_URL"
+
+// Error renders an error for an operator, with secrets scrubbed. Errors reach
+// operators through saved records and API responses, so every stored error
+// message is built here rather than formatted at each site.
+func Error(err error) string { return Text(err.Error()) }
+
+// tokenWhitespace is the character-class body for Unicode White_Space:
+// separators (\p{Z}), TAB through CR, and NEL. Every whitespace match uses it
+// because Go's \s is ASCII-only.
+const tokenWhitespace = `\p{Z}\x{0009}-\x{000D}\x{0085}`
+
+// tokenPattern matches bearer credentials, GitHub tokens and URL userinfo.
+var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-Za-z0-9._~+/=-]+|(?:gh[pousr]_|github_pat_)[A-Za-z0-9_-]{10,}|[a-z]+://[^` + tokenWhitespace + `/@]+:[^` + tokenWhitespace + `/@]+@`)
+
+// keyPattern matches sk- API keys; group 1 is the key itself. A key must start
+// a token, because ordinary words such as task-, risk- or disk- also end in
+// "sk-": it may follow anything but an ASCII letter, or an escape sequence
+// that ends in a letter in encoded text (\n, \x0b or \u003e in JSON and string
+// literals, %3D in a URL, a terminal color code such as ESC[32m, or any other
+// terminal control sequence, raw or escaped: a CSI sequence such as ESC[2K or
+// ESC[2 q, or a two-character or intermediate-byte escape such as ESC c, ESC M
+// or the character-set selection ESC(B that tput sgr0 and rmacs print).
+var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|(?:\x1b|\\(?:u001b|x1b|e|033))(?:\[[0-9:;<=>?]*[\x20-\x2f]*[A-Za-z]|[\x20-\x2f]*[\x30-\x7e])|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
+
+var (
+	secretsOnce sync.Once
+	secrets     []string
+)
+
+func environmentSecrets() []string {
+	secretsOnce.Do(func() {
+		for _, entry := range os.Environ() {
+			key, value, ok := strings.Cut(entry, "=")
+			if !ok || len(value) < 8 {
+				continue
+			}
+			if key == WebhookEnv || strings.Contains(key, "TOKEN") || strings.Contains(key, "SECRET") || strings.Contains(key, "PASSWORD") || strings.Contains(key, "API_KEY") {
+				secrets = append(secrets, value)
+			}
+		}
+	})
+	return secrets
+}
+
+// Secrets scrubs tokens and secret-bearing environment values without any
+// length limit. Persisted results must be bounded by the caller so shortening
+// is always flagged.
+func Secrets(input string) string { return scrub(input, environmentSecrets()) }
+
+// TrimCutSecretEnd removes from the end of text the complete first words or
+// lines of a secret-bearing environment value. Text cut back to whitespace
+// because a read or capture limit fell inside such a value still ends with
+// them, and they no longer match the whole value, so scrubbing alone would
+// leave them visible. Only a part that ends where the value itself has
+// whitespace is removed.
+func TrimCutSecretEnd(text string) string { return trimCutSecretEnd(text, environmentSecrets()) }
+
+func trimCutSecretEnd(text string, values []string) string {
+	cut := 0
+	for _, value := range values {
+		for i, r := range value {
+			if i > cut && unicode.IsSpace(r) && strings.HasSuffix(text, value[:i]) {
+				cut = i
+			}
+		}
+	}
+	return text[:len(text)-cut]
+}
+
+// TrimCutSecretStart mirrors TrimCutSecretEnd for text whose start was cut and
+// then advanced past whitespace, such as a kept tail that drops its partial
+// first line: it removes from the start of text the complete last words or
+// lines of a secret-bearing environment value, a part that begins where the
+// value itself has whitespace.
+func TrimCutSecretStart(text string) string {
+	return trimCutSecretStart(text, environmentSecrets())
+}
+
+func trimCutSecretStart(text string, values []string) string {
+	cut := 0
+	for _, value := range values {
+		for i, r := range value {
+			if !unicode.IsSpace(r) {
+				continue
+			}
+			if rest := value[i+utf8.RuneLen(r):]; len(rest) > cut && strings.HasPrefix(text, rest) {
+				cut = len(rest)
+			}
+		}
+	}
+	return text[cut:]
+}
+
+// scrub replaces every token match and every occurrence of each secret value
+// in input with "[redacted]". All spans are found in the original text and
+// overlapping spans are replaced as one, so replacing one secret never splits
+// another and leaves the rest of it visible. Adjacent spans stay separate.
+func scrub(input string, values []string) string {
+	var spans [][2]int
+	for _, match := range tokenPattern.FindAllStringIndex(input, -1) {
+		spans = append(spans, [2]int{match[0], match[1]})
+	}
+	for _, match := range keyPattern.FindAllStringSubmatchIndex(input, -1) {
+		spans = append(spans, [2]int{match[2], match[3]})
+	}
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		first := len(spans)
+		for from := 0; ; {
+			i := strings.Index(input[from:], value)
+			if i < 0 {
+				break
+			}
+			start, end := from+i, from+i+len(value)
+			if last := len(spans) - 1; last >= first && start < spans[last][1] {
+				// An overlapping occurrence of the same value extends the last one.
+				spans[last][1] = end
+			} else {
+				spans = append(spans, [2]int{start, end})
+			}
+			from = start + 1
+		}
+	}
+	if len(spans) == 0 {
+		return input
+	}
+	slices.SortFunc(spans, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
+	var out strings.Builder
+	last := 0
+	for i := 0; i < len(spans); {
+		start, end := spans[i][0], spans[i][1]
+		for i++; i < len(spans) && spans[i][0] < end; i++ {
+			end = max(end, spans[i][1])
+		}
+		out.WriteString(input[last:start])
+		out.WriteString("[redacted]")
+		last = end
+	}
+	out.WriteString(input[last:])
+	return out.String()
+}
+
+// displayTextLimit bounds every string a dashboard display value can carry,
+// counted in characters on a rune boundary.
+const displayTextLimit = 16384
+
+// boundDisplayText shortens text to the display limit, cutting on a rune
+// boundary, and reports whether anything was dropped.
+func boundDisplayText(s string) (string, bool) {
+	count := 0
+	for i := range s {
+		if count == displayTextLimit {
+			return s[:i], true
+		}
+		count++
+	}
+	return s, false
+}
+
+// displayString applies the display transformation to one string and reports
+// the kinds applied: "redacted" for secret scrubbing, "shortened" for the
+// display length bound.
+func displayString(s string) (string, []string) {
+	kinds := []string{}
+	redacted := Secrets(s)
+	if redacted != s {
+		kinds = append(kinds, "redacted")
+	}
+	display, shortened := boundDisplayText(redacted)
+	if shortened {
+		kinds = append(kinds, "shortened")
+	}
+	return display, kinds
+}
+
+// Text scrubs secrets and bounds the text to the display character limit.
+func Text(input string) string {
+	s, _ := displayString(input)
+	return s
+}
+
+// DisplayTransform records every string inside one top-level field whose
+// display value differs from the canonical saved value, so an operator can
+// tell a display preview from the stored original. Each path is a structured
+// segment list — strings for object keys, numbers for array indices — so
+// callers walk it directly rather than re-parsing a formatted path.
+type DisplayTransform struct {
+	Field string   `json:"field"`
+	Kinds []string `json:"kinds"`
+	Paths [][]any  `json:"paths"`
+}
+
+// DisplayJSON returns the display-safe form of a generic JSON object: every
+// string passes through the same redaction and length bound as JSON, and each
+// altered string is reported by field, kind and structured JSON path. The
+// result is display data only; it must never be treated as canonical
+// executable configuration.
+func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
+	transforms := map[string]*DisplayTransform{}
+	var walk func(value any, path []any, field string) any
+	walk = func(value any, path []any, field string) any {
+		switch v := value.(type) {
+		case string:
+			display, kinds := displayString(v)
+			if len(kinds) == 0 {
+				return display
+			}
+			entry := transforms[field]
+			if entry == nil {
+				entry = &DisplayTransform{Field: field, Kinds: []string{}, Paths: [][]any{}}
+				transforms[field] = entry
+			}
+			for _, kind := range kinds {
+				if !slices.Contains(entry.Kinds, kind) {
+					entry.Kinds = append(entry.Kinds, kind)
+				}
+			}
+			entry.Paths = append(entry.Paths, path)
+			return display
+		case []any:
+			for i := range v {
+				v[i] = walk(v[i], append(slices.Clone(path), i), field)
+			}
+			return v
+		case map[string]any:
+			keys := make([]string, 0, len(v))
+			for key := range v {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				v[key] = walk(v[key], append(slices.Clone(path), key), field)
+			}
+			return v
+		default:
+			return value
+		}
+	}
+	fields := make([]string, 0, len(object))
+	for field := range object {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	for _, field := range fields {
+		object[field] = walk(object[field], []any{field}, field)
+	}
+	result := []DisplayTransform{}
+	for _, field := range fields {
+		if entry := transforms[field]; entry != nil {
+			// walk visits fields, map keys and array indices in sorted order,
+			// so Paths are already ordered; only Kinds needs sorting.
+			sort.Strings(entry.Kinds)
+			result = append(result, *entry)
+		}
+	}
+	return object, result
+}
+
+// JSON scrubs every string inside a generic JSON value in place.
+func JSON(value any) any {
+	switch v := value.(type) {
+	case string:
+		return Text(v)
+	case []any:
+		for i := range v {
+			v[i] = JSON(v[i])
+		}
+		return v
+	case map[string]any:
+		for k := range v {
+			v[k] = JSON(v[k])
+		}
+		return v
+	default:
+		return value
+	}
+}

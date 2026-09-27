@@ -11,12 +11,8 @@ const (
 
 var backendNames = []string{"codex", "opencode"}
 
-func (v Backend) String() string               { return wirejson.EnumName(uint8(v), backendNames) }
-func (v Backend) MarshalJSON() ([]byte, error) { return wirejson.MarshalEnum(uint8(v), backendNames) }
+func (v Backend) String() string               { return wirejson.EnumName(v, backendNames) }
+func (v Backend) MarshalJSON() ([]byte, error) { return wirejson.MarshalEnum(v, backendNames) }
 func (v *Backend) UnmarshalJSON(data []byte) error {
-	n, err := wirejson.Enum(data, backendNames)
-	if err == nil {
-		*v = Backend(n)
-	}
-	return err
+	return wirejson.UnmarshalEnum(data, backendNames, v)
 }

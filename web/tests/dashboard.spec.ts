@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { login, openNavigation } from './synthetic';
 const token = 'browser-test-operator-token-32-characters';
 
 const codexModels = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
@@ -32,6 +34,17 @@ test.beforeEach(async ({ page }) => {
     const { backend } = route.request().postDataJSON();
     await route.fulfill({ json: backend === 'codex' ? codexModels : opencodeModels });
   });
+});
+
+test('the dashboard names the build version the service reports', async ({ page }) => {
+  // The binary embeds the root VERSION file and the dashboard build injects the same file.
+  const { version } = (await (await page.request.get('/healthz')).json()) as { version: string };
+  expect(version).toBe(readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim());
+  await login(page);
+  await expect(page.locator('.content-footer')).toContainText(`· v${version}`);
+  await expect(page.locator('.disconnect .version')).toHaveText(
+    `v${version.split('.').slice(0, 2).join('.')}`
+  );
 });
 
 test('private dashboard, navigation, task evidence, configuration, and mobile layout', async ({
@@ -91,11 +104,14 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await expect(
     page.getByRole('link', { name: /Explain the local development workflow/ })
   ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/12');
-  // An unowned request is reported as such, and older deliveries remain visible.
-  await expect(page.getByText('open · external head change')).toBeVisible();
-  await expect(
-    page.getByRole('link', { name: /Record the first delivered change/ })
-  ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/7');
+  // A head change is flagged only on a delivery whose head moved after Octomus delivered
+  // it; an external request, never delivered by Octomus, has no head to compare. Older
+  // deliveries remain visible.
+  const moved = page.getByRole('link', { name: /Record the first delivered change/ });
+  await expect(moved).toContainText('open · external head change');
+  await expect(moved).toHaveAttribute('href', 'https://github.com/fixture/project/pull/7');
+  for (const title of [/Explain the local development workflow/, /Adjust the retry backoff/])
+    await expect(page.getByRole('link', { name: title })).not.toContainText('head change');
   await navigate('Overview');
   await page.getByRole('button', { name: 'Inspect run' }).click();
   // Read-only overlap context: the repository an external branch came from is
@@ -128,6 +144,86 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await navigate('Overview');
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test('ownership and status are written out, and task tabs follow the arrow-key tabs pattern', async ({
+  page,
+  isMobile
+}) => {
+  const observedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+  await page.route('**/api/state', async (route) => {
+    const state = await (await route.fetch()).json();
+    state.pr_capacity = {
+      limit: 2,
+      owned_open: 2,
+      reserved: 0,
+      remaining: 0,
+      observed_at: observedAt,
+      status: 'full',
+      reason: 'Capacity full'
+    };
+    await route.fulfill({ json: state });
+  });
+  await login(page);
+  // The operating mode is a named status region, not an ignored label on a generic element.
+  await expect(page.getByRole('status', { name: 'Operating mode' })).toContainText('active tasks');
+  // The capacity message is live; its minute-by-minute observation time is not.
+  const capacity = page.getByRole('status').filter({ hasText: 'Open-PR capacity is full' });
+  await expect(capacity).toHaveCount(1);
+  await expect(capacity).not.toContainText('Observed');
+  await expect(
+    page.locator('.notice').filter({ hasText: 'Open-PR capacity is full' })
+  ).toContainText(/Observed \d+m ago\./);
+
+  // Ownership is stated in words, not only by the badge colour.
+  await openNavigation(page, 'Pull requests', isMobile);
+  const external = page.getByRole('link', { name: /Adjust the retry backoff/ });
+  await expect(external).toContainText('· not owned by Octomus');
+  const owned = page.getByRole('link', { name: /Explain the local development workflow/ });
+  await expect(owned).toContainText('· owned by Octomus');
+  await expect(owned).not.toContainText('not owned');
+
+  await openNavigation(page, 'Task queue', isMobile);
+  await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+  const dialog = page.getByRole('dialog');
+  const tab = (name: string | RegExp) => dialog.getByRole('tab', { name });
+  await expect(tab('Overview')).toHaveAttribute('aria-selected', 'true');
+  // Only the selected tab is in the Tab order.
+  await expect(dialog.locator('[role="tab"][tabindex="0"]')).toHaveCount(1);
+  await tab('Overview').focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(tab('Sessions')).toBeFocused();
+  await expect(tab('Sessions')).toHaveAttribute('aria-selected', 'true');
+  await expect(tab('Sessions')).toHaveAttribute('tabindex', '0');
+  await expect(tab('Overview')).toHaveAttribute('aria-selected', 'false');
+  await expect(tab('Overview')).toHaveAttribute('tabindex', '-1');
+  // The panel is named by the tab that controls it.
+  await expect(dialog.getByRole('tabpanel', { name: 'Sessions' })).toBeVisible();
+  await page.keyboard.press('End');
+  await expect(tab('Activity')).toBeFocused();
+  await expect(tab('Activity')).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('ArrowRight');
+  await expect(tab('Overview')).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(tab('Activity')).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(tab('Overview')).toBeFocused();
+  await expect(dialog.getByRole('tabpanel', { name: 'Overview' })).toBeVisible();
+  await page.keyboard.press('ArrowLeft');
+  await expect(tab(/Reviews/)).not.toBeFocused();
+  await expect(tab('Activity')).toBeFocused();
+  // Clicking still selects a tab.
+  await tab(/Reviews/).click();
+  await expect(tab(/Reviews/)).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('tabpanel', { name: /Reviews/ })).toBeVisible();
+  const accessibility = await new AxeBuilder({ page })
+    .include('.task-dialog')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(
+    accessibility.violations.map((v) => ({ rule: v.id, elements: v.nodes.map((n) => n.target) }))
+  ).toEqual([]);
+  await page.getByRole('button', { name: 'Close task details' }).click();
 });
 
 test('one-shot audit progress, decisions and paused controls', async ({ page }, testInfo) => {
@@ -262,7 +358,8 @@ test('model routing across all roles, provider variants, draft catalogs and unav
   await navigate('Configuration');
   await page.getByLabel('OpenCode executable', { exact: true }).fill('/draft/opencode');
   await page.getByRole('button', { name: 'Load OpenCode models' }).click();
-  expect(drafts).toEqual([{ backend: 'opencode', binary: '/draft/opencode' }]);
+  // The route records the request asynchronously; the click can resolve first.
+  await expect.poll(() => drafts).toEqual([{ backend: 'opencode', binary: '/draft/opencode' }]);
   const names = [
     'Orchestrator',
     'Discovery agents',
@@ -326,6 +423,32 @@ test('model routing across all roles, provider variants, draft catalogs and unav
   });
 });
 
+test('a successful status without a readable JSON body is reported as a lost connection', async ({
+  page
+}) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+  const indicator = page.locator('.live-indicator');
+  await expect(indicator).toHaveText('Connected');
+  // An access proxy whose session expired answers with its sign-in page, not the service.
+  await page.route('**/api/state', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: '<html>Sign in</html>' })
+  );
+  await expect(indicator).toHaveText('Reconnecting', { timeout: 10000 });
+  const notice = page.getByRole('alert').filter({ hasText: 'Connection interrupted' });
+  await expect(notice).toContainText('Service returned an unreadable response (200)');
+  // The last received state stays on screen.
+  await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+  await page.unroute('**/api/state');
+  await expect(indicator).toHaveText('Connected', { timeout: 10000 });
+  await expect(notice).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('task detail polling does not overlap or apply a response after close', async ({
   page
 }, testInfo) => {
@@ -367,6 +490,37 @@ test('task detail polling does not overlap or apply a response after close', asy
       .getByRole('heading', { name: 'Explain the local development workflow' })
   ).toBeVisible();
   expect(reads).toBe(2);
+});
+
+test('an archived task shows its rediscovery request as withdrawn, not pending', async ({
+  page
+}, testInfo) => {
+  let archived = false;
+  await page.route('**/api/tasks/task-reviewed', async (route) => {
+    const body = await (await route.fetch()).json();
+    body.status = 'cancelled';
+    body.rediscovery_requested = true;
+    body.lifecycle = { archived_at: archived ? '2026-09-10T00:00:00Z' : null, discarded_at: null };
+    await route.fulfill({ json: body });
+  });
+  await login(page);
+  const pending = 'Rediscovery pending. The next execution cycle will reassess this objective.';
+  const withdrawn =
+    'Rediscovery withdrawn. The task was archived before an execution cycle reassessed this objective.';
+  const open = async () => {
+    await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+    return page.getByRole('dialog');
+  };
+  await openNavigation(page, 'Task queue', testInfo.project.name === 'mobile');
+  let dialog = await open();
+  await expect(dialog.getByRole('status').filter({ hasText: pending })).toBeVisible();
+  await expect(dialog.getByText(withdrawn)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close task details' }).click();
+
+  archived = true;
+  dialog = await open();
+  await expect(dialog.getByText(withdrawn)).toBeVisible();
+  await expect(dialog.getByText(pending)).toHaveCount(0);
 });
 
 test('expanded proposal evidence survives summary polling by cycle and proposal identity', async ({
@@ -545,6 +699,7 @@ test('loaded older cycles and their actions survive background refresh', async (
 }, testInfo) => {
   let newest = 102;
   let archived = false;
+  let discarded = false;
   await page.route('**/api/cycles?*', async (route) => {
     const before = Number(new URL(route.request().url()).searchParams.get('before') ?? newest + 1);
     const cycles = Array.from({ length: newest }, (_, i) => ({
@@ -557,7 +712,16 @@ test('loaded older cycles and their actions survive background refresh', async (
       error: null,
       session_count: 0,
       decisions: {},
-      lifecycle: newest - i === 1 && archived ? { archived_at: '2026-09-10T00:00:00Z' } : {}
+      // Retention cleanup discarded history-2's workspaces without it being archived.
+      lifecycle:
+        newest - i === 1 && archived
+          ? {
+              archived_at: '2026-09-10T00:00:00Z',
+              ...(discarded ? { discarded_at: '2026-09-10T00:02:00Z' } : {})
+            }
+          : newest - i === 2
+            ? { discarded_at: '2026-09-10T00:03:00Z' }
+            : {}
     })).filter((cycle) => cycle.number < before);
     const items = cycles.slice(0, 100);
     await route.fulfill({
@@ -568,8 +732,12 @@ test('loaded older cycles and their actions survive background refresh', async (
       }
     });
   });
-  await page.route('**/api/cycles/history-1/archive', async (route) => {
-    archived = true;
+  const actions: string[] = [];
+  await page.route('**/api/cycles/history-1/*', async (route) => {
+    const action = new URL(route.request().url()).pathname.split('/').at(-1)!;
+    actions.push(action);
+    if (action === 'archive') archived = true;
+    if (action === 'discard') discarded = true;
     await route.fulfill({ json: { ok: true } });
   });
   await page.goto('/');
@@ -591,9 +759,94 @@ test('loaded older cycles and their actions survive background refresh', async (
   await expect(picker.locator('option')).toHaveCount(104);
   await expect(picker).toHaveValue('history-1');
   await expect(page.getByRole('button', { name: 'Load older cycles' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Archive cycle', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Discard cycle workspaces' })).toBeVisible();
+  const archive = page.getByRole('button', { name: 'Archive cycle', exact: true });
+  const discard = page.getByRole('button', { name: 'Discard cycle workspaces' });
+  await expect(discard).toHaveCount(0);
+  await expect(archive).toBeVisible();
+  // A cycle whose workspaces are already discarded has no lifecycle action left, even
+  // when retention cleanup discarded them without an archive.
+  await expect(picker.locator('option[value="history-2"]')).toHaveText(
+    'Execution cycle #002 · completed · workspaces discarded'
+  );
+  await picker.selectOption('history-2');
+  await expect(archive).toHaveCount(0);
+  await expect(discard).toHaveCount(0);
+  await picker.selectOption('history-1');
+  await archive.click();
+  await expect(discard).toBeVisible();
   await expect(picker).toHaveValue('history-1');
+  // Archiving again would only restart the cycle's retention clock, so it is not offered.
+  await expect(archive).toHaveCount(0);
+  await expect(picker.locator('option[value="history-1"]')).toHaveText(
+    'Execution cycle #001 · completed · archived'
+  );
+  await discard.click();
+  // Discarded workspaces leave no lifecycle action for this cycle.
+  await expect(picker.locator('option[value="history-1"]')).toHaveText(
+    'Execution cycle #001 · completed · workspaces discarded'
+  );
+  await expect(archive).toHaveCount(0);
+  await expect(discard).toHaveCount(0);
+  await expect(picker).toHaveValue('history-1');
+  expect(actions).toEqual(['archive', 'discard']);
+});
+
+test('a failed request for older cycles is reported and the control stays usable', async ({
+  page
+}, testInfo) => {
+  let release: (() => void) | undefined;
+  let outage = true;
+  await page.route('**/api/cycles?*', async (route) => {
+    if (new URL(route.request().url()).searchParams.has('before')) {
+      if (!outage) {
+        const older = {
+          id: 'history-older',
+          number: 0,
+          mode: 'execution',
+          status: 'completed',
+          started_at: '2026-09-10T00:00:00Z',
+          completed_at: '2026-09-10T00:01:00Z',
+          error: null,
+          session_count: 0,
+          decisions: {},
+          lifecycle: {}
+        };
+        await route.fulfill({ json: { items: [older], next_cursor: null, counts: {} } });
+        return;
+      }
+      await new Promise<void>((resolve) => (release = resolve));
+      await route.fulfill({ status: 503, json: { error: 'Synthetic cycles outage' } });
+      return;
+    }
+    const newest = await (await route.fetch()).json();
+    await route.fulfill({ json: { ...newest, next_cursor: 1 } });
+  });
+  await page.goto('/');
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Proposals', exact: true })
+    .click();
+  const older = page.getByRole('button', { name: 'Load older cycles' });
+  await older.click();
+  await expect.poll(() => !!release).toBe(true);
+  await expect(older).toBeDisabled();
+  release!();
+  await expect(page.getByRole('alert')).toContainText(
+    'Could not load older cycles. Synthetic cycles outage'
+  );
+  await expect(older).toBeEnabled();
+  // A successful retry loads the page and leaves no stale failure behind.
+  outage = false;
+  await older.click();
+  await expect(
+    page.getByLabel('Cycle', { exact: true }).locator('option[value="history-older"]')
+  ).toHaveCount(1);
+  await expect(older).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 test('slow history requests survive polling while filter changes replace them', async ({

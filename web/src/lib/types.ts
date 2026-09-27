@@ -1,4 +1,32 @@
+/**
+ * The service's JSON records and vocabularies, restated by hand. web/types_contract_test.go
+ * compares the object types it lists with their Go records' JSON fields, and the
+ * CycleMode, OperatingMode, TaskStatus and BaselineStatus unions and ACTIVE_STATUSES with
+ * their Go enums; list a newly restated record or enum there too.
+ */
 export type Backend = 'codex' | 'opencode';
+/** Mirrors `model.CycleMode`: an execution cycle queues work, an audit only plans. */
+export type CycleMode = 'execution' | 'audit';
+/** Mirrors `model.OperatingMode`. */
+export type OperatingMode = 'paused' | 'run_once' | 'continuous';
+/** Mirrors `model.Status`: every saved task status. */
+export type TaskStatus =
+  | 'queued'
+  | 'executing'
+  | 'reviewing'
+  | 'repairing'
+  | 'verifying'
+  | 'publishing'
+  | 'published'
+  | 'blocked'
+  | 'failed'
+  | 'cancelled';
+/** Mirrors `model.WorkspaceLifecycle`: when a record was archived and its workspace discarded. */
+export type WorkspaceLifecycle = { archived_at?: string | null; discarded_at?: string | null };
+/** Whether a baseline check's revision is still the last observed remote default branch. */
+export type RevisionStatus = 'matches_last_observation' | 'stale' | 'unknown';
+/** Owned open-PR admission, as internal/engine reports it. */
+export type PrCapacityStatus = 'ready' | 'full' | 'refreshing' | 'unavailable';
 export type Route = {
   backend: Backend;
   model: string;
@@ -38,8 +66,17 @@ export type Config = {
   retain_completed_days: number;
   retain_events: number;
 };
-/** Mirrors `model.ActiveStatuses` in internal/model: task statuses with work in flight. */
-export const ACTIVE_STATUSES = ['executing', 'reviewing', 'repairing', 'verifying', 'publishing'];
+/**
+ * Mirrors `model.ActiveStatuses` in internal/model: task statuses with work in flight.
+ * Typed as plain strings so any status word, known or not, can be tested against it.
+ */
+export const ACTIVE_STATUSES: readonly string[] = [
+  'executing',
+  'reviewing',
+  'repairing',
+  'verifying',
+  'publishing'
+] satisfies TaskStatus[];
 export type TaskRow = {
   id: string;
   cycle_id: string;
@@ -48,14 +85,14 @@ export type TaskRow = {
   tier: string;
   target: string;
   branch: string;
-  status: string;
+  status: TaskStatus;
   pr_url: string | null;
   pr_number: number | null;
   error: string | null;
   created_at: string;
   updated_at: string;
   blocked_reason?: string | null;
-  lifecycle: { archived_at?: string | null; discarded_at?: string | null };
+  lifecycle: WorkspaceLifecycle;
   superseded_by?: string[];
 };
 export type Proposal = {
@@ -92,7 +129,7 @@ export type ReviewRound = {
   result: {
     completed: boolean;
     summary: string;
-    findings: { title: string; file: string; detail: string; priority: string }[];
+    findings: FindingEvidence[];
   };
 };
 export type AttemptPolicy = Pick<
@@ -106,17 +143,26 @@ export type AttemptPolicy = Pick<
 >;
 export type Page<T> = { items: T[]; next_cursor: number | null; counts: Record<string, number> };
 export type ProposalDetail = Proposal & { content_revision: number };
+/**
+ * One /api/proposals row. List rows blank `prompt` and `evidence` and truncate `problem`
+ * and `reason` to 2,000 characters; load the ProposalDetail for the full values.
+ * `detail`, `detailRequested` and `detailLoading` are client-only state, never sent.
+ */
 export type ProposalRow = ProposalDetail & {
   cycle: number;
   cycle_id: string;
-  mode: 'execution' | 'audit';
+  mode: CycleMode;
   detail?: ProposalDetail;
   detailRequested?: boolean;
   detailLoading?: number;
 };
+/**
+ * Snapshot.prs and /api/prs rows are summaries: `pr.body` is omitted and `pr.title` is
+ * truncated to 200 characters.
+ */
 export type PrObservation = {
   repository: string;
-  pr: PR;
+  pr: Omit<PR, 'body'>;
   observed_at: string;
   delivered_head: string | null;
   external_head_movement: boolean;
@@ -127,7 +173,7 @@ export type CycleSummary = Pick<
 > & {
   session_count: number;
   decisions: Record<string, number>;
-  lifecycle: { archived_at?: string | null; discarded_at?: string | null };
+  lifecycle: WorkspaceLifecycle;
 };
 export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   proposal: Proposal;
@@ -201,7 +247,7 @@ export type PrCoverage = {
   max_context_bytes: number;
 };
 export type Cycle = {
-  mode: 'execution' | 'audit';
+  mode: CycleMode;
   id: string;
   number: number;
   status: string;
@@ -221,13 +267,11 @@ export type Cycle = {
     maintenance_due: boolean;
     maintenance_targets: string[];
   } | null;
+  repository?: string;
+  decision_memory?: unknown[];
+  run_id?: string | null;
+  lifecycle?: WorkspaceLifecycle;
 };
-/**
- * GET /api/cycles/{id}/evidence and `--export-run <cycle-id>`. Mirrors internal/evidence.
- * Recorded review and check evidence only: no live HEAD, workspace, remote,
- * authorization or current PR state is inspected, and free text still requires
- * manual review before sharing.
- */
 export type VerdictState = 'recorded' | 'missing' | 'duplicate' | 'malformed';
 export type ReviewerVerdict = {
   reviewer: string;
@@ -286,7 +330,7 @@ export type TaskEvidence = {
   id: string;
   cycle_id: string;
   proposal_id: string;
-  status: string;
+  status: TaskStatus;
   branch: string;
   attempts: number;
   blocked_reason: string | null;
@@ -329,7 +373,7 @@ export type PlanningOutcome = {
 export type CycleEvidence = {
   id: string;
   number: number;
-  mode: 'execution' | 'audit';
+  mode: CycleMode;
   status: string;
   started_at: string;
   completed_at: string | null;
@@ -337,6 +381,12 @@ export type CycleEvidence = {
   grounding_revision: string | null;
   planning: PlanningOutcome;
 };
+/**
+ * GET /api/cycles/{id}/evidence and `--export-run <cycle-id>`. Mirrors internal/evidence.
+ * Recorded review and check evidence only: no live HEAD, workspace, remote,
+ * authorization or current PR state is inspected, and free text still requires
+ * manual review before sharing.
+ */
 export type RunEvidenceV1 = {
   schema_version: number;
   generated_at: string;
@@ -355,7 +405,7 @@ export type PrCapacity = {
   reserved: number;
   remaining: number | null;
   observed_at: string | null;
-  status: string;
+  status: PrCapacityStatus;
   reason: string | null;
 };
 export type PlanningCapacity = {
@@ -402,7 +452,7 @@ export type BaselineView = {
   config_matches: boolean | null;
   /** Canonical configuration revision the check recorded at start; null when none ran. */
   config_revision: string | null;
-  revision_status: 'matches_last_observation' | 'stale' | 'unknown';
+  revision_status: RevisionStatus;
   default_observation: DefaultBranchObservation | null;
   caveat: string;
 };
@@ -415,7 +465,7 @@ export type BaselineSummary = {
   /** Canonical configuration revision the check recorded at start. */
   config_revision: string;
   config_matches: boolean;
-  revision_status: 'matches_last_observation' | 'stale' | 'unknown';
+  revision_status: RevisionStatus;
 };
 /** One top-level settings field whose served values differ from canonical state. */
 export type TransformedField = {
@@ -448,7 +498,7 @@ export type Snapshot = {
   status: string;
   control: {
     paused: boolean;
-    mode: 'paused' | 'run_once' | 'continuous';
+    mode: OperatingMode;
     cycle_number: number;
     next_cycle_at: number;
     error: string | null;
@@ -463,7 +513,7 @@ export type Snapshot = {
   repository: string;
   configured: boolean;
   audit_configured: boolean;
-  active_cycle_mode: 'execution' | 'audit' | null;
+  active_cycle_mode: CycleMode | null;
   active_tasks: number;
   cycle_active: boolean;
   baseline_active: boolean;

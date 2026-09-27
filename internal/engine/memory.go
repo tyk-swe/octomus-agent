@@ -11,7 +11,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
 type decisionRecord struct {
@@ -31,27 +31,61 @@ type decisionRecord struct {
 	ReconsiderationDue bool            `json:"reconsideration_due,omitempty"`
 }
 
-func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding model.Grounding) ([]any, error) {
+// rediscoveryRequest is one pending rediscovery request: a cancelled task the
+// operator asked planning to assess afresh. entry is the store's projection of
+// the request, which planning roles receive verbatim.
+type rediscoveryRequest struct {
+	ID, Target string
+	entry      map[string]any
+}
+
+// decisionMemory is what one planning pass remembers: the current recorded
+// decisions, each marked with whether it is due for reconsideration, and the
+// pending rediscovery requests.
+type decisionMemory struct {
+	decisions []decisionRecord
+	requests  []rediscoveryRequest
+}
+
+// promptEntries is the decision memory planning roles receive: every decision
+// with its kind and reconsideration_due, then every rediscovery request with
+// kind "rediscovery".
+func (m decisionMemory) promptEntries() []any {
+	entries := make([]any, 0, len(m.decisions)+len(m.requests))
+	for _, record := range m.decisions {
+		entries = append(entries, recordToMap(record))
+	}
+	for _, request := range m.requests {
+		entry := map[string]any{"kind": "rediscovery"}
+		for key, item := range request.entry {
+			entry[key] = item
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding model.Grounding) (decisionMemory, error) {
 	raw, err := a.Store.DecisionMemory(cfg.GitHubRepo)
 	if err != nil {
-		return nil, err
+		return decisionMemory{}, err
 	}
 	records := make([]decisionRecord, 0, len(raw))
 	for _, value := range raw {
 		data, err := json.Marshal(value)
 		if err != nil {
-			return nil, err
+			return decisionMemory{}, err
 		}
 		var record decisionRecord
 		if err := json.Unmarshal(data, &record); err != nil {
-			return nil, err
+			return decisionMemory{}, err
 		}
 		if record.ID == "" || record.Repository == "" || record.Target == "" || record.ProblemKey == "" {
 			continue
 		}
 		records = append(records, record)
 	}
-	memory := make([]any, 0, len(records))
+	memory := decisionMemory{decisions: make([]decisionRecord, 0, len(records)), requests: []rediscoveryRequest{}}
 	for _, record := range records {
 		if decisionAbsorbed(record, records) {
 			continue
@@ -66,7 +100,7 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 		}
 		fingerprint, err := decisionFingerprint(ctx, cfg, revision, record.RelevantPaths)
 		if err != nil {
-			return nil, err
+			return decisionMemory{}, err
 		}
 		due := fingerprint != record.ContextFingerprint
 		if until, err := time.Parse(time.RFC3339, record.ReconsiderAfter); err == nil && !time.Now().Before(until) {
@@ -74,50 +108,40 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 		}
 		record.Kind = "decision"
 		record.ReconsiderationDue = due
-		memory = append(memory, recordToMap(record))
+		memory.decisions = append(memory.decisions, record)
 	}
 	requests, err := a.Store.RediscoveryRequests(cfg.GitHubRepo)
 	if err != nil {
-		return nil, err
+		return decisionMemory{}, err
 	}
 	for _, value := range requests {
 		entry, ok := value.(map[string]any)
 		if !ok {
 			continue
 		}
-		copy := map[string]any{"kind": "rediscovery"}
-		for key, item := range entry {
-			copy[key] = item
-		}
-		memory = append(memory, copy)
+		id, _ := entry["id"].(string)
+		target, _ := entry["target"].(string)
+		memory.requests = append(memory.requests, rediscoveryRequest{ID: id, Target: target, entry: entry})
 	}
 	return memory, nil
 }
 
+// decisionAbsorbed reports whether an accepted decision of the same cycle,
+// repository, target and problem supersedes record. Repository names compare
+// with config.EqualASCII, the ASCII-only folding every other repository
+// identity check and the store's COLLATE NOCASE lookups use.
 func decisionAbsorbed(record decisionRecord, records []decisionRecord) bool {
 	if record.Decision == model.DecisionAccepted {
 		return false
 	}
 	for _, accepted := range records {
 		if accepted.Decision == model.DecisionAccepted && accepted.CycleID == record.CycleID &&
-			strings.EqualFold(accepted.Repository, record.Repository) && accepted.Target == record.Target &&
+			config.EqualASCII(accepted.Repository, record.Repository) && accepted.Target == record.Target &&
 			accepted.ProblemKey == record.ProblemKey {
 			return true
 		}
 	}
 	return false
-}
-
-func rediscoveryRequests(memory []any) []map[string]any {
-	result := []map[string]any{}
-	for _, value := range memory {
-		entry, ok := value.(map[string]any)
-		if !ok || entry["kind"] != "rediscovery" {
-			continue
-		}
-		result = append(result, entry)
-	}
-	return result
 }
 
 func decisionFingerprint(ctx context.Context, cfg config.Config, revision string, paths []string) (string, error) {
@@ -128,7 +152,10 @@ func decisionFingerprint(ctx context.Context, cfg config.Config, revision string
 	if _, err := model.DecisionMemoryFingerprint(revision, paths, ""); err != nil {
 		return "", err
 	}
-	args := []string{"ls-tree", "-r", revision, "--"}
+	// relevant_paths are model-supplied: match them literally, never as
+	// pathspec magic such as ":(glob)" or ":!", which ls-tree refuses with a
+	// fatal error that would fail the whole plan. Ordinary paths list the same.
+	args := []string{"--literal-pathspecs", "ls-tree", "-r", revision, "--"}
 	args = append(args, paths...)
 	output, err := gitops.Git(ctx, cfg, cfg.Repository, args)
 	if err != nil {
@@ -173,7 +200,7 @@ func (a *App) recordDecisions(ctx context.Context, cfg config.Config, cycle mode
 			ProblemKey:         proposal.ProblemIdentity(),
 			RelevantPaths:      append([]string(nil), proposal.RelevantPaths...),
 			Decision:           proposal.Decision,
-			Reason:             store.Redact(proposal.Reason),
+			Reason:             redact.Text(proposal.Reason),
 			SourceRevision:     revision,
 			ContextFingerprint: fingerprint,
 			ReconsiderAfter:    time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
@@ -209,48 +236,47 @@ func recordToMap(record decisionRecord) map[string]any {
 	return value
 }
 
-// ValidateDecisionMemory prevents unchanged rejected or already accepted work
+// validateDecisionMemory prevents unchanged rejected or already accepted work
 // from silently re-entering the executable queue.
-func ValidateDecisionMemory(proposals []model.Proposal, memory []any) error {
+func validateDecisionMemory(proposals []model.Proposal, memory decisionMemory) error {
 	requests := map[string]string{}
-	for _, value := range memory {
-		entry, ok := value.(map[string]any)
-		if !ok || entry["kind"] != "rediscovery" {
-			continue
-		}
-		id, _ := entry["id"].(string)
-		target, _ := entry["target"].(string)
-		if id != "" {
-			requests[id] = target
+	for _, request := range memory.requests {
+		if request.ID != "" {
+			requests[request.ID] = request.Target
 		}
 	}
 	for _, proposal := range proposals {
-		if len(proposal.ProblemKey) > 200 || len(proposal.Reconsiders) > 100 || len(proposal.RelevantPaths) > 40 {
-			return errors.New("Proposal decision metadata exceeds bounds")
+		// Every proposal is recorded in decision memory, whatever its decision,
+		// so name the proposal and field: planning replaced an empty
+		// problem_key with the title-derived identity before this check.
+		if len(proposal.ProblemKey) > 200 {
+			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: problem identity is %d bytes (limit 200; an empty problem_key falls back to the title)", proposal.ID, len(proposal.ProblemKey))
+		}
+		if len(proposal.Reconsiders) > 100 {
+			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: %d reconsiders (limit 100)", proposal.ID, len(proposal.Reconsiders))
+		}
+		if len(proposal.RelevantPaths) > 40 {
+			return fmt.Errorf("Proposal %q decision metadata exceeds bounds: %d relevant_paths (limit 40)", proposal.ID, len(proposal.RelevantPaths))
 		}
 		for _, id := range proposal.Reconsiders {
 			target, ok := requests[id]
-			if !ok || target != proposal.Target {
-				return errors.New("Rediscovery identity or target does not match a pending request")
+			if !ok {
+				return fmt.Errorf("Rediscovery identity or target does not match a pending request: proposal %q reconsiders %q, which is not pending", proposal.ID, id)
+			}
+			if target != proposal.Target {
+				return fmt.Errorf("Rediscovery identity or target does not match a pending request: proposal %q targets %q but request %q targets %q", proposal.ID, proposal.Target, id, target)
 			}
 		}
 		if proposal.Decision != model.DecisionAccepted {
 			continue
 		}
-		for _, value := range memory {
-			entry, ok := value.(map[string]any)
-			if !ok || entry["kind"] != "decision" {
+		for _, record := range memory.decisions {
+			if record.Target != proposal.Target || record.ProblemKey != proposal.ProblemIdentity() {
 				continue
 			}
-			target, _ := entry["target"].(string)
-			problem, _ := entry["problem_key"].(string)
-			if target != proposal.Target || problem != proposal.ProblemIdentity() {
-				continue
-			}
-			due, _ := entry["reconsideration_due"].(bool)
-			mode := fmt.Sprint(entry["mode"])
-			decision, _ := entry["decision"].(string)
-			if due || (mode == model.CycleModeAudit.String() && decision == model.DecisionAccepted) {
+			// A decision due for reconsideration, or an audit's recommendation,
+			// never vetoes accepted work.
+			if record.ReconsiderationDue || (record.CycleMode == model.CycleModeAudit && record.Decision == model.DecisionAccepted) {
 				continue
 			}
 			validRequest := false
@@ -260,7 +286,7 @@ func ValidateDecisionMemory(proposals []model.Proposal, memory []any) error {
 				}
 			}
 			if !validRequest {
-				return errors.New("Accepted proposal repeats a current recorded decision without an explicit rediscovery request")
+				return fmt.Errorf("Accepted proposal repeats a current recorded decision without an explicit rediscovery request (proposal %q, decision %q)", proposal.ID, record.ID)
 			}
 		}
 	}

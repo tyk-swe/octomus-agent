@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,11 +16,19 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
+// testStore opens a store in a fresh temporary directory; see openStore.
 func testStore(t *testing.T) *store.Store {
 	t.Helper()
-	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	return openStore(t, t.TempDir())
+}
+
+// openStore opens dir/state.db and closes it when the test ends.
+func openStore(t *testing.T, dir string) *store.Store {
+	t.Helper()
+	state, err := store.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +94,13 @@ func ownedPR(branch string) model.PullRequest {
 	}
 }
 
+// deferHousekeeping marks retention and observation as just run, so a test's
+// ticks start no housekeeping pass until those intervals elapse.
+func deferHousekeeping(app *App) {
+	app.runtime.lastRetention = time.Now()
+	app.runtime.lastObserve = time.Now()
+}
+
 func TestIdleDelayMatchesDurableBackoffContract(t *testing.T) {
 	for _, test := range []struct {
 		base   uint64
@@ -107,7 +124,7 @@ func TestPausePreservesDurableErrorEvidence(t *testing.T) {
 	app := New(state, t.TempDir())
 	t.Cleanup(app.Shutdown)
 
-	if err := app.Pause(); err != nil {
+	if _, err := app.ControlAction("pause"); err != nil {
 		t.Fatal(err)
 	}
 	paused, err := app.Control()
@@ -208,6 +225,10 @@ func TestPlanningAdmissionBudgetIsAtomicUnderConcurrency(t *testing.T) {
 	}
 }
 
+// TestRunOnceAffordabilityAndMembershipAreAtomic: the operator's run once
+// starts its batch, tags the queued members and saves the control in the
+// transaction that checks planning affordability, answers with that saved
+// control and wakes the scheduler. An unaffordable request changes nothing.
 func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -219,14 +240,21 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	saveSettings(t, state, cfg, model.DefaultControl())
 	a := New(state, t.TempDir())
 	t.Cleanup(a.Shutdown)
-	if err := a.RunOnce(); err == nil {
-		t.Fatal("unaffordable run once succeeded")
+	if _, err := a.ControlAction("cycle"); err == nil || !errors.Is(err, model.BlockedReasonBudgetExhausted) || !IsActionConflict(err) {
+		t.Fatalf("unaffordable run once = %v; want a budget refusal", err)
+	}
+	if len(a.wake) != 0 {
+		t.Fatal("unaffordable request woke the scheduler")
 	}
 	control, err := a.Control()
 	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil {
 		t.Fatalf("unaffordable request changed control: %+v, %v", control, err)
 	}
-	unchanged, _ := store.Get[model.Task](state, "task", task.ID)
+	system := "system"
+	if events, err := state.Events(&system); err != nil || len(events) != 0 {
+		t.Fatalf("unaffordable request recorded events: %+v, %v", events, err)
+	}
+	unchanged := loadTask(t, state, task.ID)
 	if unchanged.RunID != nil {
 		t.Fatalf("unaffordable request tagged task with run %q", *unchanged.RunID)
 	}
@@ -235,38 +263,93 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 	if err := state.Put("settings", "config", cfg); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.RunOnce(); err != nil {
+	body, err := a.ControlAction("cycle")
+	if err != nil {
 		t.Fatalf("affordable run once failed: %v", err)
 	}
+	if len(a.wake) != 1 {
+		t.Fatal("run once did not wake the scheduler")
+	}
 	started, err := a.Control()
-	if err != nil || started.Batch == nil {
+	if err != nil || started.Mode != model.OperatingModeRunOnce || started.Batch == nil || started.Batch.Phase != model.BatchPhaseDraining {
 		t.Fatalf("affordable run once did not persist a batch: %+v, %v", started, err)
 	}
-	member, _ := store.Get[model.Task](state, "task", task.ID)
+	if saved, err := wirejson.GenericMap(started); err != nil || !reflect.DeepEqual(body, saved) {
+		t.Fatalf("run once answered %v; want the saved control %v (%v)", body, saved, err)
+	}
+	if events, err := state.Events(&system); err != nil || len(events) != 1 || events[0].Kind != "operator" || events[0].Message != "cycle" {
+		t.Fatalf("run once events = %+v, %v; want one operator event", events, err)
+	}
+	member := loadTask(t, state, task.ID)
 	if member.RunID == nil || *member.RunID != started.Batch.ID {
-		t.Fatalf("original queued task is not a batch member: %+v", member.RunID)
+		t.Fatalf("original queued task is not a batch member: run=%s", optionalText(member.RunID))
 	}
 	later := queuedTask(cfg, "later", cfg.DefaultBranch, "octomus/later")
 	if err := state.Put("task", later.ID, later); err != nil {
 		t.Fatal(err)
 	}
-	laterSaved, _ := store.Get[model.Task](state, "task", later.ID)
+	laterSaved := loadTask(t, state, later.ID)
 	if laterSaved.RunID != nil {
 		t.Fatal("task queued after RunOnce start joined the batch")
 	}
 
 	member.Status = model.StatusBlocked
-	if err := state.Put("task", member.ID, *member); err != nil {
+	if err := state.Put("task", member.ID, member); err != nil {
 		t.Fatal(err)
 	}
 	member.Status = model.StatusQueued
 	member.RunID = nil
-	if err := state.Put("task", member.ID, *member); err != nil {
+	if err := state.Put("task", member.ID, member); err != nil {
 		t.Fatal(err)
 	}
 	pending, unresolved, err := state.BatchCounts(started.Batch.ID)
 	if err != nil || pending != 0 || unresolved != 1 {
 		t.Fatalf("late retry erased batch failure: pending=%d unresolved=%d, %v", pending, unresolved, err)
+	}
+}
+
+// TestRunOnceStaleControlIsAConflict: the store refuses to start a batch from
+// a control record that changed after the caller read it. While planning is
+// still affordable, that refusal must reach the operator as a conflict rather
+// than as a run once that reports success without starting, and it must not
+// tag queued work or rewrite the live control.
+func TestRunOnceStaleControlIsAConflict(t *testing.T) {
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	task := queuedTask(cfg, "member", cfg.DefaultBranch, "octomus/member")
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	saveSettings(t, state, cfg, model.DefaultControl())
+	a := New(state, t.TempDir())
+	t.Cleanup(a.Shutdown)
+	if capacity, err := state.PlanningCapacity(); err != nil || !capacity.Available() {
+		t.Fatalf("the scenario needs an affordable planning pass: %+v, %v", capacity, err)
+	}
+	stale, err := a.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A write that did not pass through the gate changes the live record
+	// after the request read it.
+	live := stale.Clone()
+	message := "Recorded while run once was deciding"
+	live.Error = &message
+	if err := state.SaveControl(live); err != nil {
+		t.Fatal(err)
+	}
+	err = a.startRunOnceBatch(&stale)
+	if err == nil || !IsActionConflict(err) || model.BlockedReasonFromError(err) != model.BlockedReasonUnknown {
+		t.Fatalf("stale control start = %v; want a plain conflict", err)
+	}
+	if stale.Batch != nil || stale.Mode != model.OperatingModePaused {
+		t.Fatalf("refused start rewrote the caller's control: %+v", stale)
+	}
+	if stored, err := a.Control(); err != nil || !reflect.DeepEqual(stored, live) {
+		t.Fatalf("refused start changed the live control: %+v, %v", stored, err)
+	}
+	if unchanged := loadTask(t, state, task.ID); unchanged.RunID != nil {
+		t.Fatalf("refused start tagged queued work: %+v", unchanged)
 	}
 }
 
@@ -282,7 +365,7 @@ func TestUnaffordableAuditHasNoSideEffects(t *testing.T) {
 		t.Fatal("unaffordable audit started")
 	}
 	control, err := a.Control()
-	if err != nil || !controlsEqual(control, original) {
+	if err != nil || !reflect.DeepEqual(control, original) {
 		t.Fatalf("unaffordable audit changed control: %+v, %v", control, err)
 	}
 	cycles, err := store.List[model.Cycle](state, "cycle")
@@ -292,23 +375,6 @@ func TestUnaffordableAuditHasNoSideEffects(t *testing.T) {
 	used, err := state.SessionsToday()
 	if err != nil || used != 0 {
 		t.Fatalf("unaffordable audit consumed admissions: %d, %v", used, err)
-	}
-}
-
-func TestExternalContextIsBoundedAndReportsCoverage(t *testing.T) {
-	open := make([]model.PullRequest, 0, 105)
-	for i := 105; i >= 1; i-- {
-		open = append(open, model.PullRequest{Number: uint64(i), Title: strings.Repeat("t", 250), Body: strings.Repeat("b", 2200), Branch: fmt.Sprintf("branch-%d", i), Base: "main", State: "open"})
-	}
-	context, coverage, err := ExternalContext(model.OpenPrInventory{PRs: open})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(context) != 100 || coverage.TotalOpen != 105 || coverage.IncludedExternal != 100 || coverage.OmittedExternal != 5 || !coverage.Complete {
-		t.Fatalf("unexpected bounded coverage: %d %+v", len(context), coverage)
-	}
-	if context[0].Number != 1 || len([]rune(context[0].Title)) != 200 || len([]rune(context[0].Body)) != 2000 {
-		t.Fatalf("context was not sorted/truncated: %+v", context[0])
 	}
 }
 
@@ -459,9 +525,67 @@ func TestRecoverySeedsOnlyResumableAndCheckpointedPrReservations(t *testing.T) {
 	if !got[initialized.ID] || !got[unresolvedCheckpoint.ID] || !got[resumableCheckpoint.ID] || got[invalidQueued.ID] || got[doomedActive.ID] || got[cancelledCheckpoint.ID] {
 		t.Fatalf("unexpected recovery reservations: %+v", got)
 	}
-	recovered, err := store.Get[model.Task](state, "task", resumableCheckpoint.ID)
-	if err != nil || recovered == nil || recovered.Status != model.StatusQueued || recovered.Attempts != 1 || recovered.Sessions[0].Status != model.SessionInterrupted {
-		t.Fatalf("checkpoint recovery lost resumable evidence: %+v, %v", recovered, err)
+	recovered := loadTask(t, state, resumableCheckpoint.ID)
+	if recovered.Status != model.StatusQueued || recovered.Attempts != 1 || recovered.Sessions[0].Status != model.SessionInterrupted {
+		t.Fatalf("checkpoint recovery lost resumable evidence: %+v", recovered)
+	}
+}
+
+// TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget: an interrupted
+// publication whose retry budget is spent still holds reviewed and verified
+// output. Recovery blocks it for reconciliation, which publishes without
+// another attempt or model turn, instead of as a retry limit whose only retry
+// is refused. Work without a checkpoint keeps the retry limit.
+func TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget(t *testing.T) {
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	session := "execution-session"
+	commit := "output-commit"
+	exhausted := func(id string, status model.Status, output *string) model.Task {
+		task := queuedTask(cfg, id, cfg.DefaultBranch, cfg.BranchPrefix+id)
+		task.Status = status
+		task.OutputCommit = output
+		task.ExecutionSession = &session
+		task.Workspace = filepath.Join(t.TempDir(), id)
+		task.Attempts = cfg.MaxRetries
+		task.Sessions = []model.Session{model.NewSession("running", "executor", task.Route)}
+		if err := os.MkdirAll(filepath.Join(task.Workspace, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Put("task", task.ID, task); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	checkpoint := exhausted("publishing-checkpoint", model.StatusPublishing, &commit)
+	uncommitted := exhausted("reviewing-without-checkpoint", model.StatusReviewing, nil)
+
+	a := New(state, t.TempDir())
+	t.Cleanup(a.Shutdown)
+	if err := a.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := loadTask(t, state, checkpoint.ID)
+	if !blockedAs(recovered, model.BlockedReasonPublicationUncertain) || recovered.Attempts != cfg.MaxRetries ||
+		recovered.OutputCommit == nil || *recovered.OutputCommit != commit || recovered.Sessions[0].Status != model.SessionInterrupted {
+		t.Fatalf("exhausted checkpoint recovery = %+v", recovered)
+	}
+	if actions := recovered.AllowedActions(); !slices.Contains(actions, "reconcile") || slices.Contains(actions, "retry") {
+		t.Fatalf("exhausted checkpoint actions = %v; want reconcile instead of retry", actions)
+	}
+	if recovered.Error == nil || !strings.Contains(*recovered.Error, "Reconcile publication") {
+		t.Fatalf("exhausted checkpoint must name its remedy: %s", optionalText(recovered.Error))
+	}
+	reservations, err := state.PrReservations(cfg.GitHubRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(reservations, func(r store.PrReservation) bool { return r.TaskID == checkpoint.ID }) {
+		t.Fatalf("exhausted checkpoint lost its PR reservation: %+v", reservations)
+	}
+	if other := loadTask(t, state, uncommitted.ID); !blockedAs(other, model.BlockedReasonRetryLimit) || other.Attempts != cfg.MaxRetries {
+		t.Fatalf("exhausted work without a checkpoint = %+v; want the retry limit", other)
 	}
 }
 
@@ -574,17 +698,12 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 	if err := a.RunOnce(); err != nil {
 		t.Fatal(err)
 	}
-	saved, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || saved == nil {
-		t.Fatal(err)
-	}
-	task = *saved
+	task = loadTask(t, state, task.ID)
 	task.Proposal.Dependencies = []string{"missing"}
 	if err := state.Put("task", task.ID, task); err != nil {
 		t.Fatal(err)
 	}
-	a.runtime.lastRetention = time.Now()
-	a.runtime.lastObserve = time.Now()
+	deferHousekeeping(a)
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -610,9 +729,8 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 	if err != nil || len(cycles) != 0 {
 		t.Fatalf("failed drain created a planning cycle: %+v, %v", cycles, err)
 	}
-	blocked, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || blocked == nil || blocked.Status != model.StatusBlocked {
-		t.Fatalf("invalid draining task was not durably blocked: %+v, %v", blocked, err)
+	if blocked := loadTask(t, state, task.ID); blocked.Status != model.StatusBlocked {
+		t.Fatalf("invalid draining task was not durably blocked: %+v", blocked)
 	}
 }
 
@@ -711,8 +829,7 @@ func TestSchedulerSerializesWritersOnOneBranch(t *testing.T) {
 	})
 	a := New(state, t.TempDir(), WithTaskRunner(runner))
 	t.Cleanup(a.Shutdown)
-	a.runtime.lastRetention = time.Now()
-	a.runtime.lastObserve = time.Now()
+	deferHousekeeping(a)
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -784,8 +901,7 @@ func TestSchedulerCountsRunnerAfterTaskBecomesTerminal(t *testing.T) {
 	})
 	a := New(state, t.TempDir(), WithTaskRunner(runner))
 	t.Cleanup(a.Shutdown)
-	a.runtime.lastRetention = time.Now()
-	a.runtime.lastObserve = time.Now()
+	deferHousekeeping(a)
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -830,21 +946,29 @@ func TestRunnerExitBlocksStillActiveTask(t *testing.T) {
 	a.runTask(task)
 	a.wg.Wait()
 
-	saved, err := store.Get[model.Task](state, "task", task.ID)
-	if err != nil || saved == nil {
-		t.Fatalf("reload task: %+v, %v", saved, err)
-	}
+	saved := loadTask(t, state, task.ID)
 	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonUnknown {
 		t.Fatalf("runner exit did not block active task: %+v", saved)
 	}
 	if saved.Error == nil || !strings.Contains(*saved.Error, "exited unexpectedly") {
-		t.Fatalf("runner exit did not preserve a useful error: %+v", saved.Error)
+		t.Fatalf("runner exit did not preserve a useful error: %s", optionalText(saved.Error))
 	}
 	a.runtimeMu.Lock()
 	running := len(a.runtime.tasks)
 	a.runtimeMu.Unlock()
 	if running != 0 {
 		t.Fatalf("runner retained %d runtime slot(s) after fallback", running)
+	}
+}
+
+// A nil task runner keeps the supervised production lifecycle, as nil keeps
+// the production default for the other options, rather than leaving dispatch
+// with no runner for the tasks it admits.
+func TestNilTaskRunnerKeepsTheProductionRunner(t *testing.T) {
+	a := New(testStore(t), t.TempDir(), WithTaskRunner(nil))
+	t.Cleanup(a.Shutdown)
+	if a.taskRunner == nil {
+		t.Fatal("WithTaskRunner(nil) removed the production task runner")
 	}
 }
 
@@ -869,8 +993,7 @@ func TestSchedulerWaitsForExecutionSlotBeforeRefreshingCapacity(t *testing.T) {
 		return nil
 	})))
 	t.Cleanup(a.Shutdown)
-	a.runtime.lastRetention = time.Now()
-	a.runtime.lastObserve = time.Now()
+	deferHousekeeping(a)
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -886,9 +1009,8 @@ func TestSchedulerWaitsForExecutionSlotBeforeRefreshingCapacity(t *testing.T) {
 	if refreshing || called {
 		t.Fatalf("capacity refresh or execution started without a free slot: refreshing=%t called=%t", refreshing, called)
 	}
-	saved, err := store.Get[model.Task](state, "task", queued.ID)
-	if err != nil || saved.Status != model.StatusQueued {
-		t.Fatalf("queued work changed while execution was full: %+v, %v", saved, err)
+	if saved := loadTask(t, state, queued.ID); saved.Status != model.StatusQueued {
+		t.Fatalf("queued work changed while execution was full: %+v", saved)
 	}
 }
 
@@ -917,39 +1039,39 @@ func TestDecisionMemoryAbsorbsOnlySameCycleAlternativesAndRequiresRediscovery(t 
 	if stored["mode"] != model.CycleModeExecution || stored["cycle_mode"] != nil || stored["kind"] != nil || stored["reconsideration_due"] != nil || !pathsOK || paths == nil {
 		t.Fatalf("decision record changed: %+v", stored)
 	}
-	recorded := recordToMap(decisionRecord{
+	recorded := decisionRecord{
 		Kind: "decision", ID: model.ID(), CycleMode: model.CycleModeExecution,
 		Repository: cfg.GitHubRepo, Target: cfg.DefaultBranch, ProblemKey: accepted.ProblemIdentity(),
 		Decision: model.DecisionRejected, Reason: "Current decision", SourceRevision: "revision",
 		ContextFingerprint: "revision", ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: model.ID(),
-	})
-	if err := ValidateDecisionMemory([]model.Proposal{accepted}, []any{recorded}); err == nil {
+	}
+	if err := validateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{recorded}}); err == nil {
 		t.Fatal("unchanged rejected work became executable without rediscovery")
 	}
-	auditRecommendation := recordToMap(decisionRecord{
+	auditRecommendation := decisionRecord{
 		Kind: "decision", ID: model.ID(), CycleMode: model.CycleModeAudit,
 		Repository: cfg.GitHubRepo, Target: cfg.DefaultBranch, ProblemKey: accepted.ProblemIdentity(),
 		Decision: model.DecisionAccepted, Reason: "Audit recommendation", SourceRevision: "revision",
 		ContextFingerprint: "revision", ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: model.ID(),
-	})
-	if err := ValidateDecisionMemory([]model.Proposal{accepted}, []any{auditRecommendation}); err != nil {
+	}
+	if err := validateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{auditRecommendation}}); err != nil {
 		t.Fatalf("audit recommendation incorrectly vetoed execution: %v", err)
 	}
 	requestID := model.ID()
-	request := map[string]any{"kind": "rediscovery", "id": requestID, "target": cfg.DefaultBranch}
+	request := rediscoveryRequest{ID: requestID, Target: cfg.DefaultBranch}
 	reconsidered := accepted.Clone()
 	reconsidered.Reconsiders = []string{requestID}
-	if err := ValidateDecisionMemory([]model.Proposal{reconsidered}, []any{recorded, request}); err != nil {
+	if err := validateDecisionMemory([]model.Proposal{reconsidered}, decisionMemory{decisions: []decisionRecord{recorded}, requests: []rediscoveryRequest{request}}); err != nil {
 		t.Fatalf("matching explicit rediscovery was rejected: %v", err)
 	}
 	wrong := reconsidered.Clone()
 	wrong.Target = "other"
-	if err := ValidateDecisionMemory([]model.Proposal{wrong}, []any{request}); err == nil {
+	if err := validateDecisionMemory([]model.Proposal{wrong}, decisionMemory{requests: []rediscoveryRequest{request}}); err == nil {
 		t.Fatal("rediscovery with the wrong target was accepted")
 	}
 	oversized := accepted.Clone()
 	oversized.ProblemKey = strings.Repeat("x", 201)
-	if err := ValidateDecisionMemory([]model.Proposal{oversized}, nil); err == nil {
+	if err := validateDecisionMemory([]model.Proposal{oversized}, decisionMemory{}); err == nil {
 		t.Fatal("oversized decision metadata was accepted")
 	}
 }
@@ -1065,29 +1187,21 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		a.runtimeMu.Lock()
-		running := a.runtime.housekeeping
-		a.runtimeMu.Unlock()
-		if !running {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitHousekeeping(t, a)
 	if _, err := os.Stat(filepath.Join(unresolved.Workspace, "evidence.txt")); err != nil {
 		t.Fatalf("paused housekeeping removed unresolved evidence: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(external, "evidence.txt")); err != nil || string(data) != "outside" {
 		t.Fatalf("symlink cleanup escaped owned root: %q, %v", data, err)
 	}
-	saved, err := store.Get[model.Task](state, "task", published.ID)
-	if err != nil || saved == nil || saved.Lifecycle.DiscardedAt != nil {
-		t.Fatalf("rejected cleanup was recorded as successful: %+v, %v", saved, err)
+	if saved := loadTask(t, state, published.ID); saved.Lifecycle.DiscardedAt != nil {
+		t.Fatalf("rejected cleanup was recorded as successful: %+v", saved)
 	}
 }
 
-// duplicates regardless of wording.
+// TestSameCycleProposalsSharingAProblemKeyAreDuplicates: accepted proposals in
+// one cycle that share a problem key are duplicates regardless of wording,
+// while distinct problem keys are accepted together.
 func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	grounding := model.Grounding{Revision: "rev"}
@@ -1103,34 +1217,5 @@ func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
 	other.ProblemKey = "parser:length-header"
 	if err := ValidateProposals(cfg, []model.Proposal{first, other}, grounding, nil); err != nil {
 		t.Fatalf("distinct problem keys rejected: %v", err)
-	}
-}
-
-// order, rejects unowned and ambiguous matches, and never binds the default
-// branch as a PR.
-func TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder(t *testing.T) {
-	cfg := testConfig(t.TempDir())
-	fork := ownedPR("octomus/fix")
-	fork.Number, fork.Head, fork.Owned, fork.HeadRepository = 202, "fork-head", false, "fork/project"
-	owned := ownedPR("octomus/fix")
-	owned.Number, owned.Head = 101, "repo-head"
-	prs := []model.PullRequest{fork, owned}
-	bound, err := ResolveTarget(cfg, prs, "octomus/fix")
-	if err != nil || bound == nil || bound.Number != 101 || bound.Head != "repo-head" {
-		t.Fatalf("bound = %+v, %v; want owned PR 101", bound, err)
-	}
-	if target, err := ResolveTarget(cfg, prs, cfg.DefaultBranch); err != nil || target != nil {
-		t.Fatalf("default branch resolved to a PR: %+v, %v", target, err)
-	}
-	if _, err := ResolveTarget(cfg, prs[:1], "octomus/fix"); err == nil {
-		t.Fatal("fork-only target resolved")
-	}
-	if _, err := ResolveTarget(cfg, []model.PullRequest{owned, owned}, "octomus/fix"); err == nil {
-		t.Fatal("ambiguous owned match resolved")
-	}
-	p := proposal("a", "octomus/fix")
-	grounding := model.Grounding{Revision: "rev", PRs: prs}
-	if err := ValidateProposals(cfg, []model.Proposal{p}, grounding, nil); err != nil {
-		t.Fatalf("owned-PR target rejected: %v", err)
 	}
 }

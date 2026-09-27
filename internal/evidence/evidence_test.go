@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -752,5 +753,159 @@ func TestCommittedPlanAttributesVerdictsToReviewerSlots(t *testing.T) {
 	p2 := findProposal(t, value, "p2")
 	if get(p2, "reviewer_verdicts", 0, "decision") != "deferred" || get(p2, "reviewer_verdicts", 1, "decision") != "rejected" || len(list(p2, "linked_tasks")) != 0 {
 		t.Fatalf("%v", p2)
+	}
+}
+
+// A task whose saved proposal identity is not among the cycle's proposals is
+// counted in the run gaps only: it is never joined to a proposal by any other
+// key, and its evidence is not exported.
+func TestTasksWithoutAMatchingProposalAreCountedOnlyInRunGaps(t *testing.T) {
+	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
+	linked := task("cycle-a", "p1")
+	orphan := task("cycle-a", "p-unknown")
+	s, _ := fixture(t, []model.Cycle{c}, []model.Task{linked, orphan})
+	value := export(t, s, "cycle-a")
+	if !containsText(list(value, "gaps"), "1 task records in this cycle have no matching saved proposal identity.") {
+		t.Fatalf("%v", value["gaps"])
+	}
+	tasks := list(findProposal(t, value, "p1"), "linked_tasks")
+	if len(tasks) != 1 || get(tasks, 0, "id") != linked.ID {
+		t.Fatalf("%v", tasks)
+	}
+	if strings.Contains(text(t, value), orphan.ID) {
+		t.Fatal("the unmatched task's evidence was exported")
+	}
+}
+
+// Reviewer batches are attributed positionally; every way the saved batches
+// and reviewer sessions disagree is named in the run gaps, and a consistent
+// cycle names none.
+func TestReviewerSlotInconsistenciesAreRunGaps(t *testing.T) {
+	a := reviewerSession("adversary-a", "completed")
+	aRetry := reviewerSession("adversary-a", "completed")
+	aRetry.ID = "adversary-a-session-2"
+	b := reviewerSession("adversary-b", "completed")
+	saved := batch(entry("p1", "accepted", "accepts"))
+	for _, check := range []struct {
+		name        string
+		assessments []any
+		sessions    []model.Session
+		gaps        []string
+	}{
+		{"consistent", []any{saved, saved}, []model.Session{a, b}, nil},
+		{"batch beyond the reviewer slots", []any{saved, saved, saved}, []model.Session{a, b},
+			[]string{"Saved assessment batch 2 exceeds the two recorded reviewer roles and is unattributable."}},
+		{"repeated reviewer sessions", []any{saved, saved}, []model.Session{a, aRetry, b},
+			[]string{"2 adversary-a sessions are recorded; batch attribution is positional and cannot be confirmed."}},
+		{"batch without a completed session", []any{saved, saved}, []model.Session{b},
+			[]string{"Saved assessment batch 0 is attributed to adversary-a positionally, but no completed adversary-a session confirms it."}},
+		{"completed session without a batch", []any{saved}, []model.Session{a, b},
+			[]string{"Reviewer adversary-b recorded a completed session but no saved assessment batch; its verdicts are missing."}},
+		{"neither a session nor a batch", []any{saved}, []model.Session{a},
+			[]string{"Reviewer adversary-b has neither a completed session nor a saved assessment batch."}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, check.assessments, check.sessions)
+			s, _ := fixture(t, []model.Cycle{c}, nil)
+			value := export(t, s, "cycle-a")
+			want := make([]any, 0, len(check.gaps))
+			for _, gap := range check.gaps {
+				want = append(want, gap)
+			}
+			if got := list(value, "gaps"); joined(got) != joined(want) {
+				t.Fatalf("run gaps:\n got %q\nwant %q", joined(got), joined(want))
+			}
+		})
+	}
+}
+
+// Missing revision and pull-request evidence on a linked task is a task gap,
+// never inferred from the task's status.
+func TestTaskRevisionAndPublicationGapsStayExplicit(t *testing.T) {
+	output := "out00001"
+	pr := uint64(3)
+	// verified has a clean review and a passing check at its output revision,
+	// so only the gap under test can appear.
+	verified := func(tk *model.Task) {
+		tk.OutputCommit = &output
+		tk.Reviews = []model.ReviewRound{review(output, true, "clean review")}
+		tk.Verification = []model.Verification{check("make check", true, output)}
+	}
+	for _, check := range []struct {
+		name  string
+		shape func(*model.Task)
+		gaps  []string
+	}{
+		{"complete", func(tk *model.Task) {
+			verified(tk)
+			tk.Status = model.StatusPublished
+			tk.PRNumber = &pr
+		}, nil},
+		{"no comparison base", func(tk *model.Task) { tk.ComparisonBase = "  " },
+			[]string{"No comparison base is persisted, so the recorded review scope cannot be reconstructed."}},
+		{"published without a pull request", func(tk *model.Task) {
+			verified(tk)
+			tk.Status = model.StatusPublished
+		}, []string{"The task is recorded as published without a pull-request reference."}},
+		{"published without an output revision", func(tk *model.Task) {
+			tk.Status = model.StatusPublished
+			tk.PRNumber = &pr
+		}, []string{
+			"The task is recorded as published without an output revision.",
+			"A pull-request reference is recorded without an output revision to compare it against.",
+		}},
+		{"pull request without an output revision", func(tk *model.Task) {
+			tk.Status = model.StatusBlocked
+			tk.PRNumber = &pr
+		}, []string{"A pull-request reference is recorded without an output revision to compare it against."}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			tk := task("cycle-a", "p1")
+			check.shape(&tk)
+			c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
+			s, _ := fixture(t, []model.Cycle{c}, []model.Task{tk})
+			linked := get(findProposal(t, export(t, s, "cycle-a"), "p1"), "linked_tasks", 0).(map[string]any)
+			want := make([]any, 0, len(check.gaps))
+			for _, gap := range check.gaps {
+				want = append(want, gap)
+			}
+			if got := list(linked, "gaps"); joined(got) != joined(want) {
+				t.Fatalf("task gaps:\n got %q\nwant %q", joined(got), joined(want))
+			}
+			if strings.TrimSpace(tk.ComparisonBase) == "" && get(linked, "revisions", "comparison_base") != nil {
+				t.Fatalf("%v", linked["revisions"])
+			}
+		})
+	}
+}
+
+// A task linked to a proposal whose final decision is not accepted is kept
+// and flagged as inconsistent rather than dropped or re-labelled.
+func TestNonAcceptedProposalWithLinkedTasksIsInconsistent(t *testing.T) {
+	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "rejected")}, nil, nil)
+	tk := task("cycle-a", "p1")
+	s, _ := fixture(t, []model.Cycle{c}, []model.Task{tk})
+	p1 := findProposal(t, export(t, s, "cycle-a"), "p1")
+	if p1["final_decision"] != "rejected" || len(list(p1, "linked_tasks")) != 1 {
+		t.Fatalf("%v", p1)
+	}
+	if !containsText(list(p1, "gaps"), "The proposal is recorded as rejected yet 1 task(s) are linked; the saved records are inconsistent.") {
+		t.Fatalf("%v", p1["gaps"])
+	}
+}
+
+// Snapshot reads select tasks by cycle, so only a direct Assemble caller can
+// pass a task naming another cycle: it is counted as a gap and never joined,
+// even when its proposal ID matches.
+func TestAssembleExcludesTasksNamingAnotherCycle(t *testing.T) {
+	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
+	own := task("cycle-a", "p1")
+	foreign := task("cycle-b", "p1")
+	run := evidence.Assemble(c, []model.Task{own, foreign})
+	if !slices.Contains(run.Gaps, "1 saved task records name a different cycle and are excluded from this run.") {
+		t.Fatalf("%q", run.Gaps)
+	}
+	if linked := run.Proposals[0].LinkedTasks; len(linked) != 1 || linked[0].ID != own.ID {
+		t.Fatalf("%+v", linked)
 	}
 }

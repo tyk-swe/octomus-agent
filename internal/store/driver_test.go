@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -120,6 +121,81 @@ func TestReadOnlySnapshotIsConsistentAndIncludesWAL(t *testing.T) {
 	}))
 	if _, err := os.Stat(path + "-journal"); !os.IsNotExist(err) {
 		t.Fatal("read-only access created a rollback journal")
+	}
+}
+
+// A panic inside a transaction callback (recovered by net/http or a task
+// worker) rolls the transaction back before it unwinds. Otherwise the pinned
+// connection would stay inside the open transaction: later autocommit writes
+// would be acknowledged without ever committing, and every later transaction
+// would fail to begin.
+func TestPanicInsideTransactionRollsBack(t *testing.T) {
+	panics := func(snapshot func(func(*sql.Conn) error) error, statement string) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the callback's panic did not propagate")
+			}
+		}()
+		_ = snapshot(func(c *sql.Conn) error {
+			if _, err := c.ExecContext(store.Background(), statement); err != nil {
+				t.Fatalf("%s: %v", statement, err)
+			}
+			panic("callback failure")
+		})
+	}
+	path := statePath(t)
+	s := open(t, path)
+	panics(s.Snapshot, "INSERT INTO records VALUES ('x','inside','1')")
+	must(t, s.Put("x", "after", 1))
+	startBatch(t, s)
+
+	r, err := store.OpenReadOnly(path, "probe")
+	must(t, err)
+	defer r.Close()
+	panics(r.Snapshot, "SELECT count(*) FROM records")
+	must(t, r.Snapshot(func(*sql.Conn) error { return nil }))
+
+	must(t, s.Close())
+	s = open(t, path)
+	if _, found, err := s.GetRaw("x", "after"); err != nil || !found {
+		t.Fatalf("write after the panic = found %v, %v; want it committed", found, err)
+	}
+	if _, found, err := s.GetRaw("x", "inside"); err != nil || found {
+		t.Fatalf("write inside the panicking transaction = found %v, %v; want it rolled back", found, err)
+	}
+}
+
+// --usage-report and --export-run rely on OpenReadOnly being a real
+// SQLITE_OPEN_READONLY handle. URI metacharacters in the data directory must
+// not strip mode=ro or send the open to a different path.
+func TestReadOnlyConnectionRefusesWrites(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "state dir ?#%25")
+	must(t, os.MkdirAll(dir, 0o700))
+	path := filepath.Join(dir, "state.db")
+	s := open(t, path)
+	must(t, s.Put("x", "a", 1))
+	r, err := store.OpenReadOnly(path, "probe")
+	must(t, err)
+	defer r.Close()
+	var seen int64
+	must(t, r.Conn.QueryRowContext(store.Background(), "SELECT count(*) FROM records WHERE kind='x'").Scan(&seen))
+	if seen != 1 {
+		t.Fatalf("read-only handle sees %d records; it opened a different database", seen)
+	}
+	_, err = r.Conn.ExecContext(store.Background(), "INSERT INTO records VALUES ('x','ro','1')")
+	if err == nil || !strings.Contains(err.Error(), "readonly") {
+		t.Fatalf("read-only write error = %v", err)
+	}
+	must(t, s.Put("x", "b", 2))
+	if found, err := s.Get("x", "ro", new(any)); err != nil || found {
+		t.Fatalf("read-only write landed: found=%v err=%v", found, err)
+	}
+	entries, err := os.ReadDir(parent)
+	must(t, err)
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(dir) {
+		t.Fatalf("opening created stray paths: %v", entries)
 	}
 }
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run only as root on a disposable systemd CI VM; never uses live service state."""
+import errno
 import os
 from pathlib import Path
 import pwd
@@ -20,10 +21,23 @@ try:
         path.mkdir()
         os.chown(path, account.pw_uid, account.pw_gid)
     root.chmod(0o755)
+    # A default POSIX ACL inherited from the parent (as on some CI images)
+    # overrides the umask for new files, so clear ACLs on the fixture tree to
+    # let the file-mode check observe the unit's UMask alone.
+    for path in [root, *(root / name for name in ['home', 'checkout', 'forbidden'])]:
+        for attribute in ['system.posix_acl_default', 'system.posix_acl_access']:
+            try:
+                os.removexattr(path, attribute)
+            except OSError as error:
+                if error.errno not in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
+                    raise
     script = root / 'check.sh'
     script.write_text(f'''#!/bin/sh
 set -eu
+umask > '{root}/home/umask'
 touch '{root}/home/state' '{root}/checkout/source'
+stat -c %a '{root}/home/state' > '{root}/home/state.mode'
+grep '^NoNewPrivs:' /proc/self/status > '{root}/home/no-new-privs'
 touch /tmp/octomus-private-fixture
 if touch '{root}/forbidden/escape'; then exit 1; fi
 sleep 120 &
@@ -43,16 +57,28 @@ echo $! > '{root}/home/child.pid'
     properties = []
     for line in (PROJECT / 'deploy/octomus-agent.service').read_text().splitlines():
         key = line.partition('=')[0]
-        if key in ['NoNewPrivileges', 'ProtectSystem', 'PrivateTmp', 'ProtectKernelTunables', 'RestrictSUIDSGID', 'KillMode', 'TimeoutStopSec']:
+        if key in ['NoNewPrivileges', 'ProtectSystem', 'PrivateTmp', 'ProtectKernelTunables', 'RestrictSUIDSGID', 'UMask', 'KillMode', 'TimeoutStopSec']:
             properties += ['-p', line]
     properties += ['-p', f'ReadWritePaths={root}/home {root}/checkout', '-p', 'User=nobody']
     subprocess.run(['systemd-run', '--unit', unit, '--wait', '--pipe', *properties, str(script)], check=True)
     assert (root / 'home/state').exists() and (root / 'checkout/source').exists()
     assert not (root / 'forbidden/escape').exists()
+    # UMask=0077 keeps state, logs and workspaces private to the service user.
+    umask = (root / 'home/umask').read_text().strip()
+    assert umask == '0077', f'Service umask is {umask}, not 0077 (UMask=0077)'
+    mode = (root / 'home/state.mode').read_text().strip()
+    assert mode == '600', f'Service-created file has mode {mode}, not 600 (UMask=0077)'
+    no_new_privs = (root / 'home/no-new-privs').read_text().split()
+    assert no_new_privs == ['NoNewPrivs:', '1'], f'NoNewPrivileges not in effect: {no_new_privs}'
     pid = (root / 'home/child.pid').read_text().strip()
-    stat = Path(f'/proc/{pid}/stat')
-    assert not stat.exists() or stat.read_text().split()[2] == 'Z', 'Child survived control-group cleanup'
-    print('PASS systemd: allowed writes, protected filesystem and child cleanup')
+    # Gone means reaped or a zombie; the state follows the last ')', since the
+    # command name before it may contain spaces or parentheses.
+    try:
+        state = Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        state = 'reaped'
+    assert state in ['reaped', 'Z', 'X'], f'Child survived control-group cleanup (state {state})'
+    print('PASS systemd: allowed writes, protected filesystem, private file mode, no new privileges and child cleanup')
 finally:
     subprocess.run(['systemctl', 'stop', unit], check=False, capture_output=True)
     subprocess.run(['systemctl', 'reset-failed', unit], check=False, capture_output=True)

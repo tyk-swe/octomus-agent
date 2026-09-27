@@ -7,7 +7,7 @@ turns reuse the task's repair session, while every review starts a fresh session
 
 ## Configuration
 
-Codex routes retain the existing model and effort fields:
+Codex routes set a model and reasoning effort:
 
 ```json
 {"backend":"codex","model":"<model-id-from-the-catalog>","effort":"medium"}
@@ -33,8 +33,8 @@ required routes select need to be installed. An audit requires the orchestrator,
 discovery and proposal reviewer routes; normal execution requires every configured
 route.
 
-Newly accepted tasks use their Octomus task IDs for workspace directories.
-Saved route records include an explicit backend.
+Task workspace directories are named by Octomus task ID. Every saved route records
+its backend.
 
 ## OpenCode setup and behavior
 
@@ -88,4 +88,5 @@ Provider keys, options, authentication records, and raw transcripts are excluded
 return per-backend versions, protocol baselines, normalized model catalogs and
 warnings. Codex version fields remain present when Codex is required. Errors
 identify the failing runner or route. Catalogs and diagnostics consume no session
-admissions and make no model calls; they do not prove paid inference access.
+admissions and make no model calls; they do not prove paid inference access. See
+[the HTTP API](deployment.md#http-api) for request rules and error forms.

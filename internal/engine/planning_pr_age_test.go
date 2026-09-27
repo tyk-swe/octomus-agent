@@ -28,8 +28,8 @@ func writeMaintenancePRFixture(t *testing.T, fixture *scriptedFixture, prs []mai
 	entries := make([]map[string]any, 0, len(prs))
 	for i, pr := range prs {
 		branch := fixture.cfg.BranchPrefix + pr.name
-		command(t, fixture.repo, "/usr/bin/git", "branch", branch)
-		command(t, fixture.repo, "/usr/bin/git", "push", "origin", branch)
+		git(t, fixture.repo, "branch", branch)
+		git(t, fixture.repo, "push", "origin", branch)
 		createdAt := pr.createdAt
 		if createdAt == "" {
 			createdAt = now.AddDate(0, 0, -pr.ageDays).Format(time.RFC3339)
@@ -122,7 +122,7 @@ func TestAuditGroundingOwnedPRAgeThresholds(t *testing.T) {
 			}
 			cycle := waitCycle(t, fixture.state, cycleID)
 			if cycle.Status != model.CycleCompleted || cycle.Grounding == nil {
-				t.Fatalf("audit did not record grounding: status=%s error=%v", cycle.Status, cycle.Error)
+				t.Fatalf("audit did not record grounding: status=%s error=%s", cycle.Status, optionalText(cycle.Error))
 			}
 			want := make([]string, 0, len(tc.want))
 			for _, name := range tc.want {

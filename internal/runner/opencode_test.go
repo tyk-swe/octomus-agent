@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // The catalog allowlists provider output and checks capabilities, provider
@@ -151,7 +153,7 @@ func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 		"incomplete", "truncated", "failed", "missing-structured",
 		"malformed-structured", "interactive", "question",
 		"interactive-v2", "question-v2", "disconnect", "events-disconnect",
-		"invalid-event", "invalid-json", "oversized-json",
+		"invalid-event", "invalid-json", "oversized-json", "event-404",
 	} {
 		t.Run(mode, func(t *testing.T) {
 			f := opencodeFixture(t)
@@ -180,8 +182,62 @@ func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 				if !strings.Contains(err.Error(), "interactive input") {
 					t.Fatalf("%s error: %v", mode, err)
 				}
+			case "failed":
+				if err.Error() != "OpenCode turn failed: StructuredOutputError" {
+					t.Fatalf("%s error must name the runner failure: %v", mode, err)
+				}
+			case "malformed-structured":
+				// The same wording as Codex for the same schema violation.
+				if !strings.HasPrefix(err.Error(), "Runner returned an invalid structured result: ") {
+					t.Fatalf("%s error: %v", mode, err)
+				}
+			case "event-404":
+				// The operator can tell a protocol change from auth drift.
+				if err.Error() != `OpenCode event subscription failed with HTTP 404 Not Found: {"error": "no events"}` {
+					t.Fatalf("%s error must report the HTTP status: %v", mode, err)
+				}
 			}
 		})
+	}
+}
+
+// A session.error event and an errored response both name the runner's error,
+// falling back to "runtime error" when the error carries no string name.
+func TestOpenCodeErrorsNameTheRunnerFailure(t *testing.T) {
+	client := &OpenCode{}
+	for _, tc := range []struct {
+		name  string
+		error any
+		want  string
+	}{
+		{"named", map[string]any{"name": "ProviderAuthError", "data": map[string]any{}}, "ProviderAuthError"},
+		{"unnamed", map[string]any{"data": map[string]any{}}, "runtime error"},
+		{"non-string name", map[string]any{"name": json.Number("5")}, "runtime error"},
+		{"non-object", "failed", "runtime error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := map[string]any{"type": "session.error", "properties": map[string]any{"sessionID": "ses_a", "error": tc.error}}
+			err := client.handleEvent(event, "ses_a", "msg_parent", route(), "/workspace")
+			if err == nil || err.Error() != "OpenCode session failed: "+tc.want {
+				t.Fatalf("session.error: %v", err)
+			}
+			response := map[string]any{"info": map[string]any{
+				"id": "msg_reply", "sessionID": "ses_a", "parentID": "msg_parent", "role": "assistant",
+				"providerID": "fixture", "modelID": "fixture-model", "variant": "high", "error": tc.error,
+			}}
+			if _, err := client.validateTurn(response, "ses_a", "msg_parent", route(), nil); err == nil || err.Error() != "OpenCode turn failed: "+tc.want {
+				t.Fatalf("errored response: %v", err)
+			}
+		})
+	}
+	// A session.error event without an error document still fails, and another
+	// session's error is ignored.
+	event := map[string]any{"type": "session.error", "properties": map[string]any{"sessionID": "ses_a"}}
+	if err := client.handleEvent(event, "ses_a", "msg_parent", route(), "/workspace"); err == nil || err.Error() != "OpenCode session failed: runtime error" {
+		t.Fatalf("session.error without an error document: %v", err)
+	}
+	if err := client.handleEvent(event, "ses_other", "msg_parent", route(), "/workspace"); err != nil {
+		t.Fatalf("another session's error must be ignored: %v", err)
 	}
 }
 
@@ -221,7 +277,12 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	}
 	f.mode("opencode", "detached-hold")
 	turn := turnIn(client, session, route(), f.workspace, "Fixture prompt", nil)
-	if !waitUntil(5*time.Second, func() bool { return f.exists("opencode-child-pid") }) {
+	var childPidText string
+	if !testutil.WaitUntil(5*time.Second, func() bool {
+		var ok bool
+		childPidText, ok = published(f.path("opencode-child-pid"))
+		return ok
+	}) {
 		t.Fatal("the fixture never started its detached child")
 	}
 	cancel()
@@ -232,12 +293,8 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	if result.err == nil || !strings.Contains(result.err.Error(), "cancelled") {
 		t.Fatalf("cancelled turn must fail: %v", result.err)
 	}
-	data, err := os.ReadFile(f.path("opencode-child-pid"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var childPid int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &childPid); err != nil {
+	if _, err := fmt.Sscanf(childPidText, "%d", &childPid); err != nil {
 		t.Fatal(err)
 	}
 	serverData, err := os.ReadFile(f.path("opencode-pids.jsonl"))
@@ -253,7 +310,7 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 	if err := client.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	stopped := waitUntil(5*time.Second, func() bool { return !alive(childPid) && !alive(record.Pid) })
+	stopped := testutil.WaitUntil(5*time.Second, func() bool { return !alive(childPid) && !alive(record.Pid) })
 	if alive(childPid) {
 		// Clean up the fixture's own detached group even when this regression
 		// fails.
@@ -312,6 +369,60 @@ func TestOpenCodeStartupPolicyFailuresAndTimeoutsAreBounded(t *testing.T) {
 	}
 }
 
+// The owned server's stdout stays drained for its whole life: after one
+// over-long line ends the line reader, the server can keep logging.
+func TestOpenCodeStdoutStaysDrainedAfterOverlongLine(t *testing.T) {
+	f := opencodeFixture(t)
+	f.mode("opencode", "overlong-stdout")
+	client, err := f.connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+	finished := make(chan error, 1)
+	go func() {
+		// Each request logs 8 KiB, so twenty outgrow a 64 KiB pipe.
+		for range 20 {
+			if _, err := client.Models(f.workspace); err != nil {
+				finished <- err
+				return
+			}
+		}
+		finished <- nil
+	}()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("models: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the server blocked on undrained stdout")
+	}
+}
+
+// Connect failures before and after readiness report the server's redacted
+// stderr; a silent failure keeps its plain message.
+func TestOpenCodeStartupFailureReportsStderr(t *testing.T) {
+	for mode, want := range map[string]string{
+		"startup-failure":  "OpenCode exited before server readiness",
+		"startup-stderr":   "OpenCode exited before server readiness; stderr: fixture startup failure token=[redacted]",
+		"unhealthy-stderr": "OpenCode is not healthy; stderr: fixture health failure token=[redacted]",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			f := opencodeFixture(t)
+			f.mode("opencode", mode)
+			client, err := f.connect(context.Background())
+			if client != nil {
+				client.Close()
+				t.Fatalf("%s must not connect", mode)
+			}
+			if err == nil || err.Error() != want {
+				t.Fatalf("connect error: %v", err)
+			}
+		})
+	}
+}
+
 // A redirect is never followed; the 3xx response fails closed.
 func TestOpenCodeRedirectRefusal(t *testing.T) {
 	f := opencodeFixture(t)
@@ -335,12 +446,13 @@ func TestOpenCodeDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	diagnostics, err := client.Diagnostics(f.workspace)
+	diagnostics, err := client.Diagnose(f.workspace)
 	if err != nil {
 		t.Fatalf("diagnostics: %v", err)
 	}
-	if diagnostics["protocol_version"] != OpenCodeProtocolVersion || diagnostics["warning"] != nil {
-		t.Fatalf("baseline diagnostics: %v", diagnostics)
+	if diagnostics.Backend != config.BackendOpencode || diagnostics.ProtocolVersion != OpenCodeProtocolVersion ||
+		diagnostics.Version != client.Version() || diagnostics.Warning != nil {
+		t.Fatalf("baseline diagnostics: %+v", diagnostics)
 	}
 	client.Close()
 	f.mode("opencode", "version-mismatch")
@@ -349,12 +461,13 @@ func TestOpenCodeDiagnostics(t *testing.T) {
 		t.Fatalf("reconnect: %v", err)
 	}
 	defer client.Close()
-	diagnostics, err = client.Diagnostics(f.workspace)
+	diagnostics, err = client.Diagnose(f.workspace)
 	if err != nil {
 		t.Fatalf("diagnostics: %v", err)
 	}
-	if diagnostics["version"] != "0.0.0-fixture" || diagnostics["warning"] == nil {
-		t.Fatalf("mismatched diagnostics: %v", diagnostics)
+	if diagnostics.Version != "0.0.0-fixture" || diagnostics.Warning == nil ||
+		*diagnostics.Warning != *OpenCodeVersionWarning("0.0.0-fixture") {
+		t.Fatalf("mismatched diagnostics: %+v", diagnostics)
 	}
 }
 
@@ -387,7 +500,7 @@ func TestProtocolMessageBound(t *testing.T) {
 	if len(payload)+2 != MaxMessage {
 		t.Fatalf("fixture math: %d", len(payload))
 	}
-	sse := make(chan sseEvent, 4)
+	sse := make(chan valueResult, 4)
 	go sseLoop(context.Background(), io.MultiReader(
 		bytes.NewReader([]byte(payload)), bytes.NewReader([]byte("\n\n"))), sse)
 	event := <-sse
@@ -395,13 +508,13 @@ func TestProtocolMessageBound(t *testing.T) {
 		t.Fatalf("exact bound frame: %v", event.err)
 	}
 	payloadOver := payload + " "
-	sse = make(chan sseEvent, 4)
+	sse = make(chan valueResult, 4)
 	go sseLoop(context.Background(), bytes.NewReader([]byte(payloadOver+"\n")), sse)
 	if event := <-sse; event.err == nil {
 		t.Fatal("a frame over the bound must fail")
 	}
 	// A backlog with no newline over the bound fails too.
-	sse = make(chan sseEvent, 4)
+	sse = make(chan valueResult, 4)
 	go sseLoop(context.Background(), bytes.NewReader(over), sse)
 	if event := <-sse; event.err == nil {
 		t.Fatal("a backlog over the bound must fail")
@@ -455,5 +568,110 @@ func TestProtocolMessageBoundOverHTTP(t *testing.T) {
 	defer response.Body.Close()
 	if _, err := readJSONBody(response.Body); err == nil {
 		t.Fatal("an oversized HTTP body must fail")
+	}
+}
+
+// failedResponse is a non-2xx response carrying body.
+func failedResponse(body string) *http.Response {
+	return &http.Response{Status: "500 Internal Server Error", StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader(body))}
+}
+
+// A failed response's body is redacted before the reported snippet is cut, so
+// a secret straddling the snippet's end is never reported in part, wherever
+// the cut falls. When the read itself stops inside the body, the last word
+// read is dropped because redaction cannot recognise a partial secret, and
+// with it any first words of an environment secret it cut.
+func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
+	never := func() {}
+	for _, secret := range []string{"ghp_Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9", "Bearer eyJhbGciOiJIUzI1NiJ9.c2lnbmF0dXJl"} {
+		for at := 1; at < len(secret); at++ {
+			prefix := strings.Repeat("a", statusSnippetLimit-at-1) + " "
+			body := prefix + secret + " " + strings.Repeat("tail ", 400)
+			err := statusError("OpenCode request failed", failedResponse(body), never)
+			text := err.Error()
+			for _, part := range []string{"ghp_", "Zq9", "eyJ", "c2ln"} {
+				if strings.Contains(text, part) {
+					t.Fatalf("cut %d of %q reported %q", at, secret, part)
+				}
+			}
+			snippet := strings.TrimPrefix(text, "OpenCode request failed with HTTP 500 Internal Server Error: ")
+			if len(snippet) > statusSnippetLimit || !strings.HasPrefix(snippet, prefix) {
+				t.Fatalf("cut %d of %q: snippet of %d bytes: %.40q", at, secret, len(snippet), snippet)
+			}
+		}
+	}
+	// Redaction can shrink the read below the snippet limit, so the end of
+	// the read is reported too: a token cut there too short to recognise is
+	// dropped with its word.
+	token := "ghp_" + strings.Repeat("Zq9", 67)
+	whole := strings.Repeat(token+" ", 79)
+	for kept := 1; kept <= 20; kept++ {
+		pad := statusReadLimit + 1 - kept - len(whole)
+		body := whole + strings.Repeat("b", pad-1) + " " + token + " never read"
+		err := statusError("OpenCode request failed", failedResponse(body), never)
+		want := "OpenCode request failed with HTTP 500 Internal Server Error: " + strings.Repeat("[redacted] ", 79) + strings.Repeat("b", pad-1)
+		if err.Error() != want {
+			t.Fatalf("%d bytes of the last token read: %q", kept, err)
+		}
+	}
+	// The words before the one the read cut can be the first words of an
+	// environment passphrase, which no longer matches whole; they are dropped
+	// with it.
+	kept := len("correct horse batt")
+	pad := statusReadLimit + 1 - kept - len(" ") - len(whole)
+	body := whole + strings.Repeat("b", pad) + " " + cutPhrase + " never read"
+	want := "OpenCode request failed with HTTP 500 Internal Server Error: " + strings.Repeat("[redacted] ", 79) + strings.Repeat("b", pad) + " "
+	if err := statusError("OpenCode request failed", failedResponse(body), never); err.Error() != want {
+		t.Fatalf("a passphrase the read cut: ...%q", err.Error()[max(len(err.Error())-60, 0):])
+	}
+	// A body that fits is reported whole, secrets redacted.
+	err := statusError("OpenCode request failed", failedResponse("denied for token ghp_Zq9Zq9Zq9Zq9Zq9Zq9\n"), never)
+	if err.Error() != "OpenCode request failed with HTTP 500 Internal Server Error: denied for token [redacted]\n" {
+		t.Fatalf("whole body: %q", err)
+	}
+}
+
+// A failed response whose body stalls ends the call after statusBodyWait,
+// for a JSON round trip and for the turn's event subscription, instead of
+// holding it until the call's own deadline. The partial last word is dropped.
+func TestStalledErrorBodyEndsPromptly(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/abort") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "upstream down; token ghp_Zq9")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	client := &OpenCode{client: newLoopbackClient(), base: server.URL, password: "fixture", ctx: context.Background(), timeout: 30}
+	for _, tc := range []struct {
+		name, want string
+		call       func() error
+	}{
+		{"round trip", "OpenCode request failed", func() error {
+			_, err := client.Models("/workspace")
+			return err
+		}},
+		{"event subscription", "OpenCode event subscription failed", func() error {
+			_, err := client.Turn("ses_a", route(), "/workspace", "prompt", nil)
+			return err
+		}},
+	} {
+		started := time.Now()
+		err := tc.call()
+		if elapsed := time.Since(started); elapsed > statusBodyWait+10*time.Second {
+			t.Fatalf("%s took %v", tc.name, elapsed)
+		}
+		if err == nil || err.Error() != tc.want+" with HTTP 503 Service Unavailable: upstream down; token" {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
 	}
 }

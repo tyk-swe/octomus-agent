@@ -52,8 +52,9 @@ func prContextPage(t *testing.T, entries ...map[string]any) string {
 	return string(data)
 }
 
-// TestInventoryReadsEveryPageDedupesAndSorts ports
-// inventory_reads_every_page_dedupes_and_sorts.
+// TestInventoryReadsEveryPageDedupesAndSorts: every page of the open-PR
+// listing reaches the inventory, entries come out sorted by number, and an
+// identical entry repeated across pages is kept once.
 func TestInventoryReadsEveryPageDedupesAndSorts(t *testing.T) {
 	c := testConfig()
 	first, second, third := []map[string]any{}, []map[string]any{}, []map[string]any{}
@@ -108,8 +109,10 @@ func TestInventoryReadsEveryPageDedupesAndSorts(t *testing.T) {
 	}
 }
 
-// TestOwnershipRequiresPrefixHeadRepositoryBaseRepositoryAndMarker ports
-// ownership_requires_prefix_head_repository_base_repository_and_marker.
+// TestOwnershipRequiresPrefixHeadRepositoryBaseRepositoryAndMarker: a pull
+// request is owned only with the branch prefix, this repository as both head
+// and base, and a task marker; a deleted head repository is not owned, and a
+// foreign base repository fails the whole inventory.
 func TestOwnershipRequiresPrefixHeadRepositoryBaseRepositoryAndMarker(t *testing.T) {
 	c := testConfig()
 	cases := []struct {
@@ -153,8 +156,9 @@ func TestOwnershipRequiresPrefixHeadRepositoryBaseRepositoryAndMarker(t *testing
 	}
 }
 
-// TestMalformedOrConflictingInventoryFailsClosed ports
-// malformed_or_conflicting_inventory_fails_closed.
+// TestMalformedOrConflictingInventoryFailsClosed: conflicting duplicates,
+// empty responses, missing or unknown states and missing identity fail the
+// inventory rather than yielding a partial one; closed entries are dropped.
 func TestMalformedOrConflictingInventoryFailsClosed(t *testing.T) {
 	c := testConfig()
 	conflicting := prContextExternal(9)

@@ -4,20 +4,34 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 const (
-	prObservationLifetime = 5 * time.Minute
+	prObservationLifetime = observationLifetime
 	prAdmissionLifetime   = time.Minute
 	prRefreshRetryDelay   = time.Minute
 )
+
+// prCapacityFullReason explains a full owned-PR capacity wherever it is reported.
+const prCapacityFullReason = "The configured owned open-PR limit is reached; new-PR work waits for an observed closure or merge"
+
+// errPrInventorySuperseded reports a refresh whose inventory was not saved
+// because a refresh whose fetch started later already saved a newer complete
+// one. The older result is obsolete, not a failure.
+var errPrInventorySuperseded = errors.New("Pull request inventory became stale before persistence")
+
+// errPrPolicyChanged reports a refresh whose PR identity (repository, GitHub
+// repository, default branch or branch prefix) a configuration save changed
+// while it ran. That save already invalidated this process's observation, so
+// the result is obsolete, not a failure.
+var errPrPolicyChanged = errors.New("Pull request policy changed during refresh")
 
 type freshPrObservation struct {
 	identity          store.PrIdentity
@@ -39,6 +53,7 @@ func (a *App) invalidatePrObservation() {
 	a.runtime.prObservation = nil
 	a.runtime.prRefreshError = ""
 	a.runtime.lastPrAttempt = time.Time{}
+	a.runtime.prAdmissionRefused = false
 	a.runtimeMu.Unlock()
 }
 
@@ -76,6 +91,12 @@ func (a *App) PrCapacity() (model.PrCapacity, error) {
 	if err != nil {
 		return model.PrCapacity{}, err
 	}
+	return a.prCapacity(cfg)
+}
+
+// prCapacity is PrCapacity under cfg, the saved configuration a caller has
+// already read.
+func (a *App) prCapacity(cfg config.Config) (model.PrCapacity, error) {
 	reservations, err := a.Store.PrReservations(cfg.GitHubRepo)
 	if err != nil {
 		return model.PrCapacity{}, err
@@ -84,7 +105,7 @@ func (a *App) PrCapacity() (model.PrCapacity, error) {
 	if err != nil {
 		return model.PrCapacity{}, err
 	}
-	if stored != nil && !sameRepository(stored.Repository, cfg.GitHubRepo) {
+	if stored != nil && !config.EqualASCII(stored.Repository, cfg.GitHubRepo) {
 		stored = nil
 	}
 	var ownedOpen *uint64
@@ -127,7 +148,7 @@ func (a *App) PrCapacity() (model.PrCapacity, error) {
 		}
 	case remaining == 0:
 		status = "full"
-		reason = "The configured owned open-PR limit is reached; new-PR work waits for an observed closure or merge"
+		reason = prCapacityFullReason
 	default:
 		status = "ready"
 	}
@@ -141,11 +162,38 @@ func (a *App) PrCapacity() (model.PrCapacity, error) {
 	return capacity, nil
 }
 
+// prCapacityFrom reports the capacity that one complete inventory shows with
+// the current reservations. It is observed context for planning prompts,
+// never dispatch authority: only PrCapacity's fresh current-process
+// observation authorizes admission.
+func prCapacityFrom(cfg config.Config, inventory model.OpenPrInventory, reservations []store.PrReservation) model.PrCapacity {
+	owned, unrepresented, remaining := store.PrUnion(inventory, reservations, cfg.MaxOpenPRs)
+	observedAt := inventory.ObservedAt
+	capacity := model.PrCapacity{Limit: cfg.MaxOpenPRs, OwnedOpen: &owned, Reserved: unrepresented, Remaining: &remaining, ObservedAt: &observedAt, Status: "ready"}
+	if remaining == 0 {
+		reason := prCapacityFullReason
+		capacity.Status = "full"
+		capacity.Reason = &reason
+	}
+	return capacity
+}
+
 func (a *App) startPrRefresh(cfg config.Config) {
-	capacity, err := a.PrCapacity()
+	// A refresh in flight settles every waiting task; skip the capacity read.
+	a.runtimeMu.Lock()
+	inFlight := a.runtime.prRefresh != nil
+	a.runtimeMu.Unlock()
+	if inFlight {
+		return
+	}
+	capacity, err := a.prCapacity(cfg)
 	available := err == nil && capacity.Remaining != nil && *capacity.Remaining > 0
 	a.runtimeMu.Lock()
-	if a.runtime.prRefresh != nil || !available && time.Since(a.runtime.lastPrAttempt) < prRefreshRetryDelay {
+	// A refresh waits out the retry delay while capacity is unavailable, and
+	// after a refused admission: a refusal consumed the observation, and a
+	// persistent cause would otherwise refresh the inventory back to back.
+	paced := !available || a.runtime.prAdmissionRefused
+	if a.runtime.prRefresh != nil || paced && time.Since(a.runtime.lastPrAttempt) < prRefreshRetryDelay {
 		a.runtimeMu.Unlock()
 		return
 	}
@@ -168,48 +216,45 @@ func (a *App) startPrRefresh(cfg config.Config) {
 	}()
 }
 
-// RefreshPRs performs a complete remote observation without holding gate and
-// revalidates configuration and mode before the result can authorize work.
-func (a *App) RefreshPRs(ctx context.Context) error {
-	cfg, err := a.Config()
-	if err != nil {
-		return err
-	}
-	return a.refreshPRs(ctx, cfg)
-}
-
+// refreshPRs performs a complete remote observation of snapshot's repository
+// without holding the gate and revalidates configuration and mode before the
+// result can authorize work.
 func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result error) {
 	startedAt := time.Now()
 	defer func() {
-		if result == nil || errors.Is(result, context.Canceled) {
+		// A refresh whose own context ended (invalidation by pause, config
+		// save or a failed run, or shutdown) is obsolete, not failed: remote
+		// captures report that as process.ErrCancelled, which does not wrap
+		// context.Canceled, and invalidation has already reset this state. So
+		// is one whose PR identity a save changed while it ran: housekeeping's
+		// refresh is not cancelled by that save's invalidation. A superseded
+		// refresh is obsolete too: the newer one that persisted first already
+		// settled this state.
+		if result == nil || ctx.Err() != nil || errors.Is(result, context.Canceled) || errors.Is(result, errPrPolicyChanged) || errors.Is(result, errPrInventorySuperseded) {
+			return
+		}
+		// A genuine failure of a PR identity that a save replaced while this
+		// refresh ran is obsolete too: it says nothing about the saved policy.
+		// The gate orders this check against SaveConfig, which saves and
+		// invalidates in one gate section. No caller holds the gate here: the
+		// deferred unlock below has already run.
+		a.gate.Lock()
+		defer a.gate.Unlock()
+		if live, err := a.Config(); err == nil && !store.PrIdentityOf(snapshot).Matches(live) {
+			// Report it as the policy change it is, so housekeeping treats the
+			// whole observation as obsolete rather than failed.
+			result = errPrPolicyChanged
 			return
 		}
 		a.runtimeMu.Lock()
 		observation := a.runtime.prObservation
 		if observation == nil || (observation.identity.Matches(snapshot) && !observation.fetchedAt.After(startedAt)) {
 			a.runtime.prObservation = nil
-			a.runtime.prRefreshError = store.ErrorMessage(result)
+			a.runtime.prRefreshError = redact.Error(result)
 		}
 		a.runtimeMu.Unlock()
 	}()
-	inventory, err := gitops.OpenPrInventory(ctx, snapshot)
-	if err != nil {
-		return fmt.Errorf("Open pull request inventory failed: %w", err)
-	}
-	details, err := gitops.OwnedPrDetails(ctx, snapshot, inventory)
-	if err != nil {
-		return fmt.Errorf("Owned pull request refresh failed: %w", err)
-	}
-	detailByNumber := map[uint64]model.PullRequest{}
-	for _, detail := range details {
-		detailByNumber[detail.Number] = detail
-	}
-	for i, observed := range inventory.PRs {
-		if detail, ok := detailByNumber[observed.Number]; ok {
-			inventory.PRs[i] = detail
-		}
-	}
-	released, err := a.releasableReservations(ctx, snapshot, inventory)
+	observed, err := a.observeOpenPRs(ctx, snapshot)
 	if err != nil {
 		return err
 	}
@@ -224,31 +269,93 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		return err
 	}
 	if !store.PrIdentityOf(snapshot).Matches(live) {
-		return errors.New("Pull request policy changed during refresh")
+		return errPrPolicyChanged
 	}
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	persisted, err := a.Store.PersistPrInventory(inventory, released)
+	persisted, err := a.commitPrObservationLocked(live, observed)
 	if err != nil {
 		return err
 	}
 	if !persisted {
-		return errors.New("Pull request inventory became stale before persistence")
-	}
-	for _, detail := range details {
-		if err := a.Store.RecordPrObservation(live.GitHubRepo, detail, false); err != nil {
-			return err
-		}
-	}
-	if control.Mode != model.OperatingModePaused {
-		a.runtimeMu.Lock()
-		a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(live), inventory: inventory.Clone(), fetchedAt: time.Now()}
-		a.runtime.prRefreshError = ""
-		a.runtimeMu.Unlock()
+		// The live PR identity was confirmed above, so a refused persist can
+		// only mean a newer saved inventory.
+		return errPrInventorySuperseded
 	}
 	return nil
+}
+
+// prSnapshot is one complete remote open-PR observation: the inventory with
+// the owned PRs' authoritative details overlaid, those details, and the
+// reservations whose publications the remote shows settled.
+type prSnapshot struct {
+	inventory model.OpenPrInventory
+	owned     []model.PullRequest
+	released  []string
+}
+
+// observeOpenPRs takes one complete open-PR observation for refresh and
+// planning grounding alike. It runs without the gate; each caller revalidates
+// its live policy under the gate before commitPrObservationLocked makes the
+// observation authoritative.
+func (a *App) observeOpenPRs(ctx context.Context, cfg config.Config) (prSnapshot, error) {
+	inventory, err := gitops.OpenPrInventory(ctx, cfg)
+	if err != nil {
+		return prSnapshot{}, fmt.Errorf("Open pull request inventory failed: %w", err)
+	}
+	owned, err := gitops.OwnedPrDetails(ctx, cfg, inventory)
+	if err != nil {
+		return prSnapshot{}, fmt.Errorf("Owned pull request refresh failed: %w", err)
+	}
+	overlayOwnedDetails(&inventory, owned)
+	released, err := a.releasableReservations(ctx, cfg, inventory)
+	if err != nil {
+		return prSnapshot{}, err
+	}
+	return prSnapshot{inventory: inventory, owned: owned, released: released}, nil
+}
+
+// overlayOwnedDetails replaces each inventory entry that has an authoritative
+// owned-PR detail with that detail, matched by PR number.
+func overlayOwnedDetails(inventory *model.OpenPrInventory, details []model.PullRequest) {
+	byNumber := make(map[uint64]model.PullRequest, len(details))
+	for _, detail := range details {
+		byNumber[detail.Number] = detail
+	}
+	for i, observed := range inventory.PRs {
+		if detail, ok := byNumber[observed.Number]; ok {
+			inventory.PRs[i] = detail
+		}
+	}
+}
+
+// commitPrObservationLocked persists one complete open-PR observation,
+// records the owned PR details under observed's repository and, unless the
+// service is paused, makes it this process's fresh admission observation. A
+// persisted inventory clears an earlier refresh failure in any mode. Callers
+// hold the gate and have revalidated the live configuration that observed
+// describes. A false result without an error means nothing was written: a
+// refresh whose fetch started later already saved a newer inventory and
+// recorded its own observations and authority.
+func (a *App) commitPrObservationLocked(observed config.Config, snapshot prSnapshot) (bool, error) {
+	control, err := a.Control()
+	if err != nil {
+		return false, err
+	}
+	persisted, err := a.Store.PersistPrInventory(snapshot.inventory, snapshot.released)
+	if err != nil || !persisted {
+		return false, err
+	}
+	for _, pr := range snapshot.owned {
+		if err := a.Store.RecordPrObservation(observed.GitHubRepo, pr, false); err != nil {
+			return true, err
+		}
+	}
+	a.runtimeMu.Lock()
+	if control.Mode != model.OperatingModePaused {
+		a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(observed), inventory: snapshot.inventory.Clone(), fetchedAt: time.Now()}
+	}
+	a.runtime.prRefreshError = ""
+	a.runtimeMu.Unlock()
+	return true, nil
 }
 
 func (a *App) releasableReservations(ctx context.Context, cfg config.Config, inventory model.OpenPrInventory) ([]string, error) {
@@ -297,8 +404,8 @@ func (a *App) releasableReservations(ctx context.Context, cfg config.Config, inv
 			continue
 		}
 		settled := (detail.State == "closed" || detail.State == "merged") &&
-			sameRepository(detail.HeadRepository, cfg.GitHubRepo) &&
-			sameRepository(detail.BaseRepository, cfg.GitHubRepo) && detail.Branch == reservation.Branch
+			config.EqualASCII(detail.HeadRepository, cfg.GitHubRepo) &&
+			config.EqualASCII(detail.BaseRepository, cfg.GitHubRepo) && detail.Branch == reservation.Branch
 		if !settled {
 			continue
 		}
@@ -312,8 +419,4 @@ func (a *App) releasableReservations(ctx context.Context, cfg config.Config, inv
 		}
 	}
 	return released, nil
-}
-
-func sameRepository(a, b string) bool {
-	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }

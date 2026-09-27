@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -36,5 +37,51 @@ func TestRouteJSONRequiresExactFields(t *testing.T) {
 		if err := json.Unmarshal([]byte(raw), &route); err == nil {
 			t.Fatalf("accepted %s", raw)
 		}
+	}
+}
+
+func TestBackendRoundTripsItsWireNames(t *testing.T) {
+	for i, name := range []string{"codex", "opencode"} {
+		backend := Backend(i)
+		data, err := json.Marshal(backend)
+		if err != nil || string(data) != `"`+name+`"` || backend.String() != name {
+			t.Fatalf("Backend(%d) = %s, %q, %v; want %q", i, data, backend.String(), err, name)
+		}
+		var decoded Backend
+		if err := json.Unmarshal(data, &decoded); err != nil || decoded != backend {
+			t.Fatalf("json.Unmarshal(%s) = %d, %v", data, decoded, err)
+		}
+	}
+	if data, err := json.Marshal(Backend(2)); err == nil {
+		t.Fatalf("json.Marshal(Backend(2)) = %s; want an error", data)
+	}
+	decoded := BackendOpencode
+	err := json.Unmarshal([]byte(`"claude"`), &decoded)
+	if err == nil || decoded != BackendOpencode || !strings.Contains(err.Error(), "expected one of: codex, opencode") {
+		t.Fatalf("unknown backend = %d, %v; want a listed-values error and no change", decoded, err)
+	}
+}
+
+// Absent fields take the defaults, never a reused variable's previous values.
+func TestDecodingIntoAReusedConfigRestoresDefaults(t *testing.T) {
+	provider, variant := "stale-provider", "stale-variant"
+	route := Route{Backend: BackendOpencode, Model: "stale", Provider: &provider, Variant: &variant}
+	if err := json.Unmarshal([]byte(`{"model":"fresh"}`), &route); err != nil {
+		t.Fatal(err)
+	}
+	if route != (Route{Backend: BackendCodex, Model: "fresh"}) {
+		t.Fatalf("reused route kept stale fields: %+v", route)
+	}
+	cfg := Default()
+	cfg.DiscoveryAgents = 10
+	cfg.BranchPrefix = "stale/"
+	cfg.VerificationCommands = []string{"stale"}
+	if err := json.Unmarshal([]byte(`{"github_repo":"fixture/project"}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	want := Default()
+	want.GitHubRepo = "fixture/project"
+	if !reflect.DeepEqual(cfg, want) {
+		t.Fatalf("reused config = %+v; want defaults", cfg)
 	}
 }

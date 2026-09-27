@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -115,8 +114,7 @@ func (f *scriptedFixture) pausedApp(t *testing.T, options ...Option) *App {
 	t.Helper()
 	app := New(f.state, f.dataDir, append([]Option{WithRunnerConnector(f.script.Connector())}, options...)...)
 	t.Cleanup(app.Shutdown)
-	app.runtime.lastRetention = time.Now()
-	app.runtime.lastObserve = time.Now()
+	deferHousekeeping(app)
 	return app
 }
 
@@ -301,7 +299,7 @@ func TestScriptedCatalogRejectsMissingRoute(t *testing.T) {
 		t.Fatalf("missing reviewer route outcome = %+v", saved)
 	}
 	if saved.Error == nil || !strings.Contains(*saved.Error, routes.Reviewer.String()) {
-		t.Fatalf("the block must name the missing route: %v", saved.Error)
+		t.Fatalf("the block must name the missing route: %s", optionalText(saved.Error))
 	}
 	if saved.Workspace != "" || saved.ExecutionSession != nil || len(saved.Sessions) != 0 {
 		t.Fatalf("a rejected route initialized the task: %+v", saved)

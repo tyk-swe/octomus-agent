@@ -4,18 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// controlFixture names every route so
-// the configuration counts as ready, with runtime scenarios that
-// manipulates directly.
+// controlFixture builds an app whose saved configuration names every route,
+// so it counts as ready, and applies scenario: "continuous" saves continuous
+// mode, while "task", "execution" and "audit" install that runtime work
+// directly, with no worker behind it.
 func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
 	t.Helper()
 	state := testStore(t)
@@ -69,44 +73,33 @@ func TestAuditControlsConflictWhileAuditRuns(t *testing.T) {
 
 func TestResumePreservesAuditAndBaselineConflicts(t *testing.T) {
 	for _, active := range []string{"audit", "audit preflight", "baseline"} {
-		for _, action := range []string{"direct", "control action"} {
-			t.Run(active+"/"+action, func(t *testing.T) {
-				app, control := controlFixture(t, "idle")
-				control.NextCycleAt = 1234567890
-				message := "earlier planning failure"
-				control.Error = &message
-				if err := app.Store.SaveControl(control); err != nil {
-					t.Fatal(err)
-				}
-				app.runtimeMu.Lock()
-				switch active {
-				case "audit":
-					app.runtime.cycle = &cycleJob{id: "audit", mode: model.CycleModeAudit, cancel: func() {}}
-				case "audit preflight":
-					app.runtime.preflight = true
-					app.runtime.preflightMode = model.CycleModeAudit
-				case "baseline":
-					app.runtime.baseline = &baselineJob{id: "baseline", cancel: func() {}}
-				}
-				app.runtimeMu.Unlock()
-				var err error
-				if action == "direct" {
-					err = app.Resume()
-				} else {
-					_, err = app.ControlAction("resume")
-					if err != nil && !IsActionConflict(err) {
-						t.Fatalf("control action should report a conflict: %v", err)
-					}
-				}
-				if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.Split(active, " ")[0]) {
-					t.Fatalf("resume during %s: %v", active, err)
-				}
-				saved, loadErr := app.Control()
-				if loadErr != nil || saved.Mode != model.OperatingModePaused || saved.NextCycleAt != control.NextCycleAt || saved.Error == nil || *saved.Error != message {
-					t.Fatalf("rejected resume changed control: %+v, %v", saved, loadErr)
-				}
-			})
-		}
+		t.Run(active, func(t *testing.T) {
+			app, control := controlFixture(t, "idle")
+			control.NextCycleAt = 1234567890
+			message := "earlier planning failure"
+			control.Error = &message
+			if err := app.Store.SaveControl(control); err != nil {
+				t.Fatal(err)
+			}
+			app.runtimeMu.Lock()
+			switch active {
+			case "audit":
+				app.runtime.cycle = &cycleJob{id: "audit", mode: model.CycleModeAudit, cancel: func() {}}
+			case "audit preflight":
+				app.runtime.startPreflight(model.CycleModeAudit)
+			case "baseline":
+				app.runtime.baseline = &baselineJob{id: "baseline", cancel: func() {}}
+			}
+			app.runtimeMu.Unlock()
+			_, err := app.ControlAction("resume")
+			if err == nil || !IsActionConflict(err) || !strings.Contains(strings.ToLower(err.Error()), strings.Split(active, " ")[0]) {
+				t.Fatalf("resume during %s = %v; want a conflict naming it", active, err)
+			}
+			saved, loadErr := app.Control()
+			if loadErr != nil || saved.Mode != model.OperatingModePaused || saved.NextCycleAt != control.NextCycleAt || saved.Error == nil || *saved.Error != message {
+				t.Fatalf("rejected resume changed control: %+v, %v", saved, loadErr)
+			}
+		})
 	}
 }
 
@@ -149,6 +142,110 @@ func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(
 				}
 			})
 		}
+	}
+}
+
+// ControlAction checks paused, idle operation under the gate, then releases
+// it before StartAudit admits the audit. A launch or mode change landing in
+// that window is refused there as ErrBusy or ErrNotPaused, and those refusals
+// are the same conflict the gate-held check reports, not a bad request. Run
+// once never releases the gate, so its refusal of the same states is that
+// gate-held conflict.
+func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
+	for _, test := range []struct {
+		scenario string
+		want     error
+	}{
+		{"audit preflight", ErrBusy},
+		{"task", ErrBusy},
+		{"continuous", ErrNotPaused},
+	} {
+		t.Run(test.scenario, func(t *testing.T) {
+			app, control := controlFixture(t, test.scenario)
+			if test.scenario == "audit preflight" {
+				app.runtimeMu.Lock()
+				app.runtime.startPreflight(model.CycleModeAudit)
+				app.runtimeMu.Unlock()
+			}
+			if _, err := app.StartAudit(context.Background()); !errors.Is(err, test.want) || !IsActionConflict(err) {
+				t.Fatalf("StartAudit = %v; want the %q conflict", err, test.want)
+			}
+			if _, err := app.ControlAction("cycle"); err == nil || !IsActionConflict(err) || !strings.HasPrefix(err.Error(), "Run once requires paused operation with no active work") {
+				t.Fatalf("run once = %v; want the paused, idle conflict", err)
+			}
+			if saved, err := app.Control(); err != nil || saved.Mode != control.Mode || saved.Batch != nil {
+				t.Fatalf("refused launch changed control: %+v, %v", saved, err)
+			}
+		})
+	}
+}
+
+// An operator request that panics while it holds the gate is recovered per
+// request by net/http, so the process lives on: the request must still
+// release the gate, or every later tick, control and task action, and
+// Shutdown, blocks forever. A missing store panics on the request's first
+// durable read, under the gate.
+func TestOperatorPanicUnderTheGateReleasesIt(t *testing.T) {
+	for name, request := range map[string]func(*App){
+		"control action": func(app *App) { _, _ = app.ControlAction("pause") },
+		"task action":    func(app *App) { _ = app.TaskAction(context.Background(), "task", "archive") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := New(nil, t.TempDir())
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Fatal("the request did not panic")
+					}
+				}()
+				request(app)
+			}()
+			stopped := make(chan struct{})
+			go func() {
+				app.Shutdown()
+				close(stopped)
+			}()
+			select {
+			case <-stopped:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the gate stayed locked after the request panicked")
+			}
+		})
+	}
+}
+
+// TestAuditControlRecordsOneOperatorEvent: one operator click that starts an
+// audit is recorded once, on the cycle it started, and the response is the
+// still-paused control record.
+func TestAuditControlRecordsOneOperatorEvent(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	app := fixture.pausedApp(t)
+	body, err := app.ControlAction("audit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["mode"] != "paused" {
+		t.Fatalf("audit response mode = %v", body["mode"])
+	}
+	cycles, err := store.List[model.Cycle](fixture.state, "cycle")
+	if err != nil || len(cycles) != 1 || cycles[0].Mode != model.CycleModeAudit {
+		t.Fatalf("audit cycles = %+v, %v", cycles, err)
+	}
+	// No planning replies are scripted, so the audit ends at its first role;
+	// only the launch is under test.
+	waitCycle(t, fixture.state, cycles[0].ID)
+	events, err := fixture.state.Events(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator := []model.Event{}
+	for _, event := range events {
+		if event.Kind == "operator" {
+			operator = append(operator, event)
+		}
+	}
+	if len(operator) != 1 || operator[0].EntityID != cycles[0].ID || operator[0].Message != "Audit started" {
+		t.Fatalf("operator events = %+v; want one \"Audit started\" on cycle %s", operator, cycles[0].ID)
 	}
 }
 
@@ -270,10 +367,13 @@ func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
 	}
 }
 
-// stringPointer is shared with baseline_test.go's fixtures.
+// TestStateViewReportsBaselineSummaryWithoutCommands: the state view
+// summarizes the latest baseline check, with the configuration revision it
+// ran under and whether that still matches the saved configuration, but never
+// its command evidence, and a finished check is not reported as active.
 func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
 	app, cfg := baselineApp(t)
-	fingerprint, err := BaselineFingerprint(cfg)
+	fingerprint, err := cfg.Fingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,8 +481,7 @@ func TestStateViewRetainsRuntimeAuditActivity(t *testing.T) {
 			app, _ := controlFixture(t, "idle")
 			app.runtimeMu.Lock()
 			if check.preflight {
-				app.runtime.preflight = true
-				app.runtime.preflightMode = model.CycleModeAudit
+				app.runtime.startPreflight(model.CycleModeAudit)
 			} else {
 				app.runtime.cycle = &cycleJob{id: "audit", mode: model.CycleModeAudit}
 			}
@@ -399,15 +498,75 @@ func TestStateViewRetainsRuntimeAuditActivity(t *testing.T) {
 	}
 }
 
+// TestStateViewStatusPrecedence pins the dashboard status order: an audit
+// wins, then paused, then a recorded error, then active work, then idle.
+func TestStateViewStatusPrecedence(t *testing.T) {
+	for _, check := range []struct {
+		name       string
+		continuous bool
+		err        bool
+		// runtime is the in-memory work: "task", "audit preflight" or "".
+		runtime      string
+		storedCycle  bool
+		wantStatus   string
+		wantActive   int
+		wantCycleRun bool
+	}{
+		{name: "paused with error and a running task", err: true, runtime: "task", wantStatus: "paused", wantActive: 1},
+		{name: "paused audit preflight", runtime: "audit preflight", wantStatus: "auditing"},
+		{name: "continuous with error and a running task", continuous: true, err: true, runtime: "task", wantStatus: "unhealthy", wantActive: 1},
+		{name: "continuous with a running task", continuous: true, runtime: "task", wantStatus: "running", wantActive: 1},
+		{name: "continuous with a stored running cycle", continuous: true, storedCycle: true, wantStatus: "running", wantCycleRun: true},
+		{name: "continuous and idle", continuous: true, wantStatus: "idle"},
+		{name: "paused and idle", wantStatus: "paused"},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			app, control := controlFixture(t, "idle")
+			if check.continuous {
+				control.SetMode(model.OperatingModeContinuous)
+			}
+			if check.err {
+				control.Error = stringPointer("recorded planning failure")
+			}
+			if err := app.Store.SaveControl(control); err != nil {
+				t.Fatal(err)
+			}
+			app.runtimeMu.Lock()
+			switch check.runtime {
+			case "task":
+				app.runtime.tasks["synthetic-task"] = taskJob{branch: "octomus/x", cancel: func() {}}
+			case "audit preflight":
+				app.runtime.startPreflight(model.CycleModeAudit)
+			}
+			app.runtimeMu.Unlock()
+			if check.storedCycle {
+				// A committed cycle is durable before its runtime slot exists.
+				cycle := model.Cycle{
+					Mode: model.CycleModeExecution, ID: "committed-cycle", Number: 1,
+					Status: model.CycleRunning, StartedAt: model.Now(),
+					Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
+				}
+				if err := app.Store.Put("cycle", cycle.ID, cycle); err != nil {
+					t.Fatal(err)
+				}
+			}
+			view, err := app.StateView()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view["status"] != check.wantStatus || view["active_tasks"] != check.wantActive || view["cycle_active"] != check.wantCycleRun {
+				t.Fatalf("status = %v, active_tasks = %v, cycle_active = %v; want %s, %d, %v",
+					view["status"], view["active_tasks"], view["cycle_active"], check.wantStatus, check.wantActive, check.wantCycleRun)
+			}
+		})
+	}
+}
+
 // Recovery and the worker guard both end interrupted episodes as blocked,
 // which the enabled outbox captures once per episode.
 func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
 	dir := t.TempDir()
-	state, err := store.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = state.Close() })
+	state := openStore(t, dir)
 	app := New(state, dir)
 	cfg := testConfig(t.TempDir())
 	if err := state.Put("settings", "config", cfg); err != nil {
@@ -462,5 +621,93 @@ func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
 	}
 	if pending() != 2 {
 		t.Fatal("recovery re-captured already-terminal episodes")
+	}
+}
+
+// mismatchAdapter reports its backend's diagnostics with a version-mismatch
+// warning, standing in for a runner whose installed version differs from the
+// tested baseline.
+type mismatchAdapter struct {
+	runner.Adapter
+	warning string
+}
+
+func (m mismatchAdapter) Diagnose(cwd string) (runner.Diagnostics, error) {
+	diagnostics, err := m.Adapter.Diagnose(cwd)
+	diagnostics.Warning = &m.warning
+	return diagnostics, err
+}
+
+// catalogFailingAdapter is a mismatched runner whose model catalog request
+// fails, as an incompatible protocol version can make it.
+type catalogFailingAdapter struct {
+	mismatchAdapter
+}
+
+func (catalogFailingAdapter) Models(string) ([]runner.Model, error) {
+	return nil, errors.New("model/list: unexpected response shape")
+}
+
+// The doctor lists each backend's diagnostics in the one wire shape the
+// dashboard and CLI read, names the observed Codex version, and returns
+// version-mismatch warnings as data, also when a route check or the catalog
+// request fails, for the command-line doctor to print.
+func TestDoctorReportsBackendDiagnosticsAndWarnings(t *testing.T) {
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	app := fixture.pausedApp(t)
+	result, warnings, err := app.DoctorFor(fixture.cfg, model.CycleModeExecution)
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("doctor = %v, warnings %q", err, warnings)
+	}
+	backends, err := wirejson.Marshal(result["backends"])
+	if want := `[{"backend":"codex","protocol_version":"scripted","version":"scripted","warning":null}]`; err != nil || string(backends) != want {
+		t.Fatalf("backends = %s, %v; want %s", backends, err, want)
+	}
+	if result["codex_version"] != "scripted" || result["tested_codex_version"] != runner.CodexTestedVersion {
+		t.Fatalf("codex versions = %v, %v", result["codex_version"], result["tested_codex_version"])
+	}
+	if message := result["message"]; message != "Repository, GitHub authentication, and all model routes are available." {
+		t.Fatalf("message = %v", message)
+	}
+
+	warning := runner.VersionWarning(config.BackendCodex, "scripted", "tested with a fixture")
+	connect := fixture.script.Connector()
+	mismatched := func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (runner.Adapter, error) {
+		client, err := connect(ctx, backend, cfg, cwd)
+		if err != nil {
+			return nil, err
+		}
+		return mismatchAdapter{Adapter: client, warning: warning}, nil
+	}
+	app = fixture.pausedApp(t, WithRunnerConnector(mismatched))
+	result, warnings, err = app.DoctorFor(fixture.cfg, model.CycleModeAudit)
+	if err != nil || len(warnings) != 1 || warnings[0] != warning {
+		t.Fatalf("doctor = %v, warnings %q; want %q", err, warnings, warning)
+	}
+	backends, err = wirejson.Marshal(result["backends"])
+	quoted, _ := json.Marshal(warning)
+	if want := `[{"backend":"codex","protocol_version":"scripted","version":"scripted","warning":` + string(quoted) + `}]`; err != nil || string(backends) != want {
+		t.Fatalf("backends = %s, %v; want %s", backends, err, want)
+	}
+	if message := result["message"]; message != "Repository, GitHub authentication, and planning model routes are available. Warning: "+warning {
+		t.Fatalf("message = %v", message)
+	}
+	fixture.script.SetCatalog()
+	result, warnings, err = app.DoctorFor(fixture.cfg, model.CycleModeAudit)
+	if err == nil || result != nil || len(warnings) != 1 || warnings[0] != warning {
+		t.Fatalf("failing doctor = %v, %v, warnings %q; want the warning with the failure", result, err, warnings)
+	}
+
+	catalogFailing := func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (runner.Adapter, error) {
+		client, err := connect(ctx, backend, cfg, cwd)
+		if err != nil {
+			return nil, err
+		}
+		return catalogFailingAdapter{mismatchAdapter{Adapter: client, warning: warning}}, nil
+	}
+	app = fixture.pausedApp(t, WithRunnerConnector(catalogFailing))
+	result, warnings, err = app.DoctorFor(fixture.cfg, model.CycleModeAudit)
+	if err == nil || err.Error() != "Codex: model/list: unexpected response shape" || result != nil || len(warnings) != 1 || warnings[0] != warning {
+		t.Fatalf("doctor with a failing catalog = %v, %v, warnings %q; want the warning with the failure", result, err, warnings)
 	}
 }

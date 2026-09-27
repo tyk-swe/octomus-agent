@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick, untrack } from 'svelte';
   import { api, relative } from './api';
   import { baselineStatusLabel, type Tone } from './evidence';
   import type { BaselineCheck, BaselineView } from './types';
@@ -14,7 +15,7 @@
     active: boolean;
     editable: boolean;
     /** Canonical revision of the saved configuration; the check always runs that exact state. */
-    savedRevision: string | null;
+    savedRevision: string;
     dirty: boolean;
     onchanged: () => void;
   } = $props();
@@ -22,12 +23,12 @@
     error = $state(''),
     pending = $state(''),
     confirming = $state(false);
-  let generation = 0,
-    lastSaved = '';
+  let generation = 0;
+  /** The revision already read on mount; only a later saved revision forces a new read. */
+  let lastSaved = untrack(() => savedRevision);
   let request: AbortController | null = null;
   const check = $derived(view?.check ?? null);
   const running = $derived(check?.status === 'running');
-  const savedKey = $derived(savedRevision ?? '');
   const configMatches = $derived(
     view?.config_matches === false ||
       (check && savedRevision && check.config_fingerprint !== savedRevision)
@@ -79,10 +80,10 @@
     };
   });
   $effect(() => {
-    if (savedKey === lastSaved) return;
-    lastSaved = savedKey;
+    if (savedRevision === lastSaved) return;
+    lastSaved = savedRevision;
     confirming = false;
-    generation += 1;
+    // The forced load supersedes any read still in flight for the previous revision.
     if (active) void load(true);
   });
   $effect(() => {
@@ -92,6 +93,21 @@
     )
       confirming = false;
   });
+  /**
+   * The confirmation replaces the button that opened it, so focus moves into the dialog and
+   * back to that button on Back. An automatic close (an edit, a new revision) never moves
+   * focus: the operator is working elsewhere.
+   */
+  async function openConfirm() {
+    confirming = true;
+    await tick();
+    document.getElementById('run-baseline-check')?.focus();
+  }
+  async function closeConfirm() {
+    confirming = false;
+    await tick();
+    document.getElementById('check-baseline')?.focus();
+  }
   async function start() {
     if (!savedRevision || !editable || dirty || pending || view?.eligible !== true) return;
     confirming = false;
@@ -113,7 +129,7 @@
     pending = 'cancel';
     error = '';
     try {
-      await api(`/baseline-checks/${id}/cancel`, 'POST');
+      await api(`/baseline-checks/${encodeURIComponent(id)}/cancel`, 'POST');
       await load(true);
       onchanged();
     } catch (e) {
@@ -138,7 +154,7 @@
   </div>
   {#if error}<div class="notice error" role="alert">{error}</div>{/if}
   {#if check}
-    <dl class="baseline-facts">
+    <dl class="facts">
       <div>
         <dt>Status</dt>
         <dd>
@@ -215,24 +231,38 @@
         {/each}
       </ul>
     {/if}
-  {:else}
+  {:else if view}
     <p class="muted">No baseline check has been run.</p>
+  {:else if error}
+    <p class="muted">Baseline status unavailable.</p>
+  {:else}
+    <p class="muted">Loading baseline status…</p>
   {/if}
   {#if view && !view.eligible && !running && view.reason}<p class="muted">{view.reason}</p>{/if}
+  {#if dirty && !running}<p class="muted">
+      Save or discard edits before checking the baseline.
+    </p>{/if}
   {#if confirming}
-    <div class="notice" role="alertdialog" aria-label="Confirm baseline check">
-      <p>
+    <div
+      class="notice"
+      role="alertdialog"
+      aria-label="Confirm baseline check"
+      aria-describedby="baseline-confirm-text"
+    >
+      <p id="baseline-confirm-text">
         Run the saved verification commands on a disposable clone of the remote default branch?
         Commands run with the service user's permissions and may have external effects. No model
         calls or tasks will be created.
       </p>
       <div class="actions">
-        <button class="button primary" onclick={start} disabled={pending !== ''}
+        <button
+          id="run-baseline-check"
+          class="button primary"
+          onclick={start}
+          disabled={pending !== ''}
           >{pending === 'start' ? 'Starting…' : 'Run baseline check'}</button
         >
-        <button class="button" onclick={() => (confirming = false)} disabled={pending !== ''}
-          >Back</button
-        >
+        <button class="button" onclick={closeConfirm} disabled={pending !== ''}>Back</button>
       </div>
     </div>
   {:else}
@@ -240,7 +270,7 @@
       <button
         id="check-baseline"
         class="button"
-        onclick={() => (confirming = true)}
+        onclick={openConfirm}
         disabled={!savedRevision || !editable || dirty || pending !== '' || view?.eligible !== true}
         ><Icon name="shield" size={16} />Check clean baseline</button
       >
@@ -252,22 +282,6 @@
 </section>
 
 <style>
-  .baseline-facts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 10px 18px;
-    margin: 0 24px;
-  }
-  .baseline-facts dt {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-  }
-  .baseline-facts dd {
-    margin: 2px 0 0;
-    font-size: 13px;
-  }
   .baseline-commands {
     list-style: none;
     margin: 12px 24px 0;

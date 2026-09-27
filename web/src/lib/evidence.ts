@@ -7,12 +7,14 @@
  * evidence panel and the task detail summary cannot describe the same record
  * differently.
  */
+import type { IconName } from './Icon.svelte';
 import { ACTIVE_STATUSES } from './types';
 import type {
   BaselineStatus,
   CommandEvidence,
   CommandResult,
   CommandState,
+  CycleMode,
   ReviewRoundEvidence,
   ReviewerVerdict,
   RunEvidenceV1,
@@ -23,12 +25,17 @@ import type {
 /**
  * Badge tones every surface must style. `cancelled` reads as "nothing
  * recorded", not "fine", so a surface that leaves it unstyled hides exactly
- * the adverse evidence this mapping exists to show. app.css is checked
- * against this list.
+ * the adverse evidence this mapping exists to show. tests/evidence.spec.ts
+ * checks the dashboard stylesheet (src/app.css and its imports) against this list.
  */
 export const TONES = ['clean', 'blocked', 'failed', 'running', 'cancelled'] as const;
 export type Tone = (typeof TONES)[number] | '';
 export type Verdict = { label: string; tone: Tone; detail: string };
+
+/** A count with its noun, e.g. `1 finding`, `2 findings`; irregular plurals are passed in. */
+export function plural(count: number, noun: string, pluralNoun = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : pluralNoun}`;
+}
 
 /**
  * Reviewer slots are positional and fixed in `internal/evidence`; these labels explain the
@@ -41,12 +48,12 @@ const REVIEWER_ROLES: Record<string, string> = {
 export function reviewerLabel(reviewer: string): string {
   return REVIEWER_ROLES[reviewer] ?? reviewer;
 }
+const REVIEWER_SLOTS: Record<string, string> = {
+  'adversary-a': 'Reviewer A',
+  'adversary-b': 'Reviewer B'
+};
 export function reviewerSlot(reviewer: string): string {
-  return reviewer === 'adversary-a'
-    ? 'Reviewer A'
-    : reviewer === 'adversary-b'
-      ? 'Reviewer B'
-      : reviewer;
+  return REVIEWER_SLOTS[reviewer] ?? reviewer;
 }
 
 /** Decision words keep their own badge tone; `deferred` must never read as `rejected`. */
@@ -147,14 +154,13 @@ export function reviewerAgreement(verdicts: ReviewerVerdict[]): Verdict {
  * Badge for one saved review round in the task's own review history.
  *
  * Zero findings alone is not "Clean": an incomplete round or a blank summary is
- * reported as such, matching `ReviewRoundResult::clean` on the server.
+ * reported as such, matching `model.Review.Clean` (internal/model) on the server.
  */
 export function reviewRoundBadge(round: {
   result: { completed: boolean; summary: string; findings: unknown[] };
 }): { label: string; tone: Tone } {
   const findings = round.result.findings.length;
-  if (findings)
-    return { label: `${findings} finding${findings === 1 ? '' : 's'}`, tone: 'blocked' };
+  if (findings) return { label: plural(findings, 'finding'), tone: 'blocked' };
   if (!round.result.completed) return { label: 'Incomplete', tone: 'running' };
   if (!round.result.summary.trim()) return { label: 'No summary recorded', tone: 'blocked' };
   return { label: 'Clean', tone: 'clean' };
@@ -179,6 +185,14 @@ export function revisionMatchLabel(matches: boolean | null): { label: string; to
     : { label: 'Not the recorded output commit', tone: 'blocked' };
 }
 
+/** Published, failed, blocked and cancelled tasks keep their own tone; others read as running. */
+const OUTCOME_TONES: Record<string, Tone> = {
+  published: 'clean',
+  failed: 'failed',
+  blocked: 'blocked',
+  cancelled: 'cancelled'
+};
+
 /** The recorded outcome word for a task, with what the status does and does not imply. */
 export function outcomeVerdict(task: {
   status: string;
@@ -194,16 +208,7 @@ export function outcomeVerdict(task: {
       : 'The saved task status, verbatim.';
   return {
     label: task.status,
-    tone:
-      task.status === 'published'
-        ? 'clean'
-        : task.status === 'failed'
-          ? 'failed'
-          : task.status === 'blocked'
-            ? 'blocked'
-            : task.status === 'cancelled'
-              ? 'cancelled'
-              : 'running',
+    tone: OUTCOME_TONES[task.status] ?? 'running',
     detail: detail + blocked + (task.error_recorded ? ' An error is recorded.' : '')
   };
 }
@@ -223,7 +228,7 @@ export const UNKNOWN_VERDICT: Verdict = {
 export function reviewVerdict(evidence: TaskEvidence | null): Verdict {
   if (!evidence) return UNKNOWN_VERDICT;
   const review = evidence.latest_review;
-  const rounds = `${review.rounds_recorded} recorded round${review.rounds_recorded === 1 ? '' : 's'}`;
+  const rounds = plural(review.rounds_recorded, 'recorded round');
   if (review.rounds_recorded === 0 || !review.latest)
     return {
       label: 'No review recorded',
@@ -256,7 +261,7 @@ function latestRoundVerdict(latest: ReviewRoundEvidence): Verdict {
   const findings = latest.findings.length;
   if (findings)
     return {
-      label: `${findings} recorded finding${findings === 1 ? '' : 's'}`,
+      label: plural(findings, 'recorded finding'),
       tone: 'blocked',
       detail: 'The latest recorded review round reports findings.'
     };
@@ -355,9 +360,11 @@ export function shortCommit(value: string | null): string {
 
 /**
  * The planning-only outcome word for a cycle. `completed` means planning finished and
- * decisions are recorded; it never means the run's work is complete.
+ * decisions are recorded; it never means the run's work is complete. `idle` is the
+ * service's successful cycle that accepted nothing: no queued work, or no accepted
+ * audit recommendation.
  */
-export function planningVerdict(cycle: { status: string; mode: 'execution' | 'audit' }): Verdict {
+export function planningVerdict(cycle: { status: string; mode: CycleMode }): Verdict {
   const noun = cycle.mode === 'audit' ? 'Audit' : 'Planning';
   const outputs = cycle.mode === 'audit' ? 'recommendations' : 'decisions';
   switch (cycle.status) {
@@ -366,6 +373,15 @@ export function planningVerdict(cycle: { status: string; mode: 'execution' | 'au
         label: `${noun} complete`,
         tone: 'clean',
         detail: `Proposal ${outputs} are recorded. Planning completion is not task completion.`
+      };
+    case 'idle':
+      return {
+        label: `${noun} complete · nothing accepted`,
+        tone: 'clean',
+        detail:
+          cycle.mode === 'audit'
+            ? 'The audit finished and no recommendation was accepted.'
+            : 'Planning finished and accepted no work. An empty task set is a successful idle cycle; planning completion is not task completion.'
       };
     case 'running':
       return {
@@ -394,21 +410,31 @@ export function planningVerdict(cycle: { status: string; mode: 'execution' | 'au
   }
 }
 
-/** Decision counts in a fixed order, so accepted never trades places with deferred. */
+/**
+ * Decision counts in a fixed order, so accepted never trades places with deferred.
+ * Only decisions that occurred are listed: the cycle summary reports every decision
+ * with a 0 count, while run evidence names only the decisions it saw.
+ */
 export function decisionCounts(
   decisions: Record<string, number>
 ): { decision: string; count: number; tone: Tone }[] {
   const extra = Object.keys(decisions)
     .filter((key) => !DECISIONS.some((decision) => decision === key))
     .sort();
-  return [...DECISIONS.filter((key) => key in decisions), ...extra].map((decision) => ({
-    decision,
-    count: decisions[decision] ?? 0,
-    tone: decisionTone(decision)
-  }));
+  return [...DECISIONS.filter((key) => key in decisions), ...extra]
+    .map((decision) => ({
+      decision,
+      count: decisions[decision] ?? 0,
+      tone: decisionTone(decision)
+    }))
+    .filter((entry) => entry.count > 0);
 }
 
-const OUTCOME_GROUPS: { label: (count: number) => string; tone: Tone; statuses: string[] }[] = [
+const OUTCOME_GROUPS: {
+  label: (count: number) => string;
+  tone: Tone;
+  statuses: readonly string[];
+}[] = [
   {
     label: (n) => (n === 1 ? 'published task' : 'published tasks'),
     tone: 'clean',
@@ -432,6 +458,17 @@ export function taskOutcomeCounts(
     const count = tasks.filter((task) => group.statuses.includes(task.status)).length;
     return { label: group.label(count), count, tone: group.tone };
   }).filter((group) => group.count > 0);
+}
+
+const TASK_ICONS: Record<string, IconName> = {
+  published: 'check',
+  blocked: 'alert',
+  failed: 'alert',
+  queued: 'clock'
+};
+/** The icon a task row shows for its status: any active status shows activity. */
+export function taskIcon(status: string): IconName {
+  return TASK_ICONS[status] ?? (ACTIVE_STATUSES.includes(status) ? 'activity' : 'code');
 }
 
 /** Why a configured command's state is what it is, naming the revisions involved. */
