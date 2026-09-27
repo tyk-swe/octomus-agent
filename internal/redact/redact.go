@@ -40,8 +40,10 @@ var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-
 // "sk-": it may follow anything but an ASCII letter, or an escape sequence
 // that ends in a letter in encoded text (\n, \x0b or \u003e in JSON and string
 // literals, %3D in a URL, a terminal color code such as ESC[32m, or any other
-// terminal control sequence such as ESC[2K, raw or escaped).
-var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|(?:\x1b|\\(?:u001b|x1b|e|033))\[[0-9:;<=>?]*[A-Za-z]|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
+// terminal control sequence, raw or escaped: a CSI sequence such as ESC[2K or
+// ESC[2 q, or a two-character or intermediate-byte escape such as ESC c, ESC M
+// or the character-set selection ESC(B that tput sgr0 and rmacs print).
+var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|(?:\x1b|\\(?:u001b|x1b|e|033))(?:\[[0-9:;<=>?]*[\x20-\x2f]*[A-Za-z]|[\x20-\x2f]*[\x30-\x7e])|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
 
 var (
 	secretsOnce sync.Once
