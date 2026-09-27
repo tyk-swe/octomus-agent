@@ -26,11 +26,22 @@ func Initialized(task model.Task) bool {
 }
 
 // DirectorySize sums the sizes of non-symlink entries below path; a missing
-// tree measures as zero and entries that vanish mid-scan are skipped.
+// tree measures as zero and entries that vanish mid-scan are skipped. A
+// directory below path that denies listing or searching, such as one a test
+// left at mode 0o000, contributes only what could be read: measurement never
+// changes modes, because the tree may belong to a command that is still
+// running. Every other error, and any error reading path itself, fails the
+// measurement.
 func DirectorySize(path string) (uint64, error) {
+	return directorySize(path, true)
+}
+
+// directorySize measures path; top is false below the measured root, where a
+// permission failure marks an unmeasurable subtree rather than an error.
+func directorySize(path string, top bool) (uint64, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) || !top && errors.Is(err, fs.ErrPermission) {
 			return 0, nil
 		}
 		return 0, err
@@ -39,7 +50,9 @@ func DirectorySize(path string) (uint64, error) {
 	for _, e := range entries {
 		meta, err := os.Lstat(filepath.Join(path, e.Name()))
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+			// Lstat needs search permission on path, not on the entry: a
+			// permission failure here means path itself cannot be searched.
+			if errors.Is(err, fs.ErrNotExist) || !top && errors.Is(err, fs.ErrPermission) {
 				continue
 			}
 			return 0, err
@@ -49,7 +62,7 @@ func DirectorySize(path string) (uint64, error) {
 		}
 		var n uint64
 		if meta.IsDir() {
-			n, err = DirectorySize(filepath.Join(path, e.Name()))
+			n, err = directorySize(filepath.Join(path, e.Name()), false)
 			if err != nil {
 				return 0, err
 			}

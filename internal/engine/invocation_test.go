@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -112,6 +114,60 @@ func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 		if start.Resume != nil {
 			t.Fatalf("a fresh executor session was resumed: %+v", start)
 		}
+	}
+}
+
+// TestAdmissionMeasuresPastUnreadableWorkspaceDirectories: a directory that a
+// worker or verification command left without read or search permission inside
+// a retained workspace neither refuses every later turn's admission nor fails
+// every housekeeping storage pass; both measure the bytes they can read and
+// leave the directory's mode alone. Root ignores directory modes, so the test
+// needs an unprivileged user.
+func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	state := testStore(t)
+	data := t.TempDir()
+	app := New(state, data)
+	t.Cleanup(app.Shutdown)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	workspaceDir := filepath.Join(data, "tasks", "t1", "workspace")
+	locked := filepath.Join(workspaceDir, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readable := []byte("readable workspace bytes")
+	if err := os.WriteFile(filepath.Join(workspaceDir, "notes.txt"), readable, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "inner", "hidden.txt"), []byte("hidden"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	if err := app.admit("cycle-1", nil, "discovery", cfg.Roles["discovery"]); err != nil {
+		t.Fatalf("admission with an unreadable workspace directory = %v; want a reserved session", err)
+	}
+	if used, err := state.SessionsToday(); err != nil || used != 1 {
+		t.Fatalf("sessions today = %d, %v; want 1", used, err)
+	}
+	if err := app.measureStorage(cfg); err != nil {
+		t.Fatalf("storage measurement with an unreadable workspace directory = %v", err)
+	}
+	saved, err := store.Get[storageUsage](state, "settings", "storage")
+	if err != nil || saved == nil {
+		t.Fatalf("saved storage = %+v, %v", saved, err)
+	}
+	if saved.TaskBytes != uint64(len(readable)) || saved.ApplicationBytes < saved.TaskBytes {
+		t.Fatalf("saved storage = %+v; want %d readable task bytes", saved, len(readable))
+	}
+	if info, err := os.Lstat(locked); err != nil || info.Mode().Perm() != 0 {
+		t.Fatalf("measurement changed the locked directory: %v, %v; want mode 0", info, err)
 	}
 }
 
