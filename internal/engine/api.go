@@ -349,6 +349,11 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 			if err != nil {
 				return err
 			}
+			// A version mismatch often explains why the catalog request or a
+			// route check fails, so it is kept before either runs.
+			if diagnostic.Warning != nil && *diagnostic.Warning != "" {
+				warnings = append(warnings, *diagnostic.Warning)
+			}
 			catalog, err := client.Models(a.DataDir)
 			if err != nil {
 				return err
@@ -360,9 +365,6 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 				if err := runner.ValidateRoute(named.Route, catalog); err != nil {
 					errs = append(errs, named.Name+": "+err.Error())
 				}
-			}
-			if diagnostic.Warning != nil && *diagnostic.Warning != "" {
-				warnings = append(warnings, *diagnostic.Warning)
 			}
 			models = append(models, catalog...)
 			diagnostics = append(diagnostics, diagnostic)

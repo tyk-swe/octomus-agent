@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // TokenEnv names the operator access token variable. Its value is a secret:
@@ -40,8 +42,10 @@ var tokenPattern = regexp.MustCompile(`(?i)(bearer[` + tokenWhitespace + `]+)[A-
 // "sk-": it may follow anything but an ASCII letter, or an escape sequence
 // that ends in a letter in encoded text (\n, \x0b or \u003e in JSON and string
 // literals, %3D in a URL, a terminal color code such as ESC[32m, or any other
-// terminal control sequence such as ESC[2K, raw or escaped).
-var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|(?:\x1b|\\(?:u001b|x1b|e|033))\[[0-9:;<=>?]*[A-Za-z]|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
+// terminal control sequence, raw or escaped: a CSI sequence such as ESC[2K or
+// ESC[2 q, or a two-character or intermediate-byte escape such as ESC c, ESC M
+// or the character-set selection ESC(B that tput sgr0 and rmacs print).
+var keyPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z]|\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|(?:\x1b|\\(?:u001b|x1b|e|033))(?:\[[0-9:;<=>?]*[\x20-\x2f]*[A-Za-z]|[\x20-\x2f]*[\x30-\x7e])|\[[0-9;]*m)(sk-[A-Za-z0-9_-]{10,})`)
 
 var (
 	secretsOnce sync.Once
@@ -67,6 +71,50 @@ func environmentSecrets() []string {
 // length limit. Persisted results must be bounded by the caller so shortening
 // is always flagged.
 func Secrets(input string) string { return scrub(input, environmentSecrets()) }
+
+// TrimCutSecretEnd removes from the end of text the complete first words or
+// lines of a secret-bearing environment value. Text cut back to whitespace
+// because a read or capture limit fell inside such a value still ends with
+// them, and they no longer match the whole value, so scrubbing alone would
+// leave them visible. Only a part that ends where the value itself has
+// whitespace is removed.
+func TrimCutSecretEnd(text string) string { return trimCutSecretEnd(text, environmentSecrets()) }
+
+func trimCutSecretEnd(text string, values []string) string {
+	cut := 0
+	for _, value := range values {
+		for i, r := range value {
+			if i > cut && unicode.IsSpace(r) && strings.HasSuffix(text, value[:i]) {
+				cut = i
+			}
+		}
+	}
+	return text[:len(text)-cut]
+}
+
+// TrimCutSecretStart mirrors TrimCutSecretEnd for text whose start was cut and
+// then advanced past whitespace, such as a kept tail that drops its partial
+// first line: it removes from the start of text the complete last words or
+// lines of a secret-bearing environment value, a part that begins where the
+// value itself has whitespace.
+func TrimCutSecretStart(text string) string {
+	return trimCutSecretStart(text, environmentSecrets())
+}
+
+func trimCutSecretStart(text string, values []string) string {
+	cut := 0
+	for _, value := range values {
+		for i, r := range value {
+			if !unicode.IsSpace(r) {
+				continue
+			}
+			if rest := value[i+utf8.RuneLen(r):]; len(rest) > cut && strings.HasPrefix(text, rest) {
+				cut = len(rest)
+			}
+		}
+	}
+	return text[cut:]
+}
 
 // scrub replaces every token match and every occurrence of each secret value
 // in input with "[redacted]". All spans are found in the original text and

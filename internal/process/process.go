@@ -19,6 +19,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/redact"
@@ -103,14 +104,33 @@ type Captured struct {
 	Truncated bool
 }
 
-// Preview renders kept bytes as lossy UTF-8 (invalid sequences become U+FFFD)
-// and flags truncation explicitly.
-func (c Captured) Preview() string {
+// Text renders kept bytes as lossy UTF-8 (invalid sequences become U+FFFD).
+// A truncated capture stops wherever the limit fell, possibly inside a secret
+// that redaction can then no longer recognise, so its partial last line is
+// dropped: the text is cut back to its last newline, or to its last
+// whitespace when the kept bytes hold no newline, or to nothing. The first
+// words or lines of a multi-word or multi-line environment secret the limit
+// cut are dropped with it (redact.TrimCutSecretEnd).
+func (c Captured) Text() string {
 	text := strings.ToValidUTF8(string(c.Bytes), "\uFFFD")
-	if c.Truncated {
-		return text + "\n[diagnostic output truncated]"
+	if !c.Truncated {
+		return text
 	}
-	return text
+	if i := strings.LastIndexByte(text, '\n'); i >= 0 {
+		return redact.TrimCutSecretEnd(text[:i])
+	}
+	if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
+		return redact.TrimCutSecretEnd(text[:i])
+	}
+	return ""
+}
+
+// Preview renders Text and flags truncation explicitly.
+func (c Captured) Preview() string {
+	if c.Truncated {
+		return c.Text() + "\n[diagnostic output truncated]"
+	}
+	return c.Text()
 }
 
 // Status is the end state of a direct child: an exit code when the leader
@@ -410,8 +430,9 @@ func ensureSuccess(binary string, output *ProcessOutput) error {
 // whole, as `<stdout>\n<stderr>`. Longer output keeps both ends of each stream
 // around an explicit omission marker, in `<stdout>\n[stderr]\n<stderr>` form
 // (no section when stderr is empty); stderr may always use up to stderrShare
-// of the bound however long stdout is. Secrets are scrubbed from complete text
-// before anything is cut here, so a cut never exposes part of a secret.
+// of the bound however long stdout is. Preview drops the partial line a
+// capture limit cut, and secrets are scrubbed from the remaining text before
+// anything is cut here, so no cut exposes part of a secret.
 func failureText(binary string, output *ProcessOutput) string {
 	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
 	budget := failureTextLimit - utf8.RuneCountInString(prefix)

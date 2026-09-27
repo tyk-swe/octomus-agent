@@ -95,7 +95,7 @@ func TestRemoveOwnedDir(t *testing.T) {
 
 // TestRemoveOwnedDirRemovesReadOnlyTrees pins that toolchain output such as a
 // Go module cache inside a workspace — directories without write, read or
-// search permission — never makes housekeeping fail on every pass. Root ignores
+// search permission — never prevents that workspace's removal. Root ignores
 // those modes, so the test needs an unprivileged user.
 func TestRemoveOwnedDirRemovesReadOnlyTrees(t *testing.T) {
 	if os.Geteuid() == 0 {
@@ -201,6 +201,67 @@ func TestDirectorySize(t *testing.T) {
 	}
 	if size, err := workspace.DirectorySize(filepath.Join(root, "missing")); err != nil || size != 0 {
 		t.Fatalf("missing tree = %d, %v; want zero", size, err)
+	}
+}
+
+// TestDirectorySizeSkipsUnreadableSubtrees pins that a directory below the
+// measured root which denies listing (0o000) or searching (0o644) is measured
+// as what could be read instead of failing every storage admission, and that
+// measurement leaves those modes alone. The measured root itself still fails
+// closed. Root ignores directory modes, so the test needs an unprivileged user.
+func TestDirectorySizeSkipsUnreadableSubtrees(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	root := t.TempDir()
+	workspaceDir := filepath.Join(root, "tasks", "t1", "workspace")
+	write := func(rel, content string) {
+		t.Helper()
+		path := filepath.Join(workspaceDir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("readable.txt", "1234567")
+	write("locked/inner/f.txt", "hidden")
+	write("nosearch/f.txt", "hidden too")
+	locked := []struct {
+		path string
+		mode fs.FileMode
+	}{
+		{filepath.Join(workspaceDir, "locked"), 0o000},
+		{filepath.Join(workspaceDir, "nosearch"), 0o644},
+	}
+	for _, dir := range locked {
+		if err := os.Chmod(dir.path, dir.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, dir := range locked {
+			_ = os.Chmod(dir.path, 0o755)
+		}
+	})
+	size, err := workspace.DirectorySize(root)
+	if err != nil {
+		t.Fatalf("DirectorySize with unreadable subtrees = %v; want the readable bytes", err)
+	}
+	if size != 7 {
+		t.Fatalf("size = %d; want 7 (the readable file only)", size)
+	}
+	for _, dir := range locked {
+		info, err := os.Lstat(dir.path)
+		if err != nil || info.Mode().Perm() != dir.mode {
+			t.Fatalf("measurement changed %s: %v, %v; want mode %v", dir.path, info, err, dir.mode)
+		}
+	}
+	for _, dir := range locked {
+		if _, err := workspace.DirectorySize(dir.path); !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("unreadable measured root %s = %v; want a permission error", dir.path, err)
+		}
 	}
 }
 

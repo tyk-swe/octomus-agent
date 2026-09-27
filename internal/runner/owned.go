@@ -60,12 +60,14 @@ func (t *stderrTail) explain(err error) error {
 		// The cut can split a secret, or part a bearer token from its
 		// prefix, so that redaction no longer recognises what is left.
 		// Report only whole lines, or for one long line the words after its
-		// partial first word and the word after that.
+		// partial first word and the word after that, and never the last
+		// words or lines of an environment secret the cut began inside.
 		if _, rest, found := strings.Cut(text, "\n"); found {
 			text = rest
 		} else {
 			text = afterWord(strings.TrimLeftFunc(afterWord(text), unicode.IsSpace))
 		}
+		text = redact.TrimCutSecretStart(strings.TrimLeftFunc(text, unicode.IsSpace))
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {

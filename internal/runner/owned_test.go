@@ -14,6 +14,26 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 )
 
+// cutPhraseEnv and cutLinesEnv name a multi-word passphrase and a multi-line
+// key in the environment, which redaction scrubs only as whole values. The
+// redactor reads the environment once per process, so TestMain exports them
+// before any test.
+const (
+	cutPhraseEnv = "RUNNER_TEST_PASSWORD"
+	cutPhrase    = "correct horse battery staple"
+	cutLinesEnv  = "RUNNER_TEST_SECRET"
+	cutLines     = "first-line-of-key\nsecond-line-of-key\nthird-line"
+)
+
+func TestMain(m *testing.M) {
+	for name, value := range map[string]string{cutPhraseEnv: cutPhrase, cutLinesEnv: cutLines} {
+		if err := os.Setenv(name, value); err != nil {
+			panic(err)
+		}
+	}
+	os.Exit(m.Run())
+}
+
 // startOwned starts an owned command and delivers its wait result.
 func startOwned(t *testing.T, args ...string) (*process.GroupChild, chan error) {
 	t.Helper()
@@ -204,6 +224,32 @@ func TestStderrTailExplainsConnectFailures(t *testing.T) {
 		err = tail.explain(cause)
 		if strings.Contains(err.Error(), "Secret") || !strings.HasSuffix(err.Error(), "; stderr: "+strings.TrimSpace(strings.Repeat("word ", (stderrTailLimit-2)/5-1))) {
 			t.Fatalf("long line: %q", err)
+		}
+	}
+
+	// The last lines or words of an environment secret the cut began inside
+	// no longer match the whole value; they are dropped with its partial
+	// first line or word.
+	for _, secret := range []struct {
+		name, text string
+		start      int // where the kept tail begins: inside the value's first line or word
+		fill       func(n int) string
+	}{
+		{name: "multi-line key", text: "KEY=" + cutLines + "\n", start: len("KEY=first"), fill: func(n int) string {
+			return strings.Repeat("y", n-len("\nlast line")) + "\nlast line"
+		}},
+		{name: "passphrase", text: "PASS=" + cutPhrase + " ", start: len("PASS=co"), fill: func(n int) string {
+			return strings.Repeat("word ", (n-1)/5) + strings.Repeat("x", n-(n-1)/5*5)
+		}},
+	} {
+		after := secret.fill(stderrTailLimit + secret.start - len(secret.text))
+		tail = &stderrTail{}
+		fmt.Fprint(tail, secret.text+after)
+		if len(tail.data) != stderrTailLimit || !strings.HasPrefix(secret.text, secret.text[:secret.start]+string(tail.data[:5])) {
+			t.Fatalf("%s fixture math: %d %.20q", secret.name, len(tail.data), string(tail.data))
+		}
+		if err := tail.explain(cause); err.Error() != "connect failed; stderr: "+after {
+			t.Fatalf("%s: the cut tail reported %.80q", secret.name, err)
 		}
 	}
 

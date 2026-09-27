@@ -21,6 +21,29 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
+// captureSecretEnv, capturePhraseEnv and captureLinesEnv name secret-bearing
+// variables that commands inherit, as verification commands inherit the
+// service's environment: a single token, a multi-word passphrase and a
+// multi-line key. The redactor reads the environment once per process, so
+// TestMain exports them before any test.
+const (
+	captureSecretEnv = "CAPTURE_TEST_API_KEY"
+	captureSecret    = "s3cr3tValue-0123456789"
+	capturePhraseEnv = "CAPTURE_TEST_PASSWORD"
+	capturePhrase    = "correct horse battery staple"
+	captureLinesEnv  = "CAPTURE_TEST_SECRET"
+	captureLines     = "first-line-of-key\nsecond-line-of-key\nthird-line"
+)
+
+func TestMain(m *testing.M) {
+	for name, value := range map[string]string{captureSecretEnv: captureSecret, capturePhraseEnv: capturePhrase, captureLinesEnv: captureLines} {
+		if err := os.Setenv(name, value); err != nil {
+			panic(err)
+		}
+	}
+	os.Exit(m.Run())
+}
+
 // waitForPid returns the pid a fixture command writes to path once the value
 // has fully landed: the shell creates the file before `echo` writes it, and
 // an empty pid would name /proc/stat rather than a process.
@@ -530,6 +553,140 @@ func TestSignalStatusFormat(t *testing.T) {
 	}
 	if got := out.Status.String(); got != "signal: 9 (SIGKILL)" {
 		t.Fatalf("status = %q; want signal: 9 (SIGKILL)", got)
+	}
+}
+
+// TestCapturedTextDropsThePartialLineACaptureCut pins the rule every caller
+// relies on before scrubbing: kept bytes of a truncated capture lose the line
+// the limit cut, or, when they hold no newline, the word it cut, or everything
+// when there is no whitespace either. Complete captures are left whole.
+func TestCapturedTextDropsThePartialLineACaptureCut(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		bytes     string
+		truncated bool
+		want      string
+	}{
+		{name: "complete capture", bytes: "line one\npartial https://bot:s3cr3t", want: "line one\npartial https://bot:s3cr3t"},
+		{name: "cut inside a line", bytes: "line one\nline two\nkey s3cr3tVal", truncated: true, want: "line one\nline two"},
+		{name: "cut after a newline", bytes: "line one\n", truncated: true, want: "line one"},
+		{name: "one line with words", bytes: "word one\u2003https://bot:s3cr3tpass", truncated: true, want: "word one"},
+		{name: "one unbroken token", bytes: "https://bot:s3cr3tpass", truncated: true, want: ""},
+		{name: "cut inside a character", bytes: "done\nnext \xe2\x82", truncated: true, want: "done"},
+		{name: "cut inside a passphrase", bytes: "PASS=correct horse batt", truncated: true, want: "PASS="},
+		{name: "cut inside a multi-line key", bytes: "done\nKEY=first-line-of-key\nsecond-line-of-key\nthi", truncated: true, want: "done\nKEY="},
+		{name: "complete passphrase", bytes: "PASS=correct horse battery staple", want: "PASS=correct horse battery staple"},
+		{name: "invalid bytes kept whole", bytes: "bad \xff", want: "bad \uFFFD"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			captured := process.Captured{Bytes: []byte(test.bytes), Truncated: test.truncated}
+			if got := captured.Text(); got != test.want {
+				t.Fatalf("Text() = %q; want %q", got, test.want)
+			}
+			want := test.want
+			if test.truncated {
+				want += "\n[diagnostic output truncated]"
+			}
+			if got := captured.Preview(); got != want {
+				t.Fatalf("Preview() = %q; want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestFailureTextNeverShowsASecretTheCaptureLimitCut: a command that prints a
+// secret across the diagnostic capture limit leaves only a prefix of it, which
+// redaction cannot recognise. The failure text drops that partial line, keeps
+// the complete line before it and still flags the truncation, on stdout and
+// on stderr, for an environment secret and a URL credential.
+func TestFailureTextNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
+	const kept = "KEPT-LINE\n" // what `echo KEPT-LINE` prints
+	for _, secret := range []struct {
+		name  string
+		print string // shell words printing the secret-bearing line
+		cut   int    // bytes of that line kept before the limit
+		leak  string // the kept prefix that must not appear
+	}{
+		{name: "environment secret", print: `"$` + captureSecretEnv + `"`, cut: 10, leak: captureSecret[:10]},
+		{name: "URL credential", print: `'https://bot:s3cr3tpassword0123@github.com/x'`, cut: 22, leak: "s3cr3tpass"},
+	} {
+		lines := fmt.Sprintf(`echo KEPT-LINE; head -c %d /dev/zero | tr '\0' A; printf '%%s\n' %s`,
+			process.DiagnosticLimit-len(kept)-secret.cut, secret.print)
+		for _, stream := range []struct {
+			name string
+			run  func(script string) error
+		}{
+			{name: "predicate stdout", run: func(script string) error {
+				_, err := process.RunPredicate(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10, []int{1})
+				return err
+			}},
+			{name: "machine stderr", run: func(script string) error {
+				_, err := process.RunMachine(context.Background(), "bash", []string{"-c", "{ " + script + "; } >&2"}, t.TempDir(), 10)
+				return err
+			}},
+		} {
+			t.Run(secret.name+" on "+stream.name, func(t *testing.T) {
+				err := stream.run(lines + "; exit 3")
+				if err == nil {
+					t.Fatal("exit 3 must fail")
+				}
+				text := err.Error()
+				if strings.Contains(text, secret.leak) {
+					t.Fatalf("failure text shows the cut secret prefix %q: ...%q", secret.leak, text[max(len(text)-80, 0):])
+				}
+				if !strings.Contains(text, "KEPT-LINE\n[diagnostic output truncated]") {
+					t.Fatalf("failure text lost the complete line or the truncation flag: ...%q", text[max(len(text)-80, 0):])
+				}
+			})
+		}
+	}
+}
+
+// TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret: a capture limit
+// that falls after the first word of an environment passphrase or the first
+// line of a multi-line environment key leaves those complete words or lines
+// before the partial one it cut. They no longer match the whole value, so the
+// failure text drops them with the cut, on stdout and on stderr.
+func TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret(t *testing.T) {
+	const assignment = "KEY="
+	for _, secret := range []struct {
+		name string
+		env  string
+		cut  int    // bytes of the value kept before the limit
+		leak string // its complete first word or line
+	}{
+		{name: "passphrase", env: capturePhraseEnv, cut: len("correct horse batt"), leak: "correct"},
+		{name: "multi-line key", env: captureLinesEnv, cut: len("first-line-of-key\nsecond-"), leak: "first-line-of-key"},
+	} {
+		script := fmt.Sprintf(`head -c %d /dev/zero | tr '\0' A; printf '%s%%s\n' "$%s"`,
+			process.DiagnosticLimit-len(assignment)-secret.cut, assignment, secret.env)
+		for _, stream := range []struct {
+			name string
+			run  func(script string) error
+		}{
+			{name: "predicate stdout", run: func(script string) error {
+				_, err := process.RunPredicate(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10, []int{1})
+				return err
+			}},
+			{name: "machine stderr", run: func(script string) error {
+				_, err := process.RunMachine(context.Background(), "bash", []string{"-c", "{ " + script + "; } >&2"}, t.TempDir(), 10)
+				return err
+			}},
+		} {
+			t.Run(secret.name+" on "+stream.name, func(t *testing.T) {
+				err := stream.run(script + "; exit 3")
+				if err == nil {
+					t.Fatal("exit 3 must fail")
+				}
+				text := err.Error()
+				if strings.Contains(text, secret.leak) {
+					t.Fatalf("failure text shows the cut secret's first part %q: ...%q", secret.leak, text[max(len(text)-80, 0):])
+				}
+				if !strings.HasSuffix(text, "A"+assignment+"\n[diagnostic output truncated]") {
+					t.Fatalf("failure text lost the text before the secret or the truncation flag: ...%q", text[max(len(text)-80, 0):])
+				}
+			})
+		}
 	}
 }
 
