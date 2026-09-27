@@ -1,14 +1,40 @@
-import { expect, type Page, type Route } from '@playwright/test';
+import { expect, test as base, type Page, type Route } from '@playwright/test';
 import type {
   CommandResult,
   CommandState,
+  Config,
   ProposalEvidence,
   ProposalRow,
   ReviewerVerdict,
   ReviewRoundEvidence,
   RunEvidenceV1,
+  SettingsView,
   TaskEvidence
 } from '../src/lib/types';
+
+// A route handler that races a client abort (navigation, polling churn) finds
+// the request or its fetched response already disposed; the client is gone, so
+// there is nothing to fulfill and the error is noise, not a test failure.
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    const register = page.route.bind(page);
+    page.route = (url, handler, options) =>
+      register(
+        url,
+        async (route, request) => {
+          try {
+            await handler(route, request);
+          } catch (error) {
+            if (!(error instanceof Error && error.message.includes('disposed'))) {
+              throw error;
+            }
+          }
+        },
+        options
+      );
+    await use(page);
+  }
+});
 
 export const token = 'browser-test-operator-token-32-characters';
 export const SYNTHETIC = 'Synthetic browser-test verdict text. Not a real reviewer statement.';
@@ -22,6 +48,37 @@ export async function login(page: Page) {
   await page.getByLabel('Operator access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+}
+
+export async function configFixture(page: Page) {
+  let saved: SettingsView | null = null;
+  await page.route('**/api/config', async (route) => {
+    if (route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON() as {
+        expected_revision: string;
+        config: Partial<Config>;
+      };
+      if (!saved || body.expected_revision !== saved.revision) {
+        await route.fulfill({
+          status: 409,
+          json: { error: 'Synthetic save conflict; reload settings and check the current values.' }
+        });
+        return;
+      }
+      saved = {
+        config: { ...saved.config, ...body.config },
+        revision: 'f'.repeat(64),
+        transformed_fields: []
+      };
+      await route.fulfill({ json: saved });
+      return;
+    }
+    if (!saved) {
+      const response = await route.fetch();
+      saved = (await response.json()) as SettingsView;
+    }
+    await route.fulfill({ json: saved });
+  });
 }
 
 export function trackWrites(page: Page) {

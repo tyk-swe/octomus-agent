@@ -14,6 +14,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func baselineApp(t *testing.T) (*App, config.Config) {
@@ -496,5 +497,103 @@ func TestRecoverBaselinesFinalizesRunningRecordsAndPreservesCancelIntent(t *test
 	running, err := app.Store.RunningBaselines()
 	if err != nil || len(running) != 0 {
 		t.Fatalf("running after recovery: %d", len(running))
+	}
+}
+
+func TestBaselineOverallDeadlineTimesOutAndCleansWorkspace(t *testing.T) {
+	app, cfg := baselineApp(t)
+	defer app.Shutdown()
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pythonFixtureShim(t, filepath.Join(bin, "git"), root, "git.py")
+	pythonFixtureShim(t, filepath.Join(bin, "gh"), root, "gh.py")
+	t.Setenv("OCTOMUS_FIXTURE", root)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	remote := filepath.Join(root, "remote.git")
+	git(t, root, "init", "--bare", "--initial-branch=main", remote)
+	git(t, cfg.Repository, "remote", "add", "origin", remote)
+	git(t, cfg.Repository, "push", "-u", "origin", "main")
+	pidPath := filepath.Join(root, "shell.pid")
+	check := makeCheck(cfg, model.BaselineStatusRunning)
+	check.Config.SessionTimeoutSeconds = 1
+	check.Config.TaskTimeoutSeconds = 5
+	check.Config.CommandTimeoutSeconds = 60
+	check.Config.VerificationCommands = []string{"echo $$ > " + pidPath + "; sleep 60"}
+	if err := app.Store.Put("baseline", check.ID, check); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Store.Put("settings", "baseline_latest", check.ID); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(app.Context())
+	defer cancel()
+	app.runtimeMu.Lock()
+	app.runtime.baseline = &baselineJob{id: check.ID, cancel: cancel}
+	app.runtimeMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.baselineWorker(ctx, check.ID)
+	}()
+	// The overall deadline also covers the storage and clone setup ahead of the
+	// command; confirm the shell actually started so a slow setup cannot pass
+	// for a deadline kill.
+	started := func() bool {
+		_, err := os.Stat(pidPath)
+		return err == nil
+	}
+	for !started() {
+		select {
+		case <-done:
+			if !started() {
+				t.Fatal("baseline worker finished before the verification command started")
+			}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	<-done
+	saved, err := store.Get[model.BaselineCheck](app.Store, "baseline", check.ID)
+	if err != nil || saved == nil {
+		t.Fatalf("load finished check: %v", err)
+	}
+	if saved.Status != model.BaselineStatusTimedOut {
+		t.Fatalf("status %s with error %v", saved.Status, saved.Error)
+	}
+	if saved.Error == nil || !strings.Contains(*saved.Error, "overall limit") {
+		t.Fatalf("overall limit error: %v", saved.Error)
+	}
+	if saved.CompletedAt == nil {
+		t.Fatal("completed_at unset")
+	}
+	unsuccessful := 0
+	for _, command := range saved.Commands {
+		if !command.Success {
+			unsuccessful++
+		}
+	}
+	if unsuccessful == 0 {
+		t.Fatalf("no unsuccessful command recorded: %+v", saved.Commands)
+	}
+	if !saved.WorkspaceRemoved || saved.CleanupError != nil {
+		t.Fatalf("cleanup: removed=%v error=%v", saved.WorkspaceRemoved, saved.CleanupError)
+	}
+	if _, err := os.Stat(filepath.Join(app.DataDir, "baselines", check.ID)); !os.IsNotExist(err) {
+		t.Fatalf("owned baseline directory still exists: %v", err)
+	}
+	app.runtimeMu.Lock()
+	slot := app.runtime.baseline
+	app.runtimeMu.Unlock()
+	if slot != nil {
+		t.Fatalf("runtime baseline slot not released: %+v", slot)
+	}
+	pid, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !testutil.ProcessGone(strings.TrimSpace(string(pid))) {
+		t.Fatal("the verification shell survived the overall deadline")
 	}
 }

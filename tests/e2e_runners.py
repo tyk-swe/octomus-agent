@@ -120,10 +120,13 @@ def task_deadline():
         print('PASS task deadline: abort finishes before server cleanup; no detached shell or publication')
 
 
+SCENARIOS = [
+    *[(mode, functools.partial(successful_workflow, mode)) for mode in ['opencode', 'mixed', 'reverse-mixed', 'recovery']],
+    *[(mode, functools.partial(failed_review, mode)) for mode in ['wrong-model', 'wrong-variant', 'missing-structured', 'malformed-structured', 'incomplete', 'interactive']],
+    ('audit', audit),
+    ('task-deadline', task_deadline),
+]
+
+
 if __name__ == '__main__':
-    run_selected('runners', [
-        *[(mode, functools.partial(successful_workflow, mode)) for mode in ['opencode', 'mixed', 'reverse-mixed', 'recovery']],
-        *[(mode, functools.partial(failed_review, mode)) for mode in ['wrong-model', 'wrong-variant', 'missing-structured', 'malformed-structured', 'incomplete', 'interactive']],
-        ('audit', audit),
-        ('task-deadline', task_deadline),
-    ], sys.argv[1:])
+    run_selected('runners', SCENARIOS, sys.argv[1:])

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { test, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { login, openNavigation } from './synthetic';
+import { configFixture, login, openNavigation, test } from './synthetic';
 const token = 'browser-test-operator-token-32-characters';
 
 const codexModels = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
@@ -51,6 +51,7 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
 }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  await configFixture(page);
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Your project’s control room.' })).toBeVisible();
   await page.getByLabel('Operator access token').fill('incorrect');
@@ -65,10 +66,12 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   expect(
     accessibility.violations.map((v) => ({ rule: v.id, elements: v.nodes.map((n) => n.target) }))
   ).toEqual([]);
-  await page.screenshot({
-    path: `test-results/${testInfo.project.name}-overview.png`,
-    fullPage: true
-  });
+  await expect(async () => {
+    await page.screenshot({
+      path: `test-results/${testInfo.project.name}-overview.png`,
+      fullPage: true
+    });
+  }).toPass({ timeout: 15000 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   async function navigate(name: string) {
     if (testInfo.project.name === 'mobile')
@@ -316,10 +319,12 @@ test('one-shot audit progress, decisions and paused controls', async ({ page }, 
   const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(accessibility.violations).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({
-    path: `test-results/${testInfo.project.name}-audit-fixture.png`,
-    fullPage: true
-  });
+  await expect(async () => {
+    await page.screenshot({
+      path: `test-results/${testInfo.project.name}-audit-fixture.png`,
+      fullPage: true
+    });
+  }).toPass({ timeout: 15000 });
 });
 
 test('model routing across all roles, provider variants, draft catalogs and unavailable selections', async ({
@@ -335,6 +340,7 @@ test('model routing across all roles, provider variants, draft catalogs and unav
       await route.fulfill({ json: catalogState === 'normal' ? opencodeModels : [] });
     }
   });
+  await configFixture(page);
   await page.goto('/');
   await page.getByLabel('Operator access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
@@ -404,10 +410,12 @@ test('model routing across all roles, provider variants, draft catalogs and unav
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(accessibility.violations).toEqual([]);
-  await page.screenshot({
-    path: `test-results/${testInfo.project.name}-model-routes.png`,
-    fullPage: true
-  });
+  await expect(async () => {
+    await page.screenshot({
+      path: `test-results/${testInfo.project.name}-model-routes.png`,
+      fullPage: true
+    });
+  }).toPass({ timeout: 15000 });
 });
 
 test('a successful status without a readable JSON body is reported as a lost connection', async ({

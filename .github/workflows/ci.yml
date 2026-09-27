@@ -11,9 +11,9 @@ on:
 permissions:
   contents: read
 jobs:
-  verify:
+  quality:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,17 +31,112 @@ jobs:
       - run: shellcheck install.sh scripts/*.sh
       - run: make check
       - run: make audit
+
+  go-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: regular
+            command: go test -timeout 30m ./...
+          - mode: race
+            command: CGO_ENABLED=1 go test -race -timeout 30m ./...
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: npm run build --prefix web
+      - name: Go tests (${{ matrix.mode }})
+        run: ${{ matrix.command }}
+
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - args: e2e
+          - args: hardening
+          - args: baseline notifications runners
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: make test-integration INTEGRATION_SCENARIOS="${{ matrix.args }}"
+
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [desktop, mobile]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
       - run: npx --prefix web playwright install --with-deps chromium
-      - run: make test
-      - run: make package
-      - run: python3 tests/distribution.py --package "dist/octomus-agent-v$(cat VERSION)-x86_64-unknown-linux-gnu.tar.gz"
-      - run: sudo python3 tests/systemd.py
+      - run: make test-browser PLAYWRIGHT_ARGS="--project=${{ matrix.project }}"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: browser-test-evidence
+          name: browser-test-evidence-${{ matrix.project }}
           path: web/test-results
           retention-days: 7
+
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: make test-contracts package
+      - run: python3 tests/distribution.py --package "dist/octomus-agent-v$(cat VERSION)-x86_64-unknown-linux-gnu.tar.gz"
+      - run: sudo python3 tests/systemd.py
 
   client-contracts:
     runs-on: ubuntu-24.04
@@ -76,3 +171,19 @@ jobs:
           else
             go test ./internal/runner -run '^TestPinnedOpenCodeContract$' -count=1 -v
           fi
+
+  verify:
+    name: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: always()
+    needs: [quality, go-tests, integration, browser, package, client-contracts]
+    steps:
+      - name: All jobs succeeded
+        run: |
+          test "${{ needs.quality.result }}" = success
+          test "${{ needs.go-tests.result }}" = success
+          test "${{ needs.integration.result }}" = success
+          test "${{ needs.browser.result }}" = success
+          test "${{ needs.package.result }}" = success
+          test "${{ needs.client-contracts.result }}" = success

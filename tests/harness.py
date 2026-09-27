@@ -108,6 +108,48 @@ def run_selected(suite, scenarios, names, *, workers=None, output=None):
         raise SystemExit(f'{suite} failed scenarios: {", ".join(sorted(failed))}')
 
 
+def select_scenarios(suites, names):
+    """Returns qualified scenarios selected by suite or `suite/scenario` name.
+
+    `suites` is an ordered list of (suite alias, scenarios) pairs whose
+    scenarios are (name, zero-argument callable) pairs; the result keeps that
+    order and qualifies every name as `suite/name`. With no `names` everything
+    is selected; otherwise each name is either an exact suite alias, which
+    expands the whole suite, or an exact qualified scenario. Every unknown name
+    is refused before anything runs, and overlapping selections still run a
+    scenario only once.
+    """
+    aliases = []
+    qualified = []
+    seen_suites = set()
+    seen_qualified = set()
+    for suite, scenarios in suites:
+        if suite in seen_suites:
+            raise SystemExit(f'duplicate suite name: {suite}')
+        seen_suites.add(suite)
+        aliases.append(suite)
+        registry = dict(scenarios)
+        if len(registry) != len(scenarios):
+            raise SystemExit(f'duplicate {suite} scenario names')
+        for name, run in scenarios:
+            qualified_name = f'{suite}/{name}'
+            if qualified_name in seen_qualified:
+                raise SystemExit(f'duplicate scenario name: {qualified_name}')
+            seen_qualified.add(qualified_name)
+            qualified.append((qualified_name, run))
+    available = [name for name, _ in qualified]
+    unknown = [name for name in names if name not in seen_suites and name not in seen_qualified]
+    if unknown:
+        raise SystemExit(f'unknown scenarios: {", ".join(unknown)}; available suites: {", ".join(aliases)}; scenarios: {", ".join(available)}')
+    selected = set(available) if not names else set()
+    for name in names:
+        if name in seen_suites:
+            selected.update(qualified_name for qualified_name in available if qualified_name.startswith(f'{name}/'))
+        else:
+            selected.add(name)
+    return [(name, run) for name, run in qualified if name in selected]
+
+
 def process_gone(pid):
     """Whether `pid` has exited: reaped, or a zombie its parent has not reaped yet.
 

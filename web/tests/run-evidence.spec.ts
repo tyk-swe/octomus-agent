@@ -1,4 +1,4 @@
-import { test, expect, type Locator, type Page, type Route } from '@playwright/test';
+import { expect, type Locator, type Page, type Route } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import {
   A,
@@ -17,6 +17,7 @@ import {
   runEvidence,
   serveProposals,
   taskEvidence,
+  test,
   token,
   trackWrites
 } from './synthetic';

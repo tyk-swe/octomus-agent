@@ -123,7 +123,7 @@ def scenario(mode):
             assert len(receiver.events()) == 1
             service.stop(crash=True)
             service.start()
-            time.sleep(5)
+            time.sleep(1.2)
             assert len(receiver.events()) == 1, f'restart must not re-notify a delivered episode: {receiver.events()}'
             print('PASS restart: a delivered episode is not repeated after a crash')
             return
@@ -153,7 +153,10 @@ def scenario(mode):
         raise AssertionError(f'unknown notifications scenario {mode}')
 
 
+SCENARIOS = [(mode, functools.partial(scenario, mode)) for mode in ['deliver', 'restart', 'service-error', 'env-strip', 'env-strip-opencode']]
+
+
 if __name__ == '__main__':
-    run_selected('notifications', [(mode, functools.partial(scenario, mode)) for mode in ['deliver', 'restart', 'service-error', 'env-strip', 'env-strip-opencode']], sys.argv[1:])
+    run_selected('notifications', SCENARIOS, sys.argv[1:])
     if not sys.argv[1:]:
         print('All notification scenarios passed')

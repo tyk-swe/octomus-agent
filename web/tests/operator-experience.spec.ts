@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import type {
   BaselineView,
@@ -12,7 +12,7 @@ import type {
   TaskRow,
   TransformedField
 } from '../src/lib/types';
-import { login, openNavigation, token, trackWrites } from './synthetic';
+import { login, openNavigation, test, token, trackWrites } from './synthetic';
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -1556,7 +1556,9 @@ test('short desktop sidebars keep Disconnect reachable by mouse', async ({
   await page.mouse.wheel(0, 800);
   const disconnect = page.getByRole('button', { name: /Disconnect/ });
   await expect(disconnect).toBeInViewport({ ratio: 1 });
-  await page.screenshot({ path: testInfo.outputPath('sidebar-1280x680.png') });
+  await expect(async () => {
+    await page.screenshot({ path: testInfo.outputPath('sidebar-1280x680.png') });
+  }).toPass({ timeout: 15000 });
   await disconnect.click();
   await expect(page.getByRole('heading', { name: 'Your project’s control room.' })).toBeVisible();
 });

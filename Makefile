@@ -1,8 +1,24 @@
-.PHONY: dashboard build build-race check test test-race-e2e package audit
+.PHONY: dashboard build build-race check test test-go test-contracts test-integration test-browser test-race-e2e package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
 # E2E scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
 E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
+
+define GO_TESTS
+	go test -timeout 30m ./...
+	CGO_ENABLED=1 go test -race -timeout 30m ./...
+endef
+
+define CONTRACT_CORE
+	$(E2E_ENV) python3 tests/binary_contract.py
+	$(E2E_ENV) python3 tests/evidence_snapshot.py
+	node --test tests/helpers/public_payload.test.mjs
+endef
+
+define CONTRACT_PACKAGE
+	$(E2E_ENV) python3 tests/distribution.py
+	python3 tests/package_guards.py
+endef
 
 dashboard:
 	npm run build --prefix web
@@ -25,19 +41,24 @@ check: dashboard
 	  --module nodenext --moduleResolution nodenext --types node ../tests/helpers/*.mjs
 
 test: build
-	go test -timeout 30m ./...
-	CGO_ENABLED=1 go test -race -timeout 30m ./...
-	$(E2E_ENV) python3 tests/binary_contract.py
-	$(E2E_ENV) python3 tests/evidence_snapshot.py
-	node --test tests/helpers/public_payload.test.mjs
-	$(E2E_ENV) python3 tests/e2e.py
-	$(E2E_ENV) python3 tests/e2e_baseline.py
-	$(E2E_ENV) python3 tests/e2e_notifications.py
-	$(E2E_ENV) python3 tests/e2e_runners.py
-	$(E2E_ENV) python3 tests/e2e_hardening.py
-	$(E2E_ENV) python3 tests/distribution.py
-	python3 tests/package_guards.py
-	$(E2E_ENV) npm test --prefix web
+	$(GO_TESTS)
+	$(CONTRACT_CORE)
+	$(E2E_ENV) python3 tests/integration.py $(INTEGRATION_SCENARIOS)
+	$(CONTRACT_PACKAGE)
+	$(E2E_ENV) npm test --prefix web -- $(PLAYWRIGHT_ARGS)
+
+test-go: dashboard
+	$(GO_TESTS)
+
+test-contracts: build
+	$(CONTRACT_CORE)
+	$(CONTRACT_PACKAGE)
+
+test-integration: build
+	$(E2E_ENV) python3 tests/integration.py $(INTEGRATION_SCENARIOS)
+
+test-browser: build
+	$(E2E_ENV) npm test --prefix web -- $(PLAYWRIGHT_ARGS)
 
 # Opt-in (~7 min): kept out of `make test` because the race runtime perturbs the other suites' timing.
 test-race-e2e: build-race
