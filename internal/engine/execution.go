@@ -674,17 +674,18 @@ const (
 
 // evidenceText renders the command for its verification record and the repair
 // prompt in at most limit bytes: stdout, then a [stderr] section, then the
-// exit status on failure. Secrets are scrubbed from each whole stream before
-// anything is cut. Each stream keeps its end, where test runners and compilers
-// report failures. stderr may use half the bound however long stdout is, since
-// it usually states the cause, and any room stdout leaves; stdout may use
-// whatever stderr leaves.
+// exit status on failure. Each stream drops the partial line a capture limit
+// cut (process.Captured.Text), and secrets are scrubbed from the rest before
+// anything is cut here, so no cut exposes part of a secret. Each stream keeps
+// its end, where test runners and compilers report failures. stderr may use
+// half the bound however long stdout is, since it usually states the cause,
+// and any room stdout leaves; stdout may use whatever stderr leaves.
 func (o checkOutcome) evidenceText(limit int) string {
 	if o.capture != nil {
 		return boundedTail(redact.Secrets(o.capture.Error()), limit, false)
 	}
 	clean := func(stream process.Captured) string {
-		return redact.Secrets(strings.TrimSpace(strings.ToValidUTF8(string(stream.Bytes), "\uFFFD")))
+		return redact.Secrets(strings.TrimSpace(stream.Text()))
 	}
 	status := ""
 	if !o.captured.Status.Success() {

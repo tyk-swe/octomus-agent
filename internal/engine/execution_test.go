@@ -404,6 +404,53 @@ func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
 	}
 }
 
+// TestVerificationEvidenceNeverShowsASecretTheCaptureLimitCut: a command that
+// prints a credential across the diagnostic capture limit leaves only a prefix
+// of it, which redaction cannot recognise. The saved evidence and the repair
+// prompt drop the line the limit cut, keep the complete lines before it and
+// still mark the truncation; a capture that is one unbroken line keeps none
+// of it.
+func TestVerificationEvidenceNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
+	const (
+		credential = "'https://bot:s3cr3tpassword0123@github.com/x'"
+		leak       = "s3cr3tpass"
+	)
+	// The limit keeps "https://bot:s3cr3tpass" (22 bytes) of the credential
+	// line, short of the '@' the URL pattern needs.
+	cutLine := func(before int) string {
+		return fmt.Sprintf("head -c %d /dev/zero | tr '\\0' A; printf '%%s\\n' %s", process.DiagnosticLimit-before-22, credential)
+	}
+	keptLine := "echo KEPT-LINE; " + cutLine(len("KEPT-LINE\n"))
+	for _, test := range []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "stdout", command: keptLine + "; exit 1", want: "KEPT-LINE\n" + outputTruncatedMarker + "\nexit status: 1"},
+		{name: "stderr", command: "{ " + keptLine + "; } >&2; echo out; exit 1", want: "out\n[stderr]\nKEPT-LINE\n" + outputTruncatedMarker + "\nexit status: 1"},
+		{name: "one unbroken line", command: cutLine(0) + "; exit 1", want: "\n" + outputTruncatedMarker + "\nexit status: 1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, task, revision := verificationFixture(t, []string{test.command})
+			failures, err := app.verifyRevision(context.Background(), &task, revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := loadTask(t, app.Store, task.ID)
+			if len(saved.Verification) != 1 {
+				t.Fatalf("verification = %+v; want one record", saved.Verification)
+			}
+			output := saved.Verification[0].Output
+			if strings.Contains(output, leak) || output != test.want {
+				t.Fatalf("evidence = ...%q; want %q without the cut credential", output[max(len(output)-80, 0):], test.want)
+			}
+			if len(failures) != 1 || failures[0] != test.command+": "+output {
+				t.Fatalf("repair prompt failures = %q; want the saved evidence", failures)
+			}
+		})
+	}
+}
+
 func TestBoundedTailKeepsTheEndWithinTheLimit(t *testing.T) {
 	marker := outputTruncatedMarker
 	for _, test := range []struct {
