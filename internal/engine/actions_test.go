@@ -334,7 +334,7 @@ func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 	if saved := loadTask(t, fixture.state, task.ID); saved.Attempts != 0 {
 		t.Fatalf("failed preflight consumed an attempt: %+v", saved)
 	}
-	cfg.CommandTimeoutSeconds = 5
+	cfg.CommandTimeoutSeconds = 30
 	if err := fixture.state.Put("settings", "config", cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 	if saved.Status != model.StatusQueued || saved.Attempts != 1 {
 		t.Fatalf("relaxed retry = %+v; want queued attempt 1", saved)
 	}
-	if saved.AttemptPolicy == nil || saved.AttemptPolicy.CommandTimeoutSeconds != 5 {
+	if saved.AttemptPolicy == nil || saved.AttemptPolicy.CommandTimeoutSeconds != 30 {
 		t.Fatalf("retry did not adopt the live policy: %+v", saved.AttemptPolicy)
 	}
 }

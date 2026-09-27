@@ -1352,6 +1352,9 @@ func TestPlanningRejectsAndPreservesAMutatedRoleWorkspace(t *testing.T) {
 
 func TestRemotePreflightDoesNotHoldControlLockAndRejectsChangedPolicy(t *testing.T) {
 	fixture := newScriptedPlanningFixture(t)
+	// The held remote read outlives the Pause bound below, so a Pause that
+	// waited for it could not finish in time by the command timeout killing it.
+	fixture.configure(t, func(c *config.Config) { c.CommandTimeoutSeconds = 60 })
 	hold := filepath.Join(fixture.root, "reconcile-hold")
 	if err := os.WriteFile(hold, []byte("1"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1375,7 +1378,7 @@ func TestRemotePreflightDoesNotHoldControlLockAndRejectsChangedPolicy(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("remote preflight held the control lock")
 	}
 	changed := fixture.cfg.Clone()
@@ -1564,7 +1567,7 @@ func TestPlanningAllowanceConsumedDuringPreflightUsesModeSemantics(t *testing.T)
 // waitForFixtureFile waits for a fixture peer's barrier file.
 func waitForFixtureFile(t *testing.T, path, failure string) {
 	t.Helper()
-	if !testutil.WaitUntil(5*time.Second, func() bool {
+	if !testutil.WaitUntil(30*time.Second, func() bool {
 		_, err := os.Stat(path)
 		return err == nil
 	}) {

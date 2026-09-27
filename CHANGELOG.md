@@ -129,6 +129,11 @@ the first release contains.
   submodules, and the commit message Octomus generates is secret-scrubbed like PR text.
 - Redaction replaces overlapping secrets whole, keeps catching `sk-` keys after terminal
   control sequences, and leaves ordinary words such as `task-` readable.
+- An unreadable directory inside a workspace no longer fails every session admission,
+  baseline check and housekeeping storage pass; its contents go unmeasured. Secrets cut
+  by a capture or read limit stay redacted, as do `sk-` keys printed after a terminal
+  escape such as `ESC(B`, and `--doctor` keeps a runner's version warning when its
+  model catalog request fails.
 - A structured runner answer that repeats an object key is refused as invalid JSON, so a
   review can no longer list a finding and then read as clean through a repeated empty
   `findings`.
@@ -146,18 +151,19 @@ the first release contains.
 - A Codex model catalog with empty continuing pages no longer pages forever, a Codex
   protocol message is no longer dropped when a timer races it, and an OpenCode server
   that logs a stdout line over 16 KiB no longer hangs the turn once its pipe fills.
-- A PR refresh cut short by a pause, a configuration save or shutdown is no longer
-  recorded as an inventory failure, an earlier refresh failure clears on the next
-  complete inventory even while paused, and planning and housekeeping continue with the
-  newer inventory when a concurrent refresh saved it first.
+- A PR refresh cut short by a pause, a configuration save or shutdown, or made obsolete
+  by a saved change to the repository or branch settings, is no longer recorded as an
+  inventory failure, an earlier refresh failure clears on the next complete inventory
+  even while paused, and planning and housekeeping continue with the newer inventory
+  when a concurrent refresh saved it first.
 - PR capacity and the default-branch revision stay fresh across one slow housekeeping
   pass, the baseline panel shows a default-branch observation only for the configured
   target, every scheduler pause drops process-local PR admission authority, and a
   repository path respelled in settings (`/srv/repo/`) no longer strands queued new-PR
   tasks behind back-to-back refreshes.
 - Housekeeping runs each step even after an earlier one fails. Shutdown no longer records
-  a false `housekeeping_error`, and a remote observation whose repository settings
-  change just before it is recorded is dropped instead of reported as one. Retention
+  a false `housekeeping_error`, and a remote observation made obsolete by a saved change
+  to the repository or branch settings is dropped instead of reported as one. Retention
   skips records discarded while it runs, resumes after the last candidate it visited so
   100 permanently failing candidates cannot hold back newer ones, and removes workspaces
   that contain read-only directories such as a Go module cache.
