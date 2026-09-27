@@ -1,6 +1,7 @@
 .PHONY: dashboard build build-race check test test-race-e2e package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
+# E2E scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
 E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
 
 dashboard:
