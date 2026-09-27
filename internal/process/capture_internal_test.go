@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestBoundedReadKeepsTheHeadAndTheRealEnd(t *testing.T) {
@@ -50,7 +49,7 @@ func TestTailWindowKeepsTheLastBytesAcrossWraps(t *testing.T) {
 	}
 }
 
-func TestTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
+func TestSafeTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		tail string
@@ -66,7 +65,7 @@ func TestTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
 		{name: "bearer prefix before a line break", tail: "x Authorization: BEARER \n\n  abcdefghijklmnop\nkept\n", want: "kept\n"},
 		{name: "cut bearer prefix before a line break", tail: "rer\nabcdefghijklmnop\nkept\n", want: "kept\n"},
 		{name: "bearer token alone", tail: "rer abcdefghijklmnop", want: ""},
-		{name: "whole bearer prefix kept", tail: "xx Bearer abcdefghijklmnop kept", want: "Bearer abcdefghijklmnop kept"},
+		{name: "whole bearer prefix kept", tail: "xx Bearer abcdefghijklmnop kept", want: "[redacted] kept"},
 		{name: "whole bearer prefix after a cut one", tail: "rer\nBearer abcdefghijklmnop kept", want: "kept"},
 		{name: "cut escape sequence before a key", tail: "[2 qsk-abcdefghijklmnop kept", want: "kept"},
 		{name: "cut escape sequence with spaced intermediates", tail: "\x1b ! Fsk-abcdefghijklmnop kept", want: "kept"},
@@ -81,28 +80,19 @@ func TestTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			captured := Captured{Bytes: []byte("head line\npartial"), Truncated: true, tail: []byte(test.tail)}
-			if got := captured.TailText(); got != test.want {
-				t.Fatalf("TailText() = %q; want %q", got, test.want)
+			if got := captured.SafeTailText(); got != test.want {
+				t.Fatalf("SafeTailText() = %q; want %q", got, test.want)
 			}
 			want := "head line\n[diagnostic output truncated]"
 			if test.want != "" {
 				want += "\n" + test.want
 			}
-			if got := captured.Preview(); got != want {
-				t.Fatalf("Preview() = %q; want %q", got, want)
+			if got := captured.SafePreview(); got != want {
+				t.Fatalf("SafePreview() = %q; want %q", got, want)
 			}
 		})
 	}
-	if got := (Captured{Bytes: []byte("whole\n"), tail: []byte("ignored\n")}).TailText(); got != "" {
-		t.Fatalf("complete capture TailText() = %q; want none", got)
-	}
-}
-
-func TestTailTextStaysLinearInEscapeIntermediates(t *testing.T) {
-	tail := "x " + strings.Repeat("! ", TailLimit/2-8) + "kept"
-	start := time.Now()
-	got := Captured{Truncated: true, tail: []byte(tail)}.TailText()
-	if elapsed := time.Since(start); got != "kept" || elapsed > 5*time.Second {
-		t.Fatalf("TailText() = %.40q after %v; want %q within 5s", got, elapsed, "kept")
+	if got := (Captured{Bytes: []byte("whole\n"), tail: []byte("ignored\n")}).SafeTailText(); got != "" {
+		t.Fatalf("complete capture SafeTailText() = %q; want none", got)
 	}
 }

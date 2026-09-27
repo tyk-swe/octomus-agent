@@ -46,7 +46,136 @@ func environmentSecrets() []string {
 
 func Secrets(input string) string { return scrub(input, environmentSecrets()) }
 
-func TrimCutSecretEnd(text string) string { return trimCutSecretEnd(text, environmentSecrets()) }
+// Part is text from a capture, optionally cut inside its first or last line.
+// Prefix is included only when text remains after trimming the cut lines.
+type Part struct {
+	Text             string
+	Prefix           string
+	CutStart, CutEnd bool
+}
+
+// Parts scrubs the concatenation after trimming capture cuts, retaining the part
+// boundaries. A secret spanning parts is replaced once, in the part where it starts.
+func Parts(parts ...Part) []string {
+	values := environmentSecrets()
+	texts := make([]string, len(parts))
+	for i, part := range parts {
+		text := part.Text
+		if part.CutStart {
+			text = cutFragment(text, TailLineCut, values)
+		}
+		if part.CutEnd {
+			text = cutFragment(text, HeadLineCut, values)
+		}
+		if text != "" {
+			texts[i] = part.Prefix + text
+		}
+	}
+	return scrubParts(texts, values)
+}
+
+type FragmentKind uint8
+
+const (
+	HeadLineCut FragmentKind = iota
+	HeadWordCut
+	TailLineCut
+	TailTwoWordsCut
+)
+
+func Fragment(input string, kind FragmentKind) string {
+	values := environmentSecrets()
+	return scrub(cutFragment(input, kind, values), values)
+}
+
+func cutFragment(text string, kind FragmentKind, values []string) string {
+	switch kind {
+	case HeadLineCut:
+		if i := strings.LastIndexByte(text, '\n'); i >= 0 {
+			return trimCutSecretEnd(text[:i], values)
+		}
+		if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
+			return trimCutSecretEnd(text[:i], values)
+		}
+		return ""
+	case HeadWordCut:
+		return trimCutSecretEnd(beforeLastWord(scrub(text, values)), values)
+	case TailLineCut:
+		return tailLineStart(text, values)
+	case TailTwoWordsCut:
+		return tailTwoWordsStart(scrub(text, values), values)
+	}
+	return ""
+}
+
+func beforeLastWord(text string) string {
+	if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
+		return text[:i]
+	}
+	return ""
+}
+
+func afterWord(text string) string {
+	if i := strings.IndexFunc(text, unicode.IsSpace); i >= 0 {
+		return text[i:]
+	}
+	return ""
+}
+
+func tailTwoWordsStart(text string, values []string) string {
+	var rest string
+	if _, after, found := strings.Cut(text, "\n"); found {
+		rest = after
+	} else {
+		rest = afterWord(strings.TrimLeftFunc(afterWord(text), unicode.IsSpace))
+	}
+	return trimCutSecretStart(strings.TrimLeftFunc(rest, unicode.IsSpace), values)
+}
+
+const escapeIntermediates = " !\"#$%&'()*+,-./"
+
+var cutEscapeKey = regexp.MustCompile(`(?i)^[a-z]sk-[a-z0-9_-]{10}`)
+
+func mayEndBearerPrefix(text string) bool {
+	const prefix = "bearer"
+	n := min(len(text), len(prefix))
+	return (n == len(text) || n == len(prefix)) && strings.EqualFold(text[len(text)-n:], prefix[len(prefix)-n:])
+}
+
+func tailLineStart(text string, values []string) string {
+	dropped, rest, found := strings.Cut(text, "\n")
+	if !found {
+		i := strings.IndexFunc(text, unicode.IsSpace)
+		if i < 0 {
+			return ""
+		}
+		dropped, rest = text[:i], text[i:]
+	}
+	run := 0
+	for {
+		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
+		at := len(text) - len(rest)
+		if at >= run {
+			run = at + len(rest) - len(strings.TrimLeft(rest, escapeIntermediates))
+		}
+		from := -1
+		if key := cutEscapeKey.FindStringIndex(text[run:]); key != nil {
+			from = run - at + key[1]
+		} else if mayEndBearerPrefix(strings.TrimRightFunc(dropped, unicode.IsSpace)) {
+			from = 0
+		} else if trimmed := trimCutSecretStart(rest, values); len(trimmed) < len(rest) {
+			from = len(rest) - len(trimmed)
+		}
+		if from < 0 {
+			return rest
+		}
+		i := strings.IndexFunc(rest[from:], unicode.IsSpace)
+		if i < 0 {
+			return ""
+		}
+		dropped, rest = rest[:from+i], rest[from+i:]
+	}
+}
 
 func trimCutSecretEnd(text string, values []string) string {
 	cut := 0
@@ -58,10 +187,6 @@ func trimCutSecretEnd(text string, values []string) string {
 		}
 	}
 	return text[:len(text)-cut]
-}
-
-func TrimCutSecretStart(text string) string {
-	return trimCutSecretStart(text, environmentSecrets())
 }
 
 func trimCutSecretStart(text string, values []string) string {
@@ -79,8 +204,9 @@ func trimCutSecretStart(text string, values []string) string {
 	return text[cut:]
 }
 
-// scrub finds all spans in the original text and merges overlaps, so replacing one secret never splits another.
-func scrub(input string, values []string) string {
+// secretSpans finds all spans in the original text and merges overlaps, so
+// replacing one secret never splits another.
+func secretSpans(input string, values []string) [][2]int {
 	var spans [][2]int
 	for _, match := range tokenPattern.FindAllStringIndex(input, -1) {
 		spans = append(spans, [2]int{match[0], match[1]})
@@ -107,23 +233,50 @@ func scrub(input string, values []string) string {
 			from = start + 1
 		}
 	}
-	if len(spans) == 0 {
-		return input
-	}
 	slices.SortFunc(spans, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
-	var out strings.Builder
-	last := 0
+	merged := spans[:0]
 	for i := 0; i < len(spans); {
 		start, end := spans[i][0], spans[i][1]
 		for i++; i < len(spans) && spans[i][0] < end; i++ {
 			end = max(end, spans[i][1])
 		}
-		out.WriteString(input[last:start])
-		out.WriteString("[redacted]")
-		last = end
+		merged = append(merged, [2]int{start, end})
 	}
-	out.WriteString(input[last:])
-	return out.String()
+	return merged
+}
+
+func scrub(input string, values []string) string {
+	return scrubParts([]string{input}, values)[0]
+}
+
+func scrubParts(parts []string, values []string) []string {
+	input := strings.Join(parts, "")
+	spans := secretSpans(input, values)
+	if len(spans) == 0 {
+		return parts
+	}
+	start := 0
+	for i, part := range parts {
+		end := start + len(part)
+		last := start
+		var out strings.Builder
+		for len(spans) > 0 && spans[0][0] < end {
+			span := spans[0]
+			if span[0] >= start {
+				out.WriteString(input[last:span[0]])
+				out.WriteString("[redacted]")
+			}
+			last = min(span[1], end)
+			if span[1] > end {
+				break
+			}
+			spans = spans[1:]
+		}
+		out.WriteString(input[last:end])
+		parts[i] = out.String()
+		start = end
+	}
+	return parts
 }
 
 const displayTextLimit = 16384

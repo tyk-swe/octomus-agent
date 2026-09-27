@@ -42,34 +42,17 @@ func (t *stderrTail) explain(err error) error {
 	t.mu.Lock()
 	text, cut := string(t.data), t.cut
 	t.mu.Unlock()
-	text = redact.Text(strings.ToValidUTF8(strings.TrimRightFunc(text, unicode.IsSpace), "\uFFFD"))
+	text = strings.ToValidUTF8(strings.TrimRightFunc(text, unicode.IsSpace), "\uFFFD")
 	if cut {
-		if _, rest, found := strings.Cut(text, "\n"); found {
-			text = rest
-		} else {
-			text = afterWord(strings.TrimLeftFunc(afterWord(text), unicode.IsSpace))
-		}
-		text = redact.TrimCutSecretStart(strings.TrimLeftFunc(text, unicode.IsSpace))
+		text = redact.Fragment(text, redact.TailTwoWordsCut)
+	} else {
+		text = redact.Text(text)
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return err
 	}
 	return fmt.Errorf("%w; stderr: %s", err, text)
-}
-
-func afterWord(text string) string {
-	if i := strings.IndexFunc(text, unicode.IsSpace); i >= 0 {
-		return text[i:]
-	}
-	return ""
-}
-
-func beforeLastWord(text string) string {
-	if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
-		return text[:i]
-	}
-	return ""
 }
 
 func drained(lines <-chan lineResult) <-chan struct{} {

@@ -67,6 +67,12 @@ as the attention webhook URL. It
 bounds each returned string to 16,384 characters. Events and dashboard JSON pass
 through redaction; this is not an encryption or data-loss-prevention system.
 
+Complete values take `Secrets`, `Text` or `JSON`. Text already cut by a capture
+or read limit takes `Fragment` with an explicit kind matching its retention
+policy. That operation owns both boundary normalization and scrubbing — including
+the policy-specific ordering needed to avoid exposing a token whose context was
+cut — before any later display or evidence bound applies.
+
 Outbound pull request titles, descriptions and follow-up comments pass through
 the same secret patterns without the length bound; the remote's own size limits
 apply instead, and text that would lose the delivery marker or exceed those
@@ -78,6 +84,24 @@ workspaces, process output and runner transcripts may retain sensitive content.
 Review every shared screenshot, JSON export and log manually. Never commit private
 billing screenshots, credentials or raw transcripts. Record redacted observations
 and private evidence references instead.
+
+## Where each control is enforced
+
+Controls stay at the module that owns its seam; there is no central security
+facade. Each fails closed: when a check cannot run or does not hold, the
+operation is refused rather than allowed to proceed unguarded.
+
+| Control | Enforcing seam | Fail-closed behavior |
+| --- | --- | --- |
+| Host isolation | `deploy/octomus-agent.service`, dedicated VM | Hardened unit and VM policy bound impact; no in-process sandbox is claimed. |
+| Operator HTTP edge | `internal/httpapi` | Requests without a valid operator token are refused before reaching controls. |
+| Child environment and lifetime | `internal/process` | The operator token, webhook URL and repository-locating Git variables are stripped; every child joins an owned process group. |
+| Runner protocol policy | `internal/runner` | Catalog, route and message-bound violations refuse the session or connection. |
+| Configuration identity | `internal/config`, `internal/wirejson`, `internal/engine` | An identity change mid-operation fails that operation. |
+| Managed workspaces | `internal/workspace` | Cleanup refuses noncanonical paths, indirect children and symlink paths. |
+| Publication | `internal/git` | A push proceeds only while branch ownership, the reviewed revision and remote leases hold. |
+| Text egress | `internal/redact` | Complete values and cut fragments are normalized and scrubbed before display or evidence bounds. |
+| Durable state and evidence | `internal/store`, `internal/evidence` | Records stay typed and versioned; exports are read-only. |
 
 ## Host controls and residual risk
 
