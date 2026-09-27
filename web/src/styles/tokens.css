@@ -1,4 +1,3 @@
-/* Palette, type scale and element defaults. Shared palette and semantic tones live here; prefer these tokens over new colour literals. */
 :root {
   font-family:
     Inter,
@@ -10,21 +9,17 @@
   background: #fffaf0;
   font-synthesis: none;
 
-  /* Surfaces: cream page, raised white panels, tinted wells. */
   --paper: #fffaf0;
   --surface: #ffffff;
   --well: #f7f9f2;
 
-  /* Ink scale: primary text, secondary text, quiet labels. */
   --ink: #233c36;
   --ink-2: #42554b;
   --muted: #66736b;
 
-  /* Lines and the pale washes behind badges and rows. */
   --line: #dfe3d7;
   --line-soft: #edf1e6;
 
-  /* Brand accents. */
   --green: #235a49;
   --green-deep: #174334;
   --green-soft: #edf3e5;
@@ -33,7 +28,6 @@
   --lilac: #e2d4f4;
   --orange: #ff9365;
 
-  /* Semantic tones: foreground, wash, and border for badges and notices. */
   --good-fg: #3f6b41;
   --good-bg: #eef5e9;
   --good-line: #dfead3;
@@ -47,7 +41,6 @@
   --bad-bg: #fbefeb;
   --bad-line: #eedcd4;
 
-  /* Corners, elevation, focus and motion. */
   --r-sm: 6px;
   --r-md: 9px;
   --r-lg: 14px;

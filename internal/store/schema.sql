@@ -1,4 +1,3 @@
--- Fresh Go state schema. Projection triggers are assembled from model.Decisions in schema.go.
 
 CREATE TABLE admissions (
                 id TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, data TEXT NOT NULL

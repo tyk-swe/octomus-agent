@@ -3,7 +3,6 @@
   import Icon from './Icon.svelte';
   import type { PrObservation } from './types';
 
-  /** One observed pull request, linking out to GitHub, with its ownership and head movement. */
   let { observed }: { observed: PrObservation } = $props();
   const pr = $derived(observed.pr);
 </script>

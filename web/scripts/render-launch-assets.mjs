@@ -64,7 +64,6 @@ try {
       const response = await route.fetch();
       /** @type {import('../src/lib/types.js').Snapshot} */
       const snapshot = await response.json();
-      // Show a configured, paused synthetic workspace without configuring the service.
       await route.fulfill({
         response,
         json: {

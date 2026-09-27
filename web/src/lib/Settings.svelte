@@ -30,30 +30,22 @@
     editable: boolean;
     status: SetupStatus | null;
     onsaved: () => void;
-    /** Hands the operator to the Overview controls without starting anything. */
     onchoose: (action: 'audit' | 'cycle') => void;
   } = $props();
   let config = $state<Config | null>(null),
-    /** Canonical revision the displayed values came from; writes pin it and checks use it. */
     revision = $state(''),
-    /** The saved configuration as displayed, serialized for the draft/dirty comparison. */
     savedJson = $state(''),
-    /** The saved verification commands as displayed, one per line. */
     savedCommands = $state(''),
-    /** Every field the server transformed for display; those values are previews only. */
     transformed = $state<TransformedField[]>([]),
-    /** Transformed fields the operator deliberately chose to replace in full. */
     replaced = $state<Record<string, boolean>>({}),
     loading = $state(false),
     loadError = $state(''),
     error = $state(''),
-    /** The last save was refused because another save changed the revision first. */
     conflict = $state(false),
     message = $state(''),
     pending = $state(''),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
     commands = $state(''),
-    /** Result of the last explicit connection check, keyed to the exact saved revision. */
     preflight = $state<Preflight | null>(null);
   const busy = $derived(pending !== '');
   const dirty = $derived(
@@ -61,20 +53,15 @@
   );
   const savedConfig = $derived<Config | null>(savedJson ? JSON.parse(savedJson) : null);
   const transformedByField = $derived(new Map(transformed.map((entry) => [entry.field, entry])));
-  // A transformed collection is a read-only preview until deliberately replaced:
-  // its hidden members must never be merged back by position.
   const locked = (field: string) => transformedByField.has(field) && !replaced[field];
   const previewKind = (field: string) =>
     transformedByField.get(field)?.kinds.includes('redacted') ? 'hidden' : 'shortened';
-  // Revisit saved values only on navigation, never in response to a draft edit.
   $effect(() => {
     if (active) untrack(() => void load());
   });
   $effect(() => {
     if (dirty) message = '';
   });
-  // Offered in config.Categories() order. TestDashboardVocabulariesMatchConfig
-  // (internal/config) checks this list and ROLES and TIERS below.
   const categories = [
     'features',
     'correctness',
@@ -93,8 +80,6 @@
     proposal_reviewer: 'Proposal reviewers',
     code_reviewer: 'Code reviewer'
   };
-  // Routes render in pipeline and size order, mirroring config.Roles() and config.Tiers();
-  // the service's JSON sorts map keys. Any unexpected key follows in received order.
   const ROLES = ['orchestrator', 'discovery', 'proposal_reviewer', 'code_reviewer'];
   const TIERS = ['XS', 'S', 'M', 'L', 'XL'];
   const ordered = (keys: string[], known: string[]) => [
@@ -107,7 +92,6 @@
     loadError = '';
     try {
       const view = await api<SettingsView>('/config');
-      // The operator may have started typing while this refresh was in flight.
       if (!dirty) acceptSaved(view);
     } catch (e) {
       loadError = (e as Error).message;
@@ -120,7 +104,6 @@
       error = '';
       conflict = false;
       message = '';
-      // A connection check only ever covers the exact saved revision it ran against.
       preflight = null;
     }
     config = view.config;
@@ -130,12 +113,8 @@
     commands = view.config.verification_commands.join('\n');
     savedCommands = commands;
     replaced = {};
-    // Every caller passes a fresh server view, so an earlier load failure is resolved.
     loadError = '';
   }
-  // clearPath drops one display-transformed value so only deliberately supplied
-  // text is ever sent back; hidden originals are never combined into a replacement.
-  // Segments arrive structured: strings are object keys, numbers array indices.
   function clearPath(segments: (string | number)[]) {
     if (!config) return;
     let node: unknown = config;
@@ -145,8 +124,6 @@
     }
     const leaf = segments.at(-1);
     if (leaf === undefined || node == null) return;
-    // Clearing keeps positions stable: an emptied string marks exactly where the
-    // hidden value was, and every other member keeps its index.
     if (Array.isArray(node)) node[leaf as number] = '';
     else if (segments[0] === 'runner_storage_paths')
       delete (node as Record<string, unknown>)[leaf as string];
@@ -166,10 +143,6 @@
     conflict = false;
     message = 'Changes discarded. Saved configuration restored.';
   }
-  /**
-   * The service answers a stale save with 409 and asks to reload settings. This is the
-   * explicit way to follow that in place: drop the draft, then load the saved configuration.
-   */
   async function reload() {
     if (busy || loading) return;
     if (config) {
@@ -181,7 +154,6 @@
     conflict = false;
     message = '';
     await load();
-    // An edit typed while the read was in flight keeps its draft, so nothing was reloaded.
     if (!loadError && !dirty) message = 'Edits discarded. Saved configuration reloaded.';
   }
   async function save() {
@@ -192,8 +164,6 @@
     message = '';
     try {
       const draft: Config = { ...config, verification_commands: parseCommands(commands) };
-      // Send only the top-level fields the operator changed; each supplied field
-      // replaces its canonical value completely and omitted fields keep theirs.
       const patch: Record<string, unknown> = {};
       for (const key of Object.keys(draft) as (keyof Config)[]) {
         if (JSON.stringify(draft[key]) !== JSON.stringify(savedConfig?.[key]))
@@ -208,10 +178,6 @@
       onsaved();
     } catch (e) {
       error = (e as Error).message;
-      // The service also answers 409 when it is no longer paused or when tasks must be
-      // resolved first; a reload fixes neither. Only the stale-revision conflict asks for one.
-      // TestConfigConflictsAskForReloadOnlyWhenStale (internal/httpapi) holds the service's
-      // 409 texts to this pattern.
       conflict = e instanceof ApiError && e.status === 409 && /\breload\b/i.test(error);
     } finally {
       pending = '';
@@ -223,7 +189,6 @@
     return entry?.binary === config?.[`${backend}_binary`] ? entry : undefined;
   }
   async function catalog(backend: Backend) {
-    // A previewed executable is display text, not a path: it is never sent back.
     if (!config || !editable || busy || loading || locked(`${backend}_binary`)) return;
     const binary = config[`${backend}_binary`];
     pending = `catalog-${backend}`;
@@ -272,7 +237,6 @@
       pending = '';
     }
   }
-  /** Checklist links move focus to the existing control; they never edit, save or start work. */
   function focusControl(target: string) {
     const element = document.getElementById(target);
     if (!element) return;
@@ -668,7 +632,6 @@
     line-height: 1.7;
     color: var(--warn-fg);
   }
-  /* Notes for whole collections sit at section level, outside the form grid. */
   .settings-section > .preview-note {
     margin: 0 24px 14px;
   }
@@ -698,7 +661,6 @@
     margin: -8px 24px 16px;
     font-size: 12px;
   }
-  /* A narrow save bar moves the reload control below the message instead of squeezing it. */
   .settings-feedback > span {
     flex: 1 1 16em;
   }

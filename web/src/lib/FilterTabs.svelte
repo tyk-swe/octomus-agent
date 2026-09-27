@@ -1,5 +1,4 @@
 <script lang="ts">
-  /** Pressed-state buttons choosing one list filter; non-zero totals show beside a state. */
   let {
     labels,
     current,

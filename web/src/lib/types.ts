@@ -1,15 +1,6 @@
-/**
- * The service's JSON records and vocabularies, restated by hand. web/types_contract_test.go
- * compares the object types it lists with their Go records' JSON fields, and the
- * CycleMode, OperatingMode, TaskStatus and BaselineStatus unions and ACTIVE_STATUSES with
- * their Go enums; list a newly restated record or enum there too.
- */
 export type Backend = 'codex' | 'opencode';
-/** Mirrors `model.CycleMode`: an execution cycle queues work, an audit only plans. */
 export type CycleMode = 'execution' | 'audit';
-/** Mirrors `model.OperatingMode`. */
 export type OperatingMode = 'paused' | 'run_once' | 'continuous';
-/** Mirrors `model.Status`: every saved task status. */
 export type TaskStatus =
   | 'queued'
   | 'executing'
@@ -21,11 +12,8 @@ export type TaskStatus =
   | 'blocked'
   | 'failed'
   | 'cancelled';
-/** Mirrors `model.WorkspaceLifecycle`: when a record was archived and its workspace discarded. */
 export type WorkspaceLifecycle = { archived_at?: string | null; discarded_at?: string | null };
-/** Whether a baseline check's revision is still the last observed remote default branch. */
 export type RevisionStatus = 'matches_last_observation' | 'stale' | 'unknown';
-/** Owned open-PR admission, as internal/engine reports it. */
 export type PrCapacityStatus = 'ready' | 'full' | 'refreshing' | 'unavailable';
 export type Route = {
   backend: Backend;
@@ -66,10 +54,6 @@ export type Config = {
   retain_completed_days: number;
   retain_events: number;
 };
-/**
- * Mirrors `model.ActiveStatuses` in internal/model: task statuses with work in flight.
- * Typed as plain strings so any status word, known or not, can be tested against it.
- */
 export const ACTIVE_STATUSES: readonly string[] = [
   'executing',
   'reviewing',
@@ -143,11 +127,6 @@ export type AttemptPolicy = Pick<
 >;
 export type Page<T> = { items: T[]; next_cursor: number | null; counts: Record<string, number> };
 export type ProposalDetail = Proposal & { content_revision: number };
-/**
- * One /api/proposals row. List rows blank `prompt` and `evidence` and truncate `problem`
- * and `reason` to 2,000 characters; load the ProposalDetail for the full values.
- * `detail`, `detailRequested` and `detailLoading` are client-only state, never sent.
- */
 export type ProposalRow = ProposalDetail & {
   cycle: number;
   cycle_id: string;
@@ -156,10 +135,6 @@ export type ProposalRow = ProposalDetail & {
   detailRequested?: boolean;
   detailLoading?: number;
 };
-/**
- * Snapshot.prs and /api/prs rows are summaries: `pr.body` is omitted and `pr.title` is
- * truncated to 200 characters.
- */
 export type PrObservation = {
   repository: string;
   pr: Omit<PR, 'body'>;
@@ -262,7 +237,6 @@ export type Cycle = {
     prs: PR[];
     external_prs?: ExternalPrContext[];
     pr_coverage?: PrCoverage;
-    /** Repository history the planning pass read. Shape is owned by the planner. */
     history: unknown;
     maintenance_due: boolean;
     maintenance_targets: string[];
@@ -357,7 +331,6 @@ export type ProposalEvidence = {
   final_decision: string;
   final_reason: string;
   reviewer_verdicts: ReviewerVerdict[];
-  /** Zero or many: every task matching (cycle_id, proposal_id) is preserved. */
   linked_tasks: TaskEvidence[];
   gaps: string[];
 };
@@ -381,12 +354,6 @@ export type CycleEvidence = {
   grounding_revision: string | null;
   planning: PlanningOutcome;
 };
-/**
- * GET /api/cycles/{id}/evidence and `--export-run <cycle-id>`. Mirrors internal/evidence.
- * Recorded review and check evidence only: no live HEAD, workspace, remote,
- * authorization or current PR state is inspected, and free text still requires
- * manual review before sharing.
- */
 export type RunEvidenceV1 = {
   schema_version: number;
   generated_at: string;
@@ -450,7 +417,6 @@ export type BaselineView = {
   eligible: boolean;
   reason: string | null;
   config_matches: boolean | null;
-  /** Canonical configuration revision the check recorded at start; null when none ran. */
   config_revision: string | null;
   revision_status: RevisionStatus;
   default_observation: DefaultBranchObservation | null;
@@ -462,24 +428,15 @@ export type BaselineSummary = {
   started_at: string;
   completed_at: string | null;
   error: string | null;
-  /** Canonical configuration revision the check recorded at start. */
   config_revision: string;
   config_matches: boolean;
   revision_status: RevisionStatus;
 };
-/** One top-level settings field whose served values differ from canonical state. */
 export type TransformedField = {
   field: string;
   kinds: ('redacted' | 'shortened')[];
-  /** Structured JSON paths: string segments are object keys, numbers are array indices. */
   paths: (string | number)[][];
 };
-/**
- * The settings read/write contract: a display-safe configuration, the canonical
- * revision it was computed from, and every display-transformed field. Displayed
- * values are previews; writes send `expected_revision` plus only the top-level
- * fields being deliberately replaced.
- */
 export type SettingsView = {
   config: Config;
   revision: string;

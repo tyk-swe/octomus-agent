@@ -81,7 +81,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def setup_request(self):
         if mode() == 'overlong-stdout':
-            # Server logs keep reaching stdout after readiness.
             print('x' * 8191, flush=True)
         expected = 'Basic ' + base64.b64encode(f"{os.environ['OPENCODE_SERVER_USERNAME']}:{os.environ['OPENCODE_SERVER_PASSWORD']}".encode()).decode()
         if self.headers.get('Authorization') != expected:
@@ -115,7 +114,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({**policy, 'share': 'auto'} if mode() == 'wrong-policy' else policy)
         elif self.parts == ['provider']:
             if mode() == 'redirect':
-                # Redirects must fail closed; the adapter never follows them.
                 self.send_response(302)
                 self.send_header('Location', 'http://127.0.0.1:1/')
                 self.send_header('Content-Length', '0')
@@ -155,7 +153,6 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(b'0\r\n\r\n')
                         break
                     frame = b'data: not-json\n\n' if value == 'malformed' else ('data: ' + json.dumps(value, ensure_ascii=False) + '\n\n').encode()
-                    # Real HTTP chunks can split both SSE lines and UTF-8 codepoints.
                     for offset in range(0, len(frame), 17):
                         chunk = frame[offset:offset + 17]
                         self.wfile.write(f'{len(chunk):x}\r\n'.encode() + chunk + b'\r\n')
@@ -215,7 +212,6 @@ class Handler(BaseHTTPRequestHandler):
         file.write_text(json.dumps(thread))
         prompt = body['parts'][0]['text']
         log('protocol.jsonl', {'backend': 'opencode', 'thread': identity, 'prompt': prompt, 'cwd': self.directory, 'provider': body['model']['providerID'], 'model': body['model']['modelID'], 'variant': body.get('variant')})
-        # Model-dependent failure markers leave the planning cycle intact in full-service tests.
         behavior = mode() if body['model']['modelID'] != 'plain-model' else ''
         info = {'id': 'msg_' + uuid.uuid4().hex, 'sessionID': identity, 'parentID': body['messageID'], 'role': 'assistant', 'modelID': body['model']['modelID'], 'providerID': body['model']['providerID'], 'time': {'created': 1, 'completed': 2}, 'finish': 'stop'}
         if 'variant' in body:
@@ -233,7 +229,6 @@ class Handler(BaseHTTPRequestHandler):
                 child = subprocess.Popen(['sleep', '120'])
                 (root / 'opencode-child-pid').write_text(str(child.pid))
             elif behavior == 'detached-hold':
-                # OpenCode uses detached shell groups with a three-second SIGKILL fallback.
                 ready = root / 'opencode-child-ready'
                 script = 'import signal,time,sys;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);Path(sys.argv[1]).touch();time.sleep(120)'
                 child = subprocess.Popen([sys.executable, '-c', script, str(ready)], start_new_session=True)
@@ -282,7 +277,6 @@ class Handler(BaseHTTPRequestHandler):
                 info['structured'] = 'not a review object'
         if behavior == 'empty':
             parts = []
-        # Include an unrelated event and Unicode progress data to exercise filtering and framing.
         emit(self.directory, {'type': 'message.updated', 'properties': {'info': {'sessionID': 'ses_unrelated', 'role': 'assistant', 'parentID': body['messageID'], 'modelID': 'ignored'}}})
         emit(self.directory, {'type': 'message.part.updated', 'properties': {'sessionID': identity, 'part': {'type': 'tool', 'state': {'status': 'completed', 'output': 'private fixture ✓'}}}})
         emit(self.directory, {'type': 'message.updated', 'properties': {'info': info}})
@@ -293,7 +287,7 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def handle_error(self, request, client_address):
-        pass  # Disconnects are exercised deliberately.
+        pass
 
 
 port = int(sys.argv[sys.argv.index('--port') + 1])
@@ -301,6 +295,5 @@ server = Server(('127.0.0.1', port), Handler)
 log('opencode-pids.jsonl', {'pid': os.getpid()})
 print(f'opencode server listening on http://127.0.0.1:{server.server_port}', flush=True)
 if mode() == 'overlong-stdout':
-    # One stdout line over the adapter's 16 KiB readiness line bound.
     print('z' * 20000, flush=True)
 server.serve_forever()

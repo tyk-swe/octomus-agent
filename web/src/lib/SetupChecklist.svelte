@@ -28,19 +28,15 @@
   }: {
     draft: Config;
     saved: Config | null;
-    /** Canonical revision of the saved configuration the display values come from. */
     revision: string;
     commands: string;
     dirty: boolean;
     catalogs: Partial<Record<Backend, ModelCatalog>>;
     preflight: Preflight | null;
     status: SetupStatus | null;
-    /** Moves focus to an existing control; it never changes or saves a value. */
     onfocus: (target: string) => void;
-    /** Hands off to the Overview controls; it never starts work. */
     onchoose: (action: 'audit' | 'cycle') => void;
   } = $props();
-  // Tab-local only: collapsing the checklist is not persisted and starts nothing.
   let open = $state(true);
   const draftCommands = $derived(parseCommands(commands));
   type Link = { label: string; target?: string; choose?: 'audit' | 'cycle' };

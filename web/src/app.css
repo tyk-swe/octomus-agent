@@ -1,6 +1,3 @@
-/* The dashboard stylesheet, in cascade order. These files are concatenated in
-   the order below, so a rule in a later file wins a tie with an earlier one.
-   Order is the contract; move a file and you move its specificity. */
 @import './styles/tokens.css';
 @import './styles/controls.css';
 @import './styles/shell.css';

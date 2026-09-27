@@ -49,7 +49,6 @@ def scenario(mode):
             state = service.wait(failed_cycle, 'failed discovery cycle')
             cycle = service.request('/cycles/' + state['cycles'][0]['id'])
             assert 'invalid JSON' in cycle['error'], cycle['error']
-            # Every started role leaves terminal evidence, including the ones after the failure.
             assert sorted(s['role'] for s in cycle['sessions']) == sorted(['grounding'] + [f'discovery-{i}' for i in range(9)]), cycle['sessions']
             failed = [s for s in cycle['sessions'] if s['status'] == 'failed']
             assert [s['role'] for s in failed] == ['discovery-0'] and 'invalid JSON' in failed[0]['summary'], failed
@@ -76,8 +75,6 @@ def scenario(mode):
             if mode == 'closed-after-publication':
                 update_prs(root, lambda prs: prs[0].update(state='closed'))
             service.start()
-            # The durable publishing checkpoint is recovered autonomously.
-            # No Codex turn or operator retry should be needed.
             task = service.wait(service.terminal_task, 'recovered publication')
             assert task['status'] == 'published', task['error']
         task = service.wait(service.terminal_task, 'task completion')
@@ -114,7 +111,6 @@ def scenario(mode):
             assert not (root / 'publications.jsonl').exists(), 'Unresolved work must not publish'
             if mode == 'interactive':
                 assert 'interactive input' in task['error']
-                # A retry retains the saved route despite an operator configuration change.
                 service.request('/control/pause', 'POST')
                 service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'paused task')
                 config = service.request('/config')['config']
@@ -212,10 +208,6 @@ def settings_scenario():
 
         config = base_config(service, [])
         use_codex_routes(config)
-        # The service token is a registered secret: a command embedding it is
-        # served redacted, while the stored canonical value keeps the token.
-        # Its side effect is the proof the canonical command, not the preview,
-        # is what the service holds and runs.
         proof = root / 'canonical-proof'
         secret_command = f'echo {TOKEN} > {proof}'
         displayed = f'echo [redacted] > {proof}'
@@ -226,21 +218,17 @@ def settings_scenario():
         assert saved['config']['verification_commands'] == [displayed]
         assert saved['revision'] != view['revision'] and len(saved['revision']) == 64
 
-        # A partial patch omits the hidden field; the canonical token survives.
         retries = saved['config']['max_retries'] + 1
         code, updated = service.expect('/config', 'PUT', {'expected_revision': saved['revision'], 'config': {'max_retries': retries}})
         assert code == 200, updated
         assert updated['config']['verification_commands'] == [displayed]
         assert updated['config']['max_retries'] == retries and updated['revision'] != saved['revision']
         assert next(t for t in updated['transformed_fields'] if t['field'] == 'verification_commands')
-        # API responses redact even canonical echoes; the revision is the
-        # authoritative identity of the checked configuration.
         diagnostic = service.request('/doctor', 'POST')
         assert diagnostic['checked_revision'] == updated['revision']
         assert diagnostic['checked_config']['verification_commands'] == [displayed]
         assert not proof.exists()
 
-        # A stale revision rejects writes and baseline starts before any work exists.
         code, refusal = service.expect('/config', 'PUT', {'expected_revision': saved['revision'], 'config': {'max_retries': retries + 1}})
         assert code == 409 and 'changed' in refusal['error'], (code, refusal)
         code, refusal = service.expect('/baseline-checks', 'POST', {'expected_revision': saved['revision']})
@@ -248,7 +236,6 @@ def settings_scenario():
         assert service.request('/baseline-checks/latest')['check'] is None
         assert not (root / '.octomus/baselines').exists()
 
-        # The admitted check snapshots the canonical configuration, not the preview.
         code, check = service.expect('/baseline-checks', 'POST', {'expected_revision': updated['revision']})
         assert code == 202, (code, check)
         assert check['config']['verification_commands'] == [displayed]
@@ -273,7 +260,6 @@ def missing_session_scenario(role):
         thread = task['execution_session' if role == 'executor' else 'repair_session']
         assert thread and any(s['id'] == thread for s in task['sessions'])
         task['sessions'] = [s for s in task['sessions'] if s['id'] != thread]
-        # Corrupt only this stopped, temporary fixture's saved task snapshot.
         with sqlite3.connect(root / '.octomus/state.db') as db:
             db.execute("UPDATE records SET data=? WHERE kind='task' AND id=?", (json.dumps(task), task['id']))
         marker.unlink()
@@ -353,8 +339,6 @@ def audit_scenario(mode):
             assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
             print('PASS audit-budget: refused before any admission with an explicit capacity reason')
             return
-        # A remote observation right after the restart does not invalidate
-        # the audit preflight, so one request starts the audit.
         code, response = service.expect('/control/audit', 'POST')
         assert code == 200, (mode, code, response)
         if mode != 'failed':
@@ -394,8 +378,6 @@ def audit_scenario(mode):
             assert row['planning_admissions'] == 13
         service.stop()
         service.start()
-        # Negative checks sleep past a scheduler tick (schedulerInterval,
-        # 1 s, in internal/engine/engine.go) so a restart could act first.
         time.sleep(1.2)
         assert service.request('/state')['tasks'] == queued_before
         current_publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
@@ -430,7 +412,6 @@ def harness_scenario():
             if self.path == '/api/state':
                 self.wfile.write(b'not an HTTP status line\r\n\r\n')
             elif self.path == '/api/recovers' and calls[self.path] < 3:
-                # The body stops short of its Content-Length, so reading it raises IncompleteRead.
                 self.reply(500, b'{"error":', length=64)
             elif self.path == '/api/recovers':
                 self.reply(200, b'{"ok":true}')
@@ -464,8 +445,6 @@ def harness_scenario():
             assert report and report.startswith('missing route timed out after 1s; last error: HTTP 404: {"error":"Unknown API route"}\nstate: <state unavailable: BadStatusLine('), report
             assert report.endswith('service.log tail:\nearlier line\nlast service line'), report
 
-            # A race-instrumented service exits with the race detector's status
-            # even from a graceful SIGTERM shutdown; stop() reports it once.
             service.process = subprocess.Popen([sys.executable, '-c', 'import signal, sys, time\nsignal.signal(signal.SIGTERM, lambda *_: sys.exit(66))\nprint("ready", flush=True)\ntime.sleep(30)'], stdout=subprocess.PIPE, text=True)
             with service.process.stdout:
                 assert service.process.stdout.readline() == 'ready\n'
@@ -476,7 +455,6 @@ def harness_scenario():
                 report = str(error)
             assert report and report.startswith('service exited with status 66: the race detector reported a data race; service.log tail:\n'), report
             service.stop()
-            # A clean exit, or a crash stop's SIGKILL, is not a race report.
             service.race_reported = False
             for command in ['pass', 'import time; time.sleep(30)']:
                 service.process = subprocess.Popen([sys.executable, '-c', command])
@@ -487,7 +465,6 @@ def harness_scenario():
             server.server_close()
             service.log.close()
 
-    # A live process whose command name mimics a zombie's stat line.
     child = subprocess.Popen([sys.executable, '-c', "from pathlib import Path; import time; Path('/proc/self/comm').write_text('x) Z 0'); print('ready', flush=True); time.sleep(30)"], stdout=subprocess.PIPE, text=True)
     try:
         with child.stdout:
@@ -502,9 +479,6 @@ def harness_scenario():
         child.wait(timeout=5)
     assert process_gone(child.pid)
 
-    # A failed scenario still tears down: holds are released before the
-    # service stops, and the directory is removed. The stand-in service
-    # exits 3 if its hold still exists when it is asked to stop.
     failure = RuntimeError('scenario failure')
     try:
         with fixture_service('octomus-harness-fixture-', start=False) as (root, service):
@@ -520,8 +494,6 @@ def harness_scenario():
     assert service.process.returncode == 0, f'the hold outlived the service stop: {service.process.returncode}'
     assert service.log.closed and not root.exists()
 
-    # update_prs edits prs.json only under the gh fixture's lock, and replaces
-    # the file rather than rewriting it in place.
     with tempfile.TemporaryDirectory(prefix='octomus-harness-prs-') as tmp:
         root = Path(tmp)
         (root / 'prs.json').write_text(json.dumps([{'number': 1, 'state': 'open'}]))
@@ -536,7 +508,7 @@ def harness_scenario():
                     time.sleep(0.5)
                     waited = not update.done() and json.loads((root / 'prs.json').read_text())[0]['state'] == 'open'
                 finally:
-                    holder.stdin.close()  # The holder exits and releases the lock.
+                    holder.stdin.close()
                 assert waited, 'update_prs edited prs.json while gh held the lock'
                 update.result(timeout=10)
         finally:
@@ -546,7 +518,6 @@ def harness_scenario():
         assert (root / 'prs.json').stat().st_ino != inode, 'prs.json was rewritten in place'
         assert sorted(p.name for p in root.iterdir()) == ['github.lock', 'prs.json']
 
-    # Selected scenarios run in registry order; an unknown name runs nothing.
     ran = []
     registry = [(name, functools.partial(ran.append, name)) for name in ['a', 'b', 'c']]
     output = io.StringIO()

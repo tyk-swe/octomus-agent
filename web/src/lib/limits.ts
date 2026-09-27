@@ -1,27 +1,12 @@
 import type { Config } from './types';
 
-/** Configuration fields that hold a number. */
 type NumericConfigKey = {
   [K in keyof Config]: Config[K] extends number ? K : never;
 }[keyof Config];
 
-/**
- * The numeric operating limits the configuration form exposes, with the range
- * each one accepts. The bounds mirror what the service accepts (internal/config),
- * which checks every bounded limit again on save, together with one cross-field
- * rule: the task timeout must be at least the session timeout. A limit without a
- * maximum has none in the service either. The PR maintenance thresholds
- * (large_pr_lines, long_lived_pr_days) have no range in the service at all: any
- * count is accepted and 0 marks every owned open PR, so their minimum of 0 only
- * says a count is never negative. The bounds here let the form say what it will
- * accept before asking. TestDashboardLimitsMatchValidation (internal/config) holds
- * every entry to the service's validation; it reads each entry's key first and its
- * min, then any max, last.
- */
 export type Limit = {
   key: NumericConfigKey;
   label: string;
-  /** What the limit does; the accepted range is appended from `min` and `max`. */
   help: string;
   min: number;
   max?: number;
@@ -152,7 +137,6 @@ export const LIMITS: Limit[] = [
   }
 ];
 
-/** A limit's help text followed by its accepted range, e.g. `… · 1–10,000`. */
 export function limitHelp({ help, min, max }: Limit): string {
   const count = (value: number) => value.toLocaleString('en-US');
   return max === undefined ? help : `${help} · ${count(min)}–${count(max)}`;

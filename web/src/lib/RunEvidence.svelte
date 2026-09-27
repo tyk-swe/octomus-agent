@@ -1,10 +1,3 @@
-<!--
-  Inspect run: read-only navigation over the evidence one planning cycle actually saved.
-
-  This is not an event timeline. Every section names a saved record, and missing, stale,
-  duplicate or unattributable evidence is rendered as such instead of being smoothed
-  into a pass. The panel only ever issues GET requests.
--->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, ApiError, relative, safeUrl } from './api';
@@ -68,8 +61,6 @@
   );
   let missingFocus = $derived(!!run && !!selectedProposalId && !focused);
   let linked = $derived<TaskEvidence[]>(focused?.linked_tasks ?? []);
-  // Multiple matches are preserved and never resolved for the operator: one must be
-  // chosen explicitly before its review, check and delivery evidence is shown.
   let selectedTask = $derived<TaskEvidence | null>(
     taskFocus && taskFocus.proposal === focused?.id
       ? (linked.find((t) => t.id === taskFocus?.task) ?? null)
@@ -99,20 +90,17 @@
             error: e instanceof Error ? e.message : String(e)
           }))
       ]);
-      // A late response for a superseded selection must never replace newer evidence.
       if (current !== generation || controller.signal.aborted || cycle !== cycleId) return;
       run = next;
       cycleDetail = detail.cycle;
       contextError = detail.error;
       error = '';
       stale = false;
-      // A removed selection stays explicit; another proposal is never silently substituted.
       if (selectedProposalId === null)
         selectedProposalId = proposalId ?? next.proposals[0]?.id ?? null;
     } catch (e) {
       if (current !== generation || controller.signal.aborted || cycle !== cycleId) return;
       error = (e as Error).message;
-      // A rejected session must not keep displaying the previous session's records.
       if (e instanceof ApiError && e.status === 401) {
         run = null;
         cycleDetail = null;
@@ -131,7 +119,6 @@
   }
   $effect(() => {
     const cycle = cycleId;
-    // Selecting another run discards the previous run rather than mixing two cycles.
     run = null;
     cycleDetail = null;
     contextError = '';
@@ -142,7 +129,6 @@
     taskFocus = null;
     void load(cycle);
     const timer = setInterval(() => {
-      // Slow responses must finish before polling can start another request.
       if (!request) void load(cycle);
     }, 10000);
     return () => {
@@ -158,7 +144,6 @@
       request?.abort();
     };
   });
-  /** Downloads exactly the allowlisted payload the service returned. */
   function download() {
     if (!run) return;
     const url = URL.createObjectURL(
@@ -168,7 +153,6 @@
     link.href = url;
     link.download = `octomus-run-evidence-${run.cycle.id}.json`;
     link.click();
-    // Released after the browser has taken the blob, never before the click is handled.
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 </script>

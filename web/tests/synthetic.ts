@@ -1,8 +1,3 @@
-/**
- * Deterministic SYNTHETIC fixtures shared by the browser tests and the screenshot
- * captures. Nothing here is copied from a real run: every string is labelled synthetic,
- * repository names are fixture names, and commit identities are repeated letters.
- */
 import { expect, type Page, type Route } from '@playwright/test';
 import type {
   CommandResult,
@@ -29,7 +24,6 @@ export async function login(page: Page) {
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
 }
 
-/** Records every non-GET call so read-only interaction can be proven read-only. */
 export function trackWrites(page: Page) {
   const writes: { path: string; method: string }[] = [];
   page.on('request', (request) => {
@@ -185,7 +179,6 @@ export function runEvidence(
   };
 }
 
-/** One synthetic proposal summary row, as the paged proposal history returns them. */
 export function proposalRow(
   id: string,
   cycleId: string,

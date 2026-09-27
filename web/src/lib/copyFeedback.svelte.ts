@@ -1,6 +1,5 @@
 import { copyMessage, copyText } from './clipboard';
 
-/** The copy status line and its reset, shared by the task and run-evidence panels. */
 export type CopyFeedback = {
   readonly status: string;
   copy: (value: string, label: string) => Promise<void>;

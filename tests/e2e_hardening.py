@@ -23,9 +23,6 @@ def run(mode):
         if mode == 'published-trimmed-title':
             (root / 'proposal-override.json').write_text(json.dumps({'title': '\t Complete the fixture feature \u2003', 'problem_key': 'original-feature-key'}))
         if mode in ['publication-secret', 'publication-secret-followup']:
-            # Clearly synthetic secrets only: a token-patterned value and the
-            # fixture operator token's value, which the service environment
-            # legitimately carries.
             (root / 'proposal-override.json').write_text(json.dumps({
                 'title': 'Complete the fixture feature ghp_fixturePublicationSecret0001',
                 'problem': f'Missing output; leaked environment value {TOKEN} and ghp_fixturePublicationSecret0001'}))
@@ -38,16 +35,12 @@ def run(mode):
             task = service.wait(service.terminal_task, 'uncertain publication')
             assert task['status'] == 'blocked' and task['output_commit'], task
             service.wait(lambda: service.request('/state')['control']['paused'] and service.request('/state')['active_tasks'] == 0, 'uncertain publication paused')
-            # First preserve an invalid remote identity to exercise failure cleanup,
-            # then restore it and reconcile the already delivered commit.
             for succeeds in [False, True]:
                 if succeeds:
                     update_prs(root, lambda prs: prs[0].update(body=f'<!-- octomus:task:{task["id"]} -->'))
                 (root / 'reconcile-entered').unlink(missing_ok=True)
                 (root / 'reconcile-hold').touch()
                 with ThreadPoolExecutor(max_workers=1) as pool:
-                    # The held request stays open across the controls below,
-                    # longer than the default 5 s socket timeout allows.
                     request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST', timeout=30)
                     try:
                         service.wait(lambda: (root / 'reconcile-entered').exists(), 'held reconciliation', seconds=3)
@@ -87,10 +80,6 @@ def run(mode):
             service.request('/tasks/' + task['id'] + '/archive', 'POST')
             archived = service.request('/tasks/' + task['id'])
             assert archived['status'] == 'cancelled' and archived['allowed_actions'] == ['discard'], archived
-            # The remote side of the checkpoint settles closed. Remote
-            # inspection must release the reservation rather than stranding
-            # the slot on an archived task. The follow-up cycle discovers no
-            # new work so the released count cannot race a fresh admission.
             update_prs(root, lambda prs: prs[0].update(state='closed'))
             (root / 'idle').touch()
             service.request('/control/cycle', 'POST')
@@ -277,10 +266,6 @@ def run(mode):
             time.sleep(1)
             assert not service.request('/state')['prs'][0]['external_head_movement'], 'Archival must not replace the latest known delivery head'
         elif mode == 'dependency-rollback':
-            # The first follow-up lands on the shared branch; the remote then
-            # reports the branch rewound to its parent, so the delivered
-            # commit is no longer an ancestor of the head. Both dependents
-            # must block on the dependency instead of planning over it.
             service.wait(lambda: service.request('/state')['control']['paused'], 'rollback drain paused')
             tasks = [service.request('/tasks/' + r['id']) for r in service.request('/state')['tasks']]
             published = [t for t in tasks if t['status'] == 'published']
@@ -294,8 +279,6 @@ def run(mode):
             assert actions == ['comment'], actions
             return
         elif mode == 'publication-body-edit':
-            # The maintainer's concurrent description edit survives the
-            # follow-up: evidence lands as a comment, never a body rewrite.
             task = service.wait(service.terminal_task, 'follow-up publication')
             assert task['status'] == 'published' and task['pr_number'] == 42, task
             pr = json.loads((root / 'prs.json').read_text())[0]
@@ -307,9 +290,6 @@ def run(mode):
             service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot paused')
             return
         elif mode in ['publication-secret', 'publication-secret-followup']:
-            # The same secret policy covers a new PR's title and body and
-            # an owned PR's append-only follow-up comment; the durable
-            # record keeps the canonical private text.
             task = service.wait(service.terminal_task, mode)
             assert task['status'] == 'published', task
             prs = json.loads((root / 'prs.json').read_text())
@@ -328,8 +308,6 @@ def run(mode):
             assert f'<!-- octomus:task:{task["id"]} -->' in sent, sent
             assert f'Reviewed commit: `{task["output_commit"]}`' in sent, sent
             assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
-            # The pushed branch is public too: its generated commit
-            # message is the scrubbed title.
             messages = git('log', '--format=%B', task['branch'], cwd=root / 'remote.git')
             assert TOKEN not in messages and 'ghp_fixturePublicationSecret0001' not in messages, messages
             assert 'Complete the fixture feature [redacted]' in messages, messages
@@ -348,7 +326,6 @@ def run(mode):
             assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
         service.wait(lambda: service.request('/state')['control']['paused'], 'one-shot completion')
         cycles = len(service.request('/state')['cycles'])
-        # Past one scheduler tick (schedulerInterval in internal/engine/engine.go).
         service.stop(); service.start(); time.sleep(1.2)
         assert service.request('/state')['control']['mode'] == 'paused'
         assert len(service.request('/state')['cycles']) == cycles
@@ -377,12 +354,9 @@ def reconciliation_deadline():
         config.update(session_timeout_seconds=30, task_timeout_seconds=120)
         service.save_config(config)
         update_prs(root, lambda prs: prs[0].update(body=f'<!-- octomus:task:{task["id"]} -->'))
-        # Each command fits its 10-second limit; their total exceeds the task's.
         (root / 'reconcile-delay').write_text('6')
         start = time.monotonic()
         with ThreadPoolExecutor(max_workers=1) as pool:
-            # The client gives up after its 5 s socket timeout, before the
-            # 7 s wait below: reconciliation must outlive the disconnect.
             request = pool.submit(service.request, '/tasks/' + task['id'] + '/reconcile', 'POST', timeout=5)
             service.wait(lambda: (root / 'reconcile-processes.jsonl').exists(), 'slow reconciliation entered', seconds=3)
             try:

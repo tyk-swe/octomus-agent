@@ -7,7 +7,6 @@ import subprocess
 import sys
 import time
 root = Path(os.environ['OCTOMUS_FIXTURE'])
-# The service strips its operator token and webhook URL from every child.
 assert 'OCTOMUS_TOKEN' not in os.environ
 assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 import fcntl
@@ -91,9 +90,6 @@ elif args[:2] == ['pr', 'comment']:
     pr.setdefault('comments', []).append({'body': Path(arg('--body-file')).read_text()})
     with (root / 'publications.jsonl').open('a') as log:
         log.write(json.dumps({'action': 'comment', 'number': number}) + '\n')
-    # A maintainer editing the description concurrently with the follow-up must
-    # survive: comments append and never touch the body. The edit keeps the
-    # recorded ownership marker, the way a maintainer editing prose would.
     if (root / 'publication-body-edit').exists():
         pr['body'] = 'Maintainer edit during follow-up.\n\n' + pr['body']
     if (root / 'dependency-rollback').exists():

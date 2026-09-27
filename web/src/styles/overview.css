@@ -1,4 +1,3 @@
-/* The overview view: the latest run, then attention, then operating limits. */
 .run-outcome {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

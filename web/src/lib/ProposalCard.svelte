@@ -4,10 +4,6 @@
   import Icon from './Icon.svelte';
   import type { ProposalRow } from './types';
 
-  /**
-   * One proposal from the paged history. Opening its details asks the page to fetch the
-   * full proposal; fetched detail is shown in place of the truncated polling summary.
-   */
   let {
     proposal,
     onexpand,

@@ -1,4 +1,3 @@
-/* The unauthenticated screen, which shares nothing with the frame behind it. */
 .login-page {
   min-height: 100vh;
   background: #fffaf0;

@@ -11,7 +11,6 @@ from harness import configuration, fixture_service, git, process_gone, route, ru
 
 def successful_workflow(mode):
     with fixture_service('octomus-runners-') as (root, service):
-        # Preview a draft executable path without saving configuration or admitting turns.
         preview = root / 'bin/opencode-preview'
         shutil.copy(root / 'bin/opencode', preview)
         models = service.request('/model-catalog', 'POST', {'backend': 'opencode', 'binary': str(preview)})
@@ -32,7 +31,7 @@ def successful_workflow(mode):
             row = service.request('/state')['tasks'][0]
             original = service.request(f'/tasks/{row["id"]}')
             service.stop(crash=True)
-            stop_peers(root)  # Model the documented supervisor cgroup cleanup before restart.
+            stop_peers(root)
             (root / 'opencode-mode').unlink()
             service.start()
         task = service.wait(service.terminal_task, f'{mode} delivery')

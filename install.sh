@@ -1,5 +1,4 @@
 #!/bin/sh
-# Usage: sh install.sh [vVERSION] (or OCTOMUS_VERSION=vVERSION). INSTALL_DIR defaults to /usr/local/bin.
 set -eu
 fail() { echo "octomus installer: $*" >&2; exit 1; }
 [ "$(uname -s)" = Linux ] || fail 'Linux is required'
@@ -13,7 +12,6 @@ repo=https://github.com/tyk-swe/octomus-agent
 version=${1:-${OCTOMUS_VERSION:-}}
 if [ -z "$version" ]; then
   latest=$(curl --proto '=https' --proto-redir '=https' -fsSL -o /dev/null -w '%{url_effective}' "$repo/releases/latest") || fail 'No downloadable release; check release availability'
-  # Without a stable release GitHub lands on the release list, not a tag.
   case "$latest" in */releases/tag/v[0-9]*) ;; *) fail 'No published stable release found; pass a version such as v0.1.0';; esac
   version=${latest##*/}
 fi
@@ -27,16 +25,14 @@ asset=octomus-agent-$version-$target.tar.gz
 url=$repo/releases/download/$version
 curl --proto '=https' --proto-redir '=https' -fsSL "$url/$asset" -o "$stage/$asset" || fail 'Release download failed'
 curl --proto '=https' --proto-redir '=https' -fsSL "$url/SHA256SUMS" -o "$stage/SHA256SUMS" || fail 'Checksum download failed'
-# Select exactly one checksum; never trust paths supplied by the checksum file.
+# Select exactly one checksum by asset name; never trust paths supplied by the checksum file.
 hash=$(awk -v name="$asset" '$2 == name {print $1}' "$stage/SHA256SUMS")
 [ "${#hash}" = 64 ] || fail 'Missing or ambiguous checksum'
 case "$hash" in *[!a-fA-F0-9]*) fail 'Invalid checksum';; esac
 (cd "$stage" && printf '%s  %s\n' "$hash" "$asset" | sha256sum -c -) || fail 'Checksum mismatch; nothing installed'
-# Extract only the expected executable into our private temporary directory.
 tar -xOzf "$stage/$asset" octomus-agent/octomus-agent > "$stage/octomus-agent" || fail 'Archive is missing the executable'
 [ -s "$stage/octomus-agent" ] || fail 'Empty executable'
-# Create a missing destination as the invoking user when its parent allows it,
-# so sudo never creates root-owned directories under a user-writable path.
+# Create a missing destination as the invoking user so sudo never creates root-owned directories under a user-writable path.
 [ -d "$dest" ] || mkdir -p "$dest" 2>/dev/null || :
 if [ -d "$dest" ] && [ -w "$dest" ]; then
   install -m 755 "$stage/octomus-agent" "$dest/.octomus-agent.$$"

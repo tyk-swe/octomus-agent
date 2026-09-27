@@ -1,4 +1,3 @@
-/* Accessibility utilities and focus visibility shared by the page and both panels. */
 .skip-link {
   position: fixed;
   top: 8px;
@@ -43,7 +42,6 @@ select:focus-visible,
   outline-offset: -3px;
 }
 
-/* Badges are read as text. Sentence case comes from the first letter, never Title Case. */
 .badge::first-letter {
   text-transform: uppercase;
 }

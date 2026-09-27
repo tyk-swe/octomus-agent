@@ -21,14 +21,8 @@ import urllib.request
 PROJECT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent')))
 TOKEN = 'fixture-operator-token-with-at-least-32-characters'
-# The Go race detector's default exit status (GORACE exitcode). Only a
-# race-instrumented build (make test-race-e2e) exits with it; the service
-# itself uses 0, 1 and 2.
 RACE_EXIT_STATUS = 66
-# The Codex route the fixture peer serves. Shipped tiers and repair carry an
-# effort but no model, so scenarios pick this one.
 CODEX_ROUTE = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
-# Marker files a fixture peer waits on for as long as they exist.
 HOLDS = ['reconcile-hold', 'audit-hold']
 
 
@@ -91,7 +85,7 @@ def process_gone(pid):
     """
     try:
         stat = Path(f'/proc/{pid}/stat').read_text()
-    except (FileNotFoundError, ProcessLookupError):  # Reaped before or while reading.
+    except (FileNotFoundError, ProcessLookupError):
         return True
     return stat.rpartition(')')[2].split()[0] in ['Z', 'X']
 
@@ -157,13 +151,9 @@ class Service:
             try:
                 self.process.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                # Never leave the service running; the raised error chains any
-                # scenario failure already in flight.
                 self.process.kill()
                 self.process.wait(timeout=5)
                 raise AssertionError(f'service did not stop within 15s of {"SIGKILL" if crash else "SIGTERM"}; service.log tail:\n{service_log(self.root, tail=100)}')
-        # A race detected at any point, shutdown included, fails the scenario
-        # once, with the report from the log.
         if self.process and self.process.returncode == RACE_EXIT_STATUS and not self.race_reported:
             self.race_reported = True
             raise AssertionError(f'service exited with status {RACE_EXIT_STATUS}: the race detector reported a data race; service.log tail:\n{service_log(self.root, tail=200)}')
@@ -203,14 +193,13 @@ class Service:
         last_error = None
 
         def attempt():
-            # poll() retries these; remember the latest for the timeout report.
             nonlocal last_error
             try:
                 return predicate()
             except urllib.error.HTTPError as error:
                 try:
                     body = error.read()[:2000].decode(errors='replace')
-                except Exception as read_error:  # A cut-off body raises IncompleteRead, not OSError.
+                except Exception as read_error:
                     body = f'<body unavailable: {read_error!r}>'
                 last_error = f'HTTP {error.code}: {body}'
                 raise
@@ -226,7 +215,7 @@ class Service:
             return result
         try:
             state = json.dumps(self.request('/state'), indent=2)
-        except Exception as error:  # Any failure (even BadStatusLine) is reported, never raised.
+        except Exception as error:
             state = f'<state unavailable: {error!r}>'
         raise AssertionError(f'{label} timed out after {seconds}s; last error: {last_error}\nstate: {state}\nservice.log tail:\n{service_log(self.root, tail=100)}')
 
@@ -242,8 +231,6 @@ class Service:
         self.save_config(config)
         diagnostic = self.request('/doctor', 'POST')
         view = self.request('/config')
-        # The check is attributed to the canonical revision; fixture values are
-        # never display-transformed, so the checked canonical payload matches.
         assert diagnostic['checked_revision'] == view['revision']
         assert diagnostic['checked_config'] == view['config']
         assert diagnostic['codex_version'] == 'codex-cli 0.153.4'
@@ -313,7 +300,6 @@ def update_prs(root, change):
 
 
 def usage_report(root):
-    # Runs concurrently with the service lock, with no token or dashboard assets.
     report = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--usage-report'], text=True, timeout=30))
     assert sum(d['admissions'] for d in report['daily']) == len(report['admissions'])
     assert all(d['unattributed_admissions'] == 0 for d in report['daily'])
@@ -359,7 +345,6 @@ def fixture_service(prefix, prepare=None, env=None, start=True):
         if prepare:
             prepare(root)
         service = Service(root)
-        # Callbacks run last-registered first.
         teardown.callback(service.log.close)
         teardown.callback(stop_peers, root)
         teardown.callback(service.stop)

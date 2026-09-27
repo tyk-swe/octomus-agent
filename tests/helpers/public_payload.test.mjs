@@ -1,5 +1,3 @@
-// Unit tests for the private-payload gate's JSON parser. tests/evidence_snapshot.py
-// runs the documented gate end to end against a real `--export-run` candidate.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseUniqueJson } from './public_payload.mjs';

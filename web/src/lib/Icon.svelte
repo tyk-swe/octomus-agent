@@ -27,7 +27,6 @@
     logout: 'M9 3H3v18h6M10 12h11m-4-4 4 4-4 4',
     copy: 'M9 9h11v11H9zM15 9V4H4v11h5'
   } as const;
-  /** Every icon the dashboard draws; a name outside this set fails the type check. */
   export type IconName = keyof typeof paths;
 </script>
 

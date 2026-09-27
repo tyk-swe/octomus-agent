@@ -1,7 +1,3 @@
-<!--
-  A commit identity: the short form is what people scan, the full SHA stays available to
-  assistive technology (and on hover), and an optional copy action carries the full value.
--->
 <script lang="ts">
   import Icon from './Icon.svelte';
   import { shortCommit } from './evidence';

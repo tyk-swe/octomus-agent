@@ -25,7 +25,6 @@ def run(binary, args, cwd, environment=None):
 def service_startup():
     with tempfile.TemporaryDirectory(prefix='octomus-binary-service-') as directory:
         root = Path(directory)
-        # Startup initializes state before doctor/config/assets checks.
         for args, expected in [
             ([], 'Dashboard override missing 200.html'),
             (['--doctor'], 'model and effort'),
@@ -37,13 +36,10 @@ def service_startup():
             assert expected in result.stderr, (args, result.stderr)
             assert (root / 'state' / 'state.db').exists(), f'Service startup skipped the store: {args}'
             shutil.rmtree(root / 'state')
-        # Without an operator token the service refuses before the assets check.
         result = run(BINARY, ['--data-dir', str(root / 'state')], root,
                      {'OCTOMUS_ASSETS': '/nonexistent'})
         assert result.returncode == 1 and 'OCTOMUS_TOKEN' in result.stderr, result.stderr
         shutil.rmtree(root / 'state')
-        # Read-only exports: missing state is an explicit failure that never
-        # creates the data directory or takes the service lock.
         for args in [['--usage-report'], ['--export-run', 'synthetic-cycle']]:
             result = run(BINARY, ['--data-dir', str(root / 'state'), *args], root,
                          {'OCTOMUS_TOKEN': 'fixture-token-not-an-operator-token', 'OCTOMUS_ASSETS': '/nonexistent'})
@@ -81,8 +77,6 @@ def signal_shutdown_releases_lock():
                 if not match:
                     raise AssertionError(f'Service did not listen: {startup_output!r}')
 
-                # The listener announcement precedes Serve; wait for a real
-                # health response before delivering the signal.
                 while time.monotonic() < deadline:
                     try:
                         connection = http.client.HTTPConnection(host, int(port), timeout=1)
@@ -108,8 +102,6 @@ def signal_shutdown_releases_lock():
             stdout, stderr = first.communicate(timeout=15)
             assert first.returncode == 0 and not stdout, (first.returncode, stdout, stderr)
 
-            # Restart on the same state directory proves the process lock was
-            # released after the normal worker and HTTP shutdown path.
             second = start_service()
             try:
                 second.send_signal(signal.SIGTERM)
@@ -126,19 +118,15 @@ def signal_shutdown_releases_lock():
 
 
 def embedding_contracts():
-    # The shipped executable includes both the SPA entrypoint and JS assets.
     binary = BINARY.read_bytes()
     assets = [PROJECT / 'web/build/200.html', *sorted((PROJECT / 'web/build/_app/immutable/entry').glob('*.js'))]
     assert len(assets) > 1
     for asset in assets:
         assert asset.read_bytes() in binary, f'executable omitted {asset.name}'
 
-    # Work in an isolated Go package instead of moving the shared web/build while
-    # other tests may read it. Use the actual checked-in embed declaration.
     with tempfile.TemporaryDirectory(prefix='octomus-binary-embed-') as directory:
         root = Path(directory)
         shutil.copy2(PROJECT / 'web/embed.go', root / 'embed.go')
-        # go.mod is the single source of the language version.
         version = re.search(r'^go (\S+)$', (PROJECT / 'go.mod').read_text(), re.M).group(1)
         (root / 'go.mod').write_text(f'module embedded-contract\n\ngo {version}\n')
         for stage in ['absent', 'entrypoint-only', 'complete', 'bundle-without-entrypoint']:

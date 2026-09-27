@@ -55,9 +55,6 @@ def main():
         'problem_key': '', 'relevant_paths': [], 'reconsiders': [],
     }
     deferred = {**proposal, 'id': 'synthetic-deferred', 'decision': 'deferred'}
-    # Session summaries and review summaries stay private: the export carries routes
-    # and summary presence only. Finding text is carried as model-authored text.
-    # A valid saved OpenCode route: provider and variant, never a Codex effort.
     review_route = {'backend': 'opencode', 'model': 'synthetic-model', 'effort': '',
                     'provider': 'synthetic-provider', 'variant': 'synthetic-variant'}
     sessions = [
@@ -103,8 +100,6 @@ def main():
     }
 
     os.umask(0o077)
-    # Explicit /tmp keeps raw fixtures and candidates outside Git/build roots even
-    # when the invoking shell has TMPDIR set to a directory inside the checkout.
     with tempfile.TemporaryDirectory(prefix='octomus-synthetic-snapshot-', dir='/tmp') as temp:
         root = Path(temp)
         source, snapshot, lossy = (root / name for name in ('source #?', 'snapshot', 'lossy'))
@@ -126,14 +121,11 @@ def main():
             wal = source / 'state.db-wal'
             assert wal.stat().st_size > 0
 
-            # Negative control: a valid main-file copy silently loses the WAL task.
             shutil.copyfile(state, lossy / 'state.db')
             lost = exported(lossy)
             assert lost['proposals'][0]['linked_tasks'] == []
             assert lost['proposals'][0]['gaps']
 
-            # Keep an uncommitted edit open during the backup. It must not enter
-            # the snapshot, while the earlier committed WAL task must be included.
             writer.execute("UPDATE records SET data='{}' WHERE kind='task'")
             source_bytes = (state.read_bytes(), wal.read_bytes())
             saved = snapshot / 'state.db'
@@ -182,7 +174,6 @@ def main():
         assert evidence['review_required_before_sharing'] and len(evidence['limitations']) == 9
         assert 'SYNTHETIC-PRIVATE-' not in json.dumps(evidence)
 
-        # Synthetic wrapping only: no real facts, redactions or approval.
         candidate = root / 'synthetic-candidate.json'
         payload = {'public_schema_version': 1, 'mode': 'recorded', 'evidence': evidence}
         candidate.write_text(json.dumps(payload, indent=2) + '\n')
@@ -194,8 +185,6 @@ def main():
         assert candidate.read_bytes() == candidate_bytes
         assert candidate.stat().st_mode & 0o077 == 0
 
-        # The gate fails closed on a real candidate: an unallowlisted member anywhere,
-        # a different mode, a removed limitation or contradictory recorded facts.
         def linked_task(p):
             return p['evidence']['proposals'][0]['linked_tasks'][0]
 
@@ -229,7 +218,6 @@ def main():
             assert f'Unsupported or inconsistent candidate: {reason}\n' in result.stderr, result.stderr
             assert 'Candidate SHA-256:' not in result.stdout
 
-        # The private check reuses the candidate gate's rejection of overwritten private members.
         candidate.write_text('{"evidence":{"transcript":"SYNTHETIC-PRIVATE-TRANSCRIPT"},'
                              + candidate_bytes.decode()[1:])
         result = run(['node', '--input-type=module', '-', str(candidate)], validate)

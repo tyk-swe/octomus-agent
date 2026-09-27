@@ -1,4 +1,3 @@
-/* The content of a view: panels, statistics, badges, lists and the rows inside them. */
 .panel {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -932,7 +931,6 @@ details p {
   margin-bottom: 20px;
   padding-bottom: 24px;
 }
-/* A labelled list of short read-only facts inside a settings section. */
 .facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

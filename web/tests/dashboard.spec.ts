@@ -37,7 +37,6 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('the dashboard names the build version the service reports', async ({ page }) => {
-  // The binary embeds the root VERSION file and the dashboard build injects the same file.
   const { version } = (await (await page.request.get('/healthz')).json()) as { version: string };
   expect(version).toBe(readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim());
   await login(page);
@@ -104,9 +103,6 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await expect(
     page.getByRole('link', { name: /Explain the local development workflow/ })
   ).toHaveAttribute('href', 'https://github.com/fixture/project/pull/12');
-  // A head change is flagged only on a delivery whose head moved after Octomus delivered
-  // it; an external request, never delivered by Octomus, has no head to compare. Older
-  // deliveries remain visible.
   const moved = page.getByRole('link', { name: /Record the first delivered change/ });
   await expect(moved).toContainText('open · external head change');
   await expect(moved).toHaveAttribute('href', 'https://github.com/fixture/project/pull/7');
@@ -114,8 +110,6 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
     await expect(page.getByRole('link', { name: title })).not.toContainText('head change');
   await navigate('Overview');
   await page.getByRole('button', { name: 'Inspect run' }).click();
-  // Read-only overlap context: the repository an external branch came from is
-  // what tells a reviewer the change is not ours.
   await expect(
     page.getByRole('heading', { name: 'External pull requests observed' })
   ).toBeVisible();
@@ -134,7 +128,7 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await expect(page.getByRole('status').and(page.locator('.settings-feedback'))).toHaveText(
     'Configuration saved.'
   );
-  await page.waitForTimeout(4500); // Ensure state polling never overwrites an operator's draft.
+  await page.waitForTimeout(4500);
   await expect(page.getByLabel('Orchestrator model', { exact: true })).toHaveValue('gpt-6-astra');
   await expect(page.getByLabel('Repair model', { exact: true })).toHaveValue('gpt-5.6-luna');
   await navigate('Overview');
@@ -165,9 +159,7 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
     await route.fulfill({ json: state });
   });
   await login(page);
-  // The operating mode is a named status region, not an ignored label on a generic element.
   await expect(page.getByRole('status', { name: 'Operating mode' })).toContainText('active tasks');
-  // The capacity message is live; its minute-by-minute observation time is not.
   const capacity = page.getByRole('status').filter({ hasText: 'Open-PR capacity is full' });
   await expect(capacity).toHaveCount(1);
   await expect(capacity).not.toContainText('Observed');
@@ -175,7 +167,6 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
     page.locator('.notice').filter({ hasText: 'Open-PR capacity is full' })
   ).toContainText(/Observed \d+m ago\./);
 
-  // Ownership is stated in words, not only by the badge colour.
   await openNavigation(page, 'Pull requests', isMobile);
   const external = page.getByRole('link', { name: /Adjust the retry backoff/ });
   await expect(external).toContainText('· not owned by Octomus');
@@ -188,7 +179,6 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
   const dialog = page.getByRole('dialog');
   const tab = (name: string | RegExp) => dialog.getByRole('tab', { name });
   await expect(tab('Overview')).toHaveAttribute('aria-selected', 'true');
-  // Only the selected tab is in the Tab order.
   await expect(dialog.locator('[role="tab"][tabindex="0"]')).toHaveCount(1);
   await tab('Overview').focus();
   await page.keyboard.press('ArrowRight');
@@ -197,7 +187,6 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
   await expect(tab('Sessions')).toHaveAttribute('tabindex', '0');
   await expect(tab('Overview')).toHaveAttribute('aria-selected', 'false');
   await expect(tab('Overview')).toHaveAttribute('tabindex', '-1');
-  // The panel is named by the tab that controls it.
   await expect(dialog.getByRole('tabpanel', { name: 'Sessions' })).toBeVisible();
   await page.keyboard.press('End');
   await expect(tab('Activity')).toBeFocused();
@@ -212,7 +201,6 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
   await page.keyboard.press('ArrowLeft');
   await expect(tab(/Reviews/)).not.toBeFocused();
   await expect(tab('Activity')).toBeFocused();
-  // Clicking still selects a tab.
   await tab(/Reviews/).click();
   await expect(tab(/Reviews/)).toHaveAttribute('aria-selected', 'true');
   await expect(dialog.getByRole('tabpanel', { name: /Reviews/ })).toBeVisible();
@@ -358,7 +346,6 @@ test('model routing across all roles, provider variants, draft catalogs and unav
   await navigate('Configuration');
   await page.getByLabel('OpenCode executable', { exact: true }).fill('/draft/opencode');
   await page.getByRole('button', { name: 'Load OpenCode models' }).click();
-  // The route records the request asynchronously; the click can resolve first.
   await expect.poll(() => drafts).toEqual([{ backend: 'opencode', binary: '/draft/opencode' }]);
   const names = [
     'Orchestrator',
@@ -434,14 +421,12 @@ test('a successful status without a readable JSON body is reported as a lost con
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
   const indicator = page.locator('.live-indicator');
   await expect(indicator).toHaveText('Connected');
-  // An access proxy whose session expired answers with its sign-in page, not the service.
   await page.route('**/api/state', (route) =>
     route.fulfill({ status: 200, contentType: 'text/html', body: '<html>Sign in</html>' })
   );
   await expect(indicator).toHaveText('Reconnecting', { timeout: 10000 });
   const notice = page.getByRole('alert').filter({ hasText: 'Connection interrupted' });
   await expect(notice).toContainText('Service returned an unreadable response (200)');
-  // The last received state stays on screen.
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
   await page.unroute('**/api/state');
   await expect(indicator).toHaveText('Connected', { timeout: 10000 });
@@ -463,9 +448,7 @@ test('task detail polling does not overlap or apply a response after close', asy
     try {
       const response = await route.fetch();
       await route.fulfill({ response });
-    } catch {
-      /* closing aborts the outstanding request */
-    }
+    } catch {}
   });
   await page.goto('/');
   await page.getByLabel('Operator access token').fill(token);
@@ -712,7 +695,6 @@ test('loaded older cycles and their actions survive background refresh', async (
       error: null,
       session_count: 0,
       decisions: {},
-      // Retention cleanup discarded history-2's workspaces without it being archived.
       lifecycle:
         newest - i === 1 && archived
           ? {
@@ -763,8 +745,6 @@ test('loaded older cycles and their actions survive background refresh', async (
   const discard = page.getByRole('button', { name: 'Discard cycle workspaces' });
   await expect(discard).toHaveCount(0);
   await expect(archive).toBeVisible();
-  // A cycle whose workspaces are already discarded has no lifecycle action left, even
-  // when retention cleanup discarded them without an archive.
   await expect(picker.locator('option[value="history-2"]')).toHaveText(
     'Execution cycle #002 · completed · workspaces discarded'
   );
@@ -775,13 +755,11 @@ test('loaded older cycles and their actions survive background refresh', async (
   await archive.click();
   await expect(discard).toBeVisible();
   await expect(picker).toHaveValue('history-1');
-  // Archiving again would only restart the cycle's retention clock, so it is not offered.
   await expect(archive).toHaveCount(0);
   await expect(picker.locator('option[value="history-1"]')).toHaveText(
     'Execution cycle #001 · completed · archived'
   );
   await discard.click();
-  // Discarded workspaces leave no lifecycle action for this cycle.
   await expect(picker.locator('option[value="history-1"]')).toHaveText(
     'Execution cycle #001 · completed · workspaces discarded'
   );
@@ -839,7 +817,6 @@ test('a failed request for older cycles is reported and the control stays usable
     'Could not load older cycles. Synthetic cycles outage'
   );
   await expect(older).toBeEnabled();
-  // A successful retry loads the page and leaves no stale failure behind.
   outage = false;
   await older.click();
   await expect(
