@@ -156,9 +156,10 @@ deleting database evidence; each happens once per task or cycle, and repeating i
 conflicts. Application storage is measured separately from runner
 transcripts. Storage admission remains a pre-turn check, not a filesystem quota.
 Measurement skips a directory below the measured root that denies listing or
-searching, so storage can be undercounted by what it holds; the measured root
-itself and every other filesystem error still fail the measurement, and
-measurement never changes permissions.
+searching, so storage can be undercounted by what it holds; that denial on the
+measured root itself, and every other filesystem error except a missing or
+vanished path, still fails the measurement, and measurement never changes
+permissions.
 
 Diagnostic subprocess output retains a bounded 256 KiB preview and truncation
 flags. Before secrets are scrubbed, a truncated capture is cut back to its last
