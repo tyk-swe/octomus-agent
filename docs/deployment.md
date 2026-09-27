@@ -184,12 +184,13 @@ table in `internal/httpapi/httpapi.go` (`buildRoutes`) is authoritative.
   failed-authentication backoff; then the content type is checked; a known path with
   the wrong method answers `405` with an `Allow` header and an empty body.
 - Handler errors are JSON `{"error":"…"}`: `404` for an unknown task, cycle, proposal,
-  baseline check or action name, `409` for a conflict with current state (including a
-  superseded configuration revision), `500` for storage or encoding failures, and `400`
-  otherwise, such as a configuration value out of range. Request rejections are
-  `text/plain`: `400` for malformed JSON or a malformed query value, `422` when the body
-  or a `config` patch fails strict decoding (a wrong type, an unknown field or an
-  unknown name), and `413` for a body over 256 KiB.
+  baseline check (when read) or action name, `409` for a conflict with current state
+  (including a superseded configuration revision, and cancelling a baseline check that
+  does not exist, already finished or is no longer running), `500` for storage or
+  encoding failures, and `400` otherwise, such as a configuration value out of range.
+  Request rejections are `text/plain`: `400` for malformed JSON or a malformed query
+  value, `422` when the body or a `config` patch fails strict decoding (a wrong type, an
+  unknown field or an unknown name), and `413` for a body over 256 KiB.
 - Every `/api` JSON response is redacted. Request headers must arrive within 10
   seconds, and idle keep-alive connections close after two minutes.
 
