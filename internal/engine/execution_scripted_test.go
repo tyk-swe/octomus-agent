@@ -447,6 +447,7 @@ func TestExecutionTaskTimeout(t *testing.T) {
 }
 
 func TestExecutionTimeoutJoinsCallbackBeforeFinalizing(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	routes, script := fixture.routes, fixture.script
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -458,13 +459,15 @@ func TestExecutionTimeoutJoinsCallbackBeforeFinalizing(t *testing.T) {
 		return nil
 	}})
 	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
-	task.Config.TaskTimeoutSeconds = 2
+	task.Config.TaskTimeoutSeconds = 5
 	saveExecutionTask(t, fixture.planningFixture, task)
 	app := fixture.newApp(t)
 	t.Cleanup(releaseTurn)
 
 	tickUntil(t, app, entered, "non-cancellable executor turn")
-	time.Sleep(11 * time.Second)
+	// Exceed the task deadline plus WithDeadline's grace, with margin for a
+	// loaded machine (notably under -race, where fixture setup itself is slow).
+	time.Sleep(14 * time.Second)
 	if app.Drained() {
 		t.Fatal("the worker released runtime ownership while its turn could still write")
 	}

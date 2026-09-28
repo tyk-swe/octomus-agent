@@ -9,6 +9,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
@@ -258,6 +259,7 @@ func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
 
 func TestCleanupCandidatesResumeAfterTheCursorAndWrap(t *testing.T) {
 	t.Parallel()
+	testutil.SkipVolumeUnderRace(t)
 	s := open(t, statePath(t))
 	const cutoff = "2021-01-01T00:00:00Z"
 	ids := make([]string, 105)

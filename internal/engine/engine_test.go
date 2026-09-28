@@ -16,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -583,6 +584,7 @@ func TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget(t *testing.T) {
 
 func TestRecoveryReservationSeedingIsNotBoundedByDashboardWindows(t *testing.T) {
 	t.Parallel()
+	testutil.SkipVolumeUnderRace(t)
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -756,6 +758,7 @@ func TestRunOnceBlocksDependencyRetriedOutsideBatch(t *testing.T) {
 
 func TestSchedulingKeepsExistingAndActiveWritersPastQueuedWindow(t *testing.T) {
 	t.Parallel()
+	testutil.SkipVolumeUnderRace(t)
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	for i := 0; i < 501; i++ {

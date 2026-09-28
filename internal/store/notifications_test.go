@@ -9,6 +9,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 const notifyDest = "destination-a"
@@ -288,6 +289,7 @@ func TestDestinationRotationNeverRoutesNewEventsToAnOldWorker(t *testing.T) {
 
 func TestOverflowCapsPendingAtOneThousand(t *testing.T) {
 	t.Parallel()
+	testutil.SkipVolumeUnderRace(t)
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))

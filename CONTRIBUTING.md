@@ -25,7 +25,7 @@ the dashboard and binary so browser tests exercise current assets.
 
 `make build` creates the production executable at `bin/octomus-agent`, and
 `make build-race` produces a race-instrumented variant. The opt-in
-`make test-race-e2e` (about seven minutes; needs a C compiler) runs `tests/e2e.py`
+`make test-race-e2e` (about two minutes; needs a C compiler) runs `tests/e2e.py`
 against that variant so the race detector sees real HTTP, scheduler and runner
 interleavings; it is not part of `make test`. `--assets web/build`
 explicitly serves a development dashboard instead of the embedded copy. The
@@ -73,7 +73,9 @@ suite aliases or qualified names) and `make test-browser` (with
 The e2e suites share `tests/harness.py` and accept scenario names, for example
 `python3 tests/e2e_hardening.py chain fork`; an unknown name lists the available ones.
 Scenarios run with up to four workers; `OCTOMUS_TEST_JOBS` sets the limit
-(1 runs serially). Set `OCTOMUS_TEST_BINARY` to test another executable. Go tests share polling and
+(1 runs serially; lower it on a loaded machine if a scenario's own timing
+assertion, such as the harness suite's signal-shutdown check, gets crowded out).
+Set `OCTOMUS_TEST_BINARY` to test another executable. Go tests share polling and
 process helpers through `internal/testutil`, and inject `internal/runner/runnertest`
 in place of runner processes; `internal/schemas/schematest` holds each structured-output
 schema to the Go type that decodes its answers. `web/types_contract_test.go` and
@@ -82,6 +84,19 @@ vocabularies to the Go records and validation. Browser tests use clearly synthet
 data; their screenshots are not live operating evidence. `tests/systemd.py` requires
 root on a disposable systemd VM and exercises the unit's write restrictions and child
 cleanup.
+
+Go tests dispatch `git`/`gh` through a small POSIX shell relay
+(`internal/testutil.InstallFixtureCommands`) that walks up from the working
+directory to the nearest fixture root and execs that fixture's `bin/git` or
+`bin/gh`, so fixture setup costs a shell fork instead of a Python interpreter
+start. Both the Go and Python suites redirect the fixture's GitHub identity
+through the same `tests/fixtures/git.sh`; `tests/fixtures/git_rollback.py`
+holds only the dependency-rollback fault it execs into. `make test-go` and
+`make test-go-race` run with `-shuffle=on`; a failure prints its seed
+(`-test.shuffle N`) so any hidden test-order coupling reproduces. Under
+`-race`, single-goroutine data-volume checks (thousands of rows written by one
+goroutine, where the race detector has nothing to find) skip via
+`testutil.SkipVolumeUnderRace`; the regular suite still runs them.
 
 Some checks run only in CI, because each needs something a working copy does not have:
 `make package` followed by `tests/distribution.py --package`, which needs a real
