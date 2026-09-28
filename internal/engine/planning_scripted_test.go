@@ -330,24 +330,18 @@ func advanceMainDuringObservation(t *testing.T, f *scriptedFixture) string {
 	t.Helper()
 	fixtures := filepath.Join(repositoryRoot(t), "tests", "fixtures")
 	advanced := filepath.Join(f.root, "concurrent-main")
-	script := fmt.Sprintf(`#!/usr/bin/env python3
-import os, runpy, subprocess, sys
-from pathlib import Path
-root = Path(%[1]q)
-os.environ['OCTOMUS_FIXTURE'] = str(root)
-sys.path.insert(0, %[2]q)
-args = sys.argv[1:]
-marker = root / 'advance-main-on-ls-remote'
-if marker.exists() and args[:2] == ['ls-remote', '--heads'] and args[-1] == 'refs/heads/main':
-    marker.unlink()
-    remote = str(root / 'remote.git')
-    identity = dict(os.environ, GIT_AUTHOR_NAME='Maintainer', GIT_AUTHOR_EMAIL='maintainer@example.com',
-                    GIT_COMMITTER_NAME='Maintainer', GIT_COMMITTER_EMAIL='maintainer@example.com')
-    commit = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, 'commit-tree', 'main^{tree}', '-p', 'main', '-m', 'Concurrent main'], text=True, env=identity).strip()
-    subprocess.check_call(['/usr/bin/git', '--git-dir', remote, 'update-ref', 'refs/heads/main', commit])
-    Path(%[3]q).write_text(commit)
-runpy.run_path(%[4]q, run_name='__main__')
-`, f.root, fixtures, advanced, filepath.Join(fixtures, "git.py"))
+	script := fmt.Sprintf(`#!/bin/sh
+for last; do :; done
+if [ "$1" = ls-remote ] && [ "$2" = --heads ] && [ "$last" = refs/heads/main ] && rm %[2]q 2>/dev/null; then
+	export GIT_AUTHOR_NAME=Maintainer GIT_AUTHOR_EMAIL=maintainer@example.com
+	export GIT_COMMITTER_NAME=Maintainer GIT_COMMITTER_EMAIL=maintainer@example.com
+	commit=$(/usr/bin/git --git-dir %[1]q commit-tree 'main^{tree}' -p main -m 'Concurrent main') || exit 1
+	/usr/bin/git --git-dir %[1]q update-ref refs/heads/main "$commit" || exit 1
+	printf %%s "$commit" > %[3]q
+	unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+fi
+exec /bin/sh %[4]q "$@"
+`, filepath.Join(f.root, "remote.git"), filepath.Join(f.root, "advance-main-on-ls-remote"), advanced, filepath.Join(fixtures, "git.sh"))
 	if err := os.WriteFile(filepath.Join(f.root, "bin", "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

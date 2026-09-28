@@ -51,9 +51,13 @@ owns strict typed JSON boundaries for saved records and API requests.
 - `web/src`: dashboard, shared TypeScript types, settings, setup checklist and
   run/task evidence.
 - Go behavior tests sit beside each package (`*_test.go`); `internal/testutil`
-  holds their shared polling and process helpers. Pinned real-client contracts
-  (`internal/runner`) and the scale checks (`internal/store`,
-  `OCTOMUS_SCALE_TEST=1`) skip unless their environment is provided.
+  holds their shared polling and process helpers, a POSIX-shell `git`/`gh`
+  dispatcher (`InstallFixtureCommands`) that relays into a fixture's `bin/`
+  without a Python interpreter start, and `SkipVolumeUnderRace` for
+  single-goroutine data-volume checks the race detector gains nothing from.
+  Pinned real-client contracts (`internal/runner`) and the scale checks
+  (`internal/store`, `OCTOMUS_SCALE_TEST=1`) skip unless their environment is
+  provided.
 - `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py`, `e2e_baseline.py`, and
   `e2e_notifications.py` share `tests/harness.py` and `tests/fixtures`:
   deterministic Codex/OpenCode/GitHub peers with real local Git.
@@ -88,7 +92,8 @@ race detector. Install dashboard dependencies with
   and browser tests.
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
 - `make test-go`: the regular Go suite. `make test-go-race`: the race suite
-  explicitly. `make test-contracts` / `make test-integration` /
+  explicitly. Both run with `-shuffle=on`; a failure prints its seed to
+  reproduce. `make test-contracts` / `make test-integration` /
   `make test-browser`: one stage each. `test-integration` accepts
   `INTEGRATION_SCENARIOS` suite aliases or `suite/scenario` names;
   `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests run four workers.

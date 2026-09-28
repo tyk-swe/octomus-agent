@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""Redirect only fixture GitHub identity to the local bare remote. All Git operations are real."""
+"""The dependency-rollback fault for git.sh: rewind the existing PR head once the first comment lands."""
 import os
 from pathlib import Path
 import subprocess
 import sys
-assert 'OCTOMUS_TOKEN' not in os.environ
-assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 args = sys.argv[1:]
-if args == ['remote', 'get-url', 'origin']:
-    print('https://github.com/fixture/project.git')
-    sys.exit(0)
-args = [str(Path(os.environ['OCTOMUS_FIXTURE']) / 'remote.git') if a == 'https://github.com/fixture/project.git' else a for a in args]
 root = Path(os.environ['OCTOMUS_FIXTURE'])
 if (root / 'dependency-rollback').exists() and args[:2] == ['ls-remote', '--heads'] and args[-1] == 'refs/heads/octomus/existing':
     remote = str(root / 'remote.git')

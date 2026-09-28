@@ -15,6 +15,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/report"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func admission(at string) store.Admission {
@@ -597,6 +598,7 @@ func TestDuplicateProblemIdentitiesPreserveUnicodeAndLegacyFallbacks(t *testing.
 
 func TestDuplicateLookupLoadsOnlyMatchesWithoutTruncatingOrRepeatingThem(t *testing.T) {
 	t.Parallel()
+	testutil.SkipVolumeUnderRace(t)
 	path := statePath(t)
 	s := open(t, path)
 	saved := reviewTask()
@@ -844,6 +846,7 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 
 func TestOldAttentionSurvivesBoundedDashboardAndPages(t *testing.T) {
 	t.Parallel()
+	testutil.SkipVolumeUnderRace(t)
 	s := open(t, statePath(t))
 	old := task()
 	old.Status = model.StatusBlocked
@@ -898,6 +901,7 @@ func TestOldAttentionSurvivesBoundedDashboardAndPages(t *testing.T) {
 
 func TestDashboardListsRecentActiveWorkOnce(t *testing.T) {
 	t.Parallel()
+	testutil.SkipVolumeUnderRace(t)
 	s := open(t, statePath(t))
 	statuses := []model.Status{model.StatusPublished, model.StatusExecuting, model.StatusQueued, model.StatusPublished, model.StatusBlocked}
 	for i := range 700 {

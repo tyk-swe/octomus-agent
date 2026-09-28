@@ -721,6 +721,7 @@ func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
 
 func TestRetentionReachesCandidatesBehindAFullWindowOfFailures(t *testing.T) {
 	t.Parallel()
+	testutil.SkipVolumeUnderRace(t)
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())

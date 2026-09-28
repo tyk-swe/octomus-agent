@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 )
 
@@ -33,4 +34,14 @@ func ProcessGone(pid string) bool {
 	}
 	fields := strings.Fields(text[end+1:])
 	return len(fields) > 0 && (fields[0] == "Z" || fields[0] == "X")
+}
+
+// SkipVolumeUnderRace skips a single-goroutine data-volume check in the race
+// build: the race detector finds nothing there, and race-instrumented SQLite
+// slows it dozens of times over. The regular suite still runs the check.
+func SkipVolumeUnderRace(t testing.TB) {
+	t.Helper()
+	if raceEnabled {
+		t.Skip("single-goroutine data-volume check; the regular suite runs it")
+	}
 }

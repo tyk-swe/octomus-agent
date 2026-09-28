@@ -11,6 +11,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 type scriptedRoutes struct {
@@ -47,7 +48,9 @@ func newScriptedFixture(t *testing.T, options ...scriptedOption) *scriptedFixtur
 		if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		pythonFixtureShim(t, filepath.Join(root, "bin", "git"), root, "git.py")
+		if err := testutil.InstallFixtureScript(filepath.Join(root, "bin", "git"), "git.sh"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	routes := scriptedRoutes{
 		Executor:         config.NewRoute("scripted-executor", "medium"),

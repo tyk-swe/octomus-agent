@@ -106,6 +106,7 @@ func TestAuditGroundingOwnedPRAgeThresholds(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newScriptedPlanningFixture(t)
 			fixture.configure(t, func(cfg *config.Config) { cfg.LongLivedPRDays = tc.threshold })
 			if err := fixture.cfg.ValidateAudit(); err != nil {

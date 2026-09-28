@@ -424,7 +424,8 @@ func TestStateViewRunningCycleAndActivityUseOneSnapshot(t *testing.T) {
 			t.Errorf("update cycle: %v", err)
 		}
 	}()
-	for i := 0; i < 150; i++ {
+	seen := map[any]int{}
+	for i := 0; i < 150 && (seen[model.CycleRunning] < 10 || seen[model.CycleCompleted] < 10); i++ {
 		view, err := app.StateView()
 		if err != nil {
 			t.Fatal(err)
@@ -434,10 +435,14 @@ func TestStateViewRunningCycleAndActivityUseOneSnapshot(t *testing.T) {
 			t.Fatalf("cycles: %v", cycles)
 		}
 		visible := cycles[0].(map[string]any)
+		seen[visible["status"]]++
 		mode, hasMode := view["active_cycle_mode"].(*model.CycleMode)
 		if visible["status"] == model.CycleRunning && (view["cycle_active"] != true || !hasMode || *mode != model.CycleModeAudit) {
 			t.Fatalf("running cycle must be active in the same response: cycle=%v active=%v mode=%v", visible, view["cycle_active"], view["active_cycle_mode"])
 		}
+	}
+	if seen[model.CycleRunning] == 0 || seen[model.CycleCompleted] == 0 {
+		t.Fatalf("the reads never overlapped both writer states: %v", seen)
 	}
 }
 

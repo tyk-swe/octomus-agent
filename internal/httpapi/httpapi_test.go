@@ -79,13 +79,8 @@ func githubFixture(t *testing.T, commands []string) (*engine.App, *store.Store, 
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	fixtures := filepath.Join("..", "..", "tests", "fixtures")
-	for _, name := range []string{"git", "gh"} {
-		data, err := os.ReadFile(filepath.Join(fixtures, name+".py"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(bin, name), data, 0o755); err != nil {
+	for name, fixture := range map[string]string{"git": "git.sh", "gh": "gh.py"} {
+		if err := testutil.InstallFixtureScript(filepath.Join(bin, name), fixture); err != nil {
 			t.Fatal(err)
 		}
 	}

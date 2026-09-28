@@ -77,7 +77,9 @@ func newPlanningFixture(t *testing.T) *planningFixture {
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pythonFixtureShim(t, filepath.Join(root, "bin", "git"), root, "git.py")
+	if err := testutil.InstallFixtureScript(filepath.Join(root, "bin", "git"), "git.sh"); err != nil {
+		t.Fatal(err)
+	}
 	codex := filepath.Join(root, "codex")
 	pythonFixtureShim(t, codex, root, "codex.py")
 	return newFixture(t, root, func(cfg *config.Config) {

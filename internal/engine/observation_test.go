@@ -19,19 +19,14 @@ func holdRemoteRevisionRead(t *testing.T, f *planningFixture) (hold, entered str
 	fixtures := filepath.Join(repositoryRoot(t), "tests", "fixtures")
 	hold = filepath.Join(f.root, "hold-remote-revision")
 	entered = filepath.Join(f.root, "remote-revision-entered")
-	script := fmt.Sprintf(`#!/usr/bin/env python3
-import os, runpy, sys, time
-from pathlib import Path
-os.environ['OCTOMUS_FIXTURE'] = %[1]q
-sys.path.insert(0, %[2]q)
-args = sys.argv[1:]
-hold = Path(%[3]q)
-if hold.exists() and args[:2] == ['ls-remote', '--heads'] and args[-1] == 'refs/heads/main':
-    Path(%[4]q).touch()
-    while hold.exists():
-        time.sleep(0.02)
-runpy.run_path(%[5]q, run_name='__main__')
-`, f.root, fixtures, hold, entered, filepath.Join(fixtures, "git.py"))
+	script := fmt.Sprintf(`#!/bin/sh
+for last; do :; done
+if [ -e %[1]q ] && [ "$1" = ls-remote ] && [ "$2" = --heads ] && [ "$last" = refs/heads/main ]; then
+	: > %[2]q
+	while [ -e %[1]q ]; do sleep 0.02; done
+fi
+exec /bin/sh %[3]q "$@"
+`, hold, entered, filepath.Join(fixtures, "git.sh"))
 	if err := os.WriteFile(filepath.Join(f.root, "bin", "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -323,11 +323,12 @@ class Service:
 
 def setup(root):
     (root / 'bin').mkdir()
-    for name in ['codex', 'opencode', 'gh', 'git']:
+    for name, fixture in [('codex', 'codex.py'), ('opencode', 'opencode.py'), ('gh', 'gh.py'), ('git', 'git.sh')]:
         dest = root / 'bin' / name
-        shutil.copy(PROJECT / 'tests/fixtures' / f'{name}.py', dest)
+        shutil.copy(PROJECT / 'tests/fixtures' / fixture, dest)
         dest.chmod(0o755)
-    shutil.copy(PROJECT / 'tests/fixtures/worker.py', root / 'bin/worker.py')
+    for helper in ['worker.py', 'git_rollback.py']:
+        shutil.copy(PROJECT / 'tests/fixtures' / helper, root / 'bin' / helper)
     (root / 'checkout').mkdir()
     git('init', '--bare', str(root / 'remote.git'), cwd=root)
     git('init', '-b', 'main', cwd=root / 'checkout')

@@ -8,24 +8,29 @@ import (
 
 const fixtureRootMarker = ".octomus-fixture-root"
 
-const fixtureDispatcher = `#!/usr/bin/env python3
-import os
-from pathlib import Path
-import sys
-
-name = Path(sys.argv[0]).name
-cwd = Path.cwd().resolve()
-root = next((candidate for candidate in (cwd, *cwd.parents) if (candidate / "` + fixtureRootMarker + `").is_file()), None)
-if root is not None:
-    target = root / "bin" / name
-    if target.is_file():
-        env = os.environ.copy()
-        env["OCTOMUS_FIXTURE"] = str(root)
-        os.execve(target, [name, *sys.argv[1:]], env)
-if name == "git":
-    os.execv("/usr/bin/git", ["git", *sys.argv[1:]])
-sys.stderr.write(f"no fixture command {name!r} for {cwd}\n")
-sys.exit(127)
+// A POSIX shell (no Python interpreter startup) walks up from the working
+// directory to the nearest marked fixture root and execs its bin command,
+// never escaping an incomplete fixture. git falls back to the real binary.
+const fixtureDispatcher = `#!/bin/sh
+name=${0##*/}
+cd -P . || exit 127
+dir=$PWD
+while :; do
+	if [ -f "$dir/` + fixtureRootMarker + `" ]; then
+		if [ -f "$dir/bin/$name" ]; then
+			export OCTOMUS_FIXTURE="$dir"
+			exec "$dir/bin/$name" "$@"
+		fi
+		break
+	fi
+	[ -n "$dir" ] || break
+	dir=${dir%/*}
+done
+if [ "$name" = git ]; then
+	exec /usr/bin/git "$@"
+fi
+echo "no fixture command '$name' for $PWD" >&2
+exit 127
 `
 
 // MarkFixtureRoot identifies a directory whose bin commands belong to a test fixture.

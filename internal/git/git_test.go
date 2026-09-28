@@ -68,14 +68,8 @@ func fixtureRoot(t *testing.T) (config.Config, string) {
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"git", "gh"} {
-		src := filepath.Join("..", "..", "tests", "fixtures", name+".py")
-		dst := filepath.Join(bin, name)
-		data, err := os.ReadFile(src)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dst, data, 0o755); err != nil {
+	for name, fixture := range map[string]string{"git": "git.sh", "gh": "gh.py"} {
+		if err := testutil.InstallFixtureScript(filepath.Join(bin, name), fixture); err != nil {
 			t.Fatal(err)
 		}
 	}
