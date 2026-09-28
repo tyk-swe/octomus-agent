@@ -21,6 +21,7 @@ func assertErrorNames(t *testing.T, err error, fragments ...string) {
 }
 
 func TestProposalValidationNamesTheOffendingProposal(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	grounding := model.Grounding{Revision: "source", PRs: []model.PullRequest{ownedPR("octomus/existing")}}
 	onMain := func(id string) model.Proposal { return proposal(id, cfg.DefaultBranch) }
@@ -90,6 +91,7 @@ func TestProposalValidationNamesTheOffendingProposal(t *testing.T) {
 }
 
 func TestBranchOrderFaultNamesTheFirstBranchInPlanOrder(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	zeta, alpha := ownedPR("octomus/zeta"), ownedPR("octomus/alpha")
 	alpha.Number = 8
@@ -104,6 +106,7 @@ func TestBranchOrderFaultNamesTheFirstBranchInPlanOrder(t *testing.T) {
 }
 
 func TestReviewerAssessmentsNameTheOffendingProposal(t *testing.T) {
+	t.Parallel()
 	candidates := []model.Proposal{{ID: "a"}, {ID: "b"}}
 	assessed := func(id, decision, reason string) assessment {
 		return assessment{ID: id, Decision: decision, Reason: reason}
@@ -130,6 +133,7 @@ func TestReviewerAssessmentsNameTheOffendingProposal(t *testing.T) {
 }
 
 func TestConsolidationNamesTheOffendingProposal(t *testing.T) {
+	t.Parallel()
 	candidates := []model.Proposal{{ID: "a"}, {ID: "b"}}
 	for _, tc := range []struct {
 		name     string
@@ -150,6 +154,7 @@ func TestConsolidationNamesTheOffendingProposal(t *testing.T) {
 }
 
 func TestDecisionMemoryAndRediscoveryNameTheOffendingProposal(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	request := rediscoveryRequest{ID: "request-1", Target: cfg.DefaultBranch}
 	pending := decisionMemory{requests: []rediscoveryRequest{request}}
@@ -184,6 +189,7 @@ func TestDecisionMemoryAndRediscoveryNameTheOffendingProposal(t *testing.T) {
 }
 
 func TestDiscoveryProposalLimitSharesTheRemainingCandidates(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		seeded int
 		agents uint64

@@ -68,6 +68,7 @@ func pendingRows(t *testing.T, path string) []map[string]any {
 }
 
 func TestDisabledPolicyCapturesNothing(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.ConfigureNotifications(nil, "disabled", nil))
@@ -83,6 +84,7 @@ func TestDisabledPolicyCapturesNothing(t *testing.T) {
 }
 
 func TestAttentionTriggersEnqueueOneRowPerEpisode(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
@@ -120,6 +122,7 @@ func TestAttentionTriggersEnqueueOneRowPerEpisode(t *testing.T) {
 }
 
 func TestAttentionCategoryCoversEveryBlockedReason(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
@@ -145,6 +148,7 @@ func TestAttentionCategoryCoversEveryBlockedReason(t *testing.T) {
 }
 
 func TestControlErrorPauseEnqueuesOncePerPauseEpisode(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.Put("settings", "config", map[string]any{
@@ -181,6 +185,7 @@ func TestControlErrorPauseEnqueuesOncePerPauseEpisode(t *testing.T) {
 }
 
 func TestConfigurePreservesSameDestinationAndCancelsOnChange(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	putNotificationTask(t, s, "early", "blocked", "timeout")
@@ -212,6 +217,7 @@ func TestConfigurePreservesSameDestinationAndCancelsOnChange(t *testing.T) {
 }
 
 func TestClaimPreschedulesFiveAttemptsAndKeepsPayloadFrozen(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
@@ -258,6 +264,7 @@ func TestClaimPreschedulesFiveAttemptsAndKeepsPayloadFrozen(t *testing.T) {
 }
 
 func TestDestinationRotationNeverRoutesNewEventsToAnOldWorker(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
 	putNotificationTask(t, s, "old", "blocked", "timeout")
@@ -280,6 +287,7 @@ func TestDestinationRotationNeverRoutesNewEventsToAnOldWorker(t *testing.T) {
 }
 
 func TestOverflowCapsPendingAtOneThousand(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
@@ -324,6 +332,7 @@ func TestOverflowCapsPendingAtOneThousand(t *testing.T) {
 }
 
 func TestClaimExpiresDayOldRowsAndPrunesTerminalHistory(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.Put("settings", "config", map[string]any{
@@ -359,6 +368,7 @@ func TestClaimExpiresDayOldRowsAndPrunesTerminalHistory(t *testing.T) {
 }
 
 func TestEveryBlockedReasonKeepsItsNotificationCategory(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))

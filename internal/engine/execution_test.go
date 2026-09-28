@@ -100,6 +100,7 @@ func sessionByRole(task model.Task, role string) []model.Session {
 }
 
 func TestExecutionDeliversFullLifecycle(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	cfg := fixture.cfg.Clone()
 	cfg.VerificationCommands = []string{"test -f feature.txt", "grep -q fixed feature.txt"}
@@ -208,6 +209,7 @@ func verificationFixture(t *testing.T, commands []string) (*App, model.Task, str
 }
 
 func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
+	t.Parallel()
 	for _, commands := range [][]string{
 		{"printf 1 > impl.txt", "test \"$(cat impl.txt)\" = 1", "git checkout -- impl.txt"},
 		{"git -c user.name=x -c user.email=x@example.com commit --allow-empty -m moved", "true"},
@@ -231,6 +233,7 @@ func TestVerificationMutationIsFailedEvidenceAndStopsRun(t *testing.T) {
 }
 
 func TestVerificationCancelledMidCommandReturnsTheCancellationSentinel(t *testing.T) {
+	t.Parallel()
 	started := filepath.Join(t.TempDir(), "started")
 	app, task, revision := verificationFixture(t, []string{"touch '" + started + "' && sleep 30", "true"})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -261,6 +264,7 @@ func TestVerificationCancelledMidCommandReturnsTheCancellationSentinel(t *testin
 }
 
 func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
+	t.Parallel()
 	breaking := "rm -rf .git && printf 'gitdir: /nonexistent\\n' > .git"
 	app, task, revision := verificationFixture(t, []string{breaking, "true"})
 	_, err := app.verifyRevision(context.Background(), &task, revision)
@@ -281,6 +285,7 @@ func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
 }
 
 func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
+	t.Parallel()
 	app, task, revision := verificationFixture(t, []string{"printf 1 > impl.txt", "true"})
 	_, err := app.verifyRevision(context.Background(), &task, revision)
 	if err == nil {
@@ -311,6 +316,7 @@ func TestVerificationRecordsStreamsAndMutationEvidence(t *testing.T) {
 }
 
 func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
+	t.Parallel()
 	long := "head -c 20000 /dev/zero | tr '\\0' a; echo; echo TAIL-OF'-STDOUT'; "
 	for _, test := range []struct {
 		name    string
@@ -372,6 +378,7 @@ func TestVerificationEvidenceKeepsStderrAndMarksTruncation(t *testing.T) {
 }
 
 func TestVerificationEvidenceKeepsTheRealEndOfLongOutput(t *testing.T) {
+	t.Parallel()
 	const (
 		progress = "seq -f 'progress line %g of the long verification run' 12000; "
 		long     = progress + "echo 'FINAL FAILURE LINE'"
@@ -417,6 +424,7 @@ func TestVerificationEvidenceKeepsTheRealEndOfLongOutput(t *testing.T) {
 }
 
 func TestVerificationEvidenceNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
+	t.Parallel()
 	const (
 		credential = "'https://bot:s3cr3tpassword0123@github.com/x'"
 		leak       = "s3cr3tpass"
@@ -456,6 +464,7 @@ func TestVerificationEvidenceNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
 }
 
 func TestBoundedTailKeepsTheEndWithinTheLimit(t *testing.T) {
+	t.Parallel()
 	marker := outputTruncatedMarker
 	for _, test := range []struct {
 		name  string
@@ -477,6 +486,7 @@ func TestBoundedTailKeepsTheEndWithinTheLimit(t *testing.T) {
 }
 
 func TestVerificationArtifactMustBeGitIgnored(t *testing.T) {
+	t.Parallel()
 	commands := []string{"printf report > coverage.out", "true"}
 	app, task, revision := verificationFixture(t, commands)
 	_, err := app.verifyRevision(context.Background(), &task, revision)
@@ -559,6 +569,7 @@ func newExecutionApp(t *testing.T, fixture *planningFixture) *App {
 }
 
 func TestExecutionRemoteConflictBlocksStaleBase(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	writeFixtureMode(t, fixture, "remote-conflict")
 	if err := os.WriteFile(filepath.Join(fixture.root, "target"), []byte("main"), 0o600); err != nil {
@@ -675,6 +686,7 @@ func seedFixturePR(t *testing.T, fixture *planningFixture, task model.Task, stat
 }
 
 func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
+	t.Parallel()
 	t.Run("push landed without PR", func(t *testing.T) {
 		fixture := newExecutionFixture(t)
 		task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
@@ -750,6 +762,7 @@ func TestExecutionRestartReconcilesPublicationCheckpoint(t *testing.T) {
 }
 
 func TestExecutionShutdownDuringPublicationRequeuesCheckpoint(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
 	task.Status = model.StatusExecuting
@@ -830,6 +843,7 @@ func existingPrBranch(t *testing.T, fixture *planningFixture) string {
 }
 
 func TestExecutionExistingPrAppendsComment(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	head := existingPrBranch(t, fixture)
 	task := executionTask(t, fixture, "octomus/existing")
@@ -874,6 +888,7 @@ func TestExecutionExistingPrAppendsComment(t *testing.T) {
 }
 
 func TestExecutionDependenciesOrderAndRollback(t *testing.T) {
+	t.Parallel()
 	t.Run("orders onto dependency output", func(t *testing.T) {
 		fixture := newExecutionFixture(t)
 		head := existingPrBranch(t, fixture)
@@ -952,6 +967,7 @@ func TestExecutionDependenciesOrderAndRollback(t *testing.T) {
 }
 
 func TestExecutionWorkerPanicBlocks(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	task := executionTask(t, fixture, fixture.cfg.DefaultBranch)
 	saveExecutionTask(t, fixture, task)
@@ -970,6 +986,7 @@ func TestExecutionWorkerPanicBlocks(t *testing.T) {
 }
 
 func TestRunJoinedReturnsTheCallbacksOwnResult(t *testing.T) {
+	t.Parallel()
 	for _, want := range []error{nil, errors.New("late failure")} {
 		ctx, cancel := context.WithCancel(context.Background())
 		result, err := runJoined(ctx, cancel, 100*time.Millisecond, "Callback panicked", func() error {
@@ -994,6 +1011,7 @@ func TestRunJoinedReturnsTheCallbacksOwnResult(t *testing.T) {
 }
 
 func TestSupervisionNeverDemotesRecordedPublication(t *testing.T) {
+	t.Parallel()
 	supervise := func(t *testing.T, execute func(*App) func(context.Context, *model.Task) error) (*App, model.Task, error) {
 		t.Helper()
 		state := testStore(t)
@@ -1064,6 +1082,7 @@ func TestSupervisionNeverDemotesRecordedPublication(t *testing.T) {
 }
 
 func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	task := queuedTask(cfg, model.ID(), cfg.DefaultBranch, "octomus/cancelled")
@@ -1101,6 +1120,7 @@ func TestSupervisionReportsOperatorCancelOverLateDeadline(t *testing.T) {
 }
 
 func TestExecutionDeliversFullLifecycleViaOpenCode(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	opencode := filepath.Join(fixture.root, "opencode")
 	pythonFixtureShim(t, opencode, fixture.root, "opencode.py")

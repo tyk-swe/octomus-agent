@@ -21,6 +21,7 @@ import (
 )
 
 func TestCodexModelsAndPreResponseEvents(t *testing.T) {
+	t.Parallel()
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
 	if err != nil {
@@ -55,6 +56,7 @@ func TestCodexModelsAndPreResponseEvents(t *testing.T) {
 }
 
 func TestCodexModelsPagination(t *testing.T) {
+	t.Parallel()
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
 	if err != nil {
@@ -86,6 +88,7 @@ func TestCodexModelsPagination(t *testing.T) {
 }
 
 func TestCodexStartupFailureReportsStderr(t *testing.T) {
+	t.Parallel()
 	f := codexFixture(t)
 	f.mode("codex", "init-failure")
 	client, err := f.connectCodex(context.Background())
@@ -102,6 +105,7 @@ func TestCodexStartupFailureReportsStderr(t *testing.T) {
 }
 
 func TestCodexTimeoutInterruptsTurn(t *testing.T) {
+	t.Parallel()
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
 	if err != nil {
@@ -136,6 +140,7 @@ func TestCodexTimeoutInterruptsTurn(t *testing.T) {
 }
 
 func TestCodexCancellationStopsTurn(t *testing.T) {
+	t.Parallel()
 	f := codexFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	client, err := f.connectCodex(ctx)
@@ -170,6 +175,7 @@ func TestCodexCancellationStopsTurn(t *testing.T) {
 }
 
 func TestCodexStructuredOutputIsValidated(t *testing.T) {
+	t.Parallel()
 	f := codexFixture(t)
 	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
 	defer clients.Close()
@@ -200,6 +206,7 @@ func TestCodexStructuredOutputIsValidated(t *testing.T) {
 }
 
 func TestCodexResumeVerifiesThreadIdentity(t *testing.T) {
+	t.Parallel()
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
 	if err != nil {
@@ -227,6 +234,7 @@ func TestCodexResumeVerifiesThreadIdentity(t *testing.T) {
 }
 
 func TestCodexInteractiveRequestIsRejected(t *testing.T) {
+	t.Parallel()
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
 	if err != nil {
@@ -247,6 +255,7 @@ func TestCodexInteractiveRequestIsRejected(t *testing.T) {
 }
 
 func TestCodexDiagnosticsAndAccount(t *testing.T) {
+	t.Parallel()
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
 	if err != nil {
@@ -298,6 +307,7 @@ func pipedCodex(t *testing.T, ctx context.Context, timeout uint64) (*Codex, chan
 }
 
 func TestCodexRPCPerMessageBound(t *testing.T) {
+	t.Parallel()
 	client, _ := pipedCodex(t, context.Background(), 1)
 	started := time.Now()
 	_, err := client.rpc("model/list", map[string]any{})
@@ -403,6 +413,7 @@ func TestCodexBacklogBounds(t *testing.T) {
 }
 
 func TestCodexTurnSkipsQueuedStaleResponse(t *testing.T) {
+	t.Parallel()
 	const thread = "019a0000-0000-7000-8000-000000000001"
 	client := backlogCodex(t,
 		`{"id":99,"result":{}}`,
@@ -420,6 +431,7 @@ func TestCodexTurnSkipsQueuedStaleResponse(t *testing.T) {
 }
 
 func TestCodexReceiveObservesCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	client, _ := pipedCodex(t, ctx, 60)
 	time.AfterFunc(100*time.Millisecond, cancel)
@@ -434,6 +446,7 @@ func TestCodexReceiveObservesCancellation(t *testing.T) {
 }
 
 func TestOutboundFrameBound(t *testing.T) {
+	t.Parallel()
 	pad := strings.Repeat("a", MaxMessage-8)
 	payload, err := framed(map[string]any{"k": pad})
 	if err != nil {
@@ -448,6 +461,7 @@ func TestOutboundFrameBound(t *testing.T) {
 }
 
 func TestWriteAllHonorsCancellation(t *testing.T) {
+	t.Parallel()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -471,6 +485,7 @@ func TestWriteAllHonorsCancellation(t *testing.T) {
 }
 
 func TestCodexEventStreams(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"disconnect", "missing-completion", "duplicate", "stale", "interleaved"} {
 		t.Run(mode, func(t *testing.T) {
 			f := codexFixture(t)

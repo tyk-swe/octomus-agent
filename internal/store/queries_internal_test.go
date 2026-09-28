@@ -13,6 +13,7 @@ import (
 )
 
 func TestDashboardReportsMidIterationErrors(t *testing.T) {
+	t.Parallel()
 	s := fullOpen(t)
 	execStore(t, s, "INSERT INTO record_counts VALUES ('task','aaa',0,1),('task','zzz',0,9223372036854775807),('task','zzz',1,1)")
 	result, err := s.Dashboard()
@@ -27,6 +28,7 @@ func TestDashboardReportsMidIterationErrors(t *testing.T) {
 }
 
 func TestQueryRecordsAndRecordAtReadCallerOwnedConnections(t *testing.T) {
+	t.Parallel()
 	type record struct {
 		N int `json:"n"`
 	}
@@ -88,6 +90,7 @@ func TestQueryRecordsAndRecordAtReadCallerOwnedConnections(t *testing.T) {
 }
 
 func TestDecodeJSONRefusesTrailingData(t *testing.T) {
+	t.Parallel()
 	for _, raw := range []string{`{"n":1}}`, `{"n":1}]`, `{"n":1} {}`, `{"n":1} 2`, `{"n":1}x`, `[1]]`} {
 		var value any
 		if err := decodeJSON([]byte(raw), &value); err == nil || err.Error() != "trailing JSON data" {
@@ -107,6 +110,7 @@ func TestDecodeJSONRefusesTrailingData(t *testing.T) {
 }
 
 func TestSchedulingPlanNeverWalksTaskHistory(t *testing.T) {
+	t.Parallel()
 	s := fullOpen(t)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -138,6 +142,7 @@ func TestSchedulingPlanNeverWalksTaskHistory(t *testing.T) {
 }
 
 func TestUnreadableRecordsNameTheirIdentity(t *testing.T) {
+	t.Parallel()
 	s := fullOpen(t)
 	execStore(t, s, `INSERT INTO records VALUES ('task','broken','{"id":"broken","status":"executing"}')`)
 	_, err := s.SchedulingTasks(nil)

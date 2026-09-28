@@ -182,6 +182,7 @@ func await(ch chan outcome, limit time.Duration) (outcome, error) {
 }
 
 func TestValidateRoute(t *testing.T) {
+	t.Parallel()
 	models := []Model{
 		{Backend: config.BackendCodex, Model: "gpt-6-astra", DisplayName: "astra", Efforts: []string{"low", "medium", "high"}, Variants: []string{}, Available: true},
 		{Backend: config.BackendOpencode, Provider: stringPtr("fixture"), Model: "fixture-model", DisplayName: "fixture", Efforts: []string{}, Variants: []string{"low", "high"}, Available: true},
@@ -230,6 +231,7 @@ func TestValidateRoute(t *testing.T) {
 }
 
 func TestModelWireShape(t *testing.T) {
+	t.Parallel()
 	data, err := json.Marshal(Model{
 		Backend:     config.BackendCodex,
 		Model:       "gpt-6-astra",
@@ -258,6 +260,7 @@ func TestModelWireShape(t *testing.T) {
 }
 
 func TestDiagnosticsWireShape(t *testing.T) {
+	t.Parallel()
 	warning := "OpenCode version mismatch"
 	for _, tc := range []struct {
 		diagnostics Diagnostics
@@ -276,6 +279,7 @@ func TestDiagnosticsWireShape(t *testing.T) {
 }
 
 func TestVersionWarnings(t *testing.T) {
+	t.Parallel()
 	if warning := CodexVersionWarning("codex-cli 0.153.4"); warning != nil {
 		t.Fatalf("exact match must not warn: %q", *warning)
 	}
@@ -297,6 +301,7 @@ func TestVersionWarnings(t *testing.T) {
 }
 
 func TestRunnersLazyBackendsAndAuditFiltering(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	cfg := f.cfg.Clone()
 	for _, role := range []string{"orchestrator", "discovery", "proposal_reviewer"} {
@@ -325,6 +330,7 @@ func TestRunnersLazyBackendsAndAuditFiltering(t *testing.T) {
 }
 
 func TestRunnersMixedBackendCatalogs(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, "opencode", func(shim string) config.Config {
 		cfg := config.Default()
 		cfg.OpencodeBinary = shim
@@ -359,6 +365,7 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 }
 
 func TestRunnersCloseOwnsClients(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
 	defer clients.Close()
@@ -390,6 +397,7 @@ func TestRunnersCloseOwnsClients(t *testing.T) {
 }
 
 func TestRunnersErrorsKeepBlockedReason(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
 	defer clients.Close()
@@ -411,6 +419,7 @@ func TestRunnersErrorsKeepBlockedReason(t *testing.T) {
 }
 
 func TestDecodeJSONStrict(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ raw, message string }{
 		{`"\ud800"`, "unpaired high surrogate"},
 		{`"\udc00"`, "unpaired low surrogate"},
@@ -455,6 +464,7 @@ func TestDecodeJSONStrict(t *testing.T) {
 }
 
 func TestFinishTurnRejectsDuplicateKeys(t *testing.T) {
+	t.Parallel()
 	finding := `{"detail":"d","file":"a.go","priority":"high","title":"SQL injection"}`
 	proposal := map[string]any{}
 	for _, key := range []string{"id", "title", "problem", "benefit", "category", "target", "tier", "scope", "prompt", "reason", "problem_key"} {

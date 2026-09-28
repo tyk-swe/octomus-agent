@@ -3,6 +3,7 @@ package process
 import "testing"
 
 func TestSignalStringNamesLinuxSignals(t *testing.T) {
+	t.Parallel()
 	for signal, want := range map[int]string{
 		1:  " (SIGHUP)",
 		2:  " (SIGINT)",

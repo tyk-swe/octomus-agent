@@ -15,6 +15,7 @@ import (
 )
 
 func TestDecisionFingerprintTreatsPathsLiterally(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	revision := git(t, fixture.cfg.Repository, "rev-parse", "HEAD")
 	ctx := context.Background()
@@ -45,6 +46,7 @@ func TestDecisionFingerprintTreatsPathsLiterally(t *testing.T) {
 }
 
 func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	rejected := func(id, title, key string) model.Proposal {
 		return model.Proposal{ID: id, Title: title, ProblemKey: key, Target: cfg.DefaultBranch, Decision: model.DecisionRejected, Reason: "No measured benefit.", RelevantPaths: []string{}, Reconsiders: []string{}}
@@ -90,6 +92,7 @@ func TestDecisionMetadataBoundsNameTheProposalAndField(t *testing.T) {
 }
 
 func TestPlanningMemoryReconsiderationRules(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	cfg := fixture.cfg
 	ctx := context.Background()
@@ -186,6 +189,7 @@ func TestPlanningMemoryReconsiderationRules(t *testing.T) {
 }
 
 func TestPlanningMemoryPromptJSONIsStable(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	app := New(state, t.TempDir())

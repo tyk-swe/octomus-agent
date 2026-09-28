@@ -34,7 +34,7 @@ See [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md) for the code
 
 ## Meaningful evidence
 
-`make test` runs the Go tests twice (the second time under `-race`), then these
+`make test` runs the regular Go suite and then the race suite, then these
 suites against the freshly built binary. The service suites run the real service,
 SQLite and local Git with deterministic Codex, OpenCode and GitHub peers
 (`tests/fixtures`) in temporary directories, without live model calls or network
@@ -64,7 +64,8 @@ writes:
 - `npm test --prefix web`: the dashboard browser tests, including the evidence display
   rules `web/tests/evidence.spec.ts` checks without a page.
 
-Focused targets run one stage each against the built binary: `make test-go`,
+Focused targets run one stage each against the built binary: `make test-go`
+(regular Go suite), `make test-go-race` (race suite explicitly),
 `make test-contracts`, `make test-integration` (with `INTEGRATION_SCENARIOS`
 suite aliases or qualified names) and `make test-browser` (with
 `PLAYWRIGHT_ARGS` such as `--project=desktop`).

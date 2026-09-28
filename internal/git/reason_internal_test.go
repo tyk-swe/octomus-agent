@@ -8,6 +8,7 @@ import (
 )
 
 func TestReasonHelpersKeepMessageReasonAndCause(t *testing.T) {
+	t.Parallel()
 	reason := model.BlockedReasonRemoteConflict
 	refusal := blocked(reason, "Invalid PR creation URL")
 	if want := "Invalid PR creation URL: " + reason.Error(); refusal.Error() != want {

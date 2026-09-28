@@ -214,6 +214,7 @@ func assertPlanningRulePrompts(t *testing.T, f *scriptedFixture, mode model.Cycl
 }
 
 func TestAuditRunsCompleteIndependentPlanWithoutQueueingWork(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	completePlan(t, fixture).queue(fixture)
 	existing := queuedTask(fixture.cfg, "already-queued", fixture.cfg.DefaultBranch, "octomus/already-queued")
@@ -281,6 +282,7 @@ func consolidationPrCapacity(t *testing.T, f *scriptedFixture) map[string]any {
 }
 
 func TestAuditPlanningContextReportsTheGroundedPrCapacity(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		limit     uint64
@@ -356,6 +358,7 @@ runpy.run_path(%[4]q, run_name='__main__')
 }
 
 func TestGroundingFetchesTheRemoteHeadsItObserved(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	advanced := advanceMainDuringObservation(t, fixture)
 	completePlan(t, fixture).queue(fixture)
@@ -376,6 +379,7 @@ func TestGroundingFetchesTheRemoteHeadsItObserved(t *testing.T) {
 }
 
 func TestRunOnceCommitsCompletePlanningQueueAndPhase(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	completePlan(t, fixture).queue(fixture)
 	app := fixture.pausedApp(t)
@@ -405,6 +409,7 @@ func TestRunOnceCommitsCompletePlanningQueueAndPhase(t *testing.T) {
 }
 
 func TestPlanCommitSerializesWithTheSchedulerGate(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	plan := completePlan(t, fixture)
 	consolidation := runnertest.NewGate()
@@ -466,6 +471,7 @@ func TestPlanCommitSerializesWithTheSchedulerGate(t *testing.T) {
 }
 
 func TestResumeClearsOldDelayAndNextTickStartsPlanning(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"direct", "control action"} {
 		t.Run(action, func(t *testing.T) {
 			fixture := newScriptedPlanningFixture(t)
@@ -514,6 +520,7 @@ func planningErrors(t *testing.T, state *store.Store, entity string) []model.Eve
 }
 
 func TestFailedPlanningCommitsNoPartialQueueOrDecisionMemory(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []model.OperatingMode{model.OperatingModeRunOnce, model.OperatingModeContinuous} {
 		t.Run(mode.String(), func(t *testing.T) {
 			fixture := newScriptedPlanningFixture(t)
@@ -598,6 +605,7 @@ func allPlanningErrors(t *testing.T, state *store.Store) []model.Event {
 }
 
 func TestGracefulShutdownDuringPlanningRecordsInterruption(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"audit", "run once", "continuous"} {
 		t.Run(mode, func(t *testing.T) {
 			fixture := newScriptedPlanningFixture(t)
@@ -692,6 +700,7 @@ func TestGracefulShutdownDuringPlanningRecordsInterruption(t *testing.T) {
 }
 
 func TestGracefulShutdownDuringPreflightLeavesControl(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"run once", "continuous"} {
 		t.Run(mode, func(t *testing.T) {
 			runOnce := mode == "run once"
@@ -788,6 +797,7 @@ func runOncePlan(t *testing.T, f *scriptedFixture) (*App, model.Cycle) {
 }
 
 func TestRediscoveryNeedsExactlyOneFreshDecision(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		references int
@@ -825,6 +835,7 @@ func TestRediscoveryNeedsExactlyOneFreshDecision(t *testing.T) {
 }
 
 func TestArchivingWithdrawsARediscoveryRequest(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	request := saveRediscoveryRequest(t, fixture)
 	completePlan(t, fixture).queue(fixture)
@@ -853,6 +864,7 @@ func TestArchivingWithdrawsARediscoveryRequest(t *testing.T) {
 }
 
 func TestRediscoveryDecisionResolvesTheRequest(t *testing.T) {
+	t.Parallel()
 	for _, decision := range []string{model.DecisionAccepted, model.DecisionRejected} {
 		t.Run(decision, func(t *testing.T) {
 			fixture := newScriptedPlanningFixture(t)
@@ -900,6 +912,7 @@ func TestRediscoveryDecisionResolvesTheRequest(t *testing.T) {
 }
 
 func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	fixture.configure(t, func(cfg *config.Config) { cfg.MaxSessionsPerDay = 3 * cfg.PlanningAdmissionsRequired() })
 	app := fixture.pausedApp(t)
@@ -987,6 +1000,7 @@ func TestIdlePlansBackOffUntilAPlanQueuesWork(t *testing.T) {
 }
 
 func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	plan := completePlan(t, fixture)
 	plan.consolidation = runnertest.Reply{Answer: `{"proposals": []}`}
@@ -1015,6 +1029,7 @@ func TestConsolidationMustAccountForEveryOriginalProposal(t *testing.T) {
 }
 
 func TestDiscoveryRefusesDuplicateOrEmptyProposalIdentities(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		ids  []string
@@ -1049,6 +1064,7 @@ func TestDiscoveryRefusesDuplicateOrEmptyProposalIdentities(t *testing.T) {
 }
 
 func TestPlanningStagesReceiveTheGroundingSummaryText(t *testing.T) {
+	t.Parallel()
 	t.Run("summary", func(t *testing.T) {
 		fixture := newScriptedPlanningFixture(t)
 		completePlan(t, fixture).queue(fixture)
@@ -1146,6 +1162,7 @@ func committedPlanningChange() planningMutation {
 }
 
 func TestPlanningRejectsAndPreservesAMutatedRoleWorkspace(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		mutation   planningMutation
@@ -1246,6 +1263,7 @@ func TestPlanningRejectsAndPreservesAMutatedRoleWorkspace(t *testing.T) {
 }
 
 func TestRemotePreflightDoesNotHoldControlLockAndRejectsChangedPolicy(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	fixture.configure(t, func(c *config.Config) { c.CommandTimeoutSeconds = 60 })
 	hold := filepath.Join(fixture.root, "reconcile-hold")
@@ -1296,6 +1314,7 @@ func TestRemotePreflightDoesNotHoldControlLockAndRejectsChangedPolicy(t *testing
 }
 
 func TestPlanningPreflightSurvivesObservationButNotOperatorChanges(t *testing.T) {
+	t.Parallel()
 	observe := func(control *model.Control) {
 		control.ContextFingerprint = "observed-during-preflight"
 		control.IdleStreak = 3
@@ -1381,6 +1400,7 @@ func TestPlanningPreflightSurvivesObservationButNotOperatorChanges(t *testing.T)
 }
 
 func TestPlanningAllowanceConsumedDuringPreflightUsesModeSemantics(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		runOnce bool
@@ -1476,6 +1496,7 @@ func groundingCycle(t *testing.T, f *scriptedFixture, mode model.CycleMode) mode
 }
 
 func TestPausedGroundingClearsEarlierRefreshFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	app := fixture.pausedApp(t)
 	cycle := groundingCycle(t, fixture, model.CycleModeAudit)
@@ -1500,6 +1521,7 @@ func TestPausedGroundingClearsEarlierRefreshFailure(t *testing.T) {
 }
 
 func TestGroundingNamesTheFailedPullRequestObservation(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	app := fixture.pausedApp(t)
 	cycle := groundingCycle(t, fixture, model.CycleModeAudit)
@@ -1520,6 +1542,7 @@ func TestGroundingNamesTheFailedPullRequestObservation(t *testing.T) {
 }
 
 func TestGroundingSupersededByANewerInventoryContinues(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedPlanningFixture(t)
 	app := fixture.pausedApp(t)
 	if err := app.Resume(); err != nil {

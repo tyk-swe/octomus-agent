@@ -8,6 +8,7 @@ import (
 )
 
 func TestParseCreatedPRURLAcceptsOnlyThisRepositorysPullURL(t *testing.T) {
+	t.Parallel()
 	const repo = "fixture/project"
 	accepted := []struct {
 		url  string

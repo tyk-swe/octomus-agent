@@ -42,6 +42,7 @@ runpy.run_path(%[5]q, run_name='__main__')
 }
 
 func TestObservationObsoletedByARemoteChangeCommitsNothing(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	hold, entered := holdRemoteRevisionRead(t, fixture)
 	app := New(fixture.state, fixture.dataDir)
@@ -110,6 +111,7 @@ runpy.run_path(%[6]q, run_name='__main__')
 }
 
 func TestHousekeepingRefreshObsoletedByAPolicySaveIsNotAFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	hold, entered, fail := holdOpenPrInventoryRead(t, fixture)
 	app := New(fixture.state, fixture.dataDir)
@@ -217,6 +219,7 @@ func TestHousekeepingRefreshObsoletedByAPolicySaveIsNotAFailure(t *testing.T) {
 }
 
 func TestFailedRefreshForAReplacedPolicyIsNotTheCapacityReason(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	hold, entered, fail := holdOpenPrInventoryRead(t, fixture)
 	app := New(fixture.state, fixture.dataDir)
@@ -277,6 +280,7 @@ func TestFailedRefreshForAReplacedPolicyIsNotTheCapacityReason(t *testing.T) {
 }
 
 func TestObservationRecordsTheDefaultBranchWithItsContext(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
@@ -297,6 +301,7 @@ func TestObservationRecordsTheDefaultBranchWithItsContext(t *testing.T) {
 }
 
 func TestContextFingerprintShortensOnlyExtendedIdleBackoff(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_800_000_000, 0)
 	const interval = 1800
 	day := now.Unix() + 86400

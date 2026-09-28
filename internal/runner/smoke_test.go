@@ -13,6 +13,7 @@ import (
 )
 
 func TestPinnedOpenCodeProtocolSmokeWithoutModelCalls(t *testing.T) {
+	t.Parallel()
 	binary := os.Getenv("OCTOMUS_OPENCODE_SMOKE_BINARY")
 	if binary == "" {
 		t.Skip("OCTOMUS_OPENCODE_SMOKE_BINARY is not set")

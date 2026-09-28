@@ -20,6 +20,7 @@ import (
 )
 
 func TestOpenCodeCatalogIsSafeAndChecksCapabilities(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
 	if err != nil {
@@ -68,6 +69,7 @@ func TestOpenCodeCatalogIsSafeAndChecksCapabilities(t *testing.T) {
 }
 
 func TestOpenCodeSessionsResumeAndStructuredOutput(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
 	if err != nil {
@@ -195,6 +197,7 @@ func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
 }
 
 func TestOpenCodeErrorsNameTheRunnerFailure(t *testing.T) {
+	t.Parallel()
 	client := &OpenCode{}
 	for _, tc := range []struct {
 		name  string
@@ -231,6 +234,7 @@ func TestOpenCodeErrorsNameTheRunnerFailure(t *testing.T) {
 }
 
 func TestOpenCodeEmptyResultIsRejected(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
 	if err != nil {
@@ -251,6 +255,7 @@ func TestOpenCodeEmptyResultIsRejected(t *testing.T) {
 }
 
 func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	client, err := f.connect(ctx)
@@ -306,6 +311,7 @@ func TestOpenCodeCancellationStopsOwnedServerAndDescendants(t *testing.T) {
 }
 
 func TestOpenCodeStartupPolicyFailuresAndTimeoutsAreBounded(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"startup-failure", "startup-hang", "wrong-policy"} {
 		t.Run(mode, func(t *testing.T) {
 			f := opencodeFixture(t)
@@ -352,6 +358,7 @@ func TestOpenCodeStartupPolicyFailuresAndTimeoutsAreBounded(t *testing.T) {
 }
 
 func TestOpenCodeStdoutStaysDrainedAfterOverlongLine(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	f.mode("opencode", "overlong-stdout")
 	client, err := f.connect(context.Background())
@@ -380,6 +387,7 @@ func TestOpenCodeStdoutStaysDrainedAfterOverlongLine(t *testing.T) {
 }
 
 func TestOpenCodeStartupFailureReportsStderr(t *testing.T) {
+	t.Parallel()
 	for mode, want := range map[string]string{
 		"startup-failure":  "OpenCode exited before server readiness",
 		"startup-stderr":   "OpenCode exited before server readiness; stderr: fixture startup failure token=[redacted]",
@@ -401,6 +409,7 @@ func TestOpenCodeStartupFailureReportsStderr(t *testing.T) {
 }
 
 func TestOpenCodeRedirectRefusal(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
 	if err != nil {
@@ -416,6 +425,7 @@ func TestOpenCodeRedirectRefusal(t *testing.T) {
 }
 
 func TestOpenCodeDiagnostics(t *testing.T) {
+	t.Parallel()
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
 	if err != nil {
@@ -447,6 +457,7 @@ func TestOpenCodeDiagnostics(t *testing.T) {
 }
 
 func TestProtocolMessageBound(t *testing.T) {
+	t.Parallel()
 	done := make(chan struct{})
 	defer close(done)
 	line := make([]byte, MaxMessage)
@@ -505,6 +516,7 @@ func TestProtocolMessageBound(t *testing.T) {
 }
 
 func TestProtocolMessageBoundOverHTTP(t *testing.T) {
+	t.Parallel()
 	body := `{"k":"` + strings.Repeat("a", MaxMessage-8) + `"}`
 	over := `{"k":"` + strings.Repeat("a", MaxMessage-7) + `"}`
 	var serve string
@@ -541,6 +553,7 @@ func failedResponse(body string) *http.Response {
 }
 
 func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
+	t.Parallel()
 	never := func() {}
 	for _, secret := range []string{"ghp_Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9", "Bearer eyJhbGciOiJIUzI1NiJ9.c2lnbmF0dXJl"} {
 		for at := 1; at < len(secret); at++ {
@@ -584,6 +597,7 @@ func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
 }
 
 func TestStalledErrorBodyEndsPromptly(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/abort") {

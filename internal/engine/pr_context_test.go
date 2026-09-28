@@ -59,6 +59,7 @@ func prContextPR(t *testing.T, raw map[string]any) model.PullRequest {
 }
 
 func TestExternalContextBoundsCountsAndTruncatesUTF8(t *testing.T) {
+	t.Parallel()
 	entries := []map[string]any{}
 	for n := 1; n <= 130; n++ {
 		entries = append(entries, prContextExternalEntry(n))
@@ -131,6 +132,7 @@ func TestExternalContextBoundsCountsAndTruncatesUTF8(t *testing.T) {
 }
 
 func TestExternalContextSortsUnsortedInventories(t *testing.T) {
+	t.Parallel()
 	externalPR := func(number int) model.PullRequest {
 		return prContextPR(t, map[string]any{
 			"number": number, "title": "External", "branch": fmt.Sprintf("contributor/%d", number),
@@ -178,6 +180,7 @@ func TestExternalContextSortsUnsortedInventories(t *testing.T) {
 }
 
 func TestTargetResolutionRejectsExternalAndClosedPRs(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	pr := func(state string, owned bool, baseRepo string) model.PullRequest {
 		return prContextPR(t, map[string]any{
@@ -211,6 +214,7 @@ func TestTargetResolutionRejectsExternalAndClosedPRs(t *testing.T) {
 }
 
 func TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	fork := ownedPR("octomus/fix")
 	fork.Number, fork.Head, fork.Owned, fork.HeadRepository = 202, "fork-head", false, "fork/project"

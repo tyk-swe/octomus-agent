@@ -39,6 +39,7 @@ func readLines(t *testing.T, r io.Reader, limit int) ([]string, error) {
 }
 
 func TestLineReaderTrailingLine(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("connection reset")
 	for _, tc := range []struct {
 		name  string
@@ -75,6 +76,7 @@ func (endless) Read(p []byte) (int, error) {
 }
 
 func TestLineReaderStopsWhenAbandoned(t *testing.T) {
+	t.Parallel()
 	done := make(chan struct{})
 	ch := lineReader(endless{}, 16, done)
 	if result := <-ch; result.err != nil || string(result.line) != "a" {

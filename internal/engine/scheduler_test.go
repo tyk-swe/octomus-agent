@@ -15,6 +15,7 @@ import (
 )
 
 func TestTickAfterShutdownHasNoSideEffects(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"existing branch", "new PR", "planning", "paused"} {
 		t.Run(scenario, func(t *testing.T) {
 			state := testStore(t)
@@ -72,6 +73,7 @@ func TestTickAfterShutdownHasNoSideEffects(t *testing.T) {
 }
 
 func TestTaskCompletionCancelsContext(t *testing.T) {
+	t.Parallel()
 	for _, runErr := range []error{nil, errors.New("worker failed")} {
 		name := "success"
 		if runErr != nil {
@@ -108,6 +110,7 @@ func TestTaskCompletionCancelsContext(t *testing.T) {
 }
 
 func TestRunOnceAcceptsPreviouslyPublishedDependency(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		runID *string
@@ -151,6 +154,7 @@ func TestRunOnceAcceptsPreviouslyPublishedDependency(t *testing.T) {
 }
 
 func TestPlanningPreflightRejectsMissingAuthenticationBeforeSideEffects(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"audit", "run_once", "continuous"} {
 		t.Run(mode, func(t *testing.T) {
 			fixture := newPlanningFixture(t)

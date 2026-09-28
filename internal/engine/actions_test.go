@@ -15,6 +15,7 @@ import (
 )
 
 func TestShutdownOwnsRetryPreflight(t *testing.T) {
+	t.Parallel()
 	fixture, app, task := heldPreflightFixture(t)
 	finished := make(chan error, 1)
 	go func() { finished <- app.TaskAction(context.Background(), task.ID, "retry") }()
@@ -55,6 +56,7 @@ func TestShutdownOwnsRetryPreflight(t *testing.T) {
 }
 
 func TestShutdownWaitsForPublicationReconciliation(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	task := checkpointedTask(t, fixture, fixture.cfg.DefaultBranch)
 	task.Status = model.StatusBlocked
@@ -120,6 +122,7 @@ func heldPreflightFixture(t *testing.T) (*planningFixture, *App, model.Task) {
 }
 
 func TestConcurrentRetriesQueueOnlyOneAttempt(t *testing.T) {
+	t.Parallel()
 	fixture, app, task := heldPreflightFixture(t)
 	results := make(chan error, 2)
 	go func() { results <- app.TaskAction(context.Background(), task.ID, "retry") }()
@@ -145,6 +148,7 @@ func TestConcurrentRetriesQueueOnlyOneAttempt(t *testing.T) {
 }
 
 func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
+	t.Parallel()
 	fixture, app, task := heldPreflightFixture(t)
 	round := model.ReviewRound{
 		SessionID:      "reviewer",
@@ -176,6 +180,7 @@ func TestRetryStartsAFreshRepairRoundBudget(t *testing.T) {
 }
 
 func TestRetryRechecksPolicyAfterRemoteChecks(t *testing.T) {
+	t.Parallel()
 	fixture, app, task := heldPreflightFixture(t)
 	done := make(chan error, 1)
 	go func() { done <- app.TaskAction(context.Background(), task.ID, "retry") }()
@@ -199,6 +204,7 @@ func TestRetryRechecksPolicyAfterRemoteChecks(t *testing.T) {
 }
 
 func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"retry", "reconcile"} {
 		for _, scenario := range []struct {
 			mutation    string
@@ -277,6 +283,7 @@ func TestRemotePreflightsReleaseControlsAndPreserveConcurrentTaskActions(t *test
 }
 
 func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	script := "#!/bin/sh\nsleep 2\nexec git-upload-pack \"$@\"\n"
 	path := filepath.Join(fixture.root, "slow-upload-pack")
@@ -320,6 +327,7 @@ func TestRetryPreflightAdoptsTheCurrentCommandTimeout(t *testing.T) {
 }
 
 func TestTaskActionSupersedeArchiveDiscard(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
@@ -367,6 +375,7 @@ func TestTaskActionSupersedeArchiveDiscard(t *testing.T) {
 }
 
 func TestUnknownActionsAreNotReportedAsEligibilityConflicts(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -405,6 +414,7 @@ func TestUnknownActionsAreNotReportedAsEligibilityConflicts(t *testing.T) {
 }
 
 func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
+	t.Parallel()
 	fixture := newExecutionFixture(t)
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
@@ -427,6 +437,7 @@ func TestRetryOnStaleBaseStaysBlocked(t *testing.T) {
 }
 
 func TestRetryChecksARecordedWorkspaceBeforeQueuing(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		action  string

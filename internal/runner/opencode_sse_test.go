@@ -35,6 +35,7 @@ func sseResults(t *testing.T, body io.Reader) []valueResult {
 }
 
 func TestSSEFraming(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("connection reset")
 	for _, tc := range []struct {
 		name   string
@@ -107,6 +108,7 @@ func TestSSEFraming(t *testing.T) {
 }
 
 func TestSSELoopEndsWhenCancelled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	out := make(chan valueResult)

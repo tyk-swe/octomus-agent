@@ -55,6 +55,7 @@ func makeCheck(cfg config.Config, status model.BaselineStatus) model.BaselineChe
 }
 
 func TestBaselineValidationAcceptsUnroutedModelsButRequiresRepositoryAndCommands(t *testing.T) {
+	t.Parallel()
 	_, cfg := baselineApp(t)
 	if err := cfg.Validate(true); err == nil {
 		t.Fatal("unrouted models must fail full validation")
@@ -83,6 +84,7 @@ func TestBaselineValidationAcceptsUnroutedModelsButRequiresRepositoryAndCommands
 }
 
 func TestStartBaselineRejectsStaleRevisionBeforeWork(t *testing.T) {
+	t.Parallel()
 	app, cfg := baselineApp(t)
 	fingerprint, err := cfg.Fingerprint()
 	if err != nil {
@@ -106,6 +108,7 @@ func TestStartBaselineRejectsStaleRevisionBeforeWork(t *testing.T) {
 }
 
 func TestBaselineFingerprintTracksTheCanonicalConfig(t *testing.T) {
+	t.Parallel()
 	_, cfg := baselineApp(t)
 	fingerprint, err := cfg.Fingerprint()
 	if err != nil {
@@ -131,6 +134,7 @@ func TestBaselineFingerprintTracksTheCanonicalConfig(t *testing.T) {
 }
 
 func TestBaselineOutputBoundsAreUTF8Safe(t *testing.T) {
+	t.Parallel()
 	const marker = "\n[output truncated]"
 	if output, truncated := boundedOutput("short", 16*1024, false); truncated || output != "short" {
 		t.Fatalf("short output: %q %v", output, truncated)
@@ -189,6 +193,7 @@ func TestBaselineOutputBoundsAreUTF8Safe(t *testing.T) {
 }
 
 func TestBaselineCommandOutputPreservesRealCaptureTruncation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	captured, captureErr := process.Capture(ctx, "bash", []string{"-c", "yes '𐐀' | head -c 20000"}, dir, 10, process.CaptureDiagnostic)
@@ -218,6 +223,7 @@ func TestBaselineCommandOutputPreservesRealCaptureTruncation(t *testing.T) {
 }
 
 func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
+	t.Parallel()
 	_, cfg := baselineApp(t)
 	ctx := context.Background()
 	revision := git(t, cfg.Repository, "rev-parse", "HEAD")
@@ -243,6 +249,7 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 }
 
 func TestBaselineObservationNeverRegressesToAnOlderRevision(t *testing.T) {
+	t.Parallel()
 	app, cfg := baselineApp(t)
 	older := time.Now().UTC().Add(-30 * time.Second).Format(time.RFC3339)
 	newer := time.Now().UTC().Format(time.RFC3339)
@@ -278,6 +285,7 @@ func setObservation(app *App, observation *model.DefaultBranchObservation) {
 }
 
 func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing.T) {
+	t.Parallel()
 	app, cfg := baselineApp(t)
 	fingerprint, err := cfg.Fingerprint()
 	if err != nil {
@@ -399,6 +407,7 @@ func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing
 }
 
 func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
+	t.Parallel()
 	app, cfg := baselineApp(t)
 	check := makeCheck(cfg, model.BaselineStatusFailed)
 	completed := model.Now()
@@ -460,6 +469,7 @@ func TestBaselineCleanupRemovesTheOwnedCloneAndRefusesSymlinks(t *testing.T) {
 }
 
 func TestRecoverBaselinesFinalizesRunningRecordsAndPreservesCancelIntent(t *testing.T) {
+	t.Parallel()
 	app, cfg := baselineApp(t)
 	interrupted := makeCheck(cfg, model.BaselineStatusRunning)
 	cancelled := makeCheck(cfg, model.BaselineStatusRunning)
@@ -501,22 +511,13 @@ func TestRecoverBaselinesFinalizesRunningRecordsAndPreservesCancelIntent(t *test
 }
 
 func TestBaselineOverallDeadlineTimesOutAndCleansWorkspace(t *testing.T) {
-	app, cfg := baselineApp(t)
+	// Keep this test serial: its five-second deadline includes storage and Git
+	// setup, which must finish before the verification shell can start.
+	fixture := newPlanningFixture(t)
+	app := New(fixture.state, fixture.dataDir)
+	cfg := fixture.cfg
 	defer app.Shutdown()
-	root := t.TempDir()
-	bin := filepath.Join(root, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	pythonFixtureShim(t, filepath.Join(bin, "git"), root, "git.py")
-	pythonFixtureShim(t, filepath.Join(bin, "gh"), root, "gh.py")
-	t.Setenv("OCTOMUS_FIXTURE", root)
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	remote := filepath.Join(root, "remote.git")
-	git(t, root, "init", "--bare", "--initial-branch=main", remote)
-	git(t, cfg.Repository, "remote", "add", "origin", remote)
-	git(t, cfg.Repository, "push", "-u", "origin", "main")
-	pidPath := filepath.Join(root, "shell.pid")
+	pidPath := filepath.Join(fixture.root, "shell.pid")
 	check := makeCheck(cfg, model.BaselineStatusRunning)
 	check.Config.SessionTimeoutSeconds = 1
 	check.Config.TaskTimeoutSeconds = 5

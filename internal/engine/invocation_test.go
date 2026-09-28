@@ -47,6 +47,7 @@ func admissionsByRole(t *testing.T, state *store.Store) map[string]int {
 }
 
 func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	fixture.configure(t, func(cfg *config.Config) {
 		cfg.VerificationCommands = []string{"grep -q fixed feature.txt"}
@@ -107,6 +108,7 @@ func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 }
 
 func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
 	}
@@ -155,6 +157,7 @@ func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
 }
 
 func TestInvocationRejectsReservedResume(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	app := New(state, t.TempDir())
 	t.Cleanup(app.Shutdown)
@@ -179,6 +182,7 @@ func TestInvocationRejectsReservedResume(t *testing.T) {
 }
 
 func TestInvocationSkipsCancelledOwner(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	app := New(state, t.TempDir())
 	t.Cleanup(app.Shutdown)
@@ -207,6 +211,7 @@ func TestInvocationSkipsCancelledOwner(t *testing.T) {
 }
 
 func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	app := New(state, t.TempDir())
 	t.Cleanup(app.Shutdown)
@@ -275,6 +280,7 @@ func scriptedProposal(id, decision string) map[string]any {
 }
 
 func TestInvocationRedactsEveryRoleSummary(t *testing.T) {
+	t.Parallel()
 	t.Run("task roles", func(t *testing.T) {
 		fixture := newScriptedFixture(t, withGitHubIdentity())
 		fixture.configure(t, func(cfg *config.Config) {

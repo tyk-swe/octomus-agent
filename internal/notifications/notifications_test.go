@@ -145,6 +145,7 @@ func refusingAddress(t *testing.T) string {
 }
 
 func TestWebhookURLPolicyAcceptsHTTPSAndLoopbackHTTPOnly(t *testing.T) {
+	t.Parallel()
 	state, _ := testStore(t)
 	cases := []struct {
 		url      string
@@ -208,6 +209,7 @@ func TestWebhookURLPolicyAcceptsHTTPSAndLoopbackHTTPOnly(t *testing.T) {
 }
 
 func TestLocalReceiverVerifiesMinimalPayloadAndDelivery(t *testing.T) {
+	t.Parallel()
 	state, _ := testStore(t)
 	server := newReceiver(t, 200, 0)
 	worker, err := Start(context.Background(), state, server.url)
@@ -260,6 +262,7 @@ func r_body(t *testing.T, data []byte) map[string]any {
 }
 
 func TestRetryableAndTerminalStatusesAreClassified(t *testing.T) {
+	t.Parallel()
 	for _, check := range []struct {
 		status    int
 		retryable bool
@@ -297,6 +300,7 @@ func TestRetryableAndTerminalStatusesAreClassified(t *testing.T) {
 }
 
 func TestSlowDeliveryDoesNotCauseACatchUpBurst(t *testing.T) {
+	t.Parallel()
 	state, _ := testStore(t)
 	server := newReceiver(t, 200, 2200*time.Millisecond)
 	worker, err := Start(context.Background(), state, server.url)
@@ -321,6 +325,7 @@ func TestSlowDeliveryDoesNotCauseACatchUpBurst(t *testing.T) {
 }
 
 func TestDeliveryTimeoutIsBoundedAndVisible(t *testing.T) {
+	t.Parallel()
 	state, _ := testStore(t)
 	server := newReceiver(t, 200, 60*time.Second)
 	worker, err := Start(context.Background(), state, server.url)
@@ -338,6 +343,7 @@ func TestDeliveryTimeoutIsBoundedAndVisible(t *testing.T) {
 }
 
 func TestHeldHTTPShutdownLeavesTheClaimedRowForRecovery(t *testing.T) {
+	t.Parallel()
 	state, path := testStore(t)
 	server := newReceiver(t, 200, 60*time.Second)
 	worker, err := Start(context.Background(), state, server.url)
@@ -366,6 +372,7 @@ func TestHeldHTTPShutdownLeavesTheClaimedRowForRecovery(t *testing.T) {
 }
 
 func TestOversizedIdentitiesFailAsInvalidPayloadInsteadOfTruncating(t *testing.T) {
+	t.Parallel()
 	state, _ := testStore(t)
 	enabled(t, state)
 	long := strings.Repeat("x", 300)
@@ -386,6 +393,7 @@ func TestOversizedIdentitiesFailAsInvalidPayloadInsteadOfTruncating(t *testing.T
 }
 
 func TestWorkerFailsOversizedEventsTerminally(t *testing.T) {
+	t.Parallel()
 	state, path := testStore(t)
 	server := newReceiver(t, 200, 0)
 	worker, err := Start(context.Background(), state, server.url)
@@ -414,6 +422,7 @@ func TestWorkerFailsOversizedEventsTerminally(t *testing.T) {
 }
 
 func TestWorkerRetriesTransportFailures(t *testing.T) {
+	t.Parallel()
 	state, path := testStore(t)
 	destination := "http://" + refusingAddress(t) + "/hook"
 	worker, err := Start(context.Background(), state, destination)
@@ -511,6 +520,7 @@ func (b *syncBuffer) String() string {
 }
 
 func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
+	t.Parallel()
 	state, path := testStore(t)
 	server := newReceiver(t, 200, 0)
 	var warnings syncBuffer

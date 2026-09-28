@@ -106,6 +106,7 @@ func thaw(t *testing.T, s *Store) {
 }
 
 func TestDiskFullRecordWriteAcknowledgesNothing(t *testing.T) {
+	t.Parallel()
 	s := fullOpen(t)
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
@@ -136,6 +137,7 @@ func TestDiskFullRecordWriteAcknowledgesNothing(t *testing.T) {
 }
 
 func TestFailedLedgerWritesRollBackTheWholeTransaction(t *testing.T) {
+	t.Parallel()
 	s := fullOpen(t)
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"

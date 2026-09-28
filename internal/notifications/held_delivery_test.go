@@ -37,6 +37,7 @@ func heldReceiver(t *testing.T) *receiver {
 }
 
 func TestHeldHTTPDoesNotBlockSchedulingAndShutdownRecoversTheRow(t *testing.T) {
+	t.Parallel()
 	server := heldReceiver(t)
 	state, path := testStore(t)
 	app := engine.New(state, filepath.Dir(path))

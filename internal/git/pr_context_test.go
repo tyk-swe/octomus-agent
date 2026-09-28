@@ -50,6 +50,7 @@ func prContextPage(t *testing.T, entries ...map[string]any) string {
 }
 
 func TestInventoryReadsEveryPageDedupesAndSorts(t *testing.T) {
+	t.Parallel()
 	c := testConfig()
 	first, second, third := []map[string]any{}, []map[string]any{}, []map[string]any{}
 	for n := 60; n >= 1; n-- {
@@ -104,6 +105,7 @@ func TestInventoryReadsEveryPageDedupesAndSorts(t *testing.T) {
 }
 
 func TestOwnershipRequiresPrefixHeadRepositoryBaseRepositoryAndMarker(t *testing.T) {
+	t.Parallel()
 	c := testConfig()
 	cases := []struct {
 		entry map[string]any
@@ -147,6 +149,7 @@ func TestOwnershipRequiresPrefixHeadRepositoryBaseRepositoryAndMarker(t *testing
 }
 
 func TestMalformedOrConflictingInventoryFailsClosed(t *testing.T) {
+	t.Parallel()
 	c := testConfig()
 	conflicting := prContextExternal(9)
 	conflicting["head"].(map[string]any)["sha"] = strings.Repeat("f", 40)

@@ -157,12 +157,25 @@ sys.exit(int(sys.argv[2]))
 	}
 }
 
-func TestInheritedStdoutZeroExit(t *testing.T)    { inheritedPipe(t, "stdout", 0) }
-func TestInheritedStdoutNonzeroExit(t *testing.T) { inheritedPipe(t, "stdout", 23) }
-func TestInheritedStderrZeroExit(t *testing.T)    { inheritedPipe(t, "stderr", 0) }
-func TestInheritedStderrNonzeroExit(t *testing.T) { inheritedPipe(t, "stderr", 23) }
+func TestInheritedStdoutZeroExit(t *testing.T) {
+	t.Parallel()
+	inheritedPipe(t, "stdout", 0)
+}
+func TestInheritedStdoutNonzeroExit(t *testing.T) {
+	t.Parallel()
+	inheritedPipe(t, "stdout", 23)
+}
+func TestInheritedStderrZeroExit(t *testing.T) {
+	t.Parallel()
+	inheritedPipe(t, "stderr", 0)
+}
+func TestInheritedStderrNonzeroExit(t *testing.T) {
+	t.Parallel()
+	inheritedPipe(t, "stderr", 23)
+}
 
 func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
+	t.Parallel()
 	temp := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -183,6 +196,7 @@ func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 }
 
 func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
+	t.Parallel()
 	temp := t.TempDir()
 	done := make(chan error, 1)
 	go func() {
@@ -205,6 +219,7 @@ func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
 }
 
 func TestStoppedGroupsCanCleanUp(t *testing.T) {
+	t.Parallel()
 	script := "trap 'touch cleaned; exit 1' TERM; touch started; sleep 30 & wait"
 	for _, tc := range []struct {
 		name    string
@@ -249,6 +264,7 @@ func TestStoppedGroupsCanCleanUp(t *testing.T) {
 }
 
 func TestTermIgnoringGroupIsStillKilled(t *testing.T) {
+	t.Parallel()
 	temp := t.TempDir()
 	cleanupGroup(t, filepath.Join(temp, "leader.pid"))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -283,6 +299,7 @@ func TestTermIgnoringGroupIsStillKilled(t *testing.T) {
 }
 
 func TestCleanupLeavesUnrelatedProcessesUntouched(t *testing.T) {
+	t.Parallel()
 	temp := t.TempDir()
 	sleeper := exec.Command("sleep", "30")
 	sleeper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -405,6 +422,7 @@ func TestChildEnvironmentDropsGitRepositoryLocation(t *testing.T) {
 }
 
 func TestMachineCaptureNeverCorruptsSuccessfulJSON(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
 	text, err := process.RunMachine(ctx, "python3",
@@ -444,6 +462,7 @@ func TestMachineCaptureNeverCorruptsSuccessfulJSON(t *testing.T) {
 }
 
 func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
 	if _, err := process.RunMachine(ctx, "python3",
@@ -467,6 +486,7 @@ func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 }
 
 func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
 	if ok, err := process.RunPredicate(ctx, "python3",
@@ -497,6 +517,7 @@ func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 }
 
 func TestSignalStatusFormat(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
 	out, err := process.Capture(ctx, "python3",
@@ -511,6 +532,7 @@ func TestSignalStatusFormat(t *testing.T) {
 }
 
 func TestCapturedSafeTextDropsThePartialLineACaptureCut(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		bytes     string
@@ -545,6 +567,7 @@ func TestCapturedSafeTextDropsThePartialLineACaptureCut(t *testing.T) {
 }
 
 func TestFailureTextNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
+	t.Parallel()
 	const kept = "KEPT-LINE\n"
 	for _, secret := range []struct {
 		name  string
@@ -588,6 +611,7 @@ func TestFailureTextNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
 }
 
 func TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret(t *testing.T) {
+	t.Parallel()
 	const assignment = "KEY="
 	for _, secret := range []struct {
 		name string
@@ -631,6 +655,7 @@ func TestFailureTextNeverShowsTheFirstWordsOrLinesOfACutSecret(t *testing.T) {
 }
 
 func TestTailTextNeverShowsASecretTheWindowCut(t *testing.T) {
+	t.Parallel()
 	for _, secret := range []struct {
 		name  string
 		print string
@@ -686,6 +711,7 @@ const (
 )
 
 func TestFailureTextFitsWhole(t *testing.T) {
+	t.Parallel()
 	_, err := process.RunMachine(context.Background(), "bash",
 		[]string{"-c", "printf o; printf e >&2; exit 3"}, t.TempDir(), 10)
 	if err == nil || err.Error() != "bash exited with exit status: 3: o\ne" {
@@ -694,6 +720,7 @@ func TestFailureTextFitsWhole(t *testing.T) {
 }
 
 func TestFailureTextRedactsCredentialsSplitAcrossStreams(t *testing.T) {
+	t.Parallel()
 	const token = "opaque-cross-stream-credential"
 	for _, tc := range []struct {
 		name    string
@@ -720,6 +747,7 @@ func TestFailureTextRedactsCredentialsSplitAcrossStreams(t *testing.T) {
 }
 
 func TestFailureTextRedactsOverlappingSecretsAcrossStreams(t *testing.T) {
+	t.Parallel()
 	for _, secret := range []struct{ name, value string }{
 		{"token in stdout", captureSplit},
 		{"token in stderr", captureReverse},
@@ -756,6 +784,7 @@ func TestFailureTextRedactsOverlappingSecretsAcrossStreams(t *testing.T) {
 }
 
 func TestFailureTextKeepsStderrAndStdoutEnds(t *testing.T) {
+	t.Parallel()
 	script := `echo STDOUT-HEAD
 for i in $(seq 800); do echo "page $i token ghp_abcdefghijklmnopqrstuvwxyz0123456789 filler filler"; done
 echo STDOUT-TAIL
@@ -792,6 +821,7 @@ exit 1`
 }
 
 func TestFailureTextBoundsLargeStderr(t *testing.T) {
+	t.Parallel()
 	script := `echo STDOUT-HEAD; head -c 40000 /dev/zero | tr '\0' o; echo; echo STDOUT-TAIL
 { echo STDERR-HEAD; head -c 40000 /dev/zero | tr '\0' e; echo; echo STDERR-TAIL; } >&2
 exit 2`
@@ -823,6 +853,7 @@ exit 2`
 }
 
 func TestFailureTextOmitsAnEmptyStderrSection(t *testing.T) {
+	t.Parallel()
 	script := `echo STDOUT-HEAD; head -c 40000 /dev/zero | tr '\0' o; echo; echo STDOUT-TAIL; exit 4`
 	_, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10)
 	if err == nil {
@@ -842,6 +873,7 @@ func TestFailureTextOmitsAnEmptyStderrSection(t *testing.T) {
 }
 
 func TestFailureTextKeepsTheRealEndOfTruncatedStreams(t *testing.T) {
+	t.Parallel()
 	script := `echo FIRST-STDOUT; seq -f 'stdout filler line %g' 40000; echo FINAL-STDOUT
 { echo FIRST-STDERR; seq -f 'stderr filler line %g' 40000; echo FINAL-STDERR; } >&2
 exit 3`
@@ -870,6 +902,7 @@ exit 3`
 }
 
 func TestShellCheckRetainsBashPipefail(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
 	failed, err := process.ShellCheck(ctx, "echo ok | false", tmp, 10)
@@ -886,6 +919,7 @@ func TestShellCheckRetainsBashPipefail(t *testing.T) {
 }
 
 func TestWithDeadline(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fresh := process.WithDeadline(ctx, cancel, 50*time.Millisecond, func() string {
@@ -913,6 +947,7 @@ func TestWithDeadline(t *testing.T) {
 }
 
 func TestBoundedKeepsCallersWording(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cleaned := make(chan struct{})
 	_, err := process.BoundedAt(ctx, time.Now().Add(20*time.Millisecond), "Check timed out", func(workCtx context.Context) (int, error) {

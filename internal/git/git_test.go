@@ -61,6 +61,9 @@ func testConfig() config.Config {
 func fixtureRoot(t *testing.T) (config.Config, string) {
 	t.Helper()
 	root := t.TempDir()
+	if err := testutil.MarkFixtureRoot(root); err != nil {
+		t.Fatal(err)
+	}
 	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
@@ -91,8 +94,6 @@ func fixtureRoot(t *testing.T) (config.Config, string) {
 	realGit(t, checkout, "remote", "add", "origin", remote)
 	realGit(t, checkout, "push", "-u", "origin", "main")
 	realGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
-	t.Setenv("OCTOMUS_FIXTURE", root)
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	c := testConfig()
 	c.Repository = checkout
 	c.GitHubRepo = "fixture/project"
@@ -108,7 +109,13 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv(envSecretName, envSecretValue); err != nil {
 		panic(err)
 	}
-	os.Exit(m.Run())
+	cleanup, err := testutil.InstallFixtureCommands()
+	if err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 func strptr(s string) *string { return &s }
@@ -121,6 +128,7 @@ func deref(s *string) string {
 }
 
 func TestGitAncestryIsAPredicateAndCommandErrorsFailClosed(t *testing.T) {
+	t.Parallel()
 	repository := initRepo(t)
 	c := testConfig()
 	ctx := context.Background()
@@ -157,6 +165,7 @@ func TestGitAncestryIsAPredicateAndCommandErrorsFailClosed(t *testing.T) {
 }
 
 func TestCloneAtCreatesAnIndependentCheckout(t *testing.T) {
+	t.Parallel()
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
 	revision, err := git.Git(ctx, c, c.Repository, []string{"rev-parse", "main"})
@@ -194,6 +203,7 @@ func TestCloneAtCreatesAnIndependentCheckout(t *testing.T) {
 }
 
 func TestRemoteValidationAndRevisionLookup(t *testing.T) {
+	t.Parallel()
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
 	if err := git.ValidateRemote(ctx, c); err != nil {
@@ -281,6 +291,7 @@ func TestValidateRemoteForms(t *testing.T) {
 }
 
 func TestRemoteRevisionIgnoresTailMatchingRefs(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	ctx := context.Background()
 	main := realGit(t, c.Repository, "rev-parse", "main")
@@ -302,6 +313,7 @@ func TestRemoteRevisionIgnoresTailMatchingRefs(t *testing.T) {
 }
 
 func TestCleanlinessAndSnapshot(t *testing.T) {
+	t.Parallel()
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
 	base, err := git.Git(ctx, c, c.Repository, []string{"rev-parse", "main"})
@@ -341,6 +353,7 @@ func TestCleanlinessAndSnapshot(t *testing.T) {
 }
 
 func TestSnapshotScrubsCommitMessage(t *testing.T) {
+	t.Parallel()
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
 	base, err := git.Git(ctx, c, c.Repository, []string{"rev-parse", "main"})
@@ -366,6 +379,7 @@ func TestSnapshotScrubsCommitMessage(t *testing.T) {
 }
 
 func TestParseInventory(t *testing.T) {
+	t.Parallel()
 	c := testConfig()
 	entry := func(number int, state, branch, head, base, baseRepo, body string) string {
 		return fmt.Sprintf(`{"number":%d,"title":"t","head":{"ref":%q,"sha":%q,"repo":{"full_name":"fixture/project"}},"base":{"ref":%q,"repo":{"full_name":%q}},"html_url":"https://github.com/fixture/project/pull/%d","state":%q,"merged_at":null,"body":%q,"additions":1,"deletions":0,"created_at":"2026-09-07T00:00:00Z"}`,
@@ -461,6 +475,7 @@ func publishableTask(t *testing.T, c config.Config, root, id string) (model.Task
 }
 
 func TestFixturePublishCreatesPullRequest(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
 	ctx := context.Background()
@@ -534,6 +549,7 @@ func TestFixturePublishCreatesPullRequest(t *testing.T) {
 }
 
 func TestFixtureFollowUpAppendsComment(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
 	ctx := context.Background()
@@ -599,6 +615,7 @@ func TestFixtureFollowUpAppendsComment(t *testing.T) {
 }
 
 func TestFixturePublishScrubsSecretsForPublicDelivery(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	ctx := context.Background()
 	token := "ghp_fixtureToken0123456789"
@@ -661,6 +678,7 @@ func TestFixturePublishScrubsSecretsForPublicDelivery(t *testing.T) {
 }
 
 func TestFixtureFollowUpScrubsCommentMetadata(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
 	ctx := context.Background()
@@ -744,6 +762,7 @@ func TestFixtureFollowUpScrubsCommentMetadata(t *testing.T) {
 }
 
 func TestFixturePublishLongBodyKeepsDeliveryIdentity(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
 	ctx := context.Background()
@@ -774,6 +793,7 @@ func TestFixturePublishLongBodyKeepsDeliveryIdentity(t *testing.T) {
 }
 
 func TestPublishRefusesUnsafeMetadataBeforeAnyWrite(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		id     string
@@ -866,6 +886,7 @@ func TestPublishRefusesUnsafeMetadataBeforeAnyWrite(t *testing.T) {
 }
 
 func TestPublishRejectsStaleBase(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	ctx := context.Background()
 	source, err := git.Git(ctx, c, c.Repository, []string{"rev-parse", "main"})
@@ -899,6 +920,7 @@ func TestPublishRejectsStaleBase(t *testing.T) {
 }
 
 func TestFixturePublishListsLatestVerificationOnly(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test", "make lint"}
 	task, commit := publishableTask(t, c, root, "task-latest")
@@ -928,6 +950,7 @@ func TestFixturePublishListsLatestVerificationOnly(t *testing.T) {
 }
 
 func TestPublishGatesOnTheLatestVerificationPerCommand(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		record func(commit string) []model.Verification
@@ -984,6 +1007,7 @@ func TestPublishGatesOnTheLatestVerificationPerCommand(t *testing.T) {
 }
 
 func TestPublishGatesRefuseBeforeAnyWrite(t *testing.T) {
+	t.Parallel()
 	seedPRs := func(t *testing.T, root string, prs ...map[string]any) {
 		t.Helper()
 		data, err := json.Marshal(prs)
@@ -1182,6 +1206,7 @@ func TestFixturePublishNeverRecursesIntoSubmodules(t *testing.T) {
 }
 
 func TestPublishUncertainWrapsCauseOnce(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
 	task, _ := publishableTask(t, c, root, "task-uncertain")
@@ -1203,6 +1228,7 @@ func TestPublishUncertainWrapsCauseOnce(t *testing.T) {
 }
 
 func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T) {
+	t.Parallel()
 	c := testConfig()
 	commit := strings.Repeat("a", 40)
 	task := publicationTask(c, "ws", commit, commit, "task-identity")
@@ -1244,6 +1270,7 @@ func TestPublicationChecksEveryIdentityFieldAndClosedReconciliation(t *testing.T
 }
 
 func TestFixtureGhChildCleanup(t *testing.T) {
+	t.Parallel()
 	c, root := fixtureRoot(t)
 	if _, err := os.Stat("/proc/self"); err != nil {
 		t.Skip("requires /proc")

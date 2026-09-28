@@ -247,6 +247,7 @@ func fileExists(path string) bool {
 }
 
 func TestPinnedCodexContract(t *testing.T) {
+	t.Parallel()
 	binary := os.Getenv("OCTOMUS_CONTRACT_CODEX_BINARY")
 	if binary == "" {
 		t.Skip("OCTOMUS_CONTRACT_CODEX_BINARY is not set")
@@ -255,6 +256,7 @@ func TestPinnedCodexContract(t *testing.T) {
 }
 
 func TestPinnedOpenCodeContract(t *testing.T) {
+	t.Parallel()
 	binary := os.Getenv("OCTOMUS_CONTRACT_OPENCODE_BINARY")
 	if binary == "" {
 		t.Skip("OCTOMUS_CONTRACT_OPENCODE_BINARY is not set")

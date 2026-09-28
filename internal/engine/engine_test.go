@@ -98,6 +98,7 @@ func deferHousekeeping(app *App) {
 }
 
 func TestIdleDelayMatchesDurableBackoffContract(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		base   uint64
 		streak uint32
@@ -110,6 +111,7 @@ func TestIdleDelayMatchesDurableBackoffContract(t *testing.T) {
 }
 
 func TestPausePreservesDurableErrorEvidence(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	control := model.DefaultControl()
@@ -130,6 +132,7 @@ func TestPausePreservesDurableErrorEvidence(t *testing.T) {
 }
 
 func TestProposalValidationRequiresKnownAcyclicOrderedDependencies(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	grounding := model.Grounding{Revision: "source", PRs: []model.PullRequest{ownedPR("octomus/existing")}}
 
@@ -166,6 +169,7 @@ func TestProposalValidationRequiresKnownAcyclicOrderedDependencies(t *testing.T)
 }
 
 func TestRejectedInvalidTargetIsNeverExecutable(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	grounding := model.Grounding{Revision: "source", PRs: []model.PullRequest{ownedPR("octomus/existing")}}
 	rejected := proposal("rejected", "someone-elses-branch")
@@ -187,6 +191,7 @@ func TestRejectedInvalidTargetIsNeverExecutable(t *testing.T) {
 }
 
 func TestPlanningAdmissionBudgetIsAtomicUnderConcurrency(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.MaxSessionsPerDay = 5
@@ -222,6 +227,7 @@ func TestPlanningAdmissionBudgetIsAtomicUnderConcurrency(t *testing.T) {
 }
 
 func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired() - 1
@@ -301,6 +307,7 @@ func TestRunOnceAffordabilityAndMembershipAreAtomic(t *testing.T) {
 }
 
 func TestRunOnceStaleControlIsAConflict(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	task := queuedTask(cfg, "member", cfg.DefaultBranch, "octomus/member")
@@ -339,6 +346,7 @@ func TestRunOnceStaleControlIsAConflict(t *testing.T) {
 }
 
 func TestUnaffordableAuditHasNoSideEffects(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired() - 1
@@ -364,6 +372,7 @@ func TestUnaffordableAuditHasNoSideEffects(t *testing.T) {
 }
 
 func TestPersistedPrInventoryIsNotProcessAuthority(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -405,6 +414,7 @@ func TestPersistedPrInventoryIsNotProcessAuthority(t *testing.T) {
 }
 
 func TestCommittedRunOncePlanSurvivesRecovery(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired()
@@ -453,6 +463,7 @@ func TestCommittedRunOncePlanSurvivesRecovery(t *testing.T) {
 }
 
 func TestRecoverySeedsOnlyResumableAndCheckpointedPrReservations(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -517,6 +528,7 @@ func TestRecoverySeedsOnlyResumableAndCheckpointedPrReservations(t *testing.T) {
 }
 
 func TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -570,6 +582,7 @@ func TestRecoveryOffersReconcileForCheckpointWithExhaustedBudget(t *testing.T) {
 }
 
 func TestRecoveryReservationSeedingIsNotBoundedByDashboardWindows(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -594,6 +607,7 @@ func TestRecoveryReservationSeedingIsNotBoundedByDashboardWindows(t *testing.T) 
 }
 
 func TestInterruptedPlanningRunOncePauses(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired()
@@ -622,6 +636,7 @@ func TestInterruptedPlanningRunOncePauses(t *testing.T) {
 }
 
 func TestPlanningCapacityAfterDrainPausesRunOnceButContinuousWaits(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired()
@@ -666,6 +681,7 @@ func TestPlanningCapacityAfterDrainPausesRunOnceButContinuousWaits(t *testing.T)
 }
 
 func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -715,6 +731,7 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 }
 
 func TestRunOnceBlocksDependencyRetriedOutsideBatch(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	runID := model.ID()
@@ -738,6 +755,7 @@ func TestRunOnceBlocksDependencyRetriedOutsideBatch(t *testing.T) {
 }
 
 func TestSchedulingKeepsExistingAndActiveWritersPastQueuedWindow(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	for i := 0; i < 501; i++ {
@@ -773,6 +791,7 @@ func TestSchedulingKeepsExistingAndActiveWritersPastQueuedWindow(t *testing.T) {
 }
 
 func TestSchedulerSerializesWritersOnOneBranch(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.ExecutionConcurrency = 2
@@ -845,6 +864,7 @@ func TestSchedulerSerializesWritersOnOneBranch(t *testing.T) {
 }
 
 func TestSchedulerCountsRunnerAfterTaskBecomesTerminal(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.ExecutionConcurrency = 1
@@ -912,6 +932,7 @@ func TestSchedulerCountsRunnerAfterTaskBecomesTerminal(t *testing.T) {
 }
 
 func TestRunnerExitBlocksStillActiveTask(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	task := queuedTask(cfg, "unfinished", "octomus/existing", "octomus/existing")
@@ -942,6 +963,7 @@ func TestRunnerExitBlocksStillActiveTask(t *testing.T) {
 }
 
 func TestNilTaskRunnerKeepsTheProductionRunner(t *testing.T) {
+	t.Parallel()
 	a := New(testStore(t), t.TempDir(), WithTaskRunner(nil))
 	t.Cleanup(a.Shutdown)
 	if a.taskRunner == nil {
@@ -950,6 +972,7 @@ func TestNilTaskRunnerKeepsTheProductionRunner(t *testing.T) {
 }
 
 func TestSchedulerWaitsForExecutionSlotBeforeRefreshingCapacity(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.ExecutionConcurrency = 1
@@ -992,6 +1015,7 @@ func TestSchedulerWaitsForExecutionSlotBeforeRefreshingCapacity(t *testing.T) {
 }
 
 func TestDecisionMemoryAbsorbsOnlySameCycleAlternativesAndRequiresRediscovery(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	a := New(state, t.TempDir())
@@ -1054,6 +1078,7 @@ func TestDecisionMemoryAbsorbsOnlySameCycleAlternativesAndRequiresRediscovery(t 
 }
 
 func TestDecisionMemoryUsesPrRevision(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	a := New(state, t.TempDir())
@@ -1073,6 +1098,7 @@ func TestDecisionMemoryUsesPrRevision(t *testing.T) {
 }
 
 func TestPrCapacityUsesCompleteInventoryAndUnrepresentedReservations(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.MaxOpenPRs = 3
@@ -1119,6 +1145,7 @@ func TestPrCapacityUsesCompleteInventoryAndUnrepresentedReservations(t *testing.
 }
 
 func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -1177,6 +1204,7 @@ func TestPausedHousekeepingPreservesUnresolvedEvidenceAndRejectsSymlink(t *testi
 }
 
 func TestSameCycleProposalsSharingAProblemKeyAreDuplicates(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	grounding := model.Grounding{Revision: "rev"}
 	first := proposal("a", cfg.DefaultBranch)

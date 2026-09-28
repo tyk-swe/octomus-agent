@@ -7,6 +7,7 @@ import (
 )
 
 func TestBoundedReadKeepsTheHeadAndTheRealEnd(t *testing.T) {
+	t.Parallel()
 	var stream bytes.Buffer
 	for i := 0; stream.Len() < 3*TailLimit; i++ {
 		stream.WriteString(strings.Repeat(string(rune('a'+i%26)), i%97))
@@ -35,6 +36,7 @@ func TestBoundedReadKeepsTheHeadAndTheRealEnd(t *testing.T) {
 }
 
 func TestTailWindowKeepsTheLastBytesAcrossWraps(t *testing.T) {
+	t.Parallel()
 	var window tailWindow
 	var written []byte
 	for i, size := range []int{1, 8192, TailLimit - 1, 3, TailLimit + 5, 40000, 1, TailLimit, 12345} {
@@ -50,6 +52,7 @@ func TestTailWindowKeepsTheLastBytesAcrossWraps(t *testing.T) {
 }
 
 func TestSafeTailTextDropsThePartialFirstLineAWindowCut(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		tail string

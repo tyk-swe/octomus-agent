@@ -8,6 +8,7 @@ import (
 )
 
 func TestCommitTasksQueuesEachAcceptedProposal(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.MaxRepairRounds, cfg.MaxNoProgressRounds, cfg.MaxRetries = 4, 2, 3
@@ -97,6 +98,7 @@ func TestCommitTasksQueuesEachAcceptedProposal(t *testing.T) {
 }
 
 func TestCommitTasksFinishesAPlanWithoutAcceptedWorkIdle(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -122,6 +124,7 @@ func TestCommitTasksFinishesAPlanWithoutAcceptedWorkIdle(t *testing.T) {
 }
 
 func TestPlannedTasksOwnTheirSnapshots(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	runID := "batch"
 	cycle := &model.Cycle{ID: model.ID(), RunID: &runID, Grounding: &model.Grounding{Revision: "main-head"}}

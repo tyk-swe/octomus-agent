@@ -11,6 +11,7 @@ import (
 )
 
 func TestTickBlocksInvalidQueuedPlan(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.ExecutionConcurrency = 4
@@ -78,6 +79,7 @@ func TestTickBlocksInvalidQueuedPlan(t *testing.T) {
 }
 
 func TestValidateTaskPlan(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	const existing = "octomus/existing"
 	task := func(id, target string, dependencies ...string) model.Task {

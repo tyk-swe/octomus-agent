@@ -6,6 +6,7 @@ import (
 )
 
 func TestParseReadyURL(t *testing.T) {
+	t.Parallel()
 	for _, endpoint := range []string{"http://127.0.0.1:4096", "http://127.0.0.1:4096/"} {
 		got, err := parseReadyURL(endpoint)
 		if err != nil || got != "http://127.0.0.1:4096" {
@@ -40,6 +41,7 @@ func TestParseReadyURL(t *testing.T) {
 }
 
 func TestSegment(t *testing.T) {
+	t.Parallel()
 	for id, want := range map[string]string{
 		"ses_ab-C9":              "ses%5Fab%2DC9",
 		"AZaz09":                 "AZaz09",
@@ -72,6 +74,7 @@ func TestSegment(t *testing.T) {
 }
 
 func TestWorkerPolicyPassesAppliedPolicy(t *testing.T) {
+	t.Parallel()
 	encoded, err := marshal(workerPolicy("octomus-a"))
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +92,7 @@ func TestWorkerPolicyPassesAppliedPolicy(t *testing.T) {
 }
 
 func TestAppliedPolicyRejectsEachDrift(t *testing.T) {
+	t.Parallel()
 	const agent = "octomus-x"
 	encoded, err := marshal(workerPolicy(agent))
 	if err != nil {

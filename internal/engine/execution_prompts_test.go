@@ -26,6 +26,7 @@ func promptTask() (*model.Task, config.Config) {
 }
 
 func TestExecutorPromptIsByteStable(t *testing.T) {
+	t.Parallel()
 	task, cfg := promptTask()
 	want := "Implement this accepted task end to end in this workspace. Source revision: source-sha. Full comparison base: base-sha. " +
 		`Existing PR: Some("https://github.com/fixture/project/pull/7"). ` +
@@ -44,6 +45,7 @@ func TestExecutorPromptIsByteStable(t *testing.T) {
 }
 
 func TestReviewPromptIsByteStable(t *testing.T) {
+	t.Parallel()
 	task, _ := promptTask()
 	want := "Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff base-sha HEAD. Recorded HEAD: reviewed-sha. " +
 		"Include all accumulated PR changes and all repairs; do not only review the last commit. " +
@@ -57,6 +59,7 @@ func TestReviewPromptIsByteStable(t *testing.T) {
 }
 
 func TestRepairPromptIsByteStable(t *testing.T) {
+	t.Parallel()
 	task, cfg := promptTask()
 	review := model.Review{Completed: true, Summary: "One finding", Findings: []model.Finding{
 		{Title: "Complete the output", File: "feature.txt:1", Detail: "Must contain \"fixed\".", Priority: "P1"},
@@ -86,6 +89,7 @@ func TestRepairPromptIsByteStable(t *testing.T) {
 }
 
 func TestTaskPromptsKeepFixturePrefixesAndPolicy(t *testing.T) {
+	t.Parallel()
 	task, cfg := promptTask()
 	repair, err := repairPrompt(task, cfg, model.Review{}, nil)
 	if err != nil {

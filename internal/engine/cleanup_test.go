@@ -147,6 +147,7 @@ func cleanupEvents(t *testing.T, state *store.Store, id string) []model.Event {
 }
 
 func TestDiscardReleasesTheGateAndClaimsTheWorkspace(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -216,6 +217,7 @@ func TestDiscardReleasesTheGateAndClaimsTheWorkspace(t *testing.T) {
 }
 
 func TestRetentionCleansUpOffTheGateAndSkipsClaimedTargets(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -288,6 +290,7 @@ func TestRetentionCleansUpOffTheGateAndSkipsClaimedTargets(t *testing.T) {
 }
 
 func TestCycleDiscardClaimsConflictsAndShutdownWaits(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -344,6 +347,7 @@ func TestCycleDiscardClaimsConflictsAndShutdownWaits(t *testing.T) {
 }
 
 func TestLifecycleArchiveAndDiscardHappenOnce(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -438,6 +442,7 @@ func TestLifecycleArchiveAndDiscardHappenOnce(t *testing.T) {
 }
 
 func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -500,6 +505,7 @@ func TestBaselineCleanupClaimsSkipsDuplicatesAndPreservesConcurrentWrites(t *tes
 }
 
 func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -553,6 +559,7 @@ func TestBaselineCleanupFailureRecordsARedactedErrorAndRetries(t *testing.T) {
 }
 
 func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -615,6 +622,7 @@ func TestCleanupFailureLeavesTaskACandidateAndRetries(t *testing.T) {
 }
 
 func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -712,6 +720,7 @@ func TestRetentionReportsARepeatedCleanupFailureOnce(t *testing.T) {
 }
 
 func TestRetentionReachesCandidatesBehindAFullWindowOfFailures(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -759,6 +768,7 @@ func TestRetentionReachesCandidatesBehindAFullWindowOfFailures(t *testing.T) {
 }
 
 func TestDiscardRefusesAnUnownedPathWithoutMarking(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -791,6 +801,7 @@ func TestDiscardRefusesAnUnownedPathWithoutMarking(t *testing.T) {
 }
 
 func TestWorkspaceRemovalPanicReleasesTheGateAndClaim(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -840,6 +851,7 @@ func TestWorkspaceRemovalPanicReleasesTheGateAndClaim(t *testing.T) {
 }
 
 func TestCleanupClaimConflictsTaskActionsAndExecutionAdmission(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -920,6 +932,7 @@ func TestCleanupClaimConflictsTaskActionsAndExecutionAdmission(t *testing.T) {
 }
 
 func TestInterruptedCleanupLeavesNoClaimAndRetriesAfterRestart(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	dataDir := t.TempDir()
 	cfg := testConfig(t.TempDir())
@@ -977,6 +990,7 @@ func TestInterruptedCleanupLeavesNoClaimAndRetriesAfterRestart(t *testing.T) {
 }
 
 func TestHousekeepingShutdownRecordsNoCancellationError(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	cycle := discardableCycle(t, fixture.dataDir)
 	if err := fixture.state.Put("cycle", cycle.ID, cycle); err != nil {
@@ -1020,6 +1034,7 @@ func TestHousekeepingShutdownRecordsNoCancellationError(t *testing.T) {
 }
 
 func TestRetentionSkipsRecordsDiscardedDuringThePass(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"task", "cycle"} {
 		t.Run(kind, func(t *testing.T) {
 			state := testStore(t)
@@ -1109,6 +1124,7 @@ func waitHousekeeping(t *testing.T, app *App) {
 }
 
 func TestHousekeepingContinuesPastAFailedRetention(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	if err := fixture.state.Put("baseline", "unreadable", map[string]any{"status": "failed", "workspace_removed": false}); err != nil {
 		t.Fatal(err)
@@ -1149,6 +1165,7 @@ func housekeepingTimers(app *App) (retention, observe time.Time) {
 }
 
 func TestHousekeepingRunsOnlyTheDueSteps(t *testing.T) {
+	t.Parallel()
 	for _, due := range []string{"observation", "retention"} {
 		t.Run(due, func(t *testing.T) {
 			fixture := newPlanningFixture(t)
@@ -1202,6 +1219,7 @@ func TestHousekeepingRunsOnlyTheDueSteps(t *testing.T) {
 }
 
 func TestHousekeepingRunsOneJobAtATime(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	cycle := discardableCycle(t, fixture.dataDir)
 	if err := fixture.state.Put("cycle", cycle.ID, cycle); err != nil {
@@ -1239,6 +1257,7 @@ func TestHousekeepingRunsOneJobAtATime(t *testing.T) {
 }
 
 func TestRunnerStorageDistinguishesUnavailableFromEmpty(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	app := New(state, t.TempDir())
 	t.Cleanup(app.Shutdown)

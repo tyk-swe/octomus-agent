@@ -83,10 +83,12 @@ race detector. Install dashboard dependencies with
 
 - `make check`: gofmt/`go vet`, Svelte/TypeScript and Prettier checks, including
   `tests/helpers`.
-- `make test`: Go tests (including `-race`), production binary, dashboard build,
-  all service suites through `tests/integration.py`, and browser tests.
+- `make test`: Go tests (regular and `-race` suites), production
+  binary, dashboard build, all service suites through `tests/integration.py`,
+  and browser tests.
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
-- `make test-go` / `make test-contracts` / `make test-integration` /
+- `make test-go`: the regular Go suite. `make test-go-race`: the race suite
+  explicitly. `make test-contracts` / `make test-integration` /
   `make test-browser`: one stage each. `test-integration` accepts
   `INTEGRATION_SCENARIOS` suite aliases or `suite/scenario` names;
   `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests run four workers.

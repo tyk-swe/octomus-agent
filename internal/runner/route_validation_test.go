@@ -23,6 +23,7 @@ func codexCatalog(entries map[string][]string) *runner.Runners {
 }
 
 func TestUnsupportedEffortNeverFallsBack(t *testing.T) {
+	t.Parallel()
 	c := config.Default()
 	for _, role := range []string{"orchestrator", "discovery", "proposal_reviewer", "code_reviewer"} {
 		c.Roles[role] = config.NewRoute("gpt-6-astra", "medium")
@@ -46,6 +47,7 @@ func TestUnsupportedEffortNeverFallsBack(t *testing.T) {
 }
 
 func TestRepairRoutesAreValidated(t *testing.T) {
+	t.Parallel()
 	c := config.Default()
 	for role := range c.Roles {
 		c.Roles[role] = config.NewRoute("available", "low")
@@ -84,6 +86,7 @@ func TestRepairRoutesAreValidated(t *testing.T) {
 }
 
 func TestAuditReadinessRequiresOnlyPlanningRoutesAndNoVerification(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repository, ".git"), 0o755); err != nil {
 		t.Fatal(err)

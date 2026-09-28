@@ -48,6 +48,7 @@ func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
 }
 
 func TestAuditControlsConflictWhileAuditRuns(t *testing.T) {
+	t.Parallel()
 	app, _ := controlFixture(t, "audit")
 	for _, check := range []struct {
 		action      string
@@ -68,6 +69,7 @@ func TestAuditControlsConflictWhileAuditRuns(t *testing.T) {
 }
 
 func TestResumePreservesAuditAndBaselineConflicts(t *testing.T) {
+	t.Parallel()
 	for _, active := range []string{"audit", "audit preflight", "baseline"} {
 		t.Run(active, func(t *testing.T) {
 			app, control := controlFixture(t, "idle")
@@ -100,6 +102,7 @@ func TestResumePreservesAuditAndBaselineConflicts(t *testing.T) {
 }
 
 func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"continuous", "task", "execution", "idle"} {
 		for _, action := range []string{"audit", "cycle", "resume", "pause"} {
 			if scenario == "idle" && action == "audit" {
@@ -141,6 +144,7 @@ func TestControlConflictsExplainTheRequestedOperationWithoutChangingEligibility(
 }
 
 func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		scenario string
 		want     error
@@ -170,6 +174,7 @@ func TestAuditAndRunOnceRefusalsAfterTheGateCheckAreConflicts(t *testing.T) {
 }
 
 func TestOperatorPanicUnderTheGateReleasesIt(t *testing.T) {
+	t.Parallel()
 	for name, request := range map[string]func(*App){
 		"control action": func(app *App) { _, _ = app.ControlAction("pause") },
 		"task action":    func(app *App) { _ = app.TaskAction(context.Background(), "task", "archive") },
@@ -199,6 +204,7 @@ func TestOperatorPanicUnderTheGateReleasesIt(t *testing.T) {
 }
 
 func TestAuditControlRecordsOneOperatorEvent(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	app := fixture.pausedApp(t)
 	body, err := app.ControlAction("audit")
@@ -229,6 +235,7 @@ func TestAuditControlRecordsOneOperatorEvent(t *testing.T) {
 }
 
 func TestBaselineGateBlocksControlsConfigAndReconcile(t *testing.T) {
+	t.Parallel()
 	app, cfg := baselineApp(t)
 	app.runtimeMu.Lock()
 	app.runtime.baseline = &baselineJob{id: "synthetic", cancel: func() {}}
@@ -262,6 +269,7 @@ func TestBaselineGateBlocksControlsConfigAndReconcile(t *testing.T) {
 }
 
 func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
+	t.Parallel()
 	app, _ := controlFixture(t, "idle")
 	live, err := app.Config()
 	if err != nil {
@@ -335,6 +343,7 @@ func TestSaveConfigRevisionGatePreservesCanonicalValues(t *testing.T) {
 }
 
 func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
+	t.Parallel()
 	app, cfg := baselineApp(t)
 	fingerprint, err := cfg.Fingerprint()
 	if err != nil {
@@ -379,6 +388,7 @@ func TestStateViewReportsBaselineSummaryWithoutCommands(t *testing.T) {
 }
 
 func TestStateViewRunningCycleAndActivityUseOneSnapshot(t *testing.T) {
+	t.Parallel()
 	app, _ := controlFixture(t, "idle")
 	cycle := model.Cycle{
 		Mode: model.CycleModeAudit, ID: "changing-cycle", Number: 1,
@@ -432,6 +442,7 @@ func TestStateViewRunningCycleAndActivityUseOneSnapshot(t *testing.T) {
 }
 
 func TestStateViewRetainsRuntimeAuditActivity(t *testing.T) {
+	t.Parallel()
 	for _, check := range []struct {
 		name        string
 		preflight   bool
@@ -462,6 +473,7 @@ func TestStateViewRetainsRuntimeAuditActivity(t *testing.T) {
 }
 
 func TestStateViewStatusPrecedence(t *testing.T) {
+	t.Parallel()
 	for _, check := range []struct {
 		name         string
 		continuous   bool
@@ -522,6 +534,7 @@ func TestStateViewStatusPrecedence(t *testing.T) {
 }
 
 func TestRecoveryAndGuardFailuresGenerateAttention(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	state := openStore(t, dir)
 	app := New(state, dir)
@@ -600,6 +613,7 @@ func (catalogFailingAdapter) Models(string) ([]runner.Model, error) {
 }
 
 func TestDoctorReportsBackendDiagnosticsAndWarnings(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	app := fixture.pausedApp(t)
 	result, warnings, err := app.DoctorFor(fixture.cfg, model.CycleModeExecution)

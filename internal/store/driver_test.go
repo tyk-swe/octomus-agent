@@ -16,6 +16,7 @@ import (
 )
 
 func TestConnectionSettingsMatchTheStorageContract(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	must(t, s.Snapshot(func(c *sql.Conn) error {
 		var mode string
@@ -48,6 +49,7 @@ func TestConnectionSettingsMatchTheStorageContract(t *testing.T) {
 }
 
 func TestBusyTimeoutWaitsForForeignWriters(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	db := raw(t, path)
@@ -81,6 +83,7 @@ func TestBusyTimeoutWaitsForForeignWriters(t *testing.T) {
 }
 
 func TestReadOnlySnapshotIsConsistentAndIncludesWAL(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.Put("x", "a", 1))
@@ -118,6 +121,7 @@ func TestReadOnlySnapshotIsConsistentAndIncludesWAL(t *testing.T) {
 }
 
 func TestPanicInsideTransactionRollsBack(t *testing.T) {
+	t.Parallel()
 	panics := func(snapshot func(func(*sql.Conn) error) error, statement string) {
 		t.Helper()
 		defer func() {
@@ -155,6 +159,7 @@ func TestPanicInsideTransactionRollsBack(t *testing.T) {
 }
 
 func TestReadOnlyConnectionRefusesWrites(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "state dir ?#%25")
 	must(t, os.MkdirAll(dir, 0o700))
@@ -191,6 +196,7 @@ func usageRows(t *testing.T, path string) (int64, int64) {
 }
 
 func TestFailedAdmissionsRollBackCounterAndLedgerTogether(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = 1; c.MaxWorkspaceBytes = 100 })
@@ -231,6 +237,7 @@ func inventory(prs ...model.PullRequest) model.OpenPrInventory {
 }
 
 func TestPrAdmissionAndReservationsShareOneTransaction(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	saveConfig(t, s, func(c *config.Config) { c.GitHubRepo = "fixture/project"; c.MaxOpenPRs = 1 })
@@ -318,6 +325,7 @@ func TestPrAdmissionAndReservationsShareOneTransaction(t *testing.T) {
 }
 
 func TestPrAdmissionRechecksCanonicalTaskAndLivePolicy(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	cfg := saveConfig(t, s, func(c *config.Config) {
 		c.GitHubRepo = "fixture/project"
@@ -385,6 +393,7 @@ func TestPrAdmissionRechecksCanonicalTaskAndLivePolicy(t *testing.T) {
 }
 
 func TestPrObservationNeverLosesDeliveredHead(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	published := task()
 	published.Status = model.StatusPublished
@@ -428,6 +437,7 @@ func TestPrObservationNeverLosesDeliveredHead(t *testing.T) {
 }
 
 func TestConfirmedReservationReleaseRechecksCanonicalTerminalState(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	saveConfig(t, s, func(c *config.Config) { c.GitHubRepo = "fixture/project" })
 	checkpoint := task()
@@ -461,6 +471,7 @@ func TestConfirmedReservationReleaseRechecksCanonicalTerminalState(t *testing.T)
 }
 
 func TestOutboxEnqueueSharesTheWriterTransaction(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	must(t, s.ConfigureNotifications(str("hook-1"), "enabled", nil))
@@ -538,6 +549,7 @@ func TestOutboxEnqueueSharesTheWriterTransaction(t *testing.T) {
 }
 
 func TestEventsAreRedactedAndBounded(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	saveConfig(t, s, func(c *config.Config) { c.RetainEvents = 5 })

@@ -11,6 +11,7 @@ import (
 )
 
 func TestFreshGoSchemaAndReopen(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	if version := queryInt(t, raw(t, path), "PRAGMA user_version"); version != store.SupportedSchemaVersion {
@@ -30,6 +31,7 @@ func TestFreshGoSchemaAndReopen(t *testing.T) {
 }
 
 func TestUnsupportedStateIsRefusedWithoutChanges(t *testing.T) {
+	t.Parallel()
 	for _, version := range []int{0, 6, 8} {
 		t.Run(strconv.Itoa(version), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.db")

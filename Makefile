@@ -1,12 +1,15 @@
-.PHONY: dashboard build build-race check test test-go test-contracts test-integration test-browser test-race-e2e package audit
+.PHONY: dashboard build build-race check test test-go test-go-race test-contracts test-integration test-browser test-race-e2e package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
 # E2E scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
 E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
 
+GO_TEST = go test -timeout 30m ./...
+GO_TEST_RACE = CGO_ENABLED=1 go test -race -timeout 30m ./...
+
 define GO_TESTS
-	go test -timeout 30m ./...
-	CGO_ENABLED=1 go test -race -timeout 30m ./...
+	$(GO_TEST)
+	$(GO_TEST_RACE)
 endef
 
 define CONTRACT_CORE
@@ -48,7 +51,10 @@ test: build
 	$(E2E_ENV) npm test --prefix web -- $(PLAYWRIGHT_ARGS)
 
 test-go: dashboard
-	$(GO_TESTS)
+	$(GO_TEST)
+
+test-go-race: dashboard
+	$(GO_TEST_RACE)
 
 test-contracts: build
 	$(CONTRACT_CORE)

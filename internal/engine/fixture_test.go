@@ -13,10 +13,19 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
-	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
+
+func TestMain(m *testing.M) {
+	cleanup, err := testutil.InstallFixtureCommands()
+	if err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
+}
 
 type planningFixture struct {
 	root    string
@@ -79,6 +88,9 @@ func newPlanningFixture(t *testing.T) *planningFixture {
 
 func newFixture(t *testing.T, root string, configure func(*config.Config)) *planningFixture {
 	t.Helper()
+	if err := testutil.MarkFixtureRoot(root); err != nil {
+		t.Fatal(err)
+	}
 	bin := filepath.Join(root, "bin")
 	repo := filepath.Join(root, "repository")
 	remote := filepath.Join(root, "remote.git")
@@ -104,20 +116,6 @@ func newFixture(t *testing.T, root string, configure func(*config.Config)) *plan
 	git(t, repo, "commit", "-m", "Initial fixture")
 	git(t, repo, "remote", "add", "origin", remote)
 	git(t, repo, "push", "-u", "origin", "main")
-
-	previousWebhook, hadWebhook := os.LookupEnv(redact.WebhookEnv)
-	if err := os.Unsetenv(redact.WebhookEnv); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if hadWebhook {
-			_ = os.Setenv(redact.WebhookEnv, previousWebhook)
-		} else {
-			_ = os.Unsetenv(redact.WebhookEnv)
-		}
-	})
-	t.Setenv("OCTOMUS_FIXTURE", root)
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	cfg := testConfig(repo)
 	cfg.SessionTimeoutSeconds = 15

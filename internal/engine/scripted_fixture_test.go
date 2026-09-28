@@ -137,6 +137,7 @@ func writeFile(name, content string) func(string) error {
 }
 
 func TestScriptedFixtureDrivesTaskThroughRepairToPublication(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	fixture.configure(t, func(cfg *config.Config) {
 		cfg.VerificationCommands = []string{"grep -q fixed feature.txt"}
@@ -200,6 +201,7 @@ func TestScriptedFixtureDrivesTaskThroughRepairToPublication(t *testing.T) {
 }
 
 func TestPublicationMetadataIsPublicOnly(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	fixture.configure(t, func(cfg *config.Config) {
 		cfg.VerificationCommands = []string{"grep -q fixed feature.txt", "echo " + secretToken}
@@ -246,6 +248,7 @@ func TestPublicationMetadataIsPublicOnly(t *testing.T) {
 }
 
 func TestScriptedCatalogRejectsMissingRoute(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	routes := fixture.routes
 	fixture.script.SetCatalog(runnertest.CatalogFor(routes.Executor, routes.Repair, routes.Orchestrator, routes.Discovery, routes.ProposalReviewer)...)

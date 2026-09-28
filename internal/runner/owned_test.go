@@ -56,6 +56,7 @@ func waitResult(t *testing.T, waitCh chan error) error {
 }
 
 func TestKilledClassifiesOnlySIGKILL(t *testing.T) {
+	t.Parallel()
 	child, waitCh := startOwned(t, "sleep", "5")
 	child.Close()
 	if err := waitResult(t, waitCh); !killed(err) {
@@ -79,6 +80,7 @@ func TestKilledClassifiesOnlySIGKILL(t *testing.T) {
 }
 
 func TestJoinOwnedReportsUnexpectedExits(t *testing.T) {
+	t.Parallel()
 	child, waitCh := startOwned(t, "sleep", "5")
 	reader := make(chan struct{})
 	joined := make(chan error, 1)
@@ -127,6 +129,7 @@ func TestJoinOwnedReportsUnexpectedExits(t *testing.T) {
 }
 
 func TestDiscardStdoutSurvivesOverlongLine(t *testing.T) {
+	t.Parallel()
 	for _, end := range []string{"writer-closed", "reader-closed"} {
 		t.Run(end, func(t *testing.T) {
 			r, w, err := os.Pipe()
@@ -170,6 +173,7 @@ func TestDiscardStdoutSurvivesOverlongLine(t *testing.T) {
 }
 
 func TestStderrTailExplainsConnectFailures(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("connect failed")
 	if err := (&stderrTail{}).explain(cause); err != cause {
 		t.Fatalf("no stderr must keep the error: %v", err)
@@ -239,6 +243,7 @@ func TestStderrTailExplainsConnectFailures(t *testing.T) {
 }
 
 func TestStderrTailCutKeepsBearerTokensRedacted(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("connect failed")
 	header := "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl"
 	for at := 1; at < len(header); at++ {

@@ -43,6 +43,7 @@ func startBatch(t *testing.T, s *store.Store) model.Control {
 }
 
 func TestDurableAndBudgetAtomic(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = 1 })
@@ -68,6 +69,7 @@ func TestDurableAndBudgetAtomic(t *testing.T) {
 }
 
 func TestPlanningCapacityReflectsPolicyUsageAndUTCDay(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	for agents, required := range map[uint64]uint64{8: 12, 9: 13, 10: 14} {
 		saveConfig(t, s, func(c *config.Config) { c.DiscoveryAgents = agents })
@@ -156,6 +158,7 @@ func number(value any) float64 {
 }
 
 func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = 2 })
@@ -193,6 +196,7 @@ func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
 }
 
 func TestLivePolicySurvivesRestartAndNeverUsesTaskSnapshot(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	queued := task()
@@ -233,6 +237,7 @@ func TestLivePolicySurvivesRestartAndNeverUsesTaskSnapshot(t *testing.T) {
 }
 
 func TestReportNeverCreatesMissingState(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "missing")
 	if _, err := report.UsageReport(filepath.Join(missing, "state.db")); err == nil || !strings.Contains(err.Error(), "state database") {
 		t.Fatalf("missing state reported: %v", err)
@@ -243,6 +248,7 @@ func TestReportNeverCreatesMissingState(t *testing.T) {
 }
 
 func TestConcurrentPlanningSessionsAppendWithoutLosingEvidence(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	c := cycleFor(task())
 	must(t, s.Put("cycle", c.ID, c))
@@ -278,6 +284,7 @@ func TestConcurrentPlanningSessionsAppendWithoutLosingEvidence(t *testing.T) {
 }
 
 func TestCancellationGuardsPublicationCheckpoints(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	for _, c := range []struct {
 		status model.Status
@@ -350,6 +357,7 @@ func observation(number uint64) model.PullRequest {
 }
 
 func TestRepositoryHistoryAndRediscoveryLineageIgnoreRepositoryCasing(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	published := reviewTask()
@@ -449,6 +457,7 @@ func TestRepositoryHistoryAndRediscoveryLineageIgnoreRepositoryCasing(t *testing
 }
 
 func TestDuplicateTitlesTrimSavedAndProposedWhitespace(t *testing.T) {
+	t.Parallel()
 	{
 		path := statePath(t)
 		s := open(t, path)
@@ -510,6 +519,7 @@ func TestDuplicateTitlesTrimSavedAndProposedWhitespace(t *testing.T) {
 }
 
 func TestDuplicateProblemIdentitiesPreserveUnicodeAndLegacyFallbacks(t *testing.T) {
+	t.Parallel()
 	type identityCase struct {
 		title, key, proposedTitle, proposedKey string
 		duplicate                              bool
@@ -586,6 +596,7 @@ func TestDuplicateProblemIdentitiesPreserveUnicodeAndLegacyFallbacks(t *testing.
 }
 
 func TestDuplicateLookupLoadsOnlyMatchesWithoutTruncatingOrRepeatingThem(t *testing.T) {
+	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
 	saved := reviewTask()
@@ -632,6 +643,7 @@ func firstItem(t *testing.T, page store.Page) map[string]any {
 }
 
 func TestProposalContentRevisionsCoverOmittedAndTruncatedEvidence(t *testing.T) {
+	t.Parallel()
 	{
 		path := statePath(t)
 		s := open(t, path)
@@ -708,6 +720,7 @@ func TestProposalContentRevisionsCoverOmittedAndTruncatedEvidence(t *testing.T) 
 }
 
 func TestCycleSummariesCountCandidateDecisions(t *testing.T) {
+	t.Parallel()
 	{
 		path := statePath(t)
 		s := open(t, path)
@@ -758,6 +771,7 @@ func TestCycleSummariesCountCandidateDecisions(t *testing.T) {
 }
 
 func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	control := map[string]any{
 		"paused": false, "mode": "run_once", "cycle_number": 1, "next_cycle_at": 0,
@@ -829,6 +843,7 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 }
 
 func TestOldAttentionSurvivesBoundedDashboardAndPages(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	old := task()
 	old.Status = model.StatusBlocked
@@ -882,6 +897,7 @@ func TestOldAttentionSurvivesBoundedDashboardAndPages(t *testing.T) {
 }
 
 func TestDashboardListsRecentActiveWorkOnce(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	statuses := []model.Status{model.StatusPublished, model.StatusExecuting, model.StatusQueued, model.StatusPublished, model.StatusBlocked}
 	for i := range 700 {
@@ -913,6 +929,7 @@ func TestDashboardListsRecentActiveWorkOnce(t *testing.T) {
 }
 
 func TestUnresolvedProblemIdentitySurvivesRewording(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	old := task()
 	old.Status = model.StatusBlocked
@@ -929,6 +946,7 @@ func TestUnresolvedProblemIdentitySurvivesRewording(t *testing.T) {
 }
 
 func TestPublishedWorkRemainsInDuplicateLookups(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	delivered := task()
 	delivered.Status = model.StatusPublished
@@ -959,6 +977,7 @@ func TestPublishedWorkRemainsInDuplicateLookups(t *testing.T) {
 }
 
 func TestAffordabilityChecksRefuseStaleControlWithoutWriting(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	cfg := saveConfig(t, s, func(*config.Config) {})
 	fingerprint, err := cfg.Fingerprint()

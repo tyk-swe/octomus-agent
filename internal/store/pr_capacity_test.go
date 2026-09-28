@@ -19,6 +19,7 @@ func capacityPR(number uint64, branch string) model.PullRequest {
 }
 
 func TestSharedBranchPullRequestsEachConsumeCapacity(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	saveConfig(t, s, func(c *config.Config) { c.GitHubRepo = "fixture/project"; c.MaxOpenPRs = 2 })
 	secondBase := capacityPR(8, "octomus/shared")
@@ -46,6 +47,7 @@ func TestSharedBranchPullRequestsEachConsumeCapacity(t *testing.T) {
 }
 
 func TestRespelledRepositoryPathKeepsThePrIdentity(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	queued := task()
 	queued.Config.Repository = "/srv/repo"
@@ -74,6 +76,7 @@ func TestRespelledRepositoryPathKeepsThePrIdentity(t *testing.T) {
 }
 
 func TestPrObservationFallsBackToTheLatestPublishedOutput(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	saveConfig(t, s, func(c *config.Config) { c.GitHubRepo = "fixture/project"; c.MaxOpenPRs = 3 })
 	delivered := task()

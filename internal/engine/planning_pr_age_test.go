@@ -54,6 +54,7 @@ func writeMaintenancePRFixture(t *testing.T, fixture *scriptedFixture, prs []mai
 }
 
 func TestAuditGroundingOwnedPRAgeThresholds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		threshold uint64

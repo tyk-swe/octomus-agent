@@ -12,6 +12,7 @@ import (
 )
 
 func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 
 	queued := task()
@@ -199,6 +200,7 @@ func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
 }
 
 func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	put := func(id string, edit func(*model.Task)) model.Task {
 		t.Helper()
@@ -255,6 +257,7 @@ func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
 }
 
 func TestCleanupCandidatesResumeAfterTheCursorAndWrap(t *testing.T) {
+	t.Parallel()
 	s := open(t, statePath(t))
 	const cutoff = "2021-01-01T00:00:00Z"
 	ids := make([]string, 105)

@@ -23,6 +23,7 @@ func refreshLive(app *App) error {
 }
 
 func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -106,6 +107,7 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 }
 
 func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
@@ -141,6 +143,7 @@ func TestCapacityReportsRefreshStateAndClearsErrorAfterObservation(t *testing.T)
 }
 
 func TestCancelledRefreshIsNotRecordedAsFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
@@ -165,6 +168,7 @@ func TestCancelledRefreshIsNotRecordedAsFailure(t *testing.T) {
 }
 
 func TestPausedRefreshClearsEarlierFailureWithoutAuthorizingDispatch(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
@@ -190,6 +194,7 @@ func TestPausedRefreshClearsEarlierFailureWithoutAuthorizingDispatch(t *testing.
 }
 
 func TestObservationContinuesWithASupersedingInventory(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	app := New(fixture.state, fixture.dataDir)
 	t.Cleanup(app.Shutdown)
@@ -217,6 +222,7 @@ func TestObservationContinuesWithASupersedingInventory(t *testing.T) {
 }
 
 func TestCancelledCheckpointsAreNeverReseeded(t *testing.T) {
+	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
@@ -248,6 +254,7 @@ func TestCancelledCheckpointsAreNeverReseeded(t *testing.T) {
 }
 
 func TestPauseCancelsHeldCapacityRefreshAndRejectsItsResult(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	delay := filepath.Join(fixture.root, "reconcile-delay")
 	if err := os.WriteFile(delay, []byte("60"), 0o644); err != nil {
@@ -298,6 +305,7 @@ func TestPauseCancelsHeldCapacityRefreshAndRejectsItsResult(t *testing.T) {
 }
 
 func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	queued := queuedTask(fixture.cfg, "waiting-for-capacity", fixture.cfg.DefaultBranch, fixture.cfg.BranchPrefix+"waiting")
 	if err := fixture.state.Put("task", queued.ID, queued); err != nil {
@@ -355,6 +363,7 @@ func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
 }
 
 func TestRefreshReleasesOnlyRemotelySettledCheckpointReservation(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	checkpoint := queuedTask(fixture.cfg, "cancelled-checkpoint", fixture.cfg.DefaultBranch, fixture.cfg.BranchPrefix+"checkpoint")
 	checkpoint.Status = model.StatusCancelled
@@ -384,6 +393,7 @@ func TestRefreshReleasesOnlyRemotelySettledCheckpointReservation(t *testing.T) {
 }
 
 func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
+	t.Parallel()
 	fixture := newPlanningFixture(t)
 	cfg := fixture.cfg.Clone()
 	cfg.BranchPrefix = "tyk/"
@@ -453,6 +463,7 @@ func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
 }
 
 func TestRefusedAdmissionPacesInventoryRefreshes(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		stale  func(*config.Config)
@@ -510,6 +521,7 @@ func TestRefusedAdmissionPacesInventoryRefreshes(t *testing.T) {
 }
 
 func TestPrAdmissionFreshnessUsesInventoryObservation(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	app := New(testStore(t), t.TempDir())
 	t.Cleanup(app.Shutdown)

@@ -11,6 +11,7 @@ import (
 )
 
 func TestDiscoveryScopesCoverEveryAcceptedAgentCount(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	scopes := uint64(len(discoveryScopes))
 	accepted := 0
@@ -50,6 +51,7 @@ func TestDiscoveryScopesCoverEveryAcceptedAgentCount(t *testing.T) {
 }
 
 func TestEveryReviewerSlotHasAnIndependentFocus(t *testing.T) {
+	t.Parallel()
 	slots := model.ReviewerSlots()
 	if len(reviewFocus) != len(slots) {
 		t.Fatalf("review focus covers %d slots; reviewer slots are %v", len(reviewFocus), slots)

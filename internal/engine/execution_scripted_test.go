@@ -58,6 +58,7 @@ func assertUnpublished(t *testing.T, fixture *scriptedFixture, task model.Task) 
 }
 
 func TestExecutionMalformedAndIncompleteReviewsNeverPublish(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		answer  string
@@ -105,6 +106,7 @@ func TestExecutionMalformedAndIncompleteReviewsNeverPublish(t *testing.T) {
 }
 
 func TestExecutionReviewerWorkspaceEditBlocks(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	fixture.configure(t, func(cfg *config.Config) {
 		cfg.VerificationCommands = []string{"test -f feature.txt"}
@@ -135,6 +137,7 @@ func TestExecutionReviewerWorkspaceEditBlocks(t *testing.T) {
 }
 
 func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	fixture.configure(t, func(cfg *config.Config) {
 		cfg.VerificationCommands = []string{"false"}
@@ -199,6 +202,7 @@ func TestExecutionFailedVerificationExhaustsRepairBudget(t *testing.T) {
 }
 
 func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	fixture.configure(t, func(cfg *config.Config) {
 		cfg.VerificationCommands = []string{"false"}
@@ -237,6 +241,7 @@ func TestExecutionNoProgressLimitStopsIdenticalRepairs(t *testing.T) {
 }
 
 func TestExecutionRepairPromptCarriesRoundEvidence(t *testing.T) {
+	t.Parallel()
 	t.Run("verification failure", func(t *testing.T) {
 		fixture := newScriptedFixture(t)
 		failing := "echo FAIL-$((40+2)); false"
@@ -307,6 +312,7 @@ func TestExecutionRepairPromptCarriesRoundEvidence(t *testing.T) {
 }
 
 func TestExecutionWithoutChangesBlocksBeforeReview(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		effect func(cwd string) error
@@ -350,6 +356,7 @@ func TestExecutionWithoutChangesBlocksBeforeReview(t *testing.T) {
 }
 
 func TestExecutionCancellationDuringTurn(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	routes, script := fixture.routes, fixture.script
 	gate := runnertest.NewGate()
@@ -392,6 +399,7 @@ func TestExecutionCancellationDuringTurn(t *testing.T) {
 }
 
 func TestExecutionTaskTimeout(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	routes, script := fixture.routes, fixture.script
 	gate := runnertest.NewGate()
@@ -486,6 +494,7 @@ func TestExecutionTimeoutJoinsCallbackBeforeFinalizing(t *testing.T) {
 }
 
 func TestExecutionDeadlineCallbackPanicBlocks(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	routes, script := fixture.routes, fixture.script
 	script.Queue(routes.Executor, runnertest.Reply{Effect: func(string) error { panic("executor exploded") }})
@@ -507,6 +516,7 @@ func TestExecutionDeadlineCallbackPanicBlocks(t *testing.T) {
 }
 
 func TestExecutionFailedExecutorStartRetries(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	routes, script := fixture.routes, fixture.script
 	script.FailStart(routes.Executor, errors.New("Fixture failed start"))
@@ -555,6 +565,7 @@ func TestExecutionFailedExecutorStartRetries(t *testing.T) {
 }
 
 func TestExecutionRestartRequeuesInitializedTask(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	fixture.configure(t, func(cfg *config.Config) {
 		cfg.VerificationCommands = []string{"test -f feature.txt"}
@@ -658,6 +669,7 @@ func existingPrTask(t *testing.T, fixture *scriptedFixture) model.Task {
 }
 
 func TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	routes, script := fixture.routes, fixture.script
 	task := existingPrTask(t, fixture)
@@ -687,6 +699,7 @@ func TestExecutionExistingPrStaleBaseBlocksBeforeCheckpoint(t *testing.T) {
 }
 
 func TestExecutionExistingPrComparisonBaseSurvivesMainMovingAfterClone(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	routes, script := fixture.routes, fixture.script
 	task := existingPrTask(t, fixture)
@@ -765,6 +778,7 @@ func hasEvent(t *testing.T, state *store.Store, id, kind, text string) bool {
 }
 
 func TestExecutionShutdownLeavesInitializedTaskForRecovery(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
 	routes, script := fixture.routes, fixture.script
 	gate := runnertest.NewGate()
@@ -826,6 +840,7 @@ func TestExecutionShutdownLeavesInitializedTaskForRecovery(t *testing.T) {
 }
 
 func TestExecutionShutdownBeforeInitializationStaysRetryable(t *testing.T) {
+	t.Parallel()
 	fixture := newScriptedFixture(t)
 	heldUploadPack(t, fixture.planningFixture)
 	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
