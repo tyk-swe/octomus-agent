@@ -1,0 +1,169 @@
+{
+  "Image": "",
+  "User": "10001:10001",
+  "Entrypoint": [
+    "/opt/octomus/octomus-agent",
+    "--sandbox-init",
+    "opencode",
+    "60",
+    "--",
+    "opencode"
+  ],
+  "Cmd": [
+    "serve",
+    "--hostname",
+    "127.0.0.1",
+    "--port",
+    "0"
+  ],
+  "WorkingDir": "/var/lib/octomus/data/tasks/0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab/workspace",
+  "Env": [
+    "HOME=/home/octomus",
+    "USER=octomus",
+    "LANG=C.UTF-8",
+    "TMPDIR=/tmp",
+    "GIT_TERMINAL_PROMPT=0",
+    "GIT_OPTIONAL_LOCKS=0",
+    "HTTPS_PROXY=http://sandbox:token@egress:3128",
+    "OPENCODE_SERVER_PASSWORD=pw"
+  ],
+  "Labels": {
+    "octomus.sandbox.instance": "octomus",
+    "octomus.sandbox.kind": "runner",
+    "octomus.sandbox.root": "tasks/0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab"
+  },
+  "AttachStdin": true,
+  "AttachStdout": true,
+  "AttachStderr": true,
+  "OpenStdin": true,
+  "StdinOnce": true,
+  "Tty": false,
+  "StopSignal": "SIGTERM",
+  "HostConfig": {
+    "Init": true,
+    "Privileged": false,
+    "ReadonlyRootfs": true,
+    "CapDrop": [
+      "ALL"
+    ],
+    "CapAdd": null,
+    "SecurityOpt": [
+      "no-new-privileges:true"
+    ],
+    "NetworkMode": "octomus-sandbox-runner",
+    "IpcMode": "private",
+    "PidMode": "",
+    "UTSMode": "",
+    "UsernsMode": "",
+    "CgroupnsMode": "",
+    "PidsLimit": 1024,
+    "Memory": 4294967296,
+    "MemorySwap": 4294967296,
+    "NanoCpus": 2000000000,
+    "OomScoreAdj": 1000,
+    "ShmSize": 0,
+    "Tmpfs": {
+      "/tmp": "rw,exec,nosuid,nodev,size=1073741824"
+    },
+    "Mounts": [
+      {
+        "Type": "volume",
+        "Source": "octomus-tools",
+        "Target": "/opt/octomus",
+        "ReadOnly": true,
+        "VolumeOptions": {
+          "NoCopy": true
+        }
+      },
+      {
+        "Type": "volume",
+        "Source": "octomus-data",
+        "Target": "/var/lib/octomus/data/tasks/0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab/workspace",
+        "ReadOnly": false,
+        "VolumeOptions": {
+          "NoCopy": true,
+          "Subpath": "tasks/0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab/workspace"
+        }
+      },
+      {
+        "Type": "volume",
+        "Source": "octomus-data",
+        "Target": "/var/lib/octomus/data/tasks/0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab/repo.git",
+        "ReadOnly": true,
+        "VolumeOptions": {
+          "NoCopy": true,
+          "Subpath": "tasks/0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab/repo.git"
+        }
+      },
+      {
+        "Type": "volume",
+        "Source": "octomus-data",
+        "Target": "/home/octomus",
+        "ReadOnly": false,
+        "VolumeOptions": {
+          "NoCopy": true,
+          "Subpath": "tasks/0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab/home"
+        }
+      },
+      {
+        "Type": "volume",
+        "Source": "octomus-runner",
+        "Target": "/home/octomus/.codex",
+        "ReadOnly": false,
+        "VolumeOptions": {
+          "NoCopy": true,
+          "Subpath": "codex"
+        }
+      },
+      {
+        "Type": "volume",
+        "Source": "octomus-runner",
+        "Target": "/home/octomus/.local/share/opencode",
+        "ReadOnly": false,
+        "VolumeOptions": {
+          "NoCopy": true,
+          "Subpath": "opencode/data"
+        }
+      },
+      {
+        "Type": "volume",
+        "Source": "octomus-runner",
+        "Target": "/home/octomus/.config/opencode",
+        "ReadOnly": false,
+        "VolumeOptions": {
+          "NoCopy": true,
+          "Subpath": "opencode/config"
+        }
+      },
+      {
+        "Type": "volume",
+        "Source": "octomus-runner",
+        "Target": "/home/octomus/.cache/opencode",
+        "ReadOnly": false,
+        "VolumeOptions": {
+          "NoCopy": true,
+          "Subpath": "opencode/cache"
+        }
+      },
+      {
+        "Type": "volume",
+        "Source": "octomus-runner",
+        "Target": "/home/octomus/.local/state/opencode",
+        "ReadOnly": false,
+        "VolumeOptions": {
+          "NoCopy": true,
+          "Subpath": "opencode/state"
+        }
+      }
+    ],
+    "Binds": null,
+    "Devices": null,
+    "AutoRemove": false,
+    "LogConfig": {
+      "Type": "none"
+    },
+    "RestartPolicy": {
+      "Name": "no"
+    }
+  }
+}

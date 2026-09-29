@@ -228,7 +228,7 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 	_, cfg := baselineApp(t)
 	ctx := context.Background()
 	revision := git(t, cfg.Repository, "rev-parse", "HEAD")
-	outcome := runCheckCommand(ctx, sandbox.Host{}, cfg, cfg.Repository, "yes x | head -c 20480; exit 3", revision)
+	outcome := runCheckCommand(ctx, sandbox.Host{}, cfg, cfg.Repository, "yes x | head -c 20480; exit 3", revision, true)
 	text, diagnosticTruncated, success := commandOutput(outcome.captured, outcome.capture)
 	if success || diagnosticTruncated {
 		t.Fatalf("outcome: %v %v", success, diagnosticTruncated)

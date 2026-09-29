@@ -505,11 +505,11 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 	}
 	allOK := true
 	remaining := baselineAggregateOutputLimit
-	for _, command := range c.VerificationCommands {
+	for i, command := range c.VerificationCommands {
 		if ctx.Err() != nil {
 			return model.BaselineStatusRunning, process.ErrCancelled
 		}
-		outcome := runCheckCommand(ctx, a.sandbox, c, workspaceDir, command, *revision)
+		outcome := runCheckCommand(ctx, a.sandbox, c, workspaceDir, command, *revision, i == 0)
 		timedOut := process.IsDeadlineElapsed(outcome.capture)
 		text, diagnosticTruncated, success := commandOutput(outcome.captured, outcome.capture)
 		var failure error

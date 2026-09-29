@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -27,6 +30,26 @@ func (a *App) scratchWorkspace() (string, func(), error) {
 		return "", nil, err
 	}
 	return dir, func() { _ = workspace.RemoveOwnedDir(parent, root) }, nil
+}
+
+// healthChecker is a sandbox backend that can be unavailable, as a broker can.
+type healthChecker interface {
+	Healthy(ctx context.Context) error
+}
+
+// sandboxReady refuses to schedule work while the sandbox backend cannot isolate it. The scheduler turns this into an
+// error pause with an attention notice; nothing ever falls back to running unsandboxed.
+func (a *App) sandboxReady() error {
+	checker, ok := a.sandbox.(healthChecker)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	defer cancel()
+	if err := checker.Healthy(ctx); err != nil {
+		return fmt.Errorf("Sandbox unavailable; no work starts without it: %w", err)
+	}
+	return nil
 }
 
 // validateRoutes checks every route's catalog from a scratch root and stops the runners it started.

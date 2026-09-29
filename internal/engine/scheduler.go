@@ -64,6 +64,9 @@ func (a *App) Tick() error {
 	if control.Mode == model.OperatingModePaused {
 		return nil
 	}
+	if err := a.sandboxReady(); err != nil {
+		return err
+	}
 	if err := cfg.Validate(true); err != nil {
 		return err
 	}

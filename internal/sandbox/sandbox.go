@@ -52,6 +52,12 @@ type Spec struct {
 	Stdin bool
 	// Stderr, when set, receives the child's stderr instead of Child.Stderr, so a runner can keep a diagnostic tail.
 	Stderr io.Writer
+	// FreshHome gives a verification sandbox an empty home: set on the first command of each verification run.
+	FreshHome bool
+	// Timeout is the backend's hard limit in seconds, beyond the caller's own graceful one; zero is the backend maximum.
+	Timeout uint64
+	// Probe names the KindProbe check to run.
+	Probe string
 }
 
 // Root is the owned root directory a workspace belongs to.
@@ -122,12 +128,16 @@ func ParseMode(value string) (Mode, error) {
 	return 0, errors.New("Sandbox must be docker or off")
 }
 
+// verifyGrace lets a verification command's own timeout and graceful termination act before the backend's hard limit.
+const verifyGrace = 60
+
 // Verify starts one verification command in the backend's verify sandbox and bounds it like any captured command.
-func Verify(ctx context.Context, backend Backend, dir, command string, seconds uint64) (*process.ProcessOutput, error) {
+// fresh starts the verification run's home empty.
+func Verify(ctx context.Context, backend Backend, dir, command string, seconds uint64, fresh bool) (*process.ProcessOutput, error) {
 	if ctx.Err() != nil {
 		return nil, process.ErrCancelled
 	}
-	child, err := backend.Start(ctx, Spec{Kind: KindVerify, Dir: dir, Command: command})
+	child, err := backend.Start(ctx, Spec{Kind: KindVerify, Dir: dir, Command: command, FreshHome: fresh, Timeout: seconds + verifyGrace})
 	if err != nil {
 		return nil, err
 	}

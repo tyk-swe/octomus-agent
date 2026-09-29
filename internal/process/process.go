@@ -128,6 +128,8 @@ type Exit struct {
 	Code   int
 	OOM    bool
 	Killed bool
+	// Reason explains a kill that was not the caller's own, such as a sandbox time limit.
+	Reason string
 }
 
 // ErrKilled marks a sandboxed child that Octomus stopped on purpose, the counterpart of a host group's SIGKILL.
@@ -184,6 +186,8 @@ func (s Status) String() string {
 		switch {
 		case s.exit.OOM:
 			return fmt.Sprintf("exit status: %d (sandbox memory limit exceeded)", s.exit.Code)
+		case s.exit.Killed && s.exit.Reason != "":
+			return s.exit.Reason
 		case s.exit.Killed:
 			return "stopped by Octomus"
 		}

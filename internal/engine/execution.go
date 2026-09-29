@@ -439,8 +439,8 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 	if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
 		return nil, err
 	}
-	for _, command := range cfg.VerificationCommands {
-		outcome := runCheckCommand(ctx, a.sandbox, cfg, ws, command, revision)
+	for i, command := range cfg.VerificationCommands {
+		outcome := runCheckCommand(ctx, a.sandbox, cfg, ws, command, revision, i == 0)
 		if ctx.Err() != nil {
 			return nil, process.ErrCancelled
 		}
@@ -601,8 +601,8 @@ func boundedTail(text string, limit int) string {
 	return prefix + text[start:]
 }
 
-func runCheckCommand(ctx context.Context, box sandbox.Backend, cfg config.Config, ws, command, revision string) checkOutcome {
-	captured, captureErr := sandbox.Verify(ctx, box, ws, command, cfg.CommandTimeoutSeconds)
+func runCheckCommand(ctx context.Context, box sandbox.Backend, cfg config.Config, ws, command, revision string, fresh bool) checkOutcome {
+	captured, captureErr := sandbox.Verify(ctx, box, ws, command, cfg.CommandTimeoutSeconds, fresh)
 	outcome := checkOutcome{captured: captured, capture: captureErr}
 	if ctx.Err() == nil {
 		outcome.intact, outcome.intactErr = gitops.At(ctx, cfg, ws, revision)

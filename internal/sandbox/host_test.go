@@ -45,7 +45,7 @@ func script(t *testing.T, body string) string {
 
 func TestHostVerifyRunsBashPipefailInTheWorkspace(t *testing.T) {
 	dir := t.TempDir()
-	out, err := sandbox.Verify(context.Background(), sandbox.Host{}, dir, "pwd; false | true", 30)
+	out, err := sandbox.Verify(context.Background(), sandbox.Host{}, dir, "pwd; false | true", 30, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestHostVerifyRunsBashPipefailInTheWorkspace(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := sandbox.Verify(ctx, sandbox.Host{}, dir, "true", 30); !errors.Is(err, process.ErrCancelled) {
+	if _, err := sandbox.Verify(ctx, sandbox.Host{}, dir, "true", 30, true); !errors.Is(err, process.ErrCancelled) {
 		t.Fatalf("cancelled verification = %v; want ErrCancelled", err)
 	}
 }
