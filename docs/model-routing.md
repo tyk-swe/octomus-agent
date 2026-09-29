@@ -60,7 +60,7 @@ sharing, automatic updates, delegated/helper agents, automatic compaction, nativ
 snapshots, formatters, and LSP processes. This keeps auxiliary work and model
 selection under the orchestrator's control. Context exhaustion fails visibly;
 automatic compaction does not choose another model. These controls remain
-application policy, not a host sandbox. Existing full-diff review, immutable
+application policy; isolation comes from the [sandbox](sandbox.md) each runner starts in. Existing full-diff review, immutable
 verification, and orchestrator-owned GitHub publication gates still apply.
 
 ## Dashboard and API

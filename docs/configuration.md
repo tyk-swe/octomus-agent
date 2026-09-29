@@ -34,7 +34,10 @@ saved revision they covered.
 ## Repository and routes
 
 Set an absolute, persistent repository path and a GitHub identity such as `OWNER/REPOSITORY`.
-The service user needs access to that checkout and the repository's build tools.
+In the Docker deployment both are fixed by `OCTOMUS_GITHUB_REPO` and shown read-only: the
+control plane owns its checkout in the data volume, and the operator token cannot point
+its git anywhere else. Unsandboxed, the service user needs access to that checkout and the
+repository's build tools.
 Choose an owned branch prefix, such as the default `octomus/`, to identify branches the agent may publish.
 Repository identity and branch policy cannot change while unresolved tasks exist.
 
@@ -50,7 +53,10 @@ Use meaningful checks for the target project, one shell command per line. At lea
 command is required for execution. An audit can run without verification commands.
 
 Every configured command must pass on the reviewed revision before publication. A failed
-check stays visible and can block delivery. Commands run with the service user's permissions
+check stays visible and can block delivery. In the Docker deployment each command runs in
+a fresh sandbox with the sandbox image's tools, the task's work tree and a home shared only
+by the commands of one verification run; it reaches only the hosts in
+`OCTOMUS_EGRESS_BUILD_HOSTS`. Unsandboxed, commands run with the service user's permissions
 on the dedicated host.
 
 A command must leave the workspace as it found it. One that changes tracked files, moves
@@ -61,6 +67,13 @@ clean-baseline check the same way.
 
 The optional **Check clean baseline** runs the saved commands against the remote default
 revision before model work. It does not verify any later task's changes.
+
+## Host settings
+
+Sandbox mode, sandbox limits, the sandbox image and runtime, the egress allowlists and the
+pinned repository are deployment settings in `.env`, not saved policy: the dashboard shows
+them read-only and no API call changes them. [env.example](../deploy/docker/env.example)
+documents each one; the [sandbox guide](sandbox.md) explains them.
 
 ## Operating limits
 
