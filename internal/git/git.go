@@ -19,6 +19,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 func blocked(reason model.BlockedReason, message string) error {
@@ -37,6 +38,35 @@ func Git(ctx context.Context, c config.Config, cwd string, args []string) (strin
 	return strings.TrimSpace(out), nil
 }
 
+// hardened pins behaviour that configuration or submodules could otherwise turn into command execution. The trusted
+// metadata is orchestrator-owned; these flags also cover legacy clones whose metadata sits inside the work tree.
+var hardened = []string{
+	"-c", "core.hooksPath=/dev/null",
+	"-c", "core.fsmonitor=false",
+	"-c", "core.untrackedCache=false",
+	"-c", "submodule.recurse=false",
+	"-c", "diff.ignoreSubmodules=all",
+	"-c", "status.submoduleSummary=false",
+}
+
+func treeArgs(workTree string, args []string) ([]string, error) {
+	gitDir, err := workspace.GitDir(workTree)
+	if err != nil {
+		return nil, reasoned(model.BlockedReasonWorkspaceInvalid, "Workspace git metadata is unavailable", err)
+	}
+	full := append([]string{"--git-dir=" + gitDir, "--work-tree=" + workTree}, hardened...)
+	return append(full, args...), nil
+}
+
+// WorkGit runs git on an owned work tree against its trusted metadata, never the work tree's own .git entry.
+func WorkGit(ctx context.Context, c config.Config, workTree string, args []string) (string, error) {
+	full, err := treeArgs(workTree, args)
+	if err != nil {
+		return "", err
+	}
+	return Git(ctx, c, workTree, full)
+}
+
 func gh(ctx context.Context, c config.Config, args []string) (string, error) {
 	return process.RunMachine(ctx, "gh", args, c.Repository, c.CommandTimeoutSeconds)
 }
@@ -46,7 +76,7 @@ func originURL(ctx context.Context, c config.Config, repo string) (string, error
 }
 
 func head(ctx context.Context, c config.Config, path string) (string, error) {
-	return Git(ctx, c, path, []string{"rev-parse", "HEAD"})
+	return WorkGit(ctx, c, path, []string{"rev-parse", "HEAD"})
 }
 
 func ghPages(out string, each func(page []map[string]any) error) error {
@@ -133,6 +163,46 @@ func Fetch(ctx context.Context, c config.Config) error {
 	return err
 }
 
+const forkHeadNamespace = "refs/octomus/pr/"
+
+// FetchForkHeads copies fork PR heads into the trusted checkout, whose objects every clone inherits, so planning
+// sandboxes can inspect them by SHA without any route to GitHub. Heads the remote no longer serves are reported, not
+// fatal: grounding records them as unavailable context rather than failing the cycle.
+func FetchForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([]uint64, error) {
+	stale, err := Git(ctx, c, c.Repository, []string{"for-each-ref", "--format=%(refname)", forkHeadNamespace})
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range strings.Fields(stale) {
+		if _, err := Git(ctx, c, c.Repository, []string{"update-ref", "-d", ref}); err != nil {
+			return nil, err
+		}
+	}
+	if len(numbers) == 0 {
+		return nil, nil
+	}
+	refspec := func(n uint64) string {
+		return fmt.Sprintf("+refs/pull/%d/head:%s%d", n, forkHeadNamespace, n)
+	}
+	all := []string{"fetch", "--no-tags", "--no-write-fetch-head", "origin"}
+	for _, n := range numbers {
+		all = append(all, refspec(n))
+	}
+	if _, err := Git(ctx, c, c.Repository, all); err == nil {
+		return nil, nil
+	}
+	var missing []uint64
+	for _, n := range numbers {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if _, err := Git(ctx, c, c.Repository, []string{"fetch", "--no-tags", "--no-write-fetch-head", "origin", refspec(n)}); err != nil {
+			missing = append(missing, n)
+		}
+	}
+	return missing, nil
+}
+
 func RemoteRevision(ctx context.Context, c config.Config, branch string) (*string, error) {
 	if !config.ValidBranch(branch) {
 		return nil, errors.New("Invalid branch")
@@ -152,62 +222,97 @@ func RemoteRevision(ctx context.Context, c config.Config, branch string) (*strin
 	return nil, nil
 }
 
+// CloneAt makes an owned clone whose git metadata lives beside the work tree in repo.git, outside anything a sandbox
+// can write, while the work tree keeps a .git pointer so tools inside it still find the history.
 func CloneAt(ctx context.Context, c config.Config, path string, revision string) error {
-	if _, err := os.Stat(path); err == nil {
-		return errors.New("Workspace already exists; recovery must inspect it")
-	}
-	if parent := filepath.Dir(path); parent == path {
+	root := filepath.Dir(path)
+	if root == path {
 		return errors.New("Invalid workspace path")
-	} else if err := os.MkdirAll(parent, 0o777); err != nil {
+	}
+	gitDir := filepath.Join(root, workspace.GitDirName)
+	for _, existing := range []string{path, gitDir} {
+		if _, err := os.Lstat(existing); err == nil {
+			return errors.New("Workspace already exists; recovery must inspect it")
+		}
+	}
+	if err := os.MkdirAll(root, 0o777); err != nil {
 		return err
 	}
 	if _, err := Git(ctx, c, c.Repository, []string{
-		"clone", "--no-hardlinks", "--no-checkout", "--", c.Repository, path,
+		"clone", "--no-hardlinks", "--no-checkout", "--separate-git-dir=" + gitDir, "--", c.Repository, path,
 	}); err != nil {
 		return err
 	}
-	if _, err := Git(ctx, c, path, []string{"checkout", "--detach", revision}); err != nil {
+	if _, err := WorkGit(ctx, c, path, []string{"checkout", "--detach", revision}); err != nil {
 		return err
 	}
 	remote, err := originURL(ctx, c, c.Repository)
 	if err != nil {
 		return err
 	}
-	if _, err := Git(ctx, c, path, []string{"remote", "set-url", "origin", remote}); err != nil {
+	if _, err := WorkGit(ctx, c, path, []string{"remote", "set-url", "origin", remote}); err != nil {
 		return err
 	}
-	if _, err := Git(ctx, c, path, []string{"config", "user.name", "Octomus Agent"}); err != nil {
+	if _, err := WorkGit(ctx, c, path, []string{"config", "user.name", "Octomus Agent"}); err != nil {
 		return err
 	}
-	if _, err := Git(ctx, c, path, []string{
+	if _, err := WorkGit(ctx, c, path, []string{
 		"config", "user.email", "octomus-agent@users.noreply.github.com",
 	}); err != nil {
 		return err
 	}
 	// Task clones must never include application state in generated commits.
-	return os.WriteFile(filepath.Join(path, ".git/info/exclude"), []byte("/.octomus/\n"), 0o666)
+	return os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte("/.octomus/\n"), 0o666)
 }
 
 func Snapshot(ctx context.Context, c config.Config, path string, message string) (string, error) {
-	if _, err := Git(ctx, c, path, []string{"add", "--all"}); err != nil {
+	if _, err := WorkGit(ctx, c, path, []string{"add", "--all"}); err != nil {
 		return "", err
 	}
-	changed, err := Git(ctx, c, path, []string{"diff", "--cached", "--name-only"})
+	if err := refuseGitlinks(ctx, c, path); err != nil {
+		return "", err
+	}
+	changed, err := WorkGit(ctx, c, path, []string{"diff", "--cached", "--name-only"})
 	if err != nil {
 		return "", err
 	}
 	if changed != "" {
-		if _, err := Git(ctx, c, path, []string{
-			"-c", "core.hooksPath=/dev/null", "commit", "-m", redact.Secrets(message),
-		}); err != nil {
+		if _, err := WorkGit(ctx, c, path, []string{"commit", "-m", redact.Secrets(message)}); err != nil {
 			return "", err
 		}
 	}
 	return head(ctx, c, path)
 }
 
+const maxReportedPath = 200
+
+// refuseGitlinks blocks staged submodule entries that are new or point elsewhere: a nested repository in the work tree
+// would otherwise publish as a gitlink whose content was never reviewed. Removing a submodule stays allowed.
+func refuseGitlinks(ctx context.Context, c config.Config, path string) error {
+	out, err := WorkGit(ctx, c, path, []string{
+		"diff", "--cached", "--raw", "-z", "--no-renames", "--ignore-submodules=none", "HEAD",
+	})
+	if err != nil {
+		return err
+	}
+	fields := strings.Split(out, "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		modes := strings.Fields(strings.TrimPrefix(fields[i], ":"))
+		if len(modes) < 2 || modes[1] != "160000" {
+			continue
+		}
+		name := fields[i+1]
+		if len(name) > maxReportedPath {
+			name = name[:maxReportedPath]
+		}
+		return blocked(model.BlockedReasonWorkspaceInvalid, fmt.Sprintf(
+			"Nested repository or changed submodule at %s; Octomus publishes only reviewed file content", strconv.Quote(redact.Text(name))))
+	}
+	return nil
+}
+
 func clean(ctx context.Context, c config.Config, path string) (bool, error) {
-	out, err := Git(ctx, c, path, []string{"status", "--porcelain"})
+	out, err := WorkGit(ctx, c, path, []string{"status", "--porcelain", "--ignore-submodules=all"})
 	if err != nil {
 		return false, err
 	}
@@ -218,6 +323,14 @@ func IsAncestor(ctx context.Context, c config.Config, cwd string, ancestor strin
 	return process.RunPredicate(ctx, "git",
 		[]string{"merge-base", "--is-ancestor", ancestor, descendant},
 		cwd, c.CommandTimeoutSeconds, []int{1})
+}
+
+func workIsAncestor(ctx context.Context, c config.Config, path string, ancestor string, descendant string) (bool, error) {
+	args, err := treeArgs(path, []string{"merge-base", "--is-ancestor", ancestor, descendant})
+	if err != nil {
+		return false, err
+	}
+	return process.RunPredicate(ctx, "git", args, path, c.CommandTimeoutSeconds, []int{1})
 }
 
 func At(ctx context.Context, c config.Config, path string, revision string) (bool, error) {
@@ -747,7 +860,7 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		} else if remote != nil {
 			return fail(model.BlockedReasonRemoteConflict)
 		}
-		ancestor, err := IsAncestor(ctx, c, path, task.SourceRevision, commit)
+		ancestor, err := workIsAncestor(ctx, c, path, task.SourceRevision, commit)
 		if err != nil {
 			return fail(err)
 		}
@@ -760,8 +873,7 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 			expected = *remote
 		}
 		// Hooks, tags and submodule recursion are pinned off so ambient configuration can never push anything but the owned branch.
-		if _, err := Git(ctx, c, path, []string{
-			"-c", "core.hooksPath=/dev/null",
+		if _, err := WorkGit(ctx, c, path, []string{
 			"-c", "push.followTags=false",
 			"push",
 			"--recurse-submodules=no",

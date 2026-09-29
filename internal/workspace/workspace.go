@@ -11,12 +11,37 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
+// GitDirName is the trusted git metadata beside each owned work tree; sandboxes mount it read-only, so work-tree content can never rewrite it.
+const GitDirName = "repo.git"
+
+var ErrNoGitDir = errors.New("Workspace has no trusted git metadata")
+
 func Initialized(task model.Task) bool {
 	if task.ExecutionSession == nil || task.ComparisonBase == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(task.Workspace, ".git"))
+	_, err := GitDir(task.Workspace)
 	return err == nil
+}
+
+// GitDir resolves the git metadata of an owned work tree without following symlinks. A split root always wins, so
+// replacing the work tree's .git pointer can never redirect it; a .git directory inside the work tree is accepted only
+// for clones made before the split layout, which never have a repo.git beside them.
+func GitDir(workTree string) (string, error) {
+	split := filepath.Join(filepath.Dir(workTree), GitDirName)
+	info, err := os.Lstat(split)
+	switch {
+	case err == nil && info.IsDir():
+		return split, nil
+	case err == nil:
+		return "", errors.New("Trusted git metadata is not a directory")
+	case !errors.Is(err, fs.ErrNotExist):
+		return "", err
+	}
+	if info, err := os.Lstat(filepath.Join(workTree, ".git")); err == nil && info.IsDir() {
+		return filepath.Join(workTree, ".git"), nil
+	}
+	return "", ErrNoGitDir
 }
 
 func DirectorySize(path string) (uint64, error) {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -120,7 +119,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		}
 	}
 	ws := task.Workspace
-	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+	if _, err := workspace.GitDir(ws); err != nil {
 		return model.BlockedReasonWorkspaceInvalid
 	}
 	if task.ComparisonBase == "" {
@@ -139,7 +138,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		if revision == task.SourceRevision {
 			return fmt.Errorf("No changes were committed on top of the source revision: %w", model.BlockedReasonVerificationFailed)
 		}
-		names, err := gitops.Git(ctx, cfg, ws, []string{"diff", "--name-only", task.SourceRevision, revision})
+		names, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--name-only", task.SourceRevision, revision})
 		if err != nil {
 			return err
 		}
@@ -268,7 +267,7 @@ func (a *App) validateRecordedWorkspace(ctx context.Context, task *model.Task) e
 	if !config.SamePath(task.Workspace, ws) || task.ComparisonBase == "" {
 		return model.BlockedReasonWorkspaceInvalid
 	}
-	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+	if _, err := workspace.GitDir(ws); err != nil {
 		return model.BlockedReasonWorkspaceInvalid
 	}
 	return ensureWorkspaceAt(ctx, task.ExecutionConfig(), ws, task.SourceRevision)
@@ -349,7 +348,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if task.PRNumber != nil {
-			task.ComparisonBase, err = gitops.Git(ctx, cfg, ws, []string{"merge-base", task.DefaultRevision, task.SourceRevision})
+			task.ComparisonBase, err = gitops.WorkGit(ctx, cfg, ws, []string{"merge-base", task.DefaultRevision, task.SourceRevision})
 			if err != nil {
 				return err
 			}

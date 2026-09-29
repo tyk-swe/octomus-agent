@@ -188,8 +188,8 @@ func verificationFixture(t *testing.T, commands []string) (*App, model.Task, str
 		t.Fatal(err)
 	}
 	fixture.cfg = cfg
-	ws := filepath.Join(fixture.root, "verify-workspace")
-	git(t, fixture.root, "init", "--initial-branch=main", ws)
+	ws := filepath.Join(fixture.root, "verify", "workspace")
+	git(t, fixture.root, "init", "--initial-branch=main", "--separate-git-dir", filepath.Join(fixture.root, "verify", "repo.git"), ws)
 	git(t, ws, "config", "user.name", "Fixture")
 	git(t, ws, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(ws, "impl.txt"), []byte("0\n"), 0o644); err != nil {
@@ -265,7 +265,7 @@ func TestVerificationCancelledMidCommandReturnsTheCancellationSentinel(t *testin
 
 func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
 	t.Parallel()
-	breaking := "rm -rf .git && printf 'gitdir: /nonexistent\\n' > .git"
+	breaking := "rm -rf ../repo.git"
 	app, task, revision := verificationFixture(t, []string{breaking, "true"})
 	_, err := app.verifyRevision(context.Background(), &task, revision)
 	if err == nil || !strings.Contains(err.Error(), "Workspace state check failed during verification") {
@@ -279,8 +279,27 @@ func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
 		t.Fatalf("verification = %+v; want one record and no further commands", saved.Verification)
 	}
 	record := saved.Verification[0]
-	if record.Command != breaking || record.Success || record.Revision != revision || !strings.Contains(record.Output, "not a git repository") {
+	if record.Command != breaking || record.Success || record.Revision != revision || !strings.Contains(record.Output, "no trusted git metadata") {
 		t.Fatalf("state check failure evidence = %+v", record)
+	}
+}
+
+func TestVerificationCannotRedirectTheTrustedGitMetadata(t *testing.T) {
+	t.Parallel()
+	marker := filepath.Join(t.TempDir(), "executed")
+	planted := fmt.Sprintf("rm -f .git && git init -q . && git config core.fsmonitor 'touch %s' && "+
+		"mkdir -p .git/hooks && printf '#!/bin/sh\\ntouch %s\\n' > .git/hooks/post-index-change && chmod +x .git/hooks/post-index-change", marker, marker)
+	app, task, revision := verificationFixture(t, []string{planted, "true"})
+	failures, err := app.verifyRevision(context.Background(), &task, revision)
+	if err != nil || len(failures) != 0 {
+		t.Fatalf("verification = %v, %v; a replaced .git entry must not affect the trusted state check", failures, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the orchestrator ran work-tree git configuration: %v", err)
+	}
+	saved := loadTask(t, app.Store, task.ID)
+	if len(saved.Verification) != 2 || !saved.Verification[0].Success || !saved.Verification[1].Success {
+		t.Fatalf("verification = %+v; want both commands recorded as passing at the reviewed revision", saved.Verification)
 	}
 }
 
@@ -500,7 +519,7 @@ func TestVerificationArtifactMustBeGitIgnored(t *testing.T) {
 	}
 
 	app, task, revision = verificationFixture(t, commands)
-	exclude := filepath.Join(task.Workspace, ".git", "info", "exclude")
+	exclude := filepath.Join(filepath.Dir(task.Workspace), "repo.git", "info", "exclude")
 	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
 		t.Fatal(err)
 	}
