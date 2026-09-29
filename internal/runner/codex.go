@@ -16,6 +16,7 @@ import (
 
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
@@ -530,6 +531,9 @@ func (c *Codex) interrupt(thread, turn string) {
 		})
 	})
 }
+
+// SandboxEvidence is what the sandbox this runner ran in recorded, once it is closed.
+func (c *Codex) SandboxEvidence() *model.SandboxRecord { return sandbox.EvidenceOf(c.child) }
 
 func (c *Codex) Close() error {
 	c.once.Do(func() {

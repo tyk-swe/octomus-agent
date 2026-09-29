@@ -78,6 +78,7 @@ services:
       OCTOMUS_SANDBOX_RUNTIME: ${OCTOMUS_SANDBOX_RUNTIME:-}
       OCTOMUS_EGRESS_PROXY: egress:3128
       OCTOMUS_EGRESS_LEASES: /run/octomus-egress
+      OCTOMUS_EGRESS_COLLECTOR: /run/octomus-egress/collector.sock
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - broker:/run/octomus

@@ -84,6 +84,20 @@ OpenCode serves HTTP on the sandbox's own loopback. A helper inside the sandbox
 the container's standard streams, so no network path exists between a sandbox and the
 control plane or broker.
 
+## What each session recorded
+
+Task details show a sandbox record for every session and verification command:
+- how many containers it ran in, and the image;
+- whether the memory limit stopped one;
+- the hosts the gateway let it reach, and those it refused, with counts.
+
+A refused host is often the first sign of prompt injection, or of a registry missing from
+`OCTOMUS_EGRESS_BUILD_HOSTS`.
+
+Host names come from untrusted code, so they stay in private task records and the
+dashboard. They are never part of exported [run evidence](run-evidence.md). Planning
+sessions and baseline commands carry the same record.
+
 ## What a sandbox can see
 
 Mounts use the same absolute path inside the sandbox as in the control plane, so runner

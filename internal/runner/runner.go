@@ -148,6 +148,7 @@ type Runners struct {
 	catalogs map[config.Backend][]Model
 	closed   bool
 	closeErr error
+	evidence *model.SandboxRecord
 }
 
 type boundClient struct {
@@ -193,8 +194,18 @@ func (r *Runners) Release() error {
 	for backend, client := range r.clients {
 		delete(r.clients, backend)
 		errs = append(errs, client.adapter.Close())
+		if evidenced, ok := client.adapter.(interface{ SandboxEvidence() *model.SandboxRecord }); ok {
+			r.evidence = model.MergeSandbox(r.evidence, evidenced.SandboxEvidence())
+		}
 	}
 	return errors.Join(errs...)
+}
+
+// TakeEvidence returns what the sandboxes of released runners recorded since the last call.
+func (r *Runners) TakeEvidence() *model.SandboxRecord {
+	evidence := r.evidence
+	r.evidence = nil
+	return evidence
 }
 
 func (r *Runners) CheckRoute(route config.Route, cwd string) error {

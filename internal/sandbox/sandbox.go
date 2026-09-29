@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 )
 
@@ -128,18 +129,27 @@ func ParseMode(value string) (Mode, error) {
 	return 0, errors.New("Sandbox must be docker or off")
 }
 
+// EvidenceOf returns what the backend recorded about a finished child, if it records anything.
+func EvidenceOf(child Child) *model.SandboxRecord {
+	if evidenced, ok := child.(interface{ Evidence() *model.SandboxRecord }); ok {
+		return evidenced.Evidence()
+	}
+	return nil
+}
+
 // verifyGrace lets a verification command's own timeout and graceful termination act before the backend's hard limit.
 const verifyGrace = 60
 
 // Verify starts one verification command in the backend's verify sandbox and bounds it like any captured command.
 // fresh starts the verification run's home empty.
-func Verify(ctx context.Context, backend Backend, dir, command string, seconds uint64, fresh bool) (*process.ProcessOutput, error) {
+func Verify(ctx context.Context, backend Backend, dir, command string, seconds uint64, fresh bool) (*process.ProcessOutput, *model.SandboxRecord, error) {
 	if ctx.Err() != nil {
-		return nil, process.ErrCancelled
+		return nil, nil, process.ErrCancelled
 	}
 	child, err := backend.Start(ctx, Spec{Kind: KindVerify, Dir: dir, Command: command, FreshHome: fresh, Timeout: seconds + verifyGrace})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return process.CaptureStarted(ctx, child, child.Stdout(), child.Stderr(), seconds, process.CaptureDiagnostic)
+	out, err := process.CaptureStarted(ctx, child, child.Stdout(), child.Stderr(), seconds, process.CaptureDiagnostic)
+	return out, EvidenceOf(child), err
 }

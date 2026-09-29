@@ -543,6 +543,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 			Output:          output,
 			OutputTruncated: outputTruncated,
 			CreatedAt:       model.Now(),
+			Sandbox:         outcome.sandbox,
 		})
 		if err := a.Store.Put("baseline", check.ID, *check); err != nil {
 			return model.BaselineStatusRunning, err

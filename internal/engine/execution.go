@@ -455,6 +455,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		output := outcome.evidenceText(verificationOutputLimit-len(note)) + note
 		task.Verification = append(task.Verification, model.Verification{
 			Command: command, Success: outcome.intactErr == nil && outcome.intact && !failed, Output: output, Revision: revision, CreatedAt: model.Now(),
+			Sandbox: outcome.sandbox,
 		})
 		if err := a.saveTask(task); err != nil {
 			return nil, err
@@ -548,6 +549,7 @@ type checkOutcome struct {
 	capture   error
 	intact    bool
 	intactErr error
+	sandbox   *model.SandboxRecord
 }
 
 func (o checkOutcome) failed() bool {
@@ -602,8 +604,8 @@ func boundedTail(text string, limit int) string {
 }
 
 func runCheckCommand(ctx context.Context, box sandbox.Backend, cfg config.Config, ws, command, revision string, fresh bool) checkOutcome {
-	captured, captureErr := sandbox.Verify(ctx, box, ws, command, cfg.CommandTimeoutSeconds, fresh)
-	outcome := checkOutcome{captured: captured, capture: captureErr}
+	captured, evidence, captureErr := sandbox.Verify(ctx, box, ws, command, cfg.CommandTimeoutSeconds, fresh)
+	outcome := checkOutcome{captured: captured, capture: captureErr, sandbox: evidence}
 	if ctx.Err() == nil {
 		outcome.intact, outcome.intactErr = gitops.At(ctx, cfg, ws, revision)
 	}

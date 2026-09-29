@@ -148,7 +148,7 @@ class Stack:
     def sandboxes(self):
         return docker('ps', '-aq', '--filter', f'label=octomus.sandbox.instance={self.project}').stdout.split()
 
-    def configure(self):
+    def configure(self, commands=None):
         view = self.request('/config')
         config = view['config']
         assert config['repository'] == '/var/lib/octomus/data/checkout' and config['github_repo'] == 'fixture/project', config
@@ -157,7 +157,7 @@ class Stack:
         for tier in config['tiers']:
             config['tiers'][tier] = dict(CODEX_ROUTE)
         config['repair_route'] = dict(CODEX_ROUTE)
-        config.update(verification_commands=['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'],
+        config.update(verification_commands=commands or ['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'],
                       session_timeout_seconds=60, command_timeout_seconds=60, task_timeout_seconds=600,
                       cycle_interval_seconds=3600)
         self.request('/config', 'PUT', {'expected_revision': view['revision'], 'config': config})
@@ -210,9 +210,13 @@ def self_test_scenario():
         print('PASS self-test: containment proven from inside a real sandbox, denials logged by the gateway')
 
 
+# A request to a host outside every allowlist: the gateway refuses it and the broker records the refusal.
+UNLISTED = "python3 -c \"import urllib.request\ntry: urllib.request.urlopen('https://example.com/', timeout=10)\nexcept Exception: pass\""
+
+
 def delivery_scenario():
     with stack('octomus-e2e-delivery-') as s:
-        s.configure()
+        s.configure([UNLISTED, 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'])
         diagnostic = s.request('/doctor', 'POST')
         assert diagnostic['ok'] and diagnostic['sandbox']['mode'] == 'docker', diagnostic
         assert diagnostic['sandbox']['self_test']['passed'], diagnostic['sandbox']
@@ -234,6 +238,13 @@ def delivery_scenario():
         # Runners exist only in the sandbox image; the control plane cannot have run one itself.
         assert s.compose('exec', '-T', 'octomus', 'sh', '-c', 'command -v codex', check=False).returncode != 0
         detail = s.request(f'/tasks/{task["id"]}')
+        for session in detail['sessions']:
+            record = session['sandbox']
+            assert record and record['runs'] >= 1 and record['image_id'].startswith('sha256:'), session
+        records = [v['sandbox'] for v in detail['verification']]
+        assert all(record and record['runs'] == 1 for record in records), detail['verification']
+        unlisted = [r for v, r in zip(detail['verification'], records) if v['command'] == UNLISTED]
+        assert unlisted and all(r['egress']['denied'].get('example.com:443', 0) >= 1 for r in unlisted), unlisted
         layout = s.compose('exec', '-T', 'octomus', 'ls', str(Path(detail['workspace']).parent)).stdout.split()
         assert {'repo.git', 'workspace', 'home'} <= set(layout), layout
         assert poll(lambda: not s.sandboxes(), 30), f'sandboxes left behind: {s.sandboxes()}'

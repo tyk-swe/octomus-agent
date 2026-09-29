@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
 // UpgradeProtocol names the framed stream a broker switches to after accepting a sandbox request. One stream carries
@@ -59,10 +61,11 @@ const (
 
 // ExitReport is the broker's account of how a sandbox ended.
 type ExitReport struct {
-	Code   int    `json:"code"`
-	OOM    bool   `json:"oom"`
-	Killed bool   `json:"killed"`
-	Error  string `json:"error,omitempty"`
+	Code    int                  `json:"code"`
+	OOM     bool                 `json:"oom"`
+	Killed  bool                 `json:"killed"`
+	Error   string               `json:"error,omitempty"`
+	Sandbox *model.SandboxRecord `json:"sandbox,omitempty"`
 }
 
 var errFrameTooLarge = errors.New("Sandbox stream frame exceeds its size limit")

@@ -118,7 +118,7 @@ func startDockerBroker(t *testing.T, tune func(*broker.Config)) *dockerBroker {
 		t.Cleanup(func() { _ = exec.Command("docker", "network", "rm", network).Run() })
 	}
 	cfg := broker.Config{
-		Socket:                 filepath.Join(t.TempDir(), "sandboxd.sock"),
+		Socket:                 filepath.Join(shortDir(t), "sandboxd.sock"),
 		DockerSocket:           "/var/run/docker.sock",
 		Image:                  image,
 		DataDir:                dirs["data"],
@@ -168,6 +168,17 @@ func startDockerBroker(t *testing.T, tune func(*broker.Config)) *dockerBroker {
 	return h
 }
 
+// shortDir keeps unix socket paths within the kernel's 108-byte limit whatever TMPDIR is.
+func shortDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "ob-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 func (h *dockerBroker) containers(t *testing.T) string {
 	return docker(t, "ps", "-aq", "--filter", "label=octomus.sandbox.instance="+h.instance)
 }
@@ -215,7 +226,7 @@ func TestDockerVerifySandboxIsContained(t *testing.T) {
 		`echo to-stderr >&2`,
 		`exit 3`,
 	}, "\n")
-	out, err := sandbox.Verify(context.Background(), h.remote, ws, script, 60, true)
+	out, _, err := sandbox.Verify(context.Background(), h.remote, ws, script, 60, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,14 +261,14 @@ func TestDockerVerifySandboxIsContained(t *testing.T) {
 func TestDockerVerifyHomeIsFreshPerRun(t *testing.T) {
 	h := startDockerBroker(t, nil)
 	ws := h.taskRoot(t)
-	if _, err := sandbox.Verify(context.Background(), h.remote, ws, "echo cached > $HOME/marker", 60, true); err != nil {
+	if _, _, err := sandbox.Verify(context.Background(), h.remote, ws, "echo cached > $HOME/marker", 60, true); err != nil {
 		t.Fatal(err)
 	}
-	out, err := sandbox.Verify(context.Background(), h.remote, ws, "cat $HOME/marker", 60, false)
+	out, _, err := sandbox.Verify(context.Background(), h.remote, ws, "cat $HOME/marker", 60, false)
 	if err != nil || strings.TrimSpace(string(out.Stdout.Bytes)) != "cached" {
 		t.Fatalf("second command of a run = %q, %v; want the run's home kept", out.Stdout.Bytes, err)
 	}
-	out, err = sandbox.Verify(context.Background(), h.remote, ws, "test -e $HOME/marker && echo stale || echo fresh", 60, true)
+	out, _, err = sandbox.Verify(context.Background(), h.remote, ws, "test -e $HOME/marker && echo stale || echo fresh", 60, true)
 	if err != nil || strings.TrimSpace(string(out.Stdout.Bytes)) != "fresh" {
 		t.Fatalf("first command of a new run = %q, %v; want an empty home", out.Stdout.Bytes, err)
 	}
@@ -330,7 +341,7 @@ func TestDockerKillAndDeadManRemoveTheSandbox(t *testing.T) {
 func TestDockerMemoryLimitIsReported(t *testing.T) {
 	h := startDockerBroker(t, func(cfg *broker.Config) { cfg.Memory = 64 << 20 })
 	ws := h.taskRoot(t)
-	out, err := sandbox.Verify(context.Background(), h.remote, ws, "head -c 512m /dev/zero | tail > /dev/null", 60, true)
+	out, _, err := sandbox.Verify(context.Background(), h.remote, ws, "head -c 512m /dev/zero | tail > /dev/null", 60, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +420,7 @@ func TestDockerBrokerRefusesUnownedRootsAndLeavesOtherContainers(t *testing.T) {
 		"checkout workspace": filepath.Join(h.cfg.DataDir, "checkout", "workspace"),
 	} {
 		_ = os.MkdirAll(dir, 0o700)
-		if _, err := sandbox.Verify(context.Background(), h.remote, dir, "true", 30, true); err == nil {
+		if _, _, err := sandbox.Verify(context.Background(), h.remote, dir, "true", 30, true); err == nil {
 			t.Errorf("%s: the broker ran a sandbox for %s", name, dir)
 		}
 	}
@@ -420,7 +431,7 @@ func TestDockerBrokerRefusesUnownedRootsAndLeavesOtherContainers(t *testing.T) {
 	if err := os.Symlink(h.cfg.DataDir, filepath.Join(root, "repo.git")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sandbox.Verify(context.Background(), h.remote, ws, "true", 30, true); err == nil {
+	if _, _, err := sandbox.Verify(context.Background(), h.remote, ws, "true", 30, true); err == nil {
 		t.Error("the broker mounted a symlinked repo.git")
 	}
 	h.cancel()

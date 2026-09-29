@@ -183,3 +183,21 @@
 .sandbox-banner {
   margin: 0 0 18px;
 }
+.sandbox-run {
+  margin-top: 8px;
+}
+.sandbox-hosts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+.sandbox-hosts > span:first-child {
+  color: var(--muted);
+  margin-right: 2px;
+}
+.sandbox-oom {
+  color: var(--bad-fg);
+}

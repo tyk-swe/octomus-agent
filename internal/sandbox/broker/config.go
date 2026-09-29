@@ -45,6 +45,8 @@ type Config struct {
 	RequireIsolatedGateway bool
 	EgressProxy            string
 	LeaseDir               string
+	// EgressCollector is the gateway's local socket for a finished sandbox's egress summary.
+	EgressCollector string
 }
 
 const (
@@ -83,6 +85,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		Runtime:                value("OCTOMUS_SANDBOX_RUNTIME", ""),
 		EgressProxy:            value("OCTOMUS_EGRESS_PROXY", ""),
 		LeaseDir:               value("OCTOMUS_EGRESS_LEASES", ""),
+		EgressCollector:        value("OCTOMUS_EGRESS_COLLECTOR", ""),
 		RequireIsolatedGateway: value("OCTOMUS_SANDBOX_REQUIRE_ISOLATED_GATEWAY", "true") != "false",
 	}
 	var errs []error

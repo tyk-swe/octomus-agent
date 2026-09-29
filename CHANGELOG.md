@@ -39,6 +39,10 @@ the first release contains.
   control plane, broker and gateway, a sandbox image with the pinned runners, `setup.sh`,
   a runner-login service, file-held secrets, a built-in Git credential helper and a
   repository pinned by `OCTOMUS_GITHUB_REPO`.
+- Sandbox records on every session, verification command and baseline command: container
+  count, image, memory-limit kills, and the hosts the egress gateway allowed or refused.
+  Task details show them with refused hosts highlighted; host names are never exported
+  as run evidence.
 - `make test-sandbox` and a `sandbox` CI job: the broker against a real Docker daemon, and
   the shipped compose file end to end with fixture runners inside real sandboxes.
 

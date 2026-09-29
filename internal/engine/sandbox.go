@@ -101,6 +101,8 @@ func (a *App) validateRoutes(clients *runner.Runners, cfg config.Config, audit b
 	if released := clients.Release(); err == nil {
 		err = released
 	}
+	// Catalog checks belong to no session, so their sandboxes are not attributed to the next turn.
+	clients.TakeEvidence()
 	return err
 }
 

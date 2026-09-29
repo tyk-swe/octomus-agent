@@ -111,3 +111,21 @@ test('a repository pinned by the deployment is read-only in configuration', asyn
   await expect(page.getByText('the operator token cannot change it')).toBeVisible();
   await expect(page.getByLabel('Codex executable')).not.toBeEditable();
 });
+
+test('task details show each session sandbox and the egress it was refused', async ({
+  page,
+  isMobile
+}) => {
+  await login(page);
+  await openNavigation(page, 'Task queue', !!isMobile);
+  await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+  await page.getByRole('tab', { name: 'Sessions' }).click();
+  const record = page.getByLabel('Sandbox record').first();
+  await expect(record).toContainText('Sandboxed · 1 container · image ffffffffffff');
+  await expect(record.locator('.badge.failed')).toHaveText('example.com:443 ×2');
+  await expect(record).toContainText('api.openai.com:443 ×14');
+  await page.getByRole('tab', { name: 'Verification' }).click();
+  const verification = page.getByLabel('Sandbox record').first();
+  await expect(verification).toContainText('proxy.golang.org:443 ×5');
+  await expect(verification.locator('.badge.failed')).toHaveCount(0);
+});

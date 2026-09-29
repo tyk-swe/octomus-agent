@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 )
 
@@ -78,7 +79,8 @@ func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 	case "drop":
 		_, _ = out.Data(FrameStdout, []byte("partial"))
 	case "oom":
-		exitFrame(out, ExitReport{Code: 137, OOM: true})
+		exitFrame(out, ExitReport{Code: 137, OOM: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1, OOM: true,
+			Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"example.com:443": 2}}}})
 	case "limit":
 		exitFrame(out, ExitReport{Code: 137, Killed: true, Error: "Sandbox time limit reached"})
 	case "hang", "":
@@ -111,7 +113,7 @@ func TestRemoteVerifyStreamsAndExit(t *testing.T) {
 	f := startFakeBroker(t, 2)
 	remote := NewRemote(f.socket)
 	dir := ownedWorkspace(t)
-	out, err := Verify(context.Background(), remote, dir, "streams", 30, true)
+	out, _, err := Verify(context.Background(), remote, dir, "streams", 30, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +135,7 @@ func TestRemoteVerifyStreamsAndExit(t *testing.T) {
 func TestRemoteTimeoutTerminatesThroughTheBroker(t *testing.T) {
 	f := startFakeBroker(t, 2)
 	start := time.Now()
-	_, err := Verify(context.Background(), NewRemote(f.socket), ownedWorkspace(t), "hang", 1, true)
+	_, _, err := Verify(context.Background(), NewRemote(f.socket), ownedWorkspace(t), "hang", 1, true)
 	if !process.IsDeadlineElapsed(err) {
 		t.Fatalf("hanging command = %v; want a timeout", err)
 	}
@@ -145,18 +147,21 @@ func TestRemoteTimeoutTerminatesThroughTheBroker(t *testing.T) {
 func TestRemoteExitReasons(t *testing.T) {
 	f := startFakeBroker(t, 2)
 	remote := NewRemote(f.socket)
-	out, err := Verify(context.Background(), remote, ownedWorkspace(t), "oom", 30, true)
+	out, evidence, err := Verify(context.Background(), remote, ownedWorkspace(t), "oom", 30, true)
 	if err != nil || !out.Status.OOM() || out.Status.Success() || !strings.Contains(out.Status.String(), "memory limit") {
 		t.Fatalf("oom = %v, %v", out, err)
 	}
-	out, err = Verify(context.Background(), remote, ownedWorkspace(t), "limit", 30, true)
+	if evidence == nil || !evidence.OOM || evidence.Egress.Denied["example.com:443"] != 2 {
+		t.Fatalf("evidence = %+v; want the broker's record of the sandbox", evidence)
+	}
+	out, _, err = Verify(context.Background(), remote, ownedWorkspace(t), "limit", 30, true)
 	if err != nil || out.Status.Success() || out.Status.String() != "Sandbox time limit reached" {
 		t.Fatalf("time limit = %v, %v", out, err)
 	}
-	if _, err := Verify(context.Background(), remote, ownedWorkspace(t), "drop", 30, true); err == nil || !strings.Contains(err.Error(), "Sandbox stream was lost") {
+	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "drop", 30, true); err == nil || !strings.Contains(err.Error(), "Sandbox stream was lost") {
 		t.Fatalf("dropped stream = %v; want an error, never a clean exit", err)
 	}
-	if _, err := Verify(context.Background(), remote, ownedWorkspace(t), "refuse", 30, true); err == nil || !strings.Contains(err.Error(), "not an owned root") {
+	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "refuse", 30, true); err == nil || !strings.Contains(err.Error(), "not an owned root") {
 		t.Fatalf("refusal = %v; want the broker's reason", err)
 	}
 }
@@ -210,7 +215,7 @@ func TestRemoteKillAndSlots(t *testing.T) {
 	if err != nil || !errors.Is(status.Err(), process.ErrKilled) {
 		t.Fatalf("killed = %v, %v", status, err)
 	}
-	if _, err := Verify(context.Background(), remote, ownedWorkspace(t), "streams", 30, true); err != nil {
+	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "streams", 30, true); err != nil {
 		t.Fatalf("slot was not released after the kill: %v", err)
 	}
 	version, err := remote.RunnerVersion(context.Background(), Spec{Runner: config.BackendCodex}, 10)
@@ -227,7 +232,7 @@ func TestRemoteUnavailableBrokerFailsClosed(t *testing.T) {
 	if err := remote.Healthy(context.Background()); err == nil || !strings.Contains(err.Error(), "Sandbox broker is unavailable") {
 		t.Fatalf("health = %v", err)
 	}
-	if _, err := Verify(context.Background(), remote, ownedWorkspace(t), "true", 30, true); err == nil {
+	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "true", 30, true); err == nil {
 		t.Fatal("verification ran without a broker")
 	}
 }

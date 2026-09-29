@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 )
@@ -374,6 +376,7 @@ func (b *Broker) handleSandbox(w http.ResponseWriter, r *http.Request) {
 type prepared struct {
 	b       *Broker
 	id      string
+	name    string
 	lease   string
 	attach  *engineapi.Attached
 	waitRes <-chan engineapi.WaitResult
@@ -410,7 +413,7 @@ func (b *Broker) prepare(ctx context.Context, p plan) (*prepared, error) {
 	if err != nil {
 		return fail(fmt.Errorf("Creating the sandbox: %w", err))
 	}
-	cleanup := &prepared{b: b, id: id, lease: lease}
+	cleanup := &prepared{b: b, id: id, name: name, lease: lease}
 	attach, err := b.engine.ContainerAttach(ctx, id, p.stdin)
 	if err != nil {
 		cleanup.remove()
@@ -421,7 +424,7 @@ func (b *Broker) prepare(ctx context.Context, p plan) (*prepared, error) {
 	b.mu.Lock()
 	b.live[id] = p.rel
 	b.mu.Unlock()
-	return &prepared{b: b, id: id, lease: lease, attach: attach, waitRes: results, waitErr: errs, cancel: cancel}, nil
+	return &prepared{b: b, id: id, name: name, lease: lease, attach: attach, waitRes: results, waitErr: errs, cancel: cancel}, nil
 }
 
 func (s *prepared) remove() {
@@ -512,7 +515,42 @@ wait:
 	if state, err := b.engine.ContainerInspect(inspectCtx, s.id); err == nil {
 		report.OOM = state.State.OOMKilled
 	}
+	report.Sandbox = b.evidence(s.name, report.OOM)
 	return report, nil
+}
+
+// evidence records what one finished sandbox ran and, when the gateway is configured, where it reached out.
+func (b *Broker) evidence(name string, oom bool) *model.SandboxRecord {
+	record := &model.SandboxRecord{ImageID: b.info.ImageID, Runtime: b.cfg.Runtime, Runs: 1, OOM: oom,
+		Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{}}}
+	if b.cfg.EgressCollector == "" {
+		return record
+	}
+	// A tunnel is recorded when it closes, just after the container's processes exit.
+	time.Sleep(300 * time.Millisecond)
+	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", b.cfg.EgressCollector)
+		}}}
+	resp, err := client.Get("http://egress/v1/summary?sandbox=" + url.QueryEscape(name))
+	if err != nil {
+		return record
+	}
+	defer resp.Body.Close()
+	var summary struct {
+		Allowed map[string]struct{ Count uint64 } `json:"allowed"`
+		Denied  map[string]struct{ Count uint64 } `json:"denied"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&summary) != nil {
+		return record
+	}
+	for host, count := range summary.Allowed {
+		record.Egress.Allowed[host] = count.Count
+	}
+	for host, count := range summary.Denied {
+		record.Egress.Denied[host] = count.Count
+	}
+	return model.MergeSandbox(nil, record)
 }
 
 const (

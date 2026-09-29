@@ -68,6 +68,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		record := model.NewSession(session, inv.role, inv.route)
 		_ = a.Store.Event(inv.cycleID, "session_started", fmt.Sprintf("%s: %s · %s", inv.role, session, inv.route))
 		answer, summary, turnErr := a.turn(clients, inv, session)
+		record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
 		if inv.ownsClients {
 			if closeErr := clients.Close(); turnErr == nil && closeErr != nil {
 				turnErr = closeErr
@@ -106,6 +107,10 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		return "", err
 	}
 	answer, summary, err := a.turn(clients, inv, session)
+	// The sandbox record stays with the session whether or not the turn succeeded; the caller saves the task.
+	if record, recordErr := sessionMut(task, session, inv.role); recordErr == nil {
+		record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
+	}
 	if err != nil {
 		return "", err
 	}

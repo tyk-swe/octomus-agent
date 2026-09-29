@@ -140,6 +140,8 @@ func TestDashboardTypesMirrorGoJSON(t *testing.T) {
 		"CommandResult":            evidence.CommandResult{},
 		"PrReference":              evidence.PrReference{},
 		"SandboxPosture":           engine.SandboxPosture{},
+		"SandboxRecord":            model.SandboxRecord{},
+		"SandboxEgress":            model.SandboxEgress{},
 		"SandboxSelfTest":          engine.SandboxSelfTest{},
 		"ProbeCheck":               sandbox.ProbeCheck{},
 		"BrokerInfo":               sandbox.BrokerInfo{},

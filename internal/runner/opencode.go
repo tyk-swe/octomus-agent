@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
@@ -604,6 +605,9 @@ func errorName(value any) string {
 	}
 	return "runtime error"
 }
+
+// SandboxEvidence is what the sandbox this server ran in recorded, once it is closed.
+func (o *OpenCode) SandboxEvidence() *model.SandboxRecord { return sandbox.EvidenceOf(o.child) }
 
 func (o *OpenCode) Close() error {
 	o.once.Do(func() {

@@ -12,6 +12,7 @@
   import EvidenceFact from './EvidenceFact.svelte';
   import FindingCard from './FindingCard.svelte';
   import ReviewChangeSet from './ReviewChangeSet.svelte';
+  import SandboxRun from './SandboxRun.svelte';
   import {
     UNKNOWN_VERDICT,
     checksVerdict,
@@ -362,6 +363,7 @@
               <span class={'badge ' + session.status}>{session.status}</span>
             </div>
             <p>Requested route: {routeLabel(session.route)}</p>
+            <SandboxRun record={session.sandbox} />
             <code>{session.id}</code><small>{relative(session.started_at)}</small
             >{#if session.id === task.repair_session}<div class="inline-note">
                 This repair context is reused across rounds.
@@ -428,6 +430,7 @@
                     oncopy={feedback.copy}
                   /> · {relative(verification.created_at)}
                 </p>
+                <SandboxRun record={verification.sandbox} />
                 <details class="command-output" open={!verification.success}>
                   <summary>Command output</summary>
                   <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be keyboard reachable) -->

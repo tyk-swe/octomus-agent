@@ -100,3 +100,30 @@ func TestScratchWorkspaceIsAnEmptyDisposableRoot(t *testing.T) {
 		t.Fatalf("scratch root after discard: %v; want it removed", err)
 	}
 }
+
+func TestSessionsRecordTheSandboxesTheirTurnsRanIn(t *testing.T) {
+	t.Parallel()
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	fixture.configure(t, func(cfg *config.Config) {
+		cfg.VerificationCommands = []string{"grep -q fixed feature.txt"}
+	})
+	routes, script := fixture.routes, fixture.script
+	script.RecordSandbox(&model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1, Egress: model.SandboxEgress{
+		Allowed: map[string]uint64{"api.openai.com:443": 2}, Denied: map[string]uint64{"example.com:443": 1}}})
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "draft\n")})
+	script.Answer(routes.Reviewer, cleanReview("First pass looks complete"), cleanReview("Repair verified"))
+	script.Queue(routes.Repair, runnertest.Reply{Answer: "Wrote the fixed output", Effect: writeFile("feature.txt", "fixed output\n")})
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	saveExecutionTask(t, fixture.planningFixture, task)
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if saved.Status != model.StatusPublished || len(saved.Sessions) != 4 {
+		t.Fatalf("task = %+v", saved)
+	}
+	for _, session := range saved.Sessions {
+		if session.Sandbox == nil || session.Sandbox.Runs != 1 || session.Sandbox.ImageID != "sha256:sandbox" ||
+			session.Sandbox.Egress.Allowed["api.openai.com:443"] != 2 || session.Sandbox.Egress.Denied["example.com:443"] != 1 {
+			t.Fatalf("%s session sandbox = %+v; want the record of its own turn", session.Role, session.Sandbox)
+		}
+	}
+}

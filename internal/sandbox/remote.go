@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 )
 
@@ -360,6 +361,16 @@ func (c *remoteChild) Stdin() DeadlineWriter {
 }
 
 func (c *remoteChild) Stdout() io.ReadCloser { return c.stdout }
+
+// Evidence is the broker's record of this sandbox once it has ended.
+func (c *remoteChild) Evidence() *model.SandboxRecord {
+	select {
+	case <-c.done:
+		return c.report.Sandbox
+	default:
+		return nil
+	}
+}
 func (c *remoteChild) Stderr() io.ReadCloser { return c.stderr }
 
 // Wait reports how the sandbox ended. A stream lost without an exit report is a kill when Octomus cut it, and an
@@ -385,8 +396,11 @@ func (c *remoteChild) signal(name string) {
 
 func (c *remoteChild) Terminate() { c.signal(SignalTerminate) }
 
-// Kill stops the sandbox: the broker kills and removes a container whose stream closes, so this holds even when the
-// kill frame cannot be written.
+// killReportWait is how long a kill waits for the broker's exit report, which carries the sandbox's evidence.
+const killReportWait = 10 * time.Second
+
+// Kill stops the sandbox and waits briefly for the broker's report of it. Cutting the stream afterwards holds even
+// when the kill frame cannot be written: the broker kills and removes a container whose stream closes.
 func (c *remoteChild) Kill() {
 	if c.killed.Swap(true) {
 		return
@@ -395,6 +409,12 @@ func (c *remoteChild) Kill() {
 	case <-c.done:
 	default:
 		c.signal(SignalKill)
+		timer := time.NewTimer(killReportWait)
+		select {
+		case <-c.done:
+		case <-timer.C:
+		}
+		timer.Stop()
 	}
 	c.conn.Close()
 	if c.stdin != nil {
