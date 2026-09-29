@@ -30,6 +30,31 @@ func TestMergeSandboxCountsRunsHostsAndKeepsAnOOM(t *testing.T) {
 	}
 }
 
+func TestMergeSandboxKeepsMixedIdentity(t *testing.T) {
+	t.Parallel()
+	imaged := func(id, runtime string) *model.SandboxRecord {
+		return &model.SandboxRecord{ImageID: id, Runtime: runtime, Runs: 1}
+	}
+	merged := model.MergeSandbox(nil, imaged("sha256:a", "runc"))
+	merged = model.MergeSandbox(merged, imaged("sha256:b", "runc"))
+	if merged.ImageID != "mixed" || merged.Runtime != "" {
+		t.Fatalf("two images merged = %+v", merged)
+	}
+	merged = model.MergeSandbox(merged, imaged("sha256:a", "runc"))
+	if merged.ImageID != "mixed" || merged.Runtime != "" {
+		t.Fatalf("mixed record reverted to one image = %+v", merged)
+	}
+	same := model.MergeSandbox(nil, imaged("sha256:a", "runc"))
+	same = model.MergeSandbox(same, imaged("sha256:a", "runc"))
+	if same.ImageID != "sha256:a" || same.Runtime != "runc" {
+		t.Fatalf("identical runs = %+v", same)
+	}
+	same = model.MergeSandbox(same, imaged("sha256:a", "runsc"))
+	if same.ImageID != "mixed" || same.Runtime != "" {
+		t.Fatalf("runtime change = %+v", same)
+	}
+}
+
 func TestSessionsWithoutSandboxRecordsStillLoad(t *testing.T) {
 	t.Parallel()
 	var session model.Session
