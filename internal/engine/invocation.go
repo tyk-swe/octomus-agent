@@ -119,8 +119,17 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 
 func (a *App) turn(clients *runner.Runners, inv invocation, session string) (answer, summary string, err error) {
 	answer, err = clients.Turn(session, inv.route, inv.workspace, inv.prompt, inv.schema)
+	// Nothing a runner started may outlive its turn: the judge and the orchestrator's git read the work tree next.
+	released := clients.Release()
 	if err != nil {
 		return "", "", err
+	}
+	if inv.ownsClients && released != nil {
+		defer func() {
+			if err == nil {
+				answer, summary, err = "", "", released
+			}
+		}()
 	}
 	if inv.judge == nil {
 		return answer, answer, nil

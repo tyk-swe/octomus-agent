@@ -509,7 +509,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		if ctx.Err() != nil {
 			return model.BaselineStatusRunning, process.ErrCancelled
 		}
-		outcome := runCheckCommand(ctx, c, workspaceDir, command, *revision)
+		outcome := runCheckCommand(ctx, a.sandbox, c, workspaceDir, command, *revision)
 		timedOut := process.IsDeadlineElapsed(outcome.capture)
 		text, diagnosticTruncated, success := commandOutput(outcome.captured, outcome.capture)
 		var failure error

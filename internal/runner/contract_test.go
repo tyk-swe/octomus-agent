@@ -12,6 +12,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
@@ -162,7 +163,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 	defer state.Close()
 	owner, cancel := context.WithCancel(ctx)
 	defer cancel()
-	client, err := Connect(owner, backend, cfg, workspace, state, "contract")
+	client, err := Connect(owner, backend, cfg, workspace, state, "contract", sandbox.Host{})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -215,7 +216,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 	if err := client.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	client, err = Connect(owner, backend, cfg, workspace, state, "contract")
+	client, err = Connect(owner, backend, cfg, workspace, state, "contract", sandbox.Host{})
 	if err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}

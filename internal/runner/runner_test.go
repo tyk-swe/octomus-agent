@@ -15,6 +15,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
@@ -112,11 +113,11 @@ func (f *fixture) exists(name string) bool {
 }
 
 func (f *fixture) connect(ctx context.Context) (*OpenCode, error) {
-	return ConnectOpenCode(ctx, f.cfg, f.workspace, f.state, "fixture")
+	return ConnectOpenCode(ctx, f.cfg, f.workspace, f.state, "fixture", sandbox.Host{})
 }
 
 func (f *fixture) connectCodex(ctx context.Context) (*Codex, error) {
-	return ConnectCodex(ctx, f.cfg, f.workspace, f.state, "fixture")
+	return ConnectCodex(ctx, f.cfg, f.workspace, f.state, "fixture", sandbox.Host{})
 }
 
 func (f *fixture) codexInterrupt() map[string]any {
@@ -308,7 +309,7 @@ func TestRunnersLazyBackendsAndAuditFiltering(t *testing.T) {
 		cfg.Roles[role] = route()
 	}
 	ctx := context.Background()
-	clients := New(ctx, cfg, DefaultConnector(f.state, "fixture"))
+	clients := New(ctx, cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
 	defer clients.Close()
 	if err := clients.ValidateRoutes(cfg, f.workspace, true); err != nil {
 		t.Fatalf("audit validation: %v", err)
@@ -339,7 +340,7 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 		cfg.CommandTimeoutSeconds = 2
 		return cfg
 	})
-	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
+	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
 	defer clients.Close()
 	if err := clients.CheckRoute(codexRoute(), f.workspace); err != nil {
 		t.Fatalf("codex route: %v", err)
@@ -367,7 +368,7 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 func TestRunnersCloseOwnsClients(t *testing.T) {
 	t.Parallel()
 	f := opencodeFixture(t)
-	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
+	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
 	defer clients.Close()
 	if _, err := clients.Client(config.BackendOpencode, f.workspace); err != nil {
 		t.Fatalf("connect: %v", err)
@@ -399,7 +400,7 @@ func TestRunnersCloseOwnsClients(t *testing.T) {
 func TestRunnersErrorsKeepBlockedReason(t *testing.T) {
 	t.Parallel()
 	f := opencodeFixture(t)
-	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
+	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
 	defer clients.Close()
 	_, err := clients.Start(route(), f.workspace, stringPtr("ses_missing"))
 	if err == nil {

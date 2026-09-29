@@ -13,6 +13,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
@@ -227,7 +228,7 @@ func TestBaselineOutputFlagsShorteningBelowTheCaptureLimit(t *testing.T) {
 	_, cfg := baselineApp(t)
 	ctx := context.Background()
 	revision := git(t, cfg.Repository, "rev-parse", "HEAD")
-	outcome := runCheckCommand(ctx, cfg, cfg.Repository, "yes x | head -c 20480; exit 3", revision)
+	outcome := runCheckCommand(ctx, sandbox.Host{}, cfg, cfg.Repository, "yes x | head -c 20480; exit 3", revision)
 	text, diagnosticTruncated, success := commandOutput(outcome.captured, outcome.capture)
 	if success || diagnosticTruncated {
 		t.Fatalf("outcome: %v %v", success, diagnosticTruncated)

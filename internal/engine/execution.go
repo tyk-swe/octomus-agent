@@ -19,6 +19,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -109,7 +110,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	}
 	client := a.runners(ctx, cfg, task.ID)
 	defer func() { _ = client.Close() }()
-	if err := client.ValidateRoutes(cfg, a.DataDir, false); err != nil {
+	if err := a.validateRoutes(client, cfg, false); err != nil {
 		return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
 	}
 	admissionReserved := task.ExecutionSession == nil
@@ -439,7 +440,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		return nil, err
 	}
 	for _, command := range cfg.VerificationCommands {
-		outcome := runCheckCommand(ctx, cfg, ws, command, revision)
+		outcome := runCheckCommand(ctx, a.sandbox, cfg, ws, command, revision)
 		if ctx.Err() != nil {
 			return nil, process.ErrCancelled
 		}
@@ -600,8 +601,8 @@ func boundedTail(text string, limit int) string {
 	return prefix + text[start:]
 }
 
-func runCheckCommand(ctx context.Context, cfg config.Config, ws, command, revision string) checkOutcome {
-	captured, captureErr := process.ShellCheck(ctx, command, ws, cfg.CommandTimeoutSeconds)
+func runCheckCommand(ctx context.Context, box sandbox.Backend, cfg config.Config, ws, command, revision string) checkOutcome {
+	captured, captureErr := sandbox.Verify(ctx, box, ws, command, cfg.CommandTimeoutSeconds)
 	outcome := checkOutcome{captured: captured, capture: captureErr}
 	if ctx.Err() == nil {
 		outcome.intact, outcome.intactErr = gitops.At(ctx, cfg, ws, revision)

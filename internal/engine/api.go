@@ -284,19 +284,24 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	errs := []string{}
 	for _, backend := range backends {
 		checkErr := func() error {
-			client, err := a.connectRunner(a.ctx, backend, cfg, a.DataDir, "system")
+			scratch, discard, err := a.scratchWorkspace()
+			if err != nil {
+				return err
+			}
+			defer discard()
+			client, err := a.connectRunner(a.ctx, backend, cfg, scratch, "system")
 			if err != nil {
 				return err
 			}
 			defer client.Close()
-			diagnostic, err := client.Diagnose(a.DataDir)
+			diagnostic, err := client.Diagnose(scratch)
 			if err != nil {
 				return err
 			}
 			if diagnostic.Warning != nil && *diagnostic.Warning != "" {
 				warnings = append(warnings, *diagnostic.Warning)
 			}
-			catalog, err := client.Models(a.DataDir)
+			catalog, err := client.Models(scratch)
 			if err != nil {
 				return err
 			}
@@ -357,12 +362,17 @@ func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Mode
 	default:
 		return nil, errors.New("Invalid backend")
 	}
-	client, err := a.connectRunner(a.ctx, backend, cfg, a.DataDir, "system")
+	scratch, discard, err := a.scratchWorkspace()
+	if err != nil {
+		return nil, err
+	}
+	defer discard()
+	client, err := a.connectRunner(a.ctx, backend, cfg, scratch, "system")
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
-	return client.Models(a.DataDir)
+	return client.Models(scratch)
 }
 
 func (a *App) StateView() (map[string]any, error) {

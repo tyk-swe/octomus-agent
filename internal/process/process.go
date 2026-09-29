@@ -119,16 +119,57 @@ func joinPreview(head, tail string, truncated bool) string {
 
 type Status struct {
 	state *os.ProcessState
+	exit  *Exit
 }
 
-func (s Status) Success() bool { return s.state != nil && s.state.Success() }
+// Exit is how a sandboxed child ended as its container runtime reports it: the init process's exit code, whether the
+// memory limit killed it, and whether Octomus itself stopped it.
+type Exit struct {
+	Code   int
+	OOM    bool
+	Killed bool
+}
+
+// ErrKilled marks a sandboxed child that Octomus stopped on purpose, the counterpart of a host group's SIGKILL.
+var ErrKilled = errors.New("stopped by Octomus")
+
+func HostStatus(state *os.ProcessState) Status { return Status{state: state} }
+
+func ExitStatus(exit Exit) Status { return Status{exit: &exit} }
+
+func (s Status) Success() bool {
+	if s.exit != nil {
+		return s.exit.Code == 0 && !s.exit.OOM && !s.exit.Killed
+	}
+	return s.state != nil && s.state.Success()
+}
+
+func (s Status) OOM() bool { return s.exit != nil && s.exit.OOM }
 
 func (s Status) Code() (int, bool) {
+	if s.exit != nil {
+		return s.exit.Code, !s.exit.Killed
+	}
 	if ws, ok := s.state.Sys().(syscall.WaitStatus); ok {
 		return ws.ExitStatus(), ws.Exited()
 	}
 	code := s.state.ExitCode()
 	return code, code >= 0
+}
+
+// Err reports an unsuccessful exit the way exec does for host children, so owners can tell a deliberate kill apart.
+func (s Status) Err() error {
+	switch {
+	case s.Success():
+		return nil
+	case s.exit != nil && s.exit.Killed:
+		return ErrKilled
+	case s.exit != nil:
+		return errors.New(s.String())
+	case s.state == nil:
+		return errors.New(s.String())
+	}
+	return &exec.ExitError{ProcessState: s.state}
 }
 
 func signalString(signal int) string {
@@ -139,6 +180,15 @@ func signalString(signal int) string {
 }
 
 func (s Status) String() string {
+	if s.exit != nil {
+		switch {
+		case s.exit.OOM:
+			return fmt.Sprintf("exit status: %d (sandbox memory limit exceeded)", s.exit.Code)
+		case s.exit.Killed:
+			return "stopped by Octomus"
+		}
+		return fmt.Sprintf("exit status: %d", s.exit.Code)
+	}
 	if s.state == nil {
 		return "unrecognised wait status: 0 0x0"
 	}
@@ -253,59 +303,147 @@ const cleanupGrace = 30 * time.Second
 
 const terminateGrace = 2 * time.Second
 
+// Proc is a started child whose lifetime a capture owns: a host process group or a sandbox.
+type Proc interface {
+	Wait() (Status, error)
+	Terminate()
+	Kill()
+}
+
+// HostChild is a command running in its own process group on this host, with pipes for its standard streams.
+type HostChild struct {
+	cmd    *exec.Cmd
+	group  *GroupChild
+	stdin  *os.File
+	stdout *os.File
+	stderr *os.File
+	once   sync.Once
+	done   chan struct{}
+	status Status
+	err    error
+}
+
+// StartHost starts binary in its own process group with the Command environment plus extra, piping stdout and stderr,
+// and stdin only when requested.
+func StartHost(binary string, args []string, cwd string, extra []string, stdin bool) (*HostChild, error) {
+	cmd := Command(binary, cwd)
+	cmd.Args = append(cmd.Args, args...)
+	cmd.Env = append(cmd.Env, extra...)
+	var parentEnds, childEnds []*os.File
+	closeAll := func() {
+		for _, f := range append(parentEnds, childEnds...) {
+			f.Close()
+		}
+	}
+	pipe := func() (*os.File, *os.File, error) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			closeAll()
+		}
+		return r, w, err
+	}
+	child := &HostChild{cmd: cmd, done: make(chan struct{})}
+	if stdin {
+		r, w, err := pipe()
+		if err != nil {
+			return nil, err
+		}
+		cmd.Stdin, child.stdin = r, w
+		parentEnds, childEnds = append(parentEnds, w), append(childEnds, r)
+	}
+	stdoutR, stdoutW, err := pipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stdout, child.stdout = stdoutW, stdoutR
+	parentEnds, childEnds = append(parentEnds, stdoutR), append(childEnds, stdoutW)
+	stderrR, stderrW, err := pipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stderr, child.stderr = stderrW, stderrR
+	parentEnds, childEnds = append(parentEnds, stderrR), append(childEnds, stderrW)
+	if err := cmd.Start(); err != nil {
+		closeAll()
+		return nil, err
+	}
+	// The child holds its own pipe fds now; the parent's copies must close or readers never see EOF.
+	for _, f := range childEnds {
+		f.Close()
+	}
+	child.group = NewGroupChild(cmd)
+	return child, nil
+}
+
+func (h *HostChild) Stdin() *os.File                { return h.stdin }
+func (h *HostChild) Stdout() io.ReadCloser          { return h.stdout }
+func (h *HostChild) Stderr() io.ReadCloser          { return h.stderr }
+func (h *HostChild) Pid() int                       { return h.cmd.Process.Pid }
+func (h *HostChild) Terminate()                     { _ = syscall.Kill(-h.group.pgid, syscall.SIGTERM) }
+func (h *HostChild) Kill()                          { h.group.Close() }
+func (h *HostChild) Group() *GroupChild             { return h.group }
+func (h *HostChild) ProcessState() *os.ProcessState { return h.cmd.ProcessState }
+
+// Wait reaps the child once; later calls return the same result.
+func (h *HostChild) Wait() (Status, error) {
+	h.once.Do(func() {
+		defer close(h.done)
+		err := h.cmd.Wait()
+		if h.cmd.ProcessState == nil {
+			h.err = err
+			return
+		}
+		h.status = HostStatus(h.cmd.ProcessState)
+	})
+	<-h.done
+	return h.status, h.err
+}
+
 func Capture(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (*ProcessOutput, error) {
 	if ctx.Err() != nil {
 		return nil, ErrCancelled
 	}
-	cmd := Command(binary, cwd)
-	cmd.Args = append(cmd.Args, args...)
-	stdoutR, stdoutW, err := os.Pipe()
+	child, err := StartHost(binary, args, cwd, nil, false)
 	if err != nil {
-		return nil, err
-	}
-	stderrR, stderrW, err := os.Pipe()
-	if err != nil {
-		stdoutR.Close()
-		stdoutW.Close()
-		return nil, err
-	}
-	cmd.Stdout = stdoutW
-	cmd.Stderr = stderrW
-	if err := cmd.Start(); err != nil {
-		stdoutR.Close()
-		stderrR.Close()
-		stdoutW.Close()
-		stderrW.Close()
 		return nil, fmt.Errorf("Could not start %s: %w", binary, err)
 	}
-	// The child holds its own pipe fds now; the parent's write ends must close or readers never see EOF.
-	stdoutW.Close()
-	stderrW.Close()
-	defer stdoutR.Close()
-	defer stderrR.Close()
-	child := NewGroupChild(cmd)
+	return CaptureStarted(ctx, child, child.Stdout(), child.Stderr(), seconds, mode)
+}
+
+// CaptureStarted bounds an already started child's output and lifetime: a timeout or cancellation terminates it,
+// escalates to a kill after a grace period, and a normal exit still kills anything it left running.
+func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser, seconds uint64, mode CaptureMode) (*ProcessOutput, error) {
+	defer stdout.Close()
+	defer stderr.Close()
 	limit := DiagnosticLimit
 	if mode == CaptureMachine {
 		limit = MachineLimit
 	}
 	outCh := make(chan readResult, 1)
 	errCh := make(chan readResult, 1)
-	waitCh := make(chan error, 1)
+	type waited struct {
+		status Status
+		err    error
+	}
+	waitCh := make(chan waited, 1)
 	go func() {
-		captured, err := boundedRead(stdoutR, limit)
+		captured, err := boundedRead(stdout, limit)
 		outCh <- readResult{captured, err}
 	}()
 	go func() {
-		captured, err := boundedRead(stderrR, DiagnosticLimit)
+		captured, err := boundedRead(stderr, DiagnosticLimit)
 		errCh <- readResult{captured, err}
 	}()
-	go func() { waitCh <- cmd.Wait() }()
-	var waitErr error
+	go func() {
+		status, err := proc.Wait()
+		waitCh <- waited{status, err}
+	}()
+	var result waited
 	var out, errOut readResult
 	haveWait, haveOut, haveErr := false, false, false
 	terminate := func() {
 		if !haveWait {
-			_ = syscall.Kill(-child.pgid, syscall.SIGTERM)
+			proc.Terminate()
 			grace := time.NewTimer(terminateGrace)
 		term:
 			for !haveWait {
@@ -322,7 +460,7 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 			}
 			grace.Stop()
 		}
-		child.Close()
+		proc.Kill()
 		deadline := time.NewTimer(cleanupGrace)
 		defer deadline.Stop()
 		for !haveWait || !haveOut || !haveErr {
@@ -334,8 +472,8 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 			case <-errCh:
 				haveErr = true
 			case <-deadline.C:
-				stdoutR.Close()
-				stderrR.Close()
+				stdout.Close()
+				stderr.Close()
 				return
 			}
 		}
@@ -344,9 +482,9 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 	defer timer.Stop()
 	for !haveWait || !haveOut || !haveErr {
 		select {
-		case waitErr = <-waitCh:
+		case result = <-waitCh:
 			haveWait = true
-			child.Close()
+			proc.Kill()
 		case out = <-outCh:
 			haveOut = true
 		case errOut = <-errCh:
@@ -359,8 +497,8 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 			return nil, ErrCancelled
 		}
 	}
-	if cmd.ProcessState == nil {
-		return nil, waitErr
+	if result.err != nil {
+		return nil, result.err
 	}
 	if out.err != nil {
 		return nil, out.err
@@ -369,7 +507,7 @@ func Capture(ctx context.Context, binary string, args []string, cwd string, seco
 		return nil, errOut.err
 	}
 	return &ProcessOutput{
-		Status: Status{cmd.ProcessState},
+		Status: result.status,
 		Stdout: out.captured,
 		Stderr: errOut.captured,
 	}, nil

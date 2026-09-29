@@ -1,0 +1,102 @@
+package engine
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+)
+
+// watchedBackend records how many runner clients were open whenever a verification command started.
+type watchedBackend struct {
+	sandbox.Host
+	script *runnertest.Script
+	mu     sync.Mutex
+	open   []int
+	dirs   []string
+}
+
+func (w *watchedBackend) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Child, error) {
+	w.mu.Lock()
+	w.open = append(w.open, w.script.OpenClients())
+	w.dirs = append(w.dirs, spec.Dir)
+	w.mu.Unlock()
+	return w.Host.Start(ctx, spec)
+}
+
+func TestNoRunnerOutlivesItsTurn(t *testing.T) {
+	t.Parallel()
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	fixture.configure(t, func(cfg *config.Config) {
+		cfg.VerificationCommands = []string{"grep -q fixed feature.txt"}
+	})
+	routes, script := fixture.routes, fixture.script
+	var connectMu sync.Mutex
+	openAtConnect := []int{}
+	connect := script.Connector()
+	watched := func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (runner.Adapter, error) {
+		connectMu.Lock()
+		openAtConnect = append(openAtConnect, script.OpenClients())
+		connectMu.Unlock()
+		return connect(ctx, backend, cfg, cwd)
+	}
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "draft\n")})
+	script.Answer(routes.Reviewer, cleanReview("First pass looks complete"), cleanReview("Repair verified"))
+	script.Queue(routes.Repair, runnertest.Reply{Answer: "Wrote the fixed output", Effect: writeFile("feature.txt", "fixed output\n")})
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	saveExecutionTask(t, fixture.planningFixture, task)
+	backend := &watchedBackend{script: script}
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t, WithRunnerConnector(watched), WithSandbox(backend)), task.ID)
+	if saved.Status != model.StatusPublished {
+		t.Fatalf("task = %+v; want it published", saved)
+	}
+	if len(backend.open) != 2 {
+		t.Fatalf("verification starts = %v; want one per review round", backend.open)
+	}
+	for i, open := range backend.open {
+		if open != 0 {
+			t.Fatalf("%d runner clients were open when verification %d started", open, i)
+		}
+		if backend.dirs[i] != saved.Workspace {
+			t.Fatalf("verification %d ran in %s; want the task workspace", i, backend.dirs[i])
+		}
+	}
+	for i, open := range openAtConnect {
+		if open != 0 {
+			t.Fatalf("connect %d found %d runner clients still open; every turn must release its runner", i, open)
+		}
+	}
+	if connects := len(openAtConnect); connects < 5 {
+		t.Fatalf("connects = %d; want route validation, executor, two reviewers and repair each on a fresh runner", connects)
+	}
+	assertNoOpenClients(t, script)
+}
+
+func TestScratchWorkspaceIsAnEmptyDisposableRoot(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	app := New(nil, dataDir)
+	t.Cleanup(app.Shutdown)
+	dir, discard, err := app.scratchWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(dir) != "workspace" || filepath.Dir(filepath.Dir(dir)) != filepath.Join(dataDir, scratchDir) {
+		t.Fatalf("scratch workspace = %s; want <data>/%s/<id>/workspace", dir, scratchDir)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("scratch workspace entries = %v, %v; want an empty directory", entries, err)
+	}
+	discard()
+	if _, err := os.Stat(filepath.Dir(dir)); !os.IsNotExist(err) {
+		t.Fatalf("scratch root after discard: %v; want it removed", err)
+	}
+}

@@ -11,7 +11,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 )
 
 const cleanupBudget = 30 * time.Second
@@ -76,7 +78,26 @@ func discardStdout(lines <-chan lineResult, stdout io.Reader) <-chan struct{} {
 	return done
 }
 
+// exitErr turns a runner child's end into the error its owner joins: nil for a clean exit.
+func exitErr(status process.Status, err error) error {
+	if err != nil {
+		return err
+	}
+	return status.Err()
+}
+
+// runnerSetupHint names where a runner that cannot start must be fixed.
+func runnerSetupHint(box sandbox.Backend, action string) string {
+	if box.Mode() == sandbox.ModeDocker {
+		return "check the sandbox image and the runner login volume"
+	}
+	return action + " on this host"
+}
+
 func killed(err error) bool {
+	if errors.Is(err, process.ErrKilled) {
+		return true
+	}
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) {
 		return false

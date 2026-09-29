@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -79,7 +80,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 	defer state.Close()
 	owner, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	client, err := Connect(owner, config.BackendOpencode, cfg, workspace, state, "smoke")
+	client, err := Connect(owner, config.BackendOpencode, cfg, workspace, state, "smoke", sandbox.Host{})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -110,7 +111,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 	if err := client.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	client, err = Connect(owner, config.BackendOpencode, cfg, workspace, state, "smoke")
+	client, err = Connect(owner, config.BackendOpencode, cfg, workspace, state, "smoke", sandbox.Host{})
 	if err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}

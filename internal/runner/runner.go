@@ -9,10 +9,10 @@ import (
 	"io"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -95,21 +95,22 @@ type Adapter interface {
 
 type Connector func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (Adapter, error)
 
-func DefaultConnector(state *store.Store, entity string) Connector {
+func DefaultConnector(state *store.Store, entity string, box sandbox.Backend) Connector {
 	return func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (Adapter, error) {
-		return Connect(ctx, backend, cfg, cwd, state, entity)
+		return Connect(ctx, backend, cfg, cwd, state, entity, box)
 	}
 }
 
-func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd string, state *store.Store, entity string) (Adapter, error) {
+// Connect starts a runner whose sandbox is bound to cwd's owned root for as long as the adapter stays open.
+func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (Adapter, error) {
 	if err := config.ValidateBinary(cfg.Binary(backend)); err != nil {
 		return nil, err
 	}
 	switch backend {
 	case config.BackendCodex:
-		return ConnectCodex(ctx, cfg, cwd, state, entity)
+		return ConnectCodex(ctx, cfg, cwd, state, entity, box)
 	case config.BackendOpencode:
-		return ConnectOpenCode(ctx, cfg, cwd, state, entity)
+		return ConnectOpenCode(ctx, cfg, cwd, state, entity, box)
 	}
 	return nil, fmt.Errorf("Invalid backend")
 }
@@ -137,14 +138,21 @@ func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 	return string(data), nil
 }
 
+// Runners holds at most one open runner per backend, each bound to the working directory it was started for. A
+// sandboxed runner can only see that directory's owned root, so asking for another directory replaces it.
 type Runners struct {
 	cfg      config.Config
 	ctx      context.Context
 	connect  Connector
-	clients  map[config.Backend]Adapter
+	clients  map[config.Backend]boundClient
 	catalogs map[config.Backend][]Model
-	once     sync.Once
+	closed   bool
 	closeErr error
+}
+
+type boundClient struct {
+	adapter Adapter
+	cwd     string
 }
 
 func New(ctx context.Context, cfg config.Config, connect Connector) *Runners {
@@ -152,21 +160,41 @@ func New(ctx context.Context, cfg config.Config, connect Connector) *Runners {
 		cfg:      cfg.Clone(),
 		ctx:      ctx,
 		connect:  connect,
-		clients:  map[config.Backend]Adapter{},
+		clients:  map[config.Backend]boundClient{},
 		catalogs: map[config.Backend][]Model{},
 	}
 }
 
 func (r *Runners) Client(backend config.Backend, cwd string) (Adapter, error) {
+	if r.closed {
+		return nil, errors.New("Runner clients are closed")
+	}
 	if client, ok := r.clients[backend]; ok {
-		return client, nil
+		if config.SamePath(client.cwd, cwd) {
+			return client.adapter, nil
+		}
+		delete(r.clients, backend)
+		if err := client.adapter.Close(); err != nil {
+			return nil, err
+		}
 	}
 	client, err := r.connect(r.ctx, backend, r.cfg, cwd)
 	if err != nil {
 		return nil, err
 	}
-	r.clients[backend] = client
+	r.clients[backend] = boundClient{adapter: client, cwd: cwd}
 	return client, nil
+}
+
+// Release stops every open runner while keeping the checked catalogs, so nothing a runner started outlives the turn
+// it served. The next request starts a fresh runner.
+func (r *Runners) Release() error {
+	errs := []error{}
+	for backend, client := range r.clients {
+		delete(r.clients, backend)
+		errs = append(errs, client.adapter.Close())
+	}
+	return errors.Join(errs...)
 }
 
 func (r *Runners) CheckRoute(route config.Route, cwd string) error {
@@ -243,13 +271,10 @@ func requireRoute(route config.Route, backend config.Backend) error {
 }
 
 func (r *Runners) Close() error {
-	r.once.Do(func() {
-		errs := []error{}
-		for _, client := range r.clients {
-			errs = append(errs, client.Close())
-		}
-		r.closeErr = errors.Join(errs...)
-	})
+	if !r.closed {
+		r.closed = true
+		r.closeErr = r.Release()
+	}
 	return r.closeErr
 }
 
