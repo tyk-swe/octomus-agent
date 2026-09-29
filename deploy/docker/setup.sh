@@ -58,7 +58,7 @@ fi
 
 docker compose build octomus login
 # The control plane runs as uid 10001 and reads its secrets as files; hand them over without widening their mode.
-if [ -r secrets/operator_token ] && [ "$(stat -c %u secrets/operator_token)" != 10001 ]; then
+if [ "$(stat -c %u secrets/operator_token)" != 10001 ] || [ "$(stat -c %u secrets/github_token)" != 10001 ]; then
   image=$(sed -n 's/^OCTOMUS_IMAGE=//p' .env)
   docker run --rm --network none --user 0 --entrypoint chown -v "$PWD/secrets:/secrets" "${image:-octomus-agent:local}" \
     10001:10001 /secrets/operator_token /secrets/github_token

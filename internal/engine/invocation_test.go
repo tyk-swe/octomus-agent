@@ -255,6 +255,61 @@ func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
+func TestInvocationReleaseFailureStopsBeforeJudging(t *testing.T) {
+	t.Parallel()
+	for _, role := range []string{"discovery-0", "executor", "reviewer", "repair"} {
+		t.Run(role, func(t *testing.T) {
+			state := testStore(t)
+			app := New(state, t.TempDir())
+			t.Cleanup(app.Shutdown)
+			route := config.NewRoute("scripted-worker", "medium")
+			script := runnertest.New(runnertest.CatalogFor(route)...)
+			script.Answer(route, "Completed")
+			cleanupErr := errors.New("fixture shutdown failed")
+			script.FailClose(route.Backend, cleanupErr)
+			clients := runner.New(context.Background(), config.Default(), script.Connector())
+			t.Cleanup(func() { _ = clients.Close() })
+			session, err := clients.Start(route, t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			judged := false
+			answer, summary, err := app.turn(clients, invocation{
+				role: role, route: route, workspace: script.Starts(route)[0].Cwd, ownsClients: role == "discovery-0",
+				judge: func(string, string) (string, error) { judged = true; return "Judged", nil },
+			}, session)
+			if !errors.Is(err, cleanupErr) || answer != "" || summary != "" || judged {
+				t.Fatalf("turn after failed release = %q, %q, %v; judged = %v", answer, summary, err, judged)
+			}
+			assertNoOpenClients(t, script)
+		})
+	}
+}
+
+func TestExecutorCleanupFailureBlocksPublication(t *testing.T) {
+	t.Parallel()
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	routes, script := fixture.routes, fixture.script
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature.txt", Effect: func(cwd string) error {
+		// Fail this turn's release after the preflight clients have already been released.
+		script.FailClose(routes.Executor.Backend, errors.New("fixture executor cleanup failed"))
+		return writeFile("feature.txt", "fixed output\n")(cwd)
+	}})
+	script.Answer(routes.Reviewer, cleanReview("Reviewed"))
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	saveExecutionTask(t, fixture.planningFixture, task)
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if saved.Status != model.StatusBlocked || saved.Error == nil || !strings.Contains(*saved.Error, "fixture executor cleanup failed") {
+		t.Fatalf("cleanup failure outcome = %+v", saved)
+	}
+	if sessions := sessionByRole(saved, "executor"); len(sessions) != 1 || sessions[0].Status != model.SessionFailed {
+		t.Fatalf("executor sessions after cleanup failure = %+v", sessions)
+	}
+	if len(script.Turns(routes.Reviewer)) != 0 || saved.OutputCommit != nil || saved.PRNumber != nil {
+		t.Fatalf("task reached review or publication after failed cleanup: %+v", saved)
+	}
+}
+
 const secretToken = "ghp_invocationSecret0123456789"
 
 func assertRedactedSummaries(t *testing.T, sessions []model.Session, roles []string) {

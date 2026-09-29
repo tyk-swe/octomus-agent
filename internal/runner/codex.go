@@ -538,10 +538,12 @@ func (c *Codex) SandboxEvidence() *model.SandboxRecord { return sandbox.Evidence
 func (c *Codex) Close() error {
 	c.once.Do(func() {
 		close(c.done)
+		// Stop parsing notifications, then drain raw stdout so the broker's exit report can reach the child.
+		readerDone := discardStdout(c.lines, c.stdout)
 		c.child.Kill()
 		c.stdin.Close()
 		c.stdout.Close()
-		c.closeErr = joinOwned(c.waitCh, drained(c.lines), "Codex app-server did not exit during cleanup")
+		c.closeErr = joinOwned(c.waitCh, readerDone, "Codex app-server did not exit during cleanup")
 	})
 	return c.closeErr
 }

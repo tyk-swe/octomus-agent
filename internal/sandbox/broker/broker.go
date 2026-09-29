@@ -287,21 +287,29 @@ func peerUID(conn net.Conn) (int, bool) {
 
 // Serve answers the control plane until ctx ends, then stops every sandbox it started.
 func (b *Broker) Serve(ctx context.Context, listener net.Listener) error {
+	requests, cancelRequests := context.WithCancel(ctx)
+	defer cancelRequests()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, b.Info())
 	})
 	mux.HandleFunc("POST /v1/sandboxes", b.handleSandbox)
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second,
+		BaseContext: func(net.Listener) context.Context { return requests }}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	select {
 	case <-ctx.Done():
+		cancelRequests()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdown)
-		_ = b.sweep(shutdown)
-		return nil
+		shutdownErr := server.Shutdown(shutdown)
+		cancel()
+		if shutdownErr != nil {
+			_ = server.Close()
+		}
+		cleanup, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelCleanup()
+		return errors.Join(shutdownErr, b.sweep(cleanup))
 	case err := <-done:
 		return err
 	}
@@ -369,7 +377,7 @@ func (b *Broker) handleSandbox(w http.ResponseWriter, r *http.Request) {
 		prepared.remove()
 		return
 	}
-	b.stream(prepared, p, conn, stream.Reader)
+	b.stream(r.Context(), prepared, p, conn, stream.Reader)
 }
 
 // prepared is a created container with its attach stream already registered, not yet started.
@@ -448,7 +456,30 @@ type control struct {
 // execute starts a prepared container and pumps it until it exits, the time limit passes or the control source
 // ends. It always removes the container.
 func (s *prepared) execute(ctx context.Context, timeout time.Duration, stdout, stderr func([]byte) error, controls <-chan control) (sandbox.ExitReport, error) {
-	defer s.remove()
+	input := make(chan control)
+	stopInput, inputDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(inputDone)
+		for {
+			select {
+			case <-stopInput:
+				return
+			case msg := <-input:
+				if msg.eof {
+					_ = s.attach.CloseStdin()
+				} else if _, err := s.attach.Conn.Write(msg.stdin); err != nil {
+					_ = s.attach.CloseStdin()
+				}
+			}
+		}
+	}()
+	defer func() {
+		close(stopInput)
+		s.remove() // Closing attach interrupts a blocked stdin write.
+		<-inputDone
+	}()
+	var pendingInput []control
+	pendingBytes := 0
 	b := s.b
 	attached := make(chan error, 1)
 	go func() {
@@ -473,7 +504,16 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, stdout, s
 	var result engineapi.WaitResult
 wait:
 	for {
+		var sendInput chan control
+		var nextInput control
+		if len(pendingInput) > 0 {
+			sendInput, nextInput = input, pendingInput[0]
+		}
 		select {
+		case sendInput <- nextInput:
+			pendingBytes -= len(nextInput.stdin)
+			pendingInput[0] = control{}
+			pendingInput = pendingInput[1:]
 		case result = <-results:
 			break wait
 		case err := <-errs:
@@ -487,12 +527,13 @@ wait:
 			switch {
 			case !ok:
 				return sandbox.ExitReport{Killed: true, Error: "Sandbox stream closed"}, nil
-			case msg.stdin != nil:
-				if _, err := s.attach.Conn.Write(msg.stdin); err != nil {
-					_ = s.attach.CloseStdin()
+			case msg.stdin != nil || msg.eof:
+				// Keep input ordered and bounded without delaying cancellation, signals or the time limit.
+				if len(pendingInput) >= 1024 || pendingBytes+len(msg.stdin) > 32<<20 {
+					return sandbox.ExitReport{}, errors.New("Sandbox stdin backlog exceeded")
 				}
-			case msg.eof:
-				_ = s.attach.CloseStdin()
+				pendingInput = append(pendingInput, msg)
+				pendingBytes += len(msg.stdin)
 			case msg.signal == signalTerm:
 				kill("SIGTERM")
 			case msg.signal == signalKill:
@@ -522,8 +563,7 @@ func (b *Broker) evidence(name string, oom bool) *model.SandboxRecord {
 	if b.cfg.EgressCollector == "" {
 		return record
 	}
-	// A tunnel is recorded when it closes, just after the container's processes exit.
-	time.Sleep(300 * time.Millisecond)
+	// The gateway counts accepted tunnels immediately, even when upstream connections are still closing.
 	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", b.cfg.EgressCollector)
@@ -568,10 +608,10 @@ func (b *Broker) runSandbox(ctx context.Context, p plan, stdout, stderr func([]b
 
 // stream serves one sandbox over an upgraded connection. The connection is the sandbox's lifeline: if it closes,
 // the container is killed and removed.
-func (b *Broker) stream(s *prepared, p plan, conn net.Conn, reader *bufio.Reader) {
+func (b *Broker) stream(ctx context.Context, s *prepared, p plan, conn net.Conn, reader *bufio.Reader) {
 	out := sandbox.NewFrameWriter(conn)
 	controls := make(chan control)
-	lifeline, cut := context.WithCancel(context.Background())
+	lifeline, cut := context.WithCancel(ctx)
 	defer cut()
 	go func() {
 		defer cut()

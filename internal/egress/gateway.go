@@ -98,6 +98,11 @@ type HostCount struct {
 const summaryHostLimit = 64
 
 func (g *Gateway) record(d Decision) {
+	g.logDecision(d)
+	g.countDecision(d)
+}
+
+func (g *Gateway) logDecision(d Decision) {
 	d.Time = g.now().UTC().Format(time.RFC3339Nano)
 	if g.log != nil {
 		data, _ := json.Marshal(d)
@@ -105,8 +110,11 @@ func (g *Gateway) record(d Decision) {
 		_, _ = g.log.Write(append(data, '\n'))
 		g.logMu.Unlock()
 	}
+}
+
+func (g *Gateway) countDecision(d Decision) (*Summary, string) {
 	if d.Sandbox == "" || d.Host == "" {
-		return
+		return nil, ""
 	}
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
@@ -128,6 +136,18 @@ func (g *Gateway) record(d Decision) {
 	count.Count++
 	count.Bytes += d.BytesUp + d.BytesDown
 	target[key] = count
+	return summary, key
+}
+
+// addTunnelBytes updates an uncollected summary without recreating evidence the broker already collected.
+func (g *Gateway) addTunnelBytes(sandboxName string, summary *Summary, key string, bytes int64) {
+	g.statsMu.Lock()
+	defer g.statsMu.Unlock()
+	if g.stats[sandboxName] == summary {
+		count := summary.Allowed[key]
+		count.Bytes += bytes
+		summary.Allowed[key] = count
+	}
 }
 
 // Collect returns and forgets what a finished sandbox did.
@@ -245,13 +265,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer client.Close()
+	decision := Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: uint16(port), Decision: "allowed"}
+	summary, key := g.countDecision(decision)
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		g.logDecision(decision)
 		return
 	}
 	started := g.now()
 	up, down := splice(client, buffered, upstream)
-	g.record(Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: uint16(port), Decision: "allowed",
-		BytesUp: up, BytesDown: down, Millis: g.now().Sub(started).Milliseconds()})
+	g.addTunnelBytes(lease.Sandbox, summary, key, up+down)
+	decision.BytesUp, decision.BytesDown, decision.Millis = up, down, g.now().Sub(started).Milliseconds()
+	g.logDecision(decision)
 }
 
 // dialAddresses shares a bounded connection budget among the remaining vetted addresses, so a stalled attempt

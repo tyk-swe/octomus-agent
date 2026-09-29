@@ -23,6 +23,7 @@ endef
 define CONTRACT_PACKAGE
 	$(E2E_ENV) python3 tests/distribution.py
 	python3 tests/package_guards.py
+	python3 tests/docker_setup.py
 endef
 
 dashboard:

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func TestPublicAddressRefusesEveryInternalRange(t *testing.T) {
@@ -305,6 +306,62 @@ func TestGatewayBoundsTunnelsPerSandbox(t *testing.T) {
 	}
 	for _, tunnel := range open {
 		tunnel.Close()
+	}
+}
+
+func TestGatewayCollectsOpenTunnelWithoutRecreatingSummary(t *testing.T) {
+	f := newGatewayFixture(t, "runner")
+	status, tunnel := f.connect(t, "api.openai.com:443", sandbox.ProxyUser+":"+f.token)
+	if status != http.StatusOK {
+		t.Fatalf("tunnel = %d", status)
+	}
+	defer tunnel.Close()
+	_ = tunnel.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.WriteString(tunnel, "ping"); err != nil {
+		t.Fatal(err)
+	}
+	var echoed [4]byte
+	if _, err := io.ReadFull(tunnel, echoed[:]); err != nil {
+		t.Fatal(err)
+	}
+	summary := f.gateway.Collect("octomus-test-runner")
+	if summary.Allowed["api.openai.com:443"].Count != 1 {
+		t.Fatalf("open tunnel absent from summary: %+v", summary)
+	}
+	_ = tunnel.Close()
+	if !testutil.WaitUntil(2*time.Second, func() bool {
+		f.gateway.statsMu.Lock()
+		defer f.gateway.statsMu.Unlock()
+		return f.gateway.open["octomus-test-runner"] == 0
+	}) {
+		t.Fatal("tunnel did not close")
+	}
+	if again := f.gateway.Collect("octomus-test-runner"); len(again.Allowed)+len(again.Denied) != 0 {
+		t.Fatalf("closing a collected tunnel recreated its summary: %+v", again)
+	}
+}
+
+func TestGatewayRetainsCompletedTunnelBytes(t *testing.T) {
+	f := newGatewayFixture(t, "runner")
+	_, tunnel := f.connect(t, "api.openai.com:443", sandbox.ProxyUser+":"+f.token)
+	defer tunnel.Close()
+	_ = tunnel.SetDeadline(time.Now().Add(2 * time.Second))
+	_, _ = io.WriteString(tunnel, "ping")
+	var echoed [4]byte
+	if _, err := io.ReadFull(tunnel, echoed[:]); err != nil {
+		t.Fatal(err)
+	}
+	_ = tunnel.Close()
+	if !testutil.WaitUntil(2*time.Second, func() bool {
+		f.gateway.statsMu.Lock()
+		defer f.gateway.statsMu.Unlock()
+		return f.gateway.open["octomus-test-runner"] == 0
+	}) {
+		t.Fatal("tunnel did not close")
+	}
+	summary := f.gateway.Collect("octomus-test-runner")
+	if got := summary.Allowed["api.openai.com:443"]; got.Count != 1 || got.Bytes != 8 {
+		t.Fatalf("completed tunnel = %+v; want one connection and eight bytes", got)
 	}
 }
 
