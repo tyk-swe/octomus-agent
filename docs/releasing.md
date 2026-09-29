@@ -57,6 +57,24 @@ Before enabling live workers, configure release-tag protections so their GitHub
 identity cannot trigger a release by pushing a tag. These repository controls
 are an owner setup action; worker prompts are not an authorization boundary.
 
+## Container images
+
+The same tag also builds the two Docker images for `linux/amd64` and `linux/arm64`:
+`ghcr.io/tyk-swe/octomus-agent:<version>` (the control plane, broker and egress gateway) and
+`ghcr.io/tyk-swe/octomus-sandbox:<version>`. The release workflow pushes each with an SBOM and
+build provenance attached, and signs the pushed digest with cosign keyless signing, bound to
+the workflow's GitHub identity. Verify a pulled image before using it:
+
+```bash
+cosign verify ghcr.io/tyk-swe/octomus-agent:0.1.0 \
+  --certificate-identity-regexp '^https://github.com/tyk-swe/octomus-agent/.github/workflows/release.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+To deploy release images instead of building locally, set `OCTOMUS_IMAGE` and
+`OCTOMUS_SANDBOX_IMAGE` in `deploy/docker/.env` and pull them before `docker compose up -d`; the
+broker never pulls. Image publication has not run yet: the first release will exercise it.
+
 ## State format
 
 This release creates version-7 SQLite state. It refuses earlier database versions

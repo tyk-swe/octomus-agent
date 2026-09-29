@@ -43,6 +43,9 @@ the first release contains.
   count, image, memory-limit kills, and the hosts the egress gateway allowed or refused.
   Task details show them with refused hosts highlighted; host names are never exported
   as run evidence.
+- Release images: tags build `octomus-agent` and `octomus-sandbox` for amd64 and arm64,
+  push them to GHCR with an SBOM and build provenance, and sign each digest with cosign
+  keyless signing. Image publication has not run yet.
 - `make test-sandbox` and a `sandbox` CI job: the broker against a real Docker daemon, and
   the shipped compose file end to end with fixture runners inside real sandboxes.
 
