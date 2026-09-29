@@ -12,6 +12,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -233,6 +234,9 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	if err != nil {
 		return nil, err
 	}
+	if err := a.deployment.check(c); err != nil {
+		return nil, err
+	}
 	if err := c.Validate(false); err != nil {
 		return nil, err
 	}
@@ -268,6 +272,18 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	if err := gitops.ValidateRemote(a.ctx, cfg); err != nil {
 		return nil, nil, err
 	}
+	errs := []string{}
+	sandboxResult := map[string]any{"mode": a.sandbox.Mode().String()}
+	if a.sandbox.Mode() == sandbox.ModeDocker {
+		selfTest, err := a.SelfTest(a.ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if failure := selfTest.failure(); failure != nil {
+			errs = append(errs, failure.Error())
+		}
+		sandboxResult["self_test"] = selfTest
+	}
 	routes := cfg.RoutesFor(mode == model.CycleModeAudit)
 	seen := map[config.Backend]bool{}
 	backends := []config.Backend{}
@@ -281,22 +297,26 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	diagnostics := []runner.Diagnostics{}
 	models := []runner.Model{}
 	warnings := []string{}
-	errs := []string{}
 	for _, backend := range backends {
 		checkErr := func() error {
-			client, err := a.connectRunner(a.ctx, backend, cfg, a.DataDir, "system")
+			scratch, discard, err := a.scratchWorkspace()
+			if err != nil {
+				return err
+			}
+			defer discard()
+			client, err := a.connectRunner(a.ctx, backend, cfg, scratch, "system")
 			if err != nil {
 				return err
 			}
 			defer client.Close()
-			diagnostic, err := client.Diagnose(a.DataDir)
+			diagnostic, err := client.Diagnose(scratch)
 			if err != nil {
 				return err
 			}
 			if diagnostic.Warning != nil && *diagnostic.Warning != "" {
 				warnings = append(warnings, *diagnostic.Warning)
 			}
-			catalog, err := client.Models(a.DataDir)
+			catalog, err := client.Models(scratch)
 			if err != nil {
 				return err
 			}
@@ -329,7 +349,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	}
 	result := map[string]any{
 		"ok": true, "mode": mode, "models": models, "backends": diagnostics,
-		"warnings": warnings, "message": message,
+		"warnings": warnings, "message": message, "sandbox": sandboxResult,
 	}
 	for _, diagnostic := range diagnostics {
 		if diagnostic.Backend == config.BackendCodex {
@@ -357,12 +377,17 @@ func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Mode
 	default:
 		return nil, errors.New("Invalid backend")
 	}
-	client, err := a.connectRunner(a.ctx, backend, cfg, a.DataDir, "system")
+	scratch, discard, err := a.scratchWorkspace()
+	if err != nil {
+		return nil, err
+	}
+	defer discard()
+	client, err := a.connectRunner(a.ctx, backend, cfg, scratch, "system")
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
-	return client.Models(a.DataDir)
+	return client.Models(scratch)
 }
 
 func (a *App) StateView() (map[string]any, error) {
@@ -480,6 +505,7 @@ func (a *App) StateView() (map[string]any, error) {
 		"storage":           storage,
 		"planning_capacity": planningCapacity,
 		"pr_capacity":       prCapacity,
+		"sandbox":           a.SandboxPosture(),
 	})
 	return view, nil
 }

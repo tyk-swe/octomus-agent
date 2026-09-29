@@ -5,6 +5,7 @@
   import type { BaselineCheck, BaselineView } from './types';
   import Sha from './Sha.svelte';
   import Icon from './Icon.svelte';
+  import SandboxRun from './SandboxRun.svelte';
   let {
     active,
     editable,
@@ -213,6 +214,7 @@
               >{result.success ? 'Passed' : 'Failed'}</span
             >
             <code>{result.command}</code>
+            <SandboxRun record={result.sandbox} />
             {#if result.output}<details>
                 <summary>Output{result.output_truncated ? ' (truncated)' : ''}</summary>
                 <pre>{result.output}</pre>

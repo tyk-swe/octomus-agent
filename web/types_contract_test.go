@@ -9,9 +9,11 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/evidence"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -137,6 +139,14 @@ func TestDashboardTypesMirrorGoJSON(t *testing.T) {
 		"CommandEvidence":          evidence.CommandEvidence{},
 		"CommandResult":            evidence.CommandResult{},
 		"PrReference":              evidence.PrReference{},
+		"SandboxPosture":           engine.SandboxPosture{},
+		"SandboxRecord":            model.SandboxRecord{},
+		"SandboxEgress":            model.SandboxEgress{},
+		"SandboxSelfTest":          engine.SandboxSelfTest{},
+		"ProbeCheck":               sandbox.ProbeCheck{},
+		"BrokerInfo":               sandbox.BrokerInfo{},
+		"BrokerLimits":             sandbox.BrokerLimits{},
+		"BrokerNetworks":           sandbox.BrokerNetworks{},
 	} {
 		keys, found := declared[name]
 		if !found {

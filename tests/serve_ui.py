@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Temporary, clearly synthetic data for browser tests; never used by the shipped app."""
+from http.server import BaseHTTPRequestHandler
 import json
 import os
 from pathlib import Path
+import socketserver
 import sqlite3
 import subprocess
 import tempfile
+import threading
 from datetime import datetime, timezone
 
 project = Path(__file__).resolve().parents[1]
@@ -29,8 +32,9 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     for identity, title, status, category, tier in rows:
         proposal = {'id': identity, 'title': title, 'problem': 'A project-specific improvement grounded in repository evidence.', 'evidence': ['cmd/octomus-agent/main.go: service lifecycle'], 'benefit': 'A clearer and more reliable project.', 'category': category, 'target': 'main', 'tier': tier, 'scope': 'Preserve existing behavior and add proportionate verification.', 'dependencies': [], 'prompt': 'Complete the accepted improvement with useful verification and accurate documentation.', 'decision': 'accepted', 'reason': 'The orchestrator and both independent reviewers found a concrete benefit.', 'problem_key': '', 'relevant_paths': [], 'reconsiders': []}
         proposals.append(proposal)
+        sandboxed = {'image_id': 'sha256:' + 'f' * 64, 'runtime': '', 'runs': 1, 'oom': False, 'egress': {'allowed': {'api.openai.com:443': 14, 'proxy.golang.org:443': 3}, 'denied': {'example.com:443': 2}}}
         review = {'session_id': 'review-session', 'revision': 'b' * 40, 'comparison_base': 'a' * 40, 'created_at': now, 'result': {'completed': True, 'summary': 'The full change set meets the objective without actionable findings.', 'findings': []}}
-        put('task', identity, {'id': identity, 'cycle_id': 'cycle-1', 'proposal': proposal, 'status': status, 'route': config['tiers'][tier], 'config': task_config, 'source_revision': 'a' * 40, 'comparison_base': 'a' * 40, 'default_revision': 'a' * 40, 'branch': f'octomus/{identity}', 'workspace': f'/srv/project/.octomus/tasks/{identity}/workspace', 'execution_session': 'execution-session' if status != 'queued' else None, 'repair_session': None, 'sessions': [{'id': 'execution-session', 'role': 'executor', 'route': config['tiers'][tier], 'status': 'completed', 'started_at': now, 'summary': 'Implemented and verified the accepted scope.'}] if status != 'queued' else [], 'reviews': [review] if status == 'published' else [], 'verification': [{'command': 'go test ./...', 'success': True, 'output': 'All tests passed.', 'revision': 'b' * 40, 'created_at': now}] if status == 'published' else [], 'output_commit': 'b' * 40 if status == 'published' else None, 'pr_number': 12 if status == 'published' else None, 'pr_url': 'https://github.com/fixture/project/pull/12' if status == 'published' else None, 'attempts': 0, 'review_baseline': 0, 'superseded_by': [], 'supersedes': [], 'rediscovery_requested': False, 'lifecycle': {'archived_at': None, 'discarded_at': None}, 'error': 'Verification timed out. Workspace preserved for inspection.' if status == 'blocked' else None, 'created_at': now, 'updated_at': now})
+        put('task', identity, {'id': identity, 'cycle_id': 'cycle-1', 'proposal': proposal, 'status': status, 'route': config['tiers'][tier], 'config': task_config, 'source_revision': 'a' * 40, 'comparison_base': 'a' * 40, 'default_revision': 'a' * 40, 'branch': f'octomus/{identity}', 'workspace': f'/srv/project/.octomus/tasks/{identity}/workspace', 'execution_session': 'execution-session' if status != 'queued' else None, 'repair_session': None, 'sessions': [{'id': 'execution-session', 'role': 'executor', 'route': config['tiers'][tier], 'status': 'completed', 'started_at': now, 'summary': 'Implemented and verified the accepted scope.', 'sandbox': sandboxed if status == 'published' else None}] if status != 'queued' else [], 'reviews': [review] if status == 'published' else [], 'verification': [{'command': 'go test ./...', 'success': True, 'output': 'All tests passed.', 'revision': 'b' * 40, 'created_at': now, 'sandbox': {**sandboxed, 'egress': {'allowed': {'proxy.golang.org:443': 5}, 'denied': {}}}}] if status == 'published' else [], 'output_commit': 'b' * 40 if status == 'published' else None, 'pr_number': 12 if status == 'published' else None, 'pr_url': 'https://github.com/fixture/project/pull/12' if status == 'published' else None, 'attempts': 0, 'review_baseline': 0, 'superseded_by': [], 'supersedes': [], 'rediscovery_requested': False, 'lifecycle': {'archived_at': None, 'discarded_at': None}, 'error': 'Verification timed out. Workspace preserved for inspection.' if status == 'blocked' else None, 'created_at': now, 'updated_at': now})
     slots = ['adversary-a', 'adversary-b']
     reviewer_sessions = [{'id': f'{slot}-session', 'role': slot, 'route': config['roles']['proposal_reviewer'], 'status': 'completed', 'started_at': now, 'summary': f'Synthetic browser-test review recorded for {slot}.'} for slot in slots]
     batches = [{'assessments': [{'id': p['id'], 'decision': 'accepted', 'reason': f'Synthetic browser-test verdict recorded for {slot}: the saved scope is concrete and bounded.'} for p in proposals]} for slot in slots]
@@ -41,10 +45,33 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     put('pr', 'fixture/project:12', observation(12, rows[1][1], 'octomus/task-reviewed', True, 'b' * 40, delivered='b' * 40))
     put('pr', 'fixture/project:31', observation(31, 'Adjust the retry backoff', 'contributor/backoff', False, 'c' * 40))
     put('pr', 'fixture/project:7', observation(7, 'Record the first delivered change', 'octomus/first-delivery', True, 'd' * 40, delivered='e' * 40))
+    checks = [('non_root', 'Runs as an unprivileged user', 'uid 10001'), ('no_capabilities', 'Holds no Linux capabilities', 'effective 0000000000000000, bounding 0000000000000000'), ('no_new_privileges', 'Cannot gain privileges through setuid programs', 'no_new_privs 1'), ('seccomp', 'System calls are filtered by seccomp', 'seccomp mode 2'), ('read_only_image', 'The image filesystem is read-only', 'read-only'), ('no_orchestrator_state', 'Cannot see Octomus state, secrets or the Docker socket', 'none visible'), ('no_direct_egress', 'Has no direct route to the internet', 'no route'), ('no_external_dns', 'Cannot resolve internet names directly', 'lookup refused'), ('no_host_route', 'Has no gateway to the host or its neighbours', 'no default route'), ('resource_limits', 'Runs under memory and process limits', 'memory.max 4294967296, pids.max 1024'), ('egress_gateway', 'The egress gateway refuses unlisted, metadata and local targets', 'refused example.com:443, 169.254.169.254:80, localhost:4200')]
+    put('settings', 'sandbox_self_test', {'at': now, 'passed': True, 'checks': [{'id': i, 'label': label, 'passed': True, 'detail': detail} for i, label, detail in checks], 'kernel': 'synthetic', 'image_id': 'sha256:' + 'f' * 64, 'error': None})
     db.commit()
     db.close()
+    broker_info = {'version': '0.1.0', 'docker_version': '29.0.0', 'api_version': '1.51', 'image': 'octomus-sandbox:local', 'image_id': 'sha256:' + 'f' * 64, 'image_digests': [], 'runtime': '', 'runners': {'codex': 'codex-cli 0.153.4', 'opencode': '1.18.30'}, 'limits': {'nano_cpus': 2000000000, 'memory_bytes': 4294967296, 'pids': 1024, 'tmpfs_bytes': 1073741824, 'max_sandboxes': 12, 'max_seconds': 21600}, 'networks': {'runner': 'octomus-sandbox-runner', 'verify': 'octomus-sandbox-verify'}, 'egress': True, 'live': 0}
+
+    class Broker(BaseHTTPRequestHandler):
+        """Synthetic sandbox broker: reports its posture and runs nothing."""
+        def address_string(self):
+            return 'broker'
+
+        def do_GET(self):
+            body = json.dumps(broker_info).encode()
+            self.send_response(200 if self.path == '/v1/info' else 404)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    broker = socketserver.ThreadingUnixStreamServer(str(data / 'sandboxd.sock'), Broker)
+    threading.Thread(target=broker.serve_forever, daemon=True).start()
     env = {key: value for key, value in os.environ.items() if key != 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'}
     env['OCTOMUS_TOKEN'] = 'browser-test-operator-token-32-characters'
+    env.update(OCTOMUS_SANDBOX='docker', OCTOMUS_SANDBOXD_SOCKET=str(data / 'sandboxd.sock'), OCTOMUS_EGRESS_MODEL_HOSTS='chatgpt.com,auth.openai.com,api.openai.com', OCTOMUS_EGRESS_BUILD_HOSTS='proxy.golang.org,registry.npmjs.org')
     process = subprocess.Popen([str(binary), '--listen', '127.0.0.1:4299', '--data-dir', directory, '--assets', str(project / 'web/build')], env=env)
     try:
         process.wait()

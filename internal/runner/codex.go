@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -15,8 +16,10 @@ import (
 
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -76,9 +79,10 @@ func (b *backlog) pop() (map[string]any, bool) {
 }
 
 type Codex struct {
-	child          *process.GroupChild
-	stdin          *os.File
-	stdout         *os.File
+	child          sandbox.Child
+	box            sandbox.Backend
+	stdin          sandbox.DeadlineWriter
+	stdout         io.ReadCloser
 	lines          chan lineResult
 	serial         uint64
 	pending        backlog
@@ -94,42 +98,25 @@ type Codex struct {
 	commandTimeout uint64
 }
 
-func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string) (*Codex, error) {
+func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (*Codex, error) {
 	if ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
 	}
-	cmd := process.Command(cfg.CodexBinary, cwd)
-	cmd.Args = append(cmd.Args, "app-server", "--listen", "stdio://")
-	stdinR, stdinW, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
-	stdoutR, stdoutW, err := os.Pipe()
-	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
-		return nil, err
-	}
-	cmd.Stdin = stdinR
-	cmd.Stdout = stdoutW
 	tail := &stderrTail{}
-	cmd.Stderr = tail
-	cmd.WaitDelay = stderrWaitDelay
-	if err := cmd.Start(); err != nil {
-		stdinR.Close()
-		stdinW.Close()
-		stdoutR.Close()
-		stdoutW.Close()
-		return nil, fmt.Errorf("Could not start Codex app-server; install and authenticate Codex on this host: %w", err)
+	child, err := box.Start(ctx, sandbox.Spec{
+		Kind: sandbox.KindRunner, Runner: config.BackendCodex, Binary: cfg.CodexBinary,
+		Dir: cwd, Stdin: true, Stderr: tail,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Could not start Codex app-server; %s: %w", runnerSetupHint(box, "install and authenticate Codex"), err)
 	}
-	stdinR.Close()
-	stdoutW.Close()
 	done := make(chan struct{})
 	c := &Codex{
-		child:   process.NewGroupChild(cmd),
-		stdin:   stdinW,
-		stdout:  stdoutR,
-		lines:   lineReader(stdoutR, MaxMessage, done),
+		child:   child,
+		box:     box,
+		stdin:   child.Stdin(),
+		stdout:  child.Stdout(),
+		lines:   lineReader(child.Stdout(), MaxMessage, done),
 		timeout: cfg.SessionTimeoutSeconds,
 		ctx:     ctx,
 		state:   state,
@@ -140,7 +127,7 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 		binary:         cfg.CodexBinary,
 		commandTimeout: cfg.CommandTimeoutSeconds,
 	}
-	go func() { c.waitCh <- cmd.Wait() }()
+	go func() { c.waitCh <- exitErr(child.Wait()) }()
 	fail := func(err error) (*Codex, error) {
 		_ = c.Close()
 		return nil, tail.explain(err)
@@ -166,7 +153,9 @@ func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
 	if m["requiresOpenaiAuth"] != false && m["account"] == nil {
 		return Diagnostics{}, fmt.Errorf("Codex authentication is missing; run codex login as the service user")
 	}
-	version, err := process.RunMachine(c.ctx, c.binary, []string{"--version"}, cwd, min(c.commandTimeout, 60))
+	version, err := c.box.RunnerVersion(c.ctx, sandbox.Spec{
+		Kind: sandbox.KindRunner, Runner: config.BackendCodex, Binary: c.binary, Dir: cwd,
+	}, min(c.commandTimeout, 60))
 	if err != nil {
 		return Diagnostics{}, err
 	}
@@ -209,7 +198,7 @@ func (c *Codex) sendBestEffort(ctx context.Context, value map[string]any) error 
 	return writeAll(ctx, c.stdin, []byte(payload))
 }
 
-func writeAll(ctx context.Context, w *os.File, data []byte) error {
+func writeAll(ctx context.Context, w sandbox.DeadlineWriter, data []byte) error {
 	defer w.SetWriteDeadline(time.Time{})
 	for len(data) > 0 {
 		if err := ctx.Err(); err != nil {
@@ -543,13 +532,18 @@ func (c *Codex) interrupt(thread, turn string) {
 	})
 }
 
+// SandboxEvidence is what the sandbox this runner ran in recorded, once it is closed.
+func (c *Codex) SandboxEvidence() *model.SandboxRecord { return sandbox.EvidenceOf(c.child) }
+
 func (c *Codex) Close() error {
 	c.once.Do(func() {
 		close(c.done)
-		c.child.Close()
+		// Stop parsing notifications, then drain raw stdout so the broker's exit report can reach the child.
+		readerDone := discardStdout(c.lines, c.stdout)
+		c.child.Kill()
 		c.stdin.Close()
 		c.stdout.Close()
-		c.closeErr = joinOwned(c.waitCh, drained(c.lines), "Codex app-server did not exit during cleanup")
+		c.closeErr = joinOwned(c.waitCh, readerDone, "Codex app-server did not exit during cleanup")
 	})
 	return c.closeErr
 }

@@ -120,6 +120,7 @@ func (a *api) buildRoutes() []apiRoute {
 		{"POST", segs("/baseline-checks/{id}/cancel"), a.baselineCancel},
 		{"POST", segs("/control/{action}"), a.controlAction},
 		{"POST", segs("/doctor"), a.doctor},
+		{"POST", segs("/sandbox/self-test"), a.sandboxSelfTest},
 		{"POST", segs("/model-catalog"), a.modelCatalog},
 		{"GET", segs("/events"), a.events},
 	}
@@ -534,6 +535,12 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	}
 	body["checked_revision"] = revision
 	return status, body, nil
+}
+
+// sandboxSelfTest proves the sandbox from inside a real one; with the sandbox off there is nothing to prove.
+func (a *api) sandboxSelfTest(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+	result, err := a.app.SelfTest(r.Context())
+	return http.StatusOK, result, err
 }
 
 type catalogRequest struct {

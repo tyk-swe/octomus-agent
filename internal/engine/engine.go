@@ -12,6 +12,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
@@ -38,6 +39,15 @@ func WithTaskRunner(runner TaskRunner) Option {
 
 func WithRunnerConnector(connect runner.Connector) Option {
 	return func(a *App) { a.connector = connect }
+}
+
+// WithSandbox selects where untrusted children run. Without it the engine runs them directly on the host.
+func WithSandbox(backend sandbox.Backend) Option {
+	return func(a *App) {
+		if backend != nil {
+			a.sandbox = backend
+		}
+	}
 }
 
 func WithWorkspaceRemoval(remove func(root, path string) error) Option {
@@ -104,6 +114,8 @@ type App struct {
 	wake       chan struct{}
 	taskRunner TaskRunner
 	connector  runner.Connector
+	sandbox    sandbox.Backend
+	deployment Deployment
 	removeDir  func(root, path string) error
 	wg         sync.WaitGroup
 }
@@ -126,7 +138,7 @@ func (a *App) connect(entity string) runner.Connector {
 	if a.connector != nil {
 		return a.connector
 	}
-	return runner.DefaultConnector(a.Store, entity)
+	return runner.DefaultConnector(a.Store, entity, a.sandbox)
 }
 
 func New(state *store.Store, dataDir string, options ...Option) *App {
@@ -140,6 +152,7 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}, retentionCursors: map[cleanupKind]string{}},
 	}
 	a.taskRunner = TaskRunnerFunc(a.superviseTask)
+	a.sandbox = sandbox.Host{}
 	a.removeDir = workspace.RemoveOwnedDir
 	for _, option := range options {
 		if option != nil {
@@ -162,9 +175,9 @@ func (a *App) Config() (config.Config, error) {
 		return config.Config{}, err
 	}
 	if cfg == nil {
-		return config.Default(), nil
+		return a.deployment.pin(config.Default()), nil
 	}
-	return *cfg, nil
+	return a.deployment.pin(*cfg), nil
 }
 
 func (a *App) Control() (model.Control, error) {
@@ -243,6 +256,10 @@ func (a *App) Recover() error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 
+	// Scratch roots only ever hold a check that died with the previous process.
+	if err := workspace.RemoveOwnedDir(a.DataDir, filepath.Join(a.DataDir, scratchDir)); err != nil {
+		return err
+	}
 	if err := a.recoverBaselines(); err != nil {
 		return err
 	}

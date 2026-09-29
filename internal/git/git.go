@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 func blocked(reason model.BlockedReason, message string) error {
@@ -30,11 +32,71 @@ func reasoned(reason model.BlockedReason, message string, err error) error {
 }
 
 func Git(ctx context.Context, c config.Config, cwd string, args []string) (string, error) {
-	out, err := process.RunMachine(ctx, "git", args, cwd, c.CommandTimeoutSeconds)
+	return git(ctx, c, cwd, args, isolatedConfig)
+}
+
+// remoteGit is Git for the few commands that may need an inherited credential helper: fetches, remote listing and
+// pushes. They never apply work-tree attributes, so the ambient configuration cannot arm a repository-named driver.
+func remoteGit(ctx context.Context, c config.Config, cwd string, args []string) (string, error) {
+	return git(ctx, c, cwd, args, nil)
+}
+
+func git(ctx context.Context, c config.Config, cwd string, args []string, env []string) (string, error) {
+	out, err := process.RunMachineEnv(ctx, "git", args, cwd, c.CommandTimeoutSeconds, env)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// isolatedConfig cuts every inherited configuration scope out of a git child: an owned work tree's .gitattributes
+// may name any filter or diff driver the ambient configuration defines, and git would run it as the control plane.
+// The trusted repo.git and the -c pins above still apply; remoteGit keeps ambient configuration only where a
+// credential helper may live.
+var isolatedConfig = []string{
+	"GIT_CONFIG_NOSYSTEM=1",
+	"GIT_CONFIG_GLOBAL=" + os.DevNull,
+	"GIT_CONFIG_COUNT=0",
+	"GIT_CONFIG_PARAMETERS=",
+}
+
+// hardened pins behaviour that configuration or submodules could otherwise turn into command execution. The trusted
+// metadata is orchestrator-owned; these flags also cover legacy clones whose metadata sits inside the work tree.
+var hardened = []string{
+	"-c", "core.hooksPath=/dev/null",
+	"-c", "core.fsmonitor=false",
+	"-c", "core.untrackedCache=false",
+	"-c", "submodule.recurse=false",
+	"-c", "diff.ignoreSubmodules=all",
+	"-c", "status.submoduleSummary=false",
+}
+
+func treeArgs(workTree string, args []string) ([]string, error) {
+	gitDir, err := workspace.GitDir(workTree)
+	if err != nil {
+		return nil, reasoned(model.BlockedReasonWorkspaceInvalid, "Workspace git metadata is unavailable", err)
+	}
+	full := append([]string{"--git-dir=" + gitDir, "--work-tree=" + workTree}, hardened...)
+	return append(full, args...), nil
+}
+
+// WorkGit runs git on an owned work tree against its trusted metadata, never the work tree's own .git entry.
+func WorkGit(ctx context.Context, c config.Config, workTree string, args []string) (string, error) {
+	full, err := treeArgs(workTree, args)
+	if err != nil {
+		return "", err
+	}
+	return Git(ctx, c, workTree, full)
+}
+
+// remoteWorkGit is WorkGit for pushes: they may need an inherited credential helper, and they write no work tree
+// and apply no attributes.
+func remoteWorkGit(ctx context.Context, c config.Config, workTree string, args []string) (string, error) {
+	full, err := treeArgs(workTree, args)
+	if err != nil {
+		return "", err
+	}
+	return remoteGit(ctx, c, workTree, full)
 }
 
 func gh(ctx context.Context, c config.Config, args []string) (string, error) {
@@ -46,7 +108,7 @@ func originURL(ctx context.Context, c config.Config, repo string) (string, error
 }
 
 func head(ctx context.Context, c config.Config, path string) (string, error) {
-	return Git(ctx, c, path, []string{"rev-parse", "HEAD"})
+	return WorkGit(ctx, c, path, []string{"rev-parse", "HEAD"})
 }
 
 func ghPages(out string, each func(page []map[string]any) error) error {
@@ -129,8 +191,48 @@ func validatedOrigin(ctx context.Context, c config.Config) (string, error) {
 }
 
 func Fetch(ctx context.Context, c config.Config) error {
-	_, err := Git(ctx, c, c.Repository, []string{"fetch", "--prune", "origin"})
+	_, err := remoteGit(ctx, c, c.Repository, []string{"fetch", "--prune", "origin"})
 	return err
+}
+
+const forkHeadNamespace = "refs/octomus/pr/"
+
+// FetchForkHeads copies fork PR heads into the trusted checkout, whose objects every clone inherits, so planning
+// sandboxes can inspect them by SHA without any route to GitHub. Heads the remote no longer serves are reported, not
+// fatal: grounding records them as unavailable context rather than failing the cycle.
+func FetchForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([]uint64, error) {
+	stale, err := Git(ctx, c, c.Repository, []string{"for-each-ref", "--format=%(refname)", forkHeadNamespace})
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range strings.Fields(stale) {
+		if _, err := Git(ctx, c, c.Repository, []string{"update-ref", "-d", ref}); err != nil {
+			return nil, err
+		}
+	}
+	if len(numbers) == 0 {
+		return nil, nil
+	}
+	refspec := func(n uint64) string {
+		return fmt.Sprintf("+refs/pull/%d/head:%s%d", n, forkHeadNamespace, n)
+	}
+	all := []string{"fetch", "--no-tags", "--no-write-fetch-head", "origin"}
+	for _, n := range numbers {
+		all = append(all, refspec(n))
+	}
+	if _, err := remoteGit(ctx, c, c.Repository, all); err == nil {
+		return nil, nil
+	}
+	var missing []uint64
+	for _, n := range numbers {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if _, err := remoteGit(ctx, c, c.Repository, []string{"fetch", "--no-tags", "--no-write-fetch-head", "origin", refspec(n)}); err != nil {
+			missing = append(missing, n)
+		}
+	}
+	return missing, nil
 }
 
 func RemoteRevision(ctx context.Context, c config.Config, branch string) (*string, error) {
@@ -138,7 +240,7 @@ func RemoteRevision(ctx context.Context, c config.Config, branch string) (*strin
 		return nil, errors.New("Invalid branch")
 	}
 	want := "refs/heads/" + branch
-	out, err := Git(ctx, c, c.Repository, []string{
+	out, err := remoteGit(ctx, c, c.Repository, []string{
 		"ls-remote", "--heads", "origin", want,
 	})
 	if err != nil {
@@ -152,62 +254,130 @@ func RemoteRevision(ctx context.Context, c config.Config, branch string) (*strin
 	return nil, nil
 }
 
+// CloneAt makes an owned clone whose git metadata lives beside the work tree in repo.git, outside anything a sandbox
+// can write, while the work tree keeps a .git pointer so tools inside it still find the history.
 func CloneAt(ctx context.Context, c config.Config, path string, revision string) error {
-	if _, err := os.Stat(path); err == nil {
-		return errors.New("Workspace already exists; recovery must inspect it")
-	}
-	if parent := filepath.Dir(path); parent == path {
+	root := filepath.Dir(path)
+	if root == path {
 		return errors.New("Invalid workspace path")
-	} else if err := os.MkdirAll(parent, 0o777); err != nil {
+	}
+	gitDir := filepath.Join(root, workspace.GitDirName)
+	for _, existing := range []string{path, gitDir} {
+		if _, err := os.Lstat(existing); err == nil {
+			return errors.New("Workspace already exists; recovery must inspect it")
+		}
+	}
+	if err := os.MkdirAll(root, 0o777); err != nil {
 		return err
 	}
 	if _, err := Git(ctx, c, c.Repository, []string{
-		"clone", "--no-hardlinks", "--no-checkout", "--", c.Repository, path,
+		"clone", "--no-hardlinks", "--no-checkout", "--separate-git-dir=" + gitDir, "--", c.Repository, path,
 	}); err != nil {
 		return err
 	}
-	if _, err := Git(ctx, c, path, []string{"checkout", "--detach", revision}); err != nil {
+	if _, err := WorkGit(ctx, c, path, []string{"checkout", "--detach", revision}); err != nil {
 		return err
 	}
 	remote, err := originURL(ctx, c, c.Repository)
 	if err != nil {
 		return err
 	}
-	if _, err := Git(ctx, c, path, []string{"remote", "set-url", "origin", remote}); err != nil {
+	if _, err := WorkGit(ctx, c, path, []string{"remote", "set-url", "origin", remote}); err != nil {
 		return err
 	}
-	if _, err := Git(ctx, c, path, []string{"config", "user.name", "Octomus Agent"}); err != nil {
+	if _, err := WorkGit(ctx, c, path, []string{"config", "user.name", "Octomus Agent"}); err != nil {
 		return err
 	}
-	if _, err := Git(ctx, c, path, []string{
+	if _, err := WorkGit(ctx, c, path, []string{
 		"config", "user.email", "octomus-agent@users.noreply.github.com",
 	}); err != nil {
 		return err
 	}
 	// Task clones must never include application state in generated commits.
-	return os.WriteFile(filepath.Join(path, ".git/info/exclude"), []byte("/.octomus/\n"), 0o666)
+	return os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte("/.octomus/\n"), 0o666)
+}
+
+// CloneReviewed makes a disposable clone of an owned clone at exactly one revision, in the same split layout, so
+// verification sees the reviewed commit and nothing else a session left in the work tree: no ignored files, caches
+// or build output. It keeps the source's local ignore rules and shares its immutable objects.
+func CloneReviewed(ctx context.Context, c config.Config, source, path, revision string) error {
+	sourceGitDir, err := workspace.GitDir(source)
+	if err != nil {
+		return reasoned(model.BlockedReasonWorkspaceInvalid, "Workspace git metadata is unavailable", err)
+	}
+	root := filepath.Dir(path)
+	gitDir := filepath.Join(root, workspace.GitDirName)
+	for _, existing := range []string{path, gitDir} {
+		if _, err := os.Lstat(existing); err == nil {
+			return errors.New("Verification checkout already exists")
+		}
+	}
+	if err := os.MkdirAll(root, 0o777); err != nil {
+		return err
+	}
+	if _, err := Git(ctx, c, root, []string{
+		"clone", "--quiet", "--no-checkout", "--separate-git-dir=" + gitDir, "--", sourceGitDir, path,
+	}); err != nil {
+		return err
+	}
+	if _, err := WorkGit(ctx, c, path, []string{"checkout", "--quiet", "--detach", revision}); err != nil {
+		return err
+	}
+	exclude, err := os.ReadFile(filepath.Join(sourceGitDir, "info", "exclude"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.WriteFile(filepath.Join(gitDir, "info", "exclude"), exclude, 0o666)
 }
 
 func Snapshot(ctx context.Context, c config.Config, path string, message string) (string, error) {
-	if _, err := Git(ctx, c, path, []string{"add", "--all"}); err != nil {
+	if _, err := WorkGit(ctx, c, path, []string{"add", "--all"}); err != nil {
 		return "", err
 	}
-	changed, err := Git(ctx, c, path, []string{"diff", "--cached", "--name-only"})
+	if err := refuseGitlinks(ctx, c, path); err != nil {
+		return "", err
+	}
+	changed, err := WorkGit(ctx, c, path, []string{"diff", "--cached", "--name-only"})
 	if err != nil {
 		return "", err
 	}
 	if changed != "" {
-		if _, err := Git(ctx, c, path, []string{
-			"-c", "core.hooksPath=/dev/null", "commit", "-m", redact.Secrets(message),
-		}); err != nil {
+		if _, err := WorkGit(ctx, c, path, []string{"commit", "-m", redact.Secrets(message)}); err != nil {
 			return "", err
 		}
 	}
 	return head(ctx, c, path)
 }
 
+const maxReportedPath = 200
+
+// refuseGitlinks blocks staged submodule entries that are new or point elsewhere: a nested repository in the work tree
+// would otherwise publish as a gitlink whose content was never reviewed. Removing a submodule stays allowed.
+func refuseGitlinks(ctx context.Context, c config.Config, path string) error {
+	out, err := WorkGit(ctx, c, path, []string{
+		"diff", "--cached", "--raw", "-z", "--no-renames", "--ignore-submodules=none", "HEAD",
+	})
+	if err != nil {
+		return err
+	}
+	fields := strings.Split(out, "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		modes := strings.Fields(strings.TrimPrefix(fields[i], ":"))
+		if len(modes) < 2 || modes[1] != "160000" {
+			continue
+		}
+		name := fields[i+1]
+		if len(name) > maxReportedPath {
+			name = name[:maxReportedPath]
+		}
+		return blocked(model.BlockedReasonWorkspaceInvalid, fmt.Sprintf(
+			"Nested repository or changed submodule at %s; Octomus publishes only reviewed file content", strconv.Quote(redact.Text(name))))
+	}
+	return nil
+}
+
 func clean(ctx context.Context, c config.Config, path string) (bool, error) {
-	out, err := Git(ctx, c, path, []string{"status", "--porcelain"})
+	out, err := WorkGit(ctx, c, path, []string{"status", "--porcelain", "--ignore-submodules=all"})
 	if err != nil {
 		return false, err
 	}
@@ -215,9 +385,17 @@ func clean(ctx context.Context, c config.Config, path string) (bool, error) {
 }
 
 func IsAncestor(ctx context.Context, c config.Config, cwd string, ancestor string, descendant string) (bool, error) {
-	return process.RunPredicate(ctx, "git",
+	return process.RunPredicateEnv(ctx, "git",
 		[]string{"merge-base", "--is-ancestor", ancestor, descendant},
-		cwd, c.CommandTimeoutSeconds, []int{1})
+		cwd, c.CommandTimeoutSeconds, []int{1}, isolatedConfig)
+}
+
+func workIsAncestor(ctx context.Context, c config.Config, path string, ancestor string, descendant string) (bool, error) {
+	args, err := treeArgs(path, []string{"merge-base", "--is-ancestor", ancestor, descendant})
+	if err != nil {
+		return false, err
+	}
+	return process.RunPredicateEnv(ctx, "git", args, path, c.CommandTimeoutSeconds, []int{1}, isolatedConfig)
 }
 
 func At(ctx context.Context, c config.Config, path string, revision string) (bool, error) {
@@ -747,7 +925,7 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		} else if remote != nil {
 			return fail(model.BlockedReasonRemoteConflict)
 		}
-		ancestor, err := IsAncestor(ctx, c, path, task.SourceRevision, commit)
+		ancestor, err := workIsAncestor(ctx, c, path, task.SourceRevision, commit)
 		if err != nil {
 			return fail(err)
 		}
@@ -760,8 +938,7 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 			expected = *remote
 		}
 		// Hooks, tags and submodule recursion are pinned off so ambient configuration can never push anything but the owned branch.
-		if _, err := Git(ctx, c, path, []string{
-			"-c", "core.hooksPath=/dev/null",
+		if _, err := remoteWorkGit(ctx, c, path, []string{
 			"-c", "push.followTags=false",
 			"push",
 			"--recurse-submodules=no",

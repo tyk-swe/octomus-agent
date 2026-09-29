@@ -1,0 +1,165 @@
+# Octomus on one Docker host, sandboxed by default. See docs/deployment.md.
+#
+#   octomus    control plane: state, scheduler, dashboard (127.0.0.1:4200 only) and GitHub publication
+#   sandboxd   broker: the only holder of the Docker socket; no network at all
+#   egress     gateway: the only way out for sandboxes, allowlisted per sandbox kind
+#   login      one-off runner logins into the runner volume (docker compose run --rm login codex login --device-auth)
+#
+# Every agent turn and verification command runs in its own short-lived sandbox container that the broker builds.
+name: octomus
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  init: true
+  restart: unless-stopped
+  user: "10001:10001"
+  tmpfs: ["/tmp:size=64m"]
+
+x-egress-hosts: &egress-hosts
+  OCTOMUS_EGRESS_MODEL_HOSTS: ${OCTOMUS_EGRESS_MODEL_HOSTS:-chatgpt.com,auth.openai.com,api.openai.com}
+  OCTOMUS_EGRESS_BUILD_HOSTS: ${OCTOMUS_EGRESS_BUILD_HOSTS:-}
+
+services:
+  octomus:
+    <<: *hardened
+    image: ${OCTOMUS_IMAGE:-octomus-agent:local}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    command: ["--listen", "0.0.0.0:4200", "--sandbox", "docker"]
+    environment:
+      <<: *egress-hosts
+      OCTOMUS_TOKEN_FILE: /run/secrets/operator_token
+      OCTOMUS_GITHUB_TOKEN_FILE: /run/secrets/github_token
+      OCTOMUS_GITHUB_REPO: ${OCTOMUS_GITHUB_REPO:?Set OCTOMUS_GITHUB_REPO in .env}
+      OCTOMUS_SANDBOXD_SOCKET: /run/octomus/sandboxd.sock
+    secrets: [operator_token, github_token]
+    volumes:
+      - data:/var/lib/octomus/data
+      - broker:/run/octomus
+    ports:
+      - "127.0.0.1:${OCTOMUS_PORT:-4200}:4200"
+    networks: [control]
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/octomus-agent", "--healthcheck", "--listen", "0.0.0.0:4200"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10m
+    depends_on:
+      sandboxd:
+        condition: service_healthy
+      egress:
+        condition: service_started
+
+  sandboxd:
+    <<: *hardened
+    image: ${OCTOMUS_IMAGE:-octomus-agent:local}
+    command: ["--sandboxd"]
+    group_add: ["${DOCKER_GID:?Run ./setup.sh or set DOCKER_GID to the docker socket group}"]
+    network_mode: none
+    environment:
+      OCTOMUS_SANDBOXD_SOCKET: /run/octomus/sandboxd.sock
+      OCTOMUS_DATA_DIR: /var/lib/octomus/data
+      OCTOMUS_SANDBOX_IMAGE: ${OCTOMUS_SANDBOX_IMAGE:-octomus-sandbox:local}
+      OCTOMUS_SANDBOX_DATA_VOLUME: octomus-data
+      OCTOMUS_SANDBOX_RUNNER_VOLUME: octomus-runner
+      OCTOMUS_SANDBOX_TOOLS_VOLUME: octomus-tools
+      OCTOMUS_SANDBOX_RUNNER_NETWORK: octomus-sandbox-runner
+      OCTOMUS_SANDBOX_VERIFY_NETWORK: octomus-sandbox-verify
+      OCTOMUS_SANDBOX_INSTANCE: ${OCTOMUS_SANDBOX_INSTANCE:-octomus}
+      OCTOMUS_SANDBOX_CPUS: ${OCTOMUS_SANDBOX_CPUS:-2}
+      OCTOMUS_SANDBOX_MEMORY: ${OCTOMUS_SANDBOX_MEMORY:-4g}
+      OCTOMUS_SANDBOX_PIDS: ${OCTOMUS_SANDBOX_PIDS:-1024}
+      OCTOMUS_SANDBOX_TMPFS: ${OCTOMUS_SANDBOX_TMPFS:-1g}
+      OCTOMUS_SANDBOX_MAX: ${OCTOMUS_SANDBOX_MAX:-12}
+      OCTOMUS_SANDBOX_RUNTIME: ${OCTOMUS_SANDBOX_RUNTIME:-}
+      OCTOMUS_EGRESS_PROXY: egress:3128
+      OCTOMUS_EGRESS_LEASES: /run/octomus-egress
+      OCTOMUS_EGRESS_COLLECTOR: /run/octomus-egress/collector.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - broker:/run/octomus
+      - data:/var/lib/octomus/data:ro
+      - runner:/var/lib/octomus/runner
+      - tools:/opt/octomus-tools
+      - egress-state:/run/octomus-egress
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/octomus-agent", "--sandboxd-check"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+
+  egress:
+    <<: *hardened
+    image: ${OCTOMUS_IMAGE:-octomus-agent:local}
+    command: ["--egress"]
+    environment:
+      <<: *egress-hosts
+      OCTOMUS_EGRESS_LISTEN: ":3128"
+      OCTOMUS_EGRESS_LEASES: /run/octomus-egress
+      OCTOMUS_EGRESS_COLLECTOR: /run/octomus-egress/collector.sock
+    volumes:
+      - egress-state:/run/octomus-egress
+    networks:
+      sandbox-runner:
+        aliases: [egress]
+      sandbox-verify:
+        aliases: [egress]
+      egress-out: {}
+
+  login:
+    image: ${OCTOMUS_SANDBOX_IMAGE:-octomus-sandbox:local}
+    build:
+      context: .
+      dockerfile: sandbox.Dockerfile
+    profiles: [tools]
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      HOME: /home/octomus
+    # Logins land exactly where runner sandboxes mount them. The broker creates these subdirectories when it starts,
+    # so run logins after `docker compose up -d`.
+    volumes:
+      - {type: volume, source: runner, target: /home/octomus/.codex, volume: {subpath: codex}}
+      - {type: volume, source: runner, target: /home/octomus/.local/share/opencode, volume: {subpath: opencode/data}}
+      - {type: volume, source: runner, target: /home/octomus/.config/opencode, volume: {subpath: opencode/config}}
+      - {type: volume, source: runner, target: /home/octomus/.cache/opencode, volume: {subpath: opencode/cache}}
+      - {type: volume, source: runner, target: /home/octomus/.local/state/opencode, volume: {subpath: opencode/state}}
+    networks: [egress-out]
+
+secrets:
+  operator_token:
+    file: ./secrets/operator_token
+  github_token:
+    file: ./secrets/github_token
+
+volumes:
+  data:
+    name: octomus-data
+  runner:
+    name: octomus-runner
+  tools:
+    name: octomus-tools
+  broker: {}
+  egress-state: {}
+
+networks:
+  control: {}
+  egress-out: {}
+  sandbox-runner:
+    name: octomus-sandbox-runner
+    internal: true
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+  sandbox-verify:
+    name: octomus-sandbox-verify
+    internal: true
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated

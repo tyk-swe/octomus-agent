@@ -281,7 +281,15 @@ func (c Config) validateRepository() error {
 	if _, err := os.Stat(c.Repository + string(os.PathSeparator) + ".git"); !filepath.IsAbs(c.Repository) || err != nil {
 		return fmt.Errorf("Repository must be an absolute path to a Git checkout")
 	}
-	parts := strings.Split(c.GitHubRepo, "/")
+	if !ValidGitHubRepo(c.GitHubRepo) {
+		return fmt.Errorf("GitHub repository must be owner/name")
+	}
+	return nil
+}
+
+// ValidGitHubRepo reports whether repo is an owner/name pair of GitHub-safe characters.
+func ValidGitHubRepo(repo string) bool {
+	parts := strings.Split(repo, "/")
 	valid := len(parts) == 2
 	for _, part := range parts {
 		if part == "" {
@@ -293,10 +301,7 @@ func (c Config) validateRepository() error {
 			}
 		}
 	}
-	if !valid {
-		return fmt.Errorf("GitHub repository must be owner/name")
-	}
-	return nil
+	return valid
 }
 func ValidateBinary(binary string) error {
 	if strings.TrimSpace(binary) == "" || len(binary) > 4096 || strings.ContainsFunc(binary, unicode.IsControl) {

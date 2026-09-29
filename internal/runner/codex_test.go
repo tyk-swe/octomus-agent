@@ -15,6 +15,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
@@ -177,7 +178,7 @@ func TestCodexCancellationStopsTurn(t *testing.T) {
 func TestCodexStructuredOutputIsValidated(t *testing.T) {
 	t.Parallel()
 	f := codexFixture(t)
-	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture"))
+	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
 	defer clients.Close()
 	session, err := clients.Start(codexRoute(), f.workspace, nil)
 	if err != nil {

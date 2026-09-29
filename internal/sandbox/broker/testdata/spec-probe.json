@@ -1,0 +1,80 @@
+{
+  "Image": "",
+  "User": "10001:10001",
+  "Entrypoint": [
+    "/opt/octomus/octomus-agent",
+    "--sandbox-init",
+    "containment"
+  ],
+  "Cmd": null,
+  "WorkingDir": "/tmp",
+  "Env": [
+    "HOME=/home/octomus",
+    "USER=octomus",
+    "LANG=C.UTF-8",
+    "TMPDIR=/tmp",
+    "GIT_TERMINAL_PROMPT=0",
+    "GIT_OPTIONAL_LOCKS=0",
+    "HTTPS_PROXY=http://sandbox:token@egress:3128"
+  ],
+  "Labels": {
+    "octomus.sandbox.instance": "octomus",
+    "octomus.sandbox.kind": "probe",
+    "octomus.sandbox.root": ""
+  },
+  "AttachStdin": false,
+  "AttachStdout": true,
+  "AttachStderr": true,
+  "OpenStdin": false,
+  "StdinOnce": false,
+  "Tty": false,
+  "StopSignal": "SIGTERM",
+  "HostConfig": {
+    "Init": true,
+    "Privileged": false,
+    "ReadonlyRootfs": true,
+    "CapDrop": [
+      "ALL"
+    ],
+    "CapAdd": null,
+    "SecurityOpt": [
+      "no-new-privileges:true"
+    ],
+    "NetworkMode": "octomus-sandbox-runner",
+    "IpcMode": "private",
+    "PidMode": "",
+    "UTSMode": "",
+    "UsernsMode": "",
+    "CgroupnsMode": "",
+    "PidsLimit": 1024,
+    "Memory": 4294967296,
+    "MemorySwap": 4294967296,
+    "NanoCpus": 2000000000,
+    "OomScoreAdj": 1000,
+    "ShmSize": 0,
+    "Tmpfs": {
+      "/home/octomus": "rw,nosuid,nodev,size=67108864,uid=10001,gid=10001,mode=0700",
+      "/tmp": "rw,exec,nosuid,nodev,size=1073741824"
+    },
+    "Mounts": [
+      {
+        "Type": "volume",
+        "Source": "octomus-tools",
+        "Target": "/opt/octomus",
+        "ReadOnly": true,
+        "VolumeOptions": {
+          "NoCopy": true
+        }
+      }
+    ],
+    "Binds": null,
+    "Devices": null,
+    "AutoRemove": false,
+    "LogConfig": {
+      "Type": "none"
+    },
+    "RestartPolicy": {
+      "Name": "no"
+    }
+  }
+}

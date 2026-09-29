@@ -54,6 +54,8 @@
   const savedConfig = $derived<Config | null>(savedJson ? JSON.parse(savedJson) : null);
   const transformedByField = $derived(new Map(transformed.map((entry) => [entry.field, entry])));
   const locked = (field: string) => transformedByField.has(field) && !replaced[field];
+  const pinnedRepository = $derived(status?.sandbox.pinned_repository ?? null);
+  const sandboxed = $derived(status?.sandbox.mode === 'docker');
   const previewKind = (field: string) =>
     transformedByField.get(field)?.kinds.includes('redacted') ? 'hidden' : 'shortened';
   $effect(() => {
@@ -341,19 +343,23 @@
             >Repository path<input
               id="repository-path"
               bind:value={config.repository}
-              readonly={locked('repository')}
+              readonly={locked('repository') || pinnedRepository !== null}
               placeholder="/srv/projects/your-project"
             />{@render previewNote('repository', 'value', false)}<small
-              >Absolute path to the checkout on this host.</small
+              >{pinnedRepository
+                ? 'The trusted checkout in the data volume, fixed by the deployment.'
+                : 'Absolute path to the checkout on this host.'}</small
             ></label
           >
           <label
             >GitHub repository<input
               bind:value={config.github_repo}
-              readonly={locked('github_repo')}
+              readonly={locked('github_repo') || pinnedRepository !== null}
               placeholder="owner/repository"
             />{@render previewNote('github_repo', 'value', false)}<small
-              >Must match the checkout’s origin remote.</small
+              >{pinnedRepository
+                ? 'Set by OCTOMUS_GITHUB_REPO in the deployment; the operator token cannot change it.'
+                : 'Must match the checkout’s origin remote.'}</small
             ></label
           >
           <label
@@ -378,8 +384,8 @@
               readonly={locked('verification_commands')}
               placeholder={'npm test\nnpm run build'}
             ></textarea>{@render previewNote('verification_commands', 'command list', true)}<small
-              >One shell command per line, run inside each task workspace. All must pass before
-              publication.</small
+              >One shell command per line, each run in a fresh sandbox inside the task workspace.
+              All must pass before publication.</small
             ></label
           >
         </div>
@@ -395,20 +401,24 @@
           <label
             >Codex executable<input
               bind:value={config.codex_binary}
-              readonly={locked('codex_binary')}
+              readonly={locked('codex_binary') || sandboxed}
               required
-            />{@render previewNote('codex_binary', 'value', false)}</label
+            />{@render previewNote('codex_binary', 'value', false)}{#if sandboxed}<small
+                >Sandboxes run the Codex in the sandbox image.</small
+              >{/if}</label
           >
           <label
             >OpenCode executable<input
               aria-label="OpenCode executable"
               aria-describedby="opencode-executable-help"
               bind:value={config.opencode_binary}
-              readonly={locked('opencode_binary')}
+              readonly={locked('opencode_binary') || sandboxed}
               required
             />{@render previewNote('opencode_binary', 'value', false)}<small
               id="opencode-executable-help"
-              >Uses the service user's configured providers and login.</small
+              >{sandboxed
+                ? 'Sandboxes run the OpenCode in the sandbox image, with the providers and login in the runner volume.'
+                : "Uses the service user's configured providers and login."}</small
             ></label
           >
         </div>

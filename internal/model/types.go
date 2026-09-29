@@ -110,11 +110,12 @@ func (v ReviewRound) MarshalJSON() ([]byte, error) {
 }
 
 type Verification struct {
-	Command   string `json:"command"`
-	Success   bool   `json:"success"`
-	Output    string `json:"output"`
-	Revision  string `json:"revision"`
-	CreatedAt string `json:"created_at"`
+	Command   string         `json:"command"`
+	Success   bool           `json:"success"`
+	Output    string         `json:"output"`
+	Revision  string         `json:"revision"`
+	CreatedAt string         `json:"created_at"`
+	Sandbox   *SandboxRecord `json:"sandbox"`
 }
 
 func (v *Verification) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
@@ -124,11 +125,12 @@ func (v Verification) MarshalJSON() ([]byte, error) {
 }
 
 type BaselineCommand struct {
-	Command         string `json:"command"`
-	Success         bool   `json:"success"`
-	Output          string `json:"output"`
-	OutputTruncated bool   `json:"output_truncated"`
-	CreatedAt       string `json:"created_at"`
+	Command         string         `json:"command"`
+	Success         bool           `json:"success"`
+	Output          string         `json:"output"`
+	OutputTruncated bool           `json:"output_truncated"`
+	CreatedAt       string         `json:"created_at"`
+	Sandbox         *SandboxRecord `json:"sandbox"`
 }
 
 func (v *BaselineCommand) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
@@ -173,12 +175,13 @@ func (v DefaultBranchObservation) MarshalJSON() ([]byte, error) {
 }
 
 type Session struct {
-	ID        string       `json:"id"`
-	Role      string       `json:"role"`
-	Route     config.Route `json:"route"`
-	Status    string       `json:"status"`
-	StartedAt string       `json:"started_at"`
-	Summary   string       `json:"summary"`
+	ID        string         `json:"id"`
+	Role      string         `json:"role"`
+	Route     config.Route   `json:"route"`
+	Status    string         `json:"status"`
+	StartedAt string         `json:"started_at"`
+	Summary   string         `json:"summary"`
+	Sandbox   *SandboxRecord `json:"sandbox"`
 }
 
 func (v *Session) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }

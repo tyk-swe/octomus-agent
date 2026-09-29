@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
@@ -68,6 +69,7 @@ type Script struct {
 	sessions    map[string]struct{}
 	clients     int
 	open        int
+	sandbox     *model.SandboxRecord
 }
 
 func New(catalog ...runner.Model) *Script {
@@ -100,6 +102,13 @@ func (s *Script) Connector() runner.Connector {
 		s.open++
 		return &client{script: s, ctx: ctx, backend: backend, id: id, active: map[string]struct{}{}}, nil
 	}
+}
+
+// RecordSandbox makes every client report this sandbox record once closed, as a sandboxed runner does.
+func (s *Script) RecordSandbox(record *model.SandboxRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sandbox = record
 }
 
 func (s *Script) Queue(route config.Route, replies ...Reply) {
@@ -351,6 +360,16 @@ func (c *client) Close() error {
 	c.closed = true
 	c.script.open--
 	return pop(c.script.closeErrs, c.backend)
+}
+
+func (c *client) SandboxEvidence() *model.SandboxRecord {
+	c.script.mu.Lock()
+	defer c.script.mu.Unlock()
+	if !c.closed || c.script.sandbox == nil {
+		return nil
+	}
+	record := *c.script.sandbox
+	return &record
 }
 
 func (c *client) checkRoute(route config.Route) error {

@@ -10,7 +10,7 @@ Group=octomus
 WorkingDirectory=/var/lib/octomus
 EnvironmentFile=/etc/octomus/agent.env
 Environment=PATH=/var/lib/octomus/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/local/bin/octomus-agent --data-dir /var/lib/octomus/.octomus --listen 127.0.0.1:4200
+ExecStart=/usr/local/bin/octomus-agent --data-dir /var/lib/octomus/.octomus --listen 127.0.0.1:4200 --sandbox off
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30

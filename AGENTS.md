@@ -3,7 +3,9 @@
 Octomus is a single-operator service that discovers repository improvements,
 reviews proposals, executes accepted tasks through Codex or OpenCode, and delivers
 GitHub PRs. It is a Go service (`cmd/octomus-agent`, `internal/`); the SvelteKit
-dashboard builds to static assets embedded in the binary (`web/embed.go`).
+dashboard builds to static assets embedded in the binary (`web/embed.go`). By
+default every runner turn and verification command runs in a Docker sandbox built
+by the sandbox broker (`docs/sandbox.md`); `--sandbox off` runs them on the host.
 
 The service uses a Go-owned SQLite schema at version 7. Existing databases from
 earlier versions are refused before schema or journal changes; start this release
@@ -38,6 +40,13 @@ owns strict typed JSON boundaries for saved records and API requests.
   outbox; `schema.go` creates it and generates the record projections; `queries.go`,
   `capacity.go` and `notifications.go` serve operational views, PR capacity and the
   outbox.
+- `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
+  `--sandbox off`, `Remote` for the broker), the broker wire protocol, owned-root
+  preparation, the in-sandbox helper (`--sandbox-init`: OpenCode HTTP/2 bridge and
+  version probe) and the containment probe. `sandbox/broker` is `--sandboxd`: request
+  validation, the golden container spec (`testdata/spec-*.json`), streams, leases and
+  sweeping; `sandbox/engineapi` is its minimal Docker Engine client. `internal/egress`
+  is the `--egress` gateway.
 - `internal/redact`: the one secret scrubber and display bound, shared by every
   package that records or returns text, the token and webhook variable names, and
   `Fragment` for text already cut by a capture or read limit.
@@ -70,8 +79,10 @@ owns strict typed JSON boundaries for saved records and API requests.
   on synthetic data, against the private-payload gate in `tests/helpers`.
   `tests/fixturedb` creates a fresh state database for the Python tests.
 - Release and deployment inputs: `VERSION` (the one version, read by `version.go`,
-  the dashboard build and release tooling), `scripts/package.sh`, `install.sh` and
-  `deploy/octomus-agent.service`. `web/scripts/render-launch-assets.mjs` captures
+  the dashboard build and release tooling), `scripts/package.sh`, `install.sh`,
+  `deploy/docker` (images, compose file, `setup.sh`, `env.example`) and the
+  unsandboxed `deploy/octomus-agent.service`. `tests/e2e_sandbox.py` runs the compose
+  stack with test images from `tests/docker`. `web/scripts/render-launch-assets.mjs` captures
   `docs/dashboard.png`.
 - `web/tests`: dashboard browser tests against the synthetic service
   `tests/serve_ui.py` starts, with shared synthetic fixtures in `synthetic.ts`;
@@ -99,6 +110,8 @@ race detector. Install dashboard dependencies with
   `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests run four workers.
 - `make test-race-e2e` (opt-in, about seven minutes): `tests/e2e.py` against the
   race-instrumented build.
+- `make test-sandbox` (opt-in, needs Docker Engine 28+): the broker against the real
+  daemon (`OCTOMUS_DOCKER_TEST=1`) and `tests/e2e_sandbox.py` against the compose stack.
 - `make audit` (govulncheck and `npm audit`; needs module downloads) and `make package`
   (release archive and `SHA256SUMS` in `dist/`) also run in CI.
 - Focused integration: `make build`, then
@@ -120,6 +133,10 @@ loadable when adding fields.
 - Never silently substitute model/effort routes or weaken verification to publish.
 - The service delivers PRs; it does not merge, deploy or migrate production systems.
   Workers must not push or publish; the orchestrator owns publication.
+- Every untrusted child (runner, verification command, probe) starts through
+  `internal/sandbox`; never add another path. Orchestrator git on a work tree goes
+  through `gitops.WorkGit` and trusted `repo.git`. A change to a golden container
+  spec changes the isolation boundary; review it as one.
 - Do not edit `.octomus/`, credentials, account configuration, or other workspaces.
   Fixtures and generated build artifacts are not live evidence.
 - Keep secrets, raw runner transcripts and private billing screenshots out of Git.

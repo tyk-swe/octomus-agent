@@ -1,0 +1,21 @@
+# Image builds see source only: never local state, credentials, build output or dependencies.
+.git
+.octomus
+**/.octomus
+.env
+**/.env
+**/.env.*
+deploy/docker/secrets
+bin
+dist
+web/node_modules
+web/.svelte-kit
+web/build
+web/test-results
+web/playwright-report
+web/artifacts
+test-results
+**/__pycache__
+*.db
+*.db-shm
+*.db-wal

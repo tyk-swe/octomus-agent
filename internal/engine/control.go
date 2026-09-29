@@ -137,7 +137,7 @@ func (a *App) doctor(ctx context.Context, cfg config.Config, audit bool) error {
 		return fmt.Errorf("Repository remote preflight failed: %w", err)
 	}
 	clients := a.runners(ctx, cfg, "doctor")
-	if err := clients.ValidateRoutes(cfg, cfg.Repository, audit); err != nil {
+	if err := a.validateRoutes(clients, cfg, audit); err != nil {
 		_ = clients.Close()
 		return fmt.Errorf("Runner route preflight failed: %w", err)
 	}

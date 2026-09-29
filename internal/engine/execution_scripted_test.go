@@ -718,7 +718,7 @@ if [ -d %[1]q ] && [ ! -e %[2]q ]; then
   /usr/bin/git --git-dir %[3]q update-ref refs/heads/main "$next" || exit 1
 fi
 exec git-upload-pack "$@"
-`, filepath.Join(ws, ".git"), moved, remote)
+`, filepath.Join(filepath.Dir(ws), "repo.git"), moved, remote)
 	if err := os.WriteFile(uploadPack, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}

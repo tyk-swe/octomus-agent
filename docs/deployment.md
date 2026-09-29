@@ -1,8 +1,95 @@
-# Dedicated-host deployment
+# Deployment
 
-Octomus is a single-operator, single-repository service for a dedicated Linux VM. Runner sessions and repository verification commands run with the service account's full host permissions. Task clones separate mutable work; they are not a sandbox. Keep unrelated production credentials and services off this host.
+Octomus is a single-operator, single-repository service. The recommended deployment is
+Docker Compose on a Linux host you already run: every agent turn and verification command
+runs in its own [sandbox](sandbox.md), and the control plane holding your GitHub token never
+runs repository code. The older unsandboxed deployment on a
+[dedicated VM](#dedicated-vm-without-a-sandbox) remains available.
 
-## Install
+## Docker deployment
+
+You need:
+- Docker Engine 28 or later with the Compose plugin, on x86_64 or aarch64;
+- a GitHub fine-grained token for the one repository, with Contents and Pull requests
+  read/write;
+- Codex or OpenCode provider access.
+
+Nothing else is installed on the host.
+
+```bash
+git clone https://github.com/tyk-swe/octomus-agent.git
+cd octomus-agent/deploy/docker
+./setup.sh
+```
+
+`setup.sh` does the following:
+- checks Docker;
+- writes `.env` from [env.example](../deploy/docker/env.example), including the Docker
+  socket's group for the broker;
+- asks for `OWNER/REPOSITORY` and the GitHub token;
+- generates the operator token, printing it once;
+- stores both secrets as files that only the control plane's user can read;
+- builds the control-plane and sandbox images;
+- runs `docker compose up -d`.
+
+On first start the control plane clones the repository into its data volume. That clone
+is the trusted checkout, and the dashboard cannot repoint it.
+
+Then sign in a runner. The login is stored in the `octomus-runner` volume, which only
+runner sandboxes mount:
+
+```bash
+docker compose run --rm login codex login --device-auth
+# or
+docker compose run --rm login opencode auth login
+```
+
+Open the dashboard through an [SSH tunnel](#private-access) and run **Check connection**. It
+proves the sandbox from inside one before any work starts; see [the self-test](sandbox.md#prove-it-the-self-test).
+
+### Host settings
+
+Everything security-relevant is set in `.env`, not in the dashboard: the pinned repository,
+sandbox limits, the sandbox image and runtime, and the egress allowlists. The dashboard
+shows them read-only. [env.example](../deploy/docker/env.example) documents each setting,
+and [sandbox](sandbox.md) explains them. After changing `.env`, run `docker compose up -d`.
+
+Add your project's build and test tools to the sandbox image, not to the host: see
+[extending the sandbox image](sandbox.md#extend-the-sandbox-image). Verification commands run
+in that image.
+
+### Operating the stack
+
+| Task | Command |
+| --- | --- |
+| Status | `docker compose ps` |
+| Logs | `docker compose logs -f octomus` (egress decisions: `docker compose logs egress`) |
+| Stop, keeping state | `docker compose stop` |
+| Restart after an `.env` change | `docker compose up -d` |
+| Upgrade | `git pull`, `docker compose build octomus login`, then `docker compose up -d` |
+
+The control plane stops gracefully within its 45-second grace period. Stopping it closes
+every sandbox's stream, so the broker removes every running sandbox. The broker also
+removes any sandbox left from a previous run when it starts. It only ever touches
+containers carrying its own `octomus.sandbox.instance` label.
+
+State lives in named volumes:
+- `octomus-data`: the database, workspaces and the trusted checkout;
+- `octomus-runner`: runner logins and session transcripts;
+- `octomus-tools`: the broker's helper binary, recreated on start.
+
+Keep the secret files under `secrets/` with the deployment. `setup.sh` gives them to the
+container user (uid 10001) at mode 0600; to rotate one, replace the file as root and run
+`docker compose up -d`.
+
+## Dedicated VM without a sandbox
+
+This is the earlier deployment model: runner sessions and verification commands run with
+the service account's full host permissions, `--sandbox off`. Task clones separate mutable
+work but are not a sandbox, so keep unrelated production credentials and services off this
+host. The dashboard shows a permanent **Unsandboxed** warning.
+
+### Install
 
 Build on the target architecture or another compatible Linux host. The build
 needs Go (per `go.mod`), Node and npm for the embedded dashboard; the produced
@@ -42,7 +129,8 @@ ReadWritePaths=
 ReadWritePaths=/var/lib/octomus /srv/projects/project
 ```
 
-Copy [deploy/octomus-agent.service](../deploy/octomus-agent.service) to `/etc/systemd/system/`, then:
+Copy [deploy/octomus-agent.service](../deploy/octomus-agent.service) to `/etc/systemd/system/`.
+It starts the service with `--sandbox off`, the explicit choice this deployment makes. Then:
 
 ```bash
 sudo systemctl daemon-reload
@@ -55,7 +143,10 @@ The unit uses `KillMode=control-group` so crashes and restarts cannot leave old 
 ## Optional attention webhook
 
 Add `OCTOMUS_NOTIFICATION_WEBHOOK_URL=<operator-supplied HTTPS webhook URL>` to the
-same protected environment file to opt in, then restart the service. Do not use the
+same protected environment file to opt in, then restart the service. In the Docker
+deployment, write the URL to a file under `secrets/` and point
+`OCTOMUS_NOTIFICATION_WEBHOOK_URL_FILE` at it in a compose override for the `octomus`
+service. Do not use the
 placeholder or commit the actual URL. Unset the variable to disable notifications.
 URL rotation cancels old pending deliveries rather than forwarding them to a new
 receiver. No dashboard URL editor or inbound integration is provided.
@@ -101,12 +192,14 @@ Retries after ambiguous acceptance may duplicate an event. Queue overflow, expir
 invalid setup and delivery failures remain visible in Configuration.
 
 The URL is not persisted in task/config snapshots, returned through observation APIs,
-or passed in child-process environments. Same-user unsandboxed processes are still
-inside the dedicated-host trust boundary. Never provision unrelated secrets here.
+or passed in child-process environments. Sandboxes never see the control plane's
+environment; in unsandboxed mode, same-user processes are still inside the
+dedicated-host trust boundary. Never provision unrelated secrets here.
 
 ## Private access
 
-The default listener is `127.0.0.1:4200`. Access it over an SSH tunnel:
+The default listener is `127.0.0.1:4200`; the compose file publishes the control plane on
+`127.0.0.1:${OCTOMUS_PORT}` only. Access it over an SSH tunnel:
 
 ```bash
 ssh -N -L 4200:127.0.0.1:4200 your-host
@@ -151,13 +244,24 @@ ceiling. External PR changes can also alter backlog after observation.
 
 The workspace budget is an **admission limit**, checked before launching model work. Active commands can grow beyond it; set host disk and process limits appropriate to the repository. The MVP does not estimate dollar spend or interrupt a provider's in-flight token billing. Use account-level spending limits as appropriate.
 
-Retention housekeeping runs every 15 minutes, including while paused or configured only for audits. Published task workspaces and completed cycle directories follow the configured retention period (14 days by default). Successful planning-role clones are disposed after structured results, session evidence and unchanged-source checks are persisted. Failed or modified clones and unresolved task workspaces remain retained. **Archive task/cycle** resolves retained work and makes its workspace eligible for retention; **Discard workspace** explicitly removes an archived workspace. Each happens once; repeating it is a conflict. Database evidence, identities and lineage remain available. A failed cleanup is retried on later passes; a new or changed failure is recorded as an activity event at once, an unchanged one at most once a day per service process. Active workspaces and symlink paths are excluded from cleanup. Activity events are capped at the configured count. Command output is drained and bounded; raw runner tool arguments and output streams are not stored in the dashboard event log. Runner transcript storage is separate: Codex uses the service account's Codex home, and OpenCode uses its data directory. Configure host retention for the selected runners separately.
+Retention housekeeping runs every 15 minutes, including while paused or configured only for audits. Published task workspaces and completed cycle directories follow the configured retention period (14 days by default). Successful planning-role clones are disposed after structured results, session evidence and unchanged-source checks are persisted. Failed or modified clones and unresolved task workspaces remain retained. **Archive task/cycle** resolves retained work and makes its workspace eligible for retention; **Discard workspace** explicitly removes an archived workspace. Each happens once; repeating it is a conflict. Database evidence, identities and lineage remain available. A failed cleanup is retried on later passes; a new or changed failure is recorded as an activity event at once, an unchanged one at most once a day per service process. Active workspaces and symlink paths are excluded from cleanup. Activity events are capped at the configured count. Command output is drained and bounded; raw runner tool arguments and output streams are not stored in the dashboard event log. Runner transcript storage is separate: in the Docker deployment both runners keep sessions in the `octomus-runner` volume; unsandboxed, Codex uses the service account's Codex home and OpenCode its data directory. Configure retention for the selected runners separately.
 
-Logs: `journalctl -u octomus-agent`. Task errors and session metadata also appear in the dashboard. Known credential patterns, the webhook URL and values from token/secret/password/API-key environment variables are redacted from dashboard JSON and summaries. Keep secrets out of project documentation and task prompts; this redaction is not a secret-detection guarantee.
+Logs: `docker compose logs octomus` in the Docker deployment, `journalctl -u octomus-agent` under systemd. Task errors and session metadata also appear in the dashboard. Known credential patterns, the webhook URL and values from token/secret/password/API-key environment variables are redacted from dashboard JSON and summaries. Keep secrets out of project documentation and task prompts; this redaction is not a secret-detection guarantee.
 
 ## Backup and upgrade
 
-Pause and stop the service before a file-copy backup:
+Pause and stop the service before a file-copy backup. In the Docker deployment, stop the
+stack and archive its volumes and secrets together:
+
+```bash
+docker compose stop
+docker run --rm --network none -v octomus-data:/backup/data:ro -v octomus-runner:/backup/runner:ro \
+  -v "$PWD":/out debian:trixie-slim tar czf /out/octomus-backup.tgz -C /backup data runner
+sudo tar czf octomus-secrets.tgz secrets .env
+docker compose start
+```
+
+Under systemd:
 
 ```bash
 sudo systemctl stop octomus-agent
@@ -196,7 +300,7 @@ table in `internal/httpapi/httpapi.go` (`buildRoutes`) is authoritative.
 
 | Method | Path | Purpose | Success |
 | --- | --- | --- | --- |
-| `GET` | `/api/state` | Dashboard snapshot: mode, work, capacity, storage, notifications, baseline | 200 |
+| `GET` | `/api/state` | Dashboard snapshot: mode, work, capacity, storage, notifications, baseline, sandbox posture | 200 |
 | `GET` | `/api/tasks` | Task history page | 200 |
 | `GET` | `/api/tasks/{id}` | One task with `allowed_actions` and its attempt and live limits | 200 |
 | `POST` | `/api/tasks/{id}/{action}` | `cancel`, `retry`, `supersede`, `archive`, `discard` or `reconcile` | 200 |
@@ -214,7 +318,8 @@ table in `internal/httpapi/httpapi.go` (`buildRoutes`) is authoritative.
 | `GET` | `/api/baseline-checks/{id}` | One baseline check | 200 |
 | `POST` | `/api/baseline-checks/{id}/cancel` | Cancel a running check | 200 |
 | `POST` | `/api/control/{action}` | `pause`, `resume` (Start continuous), `cycle` (Run once) or `audit` | 200 |
-| `POST` | `/api/doctor` | Connection check; `?mode=audit` checks planning only | 200 |
+| `POST` | `/api/doctor` | Connection check, including the sandbox self-test; `?mode=audit` checks planning only | 200 |
+| `POST` | `/api/sandbox/self-test` | Run the [containment self-test](sandbox.md#prove-it-the-self-test) in a probe sandbox; `409` when the sandbox is off | 200 |
 | `POST` | `/api/model-catalog` | [Runner model catalog](model-routing.md#dashboard-and-api) | 200 |
 | `GET` | `/api/events` | Newest 200 activity events; `?entity=<id>` filters them | 200 |
 
@@ -232,7 +337,11 @@ writes the check's version warnings to its log.
 ## CLI
 
 ```text
-octomus-agent [--data-dir PATH] [--listen IP:PORT] [--assets PATH]
+octomus-agent [--data-dir PATH] [--listen IP:PORT] [--assets PATH] [--sandbox docker|off]
+octomus-agent --sandboxd
+octomus-agent --sandboxd-check
+octomus-agent --egress
+octomus-agent --healthcheck [--listen IP:PORT]
 octomus-agent --print-config
 octomus-agent --data-dir PATH --usage-report
 octomus-agent --data-dir PATH --doctor
@@ -244,7 +353,16 @@ octomus-agent --version
 
 `--data-dir` defaults to `.octomus` in the working directory and `--listen` to
 `127.0.0.1:4200`. Environment equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`,
-`OCTOMUS_ASSETS`; the service also requires `OCTOMUS_TOKEN`. `--assets`/`OCTOMUS_ASSETS`
+`OCTOMUS_ASSETS`; the service also requires `OCTOMUS_TOKEN` (or `OCTOMUS_TOKEN_FILE`).
+`--sandbox` (`OCTOMUS_SANDBOX`) defaults to `docker`, which runs every runner and
+verification command through the broker at `OCTOMUS_SANDBOXD_SOCKET`; `off` runs them on
+this host. `--sandboxd` serves the broker and `--egress` the egress gateway, each configured
+from the environment in [compose.yaml](../deploy/docker/compose.yaml). `--sandboxd-check` asks
+the broker over its socket whether it serves sandboxes; the sandboxd container's HEALTHCHECK runs
+it, and the control plane waits for that health before starting. `--healthcheck` asks
+the local service for `/healthz`. The container image also uses
+`--sandbox-init` (the in-sandbox helper) and `--git-credential` (the control plane's Git
+credential helper); neither is meant to be run by hand. `--assets`/`OCTOMUS_ASSETS`
 explicitly replaces embedded serving with a directory containing `200.html`; the default
 needs no asset files. `--doctor --audit` (or **Check audit connection**) checks only
 planning prerequisites. The `--doctor` check takes the same state lock as the service;

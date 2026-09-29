@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -110,7 +110,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	}
 	client := a.runners(ctx, cfg, task.ID)
 	defer func() { _ = client.Close() }()
-	if err := client.ValidateRoutes(cfg, a.DataDir, false); err != nil {
+	if err := a.validateRoutes(client, cfg, false); err != nil {
 		return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
 	}
 	admissionReserved := task.ExecutionSession == nil
@@ -120,7 +120,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		}
 	}
 	ws := task.Workspace
-	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+	if _, err := workspace.GitDir(ws); err != nil {
 		return model.BlockedReasonWorkspaceInvalid
 	}
 	if task.ComparisonBase == "" {
@@ -139,7 +139,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		if revision == task.SourceRevision {
 			return fmt.Errorf("No changes were committed on top of the source revision: %w", model.BlockedReasonVerificationFailed)
 		}
-		names, err := gitops.Git(ctx, cfg, ws, []string{"diff", "--name-only", task.SourceRevision, revision})
+		names, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--name-only", task.SourceRevision, revision})
 		if err != nil {
 			return err
 		}
@@ -268,7 +268,7 @@ func (a *App) validateRecordedWorkspace(ctx context.Context, task *model.Task) e
 	if !config.SamePath(task.Workspace, ws) || task.ComparisonBase == "" {
 		return model.BlockedReasonWorkspaceInvalid
 	}
-	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+	if _, err := workspace.GitDir(ws); err != nil {
 		return model.BlockedReasonWorkspaceInvalid
 	}
 	return ensureWorkspaceAt(ctx, task.ExecutionConfig(), ws, task.SourceRevision)
@@ -349,7 +349,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if task.PRNumber != nil {
-			task.ComparisonBase, err = gitops.Git(ctx, cfg, ws, []string{"merge-base", task.DefaultRevision, task.SourceRevision})
+			task.ComparisonBase, err = gitops.WorkGit(ctx, cfg, ws, []string{"merge-base", task.DefaultRevision, task.SourceRevision})
 			if err != nil {
 				return err
 			}
@@ -439,8 +439,13 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 	if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
 		return nil, err
 	}
-	for _, command := range cfg.VerificationCommands {
-		outcome := runCheckCommand(ctx, cfg, ws, command, revision)
+	checkout, discard, err := a.verificationCheckout(ctx, task, revision)
+	if err != nil {
+		return nil, err
+	}
+	defer discard()
+	for i, command := range cfg.VerificationCommands {
+		outcome := runCheckCommand(ctx, a.sandbox, cfg, checkout, command, revision, i == 0)
 		if ctx.Err() != nil {
 			return nil, process.ErrCancelled
 		}
@@ -455,6 +460,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		output := outcome.evidenceText(verificationOutputLimit-len(note)) + note
 		task.Verification = append(task.Verification, model.Verification{
 			Command: command, Success: outcome.intactErr == nil && outcome.intact && !failed, Output: output, Revision: revision, CreatedAt: model.Now(),
+			Sandbox: outcome.sandbox,
 		})
 		if err := a.saveTask(task); err != nil {
 			return nil, err
@@ -470,6 +476,29 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		}
 	}
 	return verificationErrors, nil
+}
+
+// verificationDir holds each verification run's pristine checkout inside the task's root.
+const verificationDir = "verify"
+
+// verificationCheckout clones the reviewed revision fresh for one verification run and returns a function that removes
+// it. Anything a session left in the task work tree beyond the reviewed commit cannot influence the result.
+func (a *App) verificationCheckout(ctx context.Context, task *model.Task, revision string) (string, func(), error) {
+	taskRoot := filepath.Dir(task.Workspace)
+	root := filepath.Join(taskRoot, verificationDir)
+	if err := workspace.RemoveOwnedDir(taskRoot, root); err != nil {
+		return "", nil, fmt.Errorf("Removing a previous verification checkout: %w", err)
+	}
+	checkout := filepath.Join(root, "workspace")
+	if err := gitops.CloneReviewed(ctx, task.ExecutionConfig(), task.Workspace, checkout, revision); err != nil {
+		_ = workspace.RemoveOwnedDir(taskRoot, root)
+		return "", nil, fmt.Errorf("Preparing the verification checkout: %w", err)
+	}
+	return checkout, func() {
+		if err := workspace.RemoveOwnedDir(taskRoot, root); err != nil {
+			_ = a.Store.Event(task.ID, "cleanup_error", "verification checkout: "+redact.Error(err))
+		}
+	}, nil
 }
 
 func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runners, review model.Review, verificationErrors []string) error {
@@ -548,6 +577,7 @@ type checkOutcome struct {
 	capture   error
 	intact    bool
 	intactErr error
+	sandbox   *model.SandboxRecord
 }
 
 func (o checkOutcome) failed() bool {
@@ -601,9 +631,9 @@ func boundedTail(text string, limit int) string {
 	return prefix + text[start:]
 }
 
-func runCheckCommand(ctx context.Context, cfg config.Config, ws, command, revision string) checkOutcome {
-	captured, captureErr := process.ShellCheck(ctx, command, ws, cfg.CommandTimeoutSeconds)
-	outcome := checkOutcome{captured: captured, capture: captureErr}
+func runCheckCommand(ctx context.Context, box sandbox.Backend, cfg config.Config, ws, command, revision string, fresh bool) checkOutcome {
+	captured, evidence, captureErr := sandbox.Verify(ctx, box, ws, command, cfg.CommandTimeoutSeconds, fresh)
+	outcome := checkOutcome{captured: captured, capture: captureErr, sandbox: evidence}
 	if ctx.Err() == nil {
 		outcome.intact, outcome.intactErr = gitops.At(ctx, cfg, ws, revision)
 	}

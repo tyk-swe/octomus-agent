@@ -26,6 +26,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/notifications"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/report"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -46,14 +47,24 @@ func printJSON(stdout io.Writer, value any) error {
 }
 
 type arguments struct {
-	dataDir, listen                         string
-	listenAddr                              netip.AddrPort
-	assets, exportRun                       *string
-	printConfig, doctor, audit, usageReport bool
+	dataDir, listen                                   string
+	listenAddr                                        netip.AddrPort
+	assets, exportRun                                 *string
+	printConfig, doctor, audit, usageReport, sandboxd bool
+	egress, healthcheck, sandboxdCheck                bool
+	sandbox                                           sandbox.Mode
 }
 
 func main() { os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr)) }
 func run(args []string, env func(string) (string, bool), stdout, stderr io.Writer) int {
+	// The in-sandbox helper runs inside containers and takes its own arguments.
+	if len(args) > 0 && args[0] == "--sandbox-init" {
+		return sandbox.RunInit(args[1:], os.Stdin, stdout, stderr)
+	}
+	// Git calls its credential helper with the operation appended.
+	if len(args) > 0 && args[0] == "--git-credential" {
+		return gitCredential(args[1:], os.Stdin, stdout)
+	}
 	parsed, display, err := parse(args, env)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n\nFor more information, try '--help'.\n", err)
@@ -69,6 +80,26 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 	}
 	if parsed.printConfig {
 		if err := printJSON(stdout, config.Default()); err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if parsed.healthcheck {
+		return healthcheck(parsed.listen, stderr)
+	}
+	if parsed.sandboxdCheck {
+		return sandboxdCheck(env, stderr)
+	}
+	if parsed.egress {
+		if err := runEgress(env, stdout, stderr); err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if parsed.sandboxd {
+		if err := runBroker(env, stderr); err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 1
 		}
@@ -100,6 +131,10 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 }
 
 func service(parsed arguments, env func(string) (string, bool), stdout, stderr io.Writer) error {
+	env, err := loadSecretFiles(env, os.Setenv)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(parsed.dataDir, 0o700); err != nil {
 		return err
 	}
@@ -126,7 +161,14 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		return err
 	}
 	defer state.Close()
-	app := engine.New(state, data)
+	backend := sandboxBackend(parsed.sandbox, env, stderr)
+	startup, stopStartup := signal.NotifyContext(context.Background(), shutdownSignals()...)
+	deployment, err := prepareDeployment(startup, parsed.sandbox, data, env, stderr)
+	stopStartup()
+	if err != nil {
+		return err
+	}
+	app := engine.New(state, data, engine.WithSandbox(backend), engine.WithDeployment(deployment))
 	if parsed.doctor {
 		mode := model.CycleModeExecution
 		if parsed.audit {
@@ -151,7 +193,11 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		assetsOverride = *parsed.assets
 	}
 	if !parsed.listenAddr.Addr().IsLoopback() {
-		fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
+		if _, container := env("OCTOMUS_CONTAINER"); container {
+			fmt.Fprintf(stderr, "Non-loopback listener %s inside the container: publish it on 127.0.0.1 only, as the supplied compose file does, and reach it through an SSH tunnel.\n", parsed.listen)
+		} else {
+			fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
+		}
 	}
 	webhook, _ := env(redact.WebhookEnv)
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
@@ -212,11 +258,18 @@ func runDoctor(ctx context.Context, app *engine.App, mode model.CycleMode, stdou
 }
 
 func parse(args []string, env func(string) (string, bool)) (arguments, string, error) {
-	a := arguments{dataDir: ".octomus", listen: "127.0.0.1:4200"}
+	a := arguments{dataDir: ".octomus", listen: "127.0.0.1:4200", sandbox: sandbox.ModeDocker}
 	for key, dst := range map[string]*string{"OCTOMUS_DATA_DIR": &a.dataDir, "OCTOMUS_LISTEN": &a.listen} {
 		if v, ok := env(key); ok {
 			*dst = v
 		}
+	}
+	if v, ok := env("OCTOMUS_SANDBOX"); ok {
+		mode, err := sandbox.ParseMode(v)
+		if err != nil {
+			return a, "", fmt.Errorf("invalid value %q for OCTOMUS_SANDBOX: %w", v, err)
+		}
+		a.sandbox = mode
 	}
 	if v, ok := env("OCTOMUS_ASSETS"); ok {
 		a.assets = &v
@@ -236,7 +289,7 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 		}
 		seen[name] = true
 		switch name {
-		case "--data-dir", "--listen", "--assets", "--export-run":
+		case "--data-dir", "--listen", "--assets", "--export-run", "--sandbox":
 			if !hasValue {
 				if i+1 == len(args) || strings.HasPrefix(args[i+1], "-") {
 					return a, "", fmt.Errorf("a value is required for '%s'", name)
@@ -259,8 +312,14 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 				a.assets = &value
 			case "--export-run":
 				a.exportRun = &value
+			case "--sandbox":
+				mode, err := sandbox.ParseMode(value)
+				if err != nil {
+					return a, "", fmt.Errorf("invalid value %q for '--sandbox': %w", value, err)
+				}
+				a.sandbox = mode
 			}
-		case "--print-config", "--doctor", "--audit", "--usage-report":
+		case "--print-config", "--doctor", "--audit", "--usage-report", "--sandboxd", "--sandboxd-check", "--egress", "--healthcheck":
 			if hasValue {
 				return a, "", fmt.Errorf("unexpected value for '%s'", name)
 			}
@@ -273,6 +332,14 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 				a.audit = true
 			case "--usage-report":
 				a.usageReport = true
+			case "--sandboxd":
+				a.sandboxd = true
+			case "--sandboxd-check":
+				a.sandboxdCheck = true
+			case "--egress":
+				a.egress = true
+			case "--healthcheck":
+				a.healthcheck = true
 			}
 		case "--":
 			if i != len(args)-1 {
@@ -298,6 +365,15 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	}
 	if a.exportRun != nil && (a.doctor || a.printConfig || a.usageReport) {
 		return a, "", fmt.Errorf("--export-run cannot be used with --doctor, --print-config or --usage-report")
+	}
+	modes := 0
+	for _, mode := range []bool{a.sandboxd, a.sandboxdCheck, a.egress, a.healthcheck, a.doctor, a.printConfig, a.usageReport, a.exportRun != nil} {
+		if mode {
+			modes++
+		}
+	}
+	if (a.sandboxd || a.sandboxdCheck || a.egress || a.healthcheck) && modes > 1 {
+		return a, "", fmt.Errorf("--sandboxd, --sandboxd-check, --egress and --healthcheck cannot be combined with another mode")
 	}
 	return a, "", nil
 }
@@ -326,6 +402,12 @@ Options:
       --audit                  Check only audit prerequisites with --doctor
       --usage-report           Export a read-only JSON usage report from saved state and exit
       --export-run <CYCLE_ID>   Export read-only JSON run evidence for one saved cycle and exit
+      --sandbox <MODE>          Where runners and verification run: docker, through the sandbox broker, or off,
+                                directly on this host [env: OCTOMUS_SANDBOX] [default: docker]
+      --sandboxd                Serve the sandbox broker (the only component that uses the Docker socket)
+      --sandboxd-check          Exit 0 when the sandbox broker answers on its socket
+      --egress                  Serve the egress gateway that sandboxes reach the internet through
+      --healthcheck             Exit 0 when the service on --listen answers its health check
   -h, --help                   Print help
   -V, --version                Print version
 `

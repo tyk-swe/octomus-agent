@@ -24,8 +24,52 @@ the first release contains.
 - Linux x86_64 and aarch64 release packaging and a checksum-verifying installer.
 - A security policy, threat model, hardened systemd unit, failed-authentication backoff
   and warnings for non-loopback listeners.
+- Sandboxed execution by default. Every agent turn and verification command runs in its
+  own container built by a sandbox broker (`--sandboxd`), the only component holding the
+  Docker socket. Sandboxes are non-root, with no capabilities, a read-only image, CPU,
+  memory, process and `/tmp` limits, and no transcript logs. They see only their root's
+  work tree, read-only git metadata and home, and never a GitHub credential.
+- An egress gateway (`--egress`): sandboxes on internal networks with an isolated gateway
+  reach the internet only through CONNECT tunnels to per-kind host allowlists. Refused
+  names are never resolved, non-public addresses are refused, and every decision is logged.
+- A containment self-test that runs inside a real sandbox, part of every connection check
+  and available from the Overview and `POST /api/sandbox/self-test`, with a Sandbox panel,
+  a Sandbox setup step and a permanent warning when unsandboxed.
+- A Docker Compose deployment in `deploy/docker`: one control-plane image serving the
+  control plane, broker and gateway, a sandbox image with the pinned runners, `setup.sh`,
+  a runner-login service, file-held secrets, a built-in Git credential helper and a
+  repository pinned by `OCTOMUS_GITHUB_REPO`.
+- Sandbox records on every session, verification command and baseline command: container
+  count, image, memory-limit kills, and the hosts the egress gateway allowed or refused.
+  Task details show them with refused hosts highlighted; host names are never exported
+  as run evidence.
+- Release images: tags build `octomus-agent` and `octomus-sandbox` for amd64 and arm64,
+  push them to GHCR with an SBOM and build provenance, and sign each digest with cosign
+  keyless signing. Image publication has not run yet.
+- `make test-sandbox` and a `sandbox` CI job: the broker against a real Docker daemon, and
+  the shipped compose file end to end with fixture runners inside real sandboxes.
 
 ### Changed
+
+- The service takes `--sandbox docker|off` (`OCTOMUS_SANDBOX`) and defaults to `docker`;
+  without a reachable broker it starts but refuses work. The systemd unit and the
+  unsandboxed dedicated-VM instructions now pass `--sandbox off` explicitly.
+- Owned clones keep their git metadata in `repo.git` beside the work tree. Every
+  orchestrator git command on a work tree names it explicitly and pins hooks, fsmonitor,
+  the untracked cache and submodule recursion off, so configuration or a `.git` entry
+  planted in the work tree never runs in, or redirects, the orchestrator. Clones made
+  earlier still resolve their in-tree metadata.
+- A snapshot that would add or move a submodule entry is refused as `workspace_invalid`,
+  because the gitlink would publish content nobody reviewed.
+- Runners start bound to one owned root and stop after every turn, so nothing an agent
+  started is running when its work is judged, committed or verified. Route validation,
+  doctor checks and model catalogs run from an empty scratch root.
+- Each verification run uses a fresh clone of exactly the reviewed revision, removed
+  afterwards. Ignored files, caches and build output a session left in the task work tree
+  no longer reach verification, so commands must install their own dependencies, as the
+  clean-baseline check already required.
+- Grounding fetches fork PR heads into the trusted checkout, and planning agents inspect
+  them by SHA instead of fetching from GitHub.
 
 - Refreshed dashboard and login styling, clearer setup-state explanations, and audit-first
   guidance for installations without a recorded cycle. The public dashboard screenshot

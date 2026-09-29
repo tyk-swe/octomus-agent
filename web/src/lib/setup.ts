@@ -9,7 +9,8 @@ import type {
   ModelCatalog,
   NotificationHealth,
   OperatingMode,
-  Route
+  Route,
+  SandboxPosture
 } from './types';
 
 export type SetupTone = 'missing' | 'draft' | 'saved' | 'checked' | 'failed' | 'ran';
@@ -34,6 +35,7 @@ export type SetupStatus = {
   active_cycle_mode: CycleMode | null;
   queued: number;
   latest: CycleSummary | null;
+  sandbox: SandboxPosture;
 };
 
 const REPOSITORY_FIELDS = ['repository', 'github_repo', 'default_branch', 'branch_prefix'] as const;
@@ -152,6 +154,48 @@ export function verificationStep(draft: string[], saved: string[]): SetupStep {
     tone: 'saved',
     label: 'Saved',
     detail: `${plural(saved.length, 'saved command')} run inside every task workspace; all must pass on the reviewed revision before publication.`
+  };
+}
+
+/** The sandbox is proven by the containment self-test that every connection check runs inside a real sandbox. */
+export function sandboxStep(status: SetupStatus | null): SetupStep {
+  if (!status)
+    return { tone: 'missing', label: 'Waiting', detail: 'Waiting for the service status.' };
+  const sandbox = status.sandbox;
+  if (sandbox.mode === 'off')
+    return {
+      tone: 'failed',
+      label: 'Off',
+      detail:
+        'The service was started with --sandbox off: agents and verification commands run with its own permissions. Keep it on a dedicated VM, or deploy with Docker to sandbox every turn.'
+    };
+  if (!sandbox.healthy)
+    return {
+      tone: 'failed',
+      label: 'Unavailable',
+      detail: `${sandbox.error ?? 'The sandbox broker does not answer.'} Start the sandboxd service; no work starts without it.`
+    };
+  const test = sandbox.self_test;
+  if (!test)
+    return {
+      tone: 'missing',
+      label: 'Not yet proven',
+      detail:
+        'Check connection runs the containment self-test inside a real sandbox; you can also run it from the Overview.'
+    };
+  const failed = test.checks.filter((check) => !check.passed);
+  if (test.error || failed.length)
+    return {
+      tone: 'failed',
+      label: 'Self-test failed',
+      detail:
+        test.error ??
+        `Failed from inside a sandbox: ${failed.map((check) => `${check.label} (${check.detail})`).join('; ')}.`
+    };
+  return {
+    tone: 'checked',
+    label: `Proven · ${relative(test.at)}`,
+    detail: `All ${test.checks.length} containment checks passed from inside a sandbox: no capabilities, a read-only image, no route out except the egress allowlist, and no view of Octomus state or credentials.`
   };
 }
 

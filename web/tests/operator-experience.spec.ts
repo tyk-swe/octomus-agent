@@ -12,7 +12,7 @@ import type {
   TaskRow,
   TransformedField
 } from '../src/lib/types';
-import { login, openNavigation, test, token, trackWrites } from './synthetic';
+import { login, openNavigation, test, token, trackWrites, unsandboxed } from './synthetic';
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -568,7 +568,7 @@ test('a blank runner executable is flagged on its own field before any save is s
   page,
   isMobile
 }) => {
-  const state = await configurationFixture(page);
+  const state = await configurationFixture(page, { snapshot: unsandboxed });
   await login(page);
   await openNavigation(page, 'Configuration', !!isMobile);
   const save = page.getByRole('button', { name: 'Save configuration' });
@@ -674,7 +674,7 @@ test('configuration keeps drafts and catalogs across views, discards locally, an
   page,
   isMobile
 }) => {
-  const state = await configurationFixture(page);
+  const state = await configurationFixture(page, { snapshot: unsandboxed });
   const navigate = navigatorFor(page, !!isMobile);
   await login(page);
   await navigate('Configuration');
@@ -1165,6 +1165,7 @@ test('a previewed runner executable is never sent for a model catalog until it i
   isMobile
 }) => {
   const state = await configurationFixture(page, {
+    snapshot: unsandboxed,
     transformed: {
       overrides: { codex_binary: '/opt/ta[redacted]/bin/codex' },
       fields: [{ field: 'codex_binary', kinds: ['redacted'], paths: [['codex_binary']] }]
@@ -1228,7 +1229,9 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(step('choose')).toContainText(
     'Audit: saved configuration incomplete. Run once: saved configuration incomplete.'
   );
-  await expect(page.getByText('0 of 6 steps saved, checked or run')).toBeVisible();
+  await expect(badge('sandbox')).toHaveText(/^Proven · /);
+  await expect(step('sandbox')).toContainText('containment checks passed from inside a sandbox');
+  await expect(page.getByText('1 of 7 steps saved, checked or run')).toBeVisible();
 
   await page.getByLabel('Repository path').fill('/fixture/entered');
   await page.getByLabel('GitHub repository').fill('fixture/entered');
@@ -1282,7 +1285,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(badge('verification')).toHaveText('Saved');
   await expect(badge('preflight')).toHaveText('Not checked');
   await expect(step('preflight')).toContainText('does not prove repository push permission');
-  await expect(page.getByText('3 of 6 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('4 of 7 steps saved, checked or run')).toBeVisible();
   expect(state.writes).toHaveLength(2);
 
   await step('preflight').getByRole('button', { name: 'Open the execution check' }).click();
@@ -1291,7 +1294,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await page.keyboard.press('Enter');
   await expect(badge('preflight')).toHaveText(/^Passed · execution · /);
   await expect.poll(() => state.checks).toEqual(['execution']);
-  await expect(page.getByText('4 of 6 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('5 of 7 steps saved, checked or run')).toBeVisible();
 
   const checked = structuredClone(state.saved!);
   const result = await badge('preflight').innerText();
@@ -1305,7 +1308,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(page.getByRole('button', { name: 'Check connection', exact: true })).toBeEnabled();
   await expect(badge('preflight')).toHaveText(result);
   await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('4 of 6 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('5 of 7 steps saved, checked or run')).toBeVisible();
   expect(state.checks).toEqual(['execution']);
 
   await page.getByLabel('Default branch', { exact: true }).fill('edited-main');
@@ -1487,7 +1490,7 @@ test('setup checklist links focus existing controls, hands off to the Overview a
   await page.getByRole('button', { name: 'Hide checklist' }).click();
   await expect(page.locator('[data-step]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Show checklist' }).click();
-  await expect(page.locator('[data-step]')).toHaveCount(6);
+  await expect(page.locator('[data-step]')).toHaveCount(7);
 
   restriction = 'task';
   await expect(step('choose')).toContainText(

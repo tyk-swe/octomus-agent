@@ -187,7 +187,7 @@ func TestCloneAtCreatesAnIndependentCheckout(t *testing.T) {
 	if name, err := git.Git(ctx, c, workspace, []string{"config", "user.name"}); err != nil || name != "Octomus Agent" {
 		t.Fatalf("user.name = %q, %v", name, err)
 	}
-	if exclude, err := os.ReadFile(filepath.Join(workspace, ".git/info/exclude")); err != nil ||
+	if exclude, err := os.ReadFile(filepath.Join(filepath.Dir(workspace), "repo.git", "info", "exclude")); err != nil ||
 		!strings.Contains(string(exclude), "/.octomus/") {
 		t.Fatalf("exclude = %q, %v", exclude, err)
 	}
@@ -1177,10 +1177,11 @@ func TestFixturePublishNeverRecursesIntoSubmodules(t *testing.T) {
 	writeFile(t, filepath.Join(task.Workspace, "sub", "lib.txt"), "changed locally\n")
 	realGit(t, filepath.Join(task.Workspace, "sub"), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com",
 		"commit", "-am", "Unpushed library change")
-	commit, err := git.Snapshot(ctx, c, task.Workspace, "Move the submodule")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := git.Snapshot(ctx, c, task.Workspace, "Move the submodule"); model.BlockedReasonFromError(err) != model.BlockedReasonWorkspaceInvalid {
+		t.Fatalf("snapshot of a moved submodule = %v; want it refused as unreviewed content", err)
 	}
+	realGit(t, task.Workspace, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "-m", "Move the submodule")
+	commit := realGit(t, task.Workspace, "rev-parse", "HEAD")
 	task.OutputCommit = strptr(commit)
 	task.Reviews[0].Revision = commit
 	task.Verification[0].Revision = commit

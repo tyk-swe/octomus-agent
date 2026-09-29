@@ -7,6 +7,7 @@
     preflightStep,
     repositoryStep,
     routesStep,
+    sandboxStep,
     verificationStep,
     type Preflight,
     type SetupStatus,
@@ -41,6 +42,12 @@
   const draftCommands = $derived(parseCommands(commands));
   type Link = { label: string; target?: string; choose?: 'audit' | 'cycle' };
   const steps = $derived<{ id: string; title: string; step: SetupStep; links: Link[] }[]>([
+    {
+      id: 'sandbox',
+      title: 'Sandbox',
+      step: sandboxStep(status),
+      links: [{ label: 'Open the connection check', target: 'check-connection' }]
+    },
     {
       id: 'repository',
       title: 'Repository details',

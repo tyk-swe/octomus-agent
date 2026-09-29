@@ -3,12 +3,11 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,8 +16,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -36,8 +37,8 @@ func OpenCodeVersionWarning(version string) *string {
 }
 
 type OpenCode struct {
-	child     *process.GroupChild
-	stdout    *os.File
+	child     sandbox.Child
+	stdout    io.ReadCloser
 	client    *http.Client
 	base      string
 	password  string
@@ -54,7 +55,7 @@ type OpenCode struct {
 	closeErr  error
 }
 
-func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string) (*OpenCode, error) {
+func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (*OpenCode, error) {
 	if ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
 	}
@@ -72,72 +73,33 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	if err != nil {
 		return nil, err
 	}
-	cmd := process.Command(cfg.OpencodeBinary, cwd)
-	cmd.Args = append(cmd.Args, "serve", "--hostname", "127.0.0.1", "--port", "0")
-	cmd.Env = append(cmd.Env,
-		"OPENCODE_SERVER_USERNAME=octomus",
-		"OPENCODE_SERVER_PASSWORD="+password,
-		"OPENCODE_CONFIG_CONTENT="+policyJSON,
-		"OPENCODE_DISABLE_PROJECT_CONFIG=true",
-		"OPENCODE_DISABLE_AUTOUPDATE=true",
-		"OPENCODE_DISABLE_AUTOCOMPACT=true",
-		"OPENCODE_DISABLE_TERMINAL_TITLE=true",
-	)
-	stdoutR, stdoutW, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
-	cmd.Stdout = stdoutW
 	tail := &stderrTail{}
-	cmd.Stderr = tail
-	cmd.WaitDelay = stderrWaitDelay
-	if err := cmd.Start(); err != nil {
-		stdoutR.Close()
-		stdoutW.Close()
-		return nil, fmt.Errorf("Could not start OpenCode; install and configure OpenCode as the service user: %w", err)
-	}
-	stdoutW.Close()
-	child := process.NewGroupChild(cmd)
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
-	done := make(chan struct{})
-	lines := lineReader(stdoutR, 16_384, done)
-	cleanup := func(err error) (*OpenCode, error) {
-		close(done)
-		child.Close()
-		stdoutR.Close()
-		_ = joinOwned(waitCh, drained(lines), "OpenCode server did not exit during cleanup")
+	started, err := box.StartOpenCode(ctx, sandbox.Spec{
+		Kind: sandbox.KindRunner, Runner: config.BackendOpencode, Binary: cfg.OpencodeBinary, Dir: cwd, Stderr: tail,
+		Env: []string{
+			"OPENCODE_SERVER_USERNAME=octomus",
+			"OPENCODE_SERVER_PASSWORD=" + password,
+			"OPENCODE_CONFIG_CONTENT=" + policyJSON,
+			"OPENCODE_DISABLE_PROJECT_CONFIG=true",
+			"OPENCODE_DISABLE_AUTOUPDATE=true",
+			"OPENCODE_DISABLE_AUTOCOMPACT=true",
+			"OPENCODE_DISABLE_TERMINAL_TITLE=true",
+		},
+	}, min(cfg.CommandTimeoutSeconds, 60))
+	if err != nil {
+		var notStarted *sandbox.StartError
+		if errors.As(err, &notStarted) {
+			return nil, fmt.Errorf("Could not start OpenCode; %s: %w", runnerSetupHint(box, "install and configure OpenCode as the service user"), notStarted.Err)
+		}
 		return nil, tail.explain(err)
 	}
-	base, err := process.Bounded(ctx, min(cfg.CommandTimeoutSeconds, 60), "OpenCode startup timed out", func(wctx context.Context) (string, error) {
-		for range 1000 {
-			select {
-			case r, ok := <-lines:
-				if !ok {
-					return "", fmt.Errorf("OpenCode exited before server readiness")
-				}
-				if r.err != nil {
-					return "", r.err
-				}
-				if endpoint, found := strings.CutPrefix(string(r.line), "opencode server listening on "); found {
-					return parseReadyURL(strings.TrimSpace(endpoint))
-				}
-			case <-wctx.Done():
-				return "", wctx.Err()
-			}
-		}
-		return "", fmt.Errorf("OpenCode exceeded the startup output limit")
-	})
-	if err != nil {
-		return cleanup(err)
-	}
-	client := newLoopbackClient()
-	drainDone := discardStdout(lines, stdoutR)
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- exitErr(started.Child.Wait()) }()
 	server := &OpenCode{
-		child:     child,
-		stdout:    stdoutR,
-		client:    client,
-		base:      base,
+		child:     started.Child,
+		stdout:    started.Child.Stdout(),
+		client:    newClient(started.Transport),
+		base:      started.Base,
 		password:  password,
 		agent:     agent,
 		timeout:   cfg.SessionTimeoutSeconds,
@@ -145,8 +107,8 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		state:     state,
 		entity:    entity,
 		waitCh:    waitCh,
-		done:      done,
-		drainDone: drainDone,
+		done:      make(chan struct{}),
+		drainDone: started.Drained,
 	}
 	fail := func(err error) (*OpenCode, error) {
 		_ = server.Close()
@@ -175,11 +137,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	return server, nil
 }
 
-func newLoopbackClient() *http.Client {
-	transport := &http.Transport{
-		Proxy:       nil,
-		DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-	}
+func newClient(transport http.RoundTripper) *http.Client {
 	return &http.Client{
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -187,6 +145,8 @@ func newLoopbackClient() *http.Client {
 		},
 	}
 }
+
+func newLoopbackClient() *http.Client { return newClient(sandbox.LoopbackTransport()) }
 
 func (o *OpenCode) ProtocolSchema(cwd string) (any, error) {
 	return o.call("GET", "/doc", cwd, nil, 60)
@@ -646,10 +606,13 @@ func errorName(value any) string {
 	return "runtime error"
 }
 
+// SandboxEvidence is what the sandbox this server ran in recorded, once it is closed.
+func (o *OpenCode) SandboxEvidence() *model.SandboxRecord { return sandbox.EvidenceOf(o.child) }
+
 func (o *OpenCode) Close() error {
 	o.once.Do(func() {
 		close(o.done)
-		o.child.Close()
+		o.child.Kill()
 		o.stdout.Close()
 		o.client.CloseIdleConnections()
 		o.closeErr = joinOwned(o.waitCh, o.drainDone, "OpenCode server did not exit during cleanup")

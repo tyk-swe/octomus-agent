@@ -6,15 +6,20 @@
 SvelteKit static dashboard
           │ same-origin JSON API + bearer token
           ▼
-Go service (net/http)
+Go control plane (net/http)
  ├─ SQLite state, event log, daily admission counter and ledger
  ├─ one scheduler, configured task concurrency, branch writer locks
- ├─ Codex app-server subprocesses over newline-delimited JSON RPC
- ├─ owned OpenCode HTTP/SSE servers on loopback
- └─ Git + GitHub CLI publication coordination
+ ├─ Git + GitHub CLI publication coordination on trusted git metadata
+ └─ sandbox backend ── unix socket ──▶ sandbox broker ── Docker Engine API
+                                          │
+                  one container per agent turn or verification command
+                   ├─ Codex app-server over newline-delimited JSON RPC on stdio
+                   ├─ OpenCode HTTP/SSE, relayed as HTTP/2 over stdio
+                   └─ bash -o pipefail verification commands
+                  internal networks ──▶ egress gateway (allowlisted HTTPS only)
 ```
 
-The dashboard polls authoritative service state and never schedules work itself. The production server serves the dashboard embedded in the executable; `--assets` explicitly overrides it with a filesystem build. No database service, message broker, Docker runtime, or sandbox backend is required.
+The dashboard polls authoritative service state and never schedules work itself. The production server serves the dashboard embedded in the executable; `--assets` explicitly overrides it with a filesystem build. No database service or message broker is required. The default Docker deployment runs the control plane, the [sandbox](sandbox.md) broker and the egress gateway from one image; `--sandbox off` runs runners and verification commands as host processes instead.
 
 ## Planning
 
@@ -36,7 +41,7 @@ execution still requires all routes and meaningful verification. Cycles record a
 `audit` or `execution` mode. Both modes use the same cycle numbering and maintenance
 cadence. A graceful shutdown or a crash during planning records the cycle as
 interrupted; interrupted audits are never automatically replayed. Audit clones remain
-subject to admission limits, unsandboxed agent behavior and the normal cycle retention
+subject to admission limits, the deployment's sandboxing and the normal cycle retention
 policy.
 
 Before creating a cycle, the scheduler compares live remaining daily admissions with
@@ -48,7 +53,7 @@ This preflight does not replace or pre-reserve the individual atomic role admiss
 
 ## Tasks and dependencies
 
-A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies. Global admission limits come from current saved policy inside the reservation transaction. Separate attempt policy controls all timeouts, repair/no-progress limits and retry ceiling; explicit retry adopts current attempt limits and starts a fresh repair-round budget, while automatic recovery retains both. Task configuration, routes and verification commands remain immutable. Dependency-authorized source advancement retains the original grounding in the cycle. Workspaces use `.octomus/tasks/<task-id>/workspace` and are cloned before a runner session is created. Native runner session IDs are recorded separately and never used to name directories. Each task uses an independent Git clone. Review and repair threads work in that same task clone.
+A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies. Global admission limits come from current saved policy inside the reservation transaction. Separate attempt policy controls all timeouts, repair/no-progress limits and retry ceiling; explicit retry adopts current attempt limits and starts a fresh repair-round budget, while automatic recovery retains both. Task configuration, routes and verification commands remain immutable. Dependency-authorized source advancement retains the original grounding in the cycle. Workspaces use `.octomus/tasks/<task-id>/workspace`, with the clone's git metadata beside them in `repo.git`, where sandboxes can read but not write it; they are cloned before a runner session is created. Native runner session IDs are recorded separately and never used to name directories. Each task uses an independent Git clone. Review and repair threads work in that same task clone.
 
 Independent tasks can run concurrently. Existing PR branch writers are serialized. Dependent tasks on the same existing PR wait for their prerequisites to publish; the source revision is advanced only to a recorded prerequisite output and its ancestry is checked. External branch movement blocks stale work.
 
@@ -72,7 +77,7 @@ The executor's changes are committed locally. Review uses a fixed comparison bas
 
 A reviewer is always a fresh session on its configured runner. A repair thread starts separately with the task’s saved configurable repair route (shipped with `medium` effort and no model, so it must be configured before a run is ready) and is resumed for subsequent repair turns. Interrupted, failed, missing, malformed, or explicitly incomplete results never count as clean reviews. Rounds and their revisions are recorded.
 
-Configured shell verification runs after a completed clean review. Every command must pass on exactly the reviewed revision. Worktree cleanliness and HEAD are checked before the first command and after each command; a command that leaves the worktree unclean (modified or staged files, or new untracked files that are not git-ignored) or moves HEAD is recorded as failed evidence, stops the remaining commands and blocks the task, so no success is attributed to a revision the command did not actually run against. Verification artifacts such as coverage reports and caches must therefore be git-ignored by the repository. Each command's evidence holds its stdout, then any stderr in a `[stderr]` section, then the exit status on failure, secret-scrubbed and bounded to 16 KiB: each stream keeps its end, even past the diagnostic capture limit, stderr may use half of the bound however long stdout is, and `[output truncated]` marks any cut. A failed workspace state check adds its note, itself capped at 4 KiB, after the output; the bound leaves room for it. Repair turns receive the same text for failed commands. Commands run from the assigned workspace with Bash `pipefail`. Net-empty changes are not publishable, even if an executor made commits.
+Configured shell verification runs after a completed clean review, in a fresh clone of exactly the reviewed revision (removed afterwards), each command in a fresh sandbox. Ignored files, caches and build output a session left in the task work tree never reach verification, so commands install their own dependencies. Every command must pass on exactly the reviewed revision. Worktree cleanliness and HEAD are checked before the first command and after each command; a command that leaves the worktree unclean (modified or staged files, or new untracked files that are not git-ignored) or moves HEAD is recorded as failed evidence, stops the remaining commands and blocks the task, so no success is attributed to a revision the command did not actually run against. Verification artifacts such as coverage reports and caches must therefore be git-ignored by the repository. Each command's evidence holds its stdout, then any stderr in a `[stderr]` section, then the exit status on failure, secret-scrubbed and bounded to 16 KiB: each stream keeps its end, even past the diagnostic capture limit, stderr may use half of the bound however long stdout is, and `[output truncated]` marks any cut. A failed workspace state check adds its note, itself capped at 4 KiB, after the output; the bound leaves room for it. Repair turns receive the same text for failed commands. Commands run from the assigned workspace with Bash `pipefail`. Net-empty changes are not publishable, even if an executor made commits.
 
 Publication requires recorded clean review and successful verification evidence for the output commit. Before writing, the core verifies repository identity, PR ownership/open state, source/default revisions, worktree cleanliness and commit ancestry. It pushes only the assigned prefixed branch, using an exact Git lease to guard the check/push race. The push destination comes from the validated configured checkout, not an agent-editable task remote. No default-branch push is generated.
 
@@ -116,9 +121,9 @@ Unexpected interactive requests fail visibly. RPCs, turns, whole tasks, command 
 
 Repository content and agent outputs are never deserialized into operating configuration. API access requires the operator token, which is excluded from child-process environment variables. JSON is redacted before being returned to the dashboard, and rendered as text rather than trusted HTML.
 
-Because execution is deliberately unsandboxed, prompts and application policy are **not a host security boundary**. A process with the service user's permissions can exercise those permissions. Use the dedicated-host deployment model described in [deployment](deployment.md).
+Codex's own sandbox stays off because the container is the boundary: in the Docker deployment each runner starts in a fresh [sandbox](sandbox.md) bound to one owned root, stopped after each turn, with no GitHub credential and egress only through the allowlisting gateway. Prompts and application policy are **not a security boundary** on their own. With `--sandbox off` a process with the service user's permissions can exercise those permissions; use the dedicated-host model described in [deployment](deployment.md#dedicated-vm-without-a-sandbox).
 
-SQLite uses full synchronous writes and WAL. Only one service may hold the state-directory lock. Restart recovery preserves workspace/session identities and retries initialized interrupted tasks within the retry limit. A graceful stop cancels running work but leaves initialized in-flight tasks to the same recovery as a crash. A deployment supervisor must terminate old processes before recovery; the supplied systemd unit uses control-group termination.
+SQLite uses full synchronous writes and WAL. Only one service may hold the state-directory lock. Restart recovery preserves workspace/session identities and retries initialized interrupted tasks within the retry limit. A graceful stop cancels running work but leaves initialized in-flight tasks to the same recovery as a crash. A deployment supervisor must terminate old processes before recovery: in the Docker deployment the broker kills and removes every sandbox whose stream closes and sweeps leftovers when it starts; the supplied systemd unit uses control-group termination.
 
 ## Usage records and state
 

@@ -1,4 +1,4 @@
-.PHONY: dashboard build build-race check test test-go test-go-race test-contracts test-integration test-browser test-race-e2e package audit
+.PHONY: dashboard build build-race check test test-go test-go-race test-contracts test-integration test-browser test-race-e2e test-sandbox package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
 # E2E scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
@@ -23,6 +23,7 @@ endef
 define CONTRACT_PACKAGE
 	$(E2E_ENV) python3 tests/distribution.py
 	python3 tests/package_guards.py
+	python3 tests/docker_setup.py
 endef
 
 dashboard:
@@ -71,6 +72,12 @@ test-browser: build
 # Opt-in (~7 min): kept out of `make test` because the race runtime perturbs the other suites' timing.
 test-race-e2e: build-race
 	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent-race" GORACE=halt_on_error=1 PYTHONUNBUFFERED=1 python3 tests/e2e.py
+
+# Opt-in: needs a Docker Engine 28+ daemon. Runs the broker against the real daemon, then the shipped compose stack
+# end to end with fixture runners inside real sandboxes.
+test-sandbox: dashboard
+	OCTOMUS_DOCKER_TEST=1 go test -count=1 ./internal/sandbox/...
+	PYTHONUNBUFFERED=1 python3 tests/e2e_sandbox.py
 
 # Pin govulncheck's toolchain to this module's: `go run pkg@version` would otherwise select govulncheck's own (possibly older) go.mod toolchain.
 audit:

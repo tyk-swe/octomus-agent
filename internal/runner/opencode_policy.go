@@ -4,14 +4,12 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	whatwg "github.com/nlnwa/whatwg-url/url"
-
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 )
 
 func workerPolicy(agent string) map[string]any {
@@ -37,26 +35,7 @@ func workerPolicy(agent string) map[string]any {
 	}
 }
 
-func parseReadyURL(endpoint string) (string, error) {
-	u, err := whatwg.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("Invalid OpenCode server address: %w", err)
-	}
-	port, perr := strconv.Atoi(u.Port())
-	authority := endpoint
-	if i := strings.Index(authority, "://"); i >= 0 {
-		authority = authority[i+3:]
-	}
-	if i := strings.IndexByte(authority, '/'); i >= 0 {
-		authority = authority[:i]
-	}
-	if u.Scheme() != "http" || u.Hostname() != "127.0.0.1" || perr != nil || port <= 0 ||
-		u.Username() != "" || u.Password() != "" || strings.Contains(authority, "@") ||
-		u.Pathname() != "/" || strings.ContainsAny(endpoint, "?#") {
-		return "", fmt.Errorf("OpenCode did not bind to a local server address")
-	}
-	return fmt.Sprintf("http://127.0.0.1:%s", u.Port()), nil
-}
+var parseReadyURL = sandbox.ParseLoopbackURL
 
 func appliedPolicy(effective any, agent string) bool {
 	doc, ok := asObject(effective)

@@ -97,6 +97,17 @@ export type Proposal = {
   relevant_paths: string[];
   reconsiders: string[];
 };
+export type SandboxEgress = {
+  allowed: Record<string, number>;
+  denied: Record<string, number>;
+};
+export type SandboxRecord = {
+  image_id: string;
+  runtime: string;
+  runs: number;
+  oom: boolean;
+  egress: SandboxEgress;
+};
 export type Session = {
   id: string;
   role: string;
@@ -104,6 +115,7 @@ export type Session = {
   status: string;
   started_at: string;
   summary: string;
+  sandbox: SandboxRecord | null;
 };
 export type ReviewRound = {
   session_id: string;
@@ -179,6 +191,7 @@ export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
     output: string;
     revision: string;
     created_at: string;
+    sandbox: SandboxRecord | null;
   }[];
 };
 export type PR = {
@@ -392,6 +405,7 @@ export type BaselineCommand = {
   output: string;
   output_truncated: boolean;
   created_at: string;
+  sandbox: SandboxRecord | null;
 };
 export type BaselineCheck = {
   id: string;
@@ -451,6 +465,56 @@ export type NotificationHealth = {
   last_error: string | null;
   last_http_status: number | null;
 };
+export type ProbeCheck = {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+};
+export type SandboxSelfTest = {
+  at: string;
+  passed: boolean;
+  checks: ProbeCheck[];
+  kernel: string;
+  image_id: string;
+  runtime?: string;
+  error: string | null;
+};
+export type BrokerLimits = {
+  nano_cpus: number;
+  memory_bytes: number;
+  pids: number;
+  tmpfs_bytes: number;
+  max_sandboxes: number;
+  max_seconds: number;
+};
+export type BrokerNetworks = {
+  runner: string;
+  verify: string;
+};
+export type BrokerInfo = {
+  version: string;
+  docker_version: string;
+  api_version: string;
+  image: string;
+  image_id: string;
+  image_digests: string[] | null;
+  runtime: string;
+  runners: Record<string, string> | null;
+  limits: BrokerLimits;
+  networks: BrokerNetworks;
+  egress: boolean;
+  live: number;
+};
+export type SandboxPosture = {
+  mode: 'docker' | 'off';
+  healthy: boolean;
+  error: string | null;
+  broker: BrokerInfo | null;
+  egress: Record<string, string[]> | null;
+  pinned_repository: string | null;
+  self_test: SandboxSelfTest | null;
+};
 export type Snapshot = {
   status: string;
   control: {
@@ -480,6 +544,7 @@ export type Snapshot = {
   session_limit: number;
   planning_capacity: PlanningCapacity;
   pr_capacity: PrCapacity;
+  sandbox: SandboxPosture;
   tasks: TaskRow[];
   counts: Record<string, number>;
   attention_tasks: TaskRow[];
