@@ -53,8 +53,8 @@ func MergeSandbox(into *SandboxRecord, run *SandboxRecord) *SandboxRecord {
 			merged.Egress.Denied = map[string]uint64{}
 		}
 	}
-	if into != nil && (into.ImageID != run.ImageID || into.Runtime != run.Runtime) {
-		// A session can span a sandbox image or runtime change; its record must not credit every run to the newest.
+	if into != nil && (into.ImageID == "mixed" || into.ImageID != run.ImageID || into.Runtime != run.Runtime) {
+		// Once an aggregate spans images or runtimes, later runs cannot restore a single identity.
 		merged.ImageID, merged.Runtime = "mixed", ""
 	} else {
 		merged.ImageID, merged.Runtime = run.ImageID, run.Runtime
