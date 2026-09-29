@@ -5,10 +5,11 @@ import type {
   Config,
   ProposalEvidence,
   ProposalRow,
-  ReviewerVerdict,
   ReviewRoundEvidence,
+  ReviewerVerdict,
   RunEvidenceV1,
   SettingsView,
+  Snapshot,
   TaskEvidence
 } from '../src/lib/types';
 
@@ -293,4 +294,26 @@ export async function openProposalEvidence(
     .nth(index)
     .getByRole('button', { name: 'Inspect decision evidence' })
     .click();
+}
+
+/** Presents the service as started with --sandbox off, where runner executables are the host's own. */
+export function unsandboxed(snapshot: Snapshot) {
+  snapshot.sandbox = {
+    mode: 'off',
+    healthy: false,
+    error: null,
+    broker: null,
+    egress: null,
+    pinned_repository: null,
+    self_test: null
+  };
+}
+
+export async function hostMode(page: Page) {
+  await page.route('**/api/state', async (route) => {
+    const response = await route.fetch();
+    const snapshot: Snapshot = await response.json();
+    unsandboxed(snapshot);
+    await route.fulfill({ json: snapshot });
+  });
 }

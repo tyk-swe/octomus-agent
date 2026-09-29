@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { configFixture, login, openNavigation, test } from './synthetic';
+import { configFixture, hostMode, login, openNavigation, test } from './synthetic';
 const token = 'browser-test-operator-token-32-characters';
 
 const codexModels = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
@@ -330,6 +330,7 @@ test('one-shot audit progress, decisions and paused controls', async ({ page }, 
 test('model routing across all roles, provider variants, draft catalogs and unavailable selections', async ({
   page
 }, testInfo) => {
+  await hostMode(page);
   let catalogState: 'normal' | 'removed' | 'error' = 'normal';
   const drafts: { backend: string; binary: string }[] = [];
   await page.route('**/api/model-catalog', async (route) => {

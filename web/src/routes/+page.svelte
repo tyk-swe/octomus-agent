@@ -24,6 +24,7 @@
   import TaskDetail from '$lib/TaskDetail.svelte';
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
+  import { sandboxVerdict } from '$lib/sandbox';
   import { DECISIONS, cycleLabel, decisionTone } from '$lib/evidence';
   const version = __APP_VERSION__;
   const shortVersion = version.split('.').slice(0, 2).join('.');
@@ -228,7 +229,8 @@
           notifications: data.notifications,
           active_cycle_mode: data.active_cycle_mode,
           queued: data.counts.queued ?? 0,
-          latest: data.cycles[0] ?? null
+          latest: data.cycles[0] ?? null,
+          sandbox: data.sandbox
         }
       : null
   );
@@ -500,6 +502,22 @@
         ?.focus();
     }
   }
+  async function sandboxSelfTest() {
+    if (busy) return;
+    const currentSession = sessionGeneration;
+    busy = true;
+    pendingAction = 'self-test';
+    error = '';
+    try {
+      await api('/sandbox/self-test', 'POST');
+      await refresh();
+    } catch (e) {
+      if (currentSession === sessionGeneration) error = (e as Error).message;
+    } finally {
+      busy = false;
+      pendingAction = '';
+    }
+  }
   async function control(action: ControlAction) {
     if (busy || !canControl[action]) return;
     const currentSession = sessionGeneration;
@@ -686,6 +704,16 @@
               >Connection interrupted. Displaying the last received state. {connectionError}</span
             >
           </div>{/if}
+        {#if data.sandbox.mode === 'off' || !data.sandbox.healthy}<div
+            class="notice error sandbox-banner"
+            role="status"
+            aria-label="Sandbox status"
+          >
+            <Icon name="shield" size={18} /><span
+              ><strong>{sandboxVerdict(data.sandbox).label}.</strong>
+              {sandboxVerdict(data.sandbox).detail}</span
+            >
+          </div>{/if}
         {#if data.control.error}<div class="notice error">
             <Icon name="alert" /><span>{data.control.error}</span><button
               class="text-button"
@@ -751,6 +779,7 @@
             onopentask={inspectTask}
             onviewattention={viewAttention}
             onrunonce={() => control('cycle')}
+            onselftest={sandboxSelfTest}
           />
         {:else if view === 'queue'}
           <section class="panel">

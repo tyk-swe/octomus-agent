@@ -115,6 +115,7 @@ type App struct {
 	taskRunner TaskRunner
 	connector  runner.Connector
 	sandbox    sandbox.Backend
+	deployment Deployment
 	removeDir  func(root, path string) error
 	wg         sync.WaitGroup
 }
@@ -174,9 +175,9 @@ func (a *App) Config() (config.Config, error) {
 		return config.Config{}, err
 	}
 	if cfg == nil {
-		return config.Default(), nil
+		return a.deployment.pin(config.Default()), nil
 	}
-	return *cfg, nil
+	return a.deployment.pin(*cfg), nil
 }
 
 func (a *App) Control() (model.Control, error) {

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Temporary, clearly synthetic data for browser tests; never used by the shipped app."""
+from http.server import BaseHTTPRequestHandler
 import json
 import os
 from pathlib import Path
+import socketserver
 import sqlite3
 import subprocess
 import tempfile
+import threading
 from datetime import datetime, timezone
 
 project = Path(__file__).resolve().parents[1]
@@ -41,10 +44,33 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     put('pr', 'fixture/project:12', observation(12, rows[1][1], 'octomus/task-reviewed', True, 'b' * 40, delivered='b' * 40))
     put('pr', 'fixture/project:31', observation(31, 'Adjust the retry backoff', 'contributor/backoff', False, 'c' * 40))
     put('pr', 'fixture/project:7', observation(7, 'Record the first delivered change', 'octomus/first-delivery', True, 'd' * 40, delivered='e' * 40))
+    checks = [('non_root', 'Runs as an unprivileged user', 'uid 10001'), ('no_capabilities', 'Holds no Linux capabilities', 'effective 0000000000000000, bounding 0000000000000000'), ('no_new_privileges', 'Cannot gain privileges through setuid programs', 'no_new_privs 1'), ('seccomp', 'System calls are filtered by seccomp', 'seccomp mode 2'), ('read_only_image', 'The image filesystem is read-only', 'read-only'), ('no_orchestrator_state', 'Cannot see Octomus state, secrets or the Docker socket', 'none visible'), ('no_direct_egress', 'Has no direct route to the internet', 'no route'), ('no_external_dns', 'Cannot resolve internet names directly', 'lookup refused'), ('no_host_route', 'Has no gateway to the host or its neighbours', 'no default route'), ('resource_limits', 'Runs under memory and process limits', 'memory.max 4294967296, pids.max 1024'), ('egress_gateway', 'The egress gateway refuses unlisted, metadata and local targets', 'refused example.com:443, 169.254.169.254:80, localhost:4200')]
+    put('settings', 'sandbox_self_test', {'at': now, 'passed': True, 'checks': [{'id': i, 'label': label, 'passed': True, 'detail': detail} for i, label, detail in checks], 'kernel': 'synthetic', 'image_id': 'sha256:' + 'f' * 64, 'error': None})
     db.commit()
     db.close()
+    broker_info = {'version': '0.1.0', 'docker_version': '29.0.0', 'api_version': '1.51', 'image': 'octomus-sandbox:local', 'image_id': 'sha256:' + 'f' * 64, 'image_digests': [], 'runtime': '', 'runners': {'codex': 'codex-cli 0.153.4', 'opencode': '1.18.30'}, 'limits': {'nano_cpus': 2000000000, 'memory_bytes': 4294967296, 'pids': 1024, 'tmpfs_bytes': 1073741824, 'max_sandboxes': 12, 'max_seconds': 21600}, 'networks': {'runner': 'octomus-sandbox-runner', 'verify': 'octomus-sandbox-verify'}, 'egress': True, 'live': 0}
+
+    class Broker(BaseHTTPRequestHandler):
+        """Synthetic sandbox broker: reports its posture and runs nothing."""
+        def address_string(self):
+            return 'broker'
+
+        def do_GET(self):
+            body = json.dumps(broker_info).encode()
+            self.send_response(200 if self.path == '/v1/info' else 404)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    broker = socketserver.ThreadingUnixStreamServer(str(data / 'sandboxd.sock'), Broker)
+    threading.Thread(target=broker.serve_forever, daemon=True).start()
     env = {key: value for key, value in os.environ.items() if key != 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'}
     env['OCTOMUS_TOKEN'] = 'browser-test-operator-token-32-characters'
+    env.update(OCTOMUS_SANDBOX='docker', OCTOMUS_SANDBOXD_SOCKET=str(data / 'sandboxd.sock'), OCTOMUS_EGRESS_MODEL_HOSTS='chatgpt.com,auth.openai.com,api.openai.com', OCTOMUS_EGRESS_BUILD_HOSTS='proxy.golang.org,registry.npmjs.org')
     process = subprocess.Popen([str(binary), '--listen', '127.0.0.1:4299', '--data-dir', directory, '--assets', str(project / 'web/build')], env=env)
     try:
         process.wait()

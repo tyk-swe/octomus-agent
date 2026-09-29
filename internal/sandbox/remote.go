@@ -61,7 +61,7 @@ func (r *Remote) Info(ctx context.Context) (BrokerInfo, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return BrokerInfo{}, fmt.Errorf("Sandbox broker is unavailable at %s: %w", r.socket, err)
+		return BrokerInfo{}, r.unavailable(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -87,6 +87,19 @@ func (r *Remote) Info(ctx context.Context) (BrokerInfo, error) {
 func (r *Remote) Healthy(ctx context.Context) error {
 	_, err := r.Info(ctx)
 	return err
+}
+
+// unavailable names the broker socket and the root cause, without the request plumbing around it.
+func (r *Remote) unavailable(err error) error {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Err != nil {
+		err = op.Err
+		var syscallErr *os.SyscallError
+		if errors.As(err, &syscallErr) {
+			err = syscallErr.Err
+		}
+	}
+	return fmt.Errorf("Sandbox broker is unavailable at %s: %w", r.socket, err)
 }
 
 func brokerError(resp *http.Response) error {
@@ -162,7 +175,7 @@ func (r *Remote) open(ctx context.Context, req Request) (net.Conn, *bufio.Reader
 	}
 	conn, err := r.dial(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Sandbox broker is unavailable at %s: %w", r.socket, err)
+		return nil, nil, r.unavailable(err)
 	}
 	httpReq, err := http.NewRequest(http.MethodPost, "http://sandboxd/v1/sandboxes", bytes.NewReader(body))
 	if err != nil {

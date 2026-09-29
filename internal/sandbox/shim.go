@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -203,12 +202,5 @@ func printVersions(stdout io.Writer) int {
 	if err := json.NewEncoder(stdout).Encode(versions); err != nil {
 		return 1
 	}
-	return 0
-}
-
-// runContainmentProbe is filled in with the self-test.
-func runContainmentProbe(stdout io.Writer) int {
-	_, _ = io.WriteString(stdout, "{}\n")
-	_ = os.Stdout
 	return 0
 }

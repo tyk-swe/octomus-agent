@@ -132,3 +132,54 @@
   font-size: 12px;
   line-height: 1.6;
 }
+.sandbox-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px 24px;
+  margin: 0;
+  padding: 4px 24px 18px;
+}
+.sandbox-facts dt {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #6d7466);
+}
+.sandbox-facts dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.sandbox-proof {
+  padding: 0 24px 22px;
+}
+.sandbox-proof ul {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px 20px;
+}
+.sandbox-proof li {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  column-gap: 8px;
+  align-items: start;
+  color: var(--good-fg);
+}
+.sandbox-proof li > svg {
+  margin-top: 3px;
+}
+.sandbox-proof li span {
+  color: inherit;
+}
+.sandbox-proof li.failed {
+  color: var(--bad-fg);
+}
+.sandbox-proof li small {
+  grid-column: 2;
+}
+.sandbox-banner {
+  margin: 0 0 18px;
+}

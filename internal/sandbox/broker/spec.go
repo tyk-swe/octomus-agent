@@ -29,6 +29,11 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 	}
 	env = append(env, extraEnv...)
 	env = append(env, p.env...)
+	mounts := c.mounts(p)
+	if fixtureMounts != nil {
+		fixture, fixtureEnv := fixtureMounts(p)
+		mounts, env = append(mounts, fixture...), append(env, fixtureEnv...)
+	}
 	tmpfs := map[string]string{
 		"/tmp": fmt.Sprintf("rw,exec,nosuid,nodev,size=%d", c.Tmpfs),
 	}
@@ -73,7 +78,7 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 			NanoCPUs:       c.NanoCPUs,
 			OomScoreAdj:    1000,
 			Tmpfs:          tmpfs,
-			Mounts:         c.mounts(p),
+			Mounts:         mounts,
 			Runtime:        c.Runtime,
 			AutoRemove:     false,
 			LogConfig:      engineapi.LogConfig{Type: "none"},

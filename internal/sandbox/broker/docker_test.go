@@ -57,6 +57,14 @@ var buildOnce sync.Once
 var buildDir string
 var buildErr error
 
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if buildDir != "" {
+		_ = os.RemoveAll(buildDir)
+	}
+	os.Exit(code)
+}
+
 // buildArtifacts builds the octomus-agent helper and the fake runners once per test binary.
 func buildArtifacts(t *testing.T) string {
 	t.Helper()
@@ -449,4 +457,23 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+func TestDockerContainmentProbePasses(t *testing.T) {
+	h := startDockerBroker(t, nil)
+	report, err := sandbox.Probe(context.Background(), h.remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, check := range report.Checks {
+		ids = append(ids, check.ID)
+		if !check.Passed {
+			t.Errorf("containment check %s failed: %s", check.ID, check.Detail)
+		}
+	}
+	if !report.Passed() || len(report.Checks) != 11 {
+		t.Fatalf("probe checks = %v", ids)
+	}
+	t.Logf("kernel %s; checks %v", report.Kernel, ids)
 }

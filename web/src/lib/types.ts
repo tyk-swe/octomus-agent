@@ -451,6 +451,55 @@ export type NotificationHealth = {
   last_error: string | null;
   last_http_status: number | null;
 };
+export type ProbeCheck = {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+};
+export type SandboxSelfTest = {
+  at: string;
+  passed: boolean;
+  checks: ProbeCheck[];
+  kernel: string;
+  image_id: string;
+  error: string | null;
+};
+export type BrokerLimits = {
+  nano_cpus: number;
+  memory_bytes: number;
+  pids: number;
+  tmpfs_bytes: number;
+  max_sandboxes: number;
+  max_seconds: number;
+};
+export type BrokerNetworks = {
+  runner: string;
+  verify: string;
+};
+export type BrokerInfo = {
+  version: string;
+  docker_version: string;
+  api_version: string;
+  image: string;
+  image_id: string;
+  image_digests: string[] | null;
+  runtime: string;
+  runners: Record<string, string> | null;
+  limits: BrokerLimits;
+  networks: BrokerNetworks;
+  egress: boolean;
+  live: number;
+};
+export type SandboxPosture = {
+  mode: 'docker' | 'off';
+  healthy: boolean;
+  error: string | null;
+  broker: BrokerInfo | null;
+  egress: Record<string, string[]> | null;
+  pinned_repository: string | null;
+  self_test: SandboxSelfTest | null;
+};
 export type Snapshot = {
   status: string;
   control: {
@@ -480,6 +529,7 @@ export type Snapshot = {
   session_limit: number;
   planning_capacity: PlanningCapacity;
   pr_capacity: PrCapacity;
+  sandbox: SandboxPosture;
   tasks: TaskRow[];
   counts: Record<string, number>;
   attention_tasks: TaskRow[];

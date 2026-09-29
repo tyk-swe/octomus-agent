@@ -51,6 +51,7 @@ type arguments struct {
 	listenAddr                                        netip.AddrPort
 	assets, exportRun                                 *string
 	printConfig, doctor, audit, usageReport, sandboxd bool
+	egress, healthcheck                               bool
 	sandbox                                           sandbox.Mode
 }
 
@@ -59,6 +60,10 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 	// The in-sandbox helper runs inside containers and takes its own arguments.
 	if len(args) > 0 && args[0] == "--sandbox-init" {
 		return sandbox.RunInit(args[1:], os.Stdin, stdout, stderr)
+	}
+	// Git calls its credential helper with the operation appended.
+	if len(args) > 0 && args[0] == "--git-credential" {
+		return gitCredential(args[1:], os.Stdin, stdout)
 	}
 	parsed, display, err := parse(args, env)
 	if err != nil {
@@ -75,6 +80,16 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 	}
 	if parsed.printConfig {
 		if err := printJSON(stdout, config.Default()); err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if parsed.healthcheck {
+		return healthcheck(parsed.listen, stderr)
+	}
+	if parsed.egress {
+		if err := runEgress(env, stdout, stderr); err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 1
 		}
@@ -113,6 +128,10 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 }
 
 func service(parsed arguments, env func(string) (string, bool), stdout, stderr io.Writer) error {
+	env, err := loadSecretFiles(env, os.Setenv)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(parsed.dataDir, 0o700); err != nil {
 		return err
 	}
@@ -140,7 +159,13 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	}
 	defer state.Close()
 	backend := sandboxBackend(parsed.sandbox, env, stderr)
-	app := engine.New(state, data, engine.WithSandbox(backend))
+	startup, stopStartup := signal.NotifyContext(context.Background(), shutdownSignals()...)
+	deployment, err := prepareDeployment(startup, parsed.sandbox, data, env, stderr)
+	stopStartup()
+	if err != nil {
+		return err
+	}
+	app := engine.New(state, data, engine.WithSandbox(backend), engine.WithDeployment(deployment))
 	if parsed.doctor {
 		mode := model.CycleModeExecution
 		if parsed.audit {
@@ -165,7 +190,11 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		assetsOverride = *parsed.assets
 	}
 	if !parsed.listenAddr.Addr().IsLoopback() {
-		fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
+		if _, container := env("OCTOMUS_CONTAINER"); container {
+			fmt.Fprintf(stderr, "Non-loopback listener %s inside the container: publish it on 127.0.0.1 only, as the supplied compose file does, and reach it through an SSH tunnel.\n", parsed.listen)
+		} else {
+			fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
+		}
 	}
 	webhook, _ := env(redact.WebhookEnv)
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
@@ -287,7 +316,7 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 				}
 				a.sandbox = mode
 			}
-		case "--print-config", "--doctor", "--audit", "--usage-report", "--sandboxd":
+		case "--print-config", "--doctor", "--audit", "--usage-report", "--sandboxd", "--egress", "--healthcheck":
 			if hasValue {
 				return a, "", fmt.Errorf("unexpected value for '%s'", name)
 			}
@@ -302,6 +331,10 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 				a.usageReport = true
 			case "--sandboxd":
 				a.sandboxd = true
+			case "--egress":
+				a.egress = true
+			case "--healthcheck":
+				a.healthcheck = true
 			}
 		case "--":
 			if i != len(args)-1 {
@@ -328,8 +361,14 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	if a.exportRun != nil && (a.doctor || a.printConfig || a.usageReport) {
 		return a, "", fmt.Errorf("--export-run cannot be used with --doctor, --print-config or --usage-report")
 	}
-	if a.sandboxd && (a.doctor || a.printConfig || a.usageReport || a.exportRun != nil) {
-		return a, "", fmt.Errorf("--sandboxd cannot be used with another mode")
+	modes := 0
+	for _, mode := range []bool{a.sandboxd, a.egress, a.healthcheck, a.doctor, a.printConfig, a.usageReport, a.exportRun != nil} {
+		if mode {
+			modes++
+		}
+	}
+	if (a.sandboxd || a.egress || a.healthcheck) && modes > 1 {
+		return a, "", fmt.Errorf("--sandboxd, --egress and --healthcheck cannot be combined with another mode")
 	}
 	return a, "", nil
 }
@@ -361,6 +400,8 @@ Options:
       --sandbox <MODE>          Where runners and verification run: docker, through the sandbox broker, or off,
                                 directly on this host [env: OCTOMUS_SANDBOX] [default: docker]
       --sandboxd                Serve the sandbox broker (the only component that uses the Docker socket)
+      --egress                  Serve the egress gateway that sandboxes reach the internet through
+      --healthcheck             Exit 0 when the service on --listen answers its health check
   -h, --help                   Print help
   -V, --version                Print version
 `

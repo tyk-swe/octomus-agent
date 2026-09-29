@@ -8,6 +8,7 @@
     taskOutcomeCounts
   } from './evidence';
   import Icon, { type IconName } from './Icon.svelte';
+  import SandboxPanel from './SandboxPanel.svelte';
   import TaskList from './TaskList.svelte';
   import { ACTIVE_STATUSES } from './types';
   import type { CycleSummary, Snapshot } from './types';
@@ -23,7 +24,8 @@
     oninspectrun,
     onopentask,
     onviewattention,
-    onrunonce
+    onrunonce,
+    onselftest
   }: {
     data: Snapshot;
     latestCycle: CycleSummary | undefined;
@@ -36,6 +38,7 @@
     onopentask: (id: string) => void;
     onviewattention: () => void;
     onrunonce: () => void;
+    onselftest: () => void;
   } = $props();
   const pipeline: { name: string; icon: IconName; detail: string }[] = [
     { name: 'Ground & discover', icon: 'proposals', detail: 'Understand what matters' },
@@ -207,6 +210,7 @@
       </div>{/each}
   </div>
 </section>
+<SandboxPanel sandbox={data.sandbox} {busy} {onselftest} />
 {#if attentionCount}<section class="panel attention-panel" aria-labelledby="attention-heading">
     <div class="section-heading">
       <div>

@@ -28,7 +28,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
-      - run: shellcheck install.sh scripts/*.sh
+      - run: shellcheck install.sh scripts/*.sh deploy/docker/*.sh
       - run: make check
       - run: make audit
 
@@ -171,12 +171,42 @@ jobs:
             go test ./internal/runner -run '^TestPinnedOpenCodeContract$' -count=1 -v
           fi
 
+  sandbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - name: Docker Engine supports isolated internal networks
+        run: |
+          docker version
+          major=$(docker version --format '{{.Server.Version}}' | cut -d. -f1)
+          test "$major" -ge 28
+      - name: Compose file validates
+        run: |
+          docker compose -f deploy/docker/compose.yaml config --quiet
+        env:
+          OCTOMUS_GITHUB_REPO: owner/repository
+          DOCKER_GID: '999'
+      - run: make test-sandbox
+
   verify:
     name: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: always()
-    needs: [quality, go-tests, integration, browser, package, client-contracts]
+    needs: [quality, go-tests, integration, browser, package, client-contracts, sandbox]
     steps:
       - name: All jobs succeeded
         run: |
@@ -186,3 +216,4 @@ jobs:
           test "${{ needs.browser.result }}" = success
           test "${{ needs.package.result }}" = success
           test "${{ needs.client-contracts.result }}" = success
+          test "${{ needs.sandbox.result }}" = success
