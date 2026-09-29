@@ -258,6 +258,23 @@ func TestDockerVerifySandboxIsContained(t *testing.T) {
 	}
 }
 
+func TestDockerQuickExitsAreObserved(t *testing.T) {
+	h := startDockerBroker(t, nil)
+	ws := h.taskRoot(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for i := range 20 {
+		code := i % 8
+		out, _, err := sandbox.Verify(ctx, h.remote, ws, fmt.Sprintf("exit %d", code), 10, true)
+		if err != nil {
+			t.Fatalf("quick exit %d: %v", i, err)
+		}
+		if got, ok := out.Status.Code(); !ok || got != code {
+			t.Fatalf("quick exit %d = %v; want code %d", i, out.Status, code)
+		}
+	}
+}
+
 func TestDockerVerifyHomeIsFreshPerRun(t *testing.T) {
 	h := startDockerBroker(t, nil)
 	ws := h.taskRoot(t)

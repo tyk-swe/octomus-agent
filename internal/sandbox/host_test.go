@@ -71,6 +71,11 @@ func TestHostRunnerStreamsAndStderrSink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		child.Kill()
+		child.Stdout().Close()
+		child.Stderr().Close()
+	})
 	if _, err := child.Stdin().Write([]byte("echoed\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +93,10 @@ func TestHostRunnerStreamsAndStderrSink(t *testing.T) {
 	}
 	if sink.String() != "diagnostic\n" {
 		t.Fatalf("stderr sink = %q", sink.String())
+	}
+	var data [1]byte
+	if _, err := child.Stderr().Read(data[:]); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("copied stderr remains open after Wait: %v", err)
 	}
 }
 

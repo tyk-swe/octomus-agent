@@ -372,17 +372,14 @@ func (b *Broker) handleSandbox(w http.ResponseWriter, r *http.Request) {
 	b.stream(prepared, p, conn, stream.Reader)
 }
 
-// prepared is a created container with its attach stream and exit wait already registered, not yet started.
+// prepared is a created container with its attach stream already registered, not yet started.
 type prepared struct {
-	b       *Broker
-	id      string
-	name    string
-	lease   string
-	attach  *engineapi.Attached
-	waitRes <-chan engineapi.WaitResult
-	waitErr <-chan error
-	cancel  context.CancelFunc
-	once    sync.Once
+	b      *Broker
+	id     string
+	name   string
+	lease  string
+	attach *engineapi.Attached
+	once   sync.Once
 }
 
 func (b *Broker) prepare(ctx context.Context, p plan) (*prepared, error) {
@@ -419,19 +416,14 @@ func (b *Broker) prepare(ctx context.Context, p plan) (*prepared, error) {
 		cleanup.remove()
 		return nil, fmt.Errorf("Attaching to the sandbox: %w", err)
 	}
-	waitCtx, cancel := context.WithCancel(context.Background())
-	results, errs := b.engine.ContainerWait(waitCtx, id)
 	b.mu.Lock()
 	b.live[id] = p.rel
 	b.mu.Unlock()
-	return &prepared{b: b, id: id, name: name, lease: lease, attach: attach, waitRes: results, waitErr: errs, cancel: cancel}, nil
+	return &prepared{b: b, id: id, name: name, lease: lease, attach: attach}, nil
 }
 
 func (s *prepared) remove() {
 	s.once.Do(func() {
-		if s.cancel != nil {
-			s.cancel()
-		}
 		if s.attach != nil {
 			s.attach.Close()
 		}
@@ -465,6 +457,10 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, stdout, s
 	if err := b.engine.ContainerStart(ctx, s.id); err != nil {
 		return sandbox.ExitReport{}, fmt.Errorf("Starting the sandbox: %w", err)
 	}
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	defer cancelWait()
+	// Waiting for not-running after start also observes an exit that happened before the wait request arrived.
+	results, errs := b.engine.ContainerWait(waitCtx, s.id)
 	limit := time.NewTimer(timeout)
 	defer limit.Stop()
 	killed := false
@@ -478,9 +474,9 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, stdout, s
 wait:
 	for {
 		select {
-		case result = <-s.waitRes:
+		case result = <-results:
 			break wait
-		case err := <-s.waitErr:
+		case err := <-errs:
 			return sandbox.ExitReport{}, fmt.Errorf("Waiting for the sandbox: %w", err)
 		case <-limit.C:
 			killed, reason = true, "Sandbox time limit reached"

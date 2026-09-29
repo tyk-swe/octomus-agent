@@ -68,6 +68,7 @@ func (Host) Start(ctx context.Context, spec Spec) (Child, error) {
 	}
 	go func() {
 		defer close(child.copied)
+		defer started.Stderr().Close()
 		_, _ = io.Copy(spec.Stderr, started.Stderr())
 	}()
 	return child, nil

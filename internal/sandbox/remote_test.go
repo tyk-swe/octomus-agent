@@ -71,6 +71,20 @@ func exitFrame(out *FrameWriter, report ExitReport) {
 
 func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 	out := NewFrameWriter(conn)
+	if req.Mode == RunnerModeOpenCode {
+		handshake := strings.TrimPrefix(req.Env[0], "HANDSHAKE=")
+		_, _ = out.Data(FrameStdout, []byte(handshake))
+		for {
+			kind, _, err := ReadFrame(reader)
+			if err != nil {
+				return
+			}
+			if kind == FrameSignal {
+				exitFrame(out, ExitReport{Code: 137, Killed: true})
+				return
+			}
+		}
+	}
 	switch req.Command {
 	case "streams":
 		_, _ = out.Data(FrameStdout, []byte("out\n"))
@@ -106,6 +120,59 @@ func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 				return
 			}
 		}
+	}
+}
+
+func TestRemoteOpenCodeFailedHandshakeClosesUnreadStdout(t *testing.T) {
+	for name, tc := range map[string]struct {
+		handshake string
+		want      string
+		cancel    bool
+	}{
+		"oversized failure": {handshake: handshakeFailed + strings.Repeat("x", 2*handshakeLimit) + "\n", want: "exceeded its size limit"},
+		"unexpected line":   {handshake: "unexpected\n" + strings.Repeat("x", handshakeLimit), want: "unexpected handshake"},
+		"failure with tail": {handshake: handshakeFailed + "invalid URL\n" + strings.Repeat("x", handshakeLimit), want: "invalid URL"},
+		"cancelled startup": {handshake: "OCTOMUS-", cancel: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := startFakeBroker(t, 1)
+			remote := NewRemote(f.socket)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			dir := ownedWorkspace(t)
+			done := make(chan error, 1)
+			go func() {
+				_, err := remote.StartOpenCode(ctx, Spec{Kind: KindRunner, Runner: config.BackendOpencode,
+					Dir: dir, Env: []string{"HANDSHAKE=" + tc.handshake}}, 30)
+				done <- err
+			}()
+			if tc.cancel {
+				select {
+				case <-f.requests:
+					cancel()
+				case <-time.After(3 * time.Second):
+					t.Fatal("startup never reached the broker")
+				}
+			}
+			select {
+			case err := <-done:
+				if tc.cancel {
+					if !errors.Is(err, process.ErrSessionCancelled) {
+						t.Fatalf("cancelled startup = %v", err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("startup = %v; want %q", err, tc.want)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("failed startup hung while cleaning up unread stdout")
+			}
+			// Cleanup must also release the only slot so another sandbox can start.
+			nextCtx, nextCancel := context.WithTimeout(context.Background(), time.Second)
+			defer nextCancel()
+			if _, _, err := Verify(nextCtx, remote, dir, "streams", 30, true); err != nil {
+				t.Fatalf("failed startup retained its sandbox slot: %v", err)
+			}
+		})
 	}
 }
 

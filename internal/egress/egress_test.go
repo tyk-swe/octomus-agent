@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 )
@@ -304,5 +305,123 @@ func TestGatewayBoundsTunnelsPerSandbox(t *testing.T) {
 	}
 	for _, tunnel := range open {
 		tunnel.Close()
+	}
+}
+
+func TestGatewayRetriesOnlyPublicDNSAddresses(t *testing.T) {
+	for name, tc := range map[string]struct {
+		answers []netip.Addr
+		want    []netip.AddrPort
+		status  int
+	}{
+		"IPv6 fallback": {
+			answers: []netip.Addr{netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("10.0.0.1"),
+				netip.MustParseAddr("::ffff:93.184.216.34"), netip.MustParseAddr("1.1.1.1")},
+			want:   []netip.AddrPort{netip.MustParseAddrPort("[2606:4700:4700::1111]:443"), netip.MustParseAddrPort("93.184.216.34:443")},
+			status: http.StatusOK,
+		},
+		"all public addresses fail": {
+			answers: []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("93.184.216.34"),
+				netip.MustParseAddr("169.254.169.254"), netip.MustParseAddr("1.1.1.1")},
+			want:   []netip.AddrPort{netip.MustParseAddrPort("93.184.216.34:443"), netip.MustParseAddrPort("1.1.1.1:443")},
+			status: http.StatusBadGateway,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newGatewayFixture(t, "runner")
+			f.resolver.answers["api.openai.com"] = tc.answers
+			dial := f.gateway.dial
+			attempts := make(chan netip.AddrPort, 8)
+			f.gateway.dial = func(ctx context.Context, address netip.AddrPort) (net.Conn, error) {
+				attempts <- address
+				if tc.status == http.StatusOK && address == tc.want[len(tc.want)-1] {
+					return dial(ctx, address)
+				}
+				return nil, errors.New("unreachable address")
+			}
+			status, tunnel := f.connect(t, "api.openai.com:443", sandbox.ProxyUser+":"+f.token)
+			if tunnel != nil {
+				defer tunnel.Close()
+				_ = tunnel.SetDeadline(time.Now().Add(time.Second))
+				if _, err := io.WriteString(tunnel, "echo"); err != nil {
+					t.Fatal(err)
+				}
+				var echoed [4]byte
+				if _, err := io.ReadFull(tunnel, echoed[:]); err != nil || string(echoed[:]) != "echo" {
+					t.Fatalf("fallback tunnel = %q, %v", echoed, err)
+				}
+			}
+			if status != tc.status {
+				t.Fatalf("CONNECT = %d; want %d", status, tc.status)
+			}
+			for _, want := range tc.want {
+				select {
+				case got := <-attempts:
+					if got != want {
+						t.Fatalf("dialed %v; want %v", got, want)
+					}
+				default:
+					t.Fatalf("did not try %v", want)
+				}
+			}
+			select {
+			case extra := <-attempts:
+				t.Fatalf("unexpected extra dial: %v", extra)
+			default:
+			}
+		})
+	}
+}
+
+func TestGatewayStalledDialLeavesTimeForFallback(t *testing.T) {
+	addresses := []netip.Addr{netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("93.184.216.34")}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	attempts := 0
+	g := &Gateway{dial: func(ctx context.Context, address netip.AddrPort) (net.Conn, error) {
+		attempts++
+		if address.Addr() == addresses[0] {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return client, ctx.Err()
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	conn, err := g.dialAddresses(ctx, addresses, 443)
+	if err != nil || conn != client || attempts != 2 || ctx.Err() != nil {
+		t.Fatalf("fallback = %v, %v after %d attempts (parent: %v)", conn, err, attempts, ctx.Err())
+	}
+}
+
+func TestGatewayDialBudgetAndCancellation(t *testing.T) {
+	addresses := []netip.Addr{netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("1.1.1.1")}
+	for _, cancelled := range []bool{false, true} {
+		name := "deadline"
+		if cancelled {
+			name = "cancellation"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+			defer cancel()
+			attempts := 0
+			g := &Gateway{dial: func(ctx context.Context, _ netip.AddrPort) (net.Conn, error) {
+				attempts++
+				if cancelled {
+					cancel()
+				}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}}
+			conn, err := g.dialAddresses(ctx, addresses, 443)
+			want, wantAttempts := context.DeadlineExceeded, 2
+			if cancelled {
+				want, wantAttempts = context.Canceled, 1
+			}
+			if conn != nil || !errors.Is(err, want) || attempts != wantAttempts {
+				t.Fatalf("dial = %v, %v after %d attempts; want %v after %d", conn, err, attempts, want, wantAttempts)
+			}
+		})
 	}
 }

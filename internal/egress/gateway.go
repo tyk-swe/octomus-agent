@@ -219,20 +219,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusBadGateway, host, uint16(port), "name did not resolve")
 		return
 	}
-	var target netip.Addr
+	var targets []netip.Addr
 	for _, address := range addresses {
 		if PublicAddress(address) {
-			target = address.Unmap()
-			break
+			targets = append(targets, address.Unmap())
 		}
 	}
-	if !target.IsValid() {
+	if len(targets) == 0 {
 		deny(http.StatusForbidden, host, uint16(port), "name resolves only to non-public addresses")
 		return
 	}
-	ctx, cancel = context.WithTimeout(r.Context(), 10*time.Second)
-	upstream, err := g.dial(ctx, netip.AddrPortFrom(target, uint16(port)))
-	cancel()
+	upstream, err := g.dialAddresses(r.Context(), targets, uint16(port))
 	if err != nil {
 		deny(http.StatusBadGateway, host, uint16(port), "upstream connection failed")
 		return
@@ -255,6 +252,28 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	up, down := splice(client, buffered, upstream)
 	g.record(Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: uint16(port), Decision: "allowed",
 		BytesUp: up, BytesDown: down, Millis: g.now().Sub(started).Milliseconds()})
+}
+
+// dialAddresses shares a bounded connection budget among the remaining vetted addresses, so a stalled attempt
+// leaves time to try the others. Dialing literal addresses keeps every retry within the original DNS decision.
+func (g *Gateway) dialAddresses(ctx context.Context, addresses []netip.Addr, port uint16) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	var err error
+	for i, address := range addresses {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		attempt, cancelAttempt := context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(addresses)-i))
+		var conn net.Conn
+		conn, err = g.dial(attempt, netip.AddrPortFrom(address, port))
+		cancelAttempt()
+		if err == nil {
+			return conn, nil
+		}
+	}
+	return nil, err
 }
 
 func (g *Gateway) reserve(sandboxName string) bool {

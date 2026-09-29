@@ -221,11 +221,15 @@ func (r *Remote) StartOpenCode(ctx context.Context, spec Spec, readinessSeconds 
 	}
 	stdout := child.Stdout()
 	_, err = process.Bounded(ctx, readinessSeconds+10, "OpenCode startup timed out", func(wctx context.Context) (struct{}, error) {
-		stop := context.AfterFunc(wctx, child.Kill)
+		stop := context.AfterFunc(wctx, func() {
+			stdout.Close()
+			child.Kill()
+		})
 		defer stop()
 		return struct{}{}, readHandshake(stdout)
 	})
 	if err != nil {
+		stdout.Close()
 		child.Kill()
 		_, _ = child.Wait()
 		return nil, err

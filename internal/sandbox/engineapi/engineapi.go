@@ -322,11 +322,12 @@ type WaitResult struct {
 	} `json:"Error"`
 }
 
-// ContainerWait returns once the container next exits. Call it before start so a quick exit is never missed.
+// ContainerWait asynchronously reports when a started container is no longer running, including one that has
+// already exited. Call it only after a successful start so the created state is not mistaken for an exit.
 func (c *Client) ContainerWait(ctx context.Context, id string) (<-chan WaitResult, <-chan error) {
 	results := make(chan WaitResult, 1)
 	errs := make(chan error, 1)
-	target := path("/containers/%s/wait", id) + "?condition=next-exit"
+	target := path("/containers/%s/wait", id) + "?condition=not-running"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://docker"+target, nil)
 	if err != nil {
 		errs <- err
