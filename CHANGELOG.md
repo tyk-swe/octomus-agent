@@ -61,6 +61,10 @@ the first release contains.
 - Runners start bound to one owned root and stop after every turn, so nothing an agent
   started is running when its work is judged, committed or verified. Route validation,
   doctor checks and model catalogs run from an empty scratch root.
+- Each verification run uses a fresh clone of exactly the reviewed revision, removed
+  afterwards. Ignored files, caches and build output a session left in the task work tree
+  no longer reach verification, so commands must install their own dependencies, as the
+  clean-baseline check already required.
 - Grounding fetches fork PR heads into the trusted checkout, and planning agents inspect
   them by SHA instead of fetching from GitHub.
 

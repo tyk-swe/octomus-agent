@@ -65,8 +65,8 @@ func TestNoRunnerOutlivesItsTurn(t *testing.T) {
 		if open != 0 {
 			t.Fatalf("%d runner clients were open when verification %d started", open, i)
 		}
-		if backend.dirs[i] != saved.Workspace {
-			t.Fatalf("verification %d ran in %s; want the task workspace", i, backend.dirs[i])
+		if want := filepath.Join(filepath.Dir(saved.Workspace), verificationDir, "workspace"); backend.dirs[i] != want {
+			t.Fatalf("verification %d ran in %s; want the pristine checkout %s", i, backend.dirs[i], want)
 		}
 	}
 	for i, open := range openAtConnect {

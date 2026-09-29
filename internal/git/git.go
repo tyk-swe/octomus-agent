@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -263,6 +264,39 @@ func CloneAt(ctx context.Context, c config.Config, path string, revision string)
 	}
 	// Task clones must never include application state in generated commits.
 	return os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte("/.octomus/\n"), 0o666)
+}
+
+// CloneReviewed makes a disposable clone of an owned clone at exactly one revision, in the same split layout, so
+// verification sees the reviewed commit and nothing else a session left in the work tree: no ignored files, caches
+// or build output. It keeps the source's local ignore rules and shares its immutable objects.
+func CloneReviewed(ctx context.Context, c config.Config, source, path, revision string) error {
+	sourceGitDir, err := workspace.GitDir(source)
+	if err != nil {
+		return reasoned(model.BlockedReasonWorkspaceInvalid, "Workspace git metadata is unavailable", err)
+	}
+	root := filepath.Dir(path)
+	gitDir := filepath.Join(root, workspace.GitDirName)
+	for _, existing := range []string{path, gitDir} {
+		if _, err := os.Lstat(existing); err == nil {
+			return errors.New("Verification checkout already exists")
+		}
+	}
+	if err := os.MkdirAll(root, 0o777); err != nil {
+		return err
+	}
+	if _, err := Git(ctx, c, root, []string{
+		"clone", "--quiet", "--no-checkout", "--separate-git-dir=" + gitDir, "--", sourceGitDir, path,
+	}); err != nil {
+		return err
+	}
+	if _, err := WorkGit(ctx, c, path, []string{"checkout", "--quiet", "--detach", revision}); err != nil {
+		return err
+	}
+	exclude, err := os.ReadFile(filepath.Join(sourceGitDir, "info", "exclude"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.WriteFile(filepath.Join(gitDir, "info", "exclude"), exclude, 0o666)
 }
 
 func Snapshot(ctx context.Context, c config.Config, path string, message string) (string, error) {

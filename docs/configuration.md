@@ -53,7 +53,10 @@ Use meaningful checks for the target project, one shell command per line. At lea
 command is required for execution. An audit can run without verification commands.
 
 Every configured command must pass on the reviewed revision before publication. A failed
-check stays visible and can block delivery. In the Docker deployment each command runs in
+check stays visible and can block delivery. Each verification run gets a fresh clone of
+exactly the reviewed commit: dependencies, caches and build output an agent left in the
+task work tree are not there, so commands must install what they need (for example
+`npm ci && npm test`), as the clean-baseline check always required. In the Docker deployment each command runs in
 a fresh sandbox with the sandbox image's tools, the task's work tree and a home shared only
 by the commands of one verification run; it reaches only the hosts in
 `OCTOMUS_EGRESS_BUILD_HOSTS`. Unsandboxed, commands run with the service user's permissions

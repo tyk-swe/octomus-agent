@@ -439,8 +439,13 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 	if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
 		return nil, err
 	}
+	checkout, discard, err := a.verificationCheckout(ctx, task, revision)
+	if err != nil {
+		return nil, err
+	}
+	defer discard()
 	for i, command := range cfg.VerificationCommands {
-		outcome := runCheckCommand(ctx, a.sandbox, cfg, ws, command, revision, i == 0)
+		outcome := runCheckCommand(ctx, a.sandbox, cfg, checkout, command, revision, i == 0)
 		if ctx.Err() != nil {
 			return nil, process.ErrCancelled
 		}
@@ -471,6 +476,29 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		}
 	}
 	return verificationErrors, nil
+}
+
+// verificationDir holds each verification run's pristine checkout inside the task's root.
+const verificationDir = "verify"
+
+// verificationCheckout clones the reviewed revision fresh for one verification run and returns a function that removes
+// it. Anything a session left in the task work tree beyond the reviewed commit cannot influence the result.
+func (a *App) verificationCheckout(ctx context.Context, task *model.Task, revision string) (string, func(), error) {
+	taskRoot := filepath.Dir(task.Workspace)
+	root := filepath.Join(taskRoot, verificationDir)
+	if err := workspace.RemoveOwnedDir(taskRoot, root); err != nil {
+		return "", nil, fmt.Errorf("Removing a previous verification checkout: %w", err)
+	}
+	checkout := filepath.Join(root, "workspace")
+	if err := gitops.CloneReviewed(ctx, task.ExecutionConfig(), task.Workspace, checkout, revision); err != nil {
+		_ = workspace.RemoveOwnedDir(taskRoot, root)
+		return "", nil, fmt.Errorf("Preparing the verification checkout: %w", err)
+	}
+	return checkout, func() {
+		if err := workspace.RemoveOwnedDir(taskRoot, root); err != nil {
+			_ = a.Store.Event(task.ID, "cleanup_error", "verification checkout: "+redact.Error(err))
+		}
+	}, nil
 }
 
 func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runners, review model.Review, verificationErrors []string) error {

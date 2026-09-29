@@ -284,6 +284,34 @@ func TestVerificationRecordsCommandThatBreaksTheStateCheck(t *testing.T) {
 	}
 }
 
+func TestVerificationSeesOnlyTheReviewedCommit(t *testing.T) {
+	t.Parallel()
+	app, task, revision := verificationFixture(t, []string{
+		"test \"$(cat impl.txt)\" = 0", "test ! -e planted.txt", "test ! -d node_modules", "echo built > coverage.out"})
+	if err := os.WriteFile(filepath.Join(filepath.Dir(task.Workspace), "repo.git", "info", "exclude"), []byte("planted.txt\nnode_modules/\ncoverage.out\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"planted.txt": "left by a session\n", "node_modules/fake/index.js": "exit(0)\n"} {
+		path := filepath.Join(task.Workspace, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failures, err := app.verifyRevision(context.Background(), &task, revision)
+	if err != nil || len(failures) != 0 {
+		t.Fatalf("verification = %v, %v; ignored files in the task work tree must not reach the checkout", failures, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(task.Workspace), verificationDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verification checkout was not removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(task.Workspace, "planted.txt")); err != nil {
+		t.Fatal("the task work tree itself must be left as it was")
+	}
+}
+
 func TestVerificationCannotRedirectTheTrustedGitMetadata(t *testing.T) {
 	t.Parallel()
 	marker := filepath.Join(t.TempDir(), "executed")

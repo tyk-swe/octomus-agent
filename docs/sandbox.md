@@ -75,9 +75,10 @@ filesystem, no capabilities and `no-new-privileges`. See
 
 Executors, fresh reviewers and repair turns each get a new sandbox. Persistent repair
 threads resume from the runner session store (below), not from a live process. Each
-verification command gets a fresh sandbox. Commands in one verification run share a home
-directory, so `npm ci` in one command can serve `npm test` in the next. The home starts
-empty at every new run.
+verification run starts from a fresh clone of exactly the reviewed commit, so nothing an
+agent left beside it can influence the result. Each verification command gets a fresh
+sandbox. Commands in one verification run share a home directory, so `npm ci` in one
+command can serve `npm test` in the next. The home starts empty at every new run.
 
 OpenCode serves HTTP on the sandbox's own loopback. A helper inside the sandbox
 (`octomus-agent --sandbox-init`) checks its readiness and relays its API as HTTP/2 over
