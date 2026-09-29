@@ -203,6 +203,10 @@ func (h *dockerBroker) taskRoot(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(root, "repo.git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "workspace", ".git"),
+		[]byte("gitdir: "+filepath.Join(root, "repo.git")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return filepath.Join(root, "workspace")
 }
 
@@ -212,6 +216,10 @@ func TestDockerVerifySandboxIsContained(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws := h.taskRoot(t)
+	sibling := h.taskRoot(t)
+	if err := os.WriteFile(filepath.Join(sibling, "sibling-marker"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	script := strings.Join([]string{
 		`echo "uid=$(id -u) cwd=$(pwd)"`,
 		`grep -E '^(CapEff|NoNewPrivs|Seccomp):' /proc/self/status | tr -s '\t ' ' '`,
@@ -219,6 +227,13 @@ func TestDockerVerifySandboxIsContained(t *testing.T) {
 		`touch ../repo.git/escape 2>/dev/null && echo REPO_WRITABLE || echo repo_read_only`,
 		`test -e ../../../state.db && echo STATE_VISIBLE || echo state_hidden`,
 		`test -e /var/run/docker.sock && echo DOCKER_VISIBLE || echo docker_hidden`,
+		`ls ../.. | tr '\n' ' '`,
+		`test -e ../../*/workspace/sibling-marker && echo SIBLING_REACHED || echo sibling_unreached`,
+		`rm .git 2>/dev/null && echo POINTER_DELETED || echo pointer_pinned`,
+		`mv .git .git.swap 2>/dev/null && echo POINTER_MOVED || echo pointer_pinned`,
+		`mkdir .git 2>/dev/null && echo POINTER_DIR_MADE || echo pointer_pinned`,
+		`(echo x > .git) 2>/dev/null && echo POINTER_WRITTEN || echo pointer_pinned`,
+		`grep -q gitdir .git && echo pointer_readable`,
 		`echo "pids=$(cat /sys/fs/cgroup/pids.max) memory=$(cat /sys/fs/cgroup/memory.max)"`,
 		`getent hosts example.com >/dev/null 2>&1 && echo DNS_RESOLVES || echo dns_blocked`,
 		`echo "home=$HOME" && touch "$HOME/cache" && echo home_writable`,
@@ -235,11 +250,18 @@ func TestDockerVerifySandboxIsContained(t *testing.T) {
 		fmt.Sprintf("uid=%d cwd=%s", os.Getuid(), ws),
 		"CapEff: 0000000000000000", "NoNewPrivs: 1", "Seccomp: 2",
 		"rootfs_read_only", "repo_read_only", "state_hidden", "docker_hidden",
+		"sibling_unreached", "pointer_readable",
 		"pids=256 memory=268435456", "dns_blocked", "home=/home/octomus", "home_writable",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("sandbox output lacks %q:\n%s", want, stdout)
 		}
+	}
+	if strings.Contains(stdout, "POINTER_") || strings.Contains(stdout, "SIBLING_REACHED") {
+		t.Errorf("the .git pointer or a sibling root was reachable:\n%s", stdout)
+	}
+	if strings.Contains(stdout, filepath.Base(filepath.Dir(sibling))) {
+		t.Errorf("the sandbox saw a sibling root:\n%s", stdout)
 	}
 	if code, ok := out.Status.Code(); !ok || code != 3 || out.Status.Success() {
 		t.Fatalf("status = %v; want exit 3", out.Status)

@@ -339,6 +339,7 @@ writes the check's version warnings to its log.
 ```text
 octomus-agent [--data-dir PATH] [--listen IP:PORT] [--assets PATH] [--sandbox docker|off]
 octomus-agent --sandboxd
+octomus-agent --sandboxd-check
 octomus-agent --egress
 octomus-agent --healthcheck [--listen IP:PORT]
 octomus-agent --print-config
@@ -356,7 +357,9 @@ octomus-agent --version
 `--sandbox` (`OCTOMUS_SANDBOX`) defaults to `docker`, which runs every runner and
 verification command through the broker at `OCTOMUS_SANDBOXD_SOCKET`; `off` runs them on
 this host. `--sandboxd` serves the broker and `--egress` the egress gateway, each configured
-from the environment in [compose.yaml](../deploy/docker/compose.yaml). `--healthcheck` asks
+from the environment in [compose.yaml](../deploy/docker/compose.yaml). `--sandboxd-check` asks
+the broker over its socket whether it serves sandboxes; the sandboxd container's HEALTHCHECK runs
+it, and the control plane waits for that health before starting. `--healthcheck` asks
 the local service for `/healthz`. The container image also uses
 `--sandbox-init` (the in-sandbox helper) and `--git-credential` (the control plane's Git
 credential helper); neither is meant to be run by hand. `--assets`/`OCTOMUS_ASSETS`

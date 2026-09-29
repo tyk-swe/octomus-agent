@@ -404,10 +404,15 @@ func (h *HostChild) Wait() (Status, error) {
 }
 
 func Capture(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (*ProcessOutput, error) {
+	return CaptureEnv(ctx, binary, args, cwd, seconds, mode, nil)
+}
+
+// CaptureEnv is Capture with extra environment values appended to the Command environment.
+func CaptureEnv(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode, env []string) (*ProcessOutput, error) {
 	if ctx.Err() != nil {
 		return nil, ErrCancelled
 	}
-	child, err := StartHost(binary, args, cwd, nil, false)
+	child, err := StartHost(binary, args, cwd, env, false)
 	if err != nil {
 		return nil, fmt.Errorf("Could not start %s: %w", binary, err)
 	}
@@ -611,6 +616,16 @@ func runeOffset(s string, n int) int {
 
 func RunMachine(ctx context.Context, binary string, args []string, cwd string, seconds uint64) (string, error) {
 	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureMachine)
+	return machineResult(binary, output, err)
+}
+
+// RunMachineEnv is RunMachine with extra environment values appended to the Command environment.
+func RunMachineEnv(ctx context.Context, binary string, args []string, cwd string, seconds uint64, env []string) (string, error) {
+	output, err := CaptureEnv(ctx, binary, args, cwd, seconds, CaptureMachine, env)
+	return machineResult(binary, output, err)
+}
+
+func machineResult(binary string, output *ProcessOutput, err error) (string, error) {
 	if err != nil {
 		return "", err
 	}
@@ -631,7 +646,12 @@ func ShellCheck(ctx context.Context, command string, cwd string, seconds uint64)
 }
 
 func RunPredicate(ctx context.Context, binary string, args []string, cwd string, seconds uint64, falseCodes []int) (bool, error) {
-	output, err := Capture(ctx, binary, args, cwd, seconds, CaptureDiagnostic)
+	return RunPredicateEnv(ctx, binary, args, cwd, seconds, falseCodes, nil)
+}
+
+// RunPredicateEnv is RunPredicate with extra environment values appended to the Command environment.
+func RunPredicateEnv(ctx context.Context, binary string, args []string, cwd string, seconds uint64, falseCodes []int, env []string) (bool, error) {
+	output, err := CaptureEnv(ctx, binary, args, cwd, seconds, CaptureDiagnostic, env)
 	if err != nil {
 		return false, err
 	}

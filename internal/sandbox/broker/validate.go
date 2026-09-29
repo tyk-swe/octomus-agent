@@ -145,6 +145,35 @@ func (c Config) resolveRoot(p *plan, dir string) error {
 			return err
 		}
 	}
+	if !p.scratch {
+		// The .git pointer mounts read-only into the sandbox, so it must already be the plain file a trusted clone
+		// writes; a missing or replaced pointer would otherwise be created or swapped inside the sandbox.
+		if err := c.ownedFile(filepath.Join(rel, "workspace", ".git")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ownedFile requires rel to resolve to a regular file owned by the sandbox user, inside directories ownedDirectory
+// accepts, with no symlink components.
+func (c Config) ownedFile(rel string) error {
+	if err := c.ownedDirectory(filepath.Dir(rel)); err != nil {
+		return err
+	}
+	info, err := os.Lstat(filepath.Join(c.DataDir, rel))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("Sandbox root is incomplete: %s is missing", rel)
+		}
+		return err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("Sandbox root component %s is not a plain file", rel)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != c.UID {
+		return fmt.Errorf("Sandbox root component %s is not owned by the sandbox user", rel)
+	}
 	return nil
 }
 

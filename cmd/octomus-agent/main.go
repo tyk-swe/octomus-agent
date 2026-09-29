@@ -51,7 +51,7 @@ type arguments struct {
 	listenAddr                                        netip.AddrPort
 	assets, exportRun                                 *string
 	printConfig, doctor, audit, usageReport, sandboxd bool
-	egress, healthcheck                               bool
+	egress, healthcheck, sandboxdCheck                bool
 	sandbox                                           sandbox.Mode
 }
 
@@ -87,6 +87,9 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 	}
 	if parsed.healthcheck {
 		return healthcheck(parsed.listen, stderr)
+	}
+	if parsed.sandboxdCheck {
+		return sandboxdCheck(env, stderr)
 	}
 	if parsed.egress {
 		if err := runEgress(env, stdout, stderr); err != nil {
@@ -316,7 +319,7 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 				}
 				a.sandbox = mode
 			}
-		case "--print-config", "--doctor", "--audit", "--usage-report", "--sandboxd", "--egress", "--healthcheck":
+		case "--print-config", "--doctor", "--audit", "--usage-report", "--sandboxd", "--sandboxd-check", "--egress", "--healthcheck":
 			if hasValue {
 				return a, "", fmt.Errorf("unexpected value for '%s'", name)
 			}
@@ -331,6 +334,8 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 				a.usageReport = true
 			case "--sandboxd":
 				a.sandboxd = true
+			case "--sandboxd-check":
+				a.sandboxdCheck = true
 			case "--egress":
 				a.egress = true
 			case "--healthcheck":
@@ -362,13 +367,13 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 		return a, "", fmt.Errorf("--export-run cannot be used with --doctor, --print-config or --usage-report")
 	}
 	modes := 0
-	for _, mode := range []bool{a.sandboxd, a.egress, a.healthcheck, a.doctor, a.printConfig, a.usageReport, a.exportRun != nil} {
+	for _, mode := range []bool{a.sandboxd, a.sandboxdCheck, a.egress, a.healthcheck, a.doctor, a.printConfig, a.usageReport, a.exportRun != nil} {
 		if mode {
 			modes++
 		}
 	}
-	if (a.sandboxd || a.egress || a.healthcheck) && modes > 1 {
-		return a, "", fmt.Errorf("--sandboxd, --egress and --healthcheck cannot be combined with another mode")
+	if (a.sandboxd || a.sandboxdCheck || a.egress || a.healthcheck) && modes > 1 {
+		return a, "", fmt.Errorf("--sandboxd, --sandboxd-check, --egress and --healthcheck cannot be combined with another mode")
 	}
 	return a, "", nil
 }
@@ -400,6 +405,7 @@ Options:
       --sandbox <MODE>          Where runners and verification run: docker, through the sandbox broker, or off,
                                 directly on this host [env: OCTOMUS_SANDBOX] [default: docker]
       --sandboxd                Serve the sandbox broker (the only component that uses the Docker socket)
+      --sandboxd-check          Exit 0 when the sandbox broker answers on its socket
       --egress                  Serve the egress gateway that sandboxes reach the internet through
       --healthcheck             Exit 0 when the service on --listen answers its health check
   -h, --help                   Print help

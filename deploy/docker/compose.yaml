@@ -50,7 +50,7 @@ services:
       start_period: 10m
     depends_on:
       sandboxd:
-        condition: service_started
+        condition: service_healthy
       egress:
         condition: service_started
 
@@ -87,6 +87,11 @@ services:
       - tools:/opt/octomus-tools
       - egress-state:/run/octomus-egress
     stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/octomus-agent", "--sandboxd-check"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
 
   egress:
     <<: *hardened

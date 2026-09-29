@@ -32,11 +32,32 @@ func reasoned(reason model.BlockedReason, message string, err error) error {
 }
 
 func Git(ctx context.Context, c config.Config, cwd string, args []string) (string, error) {
-	out, err := process.RunMachine(ctx, "git", args, cwd, c.CommandTimeoutSeconds)
+	return git(ctx, c, cwd, args, isolatedConfig)
+}
+
+// remoteGit is Git for the few commands that may need an inherited credential helper: fetches, remote listing and
+// pushes. They never apply work-tree attributes, so the ambient configuration cannot arm a repository-named driver.
+func remoteGit(ctx context.Context, c config.Config, cwd string, args []string) (string, error) {
+	return git(ctx, c, cwd, args, nil)
+}
+
+func git(ctx context.Context, c config.Config, cwd string, args []string, env []string) (string, error) {
+	out, err := process.RunMachineEnv(ctx, "git", args, cwd, c.CommandTimeoutSeconds, env)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// isolatedConfig cuts every inherited configuration scope out of a git child: an owned work tree's .gitattributes
+// may name any filter or diff driver the ambient configuration defines, and git would run it as the control plane.
+// The trusted repo.git and the -c pins above still apply; remoteGit keeps ambient configuration only where a
+// credential helper may live.
+var isolatedConfig = []string{
+	"GIT_CONFIG_NOSYSTEM=1",
+	"GIT_CONFIG_GLOBAL=" + os.DevNull,
+	"GIT_CONFIG_COUNT=0",
+	"GIT_CONFIG_PARAMETERS=",
 }
 
 // hardened pins behaviour that configuration or submodules could otherwise turn into command execution. The trusted
@@ -66,6 +87,16 @@ func WorkGit(ctx context.Context, c config.Config, workTree string, args []strin
 		return "", err
 	}
 	return Git(ctx, c, workTree, full)
+}
+
+// remoteWorkGit is WorkGit for pushes: they may need an inherited credential helper, and they write no work tree
+// and apply no attributes.
+func remoteWorkGit(ctx context.Context, c config.Config, workTree string, args []string) (string, error) {
+	full, err := treeArgs(workTree, args)
+	if err != nil {
+		return "", err
+	}
+	return remoteGit(ctx, c, workTree, full)
 }
 
 func gh(ctx context.Context, c config.Config, args []string) (string, error) {
@@ -160,7 +191,7 @@ func validatedOrigin(ctx context.Context, c config.Config) (string, error) {
 }
 
 func Fetch(ctx context.Context, c config.Config) error {
-	_, err := Git(ctx, c, c.Repository, []string{"fetch", "--prune", "origin"})
+	_, err := remoteGit(ctx, c, c.Repository, []string{"fetch", "--prune", "origin"})
 	return err
 }
 
@@ -189,7 +220,7 @@ func FetchForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([]u
 	for _, n := range numbers {
 		all = append(all, refspec(n))
 	}
-	if _, err := Git(ctx, c, c.Repository, all); err == nil {
+	if _, err := remoteGit(ctx, c, c.Repository, all); err == nil {
 		return nil, nil
 	}
 	var missing []uint64
@@ -197,7 +228,7 @@ func FetchForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([]u
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if _, err := Git(ctx, c, c.Repository, []string{"fetch", "--no-tags", "--no-write-fetch-head", "origin", refspec(n)}); err != nil {
+		if _, err := remoteGit(ctx, c, c.Repository, []string{"fetch", "--no-tags", "--no-write-fetch-head", "origin", refspec(n)}); err != nil {
 			missing = append(missing, n)
 		}
 	}
@@ -209,7 +240,7 @@ func RemoteRevision(ctx context.Context, c config.Config, branch string) (*strin
 		return nil, errors.New("Invalid branch")
 	}
 	want := "refs/heads/" + branch
-	out, err := Git(ctx, c, c.Repository, []string{
+	out, err := remoteGit(ctx, c, c.Repository, []string{
 		"ls-remote", "--heads", "origin", want,
 	})
 	if err != nil {
@@ -354,9 +385,9 @@ func clean(ctx context.Context, c config.Config, path string) (bool, error) {
 }
 
 func IsAncestor(ctx context.Context, c config.Config, cwd string, ancestor string, descendant string) (bool, error) {
-	return process.RunPredicate(ctx, "git",
+	return process.RunPredicateEnv(ctx, "git",
 		[]string{"merge-base", "--is-ancestor", ancestor, descendant},
-		cwd, c.CommandTimeoutSeconds, []int{1})
+		cwd, c.CommandTimeoutSeconds, []int{1}, isolatedConfig)
 }
 
 func workIsAncestor(ctx context.Context, c config.Config, path string, ancestor string, descendant string) (bool, error) {
@@ -364,7 +395,7 @@ func workIsAncestor(ctx context.Context, c config.Config, path string, ancestor 
 	if err != nil {
 		return false, err
 	}
-	return process.RunPredicate(ctx, "git", args, path, c.CommandTimeoutSeconds, []int{1})
+	return process.RunPredicateEnv(ctx, "git", args, path, c.CommandTimeoutSeconds, []int{1}, isolatedConfig)
 }
 
 func At(ctx context.Context, c config.Config, path string, revision string) (bool, error) {
@@ -907,7 +938,7 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 			expected = *remote
 		}
 		// Hooks, tags and submodule recursion are pinned off so ambient configuration can never push anything but the owned branch.
-		if _, err := WorkGit(ctx, c, path, []string{
+		if _, err := remoteWorkGit(ctx, c, path, []string{
 			"-c", "push.followTags=false",
 			"push",
 			"--recurse-submodules=no",

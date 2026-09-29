@@ -113,7 +113,12 @@ func (c Config) mounts(p plan) []engineapi.Mount {
 	}
 	mounts = append(mounts, data(filepath.Join(p.rel, "workspace"), p.dir, false))
 	if !p.scratch {
-		mounts = append(mounts, data(filepath.Join(p.rel, "repo.git"), filepath.Join(p.root, "repo.git"), true))
+		// Trusted metadata and the work tree's .git pointer both mount read-only: the pointer itself must stay the
+		// CloneAt file, or a turn could plant a repository the next turn's reviewer would diff against.
+		mounts = append(mounts,
+			data(filepath.Join(p.rel, "repo.git"), filepath.Join(p.root, "repo.git"), true),
+			data(filepath.Join(p.rel, "workspace", ".git"), filepath.Join(p.dir, ".git"), true),
+		)
 	}
 	switch p.kind {
 	case sandbox.KindRunner:

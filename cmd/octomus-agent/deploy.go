@@ -106,6 +106,11 @@ func prepareDeployment(ctx context.Context, mode sandbox.Mode, data string, env 
 	checkout := filepath.Join(data, "checkout")
 	deployment.Repository, deployment.GitHubRepo = checkout, repo
 	if _, err := os.Stat(filepath.Join(checkout, ".git")); err == nil {
+		cfg := config.Default()
+		cfg.Repository, cfg.GitHubRepo = checkout, repo
+		if err := gitops.ValidateRemote(ctx, cfg); err != nil {
+			return engine.Deployment{}, fmt.Errorf("The trusted checkout is not %s; remove %s and restart: %w", repo, checkout, err)
+		}
 		return deployment, nil
 	}
 	if !token {

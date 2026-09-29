@@ -33,6 +33,10 @@ func makeRoot(t *testing.T, cfg Config, rel string, dirs ...string) string {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(root, "workspace", ".git"),
+		[]byte("gitdir: "+filepath.Join(root, "repo.git")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return filepath.Join(root, "workspace")
 }
 

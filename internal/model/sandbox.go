@@ -53,7 +53,12 @@ func MergeSandbox(into *SandboxRecord, run *SandboxRecord) *SandboxRecord {
 			merged.Egress.Denied = map[string]uint64{}
 		}
 	}
-	merged.ImageID, merged.Runtime = run.ImageID, run.Runtime
+	if into != nil && (into.ImageID != run.ImageID || into.Runtime != run.Runtime) {
+		// A session can span a sandbox image or runtime change; its record must not credit every run to the newest.
+		merged.ImageID, merged.Runtime = "mixed", ""
+	} else {
+		merged.ImageID, merged.Runtime = run.ImageID, run.Runtime
+	}
 	merged.Runs += run.Runs
 	merged.OOM = merged.OOM || run.OOM
 	addHosts(merged.Egress.Allowed, run.Egress.Allowed)

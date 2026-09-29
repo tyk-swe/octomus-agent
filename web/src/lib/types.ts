@@ -477,6 +477,7 @@ export type SandboxSelfTest = {
   checks: ProbeCheck[];
   kernel: string;
   image_id: string;
+  runtime?: string;
   error: string | null;
 };
 export type BrokerLimits = {

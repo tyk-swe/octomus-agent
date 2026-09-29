@@ -32,6 +32,22 @@ func sandboxBackend(mode sandbox.Mode, env func(string) (string, bool), stderr i
 	return sandbox.NewRemote(socket)
 }
 
+// sandboxdCheck asks the broker over its own socket whether it serves sandboxes, for the sandboxd container's
+// HEALTHCHECK, so the control plane starts only once it can really isolate work.
+func sandboxdCheck(env func(string) (string, bool), stderr io.Writer) int {
+	socket := defaultBrokerSocket
+	if v, ok := env("OCTOMUS_SANDBOXD_SOCKET"); ok && v != "" {
+		socket = v
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := sandbox.NewRemote(socket).Info(ctx); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return 0
+}
+
 // runEgress serves the egress gateway on the sandbox networks, logging every decision as a JSON line.
 func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error {
 	value := func(key, fallback string) string {

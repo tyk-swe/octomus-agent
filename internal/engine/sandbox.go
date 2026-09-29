@@ -113,6 +113,7 @@ type SandboxSelfTest struct {
 	Checks  []sandbox.ProbeCheck `json:"checks"`
 	Kernel  string               `json:"kernel"`
 	ImageID string               `json:"image_id"`
+	Runtime string               `json:"runtime,omitempty" wire:"default"`
 	Error   *string              `json:"error"`
 }
 
@@ -127,7 +128,7 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 	}
 	if remote, ok := a.sandbox.(*sandbox.Remote); ok {
 		if info, err := remote.Info(ctx); err == nil {
-			record.ImageID = info.ImageID
+			record.ImageID, record.Runtime = info.ImageID, info.Runtime
 		}
 	}
 	report, err := sandbox.Probe(ctx, a.sandbox)
@@ -189,7 +190,11 @@ func (a *App) SandboxPosture() SandboxPosture {
 		}
 	}
 	if selfTest, err := store.Get[SandboxSelfTest](a.Store, "settings", selfTestRecord); err == nil && selfTest != nil {
-		posture.SelfTest = selfTest
+		// A saved proof only counts while it names the broker's current image and runtime; anything else predates
+		// a posture change and needs a fresh self-test.
+		if posture.Broker != nil && selfTest.ImageID == posture.Broker.ImageID && selfTest.Runtime == posture.Broker.Runtime {
+			posture.SelfTest = selfTest
+		}
 	}
 	return posture
 }

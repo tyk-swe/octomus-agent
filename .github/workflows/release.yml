@@ -113,7 +113,7 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "${IMAGE_REF%:*}@${DIGEST}"
   publish:
-    needs: build
+    needs: [build, images]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

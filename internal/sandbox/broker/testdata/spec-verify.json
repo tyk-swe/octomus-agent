@@ -91,6 +91,16 @@
       {
         "Type": "volume",
         "Source": "octomus-data",
+        "Target": "/var/lib/octomus/data/tasks/0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab/workspace/.git",
+        "ReadOnly": true,
+        "VolumeOptions": {
+          "NoCopy": true,
+          "Subpath": "tasks/0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab/workspace/.git"
+        }
+      },
+      {
+        "Type": "volume",
+        "Source": "octomus-data",
         "Target": "/home/octomus",
         "ReadOnly": false,
         "VolumeOptions": {
