@@ -164,7 +164,7 @@ Two allowlists come from the deployment's `.env`:
 | Variable | Reachable from | Typical content |
 | --- | --- | --- |
 | `OCTOMUS_EGRESS_MODEL_HOSTS` | agent turns and [runner logins](#signing-in-a-runner) | `chatgpt.com,auth.openai.com,api.openai.com` for Codex; `models.opencode.ai` plus your providers for OpenCode |
-| `OCTOMUS_EGRESS_BUILD_HOSTS` | agent turns and verification | package registries, for example `proxy.golang.org,sum.golang.org` or `registry.npmjs.org` |
+| `OCTOMUS_EGRESS_BUILD_HOSTS` | agent turns, [runner logins](#signing-in-a-runner) and verification | package registries, for example `proxy.golang.org,sum.golang.org` or `registry.npmjs.org` |
 
 Entries are host names or `*.suffix`, with an optional `:port` (default 443). An empty
 `OCTOMUS_EGRESS_MODEL_HOSTS=` allows no model hosts; only a variable missing from `.env`

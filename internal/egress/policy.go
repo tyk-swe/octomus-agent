@@ -43,8 +43,9 @@ func (r Rule) matches(host string, port uint16) bool {
 	return host == r.Host
 }
 
-// Policy is the deployment's allowlist. Model hosts serve runner sandboxes only; build hosts (package registries and
-// the like) serve runner and verification sandboxes. Probes get nothing.
+// Policy is the deployment's allowlist. Model hosts serve runner leases only; build hosts (package registries and the
+// like) serve runner and verification leases. Runner leases cover runner sandboxes, runner logins and the containment
+// probe, which proves what a runner sandbox is refused; the version probe gets no lease.
 type Policy struct {
 	Model []Rule `json:"model"`
 	Build []Rule `json:"build"`
