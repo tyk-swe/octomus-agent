@@ -233,7 +233,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer g.releaseTunnel(lease.Sandbox)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	addresses, err := g.resolve.LookupNetIP(ctx, "ip", host)
+	// The rooted name is looked up as is: no resolver search domain is ever appended to an allowlisted name.
+	addresses, err := g.resolve.LookupNetIP(ctx, "ip", host+".")
 	cancel()
 	if err != nil {
 		deny(http.StatusBadGateway, host, uint16(port), "name did not resolve")

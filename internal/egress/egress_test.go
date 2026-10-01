@@ -89,7 +89,7 @@ func (r *recordingResolver) LookupNetIP(_ context.Context, _, host string) ([]ne
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lookups = append(r.lookups, host)
-	if answers, ok := r.answers[host]; ok {
+	if answers, ok := r.answers[strings.TrimSuffix(host, ".")]; ok {
 		return answers, nil
 	}
 	return nil, errors.New("no such host")
@@ -238,7 +238,7 @@ func TestGatewayTunnelsOnlyAllowlistedHostsToPublicAddresses(t *testing.T) {
 	f.resolver.mu.Lock()
 	lookups := strings.Join(f.resolver.lookups, ",")
 	f.resolver.mu.Unlock()
-	if lookups != "api.openai.com,internal.example.com" {
+	if lookups != "api.openai.com.,internal.example.com." {
 		t.Fatalf("lookups = %s; a refused name must never reach DNS", lookups)
 	}
 	summary := f.gateway.Collect("octomus-test-runner")
@@ -496,5 +496,19 @@ func TestPublicAddressRefusesEmbeddedAndSpecialIPv6(t *testing.T) {
 		if !PublicAddress(netip.MustParseAddr(addr)) {
 			t.Errorf("%s was refused", addr)
 		}
+	}
+}
+
+func TestGatewayResolvesRootedNames(t *testing.T) {
+	f := newGatewayFixture(t, "runner")
+	status, tunnel := f.connect(t, "api.openai.com.:443", sandbox.ProxyUser+":"+f.token)
+	if status != http.StatusOK {
+		t.Fatalf("tunnel = %d", status)
+	}
+	tunnel.Close()
+	f.resolver.mu.Lock()
+	defer f.resolver.mu.Unlock()
+	if strings.Join(f.resolver.lookups, ",") != "api.openai.com." {
+		t.Fatalf("lookups = %v; want only the rooted name, so no search domain is ever appended", f.resolver.lookups)
 	}
 }
