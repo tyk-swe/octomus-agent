@@ -16,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"golang.org/x/sys/unix"
 )
 
 func admissionsByRole(t *testing.T, state *store.Store) map[string]int {
@@ -153,6 +154,104 @@ func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
 	}
 	if info, err := os.Lstat(locked); err != nil || info.Mode().Perm() != 0 {
 		t.Fatalf("measurement changed the locked directory: %v, %v; want mode 0", info, err)
+	}
+	// The hidden bytes belong to t1, so t1 itself is over the limit until its retained work is resolved.
+	owner := &model.Task{ID: "t1", CycleID: "cycle-1"}
+	if err := app.admit("cycle-1", owner, "executor", cfg.Roles["discovery"]); model.BlockedReasonFromError(err) != model.BlockedReasonStorageLimit {
+		t.Fatalf("admission for the task owning the unreadable directory = %v; want a storage limit", err)
+	}
+}
+
+// nestDirectories builds a chain of depth directories named "a" under base one level at a time, as a sandbox can with
+// relative mkdir and cd, so no path it uses is longer than one name.
+func nestDirectories(t *testing.T, base string, depth int) {
+	t.Helper()
+	fd, err := unix.Open(base, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range depth {
+		if err := unix.Mkdirat(fd, "a", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		next, err := unix.Openat(fd, "a", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		_ = unix.Close(fd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fd = next
+	}
+	_ = unix.Close(fd)
+}
+
+func TestTooDeepWorkspaceBlocksOnlyItsOwner(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	data := t.TempDir()
+	app := New(state, data)
+	t.Cleanup(app.Shutdown)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	// Deeper than PATH_MAX once spelled out as one path.
+	deep := filepath.Join(data, "tasks", "t1", "workspace", "node_modules")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nestDirectories(t, deep, 2100)
+	other := filepath.Join(data, "tasks", "t2", "workspace")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "notes.txt"), []byte("measured"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.admit("cycle-1", nil, "discovery", cfg.Roles["discovery"]); err != nil {
+		t.Fatalf("planning admission beside a too-deep task tree = %v; want a reserved session", err)
+	}
+	if err := app.admit("cycle-1", &model.Task{ID: "t2", CycleID: "cycle-1"}, "executor", cfg.Roles["discovery"]); err != nil {
+		t.Fatalf("another task's admission beside a too-deep task tree = %v; want a reserved session", err)
+	}
+	err := app.admit("cycle-1", &model.Task{ID: "t1", CycleID: "cycle-1"}, "executor", cfg.Roles["discovery"])
+	if model.BlockedReasonFromError(err) != model.BlockedReasonStorageLimit || !strings.Contains(err.Error(), filepath.Join("tasks", "t1")) {
+		t.Fatalf("admission for the task owning the too-deep tree = %v; want a storage limit naming it", err)
+	}
+	if used, err := state.SessionsToday(); err != nil || used != 2 {
+		t.Fatalf("sessions today = %d, %v; want 2", used, err)
+	}
+	if err := app.measureStorage(cfg); err != nil {
+		t.Fatalf("storage measurement beside a too-deep task tree = %v", err)
+	}
+}
+
+// A directory the service cannot read beside the owned roots, like lost+found when the data directory is a mount's
+// root, is not a sandbox's retained work: every admission is refused, and the refusal says how to fix the host.
+func TestUnreadableDataDirectoryEntryRefusesEveryAdmission(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	state := testStore(t)
+	data := t.TempDir()
+	app := New(state, data)
+	t.Cleanup(app.Shutdown)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	lost := filepath.Join(data, "lost+found")
+	if err := os.Mkdir(lost, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(lost, 0o755) })
+
+	for _, task := range []*model.Task{nil, {ID: "t1", CycleID: "cycle-1"}} {
+		err := app.admit("cycle-1", task, "executor", cfg.Roles["discovery"])
+		if model.BlockedReasonFromError(err) != model.BlockedReasonStorageLimit ||
+			!strings.Contains(err.Error(), "lost+found in the data directory") || !strings.Contains(err.Error(), "move it out of the data directory") {
+			t.Fatalf("admission beside an unreadable lost+found = %v; want a storage limit that names it and says how to fix it", err)
+		}
+	}
+	if err := app.measureStorage(cfg); err != nil {
+		t.Fatalf("storage measurement beside an unreadable lost+found = %v", err)
 	}
 }
 

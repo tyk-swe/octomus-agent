@@ -3,12 +3,15 @@ package workspace
 import (
 	"errors"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"golang.org/x/sys/unix"
 )
 
 // GitDirName is the trusted git metadata beside each owned work tree; sandboxes mount it read-only, so work-tree content can never rewrite it.
@@ -44,46 +47,125 @@ func GitDir(workTree string) (string, error) {
 	return "", ErrNoGitDir
 }
 
-func DirectorySize(path string) (uint64, error) {
-	return directorySize(path, true)
+// maxMeasuredDepth bounds how deep a storage walk descends: it opens no directory that sits this many levels or more
+// below the measured one. A sandbox can nest directories without limit, and the walk holds one descriptor per level.
+const maxMeasuredDepth = 256
+
+// Usage is one storage measurement. Bytes counts every file the walk reached. Unmeasured names, once each and sorted,
+// the subtrees whose bytes are unknown because they could not be read or sit maxMeasuredDepth or more levels below the
+// measured directory, each by at most the leading components Measure was asked to group by: whoever owns one must be
+// treated as over any limit.
+type Usage struct {
+	Bytes      uint64
+	Unmeasured []string
 }
 
-func directorySize(path string, top bool) (uint64, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) || !top && errors.Is(err, fs.ErrPermission) {
-			return 0, nil
-		}
-		return 0, err
+// Measure sums the sizes of the files under path. The walk resolves every name relative to its parent directory's
+// descriptor, so no path it hands the kernel is longer than one name however deep a sandbox nests, and it never
+// follows a symlink, even one swapped in while it runs.
+//
+// An unmeasured subtree is reported by its first group path components relative to path ("." for group 0), so the
+// report grows with the directories at those levels, not with what a sandbox builds below one, and the walk never
+// spells out a deeper path. Below path, only what a sandbox can cause in a tree it writes leaves a subtree unmeasured:
+// a denied directory, one nested too deeply, or one swapped for a symlink or a file while the walk runs. Any other
+// error, and any failure to read path itself, fails the measurement.
+func Measure(path string, group int) (Usage, error) {
+	dir, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Usage{}, nil
 	}
-	var size uint64
-	for _, e := range entries {
-		meta, err := os.Lstat(filepath.Join(path, e.Name()))
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) || !top && errors.Is(err, fs.ErrPermission) {
+	if err != nil {
+		return Usage{}, err
+	}
+	defer dir.Close()
+	w := walker{group: group, unmeasured: map[string]struct{}{}}
+	if err := w.walk(dir, ".", 0); err != nil {
+		return Usage{}, err
+	}
+	usage := Usage{Bytes: w.bytes}
+	if len(w.unmeasured) > 0 {
+		usage.Unmeasured = slices.Sorted(maps.Keys(w.unmeasured))
+	}
+	return usage, nil
+}
+
+type walker struct {
+	group      int
+	bytes      uint64
+	unmeasured map[string]struct{}
+}
+
+// unmeasurable reports whether a walk error is one a sandbox can cause in a tree it writes: a directory it denied, or
+// one it replaced with a symlink (O_NOFOLLOW) or a file (O_DIRECTORY) after the walk saw it.
+func unmeasurable(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)
+}
+
+// walk adds the files below dir, which sits depth levels below the measured directory and is reported as prefix.
+func (w *walker) walk(dir *os.File, prefix string, depth int) error {
+	names, err := dir.Readdirnames(-1)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		// Removed while the walk ran.
+		return nil
+	case err != nil && depth > 0 && unmeasurable(err):
+		w.unmeasured[prefix] = struct{}{}
+		return nil
+	case err != nil:
+		return err
+	}
+	fd := int(dir.Fd())
+	for _, name := range names {
+		var meta unix.Stat_t
+		if err := unix.Fstatat(fd, name, &meta, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				continue
+			case depth > 0 && unmeasurable(err):
+				// A directory that denies search denies every name in it.
+				w.unmeasured[prefix] = struct{}{}
+				return nil
+			}
+			return &fs.PathError{Op: "fstatat", Path: filepath.Join(dir.Name(), name), Err: err}
+		}
+		switch meta.Mode & unix.S_IFMT {
+		case unix.S_IFLNK:
+			continue
+		case unix.S_IFDIR:
+			child := prefix
+			if depth < w.group {
+				child = filepath.Join(prefix, name)
+			}
+			if depth+1 >= maxMeasuredDepth {
+				w.unmeasured[child] = struct{}{}
 				continue
 			}
-			return 0, err
-		}
-		if meta.Mode()&fs.ModeSymlink != 0 {
-			continue
-		}
-		var n uint64
-		if meta.IsDir() {
-			n, err = directorySize(filepath.Join(path, e.Name()), false)
-			if err != nil {
-				return 0, err
+			// O_NOFOLLOW refuses a directory replaced by a symlink since the stat above.
+			childFd, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				continue
+			case err != nil && unmeasurable(err):
+				w.unmeasured[child] = struct{}{}
+				continue
+			case err != nil:
+				return &fs.PathError{Op: "openat", Path: filepath.Join(dir.Name(), name), Err: err}
 			}
-		} else {
-			n = uint64(meta.Size())
-		}
-		if math.MaxUint64-size < n {
-			size = math.MaxUint64
-		} else {
-			size += n
+			childDir := os.NewFile(uintptr(childFd), name)
+			err = w.walk(childDir, child, depth+1)
+			childDir.Close()
+			if err != nil {
+				return err
+			}
+		default:
+			if n := uint64(max(meta.Size, 0)); math.MaxUint64-w.bytes < n {
+				w.bytes = math.MaxUint64
+			} else {
+				w.bytes += n
+			}
 		}
 	}
-	return size, nil
+	return nil
 }
 
 func RemoveOwnedDir(root, path string) error {

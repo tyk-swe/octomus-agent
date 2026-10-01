@@ -82,6 +82,11 @@ verification run starts from a fresh clone of exactly the reviewed commit, so no
 agent left beside it can influence the result. Each verification command gets a fresh
 sandbox. Commands in one verification run share a home directory, so `npm ci` in one
 command can serve `npm test` in the next. The home starts empty at every new run.
+When the sandbox rather than the command fails (the broker refuses or loses the command,
+or cannot confirm how it ended), the command has no result. The task is blocked as
+`runner_unavailable` for a retry, with no verification record and no repair round spent,
+and a baseline check ends interrupted rather than failed. If the command ran before the
+sandbox failed, the broker's sandbox record is kept as a `sandbox_evidence` event.
 
 OpenCode serves HTTP on the sandbox's own loopback. A helper inside the sandbox
 (`octomus-agent --sandbox-init`) checks its readiness and relays its API as HTTP/2 over
