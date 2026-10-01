@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Exercise deployment setup with offline Docker and ownership fixtures, and the shipped compose file's rendering."""
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -146,32 +145,24 @@ def render(env_file):
         return json.loads(result.stdout)
 
 
-def login_lease_matches_the_broker(service):
-    """Run login-lease's script against scratch directories: it must write the lease the broker writes
-    (internal/egress/lease.go: sha256(token).json holding {sandbox, kind}) and revoke the previous login's."""
-    assert service['entrypoint'][:2] == ['/bin/sh', '-euc'], service['entrypoint']
-    with tempfile.TemporaryDirectory(prefix='octomus-lease-') as directory:
-        leases, login = Path(directory) / 'egress', Path(directory) / 'login'
-        leases.mkdir()
-        login.mkdir()
-        script = (service['entrypoint'][2].replace('$$', '$')
-                  .replace('/run/octomus-egress', str(leases)).replace('/run/octomus-login', str(login)))
-
-        def issue():
-            subprocess.run(['sh', '-euc', script], check=True, timeout=10)
-            proxy = (login / 'proxy').read_text().strip()
-            prefix, suffix = 'http://sandbox:', '@egress:3128'
-            assert proxy.startswith(prefix) and proxy.endswith(suffix), proxy
-            token = proxy[len(prefix):-len(suffix)]
-            assert len(token) == 64 and set(token) <= set('0123456789abcdef'), token
-            lease = leases / (hashlib.sha256(token.encode()).hexdigest() + '.json')
-            assert json.loads(lease.read_text()) == {'sandbox': 'login', 'kind': 'runner'}, lease.read_text()
-            for path in [lease, login / 'proxy']:
-                assert path.stat().st_mode & 0o777 == 0o600, path
-            return lease
-        first = issue()
-        second = issue()
-        assert first != second and [path.name for path in leases.glob('*.json')] == [second.name], list(leases.iterdir())
+def login_lease_runs_the_agent_mode(services):
+    """login-lease runs the agent's --login-lease mode (cmd/octomus-agent, tested in Go) with no network, as the image's
+    unprivileged user: it writes the lease the broker writes, where the gateway reads it, and hands the login a proxy
+    URL for the gateway sandboxes use."""
+    service, login = services['login-lease'], services['login']
+    assert service.get('entrypoint') is None and service['command'] == ['--login-lease'], service
+    assert service['network_mode'] == 'none' and service['restart'] == 'no', service
+    assert service['read_only'] and service['cap_drop'] == ['ALL'] and service['user'] == '10001:10001', service
+    mounts = {mount['source']: mount['target'] for mount in service['volumes']}
+    assert mounts == {'egress-state': '/run/octomus-egress', 'login-proxy': '/run/octomus-login'}, mounts
+    environment, broker = service['environment'], services['sandboxd']['environment']
+    assert environment['OCTOMUS_EGRESS_LEASES'] == mounts['egress-state'] == broker['OCTOMUS_EGRESS_LEASES'], environment
+    assert environment['OCTOMUS_EGRESS_PROXY'] == broker['OCTOMUS_EGRESS_PROXY'], environment
+    proxy = environment['OCTOMUS_LOGIN_PROXY_FILE']
+    assert proxy == mounts['login-proxy'] + '/proxy', environment
+    read = [mount for mount in login['volumes'] if mount['source'] == 'login-proxy']
+    assert len(read) == 1 and read[0]['target'] == mounts['login-proxy'] and read[0]['read_only'], read
+    assert f'$(cat {proxy})' in login['entrypoint'][2].replace('$$', '$'), login['entrypoint']
 
 
 def compose_contract():
@@ -192,13 +183,11 @@ def compose_contract():
     login = services['login']
     assert list(login['networks']) == ['sandbox-runner'] and networks['sandbox-runner']['internal'], login['networks']
     assert login['depends_on']['login-lease']['condition'] == 'service_completed_successfully', login['depends_on']
-    assert services['login-lease']['network_mode'] == 'none', services['login-lease']
-    assert services['login-lease']['restart'] == 'no', services['login-lease']
     mounted = {mount.get('volume', {}).get('subpath') for mount in login['volumes'] if mount['source'] == 'runner'}
     assert mounted == {'codex', 'opencode/data'}, mounted
     assert all(mount['source'] != 'egress-state' for mount in login['volumes']), login['volumes']
     assert login['read_only'] and login['cap_drop'] == ['ALL'], login
-    login_lease_matches_the_broker(services['login-lease'])
+    login_lease_runs_the_agent_mode(services)
     for name, service in services.items():
         if name != 'egress':
             assert 'egress-out' not in service.get('networks', {}), f'{name} reaches the internet directly'

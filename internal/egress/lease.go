@@ -13,8 +13,8 @@ import (
 
 // Lease tells the gateway which sandbox holds a proxy credential and which allowlist applies to it. The broker grants
 // a lease before a sandbox starts and revokes it once the container is gone; the gateway only reads them. Runner
-// logins get one too (deploy/docker/compose.yaml's login-lease service), which lasts until the next login or a broker
-// restart.
+// logins get one too, from the --login-lease mode that deploy/docker/compose.yaml's login-lease service runs; it lasts
+// until the next login or a broker restart.
 type Lease struct {
 	Sandbox string `json:"sandbox"`
 	Kind    string `json:"kind"`

@@ -141,20 +141,11 @@ services:
     profiles: [tools]
     restart: "no"
     network_mode: none
-    entrypoint:
-      - /bin/sh
-      - -euc
-      - |
-        umask 077
-        cd /run/octomus-egress
-        previous=$$(cat login.lease 2>/dev/null || :)
-        case $$previous in */*) ;; [0-9a-f]*.json) rm -f "./$$previous" ;; esac
-        token=$$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-        digest=$$(printf %s "$$token" | sha256sum | cut -c1-64)
-        printf '{"sandbox":"login","kind":"runner"}' > .lease-login
-        mv .lease-login "$$digest.json"
-        printf '%s.json\n' "$$digest" > login.lease
-        printf 'http://sandbox:%s@egress:3128\n' "$$token" > /run/octomus-login/proxy
+    command: ["--login-lease"]
+    environment:
+      OCTOMUS_EGRESS_LEASES: /run/octomus-egress
+      OCTOMUS_EGRESS_PROXY: egress:3128
+      OCTOMUS_LOGIN_PROXY_FILE: /run/octomus-login/proxy
     volumes:
       - egress-state:/run/octomus-egress
       - login-proxy:/run/octomus-login

@@ -169,8 +169,9 @@ login in the `octomus-runner` volume. Runner sandboxes can write that volume, so
 gives nothing they leave there more reach than they have:
 - it joins `octomus-sandbox-runner` and reaches out only through the egress gateway, under
   the runner allowlist. Just before it starts, a one-shot `login-lease` service with no
-  network grants it a lease and revokes the previous login's. That lease stays valid until
-  the next login or until the broker restarts;
+  network runs `octomus-agent --login-lease`, which grants it a lease and revokes the
+  previous login's. That lease stays valid until the next login or until the broker
+  restarts;
 - it mounts only the Codex home and OpenCode's data directory, where the logins live.
   OpenCode's configuration, plugins, cache and state start empty;
 - its image is read-only, and it runs without capabilities, under memory and process limits.

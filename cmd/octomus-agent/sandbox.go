@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/broker"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 const defaultBrokerSocket = "/run/octomus/sandboxd.sock"
@@ -90,6 +93,38 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 	described := policy.Describe()
 	fmt.Fprintf(stderr, "Octomus egress gateway on %s; model hosts %v; build hosts %v\n", listen, described["model"], described["build"])
 	return gateway.Serve(ctx, listener)
+}
+
+// loginLease grants a runner login its egress lease, as the broker grants a runner sandbox's, and writes the proxy URL
+// the login reads. It first revokes the previous login's lease, whose credential is in the file it replaces, so only
+// the latest login can reach out.
+func loginLease(env func(string) (string, bool)) error {
+	values := map[string]string{}
+	for _, key := range []string{"OCTOMUS_EGRESS_LEASES", "OCTOMUS_EGRESS_PROXY", "OCTOMUS_LOGIN_PROXY_FILE"} {
+		v, ok := env(key)
+		if !ok || v == "" {
+			return fmt.Errorf("%s is required", key)
+		}
+		values[key] = v
+	}
+	leases := egress.Leases{Dir: values["OCTOMUS_EGRESS_LEASES"]}
+	file := values["OCTOMUS_LOGIN_PROXY_FILE"]
+	if previous, err := os.ReadFile(file); err == nil {
+		if address, err := url.Parse(strings.TrimSpace(string(previous))); err == nil {
+			if token, ok := address.User.Password(); ok {
+				leases.Revoke(token)
+			}
+		}
+	}
+	token, err := leases.Grant("login", wire.KindRunner)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(file, []byte(egress.ProxyURL(values["OCTOMUS_EGRESS_PROXY"], token)+"\n"), 0o600); err != nil {
+		leases.Revoke(token)
+		return err
+	}
+	return nil
 }
 
 // runBroker serves the sandbox broker until a shutdown signal, then removes every sandbox it started.
