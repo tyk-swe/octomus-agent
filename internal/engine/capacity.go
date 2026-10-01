@@ -164,14 +164,14 @@ func (a *App) startPrRefresh(cfg config.Config) {
 	a.runtimeMu.Lock()
 	inFlight := a.runtime.prRefresh != nil
 	a.runtimeMu.Unlock()
-	if inFlight {
+	if a.ctx.Err() != nil || inFlight {
 		return
 	}
 	capacity, err := a.prCapacity(cfg)
 	available := err == nil && capacity.Remaining != nil && *capacity.Remaining > 0
 	a.runtimeMu.Lock()
 	paced := !available || a.runtime.prAdmissionRefused
-	if a.runtime.prRefresh != nil || paced && time.Since(a.runtime.lastPrAttempt) < prRefreshRetryDelay {
+	if a.ctx.Err() != nil || a.runtime.prRefresh != nil || paced && time.Since(a.runtime.lastPrAttempt) < prRefreshRetryDelay {
 		a.runtimeMu.Unlock()
 		return
 	}

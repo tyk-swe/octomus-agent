@@ -54,7 +54,7 @@ type runnerStorage struct {
 func (a *App) maybeStartHousekeeping(cfg config.Config) {
 	now := time.Now()
 	a.runtimeMu.Lock()
-	if a.runtime.housekeeping {
+	if a.ctx.Err() != nil || a.runtime.housekeeping {
 		a.runtimeMu.Unlock()
 		return
 	}
