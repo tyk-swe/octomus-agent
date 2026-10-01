@@ -9,13 +9,16 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -871,4 +874,134 @@ func TestExecutionShutdownBeforeInitializationStaysRetryable(t *testing.T) {
 	}
 	assertAdmissions(t, fixture.state, 0, "no work was admitted before the preflight")
 	assertNoOpenClients(t, fixture.script)
+}
+
+// brokenSandbox runs runners on the host but fails every verification command the way a broker can: refusing it at
+// start, or failing it after the command started (a lost stream, or a run whose container could not be removed, which
+// still carries the broker's record of what ran).
+type brokenSandbox struct {
+	sandbox.Host
+	lost     bool
+	evidence *model.SandboxRecord
+	healed   *atomic.Bool
+}
+
+type lostChild struct {
+	sandbox.Child
+	failure  string
+	evidence *model.SandboxRecord
+}
+
+func (c lostChild) Wait() (process.Status, error) {
+	_, _ = c.Child.Wait()
+	return process.Status{}, &sandbox.SandboxError{Err: errors.New(c.failure)}
+}
+
+func (c lostChild) Evidence() *model.SandboxRecord { return c.evidence }
+
+func (b brokenSandbox) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Child, error) {
+	if spec.Kind != sandbox.KindVerify || b.healed.Load() {
+		return b.Host.Start(ctx, spec)
+	}
+	if !b.lost && b.evidence == nil {
+		return nil, &sandbox.SandboxError{Err: errors.New("Sandbox broker is unavailable at /run/octomus/sandboxd.sock: connection refused")}
+	}
+	child, err := b.Host.Start(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	if b.evidence != nil {
+		return lostChild{Child: child, failure: "Sandbox container could not be removed", evidence: b.evidence}, nil
+	}
+	return lostChild{Child: child, failure: "Sandbox stream was lost"}, nil
+}
+
+// ranRecord is the broker's record of a verification sandbox that ran before it failed.
+func ranRecord() *model.SandboxRecord {
+	return &model.SandboxRecord{ImageID: "sha256:verify-image", Runtime: "runsc", Runs: 1,
+		Egress: model.SandboxEgress{Allowed: map[string]uint64{"registry.npmjs.org:443": 2}, Denied: map[string]uint64{}}}
+}
+
+// assertSandboxEvidence checks that entity's events keep the broker's record of a failed sandbox when it had one, and
+// hold none otherwise.
+func assertSandboxEvidence(t *testing.T, state *store.Store, entity string, want *model.SandboxRecord) {
+	t.Helper()
+	events, err := state.Events(&entity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := []string{}
+	for _, event := range events {
+		if event.Kind == "sandbox_evidence" {
+			kept = append(kept, event.Message)
+		}
+	}
+	if want == nil {
+		if len(kept) != 0 {
+			t.Fatalf("sandbox evidence events = %q; want none without a broker record", kept)
+		}
+		return
+	}
+	if len(kept) != 1 || !strings.Contains(kept[0], `"true"`) || !strings.Contains(kept[0], want.ImageID) ||
+		!strings.Contains(kept[0], want.Runtime) || !strings.Contains(kept[0], "registry.npmjs.org:443") {
+		t.Fatalf("sandbox evidence events = %q; want the command and the broker's record of what ran", kept)
+	}
+}
+
+func TestExecutionSandboxFailureBlocksRetriablyWithoutRepair(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		backend brokenSandbox
+		want    string
+	}{
+		{name: "refused at start", backend: brokenSandbox{healed: new(atomic.Bool)}, want: "Sandbox broker is unavailable"},
+		{name: "stream lost", backend: brokenSandbox{lost: true, healed: new(atomic.Bool)}, want: "Sandbox stream was lost"},
+		{name: "failed after the run", backend: brokenSandbox{evidence: ranRecord(), healed: new(atomic.Bool)}, want: "Sandbox container could not be removed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newScriptedFixture(t, withGitHubIdentity())
+			fixture.configure(t, func(cfg *config.Config) {
+				cfg.VerificationCommands = []string{"true"}
+			})
+			routes, script := fixture.routes, fixture.script
+			script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "draft\n")})
+			script.Answer(routes.Reviewer, cleanReview("Looks complete"), cleanReview("Still complete"))
+			script.Queue(routes.Repair, runnertest.Reply{Answer: "Repaired", Effect: writeFile("feature.txt", "repaired\n")})
+			task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+			saveExecutionTask(t, fixture.planningFixture, task)
+			app := fixture.newApp(t, WithSandbox(test.backend))
+
+			saved := driveTask(t, fixture.planningFixture, app, task.ID)
+			if !blockedAs(saved, model.BlockedReasonRunnerUnavailable) || !slices.Contains(saved.AllowedActions(), "retry") {
+				t.Fatalf("task after a sandbox failure = %+v; want a retriable runner_unavailable block", saved)
+			}
+			if saved.Error == nil || !strings.Contains(*saved.Error, test.want) || !strings.Contains(*saved.Error, "verification command") {
+				t.Fatalf("task error = %q; want it to name the sandbox failure", optionalText(saved.Error))
+			}
+			if len(saved.Verification) != 0 {
+				t.Fatalf("verification = %+v; a command the sandbox did not run has no result", saved.Verification)
+			}
+			if turns := script.Turns(routes.Repair); len(turns) != 0 {
+				t.Fatalf("repair turns = %d; a sandbox failure must not spend the repair budget", len(turns))
+			}
+			assertSandboxEvidence(t, fixture.state, task.ID, test.backend.evidence)
+			assertUnpublished(t, fixture, saved)
+			assertAdmissions(t, fixture.state, 2, "executor + reviewer")
+
+			test.backend.healed.Store(true)
+			if err := app.TaskAction(context.Background(), task.ID, "retry"); err != nil {
+				t.Fatal(err)
+			}
+			saved = driveTask(t, fixture.planningFixture, app, task.ID)
+			if saved.Status != model.StatusPublished || len(saved.Verification) != 1 || !saved.Verification[0].Success {
+				t.Fatalf("retry once the sandbox is back = %+v; want one passing verification and publication", saved)
+			}
+			if turns := script.Turns(routes.Repair); len(turns) != 0 {
+				t.Fatalf("repair turns = %d after the retry; want none", len(turns))
+			}
+			assertNoOpenClients(t, script)
+		})
+	}
 }

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden container specs")
@@ -25,7 +25,9 @@ func testConfig(t *testing.T) Config {
 	}
 }
 
-func makeRoot(t *testing.T, cfg Config, rel string, dirs ...string) string {
+// OwnedRoot makes an owned root at rel under cfg's data directory, with a work tree, its git metadata and dirs, as
+// the control plane would, and returns the work tree.
+func OwnedRoot(t *testing.T, cfg Config, rel string, dirs ...string) string {
 	t.Helper()
 	root := filepath.Join(cfg.DataDir, rel)
 	for _, dir := range append([]string{"workspace", "repo.git"}, dirs...) {
@@ -40,24 +42,16 @@ func makeRoot(t *testing.T, cfg Config, rel string, dirs ...string) string {
 	return filepath.Join(root, "workspace")
 }
 
-func runnerDirs() []string {
-	dirs := []string{sandbox.RunnerHome}
-	for _, dir := range sandbox.RunnerHomeDirs {
-		dirs = append(dirs, filepath.Join(sandbox.RunnerHome, dir.Home))
-	}
-	return dirs
-}
-
 // TestContainerSpecsAreGolden holds every hardening choice for each kind of sandbox. A change to a golden file is a
 // change to the isolation boundary and must be reviewed as one.
 func TestContainerSpecsAreGolden(t *testing.T) {
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(runnerDirs(), sandbox.VerifyHome)...)
-	cases := map[string]sandbox.Request{
-		"runner-codex":    {Kind: "runner", Runner: "codex", Mode: sandbox.RunnerModeStdio, Dir: taskDir, Stdin: true},
-		"runner-opencode": {Kind: "runner", Runner: "opencode", Mode: sandbox.RunnerModeOpenCode, Dir: taskDir, Readiness: 60, Env: []string{"OPENCODE_SERVER_PASSWORD=pw"}},
+	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
+	cases := map[string]wire.Request{
+		"runner-codex":    {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true},
+		"runner-opencode": {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60, Env: []string{"OPENCODE_SERVER_PASSWORD=pw"}},
 		"verify":          {Kind: "verify", Dir: taskDir, Command: "make test"},
-		"probe":           {Kind: "probe", Mode: sandbox.ProbeContainment},
+		"probe":           {Kind: "probe", Mode: wire.ProbeContainment},
 	}
 	for name, req := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -93,13 +87,13 @@ func TestContainerSpecsAreGolden(t *testing.T) {
 
 func TestEverySandboxIsHardened(t *testing.T) {
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(runnerDirs(), sandbox.VerifyHome)...)
-	for _, req := range []sandbox.Request{
-		{Kind: "runner", Runner: "codex", Mode: sandbox.RunnerModeStdio, Dir: taskDir, Stdin: true},
-		{Kind: "runner", Runner: "opencode", Mode: sandbox.RunnerModeOpenCode, Dir: taskDir, Readiness: 60},
+	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
+	for _, req := range []wire.Request{
+		{Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true},
+		{Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60},
 		{Kind: "verify", Dir: taskDir, Command: "true"},
-		{Kind: "probe", Mode: sandbox.ProbeVersions},
-		{Kind: "probe", Mode: sandbox.ProbeContainment},
+		{Kind: "probe", Mode: wire.ProbeVersions},
+		{Kind: "probe", Mode: wire.ProbeContainment},
 	} {
 		p, err := cfg.plan(req)
 		if err != nil {
@@ -130,7 +124,7 @@ func TestEverySandboxIsHardened(t *testing.T) {
 			if mount.Source == cfg.ToolsVolume && !mount.ReadOnly {
 				t.Errorf("%s mounts the tools volume writable", req.Kind)
 			}
-			if mount.Source == cfg.RunnerVolume && p.kind != sandbox.KindRunner {
+			if mount.Source == cfg.RunnerVolume && p.kind != wire.KindRunner {
 				t.Errorf("%s sandbox receives runner credentials", req.Kind)
 			}
 		}
@@ -139,24 +133,24 @@ func TestEverySandboxIsHardened(t *testing.T) {
 
 func TestPlanRefusesAnythingButOwnedRootsAndNarrowRequests(t *testing.T) {
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(runnerDirs(), sandbox.VerifyHome)...)
-	scratch := makeRoot(t, cfg, "system/"+testUUID, append(runnerDirs(), sandbox.VerifyHome)...)
+	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
+	scratch := OwnedRoot(t, cfg, "system/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	if err := os.RemoveAll(filepath.Join(filepath.Dir(scratch), "repo.git")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cfg.plan(sandbox.Request{Kind: "runner", Runner: "codex", Mode: sandbox.RunnerModeStdio, Dir: scratch}); err != nil {
+	if _, err := cfg.plan(wire.Request{Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: scratch}); err != nil {
 		t.Fatalf("a scratch root needs no git metadata: %v", err)
 	}
 	for _, rel := range []string{
 		"cycles/" + testUUID + "/grounding", "cycles/" + testUUID + "/discovery-9", "cycles/" + testUUID + "/adversary-b",
 		"cycles/" + testUUID + "/consolidation", "baselines/" + testUUID, "tasks/" + testUUID + "/verify",
 	} {
-		dir := makeRoot(t, cfg, rel, sandbox.VerifyHome)
-		if _, err := cfg.plan(sandbox.Request{Kind: "verify", Dir: dir, Command: "true"}); err != nil {
+		dir := OwnedRoot(t, cfg, rel, wire.VerifyHome)
+		if _, err := cfg.plan(wire.Request{Kind: "verify", Dir: dir, Command: "true"}); err != nil {
 			t.Errorf("owned root %s refused: %v", rel, err)
 		}
 	}
-	refused := map[string]sandbox.Request{
+	refused := map[string]wire.Request{
 		"unknown kind":          {Kind: "shell", Dir: taskDir},
 		"relative dir":          {Kind: "verify", Dir: "tasks/" + testUUID + "/workspace", Command: "true"},
 		"unclean dir":           {Kind: "verify", Dir: taskDir + "/../workspace", Command: "true"},
@@ -169,13 +163,13 @@ func TestPlanRefusesAnythingButOwnedRootsAndNarrowRequests(t *testing.T) {
 		"long command":          {Kind: "verify", Dir: taskDir, Command: strings.Repeat("x", 4097)},
 		"verify with env":       {Kind: "verify", Dir: taskDir, Command: "true", Env: []string{"OPENCODE_X=1"}},
 		"verify with stdin":     {Kind: "verify", Dir: taskDir, Command: "true", Stdin: true},
-		"unknown runner":        {Kind: "runner", Runner: "bash", Mode: sandbox.RunnerModeStdio, Dir: taskDir},
-		"codex over http":       {Kind: "runner", Runner: "codex", Mode: sandbox.RunnerModeOpenCode, Dir: taskDir, Readiness: 5},
-		"opencode over stdio":   {Kind: "runner", Runner: "opencode", Mode: sandbox.RunnerModeStdio, Dir: taskDir},
-		"opencode unbounded":    {Kind: "runner", Runner: "opencode", Mode: sandbox.RunnerModeOpenCode, Dir: taskDir},
-		"runner env injection":  {Kind: "runner", Runner: "codex", Mode: sandbox.RunnerModeStdio, Dir: taskDir, Env: []string{"LD_PRELOAD=/tmp/x.so"}},
-		"runner proxy override": {Kind: "runner", Runner: "codex", Mode: sandbox.RunnerModeStdio, Dir: taskDir, Env: []string{"HTTPS_PROXY=http://evil"}},
-		"probe with a dir":      {Kind: "probe", Mode: sandbox.ProbeVersions, Dir: taskDir},
+		"unknown runner":        {Kind: "runner", Runner: "bash", Mode: wire.RunnerModeStdio, Dir: taskDir},
+		"codex over http":       {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 5},
+		"opencode over stdio":   {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeStdio, Dir: taskDir},
+		"opencode unbounded":    {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir},
+		"runner env injection":  {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"LD_PRELOAD=/tmp/x.so"}},
+		"runner proxy override": {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"HTTPS_PROXY=http://evil"}},
+		"probe with a dir":      {Kind: "probe", Mode: wire.ProbeVersions, Dir: taskDir},
 		"unknown probe":         {Kind: "probe", Mode: "shell"},
 	}
 	for name, req := range refused {
@@ -183,17 +177,17 @@ func TestPlanRefusesAnythingButOwnedRootsAndNarrowRequests(t *testing.T) {
 			t.Errorf("%s: plan accepted %+v", name, req)
 		}
 	}
-	link := makeRoot(t, cfg, "baselines/"+strings.Replace(testUUID, "0b8f", "1b8f", 1), sandbox.VerifyHome)
-	if err := os.RemoveAll(filepath.Join(filepath.Dir(link), sandbox.VerifyHome)); err != nil {
+	link := OwnedRoot(t, cfg, "baselines/"+strings.Replace(testUUID, "0b8f", "1b8f", 1), wire.VerifyHome)
+	if err := os.RemoveAll(filepath.Join(filepath.Dir(link), wire.VerifyHome)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("/", filepath.Join(filepath.Dir(link), sandbox.VerifyHome)); err != nil {
+	if err := os.Symlink("/", filepath.Join(filepath.Dir(link), wire.VerifyHome)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cfg.plan(sandbox.Request{Kind: "verify", Dir: link, Command: "true"}); err == nil {
+	if _, err := cfg.plan(wire.Request{Kind: "verify", Dir: link, Command: "true"}); err == nil {
 		t.Error("a symlinked verification home was accepted")
 	}
-	p, err := cfg.plan(sandbox.Request{Kind: "verify", Dir: taskDir, Command: "true", Timeout: 999999999})
+	p, err := cfg.plan(wire.Request{Kind: "verify", Dir: taskDir, Command: "true", Timeout: 999999999})
 	if err != nil || p.timeout.Seconds() != float64(cfg.MaxSeconds) {
 		t.Fatalf("timeout = %v, %v; want the broker's cap", p.timeout, err)
 	}
@@ -210,7 +204,7 @@ func TestLoadConfigRequiresTheDeploymentAndBoundsLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Memory != 4<<30 || cfg.Pids != 1024 || cfg.Max != 12 || cfg.NanoCPUs != 2e9 || cfg.UID != 10001 || !cfg.RequireIsolatedGateway {
+	if cfg.Memory != 4<<30 || cfg.Pids != 1024 || cfg.Max != 12 || cfg.NanoCPUs != 2e9 || cfg.UID != 10001 {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 	for key, value := range map[string]string{
@@ -230,6 +224,14 @@ func TestLoadConfigRequiresTheDeploymentAndBoundsLimits(t *testing.T) {
 		}
 		env[key] = previous
 	}
+	// ParseFloat accepts NaN, which every range comparison lets through.
+	for _, cpus := range []string{"NaN", "nan", "-nan", "+Inf", "-Inf", "0.05", "257"} {
+		env["OCTOMUS_SANDBOX_CPUS"] = cpus
+		if cfg, err := LoadConfig(getenv); err == nil || !strings.Contains(err.Error(), "OCTOMUS_SANDBOX_CPUS") {
+			t.Errorf("OCTOMUS_SANDBOX_CPUS=%s accepted as %d nano CPUs (%v)", cpus, cfg.NanoCPUs, err)
+		}
+	}
+	delete(env, "OCTOMUS_SANDBOX_CPUS")
 	if n, err := ParseBytes("512m"); err != nil || n != 512<<20 {
 		t.Fatalf("ParseBytes(512m) = %d, %v", n, err)
 	}

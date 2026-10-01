@@ -129,8 +129,7 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	}
 	go func() { c.waitCh <- exitErr(child.Wait()) }()
 	fail := func(err error) (*Codex, error) {
-		_ = c.Close()
-		return nil, tail.explain(err)
+		return nil, tail.explain(connectFailed(err, c.Close()))
 	}
 	if _, err := c.rpc("initialize", map[string]any{
 		"clientInfo":   map[string]any{"name": "octomus_agent", "title": "Octomus Agent", "version": octomus.Version},

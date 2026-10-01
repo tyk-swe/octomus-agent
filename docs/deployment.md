@@ -27,7 +27,8 @@ cd octomus-agent/deploy/docker
 - writes `.env` from [env.example](../deploy/docker/env.example), including the Docker
   socket's group for the broker;
 - asks for `OWNER/REPOSITORY` and the GitHub token;
-- generates the operator token, printing it once;
+- generates the operator token and prints it once, even when a later step fails (a later
+  run says where it is: `sudo cat deploy/docker/secrets/operator_token`);
 - stores both secrets as files that only the control plane's user can read;
 - builds the control-plane and sandbox images;
 - runs `docker compose up -d`.
@@ -43,6 +44,11 @@ docker compose run --rm login codex login --device-auth
 # or
 docker compose run --rm login opencode auth login
 ```
+
+A login runs like a runner sandbox: it reaches out only through the egress gateway, under
+the runner allowlist. Codex's sign-in hosts are allowed by default; for OpenCode, first add
+`models.opencode.ai` and your provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS` in
+`.env` and run `docker compose up -d`. See [signing in a runner](sandbox.md#signing-in-a-runner).
 
 Open the dashboard through an [SSH tunnel](#private-access) and run **Check connection**. It
 proves the sandbox from inside one before any work starts; see [the self-test](sandbox.md#prove-it-the-self-test).
@@ -63,12 +69,13 @@ in that image.
 | Task | Command |
 | --- | --- |
 | Status | `docker compose ps` |
-| Logs | `docker compose logs -f octomus` (egress decisions: `docker compose logs egress`) |
+| Logs | `docker compose logs -f octomus` (egress decisions: `docker compose logs egress`); Docker keeps at most five 10 MB files per service |
 | Stop, keeping state | `docker compose stop` |
 | Restart after an `.env` change | `docker compose up -d` |
-| Upgrade | `git pull`, `docker compose build octomus login`, then `docker compose up -d` |
+| Upgrade | `git pull`, `docker compose build octomus sandbox-image`, rebuild any [derived sandbox image](sandbox.md#extend-the-sandbox-image), then `docker compose up -d` |
 
-The control plane stops gracefully within its 45-second grace period. Stopping it closes
+The control plane stops gracefully within its 75-second grace period, which covers its
+wait for the broker to confirm each running sandbox's removal. Stopping it closes
 every sandbox's stream, so the broker removes every running sandbox. The broker also
 removes any sandbox left from a previous run when it starts. It only ever touches
 containers carrying its own `octomus.sandbox.instance` label.
@@ -79,8 +86,16 @@ State lives in named volumes:
 - `octomus-tools`: the broker's helper binary, recreated on start.
 
 Keep the secret files under `secrets/` with the deployment. `setup.sh` gives them to the
-container user (uid 10001) at mode 0600; to rotate one, replace the file as root and run
-`docker compose up -d`.
+container user (uid 10001) at mode 0600. The control plane reads them only when it starts,
+and `docker compose up -d` does not notice a changed secret file. To rotate one, install
+the new value with the same owner and mode, then recreate the control plane:
+
+```bash
+sudo install -o 10001 -g 10001 -m 0600 /path/to/new-token secrets/github_token
+docker compose up -d --force-recreate octomus
+```
+
+After rotating `secrets/operator_token`, sign in to the dashboard with the new token.
 
 ## Dedicated VM without a sandbox
 
@@ -256,10 +271,14 @@ stack and archive its volumes and secrets together:
 ```bash
 docker compose stop
 docker run --rm --network none -v octomus-data:/backup/data:ro -v octomus-runner:/backup/runner:ro \
-  -v "$PWD":/out debian:trixie-slim tar czf /out/octomus-backup.tgz -C /backup data runner
-sudo tar czf octomus-secrets.tgz secrets .env
+  -v "$PWD":/out debian:trixie-slim sh -c 'umask 077 && tar czf /out/octomus-backup.tgz -C /backup data runner'
+sudo sh -c 'umask 077 && tar czf octomus-secrets.tgz secrets .env'
 docker compose start
 ```
+
+Both archives hold credentials: the runner logins, the GitHub token and the operator token.
+Only root can read them; move them off the host, or into a directory only you can read, and
+protect them as sensitive operator data.
 
 Under systemd:
 

@@ -1,9 +1,11 @@
-package sandbox
+// Package wire is the contract between the control plane and the sandbox broker: the request, the framed stream, the
+// broker's info document, the runner and verification programs and the owned-root layout both sides agree on. It
+// starts nothing.
+package wire
 
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 
@@ -13,6 +15,16 @@ import (
 // UpgradeProtocol names the framed stream a broker switches to after accepting a sandbox request. One stream carries
 // one sandbox for its whole life: when it closes, the broker kills and removes the container.
 const UpgradeProtocol = "octomus-sandbox/1"
+
+// DefaultSocket is where the broker listens and the control plane dials when OCTOMUS_SANDBOXD_SOCKET is unset.
+const DefaultSocket = "/run/octomus/sandboxd.sock"
+
+// Request.Kind names what a sandbox runs.
+const (
+	KindRunner = "runner"
+	KindVerify = "verify"
+	KindProbe  = "probe"
+)
 
 const (
 	FrameStdin    byte = 1
@@ -123,22 +135,4 @@ func (f *FrameWriter) Data(kind byte, p []byte) (int, error) {
 		p = p[n:]
 	}
 	return written, nil
-}
-
-func frameName(kind byte) string {
-	switch kind {
-	case FrameStdin:
-		return "stdin"
-	case FrameStdinEOF:
-		return "stdin-eof"
-	case FrameStdout:
-		return "stdout"
-	case FrameStderr:
-		return "stderr"
-	case FrameExit:
-		return "exit"
-	case FrameSignal:
-		return "signal"
-	}
-	return fmt.Sprintf("unknown(%d)", kind)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -144,9 +145,9 @@ func TestDashboardTypesMirrorGoJSON(t *testing.T) {
 		"SandboxEgress":            model.SandboxEgress{},
 		"SandboxSelfTest":          engine.SandboxSelfTest{},
 		"ProbeCheck":               sandbox.ProbeCheck{},
-		"BrokerInfo":               sandbox.BrokerInfo{},
-		"BrokerLimits":             sandbox.BrokerLimits{},
-		"BrokerNetworks":           sandbox.BrokerNetworks{},
+		"BrokerInfo":               wire.BrokerInfo{},
+		"BrokerLimits":             wire.BrokerLimits{},
+		"BrokerNetworks":           wire.BrokerNetworks{},
 	} {
 		keys, found := declared[name]
 		if !found {

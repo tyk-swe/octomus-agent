@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,18 +27,18 @@ type Client struct {
 }
 
 func New(socket string) *Client {
-	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", socket)
-	}
-	return &Client{
-		socket: socket,
-		http: &http.Client{Transport: &http.Transport{
-			Proxy:               nil,
-			DialContext:         dial,
-			MaxIdleConnsPerHost: 8,
-			IdleConnTimeout:     30 * time.Second,
-		}},
-	}
+	c := &Client{socket: socket}
+	c.http = &http.Client{Transport: &http.Transport{
+		Proxy:               nil,
+		DialContext:         func(ctx context.Context, _, _ string) (net.Conn, error) { return c.dial(ctx) },
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     30 * time.Second,
+	}}
+	return c
+}
+
+func (c *Client) dial(ctx context.Context) (net.Conn, error) {
+	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", c.socket)
 }
 
 // Error is a daemon refusal with its HTTP status.
@@ -53,6 +54,12 @@ func (e *Error) Error() string {
 func IsNotFound(err error) bool {
 	var engine *Error
 	return errors.As(err, &engine) && engine.Status == http.StatusNotFound
+}
+
+// IsConflict reports a request the container's state refuses, such as killing one that is no longer running.
+func IsConflict(err error) bool {
+	var engine *Error
+	return errors.As(err, &engine) && engine.Status == http.StatusConflict
 }
 
 func path(format string, args ...any) string {
@@ -117,19 +124,6 @@ func (c *Client) Version(ctx context.Context) (Version, error) {
 	var v Version
 	err := c.do(ctx, http.MethodGet, "/version", nil, &v)
 	return v, err
-}
-
-type Info struct {
-	Runtimes        map[string]json.RawMessage `json:"Runtimes"`
-	DefaultRuntime  string                     `json:"DefaultRuntime"`
-	SecurityOptions []string                   `json:"SecurityOptions"`
-	CgroupVersion   string                     `json:"CgroupVersion"`
-}
-
-func (c *Client) Info(ctx context.Context) (Info, error) {
-	var info Info
-	err := c.do(ctx, http.MethodGet, path("/info"), nil, &info)
-	return info, err
 }
 
 type Image struct {
@@ -240,15 +234,18 @@ type RestartPolicy struct {
 	Name string `json:"Name"`
 }
 
-func (c *Client) ContainerCreate(ctx context.Context, name string, config ContainerConfig) (string, error) {
+// ContainerCreate creates a container and returns its ID with the daemon's warnings. The daemon drops a setting the
+// host cannot enforce, such as a swap or process limit, and says so only in a warning.
+func (c *Client) ContainerCreate(ctx context.Context, name string, config ContainerConfig) (string, []string, error) {
 	var created struct {
-		ID string `json:"Id"`
+		ID       string   `json:"Id"`
+		Warnings []string `json:"Warnings"`
 	}
 	target := path("/containers/create") + "?name=" + url.QueryEscape(name)
 	if err := c.do(ctx, http.MethodPost, target, config, &created); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return created.ID, nil
+	return created.ID, created.Warnings, nil
 }
 
 func (c *Client) ContainerStart(ctx context.Context, id string) error {
@@ -259,12 +256,26 @@ func (c *Client) ContainerKill(ctx context.Context, id, signal string) error {
 	return c.do(ctx, http.MethodPost, path("/containers/%s/kill", id)+"?signal="+url.QueryEscape(signal), nil, nil)
 }
 
+// ContainerRemove force-removes a container, by ID or name, with its anonymous volumes, and returns once it is gone.
+// Named volumes are never removed. A removal already in progress elsewhere is not a failure: the daemon refuses a
+// second one meanwhile, so the removal is asked for again until the container is gone, or until it fails on its own
+// account. The other removal can fail and leave the container, so waiting for it alone could wait forever.
 func (c *Client) ContainerRemove(ctx context.Context, id string) error {
-	err := c.do(ctx, http.MethodDelete, path("/containers/%s", id)+"?force=1&v=0", nil, nil)
-	if IsNotFound(err) {
-		return nil
+	for delay := 50 * time.Millisecond; ; delay = min(2*delay, time.Second) {
+		err := c.do(ctx, http.MethodDelete, path("/containers/%s", id)+"?force=1&v=1", nil, nil)
+		if err == nil || IsNotFound(err) {
+			return nil
+		}
+		var engine *Error
+		if !errors.As(err, &engine) || engine.Status != http.StatusConflict || !strings.Contains(engine.Message, "already in progress") {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("Waiting for the removal of container %s: %w", id, ctx.Err())
+		case <-time.After(delay):
+		}
 	}
-	return err
 }
 
 type ContainerState struct {
@@ -335,9 +346,7 @@ func (c *Client) ContainerWait(ctx context.Context, id string) (<-chan WaitResul
 	}
 	// A wait holds its connection open for the container's whole life, so it gets a connection of its own.
 	client := &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", c.socket)
-		}}}
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return c.dial(ctx) }}}
 	go func() {
 		resp, err := client.Do(req)
 		if err != nil {
@@ -370,9 +379,10 @@ func (a *Attached) CloseStdin() error { return a.Conn.CloseWrite() }
 
 func (a *Attached) Close() error { return a.Conn.Close() }
 
-// ContainerAttach hijacks an attach stream before the container starts, so no early output is lost.
+// ContainerAttach hijacks an attach stream before the container starts, so no early output is lost. ctx bounds the
+// handshake; the stream itself outlives it.
 func (c *Client) ContainerAttach(ctx context.Context, id string, stdin bool) (*Attached, error) {
-	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", c.socket)
+	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -391,19 +401,29 @@ func (c *Client) ContainerAttach(ctx context.Context, id string, stdin bool) (*A
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
-	if err := req.Write(conn); err != nil {
+	// The handshake runs on the raw connection, so cancellation reaches it as an expired deadline.
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	fail := func(err error) (*Attached, error) {
+		stop()
 		conn.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
+	}
+	if err := req.Write(conn); err != nil {
+		return fail(err)
 	}
 	reader := bufio.NewReaderSize(conn, 64<<10)
 	resp, err := http.ReadResponse(reader, req)
 	if err != nil {
-		conn.Close()
-		return nil, err
+		return fail(err)
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols && resp.StatusCode != http.StatusOK {
-		defer conn.Close()
-		return nil, readError(resp)
+		return fail(readError(resp))
+	}
+	if !stop() {
+		return fail(ctx.Err())
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return &Attached{Conn: unixConn, Reader: reader}, nil
@@ -420,7 +440,7 @@ func Demux(r io.Reader, stdout, stderr func([]byte) error) error {
 			}
 			return err
 		}
-		size := int(uint32(header[4])<<24 | uint32(header[5])<<16 | uint32(header[6])<<8 | uint32(header[7]))
+		size := int(binary.BigEndian.Uint32(header[4:8]))
 		sink := stdout
 		switch header[0] {
 		case 1:

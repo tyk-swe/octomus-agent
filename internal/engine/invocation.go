@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -150,15 +153,47 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 }
 
 func (a *App) admit(cycleID string, task *model.Task, role string, route config.Route) error {
-	size, err := workspace.DirectorySize(a.DataDir)
-	if err != nil {
-		return err
-	}
+	owner := filepath.Join("cycles", cycleID)
 	var taskID *string
 	if task != nil {
 		taskID = &task.ID
+		owner = filepath.Join("tasks", task.ID)
+	}
+	size, err := a.measureFor(owner)
+	if err != nil {
+		return err
 	}
 	return a.Store.ReserveSession(size, store.NewAdmission(cycleID, taskID, role, route))
+}
+
+// ownedRoots are the data directory's parents of owned roots, each <parent>/<id>, where sandboxes write.
+var ownedRoots = []string{"tasks", "cycles", "baselines", scratchDir}
+
+// ownerDepth is how many leading components of a path below the data directory name its owner: <parent>/<id>.
+const ownerDepth = 2
+
+// measureFor measures the data directory for an admission on behalf of owner, an owned root relative to it. A subtree
+// the walk could not measure, unreadable or too costly to traverse, holds unknown bytes: it puts its own owner over the
+// limit, and puts everyone over it when it lies outside any owned root. Another owner's unmeasured subtree does not
+// stop this admission; that owner can admit nothing more until its retained work is resolved.
+func (a *App) measureFor(owner string) (uint64, error) {
+	usage, err := workspace.Measure(a.DataDir, ownerDepth)
+	if err != nil {
+		return 0, err
+	}
+	for _, rel := range usage.Unmeasured {
+		parent, _, owned := strings.Cut(rel, string(filepath.Separator))
+		if !owned || !slices.Contains(ownedRoots, parent) {
+			// No sandbox writes here, so this is the host's own: lost+found at a filesystem's root, for example.
+			return 0, fmt.Errorf("Storage under %s in the data directory could not be measured; it is unreadable, nested too deeply, or too costly to traverse. Make it readable to the service or move it out of the data directory: %w",
+				redact.Text(rel), model.BlockedReasonStorageLimit)
+		}
+		if rel == owner {
+			return 0, fmt.Errorf("Workspace storage under %s could not be measured; it is unreadable, nested too deeply, or too costly to traverse. Resolve that retained work: %w",
+				redact.Text(rel), model.BlockedReasonStorageLimit)
+		}
+	}
+	return usage.Bytes, nil
 }
 
 func sessionMut(task *model.Task, thread, role string) (*model.Session, error) {

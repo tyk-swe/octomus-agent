@@ -15,6 +15,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
@@ -132,11 +133,20 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 		}
 	}
 	report, err := sandbox.Probe(ctx, a.sandbox)
+	if err != nil && ctx.Err() != nil {
+		// A probe its caller abandoned observed nothing about containment; the last result stands.
+		return record, err
+	}
 	if err != nil {
 		message := redact.Error(err)
 		record.Error = &message
 	} else {
 		record.Checks, record.Kernel, record.Passed = report.Checks, report.Kernel, report.Passed()
+		if report.Sandbox != nil {
+			// The probe's own request can move the broker to an image rebuilt under the same tag since the info above
+			// was read: the proof belongs to the image it ran on.
+			record.ImageID, record.Runtime = report.Sandbox.ImageID, report.Sandbox.Runtime
+		}
 	}
 	if err := a.Store.Put("settings", selfTestRecord, record); err != nil {
 		return record, err
@@ -166,7 +176,7 @@ type SandboxPosture struct {
 	Mode             string              `json:"mode"`
 	Healthy          bool                `json:"healthy"`
 	Error            *string             `json:"error"`
-	Broker           *sandbox.BrokerInfo `json:"broker"`
+	Broker           *wire.BrokerInfo    `json:"broker"`
 	Egress           map[string][]string `json:"egress"`
 	PinnedRepository *string             `json:"pinned_repository"`
 	SelfTest         *SandboxSelfTest    `json:"self_test"`

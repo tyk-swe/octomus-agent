@@ -86,17 +86,11 @@ func prepareDeployment(ctx context.Context, mode sandbox.Mode, data string, env 
 		}
 		return engine.Deployment{}, nil
 	}
-	deployment := engine.Deployment{Egress: map[string][]string{}}
-	policy := egress.Policy{}
-	for key, rules := range map[string]*[]egress.Rule{"OCTOMUS_EGRESS_MODEL_HOSTS": &policy.Model, "OCTOMUS_EGRESS_BUILD_HOSTS": &policy.Build} {
-		value, _ := env(key)
-		parsed, err := egress.ParseRules(value)
-		if err != nil {
-			return engine.Deployment{}, fmt.Errorf("%s: %w", key, err)
-		}
-		*rules = parsed
+	policy, err := egress.PolicyFromEnv(getenv(env))
+	if err != nil {
+		return engine.Deployment{}, err
 	}
-	deployment.Egress = policy.Describe()
+	deployment := engine.Deployment{Egress: policy.Describe()}
 	if !pinned || repo == "" {
 		return deployment, nil
 	}

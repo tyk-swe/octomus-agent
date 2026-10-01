@@ -1,5 +1,6 @@
 // Package sandbox is where every untrusted child starts: runner sessions, verification commands and containment
-// probes. The orchestrator's own git and gh commands never pass through it.
+// probes. The orchestrator's own git and gh commands never pass through it. It also holds the helper the broker
+// installs into every sandbox (RunInit, --sandbox-init) and the containment checks that helper runs from inside.
 package sandbox
 
 import (
@@ -13,6 +14,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Kind names what a sandbox runs. The backend, not the caller, chooses the program for each kind.
@@ -27,11 +29,11 @@ const (
 func (k Kind) String() string {
 	switch k {
 	case KindRunner:
-		return "runner"
+		return wire.KindRunner
 	case KindVerify:
-		return "verify"
+		return wire.KindVerify
 	case KindProbe:
-		return "probe"
+		return wire.KindProbe
 	}
 	return "unknown"
 }
@@ -55,7 +57,8 @@ type Spec struct {
 	Stderr io.Writer
 	// FreshHome gives a verification sandbox an empty home: set on the first command of each verification run.
 	FreshHome bool
-	// Timeout is the backend's hard limit in seconds, beyond the caller's own graceful one; zero is the backend maximum.
+	// Timeout is a hard limit in seconds, beyond the caller's own graceful one. The Docker backend's broker enforces it,
+	// capped at and defaulting (zero) to its maximum; the host backend sets no limit beyond the caller's own.
 	Timeout uint64
 	// Probe names the KindProbe check to run.
 	Probe string
@@ -63,6 +66,18 @@ type Spec struct {
 
 // Root is the owned root directory a workspace belongs to.
 func (s Spec) Root() string { return filepath.Dir(s.Dir) }
+
+// runnerName is the wire name of a configured runner, by which both backends choose its program, or "" for a backend
+// that names none.
+func runnerName(backend config.Backend) string {
+	switch backend {
+	case config.BackendCodex:
+		return wire.RunnerCodex
+	case config.BackendOpencode:
+		return wire.RunnerOpenCode
+	}
+	return ""
+}
 
 // DeadlineWriter is a child's stdin: a pipe on the host, a framed stream for a container.
 type DeadlineWriter interface {
@@ -93,11 +108,27 @@ type StartError struct{ Err error }
 func (e *StartError) Error() string { return e.Err.Error() }
 func (e *StartError) Unwrap() error { return e.Err }
 
+// SandboxError reports that the sandbox, not the program in it, failed: the broker refused the child, lost its
+// stream, or could not confirm how it ended. Callers must not record it as the program's own result.
+type SandboxError struct{ Err error }
+
+func (e *SandboxError) Error() string { return e.Err.Error() }
+func (e *SandboxError) Unwrap() error { return e.Err }
+
+// Infrastructure reports whether err means the sandbox failed rather than the program it ran.
+func Infrastructure(err error) bool {
+	var started *StartError
+	var failed *SandboxError
+	return errors.As(err, &started) || errors.As(err, &failed)
+}
+
 // Backend starts sandboxed children. Implementations never fall back to one another.
 type Backend interface {
 	Mode() Mode
 	Start(ctx context.Context, spec Spec) (Child, error)
 	StartOpenCode(ctx context.Context, spec Spec, readinessSeconds uint64) (*OpenCodeServer, error)
+	// RunnerVersion reports the runner's version. The host backend runs its --version, bounded by seconds; the Docker
+	// backend runs nothing and reports the version its broker probed in the current sandbox image.
 	RunnerVersion(ctx context.Context, spec Spec, seconds uint64) (string, error)
 }
 

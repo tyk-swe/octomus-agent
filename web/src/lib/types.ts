@@ -100,12 +100,14 @@ export type Proposal = {
 export type SandboxEgress = {
   allowed: Record<string, number>;
   denied: Record<string, number>;
+  failed: Record<string, number>;
 };
 export type SandboxRecord = {
   image_id: string;
   runtime: string;
   runs: number;
   oom: boolean;
+  incomplete: boolean;
   egress: SandboxEgress;
 };
 export type Session = {
@@ -501,6 +503,7 @@ export type BrokerInfo = {
   image_digests: string[] | null;
   runtime: string;
   runners: Record<string, string> | null;
+  runner_errors: Record<string, string> | null;
   limits: BrokerLimits;
   networks: BrokerNetworks;
   egress: boolean;

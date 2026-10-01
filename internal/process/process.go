@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/redact"
@@ -164,7 +165,7 @@ func (s Status) Err() error {
 	switch {
 	case s.Success():
 		return nil
-	case s.exit != nil && s.exit.Killed:
+	case s.exit != nil && s.exit.Killed && s.exit.Reason == "":
 		return ErrKilled
 	case s.exit != nil:
 		return errors.New(s.String())
@@ -457,7 +458,7 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 		term:
 			for !haveWait {
 				select {
-				case <-waitCh:
+				case result = <-waitCh:
 					haveWait = true
 				case <-outCh:
 					haveOut = true
@@ -474,7 +475,7 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 		defer deadline.Stop()
 		for !haveWait || !haveOut || !haveErr {
 			select {
-			case <-waitCh:
+			case result = <-waitCh:
 				haveWait = true
 			case <-outCh:
 				haveOut = true
@@ -500,10 +501,10 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 			haveErr = true
 		case <-timer.C:
 			terminate()
-			return nil, fmt.Errorf("Command timed out: %w", errDeadlineElapsed)
+			return nil, stopped(fmt.Errorf("Command timed out: %w", errDeadlineElapsed), result.err)
 		case <-ctx.Done():
 			terminate()
-			return nil, ErrCancelled
+			return nil, stopped(ErrCancelled, result.err)
 		}
 	}
 	if result.err != nil {
@@ -520,6 +521,15 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 		Stdout: out.captured,
 		Stderr: errOut.captured,
 	}, nil
+}
+
+// stopped keeps why a child that was stopped could not report a clean end, such as a sandbox whose end its broker
+// never confirmed, beside why it was stopped: that end is not an ordinary timeout or cancellation.
+func stopped(why, ended error) error {
+	if ended == nil {
+		return why
+	}
+	return fmt.Errorf("%w: %w", why, ended)
 }
 
 const (
@@ -639,6 +649,49 @@ func machineResult(binary string, output *ProcessOutput, err error) (string, err
 		return "", errors.New("Machine output is not valid UTF-8")
 	}
 	return string(output.Stdout.Bytes), nil
+}
+
+// RunTextEnv is RunMachineEnv for output a reader is shown rather than a program parses, as visible renders it instead
+// of failing on bytes that are not UTF-8. It returns at most limit bytes of that text (limit is at most
+// DiagnosticLimit), and complete reports whether that was all of it.
+func RunTextEnv(ctx context.Context, binary string, args []string, cwd string, seconds uint64, env []string, limit int) (text string, complete bool, err error) {
+	output, err := CaptureEnv(ctx, binary, args, cwd, seconds, CaptureDiagnostic, env)
+	if err != nil {
+		return "", false, err
+	}
+	if err := ensureSuccess(binary, output); err != nil {
+		return "", false, err
+	}
+	text, complete = visible(output.Stdout.Bytes, min(limit, DiagnosticLimit))
+	return text, complete && !output.Stdout.Truncated, nil
+}
+
+// visible renders raw output as text in which nothing reads differently than it is: a reader, or a language model,
+// sees every line break that is one and no character it cannot see. Tab, newline and CR before newline stay as they
+// are. Every other control character (C0, DEL and C1, so NUL, a lone CR, VT, FF and NEL), every format character
+// (zero-width, bidirectional and tag characters, U+FEFF among them), U+2028, U+2029, variation selectors and the
+// other default-ignorable characters show as ⟦U+XXXX⟧, and each byte that is not UTF-8 as ⟦xNN⟧. A literal ⟦ shows
+// as ⟦U+27E6⟧, so every ⟦ in the text opens an escape. It returns at most limit bytes, cut between characters or
+// escapes, and complete reports whether that was all of raw.
+func visible(raw []byte, limit int) (text string, complete bool) {
+	var out strings.Builder
+	for i := 0; i < len(raw); {
+		r, size := utf8.DecodeRune(raw[i:])
+		piece := raw[i : i+size]
+		switch {
+		case ' ' <= r && r < 0x7f, r == '\t', r == '\n', r == '\r' && i+1 < len(raw) && raw[i+1] == '\n':
+		case r == utf8.RuneError && size == 1:
+			piece = fmt.Appendf(nil, "⟦x%02X⟧", raw[i])
+		case r == '⟦' || unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point):
+			piece = fmt.Appendf(nil, "⟦U+%04X⟧", r)
+		}
+		if out.Len()+len(piece) > limit {
+			return out.String(), false
+		}
+		out.Write(piece)
+		i += size
+	}
+	return out.String(), true
 }
 
 func ShellCheck(ctx context.Context, command string, cwd string, seconds uint64) (*ProcessOutput, error) {

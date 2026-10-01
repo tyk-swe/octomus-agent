@@ -1,12 +1,16 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -400,6 +404,10 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	if !ok {
 		return model.Review{}, errors.New("code_reviewer route is missing")
 	}
+	trusted, err := trustedChangeSet(ctx, cfg, ws, task.ComparisonBase, revision)
+	if err != nil {
+		return model.Review{}, err
+	}
 	var review model.Review
 	judge := func(thread, answer string) (string, error) {
 		if err := json.Unmarshal([]byte(answer), &review); err != nil {
@@ -416,17 +424,163 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	}
 	if _, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "reviewer", route: route, workspace: ws,
-		prompt: reviewPrompt(task, revision), schema: schemas.ReviewSchema(), judge: judge,
+		prompt: reviewPrompt(task, revision, trusted), schema: schemas.ReviewSchema(), judge: judge,
 	}); err != nil {
 		return model.Review{}, err
 	}
 	return review, nil
 }
 
-func reviewPrompt(task *model.Task, revision string) string {
-	return fmt.Sprintf(
+// The review prompt carries the trusted change set within these bounds: every changed file listed, or no review at
+// all, and as many whole per-file diffs as fit, the smallest first.
+const (
+	reviewListLimit = 32 << 10
+	reviewDiffLimit = 64 << 10
+)
+
+// changeSet is a revision's change set as the orchestrator's trusted git shows it: the totals, every changed file with
+// its line counts and its creation, deletion and mode changes, the diffs that fit in reviewDiffLimit, and the files,
+// as listed, whose diffs do not. The diff keeps its final newline, so a CR that ends it still precedes one.
+type changeSet struct {
+	totals, files, diff string
+	omitted             []string
+}
+
+// changedFile is a line of git diff --numstat: the file as listed, the path git names, and its added plus deleted
+// lines, or math.MaxInt for a file git counts as binary and so gives no count.
+type changedFile struct {
+	listed, path string
+	lines        int
+}
+
+var numstatLine = regexp.MustCompile(`^(\d+|-)\t(\d+|-)\t(.+)$`)
+
+// trustedChangeSet reads the change set from base to revision with the orchestrator's git against the trusted
+// metadata, as text whatever attributes a sandbox left in the work tree and whatever bytes the files hold. The fresh
+// reviewer's own git runs in a sandbox whose home and runner configuration earlier turns of the task could change,
+// so it must not be the only account of what changed. Every changed file is listed, or the review is refused: a file
+// the account leaves out entirely could be hidden by an altered git in the sandbox. Past the diff budget, the whole
+// diffs of the smallest files are embedded and the rest named, so the reviewer knows which content Octomus did not show.
+func trustedChangeSet(ctx context.Context, cfg config.Config, ws, base, revision string) (changeSet, error) {
+	diff := func(limit int, args ...string) (string, bool, error) {
+		return gitops.DiffText(ctx, cfg, ws, append(args, base, revision), limit)
+	}
+	totals, counted, err := diff(reviewListLimit, "--shortstat")
+	if err != nil {
+		return changeSet{}, err
+	}
+	files, listed, err := diff(reviewListLimit-len(totals), "--numstat", "--summary")
+	if err != nil {
+		return changeSet{}, err
+	}
+	if !counted || !listed {
+		return changeSet{}, fmt.Errorf("%w: The change set from %s to %s lists more files than a review prompt carries (over %d bytes); narrow the task",
+			model.BlockedReasonInvalidReview, base, revision, reviewListLimit)
+	}
+	set := changeSet{totals: strings.TrimSpace(totals), files: strings.TrimRight(files, "\n")}
+	changed, err := changedFiles(set.files)
+	if err != nil {
+		return changeSet{}, err
+	}
+	if len(changed) == 0 {
+		return set, nil
+	}
+	whole, fits, err := diff(reviewDiffLimit)
+	if err != nil {
+		return changeSet{}, err
+	}
+	if fits {
+		set.diff = whole
+		return set, nil
+	}
+	smallest := make([]int, len(changed))
+	for i := range smallest {
+		smallest[i] = i
+	}
+	slices.SortStableFunc(smallest, func(a, b int) int { return cmp.Compare(changed[a].lines, changed[b].lines) })
+	shown := make([]string, len(changed))
+	remaining := reviewDiffLimit
+	for _, i := range smallest {
+		text, complete, err := gitops.DiffText(ctx, cfg, ws, []string{base, revision, "--", ":(literal)" + changed[i].path}, remaining)
+		if err != nil {
+			return changeSet{}, err
+		}
+		if !complete {
+			// Line count does not predict byte size: later files can still fit.
+			continue
+		}
+		if text == "" {
+			return changeSet{}, fmt.Errorf("Git shows no diff for the changed file %s", changed[i].listed)
+		}
+		shown[i] = text
+		remaining -= len(text)
+	}
+	var diffs strings.Builder
+	for i, file := range changed {
+		if shown[i] == "" {
+			set.omitted = append(set.omitted, file.listed)
+		}
+		diffs.WriteString(shown[i])
+	}
+	set.diff = diffs.String()
+	return set, nil
+}
+
+// changedFiles reads the --numstat lines of a numstat and summary listing. Paths are C-quoted, as core.quotePath
+// has git write them, when they hold anything but printable ASCII.
+func changedFiles(listing string) ([]changedFile, error) {
+	var changed []changedFile
+	for line := range strings.SplitSeq(listing, "\n") {
+		if line == "" || strings.HasPrefix(line, " ") {
+			continue
+		}
+		fields := numstatLine.FindStringSubmatch(line)
+		if fields == nil {
+			return nil, fmt.Errorf("Unexpected git numstat line %q", line)
+		}
+		file := changedFile{listed: fields[3], path: fields[3], lines: math.MaxInt}
+		if strings.HasPrefix(file.path, `"`) {
+			path, err := strconv.Unquote(file.path)
+			if err != nil {
+				return nil, fmt.Errorf("Unexpected git path %s: %w", file.path, err)
+			}
+			file.path = path
+		}
+		if added, err := strconv.Atoi(fields[1]); err == nil {
+			deleted, _ := strconv.Atoi(fields[2])
+			file.lines = added + deleted
+		}
+		changed = append(changed, file)
+	}
+	return changed, nil
+}
+
+func reviewPrompt(task *model.Task, revision string, trusted changeSet) string {
+	base := task.ComparisonBase
+	prompt := fmt.Sprintf(
 		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
-		task.ComparisonBase, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
+		base, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
+	prompt += fmt.Sprintf("\nThe orchestrator's own git computed the change set from %s to %s below. ", base, revision) +
+		"Git inside your sandbox reads configuration and shell startup files earlier turns could change, " +
+		"so where it shows other changes or other content, what follows is authoritative and the difference is itself a finding. " +
+		"Some differences are expected and are not findings by themselves: this account ignores every .gitattributes file and shows every file as text, " +
+		"so git may show a file as binary, count its lines differently or give other hunk headers; it shows a rename as a deletion and an addition, " +
+		"and a submodule entry as the commits it points at. Each byte that is not UTF-8 shows as ⟦xNN⟧, and each control, invisible or line-separator character, " +
+		"a literal ⟦ included, as ⟦U+XXXX⟧. Lines end only at real newlines: an escape such as ⟦U+000D⟧ or ⟦U+2028⟧ inside a line is a character the file holds, " +
+		"which some languages and tools read as a line break.\n"
+	if trusted.files == "" {
+		return prompt + fmt.Sprintf("The orchestrator's git shows no change between %s and %s.", base, revision)
+	}
+	prompt += "Totals: " + trusted.totals + "\n" +
+		"Changed files (git diff --numstat --summary: lines added, lines deleted and path, - for a file git counts as binary):\n" + trusted.files + "\n"
+	if len(trusted.omitted) == 0 {
+		return prompt + "Complete diff:\n" + trusted.diff
+	}
+	if trusted.diff != "" {
+		prompt += fmt.Sprintf("Complete diffs of the smallest files, within %d bytes:\n%s", reviewDiffLimit, trusted.diff)
+	}
+	return prompt + fmt.Sprintf("The diffs of these files do not fit, so the orchestrator has not shown you their content: read each with git diff %s HEAD -- <file>, "+
+		"check it against the line counts above and treat it as unverified:\n%s", base, strings.Join(trusted.omitted, "\n"))
 }
 
 func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision string) ([]string, error) {
@@ -448,6 +602,10 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		outcome := runCheckCommand(ctx, a.sandbox, cfg, checkout, command, revision, i == 0)
 		if ctx.Err() != nil {
 			return nil, process.ErrCancelled
+		}
+		if outcome.sandboxFailed() {
+			a.keepSandboxEvidence(task.ID, command, outcome.sandbox)
+			return nil, &sandboxUnavailable{sandboxFailure(command, outcome.capture)}
 		}
 		failed := outcome.failed()
 		note := ""
@@ -582,6 +740,40 @@ type checkOutcome struct {
 
 func (o checkOutcome) failed() bool {
 	return o.capture != nil || !o.captured.Status.Success()
+}
+
+// sandboxFailed reports that the sandbox, not the command, failed: it refused the command, lost it or could not confirm
+// how it ended. The command then has no result of its own, so it is neither a verification failure nor a pass.
+func (o checkOutcome) sandboxFailed() bool {
+	return o.capture != nil && sandbox.Infrastructure(o.capture)
+}
+
+func sandboxFailure(command string, err error) error {
+	return fmt.Errorf("The sandbox could not run verification command %s: %w", debugString(command), err)
+}
+
+// keepSandboxEvidence keeps the broker's record of a sandbox whose command has no result of its own, as a session
+// keeps it for a failed turn. The broker reports one when the command ran and the sandbox failed after it, for example
+// removing its container: the image, runtime, OOM and egress of untrusted code that did run. It becomes an event on
+// entity beside the failure, never the command's verification.
+func (a *App) keepSandboxEvidence(entity, command string, record *model.SandboxRecord) {
+	if record == nil {
+		return
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return
+	}
+	_ = a.Store.Event(entity, "sandbox_evidence", debugString(command)+": "+string(data))
+}
+
+// sandboxUnavailable blocks a task as runner_unavailable, which a retry clears, when the sandbox failed one of its
+// verification commands. Nothing is recorded as that command's verification and no repair round is spent on it.
+type sandboxUnavailable struct{ err error }
+
+func (e *sandboxUnavailable) Error() string { return e.err.Error() }
+func (e *sandboxUnavailable) Unwrap() []error {
+	return []error{model.BlockedReasonRunnerUnavailable, e.err}
 }
 
 const (

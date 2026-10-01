@@ -18,10 +18,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/broker"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // dockerBroker runs a real broker against the local Docker daemon, with named volumes bound to temporary directories
@@ -37,11 +39,25 @@ type dockerBroker struct {
 
 func docker(t *testing.T, args ...string) string {
 	t.Helper()
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	cmd := exec.Command("docker", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("docker %s: %v\n%s", strings.Join(args, " "), err, out)
+		t.Fatalf("docker %s: %v\n%s\n%s", strings.Join(args, " "), err, out, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func TestDockerOutputExcludesPullProgress(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\nprintf 'Unable to find image locally\\n' >&2\nprintf '{\"checks\": []}\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got := docker(t, "run", "probe-image"); got != `{"checks": []}` {
+		t.Fatalf("docker stdout = %q; want only the probe JSON", got)
+	}
 }
 
 func repoRoot(t *testing.T) string {
@@ -118,28 +134,27 @@ func startDockerBroker(t *testing.T, tune func(*broker.Config)) *dockerBroker {
 		t.Cleanup(func() { _ = exec.Command("docker", "network", "rm", network).Run() })
 	}
 	cfg := broker.Config{
-		Socket:                 filepath.Join(shortDir(t), "sandboxd.sock"),
-		DockerSocket:           "/var/run/docker.sock",
-		Image:                  image,
-		DataDir:                dirs["data"],
-		DataVolume:             "octomus-test-" + id + "-data",
-		RunnerVolume:           "octomus-test-" + id + "-runner",
-		RunnerDir:              dirs["runner"],
-		ToolsVolume:            "octomus-test-" + id + "-tools",
-		ToolsDir:               dirs["tools"],
-		RunnerNetwork:          "octomus-test-" + id + "-runner",
-		VerifyNetwork:          "octomus-test-" + id + "-verify",
-		Instance:               "test-" + id,
-		UID:                    os.Getuid(),
-		GID:                    os.Getgid(),
-		ClientUID:              os.Getuid(),
-		NanoCPUs:               1e9,
-		Memory:                 256 << 20,
-		Pids:                   256,
-		Tmpfs:                  64 << 20,
-		Max:                    4,
-		MaxSeconds:             120,
-		RequireIsolatedGateway: true,
+		Socket:        testutil.SocketPath(t, "sandboxd.sock"),
+		DockerSocket:  "/var/run/docker.sock",
+		Image:         image,
+		DataDir:       dirs["data"],
+		DataVolume:    "octomus-test-" + id + "-data",
+		RunnerVolume:  "octomus-test-" + id + "-runner",
+		RunnerDir:     dirs["runner"],
+		ToolsVolume:   "octomus-test-" + id + "-tools",
+		ToolsDir:      dirs["tools"],
+		RunnerNetwork: "octomus-test-" + id + "-runner",
+		VerifyNetwork: "octomus-test-" + id + "-verify",
+		Instance:      "test-" + id,
+		UID:           os.Getuid(),
+		GID:           os.Getgid(),
+		ClientUID:     os.Getuid(),
+		NanoCPUs:      1e9,
+		Memory:        256 << 20,
+		Pids:          256,
+		Tmpfs:         64 << 20,
+		Max:           4,
+		MaxSeconds:    120,
 	}
 	if tune != nil {
 		tune(&cfg)
@@ -159,7 +174,9 @@ func startDockerBroker(t *testing.T, tune func(*broker.Config)) *dockerBroker {
 	go func() { h.served <- b.Serve(ctx, listener) }()
 	t.Cleanup(func() {
 		cancel()
-		<-h.served
+		if err := <-h.served; err != nil {
+			t.Errorf("broker shutdown = %v", err)
+		}
 		if left := h.containers(t); left != "" {
 			t.Errorf("broker left sandboxes behind: %s", left)
 			_ = exec.Command("sh", "-c", "docker ps -aq --filter label=octomus.sandbox.instance="+h.instance+" | xargs -r docker rm -f").Run()
@@ -168,46 +185,18 @@ func startDockerBroker(t *testing.T, tune func(*broker.Config)) *dockerBroker {
 	return h
 }
 
-// shortDir keeps unix socket paths within the kernel's 108-byte limit whatever TMPDIR is.
-func shortDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "ob-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
-}
-
 func (h *dockerBroker) containers(t *testing.T) string {
 	return docker(t, "ps", "-aq", "--filter", "label=octomus.sandbox.instance="+h.instance)
 }
 
-func newUUID() string {
-	var id [16]byte
-	_, _ = rand.Read(id[:])
-	id[6] = id[6]&0x0f | 0x40
-	id[8] = id[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
-}
-
-// taskRoot makes an owned task root with a work tree and trusted git metadata, as the control plane would.
+// taskRoot makes an owned task root whose trusted git metadata has a HEAD.
 func (h *dockerBroker) taskRoot(t *testing.T) string {
 	t.Helper()
-	root := filepath.Join(h.cfg.DataDir, "tasks", newUUID())
-	for _, dir := range []string{"workspace", "repo.git"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(root, "repo.git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+	ws := broker.OwnedRoot(t, h.cfg, "tasks/"+uuid.NewString())
+	if err := os.WriteFile(filepath.Join(filepath.Dir(ws), "repo.git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "workspace", ".git"),
-		[]byte("gitdir: "+filepath.Join(root, "repo.git")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return filepath.Join(root, "workspace")
+	return ws
 }
 
 func TestDockerVerifySandboxIsContained(t *testing.T) {
@@ -316,7 +305,7 @@ func TestDockerVerifyHomeIsFreshPerRun(t *testing.T) {
 func TestDockerRunnerStdioStreams(t *testing.T) {
 	h := startDockerBroker(t, nil)
 	ws := h.taskRoot(t)
-	var stderr syncBuffer
+	var stderr testutil.SyncBuffer
 	child, err := h.remote.Start(context.Background(), sandbox.Spec{
 		Kind: sandbox.KindRunner, Runner: config.BackendCodex, Dir: ws, Stdin: true, Stderr: &stderr,
 	})
@@ -380,19 +369,57 @@ func TestDockerKillAndDeadManRemoveTheSandbox(t *testing.T) {
 func TestDockerMemoryLimitIsReported(t *testing.T) {
 	h := startDockerBroker(t, func(cfg *broker.Config) { cfg.Memory = 64 << 20 })
 	ws := h.taskRoot(t)
-	out, _, err := sandbox.Verify(context.Background(), h.remote, ws, "head -c 512m /dev/zero | tail > /dev/null", 60, true)
+	out, record, err := sandbox.Verify(context.Background(), h.remote, ws, "head -c 512m /dev/zero | tail > /dev/null", 60, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.Status.OOM() || out.Status.Success() || !strings.Contains(out.Status.String(), "memory limit") {
-		t.Fatalf("status = %v; want a reported memory-limit kill", out.Status)
+	if !out.Status.OOM() || out.Status.Success() || !strings.Contains(out.Status.String(), "memory limit") || record == nil || !record.OOM {
+		t.Fatalf("status = %v, evidence %+v; want a reported memory-limit kill", out.Status, record)
+	}
+	// Only a child is killed for memory; the command recovers and succeeds. The evidence still records the kill.
+	// Docker learns of the kill from an asynchronous event, so the command lingers for it before exiting. Every
+	// process in a sandbox is as likely to be chosen, so a run whose shell was killed instead proves nothing and is
+	// tried once more.
+	for attempt := 1; ; attempt++ {
+		out, record, err = sandbox.Verify(context.Background(), h.remote, ws,
+			"(head -c 512m /dev/zero | tail > /dev/null); echo survived; sleep 1; exit 0", 60, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt == 2 || len(out.Stdout.Bytes) != 0 {
+			break
+		}
+		t.Logf("the memory limit killed the shell, not only its child (%v); trying again", out.Status)
+	}
+	if out.Status.OOM() || !out.Status.Success() || string(out.Stdout.Bytes) != "survived\n" || record == nil || !record.OOM {
+		t.Fatalf("status = %v with %q, evidence %+v; want a success whose evidence records the memory kill",
+			out.Status, out.Stdout.Bytes, record)
+	}
+}
+
+func TestDockerShutdownRemovesLiveSandboxes(t *testing.T) {
+	h := startDockerBroker(t, nil)
+	ws := h.taskRoot(t)
+	for range 4 {
+		if _, err := h.remote.Start(context.Background(), sandbox.Spec{Kind: sandbox.KindVerify, Dir: ws, Command: "sleep 300"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, func() bool { return len(strings.Fields(h.containers(t))) == 4 })
+	h.cancel()
+	if err := <-h.served; err != nil {
+		t.Fatalf("broker shutdown with live sandboxes = %v", err)
+	}
+	h.served <- nil
+	if left := h.containers(t); left != "" {
+		t.Fatalf("shutdown left sandboxes behind: %s", left)
 	}
 }
 
 func TestDockerOpenCodeBridge(t *testing.T) {
 	h := startDockerBroker(t, nil)
 	ws := h.taskRoot(t)
-	var stderr syncBuffer
+	var stderr testutil.SyncBuffer
 	server, err := h.remote.StartOpenCode(context.Background(), sandbox.Spec{
 		Kind: sandbox.KindRunner, Runner: config.BackendOpencode, Dir: ws, Stderr: &stderr,
 		Env: []string{"OPENCODE_SERVER_PASSWORD=bridge-secret"},
@@ -452,10 +479,10 @@ func TestDockerBrokerRefusesUnownedRootsAndLeavesOtherContainers(t *testing.T) {
 	ws := h.taskRoot(t)
 	for name, dir := range map[string]string{
 		"data dir itself":    filepath.Join(h.cfg.DataDir, "workspace"),
-		"outside data dir":   filepath.Join(t.TempDir(), "tasks", newUUID(), "workspace"),
-		"dot-dot":            filepath.Join(h.cfg.DataDir, "tasks", newUUID(), "..", "workspace"),
+		"outside data dir":   filepath.Join(t.TempDir(), "tasks", uuid.NewString(), "workspace"),
+		"dot-dot":            filepath.Join(h.cfg.DataDir, "tasks", uuid.NewString(), "..", "workspace"),
 		"not a uuid":         filepath.Join(h.cfg.DataDir, "tasks", "task-1", "workspace"),
-		"missing repo.git":   filepath.Join(h.cfg.DataDir, "tasks", newUUID(), "workspace"),
+		"missing repo.git":   filepath.Join(h.cfg.DataDir, "tasks", uuid.NewString(), "workspace"),
 		"checkout workspace": filepath.Join(h.cfg.DataDir, "checkout", "workspace"),
 	} {
 		_ = os.MkdirAll(dir, 0o700)
@@ -474,7 +501,9 @@ func TestDockerBrokerRefusesUnownedRootsAndLeavesOtherContainers(t *testing.T) {
 		t.Error("the broker mounted a symlinked repo.git")
 	}
 	h.cancel()
-	<-h.served
+	if err := <-h.served; err != nil {
+		t.Fatalf("broker shutdown = %v", err)
+	}
 	h.served <- nil
 	if state := docker(t, "inspect", "-f", "{{.State.Running}}", decoy); state != "true" {
 		t.Fatalf("broker shutdown touched a container it does not own (running=%s)", state)
@@ -490,23 +519,6 @@ func waitFor(t *testing.T, cond func() bool) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-}
-
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }
 
 func TestDockerContainmentProbePasses(t *testing.T) {

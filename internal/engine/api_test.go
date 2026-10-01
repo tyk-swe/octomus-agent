@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -615,6 +617,77 @@ type catalogFailingAdapter struct {
 
 func (catalogFailingAdapter) Models(string) ([]runner.Model, error) {
 	return nil, errors.New("model/list: unexpected response shape")
+}
+
+// probedSandbox is a Docker-mode backend whose containment probe prints report on the host, or, with hold, runs until
+// its caller gives up. With image, the probe's sandbox record names that image, as the broker's does.
+type probedSandbox struct {
+	sandbox.Host
+	dir    string
+	report string
+	hold   bool
+	image  string
+}
+
+func (probedSandbox) Mode() sandbox.Mode { return sandbox.ModeDocker }
+
+func (p probedSandbox) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Child, error) {
+	if spec.Kind != sandbox.KindProbe {
+		return p.Host.Start(ctx, spec)
+	}
+	command := "printf '%s' '" + p.report + "'"
+	if p.hold {
+		command = "sleep 60"
+	}
+	child, err := p.Host.Start(ctx, sandbox.Spec{Kind: sandbox.KindVerify, Dir: p.dir, Command: command})
+	if err != nil || p.image == "" {
+		return child, err
+	}
+	return evidencedChild{Child: child, record: &model.SandboxRecord{ImageID: p.image, Runtime: "runsc", Runs: 1}}, nil
+}
+
+type evidencedChild struct {
+	sandbox.Child
+	record *model.SandboxRecord
+}
+
+func (c evidencedChild) Evidence() *model.SandboxRecord { return c.record }
+
+func TestSelfTestNamesTheImageItsProbeRanOn(t *testing.T) {
+	t.Parallel()
+	contained := `{"checks":[{"id":"non_root","label":"Runs as an unprivileged user","passed":true,"detail":"uid 10001"}],"kernel":"6.1"}`
+	app := New(testStore(t), t.TempDir(), WithSandbox(probedSandbox{dir: t.TempDir(), report: contained, image: "sha256:rebuilt"}))
+	t.Cleanup(app.Shutdown)
+	record, err := app.SelfTest(context.Background())
+	if err != nil || record.ImageID != "sha256:rebuilt" || record.Runtime != "runsc" {
+		t.Fatalf("self-test = %+v, %v; want it kept with the image and runtime its probe ran on", record, err)
+	}
+}
+
+const uncontainedReport = `{"checks":[{"id":"non_root","label":"Runs as an unprivileged user","passed":false,"detail":"uid 0"}],"kernel":"6.1"}`
+
+func TestDoctorRunsTheSelfTestBeforeRepositoryChecks(t *testing.T) {
+	t.Parallel()
+	// Without the GitHub identity fixture the origin is not a GitHub remote, so the repository check fails.
+	fixture := newScriptedFixture(t)
+	app := fixture.pausedApp(t, WithSandbox(probedSandbox{dir: t.TempDir(), report: uncontainedReport}))
+	result, _, err := app.DoctorFor(fixture.cfg, model.CycleModeExecution)
+	if err == nil || result != nil || !strings.Contains(err.Error(), "Sandbox self-test failed: Runs as an unprivileged user (uid 0)") {
+		t.Fatalf("doctor with a broken sandbox and remote = %v, %v; want the self-test failure reported", result, err)
+	}
+	if remoteErr := gitops.ValidateRemote(context.Background(), fixture.cfg); remoteErr == nil || !strings.Contains(err.Error(), remoteErr.Error()) {
+		t.Fatalf("doctor error = %v; want the repository failure %v beside the self-test", err, remoteErr)
+	}
+	saved, err := store.Get[SandboxSelfTest](app.Store, "settings", selfTestRecord)
+	if err != nil || saved == nil || saved.Passed || len(saved.Checks) != 1 {
+		t.Fatalf("saved self-test = %+v, %v; want the failed probe recorded", saved, err)
+	}
+	// Invalid configuration fails without a repository check, but still after the self-test.
+	invalid := fixture.cfg.Clone()
+	invalid.VerificationCommands = nil
+	if _, _, err := app.DoctorFor(invalid, model.CycleModeExecution); err == nil || !strings.Contains(err.Error(), "Sandbox self-test failed") {
+		t.Fatalf("doctor with invalid configuration = %v; want the self-test failure too", err)
+	}
 }
 
 func TestDoctorReportsBackendDiagnosticsAndWarnings(t *testing.T) {

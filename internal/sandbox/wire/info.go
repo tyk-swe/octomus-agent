@@ -1,4 +1,4 @@
-package sandbox
+package wire
 
 // BrokerInfo is what a sandbox broker reports about the isolation it enforces.
 type BrokerInfo struct {
@@ -10,10 +10,13 @@ type BrokerInfo struct {
 	ImageDigests  []string          `json:"image_digests"`
 	Runtime       string            `json:"runtime"`
 	Runners       map[string]string `json:"runners"`
-	Limits        BrokerLimits      `json:"limits"`
-	Networks      BrokerNetworks    `json:"networks"`
-	Egress        bool              `json:"egress"`
-	Live          int               `json:"live"`
+	// RunnerErrors says why each runner that is installed in the image did not report its version, so it is not
+	// mistaken for a missing one.
+	RunnerErrors map[string]string `json:"runner_errors"`
+	Limits       BrokerLimits      `json:"limits"`
+	Networks     BrokerNetworks    `json:"networks"`
+	Egress       bool              `json:"egress"`
+	Live         int               `json:"live"`
 }
 
 type BrokerLimits struct {

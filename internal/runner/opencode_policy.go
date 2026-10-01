@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 )
 
 func workerPolicy(agent string) map[string]any {
@@ -34,8 +33,6 @@ func workerPolicy(agent string) map[string]any {
 		},
 	}
 }
-
-var parseReadyURL = sandbox.ParseLoopbackURL
 
 func appliedPolicy(effective any, agent string) bool {
 	doc, ok := asObject(effective)

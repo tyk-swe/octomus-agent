@@ -6,18 +6,18 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/broker"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
-
-const defaultBrokerSocket = "/run/octomus/sandboxd.sock"
 
 // sandboxBackend picks where untrusted children run. Off is an explicit choice for a dedicated VM and says so.
 func sandboxBackend(mode sandbox.Mode, env func(string) (string, bool), stderr io.Writer) sandbox.Backend {
@@ -25,30 +25,38 @@ func sandboxBackend(mode sandbox.Mode, env func(string) (string, bool), stderr i
 		fmt.Fprintln(stderr, "Sandbox is off: runners and verification commands run with this service user's permissions. Use only on a dedicated VM.")
 		return sandbox.Host{}
 	}
-	socket := defaultBrokerSocket
+	return sandbox.NewRemote(brokerSocket(env))
+}
+
+// brokerSocket is the broker's socket the control plane dials.
+func brokerSocket(env func(string) (string, bool)) string {
 	if v, ok := env("OCTOMUS_SANDBOXD_SOCKET"); ok && v != "" {
-		socket = v
+		return v
 	}
-	return sandbox.NewRemote(socket)
+	return wire.DefaultSocket
+}
+
+// getenv adapts env to a lookup that reads an unset variable as empty.
+func getenv(env func(string) (string, bool)) func(string) string {
+	return func(key string) string {
+		v, _ := env(key)
+		return v
+	}
 }
 
 // sandboxdCheck asks the broker over its own socket whether it serves sandboxes, for the sandboxd container's
 // HEALTHCHECK, so the control plane starts only once it can really isolate work.
 func sandboxdCheck(env func(string) (string, bool), stderr io.Writer) int {
-	socket := defaultBrokerSocket
-	if v, ok := env("OCTOMUS_SANDBOXD_SOCKET"); ok && v != "" {
-		socket = v
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := sandbox.NewRemote(socket).Info(ctx); err != nil {
+	if _, err := sandbox.NewRemote(brokerSocket(env)).Info(ctx); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	return 0
 }
 
-// runEgress serves the egress gateway on the sandbox networks, logging every decision as a JSON line.
+// runEgress serves the egress gateway on the sandbox networks, logging tunnels and refusals as JSON lines.
 func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error {
 	value := func(key, fallback string) string {
 		if v, ok := env(key); ok && v != "" {
@@ -60,13 +68,9 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 	if leases == "" {
 		return errors.New("OCTOMUS_EGRESS_LEASES is required")
 	}
-	policy := egress.Policy{}
-	for key, rules := range map[string]*[]egress.Rule{"OCTOMUS_EGRESS_MODEL_HOSTS": &policy.Model, "OCTOMUS_EGRESS_BUILD_HOSTS": &policy.Build} {
-		parsed, err := egress.ParseRules(value(key, ""))
-		if err != nil {
-			return fmt.Errorf("%s: %w", key, err)
-		}
-		*rules = parsed
+	policy, err := egress.PolicyFromEnv(getenv(env))
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
@@ -86,16 +90,42 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 		if err != nil {
 			return err
 		}
-		go func() { _ = gateway.ServeCollector(ctx, socket) }()
+		go func() {
+			if err := gateway.ServeCollector(ctx, socket); err != nil {
+				fmt.Fprintf(stderr, "Octomus egress collector stopped; the broker marks sandbox records incomplete until the gateway restarts: %v\n", err)
+			}
+		}()
 	}
 	described := policy.Describe()
 	fmt.Fprintf(stderr, "Octomus egress gateway on %s; model hosts %v; build hosts %v\n", listen, described["model"], described["build"])
-	server := &http.Server{Handler: gateway, ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
-		_ = server.Close()
-	}()
-	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
+	return gateway.Serve(ctx, listener)
+}
+
+// loginLease grants a runner login its egress lease, as the broker grants a runner sandbox's, and writes the proxy URL
+// the login reads. It first revokes the previous login's lease, whose credential is in the file it replaces, so only
+// the latest login can reach out.
+func loginLease(env func(string) (string, bool)) error {
+	value := getenv(env)
+	for _, key := range []string{"OCTOMUS_EGRESS_LEASES", "OCTOMUS_EGRESS_PROXY", "OCTOMUS_LOGIN_PROXY_FILE"} {
+		if value(key) == "" {
+			return fmt.Errorf("%s is required", key)
+		}
+	}
+	leases := egress.Leases{Dir: value("OCTOMUS_EGRESS_LEASES")}
+	file := value("OCTOMUS_LOGIN_PROXY_FILE")
+	if previous, err := os.ReadFile(file); err == nil {
+		if address, err := url.Parse(strings.TrimSpace(string(previous))); err == nil {
+			if token, ok := address.User.Password(); ok {
+				leases.Revoke(token)
+			}
+		}
+	}
+	token, err := leases.Grant("login", wire.KindRunner)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(file, []byte(egress.ProxyURL(value("OCTOMUS_EGRESS_PROXY"), token)+"\n"), 0o600); err != nil {
+		leases.Revoke(token)
 		return err
 	}
 	return nil
@@ -103,13 +133,11 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 
 // runBroker serves the sandbox broker until a shutdown signal, then removes every sandbox it started.
 func runBroker(env func(string) (string, bool), stderr io.Writer) error {
-	cfg, err := broker.LoadConfig(func(key string) string {
-		v, _ := env(key)
-		return v
-	})
+	cfg, err := broker.LoadConfig(getenv(env))
 	if err != nil {
 		return err
 	}
+	cfg.Log = stderr
 	executable, err := os.Executable()
 	if err != nil {
 		return err

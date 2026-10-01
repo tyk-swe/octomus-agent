@@ -1,40 +1,30 @@
 package broker
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"io"
-	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-func serveTestEngine(t *testing.T, handler http.Handler) string {
+// brokerOn builds a broker against a test engine without New's deployment checks; limit, when set, caps its
+// sandboxes.
+func brokerOn(t *testing.T, socket string, limit int) *Broker {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "octomus-engine-")
-	if err != nil {
-		t.Fatal(err)
+	cfg := testConfig(t)
+	cfg.DockerSocket, cfg.Log = socket, io.Discard
+	if limit > 0 {
+		cfg.Max = limit
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "docker.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := &http.Server{Handler: handler}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { _ = server.Close() })
-	return socket
+	return newBroker(cfg)
 }
 
 func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
@@ -51,14 +41,11 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				_, _ = io.WriteString(w, `{"Id":"blocked"}`)
 			})
 			mux.HandleFunc("POST "+prefix+"blocked/attach", func(w http.ResponseWriter, _ *http.Request) {
-				conn, stream, err := w.(http.Hijacker).Hijack()
-				if err != nil {
-					t.Error(err)
+				conn, stream := testutil.SwitchProtocols(t, w, "tcp")
+				if conn == nil {
 					return
 				}
 				defer conn.Close()
-				_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
-				_ = stream.Flush()
 				// Read one byte to confirm the write began, then stop consuming stdin.
 				var first [1]byte
 				if _, err := io.ReadFull(stream, first[:]); err == nil {
@@ -88,17 +75,19 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				stop()
 				w.WriteHeader(http.StatusNoContent)
 			})
-			b := &Broker{cfg: testConfig(t), engine: engineapi.New(serveTestEngine(t, mux)), live: map[string]string{}}
+			b := brokerOn(t, testutil.UnixHTTPServer(t, mux), 0)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			controls := make(chan control)
 			done := make(chan error, 1)
+			var report wire.ExitReport
 			limit := time.Minute
 			if action == "timeout" {
 				limit = time.Second
 			}
 			go func() {
-				_, err := b.runSandbox(ctx, plan{kind: sandbox.KindProbe, stdin: true, timeout: limit},
+				var err error
+				report, err = b.runSandbox(ctx, plan{kind: wire.KindProbe, stdin: true, timeout: limit},
 					func([]byte) error { return nil }, func([]byte) error { return nil }, controls)
 				done <- err
 			}()
@@ -119,7 +108,7 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				close(controls)
 			case "kill":
 				select {
-				case controls <- control{signal: signalKill}:
+				case controls <- control{signal: wire.SignalKill}:
 				case <-time.After(2 * time.Second):
 					t.Fatal("kill was blocked behind stdin")
 				}
@@ -140,6 +129,9 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 					if err == nil || !strings.Contains(err.Error(), "stdin backlog exceeded") {
 						t.Fatalf("full input queue = %v", err)
 					}
+					if report.Sandbox == nil {
+						t.Fatal("a sandbox that ran before its stdin backlog failed it has no record")
+					}
 				} else if err != nil {
 					t.Fatal(err)
 				}
@@ -150,85 +142,6 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				t.Fatal("sandbox was not removed")
 			}
 		})
-	}
-}
-
-func TestShutdownCancelsPreparationAndSweepsSandboxes(t *testing.T) {
-	creating, cancelled := make(chan struct{}), make(chan struct{})
-	var removed atomic.Bool
-	prefix := "/v" + engineapi.APIVersion + "/containers/"
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST "+prefix+"create", func(_ http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		close(creating)
-		<-r.Context().Done()
-		close(cancelled)
-	})
-	mux.HandleFunc("GET "+prefix+"json", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `[{"Id":"leftover","Labels":{"octomus.sandbox.instance":"octomus"}}]`)
-	})
-	mux.HandleFunc("DELETE "+prefix+"leftover", func(w http.ResponseWriter, _ *http.Request) {
-		removed.Store(true)
-		w.WriteHeader(http.StatusNoContent)
-	})
-	b := &Broker{cfg: testConfig(t), engine: engineapi.New(serveTestEngine(t, mux)), live: map[string]string{}, slots: make(chan struct{}, 1)}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- b.Serve(ctx, listener) }()
-	requestDone := make(chan struct{})
-	go func() {
-		defer close(requestDone)
-		req, _ := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+"/v1/sandboxes",
-			bytes.NewBufferString(`{"kind":"probe","mode":"versions"}`))
-		req.Header.Set("Upgrade", sandbox.UpgradeProtocol)
-		resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
-		if err == nil {
-			_ = resp.Body.Close()
-		}
-	}()
-	select {
-	case <-creating:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Docker create did not start")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("shutdown did not cancel preparation")
-	}
-	<-requestDone
-	select {
-	case <-cancelled:
-	case <-time.After(time.Second):
-		t.Fatal("Docker create was not cancelled")
-	}
-	if !removed.Load() || len(b.slots) != 0 {
-		t.Fatal("shutdown left a sandbox or admission slot behind")
-	}
-}
-
-func TestShutdownReportsSweepFailure(t *testing.T) {
-	socket := serveTestEngine(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "fixture sweep failure", http.StatusServiceUnavailable)
-	}))
-	b := &Broker{cfg: testConfig(t), engine: engineapi.New(socket)}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := b.Serve(ctx, listener); err == nil || !strings.Contains(err.Error(), "fixture sweep failure") || errors.Is(err, context.Canceled) {
-		t.Fatalf("shutdown cleanup error = %v", err)
 	}
 }
 
@@ -243,14 +156,9 @@ func TestPreparedObservesContainerThatExitsDuringStart(t *testing.T) {
 		_, _ = io.WriteString(w, `{"Id":"quick"}`)
 	})
 	mux.HandleFunc("POST "+prefix+"quick/attach", func(w http.ResponseWriter, _ *http.Request) {
-		conn, stream, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Error(err)
-			return
+		if conn, _ := testutil.SwitchProtocols(t, w, "tcp"); conn != nil {
+			conn.Close()
 		}
-		defer conn.Close()
-		_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
-		_ = stream.Flush()
 	})
 	mux.HandleFunc("POST "+prefix+"quick/start", func(w http.ResponseWriter, _ *http.Request) {
 		started.Store(true)
@@ -280,23 +188,10 @@ func TestPreparedObservesContainerThatExitsDuringStart(t *testing.T) {
 		removed.Store(true)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	dir, err := os.MkdirTemp("", "octomus-engine-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "docker.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := &http.Server{Handler: mux}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { server.Close() })
-	b := &Broker{cfg: testConfig(t), engine: engineapi.New(socket), live: map[string]string{}}
+	b := brokerOn(t, testutil.UnixHTTPServer(t, mux), 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	p := plan{kind: sandbox.KindProbe, timeout: time.Second}
+	p := plan{kind: wire.KindProbe, timeout: time.Second}
 	report, err := b.runSandbox(ctx, p, func([]byte) error { return nil }, func([]byte) error { return nil }, nil)
 	if err != nil || report.Code != 7 || report.Killed {
 		t.Fatalf("quick exit = %+v, %v; want exit code 7", report, err)

@@ -8,10 +8,11 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Rule allows one host, or every subdomain of one (*.example.com), on one port.
@@ -42,8 +43,9 @@ func (r Rule) matches(host string, port uint16) bool {
 	return host == r.Host
 }
 
-// Policy is the deployment's allowlist. Model hosts serve runner sandboxes only; build hosts (package registries and
-// the like) serve runner and verification sandboxes. Probes get nothing.
+// Policy is the deployment's allowlist. Model hosts serve runner leases only; build hosts (package registries and the
+// like) serve runner and verification leases. Runner leases cover runner sandboxes, runner logins and the containment
+// probe, which proves what a runner sandbox is refused; the version probe gets no lease.
 type Policy struct {
 	Model []Rule `json:"model"`
 	Build []Rule `json:"build"`
@@ -52,9 +54,9 @@ type Policy struct {
 func (p Policy) Allows(kind, host string, port uint16) bool {
 	var rules []Rule
 	switch kind {
-	case sandbox.KindRunner.String():
+	case wire.KindRunner:
 		rules = append(append(rules, p.Model...), p.Build...)
-	case sandbox.KindVerify.String():
+	case wire.KindVerify:
 		rules = p.Build
 	}
 	for _, rule := range rules {
@@ -63,6 +65,36 @@ func (p Policy) Allows(kind, host string, port uint16) bool {
 		}
 	}
 	return false
+}
+
+// probeTarget chooses a syntactically valid name outside the effective runner allowlist, including build hosts.
+// Keep the familiar target when it is denied; otherwise use reserved .invalid names. A parsed wildcard rule has
+// at least two labels in its suffix, so it cannot cover these two-label candidates. There are more candidates than
+// rules, hence an exact allowlist cannot exhaust them. Still fail closed if an unvalidated policy covers them all.
+func (p Policy) probeTarget() (string, error) {
+	if !p.Allows(wire.KindRunner, "example.com", 443) {
+		return "example.com:443", nil
+	}
+	for i := 0; i <= len(p.Model)+len(p.Build); i++ {
+		host := fmt.Sprintf("octomus-probe-%d.invalid", i)
+		if !p.Allows(wire.KindRunner, host, 443) {
+			return host + ":443", nil
+		}
+	}
+	return "", errors.New("no denied containment probe target")
+}
+
+// Describe lists the effective allowlists for logs and the dashboard.
+func (p Policy) Describe() map[string][]string {
+	describe := func(rules []Rule) []string {
+		out := []string{}
+		for _, rule := range rules {
+			out = append(out, rule.String())
+		}
+		sort.Strings(out)
+		return out
+	}
+	return map[string][]string{"model": describe(p.Model), "build": describe(p.Build)}
 }
 
 var labelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -116,12 +148,34 @@ func ParseRules(list string) ([]Rule, error) {
 	return rules, nil
 }
 
+// PolicyFromEnv reads the deployment's allowlists from OCTOMUS_EGRESS_MODEL_HOSTS and OCTOMUS_EGRESS_BUILD_HOSTS; an
+// unset or empty list allows nothing.
+func PolicyFromEnv(getenv func(string) string) (Policy, error) {
+	policy := Policy{}
+	for _, list := range []struct {
+		key   string
+		rules *[]Rule
+	}{{"OCTOMUS_EGRESS_MODEL_HOSTS", &policy.Model}, {"OCTOMUS_EGRESS_BUILD_HOSTS", &policy.Build}} {
+		parsed, err := ParseRules(getenv(list.key))
+		if err != nil {
+			return Policy{}, fmt.Errorf("%s: %w", list.key, err)
+		}
+		*list.rules = parsed
+	}
+	return policy, nil
+}
+
+// globalIPv6 is the only IPv6 range assigned for global unicast. Outside it lie the IPv4-compatible (::/96) and
+// translated (::ffff:0:0:0/96) forms, deprecated site-local addresses and the SRv6 and other special ranges.
+var globalIPv6 = netip.MustParsePrefix("2000::/3")
+
 var blockedPrefixes = func() []netip.Prefix {
 	prefixes := []netip.Prefix{}
 	for _, cidr := range []string{
 		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24",
 		"203.0.113.0/24", "240.0.0.0/4", "255.255.255.255/32",
-		"64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/32", "2001:db8::/32", "2002::/16",
+		"64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/32", "2001:2::/48", "2001:10::/28", "2001:20::/28",
+		"2001:db8::/32", "2002::/16", "3fff::/20",
 	} {
 		prefixes = append(prefixes, netip.MustParsePrefix(cidr))
 	}
@@ -129,13 +183,14 @@ var blockedPrefixes = func() []netip.Prefix {
 }()
 
 // PublicAddress reports whether a tunnel may reach addr. Loopback, private, link-local (including cloud metadata),
-// carrier-grade NAT, documentation, benchmark and reserved ranges are refused, as are IPv6 forms that embed an IPv4
-// address (NAT64, 6to4, Teredo), so no allowlisted name can be pointed at the host, the VPS's neighbours or other
-// containers.
+// carrier-grade NAT, documentation, benchmark and reserved ranges are refused, as are IPv6 addresses outside global
+// unicast and IPv6 forms that embed an IPv4 address (IPv4-compatible, SIIT, NAT64, 6to4, Teredo), so no allowlisted
+// name can be pointed at the host, the VPS's neighbours or other containers.
 func PublicAddress(addr netip.Addr) bool {
 	addr = addr.Unmap()
 	if !addr.IsValid() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() || addr.IsMulticast() ||
-		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsInterfaceLocalMulticast() || !addr.IsGlobalUnicast() {
+		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsInterfaceLocalMulticast() || !addr.IsGlobalUnicast() ||
+		(addr.Is6() && !globalIPv6.Contains(addr)) {
 		return false
 	}
 	for _, prefix := range blockedPrefixes {

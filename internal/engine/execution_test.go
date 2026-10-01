@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1245,5 +1246,305 @@ func TestExecutionDeliversFullLifecycleViaOpenCode(t *testing.T) {
 	used, err := fixture.state.SessionsToday()
 	if err != nil || used != 6 {
 		t.Fatalf("opencode admissions = %d, want 6 (executor + 3 reviewers + 2 repairs)", used)
+	}
+}
+
+// changeSetClone is an owned clone, in the split layout, of a fresh repository holding files, and the revision it
+// starts at.
+func changeSetClone(t *testing.T, files map[string]string) (config.Config, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	repo := filepath.Join(root, "repository")
+	git(t, root, "init", "--initial-branch=main", repo)
+	git(t, repo, "config", "user.name", "Fixture")
+	git(t, repo, "config", "user.email", "fixture@example.com")
+	writeTree(t, repo, files)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "Initial fixture")
+	git(t, repo, "remote", "add", "origin", "https://github.com/fixture/project.git")
+	cfg := testConfig(repo)
+	cfg.CommandTimeoutSeconds = 30
+	base := git(t, repo, "rev-parse", "HEAD")
+	ws := filepath.Join(root, "task", "workspace")
+	if err := gitops.CloneAt(context.Background(), cfg, ws, base); err != nil {
+		t.Fatal(err)
+	}
+	return cfg, ws, base
+}
+
+func writeTree(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// listsChange reports whether a numstat listing has the line for path with these added and deleted counts.
+func listsChange(listing, counts, path string) bool {
+	return slices.Contains(strings.Split(listing, "\n"), counts+"\t"+path)
+}
+
+// An executor can leave attribute files that ignore themselves, so they are never committed and the work tree reads
+// as clean, and commit files that are not UTF-8. Neither may hide a change from the trusted change set.
+func TestTrustedChangeSetShowsEveryChangeAsText(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg, ws, base := changeSetClone(t, map[string]string{"app.js": "one();\n", "lib/util.js": "util();\n"})
+	writeTree(t, ws, map[string]string{
+		"app.js":             "one();\nevil();\n",
+		".gitignore":         "/.gitignore\n/.gitattributes\n",
+		".gitattributes":     "* -diff\n",
+		"sub/.gitignore":     ".gitignore\n.gitattributes\n",
+		"sub/.gitattributes": "* -diff\n",
+		"sub/lib.c":          "hidden();\n",
+		// A committed attribute file is part of the change set, but it does not hide the files beside it either.
+		"lib/.gitattributes": "* -diff\n",
+		"lib/util.js":        "util();\nalso();\n",
+		"NOTES.txt":          "caf\xe9\n",
+		// Only content marks a file binary for the list; the diff shows it as text all the same.
+		"blob.bin": "a\x00b\n",
+	})
+	revision, err := gitops.Snapshot(ctx, cfg, ws, "Hide the change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean, err := gitops.WorkGit(ctx, cfg, ws, []string{"status", "--porcelain"}); err != nil || clean != "" {
+		t.Fatalf("work tree after the snapshot = %q, %v; want it clean with the attribute files ignored", clean, err)
+	}
+	// Git on the work tree, as before, takes every changed file for binary.
+	if hidden, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--no-ext-diff", "--no-textconv", "--text", "--stat", base, revision}); err != nil ||
+		!strings.Contains(hidden, "Bin 7 -> 15 bytes") {
+		t.Fatalf("work-tree stat = %q, %v; want the planted attributes in effect", hidden, err)
+	}
+	set, err := trustedChangeSet(ctx, cfg, ws, base, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"app.js", "sub/lib.c", "lib/util.js", "lib/.gitattributes", "NOTES.txt"} {
+		if !listsChange(set.files, "1\t0", file) {
+			t.Fatalf("trusted list lacks one added line in %s:\n%s", file, set.files)
+		}
+	}
+	if !listsChange(set.files, "-\t-", "blob.bin") || !strings.Contains(set.files, " create mode 100644 blob.bin") ||
+		set.totals != "6 files changed, 5 insertions(+)" || len(set.omitted) != 0 {
+		t.Fatalf("trusted change set = %+v; want blob.bin listed as binary under the totals", set)
+	}
+	for _, want := range []string{"+evil();", "+hidden();", "+also();", "+* -diff", "+caf⟦xE9⟧\n", "+a⟦U+0000⟧b\n"} {
+		if !strings.Contains(set.diff, want) {
+			t.Fatalf("trusted diff lacks %q:\n%s", want, set.diff)
+		}
+	}
+	if strings.Contains(set.diff, "Binary files") || !utf8.ValidString(set.diff) || strings.ContainsRune(set.diff, utf8.RuneError) {
+		t.Fatalf("trusted diff shows a binary change or replaced bytes:\n%s", set.diff)
+	}
+}
+
+// Git ends a line only at a newline, while Python, JavaScript, C and YAML also break at a lone CR, and JavaScript at
+// U+2028: a statement after one must not read as part of the line before it.
+func TestTrustedChangeSetShowsLineBreaksGitDoesNotSplit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg, ws, base := changeSetClone(t, map[string]string{"app.py": "def check(user):\n    return user == \"admin\"\n"})
+	writeTree(t, ws, map[string]string{
+		"app.py":       "def check(user):\n    # Delegates to auth(); see #123.\r    return True\r    # (kept for the audit trail)\n    return user == \"admin\"\n",
+		"auth.js":      "// allow only admins\u2028return true;\n",
+		"windows.txt":  "first\r\nsecond\r\n",
+		"invisible.go": "if user == \"admin\u200b\" {}\n",
+	})
+	revision, err := gitops.Snapshot(ctx, cfg, ws, "Hide a statement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := trustedChangeSet(ctx, cfg, ws, base, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !listsChange(set.files, "1\t0", "app.py") {
+		t.Fatalf("trusted list does not count the hidden statement in one line of app.py:\n%s", set.files)
+	}
+	for _, want := range []string{
+		"\n+    # Delegates to auth(); see #123.⟦U+000D⟧    return True⟦U+000D⟧    # (kept for the audit trail)\n",
+		"\n+// allow only admins⟦U+2028⟧return true;\n",
+		"\n+first\r\n+second\r\n",
+		"\n+if user == \"admin⟦U+200B⟧\" {}\n",
+	} {
+		if !strings.Contains(set.diff, want) {
+			t.Fatalf("trusted diff lacks %q:\n%q", want, set.diff)
+		}
+	}
+	if strings.Count(set.diff, "\r") != 2 || !strings.HasSuffix(set.diff, "\r\n") || strings.Contains(set.diff, "\u2028") {
+		t.Fatalf("trusted diff keeps a line break git does not split at:\n%q", set.diff)
+	}
+}
+
+// Submodule entries are part of the change set even when a committed .gitmodules says to ignore them: a commit
+// pushed to the PR branch can move one, and a snapshot can remove one.
+func TestTrustedChangeSetShowsSubmoduleEntries(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg, ws, _ := changeSetClone(t, map[string]string{"app.py": "safe()\n"})
+	writeTree(t, ws, map[string]string{".gitmodules": "[submodule \"vendor/lib\"]\n\tpath = vendor/lib\n\turl = https://example.com/lib.git\n\tignore = all\n"})
+	if _, err := gitops.Snapshot(ctx, cfg, ws, "Declare the submodule"); err != nil {
+		t.Fatal(err)
+	}
+	commitGitlink := func(commit string) string {
+		t.Helper()
+		for _, args := range [][]string{{"update-index", "--add", "--cacheinfo", "160000," + commit + ",vendor/lib"}, {"commit", "-m", "Point vendor/lib at " + commit}, {"rev-parse", "HEAD"}} {
+			out, err := gitops.WorkGit(ctx, cfg, ws, args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if args[0] == "rev-parse" {
+				return out
+			}
+		}
+		return ""
+	}
+	old, bumped := strings.Repeat("1", 40), strings.Repeat("2", 40)
+	base := commitGitlink(old)
+	revision := commitGitlink(bumped)
+	if hidden, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--stat", base, revision}); err != nil || hidden != "" {
+		t.Fatalf("hardened git stat = %q, %v; want the submodule entry ignored there", hidden, err)
+	}
+	set, err := trustedChangeSet(ctx, cfg, ws, base, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.files != "1\t1\tvendor/lib" || set.totals != "1 file changed, 1 insertion(+), 1 deletion(-)" ||
+		!strings.Contains(set.diff, "\n-Subproject commit "+old+"\n+Subproject commit "+bumped) {
+		t.Fatalf("trusted change set of a submodule bump = %+v", set)
+	}
+	if prompt := reviewPrompt(&model.Task{ComparisonBase: base}, revision, set); !strings.Contains(prompt, "Changed files") || strings.Contains(prompt, "shows no change") {
+		t.Fatalf("review prompt for a submodule bump:\n%s", prompt)
+	}
+	// Snapshot refuses a new or moved submodule entry but lets one go.
+	writeTree(t, ws, map[string]string{"app.py": "safe()\nunsafe()\n"})
+	removed, err := gitops.Snapshot(ctx, cfg, ws, "Drop the submodule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err = trustedChangeSet(ctx, cfg, ws, revision, removed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !listsChange(set.files, "0\t1", "vendor/lib") || !strings.Contains(set.files, " delete mode 160000 vendor/lib") ||
+		!listsChange(set.files, "1\t0", "app.py") || !strings.Contains(set.diff, "\n-Subproject commit "+bumped) {
+		t.Fatalf("trusted change set of a submodule removal = %+v", set)
+	}
+	if prompt := reviewPrompt(&model.Task{ComparisonBase: revision}, revision, changeSet{}); !strings.HasSuffix(prompt, "The orchestrator's git shows no change between "+revision+" and "+revision+".") {
+		t.Fatalf("review prompt without a change:\n%s", prompt)
+	}
+}
+
+// The prompt lists every changed file and embeds whole diffs, the smallest first, within its budget, naming each file
+// whose diff it leaves out; a change set whose file list does not fit is not reviewed at all.
+func TestTrustedChangeSetSkipsOversizedDiffAndKeepsLaterFiles(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg, ws, base := changeSetClone(t, map[string]string{"README.md": "fixture\n"})
+	writeTree(t, ws, map[string]string{
+		"large.txt": strings.Repeat("x", reviewDiffLimit) + "\n",
+		"small.txt": "first\nsecond\n",
+	})
+	revision, err := gitops.Snapshot(ctx, cfg, ws, "Long line before short lines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := trustedChangeSet(ctx, cfg, ws, base, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(set.omitted, []string{"large.txt"}) || len(set.diff) > reviewDiffLimit ||
+		!strings.Contains(set.diff, "+++ b/small.txt\n@@ -0,0 +1,2 @@\n+first\n+second\n") {
+		t.Fatalf("change set omitted %q with %d diff bytes: %s", set.omitted, len(set.diff), set.diff)
+	}
+}
+
+func TestTrustedChangeSetKeepsTheReviewPromptWithinItsBudget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg, ws, base := changeSetClone(t, map[string]string{"README.md": "fixture\n"})
+	writeTree(t, ws, map[string]string{"small.txt": strings.Repeat("line\n", 100)})
+	small, err := gitops.Snapshot(ctx, cfg, ws, "Small change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set, err := trustedChangeSet(ctx, cfg, ws, base, small); err != nil || len(set.omitted) != 0 || !strings.Contains(set.diff, "+line") {
+		t.Fatalf("small change set = %+v, %v; want its diff embedded", set, err)
+	}
+	// Many one-line files and one long path once padded --stat past its budget, and a large file pushed the diff past
+	// its own, so the file list was cut before the one that mattered.
+	files := map[string]string{
+		"fixture.json":     strings.Repeat(`{"key": "value", "padding": "0123456789abcdef"},`+"\n", 1500),
+		"zz/auth/check.py": "def check(user):\n    return True\n",
+		"docs/" + strings.Repeat("d", 170) + ".md": "doc\n",
+	}
+	for i := range 110 {
+		files[fmt.Sprintf("a/f%03d.txt", i)] = "one line\n"
+	}
+	writeTree(t, ws, files)
+	large, err := gitops.Snapshot(ctx, cfg, ws, "Large change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := trustedChangeSet(ctx, cfg, ws, small, large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range files {
+		if !listsChange(set.files, "1\t0", name) && !listsChange(set.files, "2\t0", name) && !listsChange(set.files, "1500\t0", name) {
+			t.Fatalf("trusted list lacks %s:\n%s", name, set.files)
+		}
+	}
+	if !slices.Equal(set.omitted, []string{"fixture.json"}) || len(set.diff) > reviewDiffLimit ||
+		!strings.Contains(set.diff, "+++ b/zz/auth/check.py\n@@ -0,0 +1,2 @@\n+def check(user):\n+    return True") || strings.Contains(set.diff, "fixture.json") {
+		t.Fatalf("large change set: %d diff bytes, left out %q:\n%s", len(set.diff), set.omitted, set.files)
+	}
+	task, _ := promptTask()
+	prompt := reviewPrompt(task, large, set)
+	if len(prompt) > reviewListLimit+reviewDiffLimit+4096 || !strings.HasSuffix(prompt, "treat it as unverified:\nfixture.json") {
+		t.Fatalf("review prompt of %d bytes for a large change set:\n%s", len(prompt), prompt[max(0, len(prompt)-2048):])
+	}
+	// Smallest first, the whole diffs that fit are embedded and the rest named in the order git lists them.
+	sized := map[string]string{}
+	for i := range 6 {
+		sized[fmt.Sprintf("sized/%d.txt", i)] = strings.Repeat(fmt.Sprintf("line of file %d\n", i), 300*(6-i))
+	}
+	// Paths git quotes, or that pathspec magic would read as a pattern, still name exactly their own diff.
+	sized["sized/[ab]*.txt"] = "glob\n"
+	sized["sized/odd\tname café\x7f.txt"] = "odd\n"
+	writeTree(t, ws, sized)
+	tiered, err := gitops.Snapshot(ctx, cfg, ws, "Sized change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err = trustedChangeSet(ctx, cfg, ws, large, tiered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(set.omitted, []string{"sized/0.txt", "sized/1.txt"}) || len(set.diff) > reviewDiffLimit || strings.Count(set.diff, "diff --git ") != 6 ||
+		!strings.Contains(set.diff, "+++ b/sized/[ab]*.txt\n@@ -0,0 +1 @@\n+glob\n") ||
+		!strings.Contains(set.diff, `+++ "b/sized/odd\tname caf\303\251\177.txt"`+"\t\n@@ -0,0 +1 @@\n+odd\n") {
+		t.Fatalf("sized change set: %d diff bytes, left out %q:\n%s", len(set.diff), set.omitted, set.diff)
+	}
+	// A file list past its budget leaves nothing to check the sandbox's git against.
+	listed := map[string]string{}
+	for i := range 150 {
+		listed[fmt.Sprintf("%s/%03d.txt", strings.Repeat("p", 200), i)] = "x\n"
+	}
+	writeTree(t, ws, listed)
+	crowded, err := gitops.Snapshot(ctx, cfg, ws, "Crowded change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set, err := trustedChangeSet(ctx, cfg, ws, tiered, crowded); err == nil || model.BlockedReasonFromError(err) != model.BlockedReasonInvalidReview ||
+		!strings.Contains(err.Error(), "lists more files than a review prompt carries (over 32768 bytes)") {
+		t.Fatalf("crowded change set = %+v, %v; want the review refused", set, err)
 	}
 }

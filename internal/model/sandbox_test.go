@@ -15,9 +15,12 @@ func run(oom bool, allowed, denied map[string]uint64) *model.SandboxRecord {
 func TestMergeSandboxCountsRunsHostsAndKeepsAnOOM(t *testing.T) {
 	t.Parallel()
 	merged := model.MergeSandbox(nil, run(true, map[string]uint64{"api.openai.com:443": 2}, map[string]uint64{"example.com:443": 1}))
-	merged = model.MergeSandbox(merged, run(false, map[string]uint64{"api.openai.com:443": 3}, map[string]uint64{}))
+	unreachable := run(false, map[string]uint64{"api.openai.com:443": 3}, map[string]uint64{})
+	unreachable.Egress.Failed = map[string]uint64{"registry.npmjs.org:443": 2}
+	merged = model.MergeSandbox(merged, unreachable)
 	merged = model.MergeSandbox(merged, nil)
-	if merged.Runs != 2 || !merged.OOM || merged.Egress.Allowed["api.openai.com:443"] != 5 || merged.Egress.Denied["example.com:443"] != 1 {
+	if merged.Runs != 2 || !merged.OOM || merged.Egress.Allowed["api.openai.com:443"] != 5 || merged.Egress.Denied["example.com:443"] != 1 ||
+		len(merged.Egress.Denied) != 1 || merged.Egress.Failed["registry.npmjs.org:443"] != 2 {
 		t.Fatalf("merged = %+v", merged)
 	}
 	many := map[string]uint64{}
@@ -27,6 +30,19 @@ func TestMergeSandboxCountsRunsHostsAndKeepsAnOOM(t *testing.T) {
 	bounded := model.MergeSandbox(nil, run(false, nil, many))
 	if len(bounded.Egress.Denied) != model.SandboxHostLimit+1 || bounded.Egress.Denied["other"] != 10 {
 		t.Fatalf("bounded denied hosts = %d, other = %d", len(bounded.Egress.Denied), bounded.Egress.Denied["other"])
+	}
+	// A run that already folded hosts keeps every host it named, even those that sort after "other".
+	folded := map[string]uint64{"other": 3}
+	for i := range model.SandboxHostLimit {
+		folded[fmt.Sprintf("%c%02d.example:443", 'a'+25*(i%2), i)] = 1
+	}
+	kept := model.MergeSandbox(nil, run(false, folded, nil))
+	if len(kept.Egress.Allowed) != model.SandboxHostLimit+1 || kept.Egress.Allowed["other"] != 3 || kept.Egress.Allowed["z63.example:443"] != 1 {
+		t.Fatalf("hosts kept from a folded run = %d, other = %d", len(kept.Egress.Allowed), kept.Egress.Allowed["other"])
+	}
+	kept = model.MergeSandbox(kept, run(false, map[string]uint64{"new.example:443": 2, "z63.example:443": 1}, nil))
+	if len(kept.Egress.Allowed) != model.SandboxHostLimit+1 || kept.Egress.Allowed["other"] != 5 || kept.Egress.Allowed["z63.example:443"] != 2 {
+		t.Fatalf("a later run's new host = %d hosts, other = %d; want it counted under other", len(kept.Egress.Allowed), kept.Egress.Allowed["other"])
 	}
 }
 
@@ -70,5 +86,39 @@ func TestSessionsWithoutSandboxRecordsStillLoad(t *testing.T) {
 	var again model.Session
 	if err := wirejson.DecodeRecord(data, &again); err != nil || again.Sandbox.Egress.Allowed["api.openai.com:443"] != 1 || again.Sandbox.Egress.Denied == nil {
 		t.Fatalf("round trip = %+v, %v", again.Sandbox, err)
+	}
+}
+
+func TestSandboxRecordsWithoutEgressFailuresStillLoad(t *testing.T) {
+	t.Parallel()
+	var record model.SandboxRecord
+	saved := `{"image_id":"sha256:image","runtime":"","runs":1,"oom":false,"egress":{"allowed":{},"denied":{"example.com:443":2}}}`
+	if err := wirejson.DecodeRecord([]byte(saved), &record); err != nil || record.Egress.Failed == nil || len(record.Egress.Failed) != 0 ||
+		record.Egress.Denied["example.com:443"] != 2 {
+		t.Fatalf("record saved before egress failures = %+v, %v", record, err)
+	}
+	merged := model.MergeSandbox(&record, &model.SandboxRecord{ImageID: "sha256:image", Runs: 1,
+		Egress: model.SandboxEgress{Failed: map[string]uint64{"api.openai.com:443": 1}}})
+	data, err := wirejson.Marshal(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again model.SandboxRecord
+	if err := wirejson.DecodeRecord(data, &again); err != nil || again.Egress.Failed["api.openai.com:443"] != 1 || again.Runs != 2 {
+		t.Fatalf("round trip = %+v, %v", again, err)
+	}
+}
+
+func TestIncompleteSandboxEvidenceIsKeptThroughMerges(t *testing.T) {
+	t.Parallel()
+	var record model.SandboxRecord
+	saved := `{"image_id":"sha256:image","runtime":"","runs":1,"oom":false,"egress":{"allowed":{},"denied":{},"failed":{}}}`
+	if err := wirejson.DecodeRecord([]byte(saved), &record); err != nil || record.Incomplete {
+		t.Fatalf("record saved before lost evidence was marked = %+v, %v", record, err)
+	}
+	merged := model.MergeSandbox(&record, &model.SandboxRecord{ImageID: "sha256:image", Runs: 1, Incomplete: true})
+	merged = model.MergeSandbox(merged, run(false, nil, nil))
+	if !merged.Incomplete || merged.Runs != 3 {
+		t.Fatalf("a run whose evidence was lost no longer marks the record = %+v", merged)
 	}
 }

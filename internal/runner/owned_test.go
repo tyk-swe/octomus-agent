@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 )
 
 const (
@@ -125,6 +126,31 @@ func TestJoinOwnedReportsUnexpectedExits(t *testing.T) {
 	held <- err
 	if err := joinOwned(held, closed, "stuck"); err != nil {
 		t.Fatalf("a held stderr after a clean exit must join cleanly: %v", err)
+	}
+}
+
+func TestJoinOwnedKeepsSandboxEndsOctomusDidNotChoose(t *testing.T) {
+	t.Parallel()
+	if err := exitErr(process.ExitStatus(process.Exit{Code: 137, Killed: true}), nil); !killed(err) {
+		t.Fatalf("Octomus's own kill must be expected cleanup: %v", err)
+	}
+	closed := make(chan struct{})
+	close(closed)
+	for name, err := range map[string]error{
+		"time limit":  exitErr(process.ExitStatus(process.Exit{Code: 137, Killed: true, Reason: "Sandbox time limit reached"}), nil),
+		"unconfirmed": exitErr(process.Status{}, &sandbox.SandboxError{Err: errors.New("Sandbox end is unconfirmed")}),
+	} {
+		waitCh := make(chan error, 1)
+		waitCh <- err
+		joined := joinOwned(waitCh, closed, "stuck")
+		if killed(err) || joined == nil || !errors.Is(joined, err) {
+			t.Fatalf("%s = %v, joined %v; want it reported, never dropped as cleanup", name, err, joined)
+		}
+	}
+	waitCh := make(chan error, 1)
+	waitCh <- exitErr(process.ExitStatus(process.Exit{Code: 137, Killed: true, Reason: "Sandbox time limit reached"}), nil)
+	if err := joinOwned(waitCh, closed, "stuck"); err == nil || err.Error() != "Sandbox time limit reached" {
+		t.Fatalf("time limit = %v; want the reason named", err)
 	}
 }
 

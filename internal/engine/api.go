@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"sort"
 	"strings"
@@ -260,18 +261,8 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 }
 
 func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
-	if mode == model.CycleModeAudit {
-		if err := cfg.ValidateAudit(); err != nil {
-			return nil, nil, err
-		}
-	} else {
-		if err := cfg.Validate(true); err != nil {
-			return nil, nil, err
-		}
-	}
-	if err := gitops.ValidateRemote(a.ctx, cfg); err != nil {
-		return nil, nil, err
-	}
+	// The containment self-test needs no configuration, so it runs first: a broken sandbox is reported even when the
+	// configuration or repository check fails too.
 	errs := []string{}
 	sandboxResult := map[string]any{"mode": a.sandbox.Mode().String()}
 	if a.sandbox.Mode() == sandbox.ModeDocker {
@@ -283,6 +274,24 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 			errs = append(errs, failure.Error())
 		}
 		sandboxResult["self_test"] = selfTest
+	}
+	withSelfTest := func(err error) error {
+		if len(errs) == 0 {
+			return err
+		}
+		return fmt.Errorf("%s; %w", strings.Join(errs, "; "), err)
+	}
+	if mode == model.CycleModeAudit {
+		if err := cfg.ValidateAudit(); err != nil {
+			return nil, nil, withSelfTest(err)
+		}
+	} else {
+		if err := cfg.Validate(true); err != nil {
+			return nil, nil, withSelfTest(err)
+		}
+	}
+	if err := gitops.ValidateRemote(a.ctx, cfg); err != nil {
+		return nil, nil, withSelfTest(err)
 	}
 	routes := cfg.RoutesFor(mode == model.CycleModeAudit)
 	seen := map[config.Backend]bool{}

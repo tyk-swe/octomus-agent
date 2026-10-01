@@ -41,12 +41,25 @@ owns strict typed JSON boundaries for saved records and API requests.
   `capacity.go` and `notifications.go` serve operational views, PR capacity and the
   outbox.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
-  `--sandbox off`, `Remote` for the broker), the broker wire protocol, owned-root
-  preparation, the in-sandbox helper (`--sandbox-init`: OpenCode HTTP/2 bridge and
-  version probe) and the containment probe. `sandbox/broker` is `--sandboxd`: request
-  validation, the golden container spec (`testdata/spec-*.json`), streams, leases and
-  sweeping; `sandbox/engineapi` is its minimal Docker Engine client. `internal/egress`
-  is the `--egress` gateway.
+  `--sandbox off`, `Remote` for the broker), owned-root preparation, OpenCode
+  readiness and its stream connection (`opencode.go`), the in-sandbox helper
+  (`init.go`, `--sandbox-init`: OpenCode HTTP/2 bridge and version probe) and the
+  containment probe (`probe.go` runs it, `containment.go` checks from inside the
+  sandbox). `sandbox/wire` is the broker wire contract: requests, stream
+  frames, the broker info document, the runner names and the runner and verification
+  programs both backends start, and the owned-root home layout. `sandbox/broker` is
+  `--sandboxd`: `config.go` (deployment settings), `startup.go` (daemon, network
+  and volume checks, helper install), `image.go` (tag resolution and the
+  runner-version probe), `listen.go` (peer-credential socket), `serve.go` (HTTP and
+  the upgraded stream), `validate.go` (request and owned-root checks), `spec.go`
+  (the golden container spec, `testdata/spec-*.json`), `lifecycle.go` (create,
+  attach, run and evidence, granting egress leases) and `teardown.go` (teardown
+  bounds, removal, reaper and sweep); `sandbox/engineapi` is its minimal Docker
+  Engine client. `internal/egress` is the `--egress` gateway: `policy.go`
+  (allowlists, `PolicyFromEnv`), `gateway.go` (the CONNECT gateway) and `serve.go`
+  (listener bounds and the lease sweep). It owns its contract with the broker:
+  `lease.go` (lease files and proxy credentials) and `collector.go` (the summary
+  collector).
 - `internal/redact`: the one secret scrubber and display bound, shared by every
   package that records or returns text, the token and webhook variable names, and
   `Fragment` for text already cut by a capture or read limit.
@@ -62,8 +75,10 @@ owns strict typed JSON boundaries for saved records and API requests.
 - Go behavior tests sit beside each package (`*_test.go`); `internal/testutil`
   holds their shared polling and process helpers, a POSIX-shell `git`/`gh`
   dispatcher (`InstallFixtureCommands`) that relays into a fixture's `bin/`
-  without a Python interpreter start, and `SkipVolumeUnderRace` for
-  single-goroutine data-volume checks the race detector gains nothing from.
+  without a Python interpreter start, `SkipVolumeUnderRace` for
+  single-goroutine data-volume checks the race detector gains nothing from,
+  and the sandbox tests' unix-socket servers, protocol upgrades and
+  `SyncBuffer` (`sockets.go`).
   Pinned real-client contracts (`internal/runner`) and the scale checks
   (`internal/store`, `OCTOMUS_SCALE_TEST=1`) skip unless their environment is
   provided.

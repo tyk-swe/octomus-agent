@@ -7,30 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
-
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
 
 // script writes an executable runner stand-in. Tests that write one run sequentially: a parallel fork can hold the
 // write descriptor open long enough to make exec fail with "text file busy".
@@ -64,7 +47,7 @@ func TestHostVerifyRunsBashPipefailInTheWorkspace(t *testing.T) {
 
 func TestHostRunnerStreamsAndStderrSink(t *testing.T) {
 	binary := script(t, "echo \"$1 $2 $3\"; echo diagnostic >&2; cat")
-	sink := &syncBuffer{}
+	sink := &testutil.SyncBuffer{}
 	child, err := sandbox.Host{}.Start(context.Background(), sandbox.Spec{
 		Kind: sandbox.KindRunner, Runner: config.BackendCodex, Binary: binary, Dir: t.TempDir(), Stdin: true, Stderr: sink,
 	})
@@ -143,5 +126,40 @@ func TestHostOpenCodeReadiness(t *testing.T) {
 				t.Fatalf("readiness = %v; want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseLoopbackURL(t *testing.T) {
+	t.Parallel()
+	for _, endpoint := range []string{"http://127.0.0.1:4096", "http://127.0.0.1:4096/"} {
+		got, err := sandbox.ParseLoopbackURL(endpoint)
+		if err != nil || got != "http://127.0.0.1:4096" {
+			t.Errorf("ParseLoopbackURL(%q) = %q, %v", endpoint, got, err)
+		}
+	}
+	for _, endpoint := range []string{
+		"",
+		"127.0.0.1:4096",
+		"https://127.0.0.1:4096/",
+		"ws://127.0.0.1:4096/",
+		"http://localhost:4096/",
+		"http://10.0.0.1:4096/",
+		"http://[::1]:4096/",
+		"http://127.0.0.1/",
+		"http://127.0.0.1:0/",
+		"http://127.0.0.1:65536/",
+		"http://127.0.0.1:80/",
+		"http://user@127.0.0.1:4096/",
+		"http://user:pw@127.0.0.1:4096/",
+		"http://@127.0.0.1:4096/",
+		"http://127.0.0.1:4096/x",
+		"http://127.0.0.1:4096/?q",
+		"http://127.0.0.1:4096?q",
+		"http://127.0.0.1:4096/#f",
+		"http://127.0.0.1:4096#f",
+	} {
+		if got, err := sandbox.ParseLoopbackURL(endpoint); err == nil || got != "" {
+			t.Errorf("ParseLoopbackURL(%q) = %q, %v; want a refusal", endpoint, got, err)
+		}
 	}
 }

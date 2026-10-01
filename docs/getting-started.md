@@ -49,7 +49,9 @@ The script:
 - builds the images and starts the stack.
 
 The control plane clones the repository into its own data volume on first start. Then sign
-in a runner; the login lands in a volume only runner sandboxes mount:
+in a runner; the login lands in a volume only runner sandboxes mount, and it reaches out only
+through the egress gateway. For OpenCode routes, first add `models.opencode.ai` and your
+provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS` in `.env` and run `docker compose up -d`.
 
 ```bash
 docker compose run --rm login codex login --device-auth
@@ -195,8 +197,10 @@ repository push permission or model inference; only a run's recorded evidence do
    reasoning effort; OpenCode requires a provider and offers the model's supported
    variants, including **Provider default**. The same selectors apply to all execution
    tiers and repair. Catalog checks use the executable paths currently entered, without
-   saving or making model calls. Custom providers configured for the OpenCode service
-   user appear in its catalog; models must support text and tool calling. Unsupported
+   saving or making model calls. Custom providers in OpenCode's user configuration (the
+   service user's, unsandboxed; in Docker, the one
+   [installed into the runner volume](sandbox.md#signing-in-a-runner)) appear in its
+   catalog; models must support text and tool calling. Unsupported
    routes fail visibly; select available routes explicitly instead of expecting a
    fallback. See [model routing](model-routing.md) for JSON examples.
 4. **Verification policy.** Enter meaningful verification commands, one shell command

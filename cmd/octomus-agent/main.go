@@ -61,6 +61,18 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 	if len(args) > 0 && args[0] == "--sandbox-init" {
 		return sandbox.RunInit(args[1:], os.Stdin, stdout, stderr)
 	}
+	// Compose's login-lease service runs this before each runner login.
+	if len(args) > 0 && args[0] == "--login-lease" {
+		if len(args) > 1 {
+			fmt.Fprintf(stderr, "error: unexpected argument '%s'\n", args[1])
+			return 2
+		}
+		if err := loginLease(env); err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	// Git calls its credential helper with the operation appended.
 	if len(args) > 0 && args[0] == "--git-credential" {
 		return gitCredential(args[1:], os.Stdin, stdout)

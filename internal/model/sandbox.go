@@ -7,13 +7,17 @@ import (
 )
 
 // SandboxRecord is what the sandboxes behind one session or command did: the image they ran, how many there were,
-// whether a memory limit stopped one, and which hosts the egress gateway let them reach or refused.
+// whether the memory limit killed a process in one, and which hosts the egress gateway let them reach, refused or
+// could not reach. Incomplete is set when the broker could not read all of that for one of them (its egress record
+// or its memory state), so empty host lists or no OOM do not prove nothing happened; records saved before it existed
+// read as complete.
 type SandboxRecord struct {
-	ImageID string        `json:"image_id"`
-	Runtime string        `json:"runtime"`
-	Runs    uint64        `json:"runs"`
-	OOM     bool          `json:"oom"`
-	Egress  SandboxEgress `json:"egress"`
+	ImageID    string        `json:"image_id"`
+	Runtime    string        `json:"runtime"`
+	Runs       uint64        `json:"runs"`
+	OOM        bool          `json:"oom"`
+	Incomplete bool          `json:"incomplete" wire:"default"`
+	Egress     SandboxEgress `json:"egress"`
 }
 
 func (v *SandboxRecord) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
@@ -22,11 +26,14 @@ func (v SandboxRecord) MarshalJSON() ([]byte, error) {
 	return wirejson.Record(plain(v))
 }
 
-// SandboxEgress counts tunnels per host:port. Host names come from untrusted code, so they stay in private task
-// records and the dashboard and are never exported as run evidence.
+// SandboxEgress counts tunnels per host:port. Denied holds policy refusals; Failed holds allowlisted hosts the gateway
+// could not reach (DNS, upstream or the open-tunnel bound), and is empty in records saved before it existed. Host
+// names come from untrusted code, so they stay in private task records and the dashboard and are never exported as
+// run evidence.
 type SandboxEgress struct {
 	Allowed map[string]uint64 `json:"allowed"`
 	Denied  map[string]uint64 `json:"denied"`
+	Failed  map[string]uint64 `json:"failed" wire:"default"`
 }
 
 func (v *SandboxEgress) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
@@ -35,7 +42,8 @@ func (v SandboxEgress) MarshalJSON() ([]byte, error) {
 	return wirejson.Record(plain(v))
 }
 
-// SandboxHostLimit bounds the hosts one record keeps per decision; the rest are counted under "other".
+// SandboxHostLimit bounds the hosts one record names per decision; the rest are counted under "other". The egress
+// gateway names as many per sandbox, so a single sandbox's record keeps every host its summary named.
 const SandboxHostLimit = 64
 
 // MergeSandbox adds one run's record to what a session or command already recorded.
@@ -43,14 +51,13 @@ func MergeSandbox(into *SandboxRecord, run *SandboxRecord) *SandboxRecord {
 	if run == nil {
 		return into
 	}
-	merged := SandboxRecord{Egress: SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{}}}
+	merged := SandboxRecord{}
 	if into != nil {
 		merged = wirejson.Clone(*into)
-		if merged.Egress.Allowed == nil {
-			merged.Egress.Allowed = map[string]uint64{}
-		}
-		if merged.Egress.Denied == nil {
-			merged.Egress.Denied = map[string]uint64{}
+	}
+	for _, counts := range []*map[string]uint64{&merged.Egress.Allowed, &merged.Egress.Denied, &merged.Egress.Failed} {
+		if *counts == nil {
+			*counts = map[string]uint64{}
 		}
 	}
 	if into != nil && (into.ImageID == "mixed" || into.ImageID != run.ImageID || into.Runtime != run.Runtime) {
@@ -61,12 +68,20 @@ func MergeSandbox(into *SandboxRecord, run *SandboxRecord) *SandboxRecord {
 	}
 	merged.Runs += run.Runs
 	merged.OOM = merged.OOM || run.OOM
+	merged.Incomplete = merged.Incomplete || run.Incomplete
 	addHosts(merged.Egress.Allowed, run.Egress.Allowed)
 	addHosts(merged.Egress.Denied, run.Egress.Denied)
+	addHosts(merged.Egress.Failed, run.Egress.Failed)
 	return &merged
 }
 
+// addHosts adds one run's counts per host. Only named hosts count toward SandboxHostLimit: a run's own "other" adds to
+// the record's, so it never takes the place of a host the run named.
 func addHosts(into, from map[string]uint64) {
+	named := len(into)
+	if _, folded := into["other"]; folded {
+		named--
+	}
 	hosts := make([]string, 0, len(from))
 	for host := range from {
 		hosts = append(hosts, host)
@@ -74,8 +89,12 @@ func addHosts(into, from map[string]uint64) {
 	sort.Strings(hosts)
 	for _, host := range hosts {
 		key := host
-		if _, known := into[key]; !known && len(into) >= SandboxHostLimit {
-			key = "other"
+		if _, known := into[key]; !known && key != "other" {
+			if named >= SandboxHostLimit {
+				key = "other"
+			} else {
+				named++
+			}
 		}
 		into[key] += from[host]
 	}

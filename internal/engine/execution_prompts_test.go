@@ -53,8 +53,37 @@ func TestReviewPromptIsByteStable(t *testing.T) {
 		`Existing PR: Some("https://github.com/fixture/project/pull/7"). ` +
 		"Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. " +
 		"Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings."
-	if got := reviewPrompt(task, "reviewed-sha"); got != want {
+	want += "\nThe orchestrator's own git computed the change set from base-sha to reviewed-sha below. " +
+		"Git inside your sandbox reads configuration and shell startup files earlier turns could change, " +
+		"so where it shows other changes or other content, what follows is authoritative and the difference is itself a finding. " +
+		"Some differences are expected and are not findings by themselves: this account ignores every .gitattributes file and shows every file as text, " +
+		"so git may show a file as binary, count its lines differently or give other hunk headers; it shows a rename as a deletion and an addition, " +
+		"and a submodule entry as the commits it points at. Each byte that is not UTF-8 shows as ⟦xNN⟧, and each control, invisible or line-separator character, " +
+		"a literal ⟦ included, as ⟦U+XXXX⟧. Lines end only at real newlines: an escape such as ⟦U+000D⟧ or ⟦U+2028⟧ inside a line is a character the file holds, " +
+		"which some languages and tools read as a line break.\n"
+	if got := reviewPrompt(task, "reviewed-sha", changeSet{}); got != want+"The orchestrator's git shows no change between base-sha and reviewed-sha." {
+		t.Fatalf("review prompt without changes:\n got %q\nwant %q", got, want)
+	}
+	trusted := changeSet{
+		totals: "2 files changed, 2 insertions(+), 1 deletion(-)",
+		files:  "1\t1\tparser.go\n1\t0\t\"caf\\303\\251.txt\"\n create mode 100644 \"caf\\303\\251.txt\"",
+		diff:   "diff --git a/parser.go b/parser.go\n-old\n+new\n",
+	}
+	want += "Totals: 2 files changed, 2 insertions(+), 1 deletion(-)\n" +
+		"Changed files (git diff --numstat --summary: lines added, lines deleted and path, - for a file git counts as binary):\n" +
+		"1\t1\tparser.go\n1\t0\t\"caf\\303\\251.txt\"\n create mode 100644 \"caf\\303\\251.txt\"\n"
+	if got := reviewPrompt(task, "reviewed-sha", trusted); got != want+"Complete diff:\ndiff --git a/parser.go b/parser.go\n-old\n+new\n" {
 		t.Fatalf("review prompt changed:\n got %q\nwant %q", got, want)
+	}
+	trusted.omitted = []string{`"caf\303\251.txt"`}
+	omitted := "The diffs of these files do not fit, so the orchestrator has not shown you their content: read each with git diff base-sha HEAD -- <file>, " +
+		"check it against the line counts above and treat it as unverified:\n\"caf\\303\\251.txt\""
+	if got := reviewPrompt(task, "reviewed-sha", trusted); got != want+"Complete diffs of the smallest files, within 65536 bytes:\ndiff --git a/parser.go b/parser.go\n-old\n+new\n"+omitted {
+		t.Fatalf("review prompt with a diff left out:\n%s", got)
+	}
+	trusted.diff, trusted.omitted = "", []string{"parser.go", `"caf\303\251.txt"`}
+	if got := reviewPrompt(task, "reviewed-sha", trusted); got != want+strings.Replace(omitted, "\n", "\nparser.go\n", 1) {
+		t.Fatalf("review prompt with every diff left out:\n%s", got)
 	}
 }
 
@@ -100,7 +129,7 @@ func TestTaskPromptsKeepFixturePrefixesAndPolicy(t *testing.T) {
 		requires             []string
 	}{
 		{"executor", executorPrompt(task, cfg), "Implement this accepted task", []string{"Do not push, publish, merge or deploy", "Full comparison base: base-sha"}},
-		{"reviewer", reviewPrompt(task, "reviewed-sha"), "Perform a fresh code review", []string{"git diff base-sha HEAD", "Recorded HEAD: reviewed-sha", "do not modify files"}},
+		{"reviewer", reviewPrompt(task, "reviewed-sha", changeSet{}), "Perform a fresh code review", []string{"git diff base-sha HEAD", "Recorded HEAD: reviewed-sha", "do not modify files"}},
 		{"repair", repair, "Repair actionable findings", []string{"Do not push, publish, merge or deploy", "Full comparison base: base-sha"}},
 	} {
 		if !strings.HasPrefix(check.prompt, check.prefix) {

@@ -70,15 +70,33 @@ filesystem, no capabilities and `no-new-privileges`. See
    control plane's stream to the broker is the sandbox's lifeline: if it closes, because the
    turn ended, the operator cancelled or the control plane crashed, the broker kills and
    removes the container.
-4. The broker reports the exit code, whether the memory limit killed it and whether a time
-   limit stopped it. It then removes the container and revokes the lease.
+4. The broker revokes the lease and removes the container, then reports the exit code,
+   whether the memory limit killed it and whether a time limit stopped it. A sandbox it
+   could not remove keeps its slot until a retry succeeds, and its report says so.
 
 Executors, fresh reviewers and repair turns each get a new sandbox. Persistent repair
-threads resume from the runner session store (below), not from a live process. Each
-verification run starts from a fresh clone of exactly the reviewed commit, so nothing an
-agent left beside it can influence the result. Each verification command gets a fresh
-sandbox. Commands in one verification run share a home directory, so `npm ci` in one
-command can serve `npm test` in the next. The home starts empty at every new run.
+threads resume from the runner session store (below), not from a live process. These turns
+share the task's home, so what one leaves there, shell startup files included, reaches the
+next; only git's own per-user configuration in it is ignored. Because what a turn leaves
+can still change what git shows inside the next one, the fresh reviewer's prompt also
+carries the change set as Octomus's own git reads it from the trusted metadata. That
+account ignores every `.gitattributes` file, shows every file as text and every submodule
+entry as the commits it points at, and shows each control, invisible or line-separator
+character and each byte that is not UTF-8 as a `⟦…⟧` escape, so no statement hides behind
+a line break git does not split at. It lists every changed file with its line counts, and
+a change set whose list exceeds 32 KiB is not reviewed. Within 64 KiB it embeds the
+complete diff, or else the whole diffs of the smallest files, and names each file whose
+diff it leaves out: the reviewer reads those in its sandbox and treats them as unverified.
+The account is authoritative over what git in the reviewer's sandbox shows, apart from the
+differences the prompt names as expected. Each verification run starts from a fresh clone
+of exactly the reviewed commit, so nothing an agent left beside it can influence the
+result. Each verification command gets a fresh sandbox. Commands in one verification run share a home
+directory, so `npm ci` in one command can serve `npm test` in the next. The home starts empty at every new run.
+When the sandbox rather than the command fails (the broker refuses or loses the command,
+or cannot confirm how it ended), the command has no result. The task is blocked as
+`runner_unavailable` for a retry, with no verification record and no repair round spent,
+and a baseline check ends interrupted rather than failed. If the command ran before the
+sandbox failed, the broker's sandbox record is kept as a `sandbox_evidence` event.
 
 OpenCode serves HTTP on the sandbox's own loopback. A helper inside the sandbox
 (`octomus-agent --sandbox-init`) checks its readiness and relays its API as HTTP/2 over
@@ -89,11 +107,25 @@ control plane or broker.
 
 Task details show a sandbox record for every session and verification command:
 - how many containers it ran in, and the image;
-- whether the memory limit stopped one;
+- whether the memory limit killed a process in one;
 - the hosts the gateway let it reach, and those it refused, with counts.
 
 A refused host is often the first sign of prompt injection, or of a registry missing from
-`OCTOMUS_EGRESS_BUILD_HOSTS`.
+`OCTOMUS_EGRESS_BUILD_HOSTS`. An allowlisted host the gateway could not reach (a failed
+lookup or connection, or too many open tunnels) is listed apart, as unreachable.
+
+Each list names at most 64 hosts and counts the rest under `other`. Within one sandbox, the
+gateway log names each host past a list's first 64 the first time it appears, outside the
+log's per-minute budget, for up to 1,024 such hosts per sandbox. A session whose turns ran
+in several sandboxes, such as a resumed repair thread, merges their lists under the same
+limit, so its list can count under `other` a host one of those sandboxes named; the log
+names that host only where its per-minute budget allowed.
+
+When the broker could not read part of a sandbox's record, the record is marked
+**incomplete**: the gateway's count was unreachable or lost to a gateway restart, or
+Docker did not say whether the memory limit killed a process. Empty host lists in an
+incomplete record do not mean the sandbox made no connections; `docker compose logs
+egress` may still hold them.
 
 Host names come from untrusted code, so they stay in private task records and the
 dashboard. They are never part of exported [run evidence](run-evidence.md). Planning
@@ -132,21 +164,60 @@ Each sandbox receives proxy variables carrying its own random credential. The ga
   (including cloud metadata), carrier-grade NAT, documentation, benchmark, reserved or
   IPv4-embedding IPv6 addresses;
 - dials the address it checked, so DNS rebinding cannot redirect the tunnel;
-- bounds open tunnels per sandbox, and logs every decision as a JSON line
-  (`docker compose logs egress`).
+- bounds open tunnels per sandbox and connections per source, closes every refused
+  connection, and ends a sandbox's tunnels as soon as its lease is revoked;
+- logs each tunnel as a JSON line when it opens and again when it closes, and each refusal
+  (`docker compose logs egress`); past 120 tunnels or 20 refusals a minute from one
+  sandbox, the rest are counted in a single `suppressed` line instead, except the first
+  line for a host its [record](#what-each-session-recorded) does not name. Docker rotates
+  that log, and the gateway itself runs under memory and process limits.
 
 Two allowlists come from the deployment's `.env`:
 
 | Variable | Reachable from | Typical content |
 | --- | --- | --- |
-| `OCTOMUS_EGRESS_MODEL_HOSTS` | agent turns | `chatgpt.com,auth.openai.com,api.openai.com` for Codex; `models.opencode.ai` plus your providers for OpenCode |
-| `OCTOMUS_EGRESS_BUILD_HOSTS` | agent turns and verification | package registries, for example `proxy.golang.org,sum.golang.org` or `registry.npmjs.org` |
+| `OCTOMUS_EGRESS_MODEL_HOSTS` | agent turns and [runner logins](#signing-in-a-runner) | `chatgpt.com,auth.openai.com,api.openai.com` for Codex; `models.opencode.ai` plus your providers for OpenCode |
+| `OCTOMUS_EGRESS_BUILD_HOSTS` | agent turns, [runner logins](#signing-in-a-runner) and verification | package registries, for example `proxy.golang.org,sum.golang.org` or `registry.npmjs.org` |
 
-Entries are host names or `*.suffix`, with an optional `:port` (default 443). List only
-what the project needs. Every allowed host is a way out for data, and an allowlist is not
-data-loss prevention: an allowed multi-tenant service, such as a package registry or a
-model API used with someone else's key, can still carry data to an account that is not
-yours.
+Entries are host names or `*.suffix`, with an optional `:port` (default 443). An empty
+`OCTOMUS_EGRESS_MODEL_HOSTS=` allows no model hosts; only a variable missing from `.env`
+gets the Codex hosts above. List only what the project needs. Every allowed host is a way
+out for data, and an allowlist is not data-loss prevention: an allowed multi-tenant
+service, such as a package registry or a model API used with someone else's key, can still
+carry data to an account that is not yours.
+
+## Signing in a runner
+
+`docker compose run --rm login …` runs Codex or OpenCode from the sandbox image to store a
+login in the `octomus-runner` volume. Runner sandboxes can write that volume, so the login
+gives nothing they leave there more reach than they have:
+- it joins `octomus-sandbox-runner` and reaches out only through the egress gateway, under
+  the runner allowlist. Just before it starts, a one-shot `login-lease` service with no
+  network runs `octomus-agent --login-lease`, which grants it a lease and revokes the
+  previous login's. That lease stays valid until the next login or until the broker
+  restarts;
+- it mounts only the Codex home and OpenCode's data directory, where the logins live.
+  OpenCode's configuration, plugins, cache and state start empty;
+- its image is read-only, and it runs without capabilities, under memory and process limits.
+
+Codex's sign-in hosts are in the default allowlist. For OpenCode, first add
+`models.opencode.ai` and your provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS` and run
+`docker compose up -d`; `docker compose logs egress` shows any host a login was refused.
+
+OpenCode's user configuration (`opencode.json`, with custom providers, provider options and
+variants) is read by runner sandboxes from `opencode/config` in the `octomus-runner` volume,
+which the login does not mount. To install or replace it, run this from the directory that
+holds your `opencode.json`, after `docker compose up -d` has let the broker create that
+directory:
+
+```sh
+docker run --rm -i --network none --read-only --user 10001:10001 \
+  -v octomus-runner:/runner --entrypoint tee octomus-sandbox:local \
+  /runner/opencode/config/opencode.json < opencode.json > /dev/null
+```
+
+Runner sandboxes can rewrite that file like everything else in the runner volume (see
+below), so keep your copy and install it again whenever in doubt.
 
 ## Resource limits
 
@@ -166,6 +237,9 @@ so runner transcripts do not accumulate on the host's disk.
 
 Volumes have no disk quota. Octomus checks application storage before admitting work (see
 [configuration](configuration.md)); keep an eye on free space on a shared host.
+The storage walk keeps at most three directory descriptors open and bounds repeated
+ancestor traversal per owned workspace. An unreadable, excessively deep or expensive
+subtree blocks further admission for its owner without blocking unrelated workspaces.
 
 ## Trusted git metadata
 
@@ -211,13 +285,18 @@ sandbox checks, from inside:
 | Holds no Linux capabilities | effective, permitted and bounding sets are empty |
 | Cannot gain privileges through setuid programs | `no_new_privs` is set |
 | System calls are filtered by seccomp | seccomp mode 2 |
-| The image filesystem is read-only | writes to `/`, `/usr` and `/etc` fail |
+| The image filesystem is read-only | the root mount is `ro`, and writes to `/`, `/usr` and `/etc` fail with a read-only filesystem error, or are refused for permission under a mount that is itself `ro` (gVisor checks permissions first) |
 | Cannot see Octomus state, secrets or the Docker socket | none of those paths exist |
-| Has no direct route to the internet | direct TCP connections fail |
+| Has no direct route to the internet | direct TCP connections get no answer, not even a refusal |
 | Cannot resolve internet names directly | DNS lookups fail |
-| Has no gateway to the host or its neighbours | there is no default route |
-| Runs under memory and process limits | cgroup `memory.max` and `pids.max` are set |
-| The egress gateway refuses unlisted, metadata and local targets | the gateway refuses `example.com`, `169.254.169.254` and `localhost` |
+| Has no gateway to the host or its neighbours | there is no default route, and the first address of the sandbox's subnet, where a bridge gateway would sit, answers neither ARP nor a connection on common host ports unless Docker names it as a container |
+| Runs under memory and process limits | cgroup `memory.max` and `pids.max` (on cgroup v1, `memory.limit_in_bytes` and `pids.max`) match the broker's configured limits |
+| The egress gateway refuses unlisted, metadata and local targets | with a runner lease, the gateway refuses a name outside its effective model and build allowlists, and `169.254.169.254` and `localhost` as not host names |
+
+For the unlisted-name check, the broker asks the running gateway's local collector for a
+denied target: `example.com` when unlisted, otherwise a reserved `.invalid` name outside
+both allowlists. A networked self-test requires a reachable `OCTOMUS_EGRESS_COLLECTOR`;
+without the gateway's policy-selected target, it fails before starting the probe.
 
 A failed check fails the connection check, names what the probe saw, and appears on the
 Overview. The last result is kept with the image it ran on.
@@ -237,6 +316,8 @@ USER 10001:10001
 ```
 
 Build it, set `OCTOMUS_SANDBOX_IMAGE` in `.env` to its tag, and run `docker compose up -d`.
+`docker compose build octomus sandbox-image` rebuilds only the base, `octomus-sandbox:local`,
+so rebuild your image after each upgrade to pick up the new runners.
 The broker uses only images already present on the host and never pulls. Baking toolchains
 and warm caches into the image also keeps build hosts off the allowlist. Never put
 credentials in the image; every sandbox can read it.
@@ -253,7 +334,8 @@ support has not been validated with Octomus yet.
 - **Runner logins are readable inside runner sandboxes.** Runner sandboxes share the
   runner volume: the Codex or OpenCode login, and every session's transcript. A
   prompt-injected session can read them, and can leave runner configuration that a later
-  sandbox loads. It can send data only through the egress allowlist.
+  sandbox loads; a later [login](#signing-in-a-runner) still reads the Codex configuration
+  there. Either can send data only through the egress allowlist.
 - **Sandboxes on the same network can reach each other's listening ports.** Nothing else on
   the host is reachable.
 - **Docker socket access is root-equivalent.** The broker's validation is the boundary
@@ -277,9 +359,10 @@ runners would inherit the one and could rewrite the other.
 Automated tests hold:
 - the golden container spec for each sandbox kind, the broker's request validation and the
   gateway's policy (default suite);
-- the broker against a real Docker daemon: containment from inside, kill and dead-man
-  removal, memory-limit reporting, the OpenCode bridge with a 16 MB body and SSE, and
-  leaving other containers alone (`OCTOMUS_DOCKER_TEST=1`);
+- the broker against a real Docker daemon: containment from inside, the probe failing a
+  plain internal network and a writable image, kill and dead-man removal, memory-limit
+  reporting, the OpenCode bridge with a 16 MB body and SSE, and leaving other containers
+  alone (`OCTOMUS_DOCKER_TEST=1`);
 - the shipped compose file end to end with fixture runners: the self-test, a full Run once
   delivery through sandboxes, and a control-plane crash that leaves no sandbox running
   (`make test-sandbox`).

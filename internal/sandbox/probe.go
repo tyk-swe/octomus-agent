@@ -1,21 +1,17 @@
 package sandbox
 
 import (
-	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
+	"strconv"
 	"strings"
-	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // ProbeCheck is one containment property observed from inside a real sandbox.
@@ -30,6 +26,19 @@ type ProbeCheck struct {
 type ProbeReport struct {
 	Checks []ProbeCheck `json:"checks"`
 	Kernel string       `json:"kernel"`
+	// Limits are the raw cgroup limits the probe read. Only the broker knows what it configured, so Probe compares
+	// them outside the sandbox.
+	Limits ProbeLimits `json:"limits"`
+	// Sandbox is the broker's record of the probe's sandbox, which names the image the checks ran on. It never comes
+	// from the probe's own output.
+	Sandbox *model.SandboxRecord `json:"-"`
+}
+
+// ProbeLimits are the cgroup limits in force inside the probe sandbox, as the kernel reports them: cgroup v2's
+// memory.max and pids.max, or cgroup v1's memory.limit_in_bytes and pids.max where v2's are absent.
+type ProbeLimits struct {
+	Memory string `json:"memory_max"`
+	Pids   string `json:"pids_max"`
 }
 
 func (r ProbeReport) Passed() bool {
@@ -44,17 +53,12 @@ func (r ProbeReport) Passed() bool {
 	return true
 }
 
-// probeTargets are paths a sandbox must never see: orchestrator state, deployment secrets and the Docker daemon.
-var probeTargets = []string{
-	"/var/lib/octomus/data/state.db", "/run/secrets", "/var/run/docker.sock", "/run/docker.sock", "/run/octomus",
-}
-
 // Probe runs the containment probe in a fresh probe sandbox and returns its report.
 func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
 	if backend.Mode() != ModeDocker {
 		return ProbeReport{}, errors.New("The containment probe needs the Docker sandbox")
 	}
-	child, err := backend.Start(ctx, Spec{Kind: KindProbe, Probe: ProbeContainment, Timeout: 120})
+	child, err := backend.Start(ctx, Spec{Kind: KindProbe, Probe: wire.ProbeContainment, Timeout: 120})
 	if err != nil {
 		return ProbeReport{}, err
 	}
@@ -69,174 +73,68 @@ func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
 	if err := json.Unmarshal(out.Stdout.Bytes, &report); err != nil {
 		return ProbeReport{}, fmt.Errorf("Containment probe answered unreadable output: %w", err)
 	}
+	report.Sandbox = EvidenceOf(child)
+	var limits *wire.BrokerLimits
+	var limitsErr error = errors.New("the sandbox backend reports no limits")
+	if informed, ok := backend.(interface {
+		Info(context.Context) (wire.BrokerInfo, error)
+	}); ok {
+		var info wire.BrokerInfo
+		if info, limitsErr = informed.Info(ctx); limitsErr == nil {
+			limits = &info.Limits
+		}
+	}
+	report.confirmLimits(limits, limitsErr)
 	for i := range report.Checks {
 		report.Checks[i].Detail = strings.ToValidUTF8(report.Checks[i].Detail, "�")
 	}
 	return report, nil
 }
 
-// runContainmentProbe observes, from inside the sandbox, every boundary the deployment promises.
-func runContainmentProbe(stdout io.Writer) int {
-	report := ProbeReport{}
-	if kernel, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
-		report.Kernel = strings.TrimSpace(string(kernel))
-	}
-	add := func(id, label string, passed bool, detail string) {
-		report.Checks = append(report.Checks, ProbeCheck{ID: id, Label: label, Passed: passed, Detail: detail})
-	}
-	status := procStatus()
-	add("non_root", "Runs as an unprivileged user", os.Getuid() != 0 && os.Geteuid() != 0,
-		fmt.Sprintf("uid %d", os.Getuid()))
-	zero := "0000000000000000"
-	add("no_capabilities", "Holds no Linux capabilities",
-		status["CapEff"] == zero && status["CapPrm"] == zero && status["CapBnd"] == zero,
-		fmt.Sprintf("effective %s, bounding %s", status["CapEff"], status["CapBnd"]))
-	add("no_new_privileges", "Cannot gain privileges through setuid programs", status["NoNewPrivs"] == "1",
-		"no_new_privs "+status["NoNewPrivs"])
-	add("seccomp", "System calls are filtered by seccomp", status["Seccomp"] == "2", "seccomp mode "+status["Seccomp"])
-	writable := []string{}
-	for _, dir := range []string{"/usr", "/etc", "/"} {
-		probe := dir + "/.octomus-probe"
-		if err := os.WriteFile(strings.ReplaceAll(probe, "//", "/"), []byte("x"), 0o600); err == nil {
-			writable = append(writable, dir)
-			_ = os.Remove(probe)
+// confirmLimits holds the resource_limits check to the limits the broker configured. The probe reads its own cgroup
+// (its cgroup namespace makes that the root of /sys/fs/cgroup; on cgroup v1 the runtime mounts it under each
+// controller's directory), which holds exactly what Docker set from the broker's spec; no ancestor's limit shows
+// there. So a number alone proves nothing (systemd gives every scope a pids limit of its own), and a lower one is
+// some other limit than the broker's: the check passes only when both match. cgroup v1 shows no memory limit as the
+// largest page-aligned number, which matches no configured limit.
+func (r *ProbeReport) confirmLimits(want *wire.BrokerLimits, unknown error) {
+	for i := range r.Checks {
+		check := &r.Checks[i]
+		if check.ID != "resource_limits" {
+			continue
 		}
-	}
-	add("read_only_image", "The image filesystem is read-only", len(writable) == 0, detailList("writable", writable, "read-only"))
-	visible := []string{}
-	for _, path := range probeTargets {
-		if _, err := os.Lstat(path); err == nil {
-			visible = append(visible, path)
+		if want == nil {
+			check.Passed = false
+			check.Detail += "; the broker's configured limits are unknown: " + unknown.Error()
+			return
 		}
-	}
-	add("no_orchestrator_state", "Cannot see Octomus state, secrets or the Docker socket", len(visible) == 0,
-		detailList("visible", visible, "none visible"))
-	reached := []string{}
-	for _, address := range []string{"1.1.1.1:443", "8.8.8.8:53", "[2606:4700:4700::1111]:443"} {
-		conn, err := net.DialTimeout("tcp", address, 3*time.Second)
-		if err == nil {
-			conn.Close()
-			reached = append(reached, address)
+		problems := []string{}
+		// The kernel keeps memory.max in whole pages, rounding the configured bytes down. The probe shares the control
+		// plane's kernel, so this page size is the sandbox's.
+		if problem := limitMismatch("memory.max", r.Limits.Memory, want.Memory, int64(os.Getpagesize())); problem != "" {
+			problems = append(problems, problem)
 		}
-	}
-	add("no_direct_egress", "Has no direct route to the internet", len(reached) == 0, detailList("reached", reached, "no route"))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	resolved, err := net.DefaultResolver.LookupHost(ctx, "example.com")
-	cancel()
-	add("no_external_dns", "Cannot resolve internet names directly", err != nil, detailList("resolved", resolved, "lookup refused"))
-	route := defaultRoute()
-	add("no_host_route", "Has no gateway to the host or its neighbours", route == "", detailList("default route via", nonEmpty(route), "no default route"))
-	add("resource_limits", "Runs under memory and process limits", limited("/sys/fs/cgroup/memory.max") && limited("/sys/fs/cgroup/pids.max"),
-		fmt.Sprintf("memory.max %s, pids.max %s", readTrim("/sys/fs/cgroup/memory.max"), readTrim("/sys/fs/cgroup/pids.max")))
-	proxy := os.Getenv("HTTPS_PROXY")
-	if proxy == "" {
-		add("egress_gateway", "Egress is limited to the allowlist", true, "no egress gateway: sandboxes are offline")
-	} else {
-		denied := []string{}
-		failures := []string{}
-		for _, target := range []string{"example.com:443", "169.254.169.254:80", "localhost:4200"} {
-			code, err := proxyConnect(proxy, target)
-			switch {
-			case err != nil:
-				failures = append(failures, target+" ("+err.Error()+")")
-			case code == http.StatusForbidden:
-				denied = append(denied, target)
-			default:
-				failures = append(failures, fmt.Sprintf("%s (HTTP %d)", target, code))
-			}
+		if problem := limitMismatch("pids.max", r.Limits.Pids, want.Pids, 1); problem != "" {
+			problems = append(problems, problem)
 		}
-		add("egress_gateway", "The egress gateway refuses unlisted, metadata and local targets", len(failures) == 0,
-			detailList("not refused", failures, "refused "+strings.Join(denied, ", ")))
+		if len(problems) > 0 {
+			check.Passed, check.Detail = false, strings.Join(problems, ", ")
+		}
+		return
 	}
-	if err := json.NewEncoder(stdout).Encode(report); err != nil {
-		return 1
-	}
-	return 0
 }
 
-func procStatus() map[string]string {
-	fields := map[string]string{}
-	file, err := os.Open("/proc/self/status")
-	if err != nil {
-		return fields
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		if key, value, ok := strings.Cut(scanner.Text(), ":"); ok {
-			fields[key] = strings.TrimSpace(value)
-		}
-	}
-	return fields
-}
-
-// defaultRoute reports the IPv4 default route's gateway, if the sandbox has one.
-func defaultRoute() string {
-	data, err := os.ReadFile("/proc/net/route")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n")[1:] {
-		fields := strings.Fields(line)
-		if len(fields) > 2 && fields[1] == "00000000" {
-			return fields[0] + " " + fields[2]
-		}
+// limitMismatch says how an observed cgroup limit differs from the configured one, or returns "" when it is the
+// configured value rounded down to a whole granule.
+func limitMismatch(file, observed string, limit, granule int64) string {
+	value, err := strconv.ParseInt(observed, 10, 64)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("%s %s, not a numeric limit", file, observed)
+	case limit <= 0:
+		return fmt.Sprintf("%s %d, but the broker reports no configured limit", file, value)
+	case value <= 0 || value > limit || value <= limit-granule:
+		return fmt.Sprintf("%s %d, configured %d", file, value, limit)
 	}
 	return ""
-}
-
-func readTrim(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "unreadable"
-	}
-	return strings.TrimSpace(string(data))
-}
-
-func limited(path string) bool {
-	value := readTrim(path)
-	return value != "max" && value != "unreadable" && value != ""
-}
-
-func nonEmpty(value string) []string {
-	if value == "" {
-		return nil
-	}
-	return []string{value}
-}
-
-func detailList(prefix string, items []string, otherwise string) string {
-	if len(items) == 0 {
-		return otherwise
-	}
-	return prefix + " " + strings.Join(items, ", ")
-}
-
-// proxyConnect asks the configured egress gateway for a tunnel and returns its status.
-func proxyConnect(proxy, target string) (int, error) {
-	u, err := url.Parse(proxy)
-	if err != nil || u.Host == "" {
-		return 0, errors.New("unreadable proxy address")
-	}
-	conn, err := net.DialTimeout("tcp", u.Host, 5*time.Second)
-	if err != nil {
-		return 0, errors.New("gateway unreachable")
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	request := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n"
-	if u.User != nil {
-		password, _ := u.User.Password()
-		credential := base64.StdEncoding.EncodeToString([]byte(u.User.Username() + ":" + password))
-		request += "Proxy-Authorization: Basic " + credential + "\r\n"
-	}
-	if _, err := io.WriteString(conn, request+"\r\n"); err != nil {
-		return 0, err
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		return 0, err
-	}
-	resp.Body.Close()
-	return resp.StatusCode, nil
 }

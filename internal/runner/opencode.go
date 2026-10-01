@@ -111,8 +111,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		drainDone: started.Drained,
 	}
 	fail := func(err error) (*OpenCode, error) {
-		_ = server.Close()
-		return nil, tail.explain(err)
+		return nil, tail.explain(connectFailed(err, server.Close()))
 	}
 	health, err := server.call("GET", "/global/health", cwd, nil, 60)
 	if err != nil {
@@ -145,8 +144,6 @@ func newClient(transport http.RoundTripper) *http.Client {
 		},
 	}
 }
-
-func newLoopbackClient() *http.Client { return newClient(sandbox.LoopbackTransport()) }
 
 func (o *OpenCode) ProtocolSchema(cwd string) (any, error) {
 	return o.call("GET", "/doc", cwd, nil, 60)

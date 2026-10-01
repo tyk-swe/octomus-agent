@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 const uuidPattern = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
@@ -30,7 +30,7 @@ const (
 
 // plan is a request the broker has validated and resolved against its own configuration.
 type plan struct {
-	kind      sandbox.Kind
+	kind      string
 	dir       string
 	root      string
 	rel       string
@@ -43,20 +43,22 @@ type plan struct {
 	stdin     bool
 	timeout   time.Duration
 	readiness uint64
+	// image is the image ID the configured tag resolved to for this sandbox.
+	image string
 }
 
-func (c Config) plan(req sandbox.Request) (plan, error) {
+func (c Config) plan(req wire.Request) (plan, error) {
 	p := plan{stdin: req.Stdin, readiness: req.Readiness}
 	switch req.Kind {
-	case sandbox.KindRunner.String():
-		p.kind = sandbox.KindRunner
+	case wire.KindRunner:
+		p.kind = wire.KindRunner
 		switch req.Runner {
-		case "codex":
-			if req.Mode != sandbox.RunnerModeStdio {
+		case wire.RunnerCodex:
+			if req.Mode != wire.RunnerModeStdio {
 				return plan{}, errors.New("Codex runs only over stdio")
 			}
-		case "opencode":
-			if req.Mode != sandbox.RunnerModeOpenCode {
+		case wire.RunnerOpenCode:
+			if req.Mode != wire.RunnerModeOpenCode {
 				return plan{}, errors.New("OpenCode runs only behind the sandbox HTTP bridge")
 			}
 			if req.Readiness == 0 || req.Readiness > 600 {
@@ -79,8 +81,8 @@ func (c Config) plan(req sandbox.Request) (plan, error) {
 			return plan{}, errors.New("Runner environment is too large")
 		}
 		p.env = append([]string(nil), req.Env...)
-	case sandbox.KindVerify.String():
-		p.kind = sandbox.KindVerify
+	case wire.KindVerify:
+		p.kind = wire.KindVerify
 		if req.Command == "" || len(req.Command) > maxCommand || strings.ContainsRune(req.Command, 0) {
 			return plan{}, errors.New("Verification command must be 1 to 4096 bytes without NUL")
 		}
@@ -88,13 +90,13 @@ func (c Config) plan(req sandbox.Request) (plan, error) {
 			return plan{}, errors.New("Verification sandboxes take no environment or stdin")
 		}
 		p.command = req.Command
-	case sandbox.KindProbe.String():
-		p.kind = sandbox.KindProbe
+	case wire.KindProbe:
+		p.kind = wire.KindProbe
 		if req.Dir != "" || len(req.Env) > 0 || req.Stdin {
 			return plan{}, errors.New("Probe sandboxes mount nothing and take no input")
 		}
 		switch req.Mode {
-		case sandbox.ProbeVersions, sandbox.ProbeContainment:
+		case wire.ProbeVersions, wire.ProbeContainment:
 			p.probe = req.Mode
 		default:
 			return plan{}, errors.New("Unknown probe")
@@ -107,7 +109,7 @@ func (c Config) plan(req sandbox.Request) (plan, error) {
 		seconds = req.Timeout
 	}
 	p.timeout = time.Duration(seconds) * time.Second
-	if p.kind == sandbox.KindProbe {
+	if p.kind == wire.KindProbe {
 		return p, nil
 	}
 	if err := c.resolveRoot(&p, req.Dir); err != nil {
@@ -131,14 +133,8 @@ func (c Config) resolveRoot(p *plan, dir string) error {
 	if !p.scratch {
 		required = append(required, filepath.Join(rel, "repo.git"))
 	}
-	switch p.kind {
-	case sandbox.KindRunner:
-		required = append(required, filepath.Join(rel, sandbox.RunnerHome))
-		for _, mount := range sandbox.RunnerHomeDirs {
-			required = append(required, filepath.Join(rel, sandbox.RunnerHome, mount.Home))
-		}
-	case sandbox.KindVerify:
-		required = append(required, filepath.Join(rel, sandbox.VerifyHome))
+	for _, dir := range wire.HomeDirs(p.kind) {
+		required = append(required, filepath.Join(rel, dir))
 	}
 	for _, path := range required {
 		if err := c.ownedDirectory(path); err != nil {
@@ -168,13 +164,7 @@ func (c Config) ownedFile(rel string) error {
 		}
 		return err
 	}
-	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("Sandbox root component %s is not a plain file", rel)
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != c.UID {
-		return fmt.Errorf("Sandbox root component %s is not owned by the sandbox user", rel)
-	}
-	return nil
+	return c.ownedEntry(rel, info, false)
 }
 
 // ownedDirectory walks rel from the data directory without following symlinks: every component must be a real
@@ -191,12 +181,24 @@ func (c Config) ownedDirectory(rel string) error {
 			}
 			return err
 		}
-		if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("Sandbox root component %s is not a plain directory", rel)
+		if err := c.ownedEntry(rel, info, true); err != nil {
+			return err
 		}
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != c.UID {
-			return fmt.Errorf("Sandbox root component %s is not owned by the sandbox user", rel)
-		}
+	}
+	return nil
+}
+
+// ownedEntry requires info, from an Lstat within rel, to be a plain file or directory owned by the sandbox user.
+func (c Config) ownedEntry(rel string, info fs.FileInfo, wantDir bool) error {
+	plain, what := info.Mode().IsRegular(), "file"
+	if wantDir {
+		plain, what = info.IsDir(), "directory"
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !plain {
+		return fmt.Errorf("Sandbox root component %s is not a plain %s", rel, what)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != c.UID {
+		return fmt.Errorf("Sandbox root component %s is not owned by the sandbox user", rel)
 	}
 	return nil
 }
