@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func TestSweepTriesEverySandboxAndAlwaysClearsLeases(t *testing.T) {
@@ -109,7 +110,7 @@ func TestUnconfirmedRemovalKeepsItsSlotUntilAReaperConfirmsIt(t *testing.T) {
 	}
 	cfg := testConfig(t)
 	cfg.Max = 1
-	log := &syncLog{}
+	log := &testutil.SyncBuffer{}
 	cfg.Log = log
 	b := e.broker(t, cfg)
 	child, err := serve(t, b).Start(context.Background(), versionsProbe)

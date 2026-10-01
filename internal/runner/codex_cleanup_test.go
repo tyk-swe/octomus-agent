@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,43 +16,28 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // startBroker answers every sandbox request with an upgraded stream that serve scripts, so runner cleanup and
 // connect failures can be checked against the remote backend without Docker.
 func startBroker(t *testing.T, serve func(out *wire.FrameWriter, frames *bufio.Reader)) *sandbox.Remote {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "runner-broker-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "broker.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(wire.BrokerInfo{Limits: wire.BrokerLimits{Max: 2}})
 	})
 	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
-		conn, stream, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Error(err)
+		conn, stream := testutil.SwitchProtocols(t, w, wire.UpgradeProtocol)
+		if conn == nil {
 			return
 		}
 		defer conn.Close()
 		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-		_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + wire.UpgradeProtocol + "\r\n\r\n")
-		_ = stream.Flush()
 		serve(wire.NewFrameWriter(conn), stream.Reader)
 	})
-	server := &http.Server{Handler: mux}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { _ = server.Close() })
-	return sandbox.NewRemote(socket)
+	return sandbox.NewRemote(testutil.UnixHTTPServer(t, mux))
 }
 
 func reportExit(out *wire.FrameWriter, report wire.ExitReport) {

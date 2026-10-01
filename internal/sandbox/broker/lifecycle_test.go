@@ -3,10 +3,7 @@ package broker
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,25 +12,8 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
-
-func serveTestEngine(t *testing.T, handler http.Handler) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "octomus-engine-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "docker.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := &http.Server{Handler: handler}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { _ = server.Close() })
-	return socket
-}
 
 // brokerOn builds a broker against a test engine without New's deployment checks; limit, when set, caps its
 // sandboxes.
@@ -61,14 +41,11 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				_, _ = io.WriteString(w, `{"Id":"blocked"}`)
 			})
 			mux.HandleFunc("POST "+prefix+"blocked/attach", func(w http.ResponseWriter, _ *http.Request) {
-				conn, stream, err := w.(http.Hijacker).Hijack()
-				if err != nil {
-					t.Error(err)
+				conn, stream := testutil.SwitchProtocols(t, w, "tcp")
+				if conn == nil {
 					return
 				}
 				defer conn.Close()
-				_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
-				_ = stream.Flush()
 				// Read one byte to confirm the write began, then stop consuming stdin.
 				var first [1]byte
 				if _, err := io.ReadFull(stream, first[:]); err == nil {
@@ -98,7 +75,7 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				stop()
 				w.WriteHeader(http.StatusNoContent)
 			})
-			b := brokerOn(t, serveTestEngine(t, mux), 0)
+			b := brokerOn(t, testutil.UnixHTTPServer(t, mux), 0)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			controls := make(chan control)
@@ -174,14 +151,9 @@ func TestPreparedObservesContainerThatExitsDuringStart(t *testing.T) {
 		_, _ = io.WriteString(w, `{"Id":"quick"}`)
 	})
 	mux.HandleFunc("POST "+prefix+"quick/attach", func(w http.ResponseWriter, _ *http.Request) {
-		conn, stream, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Error(err)
-			return
+		if conn, _ := testutil.SwitchProtocols(t, w, "tcp"); conn != nil {
+			conn.Close()
 		}
-		defer conn.Close()
-		_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
-		_ = stream.Flush()
 	})
 	mux.HandleFunc("POST "+prefix+"quick/start", func(w http.ResponseWriter, _ *http.Request) {
 		started.Store(true)
@@ -211,20 +183,7 @@ func TestPreparedObservesContainerThatExitsDuringStart(t *testing.T) {
 		removed.Store(true)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	dir, err := os.MkdirTemp("", "octomus-engine-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "docker.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := &http.Server{Handler: mux}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { server.Close() })
-	b := brokerOn(t, socket, 0)
+	b := brokerOn(t, testutil.UnixHTTPServer(t, mux), 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	p := plan{kind: wire.KindProbe, timeout: time.Second}

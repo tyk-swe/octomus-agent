@@ -21,6 +21,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // fakeBroker speaks the broker protocol with scripted sandboxes chosen by the verification command.
@@ -31,16 +32,7 @@ type fakeBroker struct {
 
 func startFakeBroker(t *testing.T, max int) *fakeBroker {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "octomus-broker-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	f := &fakeBroker{socket: filepath.Join(dir, "sandboxd.sock"), requests: make(chan wire.Request, 64)}
-	listener, err := net.Listen("unix", f.socket)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f := &fakeBroker{requests: make(chan wire.Request, 64)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(wire.BrokerInfo{Image: "sandbox:test", Limits: wire.BrokerLimits{Max: max},
@@ -55,15 +47,14 @@ func startFakeBroker(t *testing.T, max int) *fakeBroker {
 			_, _ = io.WriteString(w, `{"error":"Sandbox directory is not an owned root"}`)
 			return
 		}
-		conn, stream, _ := w.(http.Hijacker).Hijack()
+		conn, stream := testutil.SwitchProtocols(t, w, wire.UpgradeProtocol)
+		if conn == nil {
+			return
+		}
 		defer conn.Close()
-		_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + wire.UpgradeProtocol + "\r\n\r\n")
-		_ = stream.Flush()
 		f.serve(req, conn, stream.Reader)
 	})
-	server := &http.Server{Handler: mux}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { server.Close() })
+	f.socket = testutil.UnixHTTPServer(t, mux)
 	return f
 }
 

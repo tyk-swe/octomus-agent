@@ -68,8 +68,10 @@ owns strict typed JSON boundaries for saved records and API requests.
 - Go behavior tests sit beside each package (`*_test.go`); `internal/testutil`
   holds their shared polling and process helpers, a POSIX-shell `git`/`gh`
   dispatcher (`InstallFixtureCommands`) that relays into a fixture's `bin/`
-  without a Python interpreter start, and `SkipVolumeUnderRace` for
-  single-goroutine data-volume checks the race detector gains nothing from.
+  without a Python interpreter start, `SkipVolumeUnderRace` for
+  single-goroutine data-volume checks the race detector gains nothing from,
+  and the sandbox tests' unix-socket servers, protocol upgrades and
+  `SyncBuffer` (`sockets.go`).
   Pinned real-client contracts (`internal/runner`) and the scale checks
   (`internal/store`, `OCTOMUS_SCALE_TEST=1`) skip unless their environment is
   provided.

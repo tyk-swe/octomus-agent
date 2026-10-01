@@ -25,7 +25,9 @@ func testConfig(t *testing.T) Config {
 	}
 }
 
-func makeRoot(t *testing.T, cfg Config, rel string, dirs ...string) string {
+// OwnedRoot makes an owned root at rel under cfg's data directory, with a work tree, its git metadata and dirs, as
+// the control plane would, and returns the work tree.
+func OwnedRoot(t *testing.T, cfg Config, rel string, dirs ...string) string {
 	t.Helper()
 	root := filepath.Join(cfg.DataDir, rel)
 	for _, dir := range append([]string{"workspace", "repo.git"}, dirs...) {
@@ -44,7 +46,7 @@ func makeRoot(t *testing.T, cfg Config, rel string, dirs ...string) string {
 // change to the isolation boundary and must be reviewed as one.
 func TestContainerSpecsAreGolden(t *testing.T) {
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
+	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	cases := map[string]wire.Request{
 		"runner-codex":    {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true},
 		"runner-opencode": {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60, Env: []string{"OPENCODE_SERVER_PASSWORD=pw"}},
@@ -85,7 +87,7 @@ func TestContainerSpecsAreGolden(t *testing.T) {
 
 func TestEverySandboxIsHardened(t *testing.T) {
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
+	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	for _, req := range []wire.Request{
 		{Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true},
 		{Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60},
@@ -131,8 +133,8 @@ func TestEverySandboxIsHardened(t *testing.T) {
 
 func TestPlanRefusesAnythingButOwnedRootsAndNarrowRequests(t *testing.T) {
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
-	scratch := makeRoot(t, cfg, "system/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
+	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
+	scratch := OwnedRoot(t, cfg, "system/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	if err := os.RemoveAll(filepath.Join(filepath.Dir(scratch), "repo.git")); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +145,7 @@ func TestPlanRefusesAnythingButOwnedRootsAndNarrowRequests(t *testing.T) {
 		"cycles/" + testUUID + "/grounding", "cycles/" + testUUID + "/discovery-9", "cycles/" + testUUID + "/adversary-b",
 		"cycles/" + testUUID + "/consolidation", "baselines/" + testUUID, "tasks/" + testUUID + "/verify",
 	} {
-		dir := makeRoot(t, cfg, rel, wire.VerifyHome)
+		dir := OwnedRoot(t, cfg, rel, wire.VerifyHome)
 		if _, err := cfg.plan(wire.Request{Kind: "verify", Dir: dir, Command: "true"}); err != nil {
 			t.Errorf("owned root %s refused: %v", rel, err)
 		}
@@ -175,7 +177,7 @@ func TestPlanRefusesAnythingButOwnedRootsAndNarrowRequests(t *testing.T) {
 			t.Errorf("%s: plan accepted %+v", name, req)
 		}
 	}
-	link := makeRoot(t, cfg, "baselines/"+strings.Replace(testUUID, "0b8f", "1b8f", 1), wire.VerifyHome)
+	link := OwnedRoot(t, cfg, "baselines/"+strings.Replace(testUUID, "0b8f", "1b8f", 1), wire.VerifyHome)
 	if err := os.RemoveAll(filepath.Join(filepath.Dir(link), wire.VerifyHome)); err != nil {
 		t.Fatal(err)
 	}

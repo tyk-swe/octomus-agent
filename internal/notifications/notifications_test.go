@@ -502,28 +502,11 @@ func queryDestination(t *testing.T, path string) string {
 	return destination
 }
 
-type syncBuffer struct {
-	mu   sync.Mutex
-	text strings.Builder
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.text.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.text.String()
-}
-
 func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
 	t.Parallel()
 	state, path := testStore(t)
 	server := newReceiver(t, 200, 0)
-	var warnings syncBuffer
+	var warnings testutil.SyncBuffer
 	worker, err := start(context.Background(), state, server.url, &warnings)
 	if err != nil {
 		t.Fatal(err)

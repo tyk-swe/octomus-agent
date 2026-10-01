@@ -12,6 +12,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // tune sets a teardown bound for one test.
@@ -187,7 +188,7 @@ func TestUnreadableEgressRecordIsLogged(t *testing.T) {
 	e := newFakeEngine(t)
 	cfg := testConfig(t)
 	cfg.EgressCollector = filepath.Join(t.TempDir(), "missing.sock")
-	log := &syncLog{}
+	log := &testutil.SyncBuffer{}
 	cfg.Log = log
 	report, err := e.broker(t, cfg).runSandbox(context.Background(), probePlan(time.Minute), discard, discard, nil)
 	if err != nil || report.Sandbox == nil {

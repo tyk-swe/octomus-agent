@@ -11,10 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // connectAs asks the gateway at address for a tunnel to an unlisted host with proxy's credential and returns the
@@ -55,7 +55,7 @@ func TestLoginLeaseGrantsARunnerLeaseAndRevokesThePreviousLogin(t *testing.T) {
 		v, ok := values[key]
 		return v, ok
 	}
-	log := &lockedLog{}
+	log := &testutil.SyncBuffer{}
 	gateway := egress.New(egress.Policy{}, leases, log)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -125,21 +125,4 @@ func leaseFiles(t *testing.T, dir string) []string {
 		t.Fatal(err)
 	}
 	return files
-}
-
-type lockedLog struct {
-	mu   sync.Mutex
-	data bytes.Buffer
-}
-
-func (l *lockedLog) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.data.Write(p)
-}
-
-func (l *lockedLog) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.data.String()
 }

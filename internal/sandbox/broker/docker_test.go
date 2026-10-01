@@ -18,10 +18,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/broker"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // dockerBroker runs a real broker against the local Docker daemon, with named volumes bound to temporary directories
@@ -118,7 +120,7 @@ func startDockerBroker(t *testing.T, tune func(*broker.Config)) *dockerBroker {
 		t.Cleanup(func() { _ = exec.Command("docker", "network", "rm", network).Run() })
 	}
 	cfg := broker.Config{
-		Socket:        filepath.Join(shortDir(t), "sandboxd.sock"),
+		Socket:        testutil.SocketPath(t, "sandboxd.sock"),
 		DockerSocket:  "/var/run/docker.sock",
 		Image:         image,
 		DataDir:       dirs["data"],
@@ -169,46 +171,18 @@ func startDockerBroker(t *testing.T, tune func(*broker.Config)) *dockerBroker {
 	return h
 }
 
-// shortDir keeps unix socket paths within the kernel's 108-byte limit whatever TMPDIR is.
-func shortDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "ob-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
-}
-
 func (h *dockerBroker) containers(t *testing.T) string {
 	return docker(t, "ps", "-aq", "--filter", "label=octomus.sandbox.instance="+h.instance)
 }
 
-func newUUID() string {
-	var id [16]byte
-	_, _ = rand.Read(id[:])
-	id[6] = id[6]&0x0f | 0x40
-	id[8] = id[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
-}
-
-// taskRoot makes an owned task root with a work tree and trusted git metadata, as the control plane would.
+// taskRoot makes an owned task root whose trusted git metadata has a HEAD.
 func (h *dockerBroker) taskRoot(t *testing.T) string {
 	t.Helper()
-	root := filepath.Join(h.cfg.DataDir, "tasks", newUUID())
-	for _, dir := range []string{"workspace", "repo.git"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(root, "repo.git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+	ws := broker.OwnedRoot(t, h.cfg, "tasks/"+uuid.NewString())
+	if err := os.WriteFile(filepath.Join(filepath.Dir(ws), "repo.git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "workspace", ".git"),
-		[]byte("gitdir: "+filepath.Join(root, "repo.git")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return filepath.Join(root, "workspace")
+	return ws
 }
 
 func TestDockerVerifySandboxIsContained(t *testing.T) {
@@ -317,7 +291,7 @@ func TestDockerVerifyHomeIsFreshPerRun(t *testing.T) {
 func TestDockerRunnerStdioStreams(t *testing.T) {
 	h := startDockerBroker(t, nil)
 	ws := h.taskRoot(t)
-	var stderr syncBuffer
+	var stderr testutil.SyncBuffer
 	child, err := h.remote.Start(context.Background(), sandbox.Spec{
 		Kind: sandbox.KindRunner, Runner: config.BackendCodex, Dir: ws, Stdin: true, Stderr: &stderr,
 	})
@@ -422,7 +396,7 @@ func TestDockerShutdownRemovesLiveSandboxes(t *testing.T) {
 func TestDockerOpenCodeBridge(t *testing.T) {
 	h := startDockerBroker(t, nil)
 	ws := h.taskRoot(t)
-	var stderr syncBuffer
+	var stderr testutil.SyncBuffer
 	server, err := h.remote.StartOpenCode(context.Background(), sandbox.Spec{
 		Kind: sandbox.KindRunner, Runner: config.BackendOpencode, Dir: ws, Stderr: &stderr,
 		Env: []string{"OPENCODE_SERVER_PASSWORD=bridge-secret"},
@@ -482,10 +456,10 @@ func TestDockerBrokerRefusesUnownedRootsAndLeavesOtherContainers(t *testing.T) {
 	ws := h.taskRoot(t)
 	for name, dir := range map[string]string{
 		"data dir itself":    filepath.Join(h.cfg.DataDir, "workspace"),
-		"outside data dir":   filepath.Join(t.TempDir(), "tasks", newUUID(), "workspace"),
-		"dot-dot":            filepath.Join(h.cfg.DataDir, "tasks", newUUID(), "..", "workspace"),
+		"outside data dir":   filepath.Join(t.TempDir(), "tasks", uuid.NewString(), "workspace"),
+		"dot-dot":            filepath.Join(h.cfg.DataDir, "tasks", uuid.NewString(), "..", "workspace"),
 		"not a uuid":         filepath.Join(h.cfg.DataDir, "tasks", "task-1", "workspace"),
-		"missing repo.git":   filepath.Join(h.cfg.DataDir, "tasks", newUUID(), "workspace"),
+		"missing repo.git":   filepath.Join(h.cfg.DataDir, "tasks", uuid.NewString(), "workspace"),
 		"checkout workspace": filepath.Join(h.cfg.DataDir, "checkout", "workspace"),
 	} {
 		_ = os.MkdirAll(dir, 0o700)
@@ -522,23 +496,6 @@ func waitFor(t *testing.T, cond func() bool) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-}
-
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }
 
 func TestDockerContainmentProbePasses(t *testing.T) {

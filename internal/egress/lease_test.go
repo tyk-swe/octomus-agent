@@ -3,12 +3,13 @@ package egress
 import (
 	"context"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func TestLeasesGrantWhatTheGatewayLooksUpUntilRevoked(t *testing.T) {
@@ -61,17 +62,7 @@ func TestFetchSummaryReadsTheCollector(t *testing.T) {
 	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "api.openai.com", Port: 443, Decision: "allowed", BytesUp: 7}, "lease")
 	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "example.com", Port: 443, Decision: "denied"}, "lease")
 	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "example.org", Port: 443, Decision: "failed"}, "lease")
-	// A unix socket path must fit in sun_path, which a test's temporary directory may not.
-	dir, err := os.MkdirTemp("/tmp", "oe-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "collector.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
+	listener, socket := testutil.ListenUnix(t, "collector.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	go func() { _ = g.ServeCollector(ctx, listener) }()

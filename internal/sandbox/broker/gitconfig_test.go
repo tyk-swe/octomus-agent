@@ -64,7 +64,7 @@ func TestRunnerGitIgnoresWhatEarlierTurnsLeftInTheHome(t *testing.T) {
 		t.Fatalf("the planted home did not hide the change, so this test proves nothing:\n%s", diff)
 	}
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, wire.HomeDirs(wire.KindRunner)...)
+	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, wire.HomeDirs(wire.KindRunner)...)
 	p, err := cfg.plan(wire.Request{Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true})
 	if err != nil {
 		t.Fatal(err)

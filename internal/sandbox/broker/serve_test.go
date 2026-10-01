@@ -7,8 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +15,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func TestFullBrokerMakesRequestsWait(t *testing.T) {
@@ -86,7 +85,7 @@ func TestShutdownCancelsPreparationAndSweepsSandboxes(t *testing.T) {
 	mux.HandleFunc("GET /v"+engineapi.APIVersion+"/images/{ref}/json", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"Id":"sha256:test"}`)
 	})
-	b := brokerOn(t, serveTestEngine(t, mux), 1)
+	b := brokerOn(t, testutil.UnixHTTPServer(t, mux), 1)
 	b.info.ImageID = "sha256:test"
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -133,7 +132,7 @@ func TestShutdownCancelsPreparationAndSweepsSandboxes(t *testing.T) {
 }
 
 func TestShutdownReportsSweepFailure(t *testing.T) {
-	socket := serveTestEngine(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	socket := testutil.UnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "fixture sweep failure", http.StatusServiceUnavailable)
 	}))
 	b := brokerOn(t, socket, 0)
@@ -156,16 +155,7 @@ func TestShutdownLetsSandboxesRemoveThemselvesBeforeSweeping(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Max = 4
 	b := e.broker(t, cfg)
-	dir, err := os.MkdirTemp("/tmp", "ob-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "sandboxd.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
+	listener, socket := testutil.ListenUnix(t, "sandboxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)

@@ -9,8 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +18,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // fakeEngine is a scripted Docker Engine on a unix socket: enough of the API for a broker to check its deployment
@@ -80,17 +79,8 @@ func newFakeEngine(t *testing.T) *fakeEngine {
 	t.Helper()
 	e := &fakeEngine{t: t, api: "1.51", images: map[string]string{"octomus-sandbox:test": "sha256:first"},
 		options: map[string]string{isolatedGateway: "isolated"}, containers: map[string]*fakeContainer{}}
-	dir, err := os.MkdirTemp("", "octomus-engine-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	e.socket = filepath.Join(dir, "docker.sock")
-	if e.listener, err = net.Listen("unix", e.socket); err != nil {
-		t.Fatal(err)
-	}
+	e.listener, e.socket = testutil.ListenUnix(t, "docker.sock")
 	t.Cleanup(func() {
-		_ = e.listener.Close()
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		for _, c := range e.created {
@@ -461,16 +451,7 @@ func defaultRun(c *fakeContainer) {
 // serve runs b on a unix socket until the test ends and returns a client for it.
 func serve(t *testing.T, b *Broker) *sandbox.Remote {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "ob-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "sandboxd.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
+	listener, socket := testutil.ListenUnix(t, "sandboxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	served := make(chan error, 1)
 	go func() { served <- b.Serve(ctx, listener) }()
@@ -483,22 +464,4 @@ func serve(t *testing.T, b *Broker) *sandbox.Remote {
 		}
 	})
 	return sandbox.NewRemote(socket)
-}
-
-// syncLog is a broker log a test can read while the broker writes it.
-type syncLog struct {
-	mu   sync.Mutex
-	text strings.Builder
-}
-
-func (l *syncLog) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.text.Write(p)
-}
-
-func (l *syncLog) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.text.String()
 }

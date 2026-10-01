@@ -3,24 +3,14 @@ package engineapi
 import (
 	"context"
 	"errors"
-	"net"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func TestAttachHandshakeHonoursCancellation(t *testing.T) {
-	dir, err := os.MkdirTemp("", "octomus-engine-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "docker.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
+	listener, socket := testutil.ListenUnix(t, "docker.sock")
 	defer listener.Close()
 	// A daemon that accepts the attach connection and never answers the upgrade.
 	go func() {

@@ -102,25 +102,8 @@ type gatewayFixture struct {
 	token    string
 	resolver *recordingResolver
 	dialed   chan netip.AddrPort
-	log      *lockedBuffer
+	log      *testutil.SyncBuffer
 	leases   string
-}
-
-type lockedBuffer struct {
-	mu   sync.Mutex
-	data strings.Builder
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.data.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.data.String()
 }
 
 func newGatewayFixture(t *testing.T, kind string, configure ...func(*Gateway)) *gatewayFixture {
@@ -151,7 +134,7 @@ func newGatewayFixture(t *testing.T, kind string, configure ...func(*Gateway)) *
 	model, _ := ParseRules("api.openai.com")
 	build, _ := ParseRules("registry.npmjs.org, internal.example.com")
 	f := &gatewayFixture{
-		token: token, dialed: make(chan netip.AddrPort, 8), log: &lockedBuffer{},
+		token: token, dialed: make(chan netip.AddrPort, 8), log: &testutil.SyncBuffer{},
 		resolver: &recordingResolver{answers: map[string][]netip.Addr{
 			"api.openai.com":       {netip.MustParseAddr("10.9.9.9"), netip.MustParseAddr("93.184.216.34")},
 			"registry.npmjs.org":   {netip.MustParseAddr("104.16.0.35")},
