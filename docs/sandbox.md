@@ -70,8 +70,9 @@ filesystem, no capabilities and `no-new-privileges`. See
    control plane's stream to the broker is the sandbox's lifeline: if it closes, because the
    turn ended, the operator cancelled or the control plane crashed, the broker kills and
    removes the container.
-4. The broker reports the exit code, whether the memory limit killed it and whether a time
-   limit stopped it. It then removes the container and revokes the lease.
+4. The broker revokes the lease and removes the container, then reports the exit code,
+   whether the memory limit killed it and whether a time limit stopped it. A sandbox it
+   could not remove keeps its slot until a retry succeeds, and its report says so.
 
 Executors, fresh reviewers and repair turns each get a new sandbox. Persistent repair
 threads resume from the runner session store (below), not from a live process. Each
@@ -89,7 +90,7 @@ control plane or broker.
 
 Task details show a sandbox record for every session and verification command:
 - how many containers it ran in, and the image;
-- whether the memory limit stopped one;
+- whether the memory limit killed a process in one;
 - the hosts the gateway let it reach, and those it refused, with counts.
 
 A refused host is often the first sign of prompt injection, or of a registry missing from

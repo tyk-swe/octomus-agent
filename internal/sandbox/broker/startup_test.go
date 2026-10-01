@@ -12,7 +12,7 @@ import (
 func startupConfig(t *testing.T, e *fakeEngine) (Config, string) {
 	t.Helper()
 	cfg := testConfig(t)
-	cfg.DockerSocket = e.socket
+	cfg.DockerSocket = e.Socket()
 	cfg.RunnerDir, cfg.ToolsDir, cfg.LeaseDir = t.TempDir(), t.TempDir(), t.TempDir()
 	cfg.EgressProxy = "egress:3128"
 	executable := filepath.Join(t.TempDir(), "octomus-agent")
@@ -51,7 +51,7 @@ func TestStartupAlwaysRequiresIsolatedGateways(t *testing.T) {
 		t.Fatal(err)
 	}
 	deployed, executable := startupConfig(t, e)
-	cfg.DockerSocket, cfg.RunnerDir, cfg.ToolsDir, cfg.UID, cfg.GID = e.socket, deployed.RunnerDir, deployed.ToolsDir, deployed.UID, deployed.GID
+	cfg.DockerSocket, cfg.RunnerDir, cfg.ToolsDir, cfg.UID, cfg.GID = e.Socket(), deployed.RunnerDir, deployed.ToolsDir, deployed.UID, deployed.GID
 	if _, err := New(context.Background(), cfg, executable); err == nil || !strings.Contains(err.Error(), "isolated") {
 		t.Fatalf("plain internal networks = %v; want a refusal whatever the environment says", err)
 	}
@@ -67,7 +67,9 @@ func TestStartupSweepsLeftoversBeforeAnyPreconditionCanFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The image tag was pruned while the previous broker's sandboxes still ran.
+	e.mu.Lock()
 	delete(e.images, cfg.Image)
+	e.mu.Unlock()
 	if _, err := New(context.Background(), cfg, executable); err == nil || !strings.Contains(err.Error(), "not available locally") {
 		t.Fatalf("missing image = %v", err)
 	}

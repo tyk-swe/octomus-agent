@@ -6,6 +6,7 @@ package broker
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -45,6 +46,8 @@ type Config struct {
 	LeaseDir    string
 	// EgressCollector is the gateway's local socket for a finished sandbox's egress summary.
 	EgressCollector string
+	// Log receives what the broker could not do on its own, such as a removal it keeps retrying; nil is stderr.
+	Log io.Writer
 }
 
 const (

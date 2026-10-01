@@ -25,8 +25,10 @@ import (
 // and to create, attach to, start, wait for, kill, inspect and remove containers. A started container runs the
 // test's script; hooks inject the daemon failures under test.
 type fakeEngine struct {
-	t      *testing.T
-	socket string
+	t        *testing.T
+	socket   string
+	listener net.Listener
+	serving  sync.Once
 
 	mu         sync.Mutex
 	api        string
@@ -45,6 +47,10 @@ type fakeEngine struct {
 	remove func(c *fakeContainer) (int, string)
 	// kill may refuse a signal with a status and message (a zero status delivers it).
 	kill func(c *fakeContainer, signal string) (int, string)
+	// waitDelay holds back the reply to a wait after the container ends.
+	waitDelay time.Duration
+	// removeDelay is how long a removal takes; Docker refuses a second removal meanwhile.
+	removeDelay time.Duration
 }
 
 type fakeContainer struct {
@@ -61,7 +67,7 @@ type fakeContainer struct {
 	started  bool
 	running  bool
 	done     bool
-	removed  bool
+	removing bool
 	code     int
 	oom      bool
 	closed   bool
@@ -77,14 +83,11 @@ func newFakeEngine(t *testing.T) *fakeEngine {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	e.socket = filepath.Join(dir, "docker.sock")
-	listener, err := net.Listen("unix", e.socket)
-	if err != nil {
+	if e.listener, err = net.Listen("unix", e.socket); err != nil {
 		t.Fatal(err)
 	}
-	server := &http.Server{Handler: e.mux()}
-	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() {
-		_ = server.Close()
+		_ = e.listener.Close()
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		for _, c := range e.created {
@@ -92,6 +95,16 @@ func newFakeEngine(t *testing.T) *fakeEngine {
 		}
 	})
 	return e
+}
+
+// Socket starts serving, once the test has set its hooks, and returns the engine's socket.
+func (e *fakeEngine) Socket() string {
+	e.serving.Do(func() {
+		server := &http.Server{Handler: e.mux()}
+		go func() { _ = server.Serve(e.listener) }()
+		e.t.Cleanup(func() { _ = server.Close() })
+	})
+	return e.socket
 }
 
 // leftover adds a running container a previous broker of instance left behind.
@@ -110,7 +123,7 @@ func (e *fakeEngine) leftover(name, instance string) *fakeContainer {
 // broker builds a broker against this engine without New's deployment checks.
 func (e *fakeEngine) broker(t *testing.T, cfg Config) *Broker {
 	t.Helper()
-	b := &Broker{cfg: cfg, engine: engineapi.New(e.socket), slots: make(chan struct{}, cfg.Max), live: map[string]string{}}
+	b := &Broker{cfg: cfg, engine: engineapi.New(e.Socket()), slots: make(chan struct{}, cfg.Max), live: map[string]string{}}
 	b.info.Limits.Max = cfg.Max
 	b.info.ImageID = e.images[cfg.Image]
 	return b
@@ -350,6 +363,7 @@ func (e *fakeEngine) mux() http.Handler {
 		}
 		select {
 		case <-c.exited:
+			time.Sleep(e.waitDelay)
 			c.mu.Lock()
 			code := c.code
 			c.mu.Unlock()
@@ -403,6 +417,15 @@ func (e *fakeEngine) mux() http.Handler {
 				return
 			}
 		}
+		c.mu.Lock()
+		if c.removing {
+			c.mu.Unlock()
+			refuse(w, http.StatusConflict, "removal of container "+c.ID+" is already in progress")
+			return
+		}
+		c.removing = true
+		c.mu.Unlock()
+		time.Sleep(e.removeDelay)
 		c.closeOutput()
 		c.Exit(137, false)
 		e.mu.Lock()

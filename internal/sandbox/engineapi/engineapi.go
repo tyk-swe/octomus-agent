@@ -55,6 +55,12 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &engine) && engine.Status == http.StatusNotFound
 }
 
+// IsConflict reports a request the container's state refuses, such as killing one that is no longer running.
+func IsConflict(err error) bool {
+	var engine *Error
+	return errors.As(err, &engine) && engine.Status == http.StatusConflict
+}
+
 func path(format string, args ...any) string {
 	escaped := make([]any, len(args))
 	for i, arg := range args {

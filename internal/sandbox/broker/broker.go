@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -39,12 +40,15 @@ const isolatedGateway = "com.docker.network.bridge.gateway_mode_ipv4"
 const isolatedGatewayAPI = "1.48"
 
 type Broker struct {
-	cfg     Config
-	engine  *engineapi.Client
-	info    sandbox.BrokerInfo
+	cfg    Config
+	engine *engineapi.Client
+	info   sandbox.BrokerInfo
+	// slots admits sandboxes up to the limit. A sandbox gives its slot back only once its removal is confirmed.
 	slots   chan struct{}
 	leases  *leases
 	started time.Time
+	// closing closes when Serve begins to shut down.
+	closing chan struct{}
 	mu      sync.Mutex
 	live    map[string]string
 }
@@ -64,6 +68,7 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		engine:  engineapi.New(cfg.DockerSocket),
 		slots:   make(chan struct{}, cfg.Max),
 		started: time.Now(),
+		closing: make(chan struct{}),
 		live:    map[string]string{},
 	}
 	if cfg.LeaseDir != "" {
@@ -225,6 +230,9 @@ func (b *Broker) probeVersions(ctx context.Context) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if report.Error != "" && !report.Killed {
+		return nil, fmt.Errorf("version probe failed: %s", report.Error)
+	}
 	if report.Code != 0 || report.Killed || report.OOM {
 		return nil, fmt.Errorf("version probe failed with exit %d: %s", report.Code, strings.TrimSpace(stderr.String()))
 	}
@@ -242,6 +250,15 @@ func (b *Broker) Info() sandbox.BrokerInfo {
 	info.Live = len(b.live)
 	b.mu.Unlock()
 	return info
+}
+
+// logf reports what the broker could not do on its own, such as a removal it keeps retrying.
+func (b *Broker) logf(format string, args ...any) {
+	w := b.cfg.Log
+	if w == nil {
+		w = os.Stderr
+	}
+	fmt.Fprintf(w, "Octomus sandbox broker: "+format+"\n", args...)
 }
 
 // Listen opens the broker socket, readable and writable only by its owner.
@@ -312,17 +329,44 @@ func (b *Broker) Serve(ctx context.Context, listener net.Listener) error {
 	select {
 	case <-ctx.Done():
 		cancelRequests()
+		if b.closing != nil {
+			close(b.closing)
+		}
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		shutdownErr := server.Shutdown(shutdown)
 		cancel()
 		if shutdownErr != nil {
 			_ = server.Close()
 		}
-		cleanup, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+		// Shutdown does not track hijacked streams: their handlers are still removing their sandboxes. Racing them
+		// would only make the sweep's removals collide with theirs. The steps fit compose's 30s stop grace period.
+		b.awaitSandboxes(15 * time.Second)
+		cleanup, cancelCleanup := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelCleanup()
 		return errors.Join(shutdownErr, b.sweep(cleanup))
 	case err := <-done:
 		return err
+	}
+}
+
+// awaitSandboxes waits, up to limit, until every sandbox has given its slot back, which each does once its removal
+// is confirmed. The sweep after it then meets only what a crash or a failed removal left behind.
+func (b *Broker) awaitSandboxes(limit time.Duration) {
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	taken := 0
+	defer func() {
+		for range taken {
+			<-b.slots
+		}
+	}()
+	for taken < cap(b.slots) {
+		select {
+		case b.slots <- struct{}{}:
+			taken++
+		case <-timer.C:
+			return
+		}
 	}
 }
 
@@ -353,40 +397,33 @@ func (b *Broker) handleSandbox(base context.Context, w http.ResponseWriter, r *h
 		refuse(http.StatusBadRequest, err.Error())
 		return
 	}
+	// A full broker makes the request wait for as long as the client does. The control plane keeps its own count of
+	// the same slots, but frees one as soon as it reads an exit report, a moment before the broker can.
 	select {
 	case b.slots <- struct{}{}:
-	default:
-		refuse(http.StatusTooManyRequests, fmt.Sprintf("All %d sandbox slots are in use", b.cfg.Max))
+	case <-r.Context().Done():
 		return
 	}
-	released := false
-	release := func() {
-		if !released {
-			released = true
-			<-b.slots
-		}
-	}
-	defer release()
-	prepared, err := b.prepare(r.Context(), base, p)
+	prepared, err := b.prepare(r.Context(), base, p, sync.OnceFunc(func() { <-b.slots }))
 	if err != nil {
 		refuse(http.StatusInternalServerError, err.Error())
 		return
 	}
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		prepared.remove()
+		prepared.discard()
 		refuse(http.StatusInternalServerError, "Sandbox stream cannot be hijacked")
 		return
 	}
 	conn, stream, err := hijacker.Hijack()
 	if err != nil {
-		prepared.remove()
+		prepared.discard()
 		return
 	}
 	defer conn.Close()
 	if _, err := stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " +
 		sandbox.UpgradeProtocol + "\r\n\r\n"); err != nil || stream.Flush() != nil {
-		prepared.remove()
+		prepared.discard()
 		return
 	}
 	b.stream(r.Context(), prepared, p, conn, stream.Reader)
@@ -397,9 +434,13 @@ type prepared struct {
 	b      *Broker
 	id     string
 	name   string
+	image  string
 	lease  string
 	attach *engineapi.Attached
-	once   sync.Once
+	// release gives the sandbox's admission slot back, once its removal is confirmed.
+	release func()
+	once    sync.Once
+	removed error
 }
 
 const (
@@ -410,8 +451,8 @@ const (
 
 // prepare creates a sandbox's container and attaches to it. ctx is the request's; the create alone runs under base,
 // the broker's lifetime, because a client that gives up mid-create must not leave behind a container the daemon
-// still finishes: once created, it has an ID and is removed like any other.
-func (b *Broker) prepare(ctx, base context.Context, p plan) (*prepared, error) {
+// still finishes: once created, it has an ID and is removed like any other. prepare owns release from here on.
+func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*prepared, error) {
 	var suffix [6]byte
 	_, _ = rand.Read(suffix[:])
 	name := fmt.Sprintf("octomus-%s-%s-%s", b.cfg.Instance, p.kind, hex.EncodeToString(suffix[:]))
@@ -425,6 +466,7 @@ func (b *Broker) prepare(ctx, base context.Context, p plan) (*prepared, error) {
 		}
 		token, err := b.leases.grant(name, kind)
 		if err != nil {
+			release()
 			return nil, fmt.Errorf("Granting the sandbox egress lease: %w", err)
 		}
 		lease, extraEnv = token, proxyEnv(b.cfg.EgressProxy, token)
@@ -443,49 +485,108 @@ func (b *Broker) prepare(ctx, base context.Context, p plan) (*prepared, error) {
 		}
 		// A create cut short can still finish in the daemon; removing by name finds the container if it did.
 		removeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = b.engine.ContainerRemove(removeCtx, name)
+		if err := b.engine.ContainerRemove(removeCtx, name); err != nil {
+			b.logf("Removing sandbox %s after its create failed did not succeed; the next sweep removes it: %v", name, err)
+		}
 		cancel()
+		release()
 		return nil, fmt.Errorf("Creating the sandbox: %w", err)
 	}
 	b.mu.Lock()
 	b.live[id] = p.rel
 	b.mu.Unlock()
-	s := &prepared{b: b, id: id, name: name, lease: lease}
+	s := &prepared{b: b, id: id, name: name, image: spec.Image, lease: lease, release: release}
 	if len(warnings) > 0 {
 		// Docker drops a limit the host cannot enforce and only warns; every limit in the spec is part of the boundary.
-		s.remove()
+		s.discard()
 		return nil, fmt.Errorf("Docker Engine would not enforce the sandbox spec: %s", strings.Join(warnings, " "))
 	}
 	if err := ctx.Err(); err != nil {
-		s.remove()
+		s.discard()
 		return nil, fmt.Errorf("Creating the sandbox: %w", err)
 	}
 	attachCtx, cancel := context.WithTimeout(ctx, attachTimeout)
 	attach, err := b.engine.ContainerAttach(attachCtx, id, p.stdin)
 	cancel()
 	if err != nil {
-		s.remove()
+		s.discard()
 		return nil, fmt.Errorf("Attaching to the sandbox: %w", err)
 	}
 	s.attach = attach
 	return s, nil
 }
 
-func (s *prepared) remove() {
+// remove closes the attach stream, revokes the egress lease and removes the container, retrying until ctx ends. Only
+// a confirmed removal frees the sandbox's live entry and slot; otherwise a reaper keeps both while it keeps trying,
+// so the cap on running sandboxes holds.
+func (s *prepared) remove(ctx context.Context) error {
 	s.once.Do(func() {
 		if s.attach != nil {
 			s.attach.Close()
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = s.b.engine.ContainerRemove(ctx, s.id)
+		// Egress is cut at once; that needs no confirmation.
 		if s.lease != "" {
 			s.b.leases.revoke(s.lease)
 		}
-		s.b.mu.Lock()
-		delete(s.b.live, s.id)
-		s.b.mu.Unlock()
+		if s.removed = s.b.removeContainer(ctx, s.id); s.removed != nil {
+			s.b.logf("Removing sandbox %s failed; it keeps its slot while the broker retries: %v", s.name, s.removed)
+			s.b.reap(s)
+			return
+		}
+		s.forget()
 	})
+	return s.removed
+}
+
+// discard removes a sandbox that never ran.
+func (s *prepared) discard() {
+	ctx, cancel := context.WithTimeout(context.Background(), teardownBudget)
+	defer cancel()
+	_ = s.remove(ctx)
+}
+
+func (s *prepared) forget() {
+	s.b.mu.Lock()
+	delete(s.b.live, s.id)
+	s.b.mu.Unlock()
+	s.release()
+}
+
+// removeContainer force-removes a container, retrying until the daemon confirms it is gone or ctx ends.
+func (b *Broker) removeContainer(ctx context.Context, id string) error {
+	for delay := 250 * time.Millisecond; ; delay = min(2*delay, 2*time.Second) {
+		err := b.engine.ContainerRemove(ctx, id)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(delay):
+		}
+	}
+}
+
+// reap keeps removing a sandbox whose teardown could not confirm its removal. Shutdown hands it to the final sweep.
+func (b *Broker) reap(s *prepared) {
+	go func() {
+		for delay := reapDelay; ; delay = min(2*delay, 5*time.Minute) {
+			select {
+			case <-time.After(delay):
+			case <-b.closing:
+				s.forget()
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			err := b.engine.ContainerRemove(ctx, s.id)
+			cancel()
+			if err == nil {
+				b.logf("Removed sandbox %s after earlier failures", s.name)
+				s.forget()
+				return
+			}
+		}
+	}()
 }
 
 type control struct {
@@ -494,9 +595,51 @@ type control struct {
 	signal string
 }
 
+// output is where a sandbox's stdout and stderr go. interrupt, when set, unblocks a sink stuck writing to a client
+// that stopped reading; the sinks fail from then on.
+type output struct {
+	stdout, stderr func([]byte) error
+	interrupt      func()
+}
+
+// Teardown bounds. Once a sandbox ends, or a kill is asked for, the broker drains its output, reads its state and
+// evidence, and confirms its removal within teardownBudget, so the control plane's wait for the report holds.
+var (
+	teardownBudget = 45 * time.Second
+	// removeReserve is the part of the budget kept for the removal.
+	removeReserve = 15 * time.Second
+	// stopWait is how long a killed sandbox has to report its exit before the removal stops it by force.
+	stopWait = 15 * time.Second
+	// drainWait is how long a sandbox's output has to end once the sandbox has.
+	drainWait = 10 * time.Second
+	// joinWait is how long the output pump has to finish once its source is closed.
+	joinWait = 5 * time.Second
+	// reapDelay is the first pause before a removal that failed is tried again.
+	reapDelay = 5 * time.Second
+)
+
+const streamClosed = "Sandbox stream closed"
+
+// ending is how a sandbox's run ended.
+type ending struct {
+	// result is the exit the daemon reported, if it did.
+	result *engineapi.WaitResult
+	// killed is set when a SIGKILL the daemon delivered, or the removal by force, stopped the sandbox.
+	killed bool
+	reason string
+	// cut is set when the control stream closed, leaving nobody to report to.
+	cut bool
+	// err is a failure before the sandbox could report an exit.
+	err error
+	// deadline bounds the teardown.
+	deadline time.Time
+}
+
 // execute starts a prepared container and pumps it until it exits, the time limit passes or the control source
-// ends. It always removes the container.
-func (s *prepared) execute(ctx context.Context, timeout time.Duration, stdout, stderr func([]byte) error, controls <-chan control) (sandbox.ExitReport, error) {
+// ends, then tears it down within teardownBudget. It always removes the container, or leaves it to a reaper; a
+// report with an Error and no kill means the broker cannot vouch for how the sandbox ended.
+func (s *prepared) execute(ctx context.Context, timeout time.Duration, out output, controls <-chan control) (sandbox.ExitReport, error) {
+	b := s.b
 	input := make(chan control)
 	stopInput, inputDone := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -514,20 +657,68 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, stdout, s
 			}
 		}
 	}()
-	defer func() {
-		close(stopInput)
-		s.remove() // Closing attach interrupts a blocked stdin write.
-		<-inputDone
-	}()
-	var pendingInput []control
-	pendingBytes := 0
-	b := s.b
 	attached := make(chan error, 1)
 	go func() {
-		attached <- engineapi.Demux(s.attach.Reader, stdout, stderr)
+		attached <- engineapi.Demux(s.attach.Reader, out.stdout, out.stderr)
 	}()
+	end := s.run(ctx, timeout, controls, input)
+	if end.deadline.IsZero() {
+		end.deadline = time.Now().Add(teardownBudget)
+	}
+	// within bounds one teardown step by what the budget leaves once the removal's share is kept back.
+	within := func(step time.Duration) time.Duration {
+		return max(0, min(step, time.Until(end.deadline)-removeReserve))
+	}
+	close(stopInput)
+	// Draining closes the attach stream, which also ends a blocked stdin write.
+	truncated, outErr := s.drain(end, attached, out, within)
+	<-inputDone
+	var report sandbox.ExitReport
+	var failure error
+	switch {
+	case end.cut:
+		report = sandbox.ExitReport{Killed: true, Error: streamClosed}
+	case end.err != nil:
+		failure = end.err
+	default:
+		report = sandbox.ExitReport{Killed: end.killed, Error: end.reason}
+		oom := false
+		if end.result != nil {
+			report.Code = end.result.StatusCode
+			oom = s.oomKilled(within(5 * time.Second))
+		}
+		// Docker marks a container OOM-killed when the kernel killed any process in it. The evidence keeps that; the
+		// status says the memory limit ended the command only when the command failed.
+		report.OOM = oom && report.Code != 0
+		report.Sandbox = b.evidence(s.name, s.image, oom)
+		switch {
+		case end.killed:
+		case truncated:
+			report.Error = "Sandbox output was cut short after the sandbox ended"
+		case outErr != nil:
+			report.Error = "Sandbox output failed: " + outErr.Error()
+		}
+	}
+	removeCtx, cancel := context.WithDeadline(context.Background(), end.deadline)
+	removed := s.remove(removeCtx)
+	cancel()
+	switch {
+	case removed == nil || end.cut:
+	case failure != nil:
+		failure = fmt.Errorf("%w; removing the sandbox also failed: %v", failure, removed)
+	default:
+		report.Killed, report.Error = false, "Removing the sandbox failed: "+removed.Error()
+	}
+	return report, failure
+}
+
+// run starts the container and serves its controls until it ends. Only a SIGKILL the daemon delivered marks it
+// killed, and the first one names the reason: a kill that finds it already exited leaves its own exit status.
+func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-chan control, input chan<- control) (end ending) {
+	b := s.b
 	if err := b.engine.ContainerStart(ctx, s.id); err != nil {
-		return sandbox.ExitReport{}, fmt.Errorf("Starting the sandbox: %w", err)
+		end.err = fmt.Errorf("Starting the sandbox: %w", err)
+		return end
 	}
 	waitCtx, cancelWait := context.WithCancel(context.Background())
 	defer cancelWait()
@@ -535,17 +726,34 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, stdout, s
 	results, errs := b.engine.ContainerWait(waitCtx, s.id)
 	limit := time.NewTimer(timeout)
 	defer limit.Stop()
-	killed := false
-	reason := ""
-	kill := func(signal string) {
-		killCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = b.engine.ContainerKill(killCtx, s.id, signal)
+	retry := time.NewTimer(time.Hour)
+	retry.Stop()
+	defer retry.Stop()
+	var stopped <-chan time.Time
+	asked := ""
+	kill := func(reason string) {
+		if end.deadline.IsZero() {
+			end.deadline, stopped, asked = time.Now().Add(teardownBudget), time.After(stopWait), reason
+		}
+		killCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := b.engine.ContainerKill(killCtx, s.id, "SIGKILL")
+		cancel()
+		switch {
+		case err == nil:
+			if !end.killed {
+				end.killed, end.reason = true, reason
+			}
+		case engineapi.IsConflict(err) || engineapi.IsNotFound(err):
+			// It is no longer running: it ended on its own, and the wait reports how.
+		default:
+			b.logf("Killing sandbox %s failed; retrying: %v", s.name, err)
+			retry.Reset(time.Second)
+		}
 	}
-	var result engineapi.WaitResult
-wait:
+	var pendingInput []control
+	pendingBytes := 0
 	for {
-		var sendInput chan control
+		var sendInput chan<- control
 		var nextInput control
 		if len(pendingInput) > 0 {
 			sendInput, nextInput = input, pendingInput[0]
@@ -555,51 +763,99 @@ wait:
 			pendingBytes -= len(nextInput.stdin)
 			pendingInput[0] = control{}
 			pendingInput = pendingInput[1:]
-		case result = <-results:
-			break wait
+		case result := <-results:
+			end.result = &result
+			return end
 		case err := <-errs:
-			return sandbox.ExitReport{}, fmt.Errorf("Waiting for the sandbox: %w", err)
+			end.err = fmt.Errorf("Waiting for the sandbox: %w", err)
+			return end
 		case <-limit.C:
-			killed, reason = true, "Sandbox time limit reached"
-			kill("SIGKILL")
+			kill("Sandbox time limit reached")
+		case <-retry.C:
+			kill(asked)
+		case <-stopped:
+			b.logf("Sandbox %s did not report its exit after a kill; removing it by force", s.name)
+			if !end.killed {
+				end.killed, end.reason = true, asked
+			}
+			return end
 		case <-ctx.Done():
-			return sandbox.ExitReport{Killed: true, Error: "Sandbox stream closed"}, nil
+			end.cut = true
+			return end
 		case msg, ok := <-controls:
 			switch {
 			case !ok:
-				return sandbox.ExitReport{Killed: true, Error: "Sandbox stream closed"}, nil
+				end.cut = true
+				return end
 			case msg.stdin != nil || msg.eof:
 				// Keep input ordered and bounded without delaying cancellation, signals or the time limit.
 				if len(pendingInput) >= 1024 || pendingBytes+len(msg.stdin) > 32<<20 {
-					return sandbox.ExitReport{}, errors.New("Sandbox stdin backlog exceeded")
+					end.err = errors.New("Sandbox stdin backlog exceeded")
+					return end
 				}
 				pendingInput = append(pendingInput, msg)
 				pendingBytes += len(msg.stdin)
 			case msg.signal == signalTerm:
-				kill("SIGTERM")
+				termCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = b.engine.ContainerKill(termCtx, s.id, "SIGTERM")
+				cancel()
 			case msg.signal == signalKill:
-				killed, reason = true, ""
-				kill("SIGKILL")
+				kill("")
 			}
 		}
 	}
-	select {
-	case <-attached:
-	case <-time.After(10 * time.Second):
+}
+
+// drain joins the output pump. A sandbox that exited has drainWait for the rest of its output; then, or at once when
+// it did not exit, its attach stream is closed. A sink still blocked on a client that stopped reading is interrupted,
+// so no output can follow the exit report. It reports whether output was cut off, else the pump's own error.
+func (s *prepared) drain(end ending, attached <-chan error, out output, within func(time.Duration) time.Duration) (bool, error) {
+	join := func(wait time.Duration) (bool, error) {
+		select {
+		case err := <-attached:
+			return true, err
+		default:
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case err := <-attached:
+			return true, err
+		case <-timer.C:
+			return false, nil
+		}
 	}
-	report := sandbox.ExitReport{Code: result.StatusCode, Killed: killed, Error: reason}
-	inspectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if end.result != nil {
+		if done, err := join(within(drainWait)); done {
+			s.attach.Close()
+			return false, err
+		}
+	}
+	s.attach.Close()
+	if done, _ := join(within(joinWait)); !done {
+		if out.interrupt != nil {
+			out.interrupt()
+		}
+		<-attached
+	}
+	return true, nil
+}
+
+// oomKilled reports whether the kernel killed any process in the sandbox for memory.
+func (s *prepared) oomKilled(wait time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
-	if state, err := b.engine.ContainerInspect(inspectCtx, s.id); err == nil {
-		report.OOM = state.State.OOMKilled
+	state, err := s.b.engine.ContainerInspect(ctx, s.id)
+	if err != nil {
+		s.b.logf("Reading the state of sandbox %s failed; a memory-limit kill would go unrecorded: %v", s.name, err)
+		return false
 	}
-	report.Sandbox = b.evidence(s.name, report.OOM)
-	return report, nil
+	return state.State.OOMKilled
 }
 
 // evidence records what one finished sandbox ran and, when the gateway is configured, where it reached out.
-func (b *Broker) evidence(name string, oom bool) *model.SandboxRecord {
-	record := &model.SandboxRecord{ImageID: b.info.ImageID, Runtime: b.cfg.Runtime, Runs: 1, OOM: oom,
+func (b *Broker) evidence(name, image string, oom bool) *model.SandboxRecord {
+	record := &model.SandboxRecord{ImageID: image, Runtime: b.cfg.Runtime, Runs: 1, OOM: oom,
 		Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{}}}
 	if b.cfg.EgressCollector == "" {
 		return record
@@ -609,17 +865,24 @@ func (b *Broker) evidence(name string, oom bool) *model.SandboxRecord {
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", b.cfg.EgressCollector)
 		}}}
+	unrecorded := func(why any) *model.SandboxRecord {
+		b.logf("Reading the egress record of sandbox %s failed; its record shows no connections: %v", name, why)
+		return record
+	}
 	resp, err := client.Get("http://egress/v1/summary?sandbox=" + url.QueryEscape(name))
 	if err != nil {
-		return record
+		return unrecorded(err)
 	}
 	defer resp.Body.Close()
 	var summary struct {
 		Allowed map[string]struct{ Count uint64 } `json:"allowed"`
 		Denied  map[string]struct{ Count uint64 } `json:"denied"`
 	}
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&summary) != nil {
-		return record
+	if resp.StatusCode != http.StatusOK {
+		return unrecorded(resp.Status)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&summary); err != nil {
+		return unrecorded(err)
 	}
 	for host, count := range summary.Allowed {
 		record.Egress.Allowed[host] = count.Count
@@ -637,20 +900,39 @@ const (
 
 // runSandbox runs a plan to completion without a control-plane stream, for the broker's own probes.
 func (b *Broker) runSandbox(ctx context.Context, p plan, stdout, stderr func([]byte) error, controls <-chan control) (sandbox.ExitReport, error) {
-	prepared, err := b.prepare(ctx, ctx, p)
+	prepared, err := b.prepare(ctx, ctx, p, func() {})
 	if err != nil {
 		return sandbox.ExitReport{}, err
 	}
 	if controls == nil {
 		controls = make(chan control)
 	}
-	return prepared.execute(ctx, p.timeout, stdout, stderr, controls)
+	return prepared.execute(ctx, p.timeout, output{stdout: stdout, stderr: stderr}, controls)
+}
+
+// streamWriter is a sandbox stream's connection that stays failed after its first failed write: a frame cut short
+// leaves the stream unreadable, so nothing may follow it.
+type streamWriter struct {
+	conn   net.Conn
+	failed atomic.Bool
+}
+
+func (w *streamWriter) Write(p []byte) (int, error) {
+	if w.failed.Load() {
+		return 0, net.ErrClosed
+	}
+	n, err := w.conn.Write(p)
+	if err != nil {
+		w.failed.Store(true)
+	}
+	return n, err
 }
 
 // stream serves one sandbox over an upgraded connection. The connection is the sandbox's lifeline: if it closes,
 // the container is killed and removed.
 func (b *Broker) stream(ctx context.Context, s *prepared, p plan, conn net.Conn, reader *bufio.Reader) {
-	out := sandbox.NewFrameWriter(conn)
+	written := &streamWriter{conn: conn}
+	out := sandbox.NewFrameWriter(written)
 	controls := make(chan control)
 	lifeline, cut := context.WithCancel(ctx)
 	defer cut()
@@ -691,11 +973,12 @@ func (b *Broker) stream(ctx context.Context, s *prepared, p plan, conn net.Conn,
 			return err
 		}
 	}
-	report, err := s.execute(lifeline, p.timeout, forward(sandbox.FrameStdout), forward(sandbox.FrameStderr), controls)
+	report, err := s.execute(lifeline, p.timeout, output{stdout: forward(sandbox.FrameStdout), stderr: forward(sandbox.FrameStderr),
+		interrupt: func() { _ = conn.SetWriteDeadline(time.Now()) }}, controls)
 	if err != nil {
 		report = sandbox.ExitReport{Error: err.Error()}
 	}
-	if lifeline.Err() != nil && report.Error == "Sandbox stream closed" {
+	if lifeline.Err() != nil && report.Error == streamClosed || written.failed.Load() {
 		return
 	}
 	payload, _ := json.Marshal(report)

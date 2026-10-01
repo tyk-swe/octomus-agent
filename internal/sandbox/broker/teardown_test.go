@@ -57,7 +57,7 @@ func TestRemovalAlreadyInProgressIsAwaitedAndKeepsAnonymousVolumesOut(t *testing
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := engineapi.New(e.socket).ContainerRemove(ctx, c.ID); err != nil {
+	if err := engineapi.New(e.Socket()).ContainerRemove(ctx, c.ID); err != nil {
 		t.Fatalf("removal in progress = %v; want it awaited", err)
 	}
 	if remaining := e.Remaining(); len(remaining) != 0 {
