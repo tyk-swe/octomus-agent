@@ -59,6 +59,11 @@ const maxMeasuredDepth = 2048 + 64
 // larger than the depth limit, allowing ordinary branching without letting one owner force unbounded repeated work.
 const maxReopenedComponents = 64 * 1024
 
+// maxMeasurementAttempts lets transient file removals settle without trusting an incomplete snapshot. Every retry
+// starts over with fresh descriptors, accounting and traversal budgets; a final incomplete attempt keeps its owners
+// unknown. This is a bounded response to detected mutations, not a filesystem snapshot.
+const maxMeasurementAttempts = 3
+
 // Usage is one storage measurement. Bytes counts every file the walk reached. Unmeasured names, once each and sorted,
 // the subtrees whose bytes are unknown because they could not be read or exceeded a traversal depth or work bound,
 // each by at most the leading components Measure was asked to group by: whoever owns one must be treated as over any
@@ -76,24 +81,37 @@ type Usage struct {
 // An unmeasured subtree is reported by its first group path components relative to path ("." for group 0), so the
 // report grows with the directories at those levels, not with what a sandbox builds below one, and the walk never
 // spells out a deeper path. Below path, only what a sandbox can cause in a tree it writes leaves a subtree unmeasured:
-// a denied directory, one nested too deeply, one requiring too much repeated ancestor traversal, or a directory moved
-// or replaced while the walk runs. Any other error, and any failure to read path itself, fails the measurement.
+// a denied directory, one nested too deeply, one requiring too much repeated ancestor traversal, or an entry moved
+// or replaced while the walk runs. Entries disappearing before their first stat trigger a bounded fresh scan, so a
+// settled temporary-file removal does not block its owner. Any other error, and any failure to read path itself,
+// fails the measurement.
 func Measure(path string, group int) (Usage, error) {
-	dir, err := os.Open(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return Usage{}, nil
-	}
-	if err != nil {
-		return Usage{}, err
-	}
-	defer dir.Close()
-	w := walker{root: dir, group: group, unmeasured: map[string]struct{}{}}
-	if err := w.walk(dir, ".", nil, nil); err != nil {
-		return Usage{}, err
-	}
-	usage := Usage{Bytes: w.bytes}
-	if len(w.unmeasured) > 0 {
-		usage.Unmeasured = slices.Sorted(maps.Keys(w.unmeasured))
+	return measure(path, group, func(w *walker) error { return w.walk(w.root, ".", nil, nil) })
+}
+
+func measure(path string, group int, walk func(*walker) error) (Usage, error) {
+	var usage Usage
+	for range maxMeasurementAttempts {
+		dir, err := os.Open(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return Usage{}, nil
+		}
+		if err != nil {
+			return Usage{}, err
+		}
+		w := walker{root: dir, group: group, unmeasured: map[string]struct{}{}}
+		err = walk(&w)
+		dir.Close()
+		if err != nil {
+			return Usage{}, err
+		}
+		usage = Usage{Bytes: w.bytes}
+		if len(w.unmeasured) > 0 {
+			usage.Unmeasured = slices.Sorted(maps.Keys(w.unmeasured))
+		}
+		if !w.retry {
+			break
+		}
 	}
 	return usage, nil
 }
@@ -103,6 +121,7 @@ type walker struct {
 	group       int
 	bytes       uint64
 	unmeasured  map[string]struct{}
+	retry       bool           // An entry vanished before its first stat; only a fresh scan can establish its bytes.
 	reopenLimit int            // Zero uses maxReopenedComponents.
 	reopened    map[string]int // Component opens per owner; -1 means its budget was exhausted.
 }
@@ -217,8 +236,10 @@ func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []
 		if err := unix.Fstatat(fd, name, &meta, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			switch {
 			case errors.Is(err, fs.ErrNotExist):
-				// Temporary files routinely disappear before their first stat. Only directories already
-				// identified below have a pending subtree to fail closed when they disappear during open.
+				// It may be a removed temporary file or data moved into an already-scanned directory. Mark
+				// this attempt incomplete and retry from the root, never carry its partial count forward.
+				w.unmeasured[w.childPrefix(prefix, name, depth)] = struct{}{}
+				w.retry = true
 				continue
 			case depth > 0 && unmeasurable(err):
 				// A directory that denies search denies every name in it.

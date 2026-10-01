@@ -500,39 +500,198 @@ func TestMeasureInitialDescentChecksDirectoryIdentity(t *testing.T) {
 	}
 }
 
-func TestMeasureSkipsTransientFilesMissingBeforeStat(t *testing.T) {
+func assertFreshMeasurementAttempt(t *testing.T, w *walker, previous **os.File) {
+	t.Helper()
+	if *previous != nil {
+		if _, err := (*previous).Stat(); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("previous root was not closed before retry: %v", err)
+		}
+	}
+	*previous = w.root
+	if w.bytes != 0 || len(w.unmeasured) != 0 || len(w.reopened) != 0 || w.retry {
+		t.Fatalf("retry carried previous accounting or budgets: %+v", w)
+	}
+	// Consume this descriptor's enumeration offset too: the next attempt must start from a newly opened root.
+	if _, err := w.root.Readdirnames(-1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func walkMeasuredTestPath(t *testing.T, w *walker, root, relative string) {
+	t.Helper()
+	dir, path := measuredTestPath(t, root, relative)
+	prefix := "."
+	for depth, component := range path {
+		prefix = w.childPrefix(prefix, component.name, depth)
+	}
+	if err := w.walk(dir, prefix, path, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMeasureRetriesEntriesMissingBeforeStat(t *testing.T) {
 	for group, owner := range []string{".", "cycles", filepath.Join("cycles", "owner")} {
-		t.Run(owner, func(t *testing.T) {
-			root := t.TempDir()
-			parent := filepath.Join(root, "cycles", "owner", "repo.git")
-			if err := os.MkdirAll(parent, 0o755); err != nil {
+		for _, change := range []string{"removed-file", "moved-file", "moved-directory"} {
+			t.Run(owner+"/"+change, func(t *testing.T) {
+				root := t.TempDir()
+				scanned := filepath.Join("cycles", "owner", "scanned")
+				pending := filepath.Join("cycles", "owner", "pending")
+				healthy := filepath.Join("cycles", "healthy")
+				for _, relative := range []string{scanned, pending, healthy} {
+					if err := os.MkdirAll(filepath.Join(root, relative), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				moving := filepath.Join(root, pending, "entry")
+				payload := moving
+				if change == "moved-directory" {
+					if err := os.Mkdir(moving, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					payload = filepath.Join(moving, "payload")
+				}
+				for name, content := range map[string]string{
+					payload:                                 strings.Repeat("x", 4096),
+					filepath.Join(root, pending, "counted"): "123",
+					filepath.Join(root, healthy, "counted"): "1234567",
+				} {
+					if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				attempts := 0
+				var previous *os.File
+				usage, err := measure(root, group, func(w *walker) error {
+					attempts++
+					if attempts > 1 {
+						if _, err := previous.Stat(); !errors.Is(err, os.ErrClosed) {
+							t.Fatalf("previous root still open: %v", err)
+						}
+						previous = w.root
+						if w.bytes != 0 || len(w.unmeasured) != 0 || len(w.reopened) != 0 || w.retry {
+							t.Fatalf("retry carried previous accounting or budgets: %+v", w)
+						}
+						return w.walk(w.root, ".", nil, nil)
+					}
+					assertFreshMeasurementAttempt(t, w, &previous)
+					walkMeasuredTestPath(t, w, root, scanned)
+					dir, path := measuredTestPath(t, root, pending)
+					defer dir.Close()
+					names, err := dir.Readdirnames(-1)
+					if err != nil {
+						return err
+					}
+					// This deterministic mutation occurs after enumeration and before the first stat.
+					if change == "removed-file" {
+						err = os.Remove(moving)
+					} else {
+						err = os.Rename(moving, filepath.Join(root, scanned, "moved"))
+					}
+					if err != nil {
+						return err
+					}
+					if _, err := w.measureEntries(dir, owner, len(path), names); err != nil {
+						return err
+					}
+					walkMeasuredTestPath(t, w, root, healthy)
+					if _, unknown := w.unmeasured[owner]; !unknown || !w.retry || w.bytes != 10 {
+						t.Fatalf("incomplete attempt = %+v; want 10 bytes, unknown owner and a retry", w)
+					}
+					w.reopened = map[string]int{owner: -1}
+					return nil
+				})
+				wantBytes := uint64(10)
+				if change != "removed-file" {
+					wantBytes += 4096
+				}
+				if err != nil || attempts != 2 || usage.Bytes != wantBytes || len(usage.Unmeasured) != 0 {
+					t.Fatalf("usage = %+v, attempts = %d, err = %v; want fresh complete %d bytes after two attempts", usage, attempts, err, wantBytes)
+				}
+				if _, err := previous.Stat(); !errors.Is(err, os.ErrClosed) {
+					t.Fatalf("final root still open: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestMeasureBoundsMutationRetriesAndKeepsOnlyFinalOwners(t *testing.T) {
+	root := t.TempDir()
+	owners := []string{"first", "second", "third"}
+	for _, owner := range append(append([]string{}, owners...), "healthy") {
+		for _, dir := range []string{"scanned", "pending"} {
+			if err := os.MkdirAll(filepath.Join(root, "cycles", owner, dir), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			lock := filepath.Join(parent, "index.lock")
-			if err := os.WriteFile(lock, []byte("pending index"), 0o644); err != nil {
+		}
+		if err := os.WriteFile(filepath.Join(root, "cycles", owner, "counted"), []byte("123"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if owner != "healthy" {
+			if err := os.WriteFile(filepath.Join(root, "cycles", owner, "pending", "entry"), []byte(strings.Repeat("x", 4096)), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(parent, "counted"), []byte("123"), 0o644); err != nil {
-				t.Fatal(err)
+		}
+	}
+	attempts := 0
+	var previous *os.File
+	usage, err := measure(root, 2, func(w *walker) error {
+		if attempts >= len(owners) {
+			t.Fatal("mutation retries exceeded their fixed bound")
+		}
+		changing := owners[attempts]
+		attempts++
+		assertFreshMeasurementAttempt(t, w, &previous)
+		for _, owner := range owners {
+			relative := filepath.Join("cycles", owner)
+			if owner != changing {
+				walkMeasuredTestPath(t, w, root, relative)
+				continue
 			}
-			dir, path := measuredTestPath(t, root, filepath.Join("cycles", "owner", "repo.git"))
-			defer dir.Close()
+			walkMeasuredTestPath(t, w, root, filepath.Join(relative, "scanned"))
+			dir, path := measuredTestPath(t, root, filepath.Join(relative, "pending"))
 			names, err := dir.Readdirnames(-1)
+			if err == nil {
+				err = os.Rename(filepath.Join(root, relative, "pending", "entry"), filepath.Join(root, relative, "scanned", "moved"))
+			}
+			if err == nil {
+				_, err = w.measureEntries(dir, relative, len(path), names)
+			}
+			dir.Close()
 			if err != nil {
-				t.Fatal(err)
+				return err
 			}
-			// A concurrent Git operation can remove its lock between enumeration and the first stat.
-			if err := os.Remove(lock); err != nil {
-				t.Fatal(err)
-			}
-			w := walker{group: group, unmeasured: map[string]struct{}{}}
-			directories, err := w.measureEntries(dir, owner, len(path), names)
+			// Account for the owner's already reached top-level file without scanning its destination again.
+			dir, path = measuredTestPath(t, root, relative)
+			_, err = w.measureEntries(dir, relative, len(path), []string{"counted"})
+			dir.Close()
 			if err != nil {
-				t.Fatal(err)
+				return err
 			}
-			if len(w.unmeasured) != 0 || w.bytes != 3 || len(directories) != 0 {
-				t.Fatalf("bytes = %d, directories = %v, unmeasured = %v; want 3 bytes with no unmeasured owner", w.bytes, directories, w.unmeasured)
-			}
-		})
+		}
+		walkMeasuredTestPath(t, w, root, filepath.Join("cycles", "healthy"))
+		w.reopened = map[string]int{filepath.Join("cycles", changing): -1}
+		return nil
+	})
+	if err != nil || attempts != maxMeasurementAttempts || usage.Bytes != 2*4096+4*3 || !slices.Equal(usage.Unmeasured, []string{filepath.Join("cycles", "third")}) {
+		t.Fatalf("usage = %+v, attempts = %d, err = %v; want final partial bytes and only the final changing owner after %d attempts", usage, attempts, err, maxMeasurementAttempts)
+	}
+	if _, err := previous.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("final root still open: %v", err)
+	}
+}
+
+func TestMeasureDoesNotRetryTraversalLimit(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	usage, err := measure(root, 0, func(w *walker) error {
+		attempts++
+		return w.walk(w.root, ".", make([]measuredDir, maxMeasuredDepth-1), nil)
+	})
+	if err != nil || attempts != 1 || usage.Bytes != 0 || !slices.Equal(usage.Unmeasured, []string{"."}) {
+		t.Fatalf("usage = %+v, attempts = %d, err = %v; a traversal limit must not trigger mutation retries", usage, attempts, err)
 	}
 }
