@@ -169,24 +169,28 @@ func (a *App) admit(cycleID string, task *model.Task, role string, route config.
 // ownedRoots are the data directory's parents of owned roots, each <parent>/<id>, where sandboxes write.
 var ownedRoots = []string{"tasks", "cycles", "baselines", scratchDir}
 
+// ownerDepth is how many leading components of a path below the data directory name its owner: <parent>/<id>.
+const ownerDepth = 2
+
 // measureFor measures the data directory for an admission on behalf of owner, an owned root relative to it. A subtree
 // the walk could not measure, unreadable or nested too deeply, holds unknown bytes: it puts its own owner over the
 // limit, and puts everyone over it when it lies outside any owned root. Another owner's unmeasured subtree does not
 // stop this admission; that owner can admit nothing more until its retained work is resolved.
 func (a *App) measureFor(owner string) (uint64, error) {
-	usage, err := workspace.Measure(a.DataDir)
+	usage, err := workspace.Measure(a.DataDir, ownerDepth)
 	if err != nil {
 		return 0, err
 	}
 	for _, rel := range usage.Unmeasured {
-		parts := strings.SplitN(rel, string(filepath.Separator), 3)
-		blamed := parts[0]
-		if len(parts) > 1 {
-			blamed = filepath.Join(parts[0], parts[1])
+		parent, _, owned := strings.Cut(rel, string(filepath.Separator))
+		if !owned || !slices.Contains(ownedRoots, parent) {
+			// No sandbox writes here, so this is the host's own: lost+found at a filesystem's root, for example.
+			return 0, fmt.Errorf("Storage under %s in the data directory could not be measured; it is unreadable or nested too deeply. Make it readable to the service or move it out of the data directory: %w",
+				redact.Text(rel), model.BlockedReasonStorageLimit)
 		}
-		if blamed == owner || len(parts) < 2 || !slices.Contains(ownedRoots, parts[0]) {
+		if rel == owner {
 			return 0, fmt.Errorf("Workspace storage under %s could not be measured; it is unreadable or nested too deeply. Resolve that retained work: %w",
-				redact.Text(blamed), model.BlockedReasonStorageLimit)
+				redact.Text(rel), model.BlockedReasonStorageLimit)
 		}
 	}
 	return usage.Bytes, nil

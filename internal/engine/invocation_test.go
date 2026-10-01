@@ -224,6 +224,37 @@ func TestTooDeepWorkspaceBlocksOnlyItsOwner(t *testing.T) {
 	}
 }
 
+// A directory the service cannot read beside the owned roots, like lost+found when the data directory is a mount's
+// root, is not a sandbox's retained work: every admission is refused, and the refusal says how to fix the host.
+func TestUnreadableDataDirectoryEntryRefusesEveryAdmission(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	state := testStore(t)
+	data := t.TempDir()
+	app := New(state, data)
+	t.Cleanup(app.Shutdown)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	lost := filepath.Join(data, "lost+found")
+	if err := os.Mkdir(lost, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(lost, 0o755) })
+
+	for _, task := range []*model.Task{nil, {ID: "t1", CycleID: "cycle-1"}} {
+		err := app.admit("cycle-1", task, "executor", cfg.Roles["discovery"])
+		if model.BlockedReasonFromError(err) != model.BlockedReasonStorageLimit ||
+			!strings.Contains(err.Error(), "lost+found in the data directory") || !strings.Contains(err.Error(), "move it out of the data directory") {
+			t.Fatalf("admission beside an unreadable lost+found = %v; want a storage limit that names it and says how to fix it", err)
+		}
+	}
+	if err := app.measureStorage(cfg); err != nil {
+		t.Fatalf("storage measurement beside an unreadable lost+found = %v", err)
+	}
+}
+
 func TestInvocationRejectsReservedResume(t *testing.T) {
 	t.Parallel()
 	state := testStore(t)

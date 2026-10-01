@@ -349,7 +349,7 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 // measuredBytes is what the dashboard shows: the bytes a walk could reach. Admission accounts for unmeasured subtrees
 // itself (measureFor).
 func measuredBytes(path string) (uint64, error) {
-	usage, err := workspace.Measure(path)
+	usage, err := workspace.Measure(path, 0)
 	return usage.Bytes, err
 }
 

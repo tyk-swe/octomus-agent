@@ -162,12 +162,16 @@ conflicts. Application storage is measured separately from runner
 transcripts. Storage admission remains a pre-turn check, not a filesystem quota.
 Measurement walks relative to each directory's descriptor, so nesting depth
 never lengthens a path it resolves, and it never follows a symlink. A directory
-below the measured root that cannot be read, or that nests more than 256 levels
-deep, holds unknown bytes: admission refuses its owning task, planning cycle or
-baseline (and everyone, outside those roots) with the storage limit until that
-work is resolved, while other owners' admissions count only what was measured.
-Failing to read the measured root itself still fails the measurement, and
-measurement never changes permissions.
+below the measured root that denies access (or is swapped for a symlink or file
+during the walk), or that sits 256 or more levels below the data directory,
+holds unknown bytes: admission refuses its owning task, planning cycle or
+baseline with the storage limit until that work is resolved, while other owners'
+admissions count only what was measured. Such a directory outside those owned
+roots refuses every admission until it is made readable or moved out of the data
+directory; a data directory at a filesystem's root has a `lost+found` the service
+usually cannot read, so use a subdirectory. Any other filesystem error except a
+vanished path, and failing to read the measured root itself, still fails the
+measurement, and measurement never changes permissions.
 
 Diagnostic subprocess output retains the first 256 KiB of each stream and
 truncation flags, and for a longer stream its last 64 KiB, kept in a rolling
