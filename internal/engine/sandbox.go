@@ -132,6 +132,10 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 		}
 	}
 	report, err := sandbox.Probe(ctx, a.sandbox)
+	if err != nil && ctx.Err() != nil {
+		// A probe its caller abandoned observed nothing about containment; the last result stands.
+		return record, err
+	}
 	if err != nil {
 		message := redact.Error(err)
 		record.Error = &message
