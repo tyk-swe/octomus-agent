@@ -96,7 +96,8 @@ Task details show a sandbox record for every session and verification command:
 - the hosts the gateway let it reach, and those it refused, with counts.
 
 A refused host is often the first sign of prompt injection, or of a registry missing from
-`OCTOMUS_EGRESS_BUILD_HOSTS`.
+`OCTOMUS_EGRESS_BUILD_HOSTS`. An allowlisted host the gateway could not reach (a failed
+lookup or connection, or too many open tunnels) is listed apart, as unreachable.
 
 Host names come from untrusted code, so they stay in private task records and the
 dashboard. They are never part of exported [run evidence](run-evidence.md). Planning
@@ -135,8 +136,11 @@ Each sandbox receives proxy variables carrying its own random credential. The ga
   (including cloud metadata), carrier-grade NAT, documentation, benchmark, reserved or
   IPv4-embedding IPv6 addresses;
 - dials the address it checked, so DNS rebinding cannot redirect the tunnel;
-- bounds open tunnels per sandbox, and logs every decision as a JSON line
-  (`docker compose logs egress`).
+- bounds open tunnels per sandbox and connections per source, closes every refused
+  connection, and ends a sandbox's tunnels as soon as its lease is revoked;
+- logs each tunnel as a JSON line when it opens and again when it closes, and each refusal
+  (`docker compose logs egress`); past 120 tunnels or 20 refusals a minute from one
+  sandbox, the rest are counted in a single `suppressed` line instead.
 
 Two allowlists come from the deployment's `.env`:
 
