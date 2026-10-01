@@ -47,8 +47,8 @@ docker compose run --rm login opencode auth login
 
 A login runs like a runner sandbox: it reaches out only through the egress gateway, under
 the runner allowlist. Codex's sign-in hosts are allowed by default; for OpenCode, first add
-`models.opencode.ai` and your provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS`. See
-[signing in a runner](sandbox.md#signing-in-a-runner).
+`models.opencode.ai` and your provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS` in
+`.env` and run `docker compose up -d`. See [signing in a runner](sandbox.md#signing-in-a-runner).
 
 Open the dashboard through an [SSH tunnel](#private-access) and run **Check connection**. It
 proves the sandbox from inside one before any work starts; see [the self-test](sandbox.md#prove-it-the-self-test).

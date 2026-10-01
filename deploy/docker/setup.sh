@@ -86,7 +86,9 @@ cat <<NEXT
 Octomus is starting, sandboxed. Next:
   1. Sign in a runner (the login lands in the runner volume, never in the control plane):
        docker compose run --rm login codex login --device-auth
-     or: docker compose run --rm login opencode auth login
+     For OpenCode, first add models.opencode.ai and your provider's sign-in host to OCTOMUS_EGRESS_MODEL_HOSTS
+     in .env and run docker compose up -d, then:
+       docker compose run --rm login opencode auth login
   2. From your computer, open the dashboard through an SSH tunnel:
        ssh -N -L 4200:127.0.0.1:$port <this-host>
      then browse to http://127.0.0.1:4200

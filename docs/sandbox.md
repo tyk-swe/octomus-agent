@@ -164,8 +164,8 @@ gives nothing they leave there more reach than they have:
 - its image is read-only, and it runs without capabilities, under memory and process limits.
 
 Codex's sign-in hosts are in the default allowlist. For OpenCode, first add
-`models.opencode.ai` and your provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS`;
-`docker compose logs egress` shows any host a login was refused.
+`models.opencode.ai` and your provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS` and run
+`docker compose up -d`; `docker compose logs egress` shows any host a login was refused.
 
 ## Resource limits
 
