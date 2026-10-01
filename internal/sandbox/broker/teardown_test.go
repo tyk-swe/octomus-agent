@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -91,4 +92,42 @@ func TestRemovalThatFailsElsewhereIsAskedForAgain(t *testing.T) {
 	if remaining := e.Remaining(); len(remaining) != 0 {
 		t.Fatalf("ContainerRemove returned while %v still existed", remaining)
 	}
+}
+
+func TestUnconfirmedRemovalKeepsItsSlotUntilAReaperConfirmsIt(t *testing.T) {
+	tune(t, &teardownBudget, 2*time.Second)
+	tune(t, &removeReserve, time.Second)
+	tune(t, &reapDelay, 50*time.Millisecond)
+	e := newFakeEngine(t)
+	var failing atomic.Bool
+	failing.Store(true)
+	e.remove = func(*fakeContainer) (int, string) {
+		if failing.Load() {
+			return http.StatusInternalServerError, "could not kill: tried to kill container, but did not receive an exit event"
+		}
+		return 0, ""
+	}
+	cfg := testConfig(t)
+	cfg.Max = 1
+	log := &syncLog{}
+	cfg.Log = log
+	b := e.broker(t, cfg)
+	child, err := serve(t, b).Start(context.Background(), versionsProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, child.Stdout()) }()
+	if _, err := child.Wait(); err == nil || !strings.Contains(err.Error(), "Removing the sandbox failed") {
+		t.Fatalf("sandbox whose removal failed = %v; want the failure reported", err)
+	}
+	if b.Info().Live != 1 || len(b.slots) != 1 || len(e.Remaining()) != 1 {
+		t.Fatalf("an unconfirmed removal gave back its slot (live %d, slots %d)", b.Info().Live, len(b.slots))
+	}
+	if !strings.Contains(log.String(), "did not receive an exit event") {
+		t.Fatalf("broker log = %q; want the removal failure", log.String())
+	}
+	failing.Store(false)
+	waitUntil(t, "the reaper removed the sandbox and gave its slot back", func() bool {
+		return len(e.Remaining()) == 0 && b.Info().Live == 0 && len(b.slots) == 0
+	})
 }

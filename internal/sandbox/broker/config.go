@@ -63,7 +63,10 @@ const (
 	rootLabel      = "octomus.sandbox.root"
 )
 
-var instancePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+var (
+	instancePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+	runtimePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+)
 
 // LoadConfig reads the broker's deployment settings. Every security-relevant value comes from the host, never from
 // a request.
@@ -112,13 +115,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		"OCTOMUS_DATA_DIR":           c.DataDir,
 		"OCTOMUS_SANDBOX_RUNNER_DIR": c.RunnerDir,
 		"OCTOMUS_SANDBOX_TOOLS_DIR":  c.ToolsDir,
+		"OCTOMUS_EGRESS_LEASES":      c.LeaseDir,
 	} {
 		if path != "" && (!filepath.IsAbs(path) || filepath.Clean(path) != path) {
 			errs = append(errs, fmt.Errorf("%s must be a clean absolute path", key))
 		}
-	}
-	if c.LeaseDir != "" && (!filepath.IsAbs(c.LeaseDir) || filepath.Clean(c.LeaseDir) != c.LeaseDir) {
-		errs = append(errs, errors.New("OCTOMUS_EGRESS_LEASES must be a clean absolute path"))
 	}
 	if (c.LeaseDir == "") != (c.EgressProxy == "") {
 		errs = append(errs, errors.New("OCTOMUS_EGRESS_PROXY and OCTOMUS_EGRESS_LEASES are set together"))
@@ -155,7 +156,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.Pids = integer("OCTOMUS_SANDBOX_PIDS", 1024, 32, 1<<22)
 	c.Max = int(integer("OCTOMUS_SANDBOX_MAX", 12, 1, 256))
 	c.MaxSeconds = uint64(integer("OCTOMUS_SANDBOX_MAX_SECONDS", 21600, 60, 7*24*3600))
-	if c.Runtime != "" && !regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`).MatchString(c.Runtime) {
+	if c.Runtime != "" && !runtimePattern.MatchString(c.Runtime) {
 		errs = append(errs, errors.New("OCTOMUS_SANDBOX_RUNTIME must be a runtime name such as runsc"))
 	}
 	return c, errors.Join(errs...)

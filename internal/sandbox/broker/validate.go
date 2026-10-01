@@ -164,13 +164,7 @@ func (c Config) ownedFile(rel string) error {
 		}
 		return err
 	}
-	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("Sandbox root component %s is not a plain file", rel)
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != c.UID {
-		return fmt.Errorf("Sandbox root component %s is not owned by the sandbox user", rel)
-	}
-	return nil
+	return c.ownedEntry(rel, info, false)
 }
 
 // ownedDirectory walks rel from the data directory without following symlinks: every component must be a real
@@ -187,12 +181,24 @@ func (c Config) ownedDirectory(rel string) error {
 			}
 			return err
 		}
-		if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("Sandbox root component %s is not a plain directory", rel)
+		if err := c.ownedEntry(rel, info, true); err != nil {
+			return err
 		}
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != c.UID {
-			return fmt.Errorf("Sandbox root component %s is not owned by the sandbox user", rel)
-		}
+	}
+	return nil
+}
+
+// ownedEntry requires info, from an Lstat within rel, to be a plain file or directory owned by the sandbox user.
+func (c Config) ownedEntry(rel string, info fs.FileInfo, wantDir bool) error {
+	plain, what := info.Mode().IsRegular(), "file"
+	if wantDir {
+		plain, what = info.IsDir(), "directory"
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !plain {
+		return fmt.Errorf("Sandbox root component %s is not a plain %s", rel, what)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != c.UID {
+		return fmt.Errorf("Sandbox root component %s is not owned by the sandbox user", rel)
 	}
 	return nil
 }

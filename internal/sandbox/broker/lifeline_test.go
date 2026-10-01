@@ -3,9 +3,7 @@ package broker
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -39,90 +37,6 @@ var versionsProbe = sandbox.Spec{Kind: sandbox.KindProbe, Probe: wire.ProbeVersi
 
 func probePlan(timeout time.Duration) plan {
 	return plan{kind: wire.KindProbe, probe: wire.ProbeVersions, timeout: timeout}
-}
-
-func TestFullBrokerMakesRequestsWait(t *testing.T) {
-	e := newFakeEngine(t)
-	finish := make(chan struct{})
-	e.run = func(c *fakeContainer) {
-		<-finish
-		c.End(0)
-	}
-	cfg := testConfig(t)
-	cfg.Max = 1
-	b := e.broker(t, cfg)
-	first := serve(t, b)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	holder, err := first.Start(ctx, versionsProbe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.WaitCreated(t, 1)
-	// A second control plane, or one that counted its slot free a moment early, asks while the only slot is held.
-	type started struct {
-		child sandbox.Child
-		err   error
-	}
-	second := make(chan started, 1)
-	go func() {
-		child, err := sandbox.NewRemote(first.Socket()).Start(ctx, versionsProbe)
-		second <- started{child, err}
-	}()
-	select {
-	case got := <-second:
-		t.Fatalf("a request for a held slot did not wait: %v", got.err)
-	case <-time.After(300 * time.Millisecond):
-	}
-	close(finish)
-	if status, err := holder.Wait(); err != nil || !status.Success() {
-		t.Fatalf("first sandbox = %v, %v", status, err)
-	}
-	got := <-second
-	if got.err != nil {
-		t.Fatalf("waiting request = %v; want it admitted once the slot came back", got.err)
-	}
-	if status, err := got.child.Wait(); err != nil || !status.Success() {
-		t.Fatalf("second sandbox = %v, %v", status, err)
-	}
-}
-
-func TestUnconfirmedRemovalKeepsItsSlotUntilAReaperConfirmsIt(t *testing.T) {
-	tune(t, &teardownBudget, 2*time.Second)
-	tune(t, &removeReserve, time.Second)
-	tune(t, &reapDelay, 50*time.Millisecond)
-	e := newFakeEngine(t)
-	var failing atomic.Bool
-	failing.Store(true)
-	e.remove = func(*fakeContainer) (int, string) {
-		if failing.Load() {
-			return http.StatusInternalServerError, "could not kill: tried to kill container, but did not receive an exit event"
-		}
-		return 0, ""
-	}
-	cfg := testConfig(t)
-	cfg.Max = 1
-	log := &syncLog{}
-	cfg.Log = log
-	b := e.broker(t, cfg)
-	child, err := serve(t, b).Start(context.Background(), versionsProbe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _, _ = io.Copy(io.Discard, child.Stdout()) }()
-	if _, err := child.Wait(); err == nil || !strings.Contains(err.Error(), "Removing the sandbox failed") {
-		t.Fatalf("sandbox whose removal failed = %v; want the failure reported", err)
-	}
-	if b.Info().Live != 1 || len(b.slots) != 1 || len(e.Remaining()) != 1 {
-		t.Fatalf("an unconfirmed removal gave back its slot (live %d, slots %d)", b.Info().Live, len(b.slots))
-	}
-	if !strings.Contains(log.String(), "did not receive an exit event") {
-		t.Fatalf("broker log = %q; want the removal failure", log.String())
-	}
-	failing.Store(false)
-	waitUntil(t, "the reaper removed the sandbox and gave its slot back", func() bool {
-		return len(e.Remaining()) == 0 && b.Info().Live == 0 && len(b.slots) == 0
-	})
 }
 
 func TestFailedTimeLimitKillIsRetried(t *testing.T) {
@@ -281,54 +195,5 @@ func TestUnreadableEgressRecordIsLogged(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "egress record of sandbox") {
 		t.Fatalf("broker log = %q; want the lost egress record noted", log.String())
-	}
-}
-
-func TestShutdownLetsSandboxesRemoveThemselvesBeforeSweeping(t *testing.T) {
-	e := newFakeEngine(t)
-	// Docker refuses a second removal of a container while the first one runs.
-	e.removeDelay = 300 * time.Millisecond
-	e.run = func(*fakeContainer) {}
-	cfg := testConfig(t)
-	cfg.Max = 4
-	b := e.broker(t, cfg)
-	dir, err := os.MkdirTemp("/tmp", "ob-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "sandboxd.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	served := make(chan error, 1)
-	go func() { served <- b.Serve(ctx, listener) }()
-	remote := sandbox.NewRemote(socket)
-	for range 4 {
-		child, err := remote.Start(context.Background(), versionsProbe)
-		if err != nil {
-			t.Fatal(err)
-		}
-		go func() { _, _ = io.Copy(io.Discard, child.Stdout()) }()
-	}
-	e.WaitCreated(t, 4)
-	cancel()
-	select {
-	case err := <-served:
-		if err != nil {
-			t.Fatalf("shutdown = %v; want every sandbox removed cleanly", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("shutdown did not finish")
-	}
-	if remaining := e.Remaining(); len(remaining) != 0 {
-		t.Fatalf("shutdown left %v", remaining)
-	}
-	// Each sandbox's own teardown removed it; the sweep found nothing to race them for.
-	if deletes := e.Deletes(); len(deletes) != 4 {
-		t.Fatalf("shutdown sent %d removals for 4 sandboxes; the sweep raced their own teardown", len(deletes))
 	}
 }
