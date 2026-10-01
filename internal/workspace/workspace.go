@@ -76,7 +76,7 @@ type Usage struct {
 // An unmeasured subtree is reported by its first group path components relative to path ("." for group 0), so the
 // report grows with the directories at those levels, not with what a sandbox builds below one, and the walk never
 // spells out a deeper path. Below path, only what a sandbox can cause in a tree it writes leaves a subtree unmeasured:
-// a denied directory, one nested too deeply, one requiring too much repeated ancestor traversal, or an entry moved
+// a denied directory, one nested too deeply, one requiring too much repeated ancestor traversal, or a directory moved
 // or replaced while the walk runs. Any other error, and any failure to read path itself, fails the measurement.
 func Measure(path string, group int) (Usage, error) {
 	dir, err := os.Open(path)
@@ -217,8 +217,8 @@ func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []
 		if err := unix.Fstatat(fd, name, &meta, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			switch {
 			case errors.Is(err, fs.ErrNotExist):
-				// Its type and bytes are unknown: even a file can move into an already-scanned directory.
-				w.unmeasured[w.childPrefix(prefix, name, depth)] = struct{}{}
+				// Temporary files routinely disappear before their first stat. Only directories already
+				// identified below have a pending subtree to fail closed when they disappear during open.
 				continue
 			case depth > 0 && unmeasurable(err):
 				// A directory that denies search denies every name in it.

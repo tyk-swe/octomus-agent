@@ -144,15 +144,11 @@ func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
 	if used, err := state.SessionsToday(); err != nil || used != 1 {
 		t.Fatalf("sessions today = %d, %v; want 1", used, err)
 	}
-	if err := app.measureStorage(cfg); err != nil {
-		t.Fatalf("storage measurement with an unreadable workspace directory = %v", err)
+	if err := app.measureStorage(cfg); !errors.Is(err, errStorageIncomplete) {
+		t.Fatalf("storage measurement with an unreadable workspace directory = %v; want incomplete", err)
 	}
-	saved, err := store.Get[storageUsage](state, "settings", "storage")
-	if err != nil || saved == nil {
-		t.Fatalf("saved storage = %+v, %v", saved, err)
-	}
-	if saved.TaskBytes != uint64(len(readable)) || saved.ApplicationBytes < saved.TaskBytes {
-		t.Fatalf("saved storage = %+v; want %d readable task bytes", saved, len(readable))
+	if saved, err := store.Get[storageUsage](state, "settings", "storage"); err != nil || saved != nil {
+		t.Fatalf("incomplete storage observation was published = %+v, %v", saved, err)
 	}
 	if info, err := os.Lstat(locked); err != nil || info.Mode().Perm() != 0 {
 		t.Fatalf("measurement changed the locked directory: %v, %v; want mode 0", info, err)
@@ -221,8 +217,8 @@ func TestTooDeepWorkspaceBlocksOnlyItsOwner(t *testing.T) {
 	if used, err := state.SessionsToday(); err != nil || used != 2 {
 		t.Fatalf("sessions today = %d, %v; want 2", used, err)
 	}
-	if err := app.measureStorage(cfg); err != nil {
-		t.Fatalf("storage measurement beside a too-deep task tree = %v", err)
+	if err := app.measureStorage(cfg); !errors.Is(err, errStorageIncomplete) {
+		t.Fatalf("storage measurement beside a too-deep task tree = %v; want incomplete", err)
 	}
 }
 
@@ -280,8 +276,8 @@ func TestUnreadableDataDirectoryEntryRefusesEveryAdmission(t *testing.T) {
 			t.Fatalf("admission beside an unreadable lost+found = %v; want a storage limit that names it and says how to fix it", err)
 		}
 	}
-	if err := app.measureStorage(cfg); err != nil {
-		t.Fatalf("storage measurement beside an unreadable lost+found = %v", err)
+	if err := app.measureStorage(cfg); !errors.Is(err, errStorageIncomplete) {
+		t.Fatalf("storage measurement beside an unreadable lost+found = %v; want incomplete", err)
 	}
 }
 

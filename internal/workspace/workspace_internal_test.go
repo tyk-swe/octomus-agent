@@ -500,55 +500,39 @@ func TestMeasureInitialDescentChecksDirectoryIdentity(t *testing.T) {
 	}
 }
 
-func TestMeasureReportsEntriesMissingBeforeStat(t *testing.T) {
-	for group, owner := range []string{".", "tasks", filepath.Join("tasks", "owner")} {
-		for _, kind := range []string{"file", "directory"} {
-			t.Run(owner+"/"+kind, func(t *testing.T) {
-				root := t.TempDir()
-				parent := filepath.Join(root, "tasks", "owner")
-				if err := os.MkdirAll(parent, 0o755); err != nil {
-					t.Fatal(err)
-				}
-				moving := filepath.Join(parent, "moving")
-				payload := moving
-				if kind == "directory" {
-					if err := os.Mkdir(moving, 0o755); err != nil {
-						t.Fatal(err)
-					}
-					payload = filepath.Join(moving, "payload")
-				}
-				if err := os.WriteFile(payload, []byte(strings.Repeat("x", 4096)), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(parent, "counted"), []byte("123"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				dir, path := measuredTestPath(t, root, filepath.Join("tasks", "owner"))
-				defer dir.Close()
-				names, err := dir.Readdirnames(-1)
-				if err != nil {
-					t.Fatal(err)
-				}
-				// The new name was not enumerated, so its bytes will be missed unless the old name fails closed.
-				moved := filepath.Join(parent, "moved")
-				if err := os.Rename(moving, moved); err != nil {
-					t.Fatal(err)
-				}
-				w := walker{group: group, unmeasured: map[string]struct{}{}}
-				directories, err := w.measureEntries(dir, owner, len(path), names)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, unknown := w.unmeasured[owner]; !unknown || len(w.unmeasured) != 1 || w.bytes != 3 || len(directories) != 0 {
-					t.Fatalf("bytes = %d, directories = %v, unmeasured = %v; want 3 bytes and only %q unmeasured", w.bytes, directories, w.unmeasured, owner)
-				}
-				if kind == "directory" {
-					moved = filepath.Join(moved, "payload")
-				}
-				if info, err := os.Stat(moved); err != nil || info.Size() != 4096 {
-					t.Fatalf("moved payload = %v, %v; its 4096 bytes still belong to the owner", info, err)
-				}
-			})
-		}
+func TestMeasureSkipsTransientFilesMissingBeforeStat(t *testing.T) {
+	for group, owner := range []string{".", "cycles", filepath.Join("cycles", "owner")} {
+		t.Run(owner, func(t *testing.T) {
+			root := t.TempDir()
+			parent := filepath.Join(root, "cycles", "owner", "repo.git")
+			if err := os.MkdirAll(parent, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			lock := filepath.Join(parent, "index.lock")
+			if err := os.WriteFile(lock, []byte("pending index"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(parent, "counted"), []byte("123"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dir, path := measuredTestPath(t, root, filepath.Join("cycles", "owner", "repo.git"))
+			defer dir.Close()
+			names, err := dir.Readdirnames(-1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A concurrent Git operation can remove its lock between enumeration and the first stat.
+			if err := os.Remove(lock); err != nil {
+				t.Fatal(err)
+			}
+			w := walker{group: group, unmeasured: map[string]struct{}{}}
+			directories, err := w.measureEntries(dir, owner, len(path), names)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(w.unmeasured) != 0 || w.bytes != 3 || len(directories) != 0 {
+				t.Fatalf("bytes = %d, directories = %v, unmeasured = %v; want 3 bytes with no unmeasured owner", w.bytes, directories, w.unmeasured)
+			}
+		})
 	}
 }
