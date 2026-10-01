@@ -119,32 +119,73 @@ for (const phase of ['first load', 'retry']) {
   });
 }
 
-test('a changed proposal revision clears its failed detail load and retries the current content', async ({
-  page,
-  isMobile
-}) => {
-  const row = summary();
-  await serveProposals(page, [row]);
-  let reads = 0;
-  await page.route(endpoint, async (route) => {
-    reads++;
-    if (row.content_revision === 1)
-      await route.fulfill({ status: 503, json: { error: 'Synthetic old-revision outage' } });
-    else
-      await route.fulfill({
-        json: { ...row, prompt: 'Current revision prompt', evidence: ['Current revision evidence'] }
+for (const pending of [false, true]) {
+  for (const moved of [false, true]) {
+    test(`a new proposal revision preserves ${moved ? 'moved' : 'retry'} focus with ${pending ? 'a pending retry' : 'an idle error'}`, async ({
+      page,
+      isMobile
+    }) => {
+      const row = summary();
+      await serveProposals(page, [row]);
+      const oldRetry = deferred();
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      let reads = 0;
+      await page.route(endpoint, async (route) => {
+        const revision = row.content_revision;
+        const attempt = ++reads;
+        if (revision === 1) {
+          if (attempt > 1) await oldRetry.promise;
+          await route.fulfill({ status: 503, json: { error: 'Synthetic old-revision outage' } });
+        } else
+          await route.fulfill({
+            json: {
+              ...row,
+              prompt: 'Current revision prompt',
+              evidence: ['Current revision evidence']
+            }
+          });
       });
-  });
-  await login(page);
-  await openNavigation(page, 'Proposals', !!isMobile);
-  const card = page.locator('.proposal-card');
-  await card.getByText('Scope, evidence & execution prompt', { exact: true }).click();
-  await expect(card.getByRole('alert')).toContainText('Synthetic old-revision outage');
-  row.content_revision = 2;
-  await expect(card.getByText('Current revision prompt', { exact: true })).toBeVisible({
-    timeout: 10000
-  });
-  await expect(card.getByRole('alert')).toHaveCount(0);
-  await expect(card.getByRole('button', { name: 'Retry details' })).toHaveCount(0);
-  expect(reads).toBe(2);
-});
+      await login(page);
+      await openNavigation(page, 'Proposals', !!isMobile);
+      const card = page.locator('.proposal-card');
+      const toggle = card.getByText('Scope, evidence & execution prompt', { exact: true });
+      const search = page.getByLabel('Search work');
+      try {
+        await toggle.click();
+        await expect(card.getByRole('alert')).toContainText('Synthetic old-revision outage');
+        const retry = card.getByRole('button', { name: 'Retry details', exact: true });
+        await retry.focus();
+        if (pending) {
+          await retry.click();
+          await expect.poll(() => reads).toBe(2);
+          const waiting = card.getByRole('button', { name: 'Retrying details…', exact: true });
+          await expect(waiting).toBeDisabled();
+          await expect(waiting).toBeFocused();
+        }
+        if (moved) await search.focus();
+        row.content_revision = 2;
+        await expect(card.getByText('Current revision prompt', { exact: true })).toBeVisible({
+          timeout: 10000
+        });
+        await expect(card.getByRole('alert')).toHaveCount(0);
+        await expect(card.getByRole('button', { name: 'Retry details' })).toHaveCount(0);
+        await expect(moved ? search : toggle).toBeFocused();
+        if (pending) {
+          await search.focus();
+          const response = page.waitForResponse(endpoint);
+          oldRetry.resolve();
+          await (await response).finished();
+          await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+          await expect(search).toBeFocused();
+          await expect(card.getByText('Current revision prompt', { exact: true })).toBeVisible();
+          await expect(card.getByRole('alert')).toHaveCount(0);
+        }
+        expect(reads).toBe(pending ? 3 : 2);
+        expect(errors).toEqual([]);
+      } finally {
+        oldRetry.resolve();
+      }
+    });
+  }
+}

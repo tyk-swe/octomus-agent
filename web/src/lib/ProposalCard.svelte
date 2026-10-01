@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { tick } from 'svelte';
   import Badge from './Badge.svelte';
   import { cycleLabel, decisionTone } from './evidence';
   import Icon from './Icon.svelte';
@@ -10,20 +9,22 @@
     onexpand,
     oninspect
   }: { proposal: ProposalRow; onexpand: () => Promise<void>; oninspect: () => void } = $props();
-  let summary: HTMLElement;
+  let summary = $state<HTMLElement>();
+  let retryButton = $state<HTMLButtonElement>();
 
-  async function retry(event: MouseEvent) {
-    const button = event.currentTarget as HTMLButtonElement;
-    const focused = document.activeElement === button;
-    await onexpand();
-    await tick();
+  $effect.pre(() => {
     if (
-      focused &&
-      !button.isConnected &&
-      summary?.isConnected &&
-      document.activeElement === document.body
+      proposal.detailError === undefined &&
+      retryButton &&
+      document.activeElement === retryButton &&
+      summary?.isConnected
     )
       summary.focus();
+  });
+
+  function retry() {
+    if (proposal.detailLoading !== undefined) return;
+    void onexpand();
   }
 </script>
 
@@ -56,7 +57,11 @@
           >Could not load full proposal details. Showing the summary. {proposal.detailError}</span
         >
       </div>
-      <button class="button small" disabled={proposal.detailLoading !== undefined} onclick={retry}
+      <button
+        bind:this={retryButton}
+        class="button small"
+        aria-disabled={proposal.detailLoading !== undefined}
+        onclick={retry}
         >{proposal.detailLoading !== undefined ? 'Retrying details…' : 'Retry details'}</button
       >{/if}
     <p>{proposal.detail?.benefit ?? proposal.benefit}</p>
