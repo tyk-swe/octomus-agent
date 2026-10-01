@@ -310,7 +310,8 @@ func TestRemoteKillConfirmsTheEndOrFails(t *testing.T) {
 	if killReportWait < 60*time.Second {
 		t.Fatalf("a kill waits only %s for the broker's report", killReportWait)
 	}
-	f := startFakeBroker(t, 2)
+	// One slot: each child must give it back before Wait returns, so the last check sees a leaked one.
+	f := startFakeBroker(t, 1)
 	remote := NewRemote(f.socket)
 	remote.killWait = 5 * time.Second
 	child, err := remote.Start(context.Background(), Spec{Kind: KindVerify, Dir: ownedWorkspace(t), Command: "slow-report"})
@@ -335,7 +336,9 @@ func TestRemoteKillConfirmsTheEndOrFails(t *testing.T) {
 	if err == nil || !Infrastructure(err) || !strings.Contains(err.Error(), "unconfirmed") {
 		t.Fatalf("unreported kill = %v, %v; want an unconfirmed end, never a clean kill", status, err)
 	}
-	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "streams", 30, true); err != nil {
+	slot, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, _, err := Verify(slot, remote, ownedWorkspace(t), "streams", 30, true); err != nil {
 		t.Fatalf("an unconfirmed kill kept its slot: %v", err)
 	}
 }
