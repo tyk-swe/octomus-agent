@@ -131,13 +131,21 @@ type Decision struct {
 	Suppressed int    `json:"suppressed,omitempty"`
 }
 
-const summaryHostLimit = 64
+const (
+	// summaryHostLimit bounds the hosts a summary names per decision; the rest are counted under "other".
+	summaryHostLimit = 64
+	// foldedNameLimit bounds, per sandbox, the hosts past summaryHostLimit whose first decision the log names whatever
+	// its budget, so a sandbox cannot flood the log with names either.
+	foldedNameLimit = 1024
+)
 
 // usage is one sandbox's uncollected summary and the lease it was made under.
 type usage struct {
 	summary Summary
 	lease   string
 	revoked time.Time
+	// named holds the decision and host of each host the summary folded into "other" whose first decision was logged.
+	named map[string]struct{}
 }
 
 // logBudget counts one sandbox's (or source's) logged lines of one class, refusals or tunnels, in the current window.
@@ -150,10 +158,10 @@ type logBudget struct {
 	kind       string
 }
 
-// record logs and counts a refusal or failure; budget names whose log budget it spends.
+// record counts and logs a refusal or failure; budget names whose log budget it spends.
 func (g *Gateway) record(d Decision, lease, budget string) {
-	g.logRefusal(d, budget)
-	g.countDecision(d, lease)
+	_, _, unnamed := g.countDecision(d, lease)
+	g.logRefusal(d, budget, unnamed)
 }
 
 func (g *Gateway) logDecision(d Decision) {
@@ -170,21 +178,23 @@ func (g *Gateway) writeLocked(d Decision) {
 	}
 }
 
-// logRefusal logs a refusal unless its sandbox or source has spent this window's refusal budget.
-func (g *Gateway) logRefusal(d Decision, source string) {
+// logRefusal logs a refusal unless its sandbox or source has spent this window's refusal budget. unnamed logs it
+// regardless, without spending the budget: the sandbox's summary does not name its host.
+func (g *Gateway) logRefusal(d Decision, source string, unnamed bool) {
 	g.logMu.Lock()
 	defer g.logMu.Unlock()
-	if g.spendLocked("refusals", source, g.refusalBurst, d) {
+	if unnamed || g.spendLocked("refusals", source, g.refusalBurst, d) {
 		g.writeLocked(d)
 	}
 }
 
 // logOpened logs a tunnel's opening line and reports whether it did. Past its sandbox's tunnel budget the tunnel is
-// only counted, and its closing line is left out too, so every logged tunnel has both lines.
-func (g *Gateway) logOpened(d Decision) bool {
+// only counted, and its closing line is left out too, so every logged tunnel has both lines. unnamed logs it
+// regardless, without spending the budget: the sandbox's summary does not name its host.
+func (g *Gateway) logOpened(d Decision, unnamed bool) bool {
 	g.logMu.Lock()
 	defer g.logMu.Unlock()
-	if !g.spendLocked("tunnels", "sandbox "+d.Sandbox, g.tunnelBurst, d) {
+	if !unnamed && !g.spendLocked("tunnels", "sandbox "+d.Sandbox, g.tunnelBurst, d) {
 		return false
 	}
 	g.writeLocked(d)
@@ -249,16 +259,19 @@ func summaryKey(host string, port uint16) string {
 	return net.JoinHostPort(host, strconv.Itoa(int(port)))
 }
 
-func (g *Gateway) countDecision(d Decision, lease string) (*usage, string) {
+// countDecision adds a decision to its sandbox's summary and returns the entry and key it counted under. unnamed
+// reports the first decision for a host the summary counts only under "other", up to foldedNameLimit such hosts, so
+// its log line names the host whatever the log budget.
+func (g *Gateway) countDecision(d Decision, lease string) (entry *usage, key string, unnamed bool) {
 	if d.Sandbox == "" || d.Host == "" {
-		return nil, ""
+		return nil, "", false
 	}
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
 	if _, done := g.collected[d.Sandbox]; done {
-		return nil, ""
+		return nil, "", false
 	}
-	entry := g.stats[d.Sandbox]
+	entry = g.stats[d.Sandbox]
 	if entry == nil {
 		entry = &usage{summary: emptySummary(), lease: lease}
 		g.stats[d.Sandbox] = entry
@@ -270,16 +283,23 @@ func (g *Gateway) countDecision(d Decision, lease string) (*usage, string) {
 	case "failed":
 		target = entry.summary.Failed
 	}
-	key := summaryKey(d.Host, d.Port)
+	key = summaryKey(d.Host, d.Port)
 	count, known := target[key]
 	if !known && len(target) >= summaryHostLimit {
+		folded := d.Decision + " " + key
+		if _, logged := entry.named[folded]; !logged && len(entry.named) < foldedNameLimit {
+			if entry.named == nil {
+				entry.named = map[string]struct{}{}
+			}
+			entry.named[folded], unnamed = struct{}{}, true
+		}
 		key = "other"
 		count = target[key]
 	}
 	count.Count++
 	count.Bytes += d.BytesUp + d.BytesDown
 	target[key] = count
-	return entry, key
+	return entry, key, unnamed
 }
 
 // addTunnelBytes updates an uncollected summary without recreating evidence the broker already collected.
@@ -332,7 +352,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	lease, leaseFile, ok := g.lease(r.Header.Get("Proxy-Authorization"))
 	if !ok {
 		source, _, _ := net.SplitHostPort(r.RemoteAddr)
-		g.logRefusal(Decision{Decision: "denied", Reason: "no sandbox credential"}, "source "+source)
+		g.logRefusal(Decision{Decision: "denied", Reason: "no sandbox credential"}, "source "+source, false)
 		w.Header().Set("Proxy-Authenticate", `Basic realm="octomus-egress"`)
 		http.Error(w, "Octomus egress: only sandboxes with a live lease may connect", http.StatusProxyAuthRequired)
 		return
@@ -429,8 +449,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer g.untrack(t)
 	decision := Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: uint16(port), Decision: "allowed",
 		Tunnel: g.tunnelIDs.Add(1)}
-	entry, key := g.countDecision(decision, leaseFile)
-	logged := g.logOpened(decision)
+	entry, key, unnamed := g.countDecision(decision, leaseFile)
+	logged := g.logOpened(decision, unnamed)
 	started := g.now()
 	var up, down int64
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -997,6 +998,61 @@ func TestGatewayBoundsTunnelLogging(t *testing.T) {
 	if got := last[len(last)-1]; got.Decision != "suppressed" || got.Suppressed != 3 || got.Sandbox != "octomus-test-runner" ||
 		got.Reason != "tunnels over the log budget" {
 		t.Fatalf("suppressed line = %+v; want a count of 3 tunnels", got)
+	}
+}
+
+// Past its host limit a summary counts hosts only under "other", and past its tunnel budget the log names no host.
+// A sandbox that spends both on decoys under a wildcard rule must still have every host it reached named once.
+func TestGatewayNamesEveryHostItsSummaryFolds(t *testing.T) {
+	f := newGatewayFixture(t, "runner", func(g *Gateway) {
+		g.policy.Build, _ = ParseRules("*.example-registry.com")
+		g.tunnelBurst = 2
+	})
+	go func() {
+		for range f.dialed {
+		}
+	}()
+	decoy := func(i int) string { return fmt.Sprintf("decoy-%03d.example-registry.com", i) }
+	f.resolver.mu.Lock()
+	for i := range summaryHostLimit + 2 {
+		f.resolver.answers[decoy(i)] = []netip.Addr{netip.MustParseAddr("93.184.216.34")}
+	}
+	f.resolver.answers["secret.example-registry.com"] = []netip.Addr{netip.MustParseAddr("93.184.216.34")}
+	f.resolver.mu.Unlock()
+	open := func(host string) {
+		t.Helper()
+		status, tunnel := f.connect(t, host+":443", f.credential())
+		if status != http.StatusOK {
+			t.Fatalf("tunnel to %s = %d", host, status)
+		}
+		tunnel.Close()
+	}
+	for i := range summaryHostLimit + 2 {
+		open(decoy(i))
+	}
+	open("secret.example-registry.com")
+	open("secret.example-registry.com")
+	if !testutil.WaitUntil(2*time.Second, func() bool {
+		f.gateway.statsMu.Lock()
+		defer f.gateway.statsMu.Unlock()
+		return len(f.gateway.open) == 0
+	}) {
+		t.Fatal("tunnels did not end")
+	}
+	summary := f.gateway.Collect("octomus-test-runner")
+	if _, named := summary.Allowed["secret.example-registry.com:443"]; named || summary.Allowed["other"].Count != 4 {
+		t.Fatalf("summary = %d hosts, other %+v; want the last hosts folded", len(summary.Allowed), summary.Allowed["other"])
+	}
+	opened := map[string]int{}
+	for _, d := range decisions(t, f.log.String()) {
+		if d.Decision == "allowed" {
+			opened[d.Host]++
+		}
+	}
+	for _, host := range []string{decoy(summaryHostLimit), decoy(summaryHostLimit + 1), "secret.example-registry.com"} {
+		if opened[host] != 1 {
+			t.Fatalf("log opened %d tunnels to %s; want a host the summary folded named exactly once (log %v)", opened[host], host, opened)
+		}
 	}
 }
 

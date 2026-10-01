@@ -104,6 +104,10 @@ A refused host is often the first sign of prompt injection, or of a registry mis
 `OCTOMUS_EGRESS_BUILD_HOSTS`. An allowlisted host the gateway could not reach (a failed
 lookup or connection, or too many open tunnels) is listed apart, as unreachable.
 
+Each list names at most 64 hosts and counts the rest under `other`. The gateway log names
+each host a sandbox's record counts only under `other` the first time it appears, outside
+the log's per-minute budget, for up to 1,024 such hosts per sandbox.
+
 When the broker could not read part of a sandbox's record, the record is marked
 **incomplete**: the gateway's count was unreachable or lost to a gateway restart, or
 Docker did not say whether the memory limit killed a process. Empty host lists in an
@@ -151,8 +155,9 @@ Each sandbox receives proxy variables carrying its own random credential. The ga
   connection, and ends a sandbox's tunnels as soon as its lease is revoked;
 - logs each tunnel as a JSON line when it opens and again when it closes, and each refusal
   (`docker compose logs egress`); past 120 tunnels or 20 refusals a minute from one
-  sandbox, the rest are counted in a single `suppressed` line instead. Docker rotates that
-  log, and the gateway itself runs under memory and process limits.
+  sandbox, the rest are counted in a single `suppressed` line instead, except the first
+  line for a host its [record](#what-each-session-recorded) does not name. Docker rotates
+  that log, and the gateway itself runs under memory and process limits.
 
 Two allowlists come from the deployment's `.env`:
 
