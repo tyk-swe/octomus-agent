@@ -42,9 +42,11 @@ Install [OpenCode 1.18.30](https://github.com/anomalyco/opencode/releases/tag/v1
 on the service host and authenticate/configure its providers as the service user.
 The integration uses the [headless server](https://opencode.ai/docs/server/) and
 the release's native HTTP/SSE API. Provider credentials, custom provider options,
-and custom variants remain in OpenCode's user configuration. The dashboard stores
-route selection and executable paths, never provider credentials. Project-local
-OpenCode configuration is disabled for managed workers.
+and custom variants remain in OpenCode's user configuration. In the Docker
+deployment, sign in with the `login` service and install that configuration into
+the runner volume as [Signing in a runner](sandbox.md#signing-in-a-runner) shows.
+The dashboard stores route selection and executable paths, never provider
+credentials. Project-local OpenCode configuration is disabled for managed workers.
 
 Octomus launches its own loopback servers with ephemeral authentication, using
 owned process groups. Unexpected questions and permission requests are rejected

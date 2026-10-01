@@ -191,6 +191,21 @@ Codex's sign-in hosts are in the default allowlist. For OpenCode, first add
 `models.opencode.ai` and your provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS` and run
 `docker compose up -d`; `docker compose logs egress` shows any host a login was refused.
 
+OpenCode's user configuration (`opencode.json`, with custom providers, provider options and
+variants) is read by runner sandboxes from `opencode/config` in the `octomus-runner` volume,
+which the login does not mount. To install or replace it, run this from the directory that
+holds your `opencode.json`, after `docker compose up -d` has let the broker create that
+directory:
+
+```sh
+docker run --rm -i --network none --read-only --user 10001:10001 \
+  -v octomus-runner:/runner --entrypoint tee octomus-sandbox:local \
+  /runner/opencode/config/opencode.json < opencode.json > /dev/null
+```
+
+Runner sandboxes can rewrite that file like everything else in the runner volume (see
+below), so keep your copy and install it again whenever in doubt.
+
 ## Resource limits
 
 | Variable | Default | Meaning |
