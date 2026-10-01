@@ -885,7 +885,10 @@
             <div class="proposal-list">
               {#each proposals as p (JSON.stringify([p.cycle_id, p.id]))}<ProposalCard
                   proposal={p}
-                  onexpand={() => loadProposal(p)}
+                  onexpand={() => {
+                    navigationGeneration++;
+                    return loadProposal(p);
+                  }}
                   oninspect={() => inspectRun(p.cycle_id, p.id)}
                 />{/each}
               {#if !proposals.length && listLoaded}<div class="empty">
@@ -970,6 +973,7 @@
               class="button"
               disabled={listLoading || previousPages.length === 0}
               onclick={() => {
+                navigationGeneration++;
                 listBefore = previousPages.at(-1) ?? null;
                 previousPages = previousPages.slice(0, -1);
               }}>Previous page</button
@@ -978,6 +982,7 @@
               class="button"
               disabled={listLoading || !!listError || listNext === null}
               onclick={() => {
+                navigationGeneration++;
                 previousPages = [...previousPages, listBefore];
                 listBefore = listNext;
               }}>Next page</button

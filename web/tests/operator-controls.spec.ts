@@ -33,7 +33,14 @@ test.afterEach(async ({ page }) => {
 });
 
 for (const delay of ['action', 'refresh']) {
-  for (const destination of ['configuration', 'overview', 'proposal filters', 'closed task']) {
+  for (const destination of [
+    'configuration',
+    'overview',
+    'proposal filters',
+    'closed task',
+    'pagination',
+    'inline details'
+  ]) {
     test(`an audit waiting for ${delay} respects newer ${destination} navigation`, async ({
       page,
       isMobile
@@ -58,10 +65,32 @@ for (const delay of ['action', 'refresh']) {
         actionFinished = true;
         await route.fulfill({ json: { paused: true } });
       });
+      const cursors: (string | null)[] = [];
+      if (destination === 'pagination') {
+        await page.route('**/api/tasks?*', async (route) => {
+          const before = new URL(route.request().url()).searchParams.get('before');
+          cursors.push(before);
+          const response = await route.fetch();
+          const result = await response.json();
+          result.next_cursor = before === null ? 42 : null;
+          await route.fulfill({ response, json: result });
+        });
+      }
       await page.clock.install();
       await login(page);
       await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
-      if (destination === 'proposal filters') await openNavigation(page, 'Proposals', !!isMobile);
+      if (destination === 'proposal filters' || destination === 'inline details')
+        await openNavigation(page, 'Proposals', !!isMobile);
+      if (destination === 'inline details') {
+        await page.getByLabel('Cycle', { exact: true }).selectOption('cycle-1');
+        await page.clock.runFor(100);
+        await expect(page.locator('.proposal-card').first()).toBeVisible();
+      }
+      if (destination === 'pagination') {
+        await openNavigation(page, 'Task queue', !!isMobile);
+        await page.clock.runFor(100);
+        await expect(page.getByRole('button', { name: 'Next page', exact: true })).toBeEnabled();
+      }
       await page.getByRole('button', { name: 'Run an audit', exact: true }).click();
       await expect.poll(() => waiting).toBe(true);
       const pending = page.getByRole('button', { name: 'Starting audit…', exact: true });
@@ -77,6 +106,16 @@ for (const delay of ['action', 'refresh']) {
         } else if (destination === 'proposal filters') {
           await page.getByLabel('Cycle', { exact: true }).selectOption('cycle-1');
           await page.getByRole('button', { name: 'rejected', exact: true }).click();
+        } else if (destination === 'pagination') {
+          await page.getByRole('button', { name: 'Next page', exact: true }).click();
+          await page.clock.runFor(100);
+          await expect(
+            page.getByRole('button', { name: 'Previous page', exact: true })
+          ).toBeEnabled();
+          expect(cursors).toContain('42');
+        } else if (destination === 'inline details') {
+          await page.locator('.proposal-card summary').first().click();
+          await expect(page.locator('.proposal-card details').first()).toHaveAttribute('open', '');
         } else {
           await page
             .getByRole('button', { name: /Handle interrupted verification commands/ })
@@ -106,6 +145,20 @@ for (const delay of ['action', 'refresh']) {
             await expect(
               page.getByRole('button', { name: 'rejected', exact: true })
             ).toHaveAttribute('aria-pressed', 'true');
+          } else if (destination === 'pagination') {
+            await expect(
+              page.getByRole('heading', { name: 'From idea to improvement.' })
+            ).toBeVisible();
+            await expect(
+              page.getByRole('button', { name: 'Previous page', exact: true })
+            ).toBeEnabled();
+          } else if (destination === 'inline details') {
+            await expect(page.getByLabel('Cycle', { exact: true })).toHaveValue('cycle-1');
+            await expect(page.locator('.proposal-card details').first()).toHaveAttribute(
+              'open',
+              ''
+            );
+            await expect(page.locator('.proposal-card summary').first()).toBeFocused();
           } else {
             await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
             await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -144,4 +197,31 @@ test('an audit whose refresh expires the session cannot navigate the next login'
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
   await page.getByRole('button', { name: 'Run an audit', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Worth doing. Before doing.' })).toBeVisible();
+});
+
+test('passive history refresh does not cancel the audit redirect', async ({ page, isMobile }) => {
+  const gate = deferred();
+  let reads = 0;
+  await auditSnapshot(page);
+  await page.route('**/api/tasks?*', async (route) => {
+    reads++;
+    await route.continue();
+  });
+  await page.route('**/api/control/audit', async (route) => {
+    await gate.promise;
+    await route.fulfill({ json: { paused: true } });
+  });
+  await login(page);
+  await openNavigation(page, 'Task queue', !!isMobile);
+  await expect(page.locator('.task-row').first()).toBeVisible();
+  try {
+    await page.getByRole('button', { name: 'Run an audit', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Starting audit…', exact: true })).toBeDisabled();
+    const before = reads;
+    await expect.poll(() => reads, { timeout: 10000 }).toBeGreaterThan(before);
+    gate.resolve();
+    await expect(page.getByRole('heading', { name: 'Worth doing. Before doing.' })).toBeVisible();
+  } finally {
+    gate.resolve();
+  }
 });
