@@ -133,7 +133,8 @@ Each sandbox receives proxy variables carrying its own random credential. The ga
   IPv4-embedding IPv6 addresses;
 - dials the address it checked, so DNS rebinding cannot redirect the tunnel;
 - bounds open tunnels per sandbox, and logs every decision as a JSON line
-  (`docker compose logs egress`).
+  (`docker compose logs egress`). Docker rotates that log, and the gateway itself runs
+  under memory and process limits.
 
 Two allowlists come from the deployment's `.env`:
 
@@ -142,11 +143,12 @@ Two allowlists come from the deployment's `.env`:
 | `OCTOMUS_EGRESS_MODEL_HOSTS` | agent turns | `chatgpt.com,auth.openai.com,api.openai.com` for Codex; `models.opencode.ai` plus your providers for OpenCode |
 | `OCTOMUS_EGRESS_BUILD_HOSTS` | agent turns and verification | package registries, for example `proxy.golang.org,sum.golang.org` or `registry.npmjs.org` |
 
-Entries are host names or `*.suffix`, with an optional `:port` (default 443). List only
-what the project needs. Every allowed host is a way out for data, and an allowlist is not
-data-loss prevention: an allowed multi-tenant service, such as a package registry or a
-model API used with someone else's key, can still carry data to an account that is not
-yours.
+Entries are host names or `*.suffix`, with an optional `:port` (default 443). An empty
+`OCTOMUS_EGRESS_MODEL_HOSTS=` allows no model hosts; only a variable missing from `.env`
+gets the Codex hosts above. List only what the project needs. Every allowed host is a way
+out for data, and an allowlist is not data-loss prevention: an allowed multi-tenant
+service, such as a package registry or a model API used with someone else's key, can still
+carry data to an account that is not yours.
 
 ## Resource limits
 
@@ -237,6 +239,8 @@ USER 10001:10001
 ```
 
 Build it, set `OCTOMUS_SANDBOX_IMAGE` in `.env` to its tag, and run `docker compose up -d`.
+`docker compose build octomus sandbox-image` rebuilds only the base, `octomus-sandbox:local`,
+so rebuild your image after each upgrade to pick up the new runners.
 The broker uses only images already present on the host and never pulls. Baking toolchains
 and warm caches into the image also keeps build hosts off the allowlist. Never put
 credentials in the image; every sandbox can read it.

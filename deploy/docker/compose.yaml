@@ -16,9 +16,13 @@ x-hardened: &hardened
   restart: unless-stopped
   user: "10001:10001"
   tmpfs: ["/tmp:size=64m"]
+  # Rotated, so nothing a sandbox makes the gateway log can fill the host's disk.
+  logging: &logging
+    driver: local
+    options: {max-size: 10m, max-file: "5"}
 
 x-egress-hosts: &egress-hosts
-  OCTOMUS_EGRESS_MODEL_HOSTS: ${OCTOMUS_EGRESS_MODEL_HOSTS:-chatgpt.com,auth.openai.com,api.openai.com}
+  OCTOMUS_EGRESS_MODEL_HOSTS: ${OCTOMUS_EGRESS_MODEL_HOSTS-chatgpt.com,auth.openai.com,api.openai.com}
   OCTOMUS_EGRESS_BUILD_HOSTS: ${OCTOMUS_EGRESS_BUILD_HOSTS:-}
 
 services:
@@ -104,6 +108,9 @@ services:
       OCTOMUS_EGRESS_COLLECTOR: /run/octomus-egress/collector.sock
     volumes:
       - egress-state:/run/octomus-egress
+    # Sandboxes decide how many tunnels and requests the gateway handles; bound what that can cost the host.
+    mem_limit: 512m
+    pids_limit: 512
     networks:
       sandbox-runner:
         aliases: [egress]
@@ -111,15 +118,25 @@ services:
         aliases: [egress]
       egress-out: {}
 
-  login:
-    image: ${OCTOMUS_SANDBOX_IMAGE:-octomus-sandbox:local}
+  # The base sandbox image, under a fixed tag that derived images build FROM: `docker compose build octomus sandbox-image`.
+  # The broker and logins use OCTOMUS_SANDBOX_IMAGE, which may name a derived image instead.
+  sandbox-image:
+    image: octomus-sandbox:local
     build:
       context: .
       dockerfile: sandbox.Dockerfile
+    profiles: [build]
+    network_mode: none
+    entrypoint: ["true"]
+    logging: *logging
+
+  login:
+    image: ${OCTOMUS_SANDBOX_IMAGE:-octomus-sandbox:local}
     profiles: [tools]
     user: "10001:10001"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    logging: *logging
     environment:
       HOME: /home/octomus
     # Logins land exactly where runner sandboxes mount them. The broker creates these subdirectories when it starts,

@@ -56,7 +56,7 @@ if [ ! -e secrets/github_token ]; then
   unset github_token
 fi
 
-docker compose build octomus login
+docker compose build octomus sandbox-image
 # The control plane runs as uid 10001 and reads its secrets as files; hand them over without widening their mode.
 if [ "$(stat -c %u secrets/operator_token)" != 10001 ] || [ "$(stat -c %u secrets/github_token)" != 10001 ]; then
   image=$(sed -n 's/^OCTOMUS_IMAGE=//p' .env)

@@ -63,10 +63,10 @@ in that image.
 | Task | Command |
 | --- | --- |
 | Status | `docker compose ps` |
-| Logs | `docker compose logs -f octomus` (egress decisions: `docker compose logs egress`) |
+| Logs | `docker compose logs -f octomus` (egress decisions: `docker compose logs egress`); Docker keeps at most five 10 MB files per service |
 | Stop, keeping state | `docker compose stop` |
 | Restart after an `.env` change | `docker compose up -d` |
-| Upgrade | `git pull`, `docker compose build octomus login`, then `docker compose up -d` |
+| Upgrade | `git pull`, `docker compose build octomus sandbox-image`, rebuild any [derived sandbox image](sandbox.md#extend-the-sandbox-image), then `docker compose up -d` |
 
 The control plane stops gracefully within its 45-second grace period. Stopping it closes
 every sandbox's stream, so the broker removes every running sandbox. The broker also
