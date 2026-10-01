@@ -786,13 +786,14 @@ func (o checkOutcome) evidenceText(limit int) string {
 	if o.capture != nil {
 		return boundedTail(redact.Secrets(o.capture.Error()), limit)
 	}
-	clean := func(stream process.Captured) string {
-		text := strings.TrimSpace(stream.SafeText())
+	stdoutCapture, stderrCapture := o.captured.SafeCaptures()
+	clean := func(stream process.SafeCapture) string {
+		text := strings.TrimSpace(stream.Head)
 		if !stream.Truncated {
 			return text
 		}
 		text += "\n" + outputTruncatedMarker
-		if tail := strings.TrimSpace(stream.SafeTailText()); tail != "" {
+		if tail := strings.TrimSpace(stream.Tail); tail != "" {
 			text += "\n" + tail
 		}
 		return text
@@ -801,9 +802,9 @@ func (o checkOutcome) evidenceText(limit int) string {
 	if !o.captured.Status.Success() {
 		status = "\n" + o.captured.Status.String()
 	}
-	stdout := clean(o.captured.Stdout)
+	stdout := clean(stdoutCapture)
 	stderr := ""
-	if text := clean(o.captured.Stderr); text != "" {
+	if text := clean(stderrCapture); text != "" {
 		const separator = "\n[stderr]\n"
 		budget := max(limit/2, limit-len(separator)-len(stdout)-len(status))
 		stderr = separator + boundedTail(text, budget)
