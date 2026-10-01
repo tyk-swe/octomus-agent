@@ -29,11 +29,13 @@ type Remote struct {
 	info   BrokerInfo
 	infoAt time.Time
 	slots  chan struct{}
+	// killWait is how long a kill waits for the broker's exit report: killReportWait outside tests.
+	killWait time.Duration
 }
 
 const infoTTL = 5 * time.Second
 
-func NewRemote(socket string) *Remote { return &Remote{socket: socket} }
+func NewRemote(socket string) *Remote { return &Remote{socket: socket, killWait: killReportWait} }
 
 func (r *Remote) Mode() Mode { return ModeDocker }
 
@@ -165,7 +167,7 @@ func (r *Remote) start(ctx context.Context, spec Spec, req Request) (*remoteChil
 		release()
 		return nil, err
 	}
-	return newRemoteChild(conn, reader, spec.Stderr, req.Stdin, release), nil
+	return newRemoteChild(conn, reader, spec.Stderr, req.Stdin, r.killWait, release), nil
 }
 
 // open asks the broker for a sandbox and returns the upgraded stream that is its lifeline.
@@ -206,6 +208,11 @@ func (r *Remote) open(ctx context.Context, req Request) (net.Conn, *bufio.Reader
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		defer conn.Close()
 		return nil, nil, brokerError(resp)
+	}
+	if !stop() {
+		// A cancellation as the stream came up has closed it; the broker removes a sandbox whose stream closes.
+		conn.Close()
+		return nil, nil, process.ErrSessionCancelled
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return conn, reader, nil
@@ -298,23 +305,27 @@ func (r *Remote) RunnerVersion(ctx context.Context, spec Spec, _ uint64) (string
 
 // remoteChild is one sandbox seen through its broker stream.
 type remoteChild struct {
-	conn    net.Conn
-	out     *FrameWriter
-	stdin   *remoteStdin
-	stdout  *io.PipeReader
-	stderr  *io.PipeReader
-	done    chan struct{}
-	report  ExitReport
-	lost    error
-	killed  atomic.Bool
+	conn   net.Conn
+	out    *FrameWriter
+	stdin  *remoteStdin
+	stdout *io.PipeReader
+	stderr *io.PipeReader
+	done   chan struct{}
+	report ExitReport
+	// lost is why the stream ended without a readable exit report, decided when it ended.
+	lost   error
+	killed atomic.Bool
+	// cut is set when a kill closed the stream because its wait for the broker's report ran out.
+	cut     atomic.Bool
+	wait    time.Duration
 	release func()
 }
 
-func newRemoteChild(conn net.Conn, reader *bufio.Reader, sink io.Writer, stdin bool, release func()) *remoteChild {
+func newRemoteChild(conn net.Conn, reader *bufio.Reader, sink io.Writer, stdin bool, wait time.Duration, release func()) *remoteChild {
 	stdoutR, stdoutW := io.Pipe()
 	stderrR, stderrW := io.Pipe()
 	c := &remoteChild{conn: conn, out: NewFrameWriter(conn), stdout: stdoutR, stderr: stderrR,
-		done: make(chan struct{}), release: release}
+		done: make(chan struct{}), wait: wait, release: release}
 	if stdin {
 		c.stdin = newRemoteStdin(c)
 	}
@@ -332,7 +343,7 @@ func newRemoteChild(conn net.Conn, reader *bufio.Reader, sink io.Writer, stdin b
 		for {
 			kind, payload, err := ReadFrame(reader)
 			if err != nil {
-				c.lost = err
+				c.lose(err)
 				return
 			}
 			switch kind {
@@ -348,7 +359,7 @@ func newRemoteChild(conn net.Conn, reader *bufio.Reader, sink io.Writer, stdin b
 				}
 			case FrameExit:
 				if err := json.Unmarshal(payload, &c.report); err != nil {
-					c.lost = err
+					c.lose(err)
 				}
 				return
 			}
@@ -377,15 +388,23 @@ func (c *remoteChild) Evidence() *model.SandboxRecord {
 }
 func (c *remoteChild) Stderr() io.ReadCloser { return c.stderr }
 
-// Wait reports how the sandbox ended. A stream lost without an exit report is a kill when Octomus cut it, and an
-// error otherwise.
+// lose records why the stream ended without a readable exit report. Only that report confirms the container is gone,
+// so a stream Octomus cut after a kill is no more a clean end than one the broker dropped.
+func (c *remoteChild) lose(err error) {
+	if c.cut.Load() {
+		err = fmt.Errorf("Sandbox end is unconfirmed: the broker did not report it within %s of the kill", c.wait)
+	} else {
+		err = fmt.Errorf("Sandbox stream was lost: %w", err)
+	}
+	c.lost = &SandboxError{err}
+}
+
+// Wait reports how the sandbox ended. A lost stream and an unconfirmed kill are the sandbox's failures, never the
+// program's result.
 func (c *remoteChild) Wait() (process.Status, error) {
 	<-c.done
 	if c.lost != nil {
-		if c.killed.Load() {
-			return process.ExitStatus(process.Exit{Killed: true}), nil
-		}
-		return process.Status{}, fmt.Errorf("Sandbox stream was lost: %w", c.lost)
+		return process.Status{}, c.lost
 	}
 	if c.report.Error != "" && !c.report.Killed {
 		return process.Status{}, errors.New(c.report.Error)
@@ -400,11 +419,13 @@ func (c *remoteChild) signal(name string) {
 
 func (c *remoteChild) Terminate() { c.signal(SignalTerminate) }
 
-// killReportWait is how long a kill waits for the broker's exit report, which carries the sandbox's evidence.
-const killReportWait = 10 * time.Second
+// killReportWait is how long a kill waits for the broker's exit report, which confirms the container is gone and
+// carries the sandbox's evidence. The broker bounds its teardown, removal included, well inside it.
+const killReportWait = 60 * time.Second
 
-// Kill stops the sandbox and waits briefly for the broker's report of it. Cutting the stream afterwards holds even
-// when the kill frame cannot be written: the broker kills and removes a container whose stream closes.
+// Kill stops the sandbox and waits for the broker's report of it. Cutting the stream afterwards holds even when the
+// kill frame cannot be written: the broker kills and removes a container whose stream closes, but without its report
+// Wait cannot call the end clean.
 func (c *remoteChild) Kill() {
 	if c.killed.Swap(true) {
 		return
@@ -413,10 +434,11 @@ func (c *remoteChild) Kill() {
 	case <-c.done:
 	default:
 		c.signal(SignalKill)
-		timer := time.NewTimer(killReportWait)
+		timer := time.NewTimer(c.wait)
 		select {
 		case <-c.done:
 		case <-timer.C:
+			c.cut.Store(true)
 		}
 		timer.Stop()
 	}

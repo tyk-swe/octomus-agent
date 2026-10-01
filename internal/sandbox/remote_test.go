@@ -69,6 +69,25 @@ func exitFrame(out *FrameWriter, report ExitReport) {
 	_ = out.Frame(FrameExit, payload)
 }
 
+// killedEvidence is what the broker hands back about a killed sandbox: refused hosts exist nowhere else.
+func killedEvidence() ExitReport {
+	return ExitReport{Code: 137, Killed: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1,
+		Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"exfil.example.net:443": 40}}}}
+}
+
+// awaitKill reads control frames until the client asks for a kill, and reports whether it did.
+func awaitKill(reader *bufio.Reader) bool {
+	for {
+		kind, payload, err := ReadFrame(reader)
+		if err != nil {
+			return false
+		}
+		if kind == FrameSignal && string(payload) == SignalKill {
+			return true
+		}
+	}
+}
+
 func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 	out := NewFrameWriter(conn)
 	if req.Mode == RunnerModeOpenCode {
@@ -97,6 +116,15 @@ func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 			Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"example.com:443": 2}}}})
 	case "limit":
 		exitFrame(out, ExitReport{Code: 137, Killed: true, Error: "Sandbox time limit reached"})
+	case "slow-report":
+		if awaitKill(reader) {
+			time.Sleep(200 * time.Millisecond)
+			exitFrame(out, killedEvidence())
+		}
+	case "ignore-kill":
+		// A broker that never confirms the kill: hold the stream until the client cuts it.
+		awaitKill(reader)
+		_, _ = io.Copy(io.Discard, reader)
 	case "hang", "":
 		var echoed bytes.Buffer
 		for {
@@ -230,6 +258,57 @@ func TestRemoteExitReasons(t *testing.T) {
 	}
 	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "refuse", 30, true); err == nil || !strings.Contains(err.Error(), "not an owned root") {
 		t.Fatalf("refusal = %v; want the broker's reason", err)
+	}
+}
+
+func TestRemoteLostStreamIsNeverAKill(t *testing.T) {
+	f := startFakeBroker(t, 1)
+	child, err := NewRemote(f.socket).Start(context.Background(), Spec{Kind: KindVerify, Dir: ownedWorkspace(t), Command: "drop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A runner sees its stdout end and cleans up before anyone waits; the lost broker must still be reported.
+	if data, _ := io.ReadAll(child.Stdout()); string(data) != "partial" {
+		t.Fatalf("stdout = %q", data)
+	}
+	child.Kill()
+	if status, err := child.Wait(); err == nil || !Infrastructure(err) || !strings.Contains(err.Error(), "Sandbox stream was lost") {
+		t.Fatalf("lost stream after a kill = %v, %v; want a sandbox failure, never Octomus's own kill", status, err)
+	}
+}
+
+func TestRemoteKillConfirmsTheEndOrFails(t *testing.T) {
+	// The broker may spend up to 45 seconds confirming a removal before it reports.
+	if killReportWait < 60*time.Second {
+		t.Fatalf("a kill waits only %s for the broker's report", killReportWait)
+	}
+	f := startFakeBroker(t, 2)
+	remote := NewRemote(f.socket)
+	remote.killWait = 5 * time.Second
+	child, err := remote.Start(context.Background(), Spec{Kind: KindVerify, Dir: ownedWorkspace(t), Command: "slow-report"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child.Kill()
+	if status, err := child.Wait(); err != nil || !errors.Is(status.Err(), process.ErrKilled) {
+		t.Fatalf("reported kill = %v, %v", status, err)
+	}
+	if evidence := EvidenceOf(child); evidence == nil || evidence.Egress.Denied["exfil.example.net:443"] != 40 {
+		t.Fatalf("evidence = %+v; want the report's record", evidence)
+	}
+
+	remote.killWait = 300 * time.Millisecond
+	child, err = remote.Start(context.Background(), Spec{Kind: KindVerify, Dir: ownedWorkspace(t), Command: "ignore-kill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child.Kill()
+	status, err := child.Wait()
+	if err == nil || !Infrastructure(err) || !strings.Contains(err.Error(), "unconfirmed") {
+		t.Fatalf("unreported kill = %v, %v; want an unconfirmed end, never a clean kill", status, err)
+	}
+	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "streams", 30, true); err != nil {
+		t.Fatalf("an unconfirmed kill kept its slot: %v", err)
 	}
 }
 
