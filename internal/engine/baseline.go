@@ -16,7 +16,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
-	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 const (
@@ -464,7 +463,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 
 func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (model.BaselineStatus, error) {
 	c := check.Config
-	measured, err := workspace.DirectorySize(a.DataDir)
+	measured, err := a.measureFor(filepath.Join("baselines", check.ID))
 	if err != nil {
 		return model.BaselineStatusRunning, err
 	}

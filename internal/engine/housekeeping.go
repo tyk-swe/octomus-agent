@@ -346,16 +346,23 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 	return nil
 }
 
+// measuredBytes is what the dashboard shows: the bytes a walk could reach. Admission accounts for unmeasured subtrees
+// itself (measureFor).
+func measuredBytes(path string) (uint64, error) {
+	usage, err := workspace.Measure(path)
+	return usage.Bytes, err
+}
+
 func (a *App) measureStorage(cfg config.Config) error {
-	application, err := workspace.DirectorySize(a.DataDir)
+	application, err := measuredBytes(a.DataDir)
 	if err != nil {
 		return err
 	}
-	tasks, err := workspace.DirectorySize(filepath.Join(a.DataDir, "tasks"))
+	tasks, err := measuredBytes(filepath.Join(a.DataDir, "tasks"))
 	if err != nil {
 		return err
 	}
-	planning, err := workspace.DirectorySize(filepath.Join(a.DataDir, "cycles"))
+	planning, err := measuredBytes(filepath.Join(a.DataDir, "cycles"))
 	if err != nil {
 		return err
 	}
@@ -371,7 +378,7 @@ func (a *App) measureStorage(cfg config.Config) error {
 			info, statErr := os.Stat(path)
 			if statErr != nil || !info.IsDir() {
 				entry.Status = "unavailable"
-			} else if bytes, sizeErr := workspace.DirectorySize(path); sizeErr != nil {
+			} else if bytes, sizeErr := measuredBytes(path); sizeErr != nil {
 				entry.Status = "error"
 			} else {
 				entry.Bytes = &bytes

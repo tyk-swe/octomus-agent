@@ -160,11 +160,14 @@ until explicit resolution. Archive/discard changes workspace lifecycle without
 deleting database evidence; each happens once per task or cycle, and repeating it
 conflicts. Application storage is measured separately from runner
 transcripts. Storage admission remains a pre-turn check, not a filesystem quota.
-Measurement skips a directory below the measured root that denies listing or
-searching, so storage can be undercounted by what it holds; that denial on the
-measured root itself, and every other filesystem error except a missing or
-vanished path, still fails the measurement, and measurement never changes
-permissions.
+Measurement walks relative to each directory's descriptor, so nesting depth
+never lengthens a path it resolves, and it never follows a symlink. A directory
+below the measured root that cannot be read, or that nests more than 256 levels
+deep, holds unknown bytes: admission refuses its owning task, planning cycle or
+baseline (and everyone, outside those roots) with the storage limit until that
+work is resolved, while other owners' admissions count only what was measured.
+Failing to read the measured root itself still fails the measurement, and
+measurement never changes permissions.
 
 Diagnostic subprocess output retains the first 256 KiB of each stream and
 truncation flags, and for a longer stream its last 64 KiB, kept in a rolling

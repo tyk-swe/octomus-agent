@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"golang.org/x/sys/unix"
 )
 
 // GitDirName is the trusted git metadata beside each owned work tree; sandboxes mount it read-only, so work-tree content can never rewrite it.
@@ -44,46 +45,91 @@ func GitDir(workTree string) (string, error) {
 	return "", ErrNoGitDir
 }
 
-func DirectorySize(path string) (uint64, error) {
-	return directorySize(path, true)
+// maxMeasuredDepth bounds how deep a storage walk descends. A sandbox can nest directories without limit, and the walk
+// holds one descriptor for each level.
+const maxMeasuredDepth = 256
+
+// Usage is one storage measurement. Bytes counts every file the walk reached. Unmeasured lists, relative to the
+// measured directory, each subtree it could not read or that nests deeper than maxMeasuredDepth: its bytes are
+// unknown, so whoever owns it must be treated as over any limit.
+type Usage struct {
+	Bytes      uint64
+	Unmeasured []string
 }
 
-func directorySize(path string, top bool) (uint64, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) || !top && errors.Is(err, fs.ErrPermission) {
-			return 0, nil
-		}
-		return 0, err
+// Measure sums the sizes of the files under path. The walk resolves every name relative to its parent directory's
+// descriptor, so no path it hands the kernel is longer than one name however deep a sandbox nests, and it never
+// follows a symlink, even one swapped in while it runs. Only a failure to read path itself is an error.
+func Measure(path string) (Usage, error) {
+	dir, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Usage{}, nil
 	}
-	var size uint64
-	for _, e := range entries {
-		meta, err := os.Lstat(filepath.Join(path, e.Name()))
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) || !top && errors.Is(err, fs.ErrPermission) {
+	if err != nil {
+		return Usage{}, err
+	}
+	defer dir.Close()
+	var usage Usage
+	if err := usage.walk(dir, ".", 0); err != nil {
+		return Usage{}, err
+	}
+	return usage, nil
+}
+
+func (u *Usage) walk(dir *os.File, rel string, depth int) error {
+	unreadable := func(err error) error {
+		if depth == 0 {
+			return err
+		}
+		u.Unmeasured = append(u.Unmeasured, rel)
+		return nil
+	}
+	names, err := dir.Readdirnames(-1)
+	if err != nil {
+		return unreadable(err)
+	}
+	fd := int(dir.Fd())
+	for _, name := range names {
+		var meta unix.Stat_t
+		if err := unix.Fstatat(fd, name, &meta, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return 0, err
+			return unreadable(&fs.PathError{Op: "fstatat", Path: filepath.Join(dir.Name(), name), Err: err})
 		}
-		if meta.Mode()&fs.ModeSymlink != 0 {
+		switch meta.Mode & unix.S_IFMT {
+		case unix.S_IFLNK:
 			continue
-		}
-		var n uint64
-		if meta.IsDir() {
-			n, err = directorySize(filepath.Join(path, e.Name()), false)
-			if err != nil {
-				return 0, err
+		case unix.S_IFDIR:
+			child := filepath.Join(rel, name)
+			if depth+1 >= maxMeasuredDepth {
+				u.Unmeasured = append(u.Unmeasured, child)
+				continue
 			}
-		} else {
-			n = uint64(meta.Size())
-		}
-		if math.MaxUint64-size < n {
-			size = math.MaxUint64
-		} else {
-			size += n
+			// O_NOFOLLOW refuses a directory replaced by a symlink since the stat above.
+			childFd, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				u.Unmeasured = append(u.Unmeasured, child)
+				continue
+			}
+			childDir := os.NewFile(uintptr(childFd), name)
+			err = u.walk(childDir, child, depth+1)
+			childDir.Close()
+			if err != nil {
+				return err
+			}
+		default:
+			if n := uint64(max(meta.Size, 0)); math.MaxUint64-u.Bytes < n {
+				u.Bytes = math.MaxUint64
+			} else {
+				u.Bytes += n
+			}
 		}
 	}
-	return size, nil
+	return nil
 }
 
 func RemoveOwnedDir(root, path string) error {

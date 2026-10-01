@@ -5,11 +5,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
+	"golang.org/x/sys/unix"
 )
 
 func TestRemoveOwnedDir(t *testing.T) {
@@ -152,7 +154,7 @@ func TestRemoveOwnedDirRejectsNoncanonicalPaths(t *testing.T) {
 	}
 }
 
-func TestDirectorySize(t *testing.T) {
+func TestMeasure(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, content string) {
 		t.Helper()
@@ -173,19 +175,62 @@ func TestDirectorySize(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(root, "linked")); err != nil {
 		t.Fatal(err)
 	}
-	size, err := workspace.DirectorySize(root)
+	if err := os.Symlink(filepath.Dir(target), filepath.Join(root, "linked-dir")); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := workspace.Measure(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if size != 10 {
-		t.Fatalf("size = %d; want 10 (symlink target excluded)", size)
+	if usage.Bytes != 10 || len(usage.Unmeasured) != 0 {
+		t.Fatalf("usage = %+v; want 10 bytes (symlink targets excluded), all measured", usage)
 	}
-	if size, err := workspace.DirectorySize(filepath.Join(root, "missing")); err != nil || size != 0 {
-		t.Fatalf("missing tree = %d, %v; want zero", size, err)
+	if usage, err := workspace.Measure(filepath.Join(root, "missing")); err != nil || usage.Bytes != 0 {
+		t.Fatalf("missing tree = %+v, %v; want zero", usage, err)
 	}
 }
 
-func TestDirectorySizeSkipsUnreadableSubtrees(t *testing.T) {
+func TestMeasureReportsTooDeepSubtreesWithoutFailing(t *testing.T) {
+	root := t.TempDir()
+	tree := filepath.Join(root, "tasks", "t1", "workspace")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "shallow.txt"), []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A sandbox nests with relative mkdir and cd; spelled out as one path, this chain is far beyond PATH_MAX.
+	fd, err := unix.Open(tree, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2100 {
+		if err := unix.Mkdirat(fd, "a", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		next, err := unix.Openat(fd, "a", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		_ = unix.Close(fd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fd = next
+	}
+	_ = unix.Close(fd)
+
+	usage, err := workspace.Measure(root)
+	if err != nil {
+		t.Fatalf("Measure of a too-deep tree = %v; want the reachable bytes", err)
+	}
+	if usage.Bytes != 5 || len(usage.Unmeasured) != 1 ||
+		!strings.HasPrefix(usage.Unmeasured[0], filepath.Join("tasks", "t1", "workspace", "a", "a")+string(filepath.Separator)) {
+		t.Fatalf("usage = %d bytes, unmeasured %d entries; want 5 bytes and the deep chain reported once", usage.Bytes, len(usage.Unmeasured))
+	}
+	if err := workspace.RemoveOwnedDir(filepath.Join(root, "tasks"), filepath.Join(root, "tasks", "t1")); err != nil {
+		t.Fatalf("removing a too-deep tree = %v", err)
+	}
+}
+
+func TestMeasureReportsUnreadableSubtrees(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
 	}
@@ -221,12 +266,17 @@ func TestDirectorySizeSkipsUnreadableSubtrees(t *testing.T) {
 			_ = os.Chmod(dir.path, 0o755)
 		}
 	})
-	size, err := workspace.DirectorySize(root)
+	usage, err := workspace.Measure(root)
 	if err != nil {
-		t.Fatalf("DirectorySize with unreadable subtrees = %v; want the readable bytes", err)
+		t.Fatalf("Measure with unreadable subtrees = %v; want the readable bytes", err)
 	}
-	if size != 7 {
-		t.Fatalf("size = %d; want 7 (the readable file only)", size)
+	if usage.Bytes != 7 {
+		t.Fatalf("size = %d; want 7 (the readable file only)", usage.Bytes)
+	}
+	want := []string{filepath.Join("tasks", "t1", "workspace", "locked"), filepath.Join("tasks", "t1", "workspace", "nosearch")}
+	slices.Sort(usage.Unmeasured)
+	if !slices.Equal(usage.Unmeasured, want) {
+		t.Fatalf("unmeasured = %q; want %q, whose bytes are unknown", usage.Unmeasured, want)
 	}
 	for _, dir := range locked {
 		info, err := os.Lstat(dir.path)
@@ -235,7 +285,7 @@ func TestDirectorySizeSkipsUnreadableSubtrees(t *testing.T) {
 		}
 	}
 	for _, dir := range locked {
-		if _, err := workspace.DirectorySize(dir.path); !errors.Is(err, fs.ErrPermission) {
+		if _, err := workspace.Measure(dir.path); !errors.Is(err, fs.ErrPermission) {
 			t.Fatalf("unreadable measured root %s = %v; want a permission error", dir.path, err)
 		}
 	}
