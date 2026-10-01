@@ -210,7 +210,7 @@ func TestLoadConfigRequiresTheDeploymentAndBoundsLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Memory != 4<<30 || cfg.Pids != 1024 || cfg.Max != 12 || cfg.NanoCPUs != 2e9 || cfg.UID != 10001 || !cfg.RequireIsolatedGateway {
+	if cfg.Memory != 4<<30 || cfg.Pids != 1024 || cfg.Max != 12 || cfg.NanoCPUs != 2e9 || cfg.UID != 10001 {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 	for key, value := range map[string]string{

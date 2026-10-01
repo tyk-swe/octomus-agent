@@ -34,6 +34,10 @@ import (
 // reach host services through their gateway.
 const isolatedGateway = "com.docker.network.bridge.gateway_mode_ipv4"
 
+// isolatedGatewayAPI is the Engine API of Docker Engine 28, the first whose bridge driver enforces an isolated gateway.
+// Older engines store the option as given without acting on it, so the network's options alone cannot tell.
+const isolatedGatewayAPI = "1.48"
+
 type Broker struct {
 	cfg     Config
 	engine  *engineapi.Client
@@ -69,8 +73,9 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Docker Engine is unreachable at %s: %w", cfg.DockerSocket, err)
 	}
-	if !apiAtLeast(version.APIVersion, engineapi.APIVersion) {
-		return nil, fmt.Errorf("Docker Engine API %s is older than %s; upgrade Docker Engine", version.APIVersion, engineapi.APIVersion)
+	if !apiAtLeast(version.APIVersion, isolatedGatewayAPI) {
+		return nil, fmt.Errorf("Docker Engine API %s is older than %s; sandboxes need Docker Engine 28 or later to isolate their networks from the host",
+			version.APIVersion, isolatedGatewayAPI)
 	}
 	image, err := b.engine.ImageInspect(ctx, cfg.Image)
 	if err != nil {
@@ -87,7 +92,7 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		if network.EnableIPv6 {
 			return nil, fmt.Errorf("Sandbox network %s must not enable IPv6", name)
 		}
-		if cfg.RequireIsolatedGateway && network.Options[isolatedGateway] != "isolated" {
+		if network.Options[isolatedGateway] != "isolated" {
 			return nil, fmt.Errorf("Sandbox network %s must set %s=isolated so sandboxes cannot reach host services", name, isolatedGateway)
 		}
 	}

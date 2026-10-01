@@ -33,18 +33,16 @@ type Config struct {
 	UID      int
 	GID      int
 	// ClientUID is the only peer uid the broker serves.
-	ClientUID  int
-	NanoCPUs   int64
-	Memory     int64
-	Pids       int64
-	Tmpfs      int64
-	Max        int
-	MaxSeconds uint64
-	Runtime    string
-	// RequireIsolatedGateway refuses internal networks through whose gateway sandboxes could reach the host.
-	RequireIsolatedGateway bool
-	EgressProxy            string
-	LeaseDir               string
+	ClientUID   int
+	NanoCPUs    int64
+	Memory      int64
+	Pids        int64
+	Tmpfs       int64
+	Max         int
+	MaxSeconds  uint64
+	Runtime     string
+	EgressProxy string
+	LeaseDir    string
 	// EgressCollector is the gateway's local socket for a finished sandbox's egress summary.
 	EgressCollector string
 }
@@ -70,23 +68,22 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return fallback
 	}
 	c := Config{
-		Socket:                 value("OCTOMUS_SANDBOXD_SOCKET", "/run/octomus/sandboxd.sock"),
-		DockerSocket:           value("OCTOMUS_DOCKER_SOCKET", "/var/run/docker.sock"),
-		Image:                  value("OCTOMUS_SANDBOX_IMAGE", ""),
-		DataDir:                value("OCTOMUS_DATA_DIR", ""),
-		DataVolume:             value("OCTOMUS_SANDBOX_DATA_VOLUME", ""),
-		RunnerVolume:           value("OCTOMUS_SANDBOX_RUNNER_VOLUME", ""),
-		RunnerDir:              value("OCTOMUS_SANDBOX_RUNNER_DIR", "/var/lib/octomus/runner"),
-		ToolsVolume:            value("OCTOMUS_SANDBOX_TOOLS_VOLUME", ""),
-		ToolsDir:               value("OCTOMUS_SANDBOX_TOOLS_DIR", "/opt/octomus-tools"),
-		RunnerNetwork:          value("OCTOMUS_SANDBOX_RUNNER_NETWORK", ""),
-		VerifyNetwork:          value("OCTOMUS_SANDBOX_VERIFY_NETWORK", ""),
-		Instance:               value("OCTOMUS_SANDBOX_INSTANCE", "octomus"),
-		Runtime:                value("OCTOMUS_SANDBOX_RUNTIME", ""),
-		EgressProxy:            value("OCTOMUS_EGRESS_PROXY", ""),
-		LeaseDir:               value("OCTOMUS_EGRESS_LEASES", ""),
-		EgressCollector:        value("OCTOMUS_EGRESS_COLLECTOR", ""),
-		RequireIsolatedGateway: value("OCTOMUS_SANDBOX_REQUIRE_ISOLATED_GATEWAY", "true") != "false",
+		Socket:          value("OCTOMUS_SANDBOXD_SOCKET", "/run/octomus/sandboxd.sock"),
+		DockerSocket:    value("OCTOMUS_DOCKER_SOCKET", "/var/run/docker.sock"),
+		Image:           value("OCTOMUS_SANDBOX_IMAGE", ""),
+		DataDir:         value("OCTOMUS_DATA_DIR", ""),
+		DataVolume:      value("OCTOMUS_SANDBOX_DATA_VOLUME", ""),
+		RunnerVolume:    value("OCTOMUS_SANDBOX_RUNNER_VOLUME", ""),
+		RunnerDir:       value("OCTOMUS_SANDBOX_RUNNER_DIR", "/var/lib/octomus/runner"),
+		ToolsVolume:     value("OCTOMUS_SANDBOX_TOOLS_VOLUME", ""),
+		ToolsDir:        value("OCTOMUS_SANDBOX_TOOLS_DIR", "/opt/octomus-tools"),
+		RunnerNetwork:   value("OCTOMUS_SANDBOX_RUNNER_NETWORK", ""),
+		VerifyNetwork:   value("OCTOMUS_SANDBOX_VERIFY_NETWORK", ""),
+		Instance:        value("OCTOMUS_SANDBOX_INSTANCE", "octomus"),
+		Runtime:         value("OCTOMUS_SANDBOX_RUNTIME", ""),
+		EgressProxy:     value("OCTOMUS_EGRESS_PROXY", ""),
+		LeaseDir:        value("OCTOMUS_EGRESS_LEASES", ""),
+		EgressCollector: value("OCTOMUS_EGRESS_COLLECTOR", ""),
 	}
 	var errs []error
 	for key, v := range map[string]string{
