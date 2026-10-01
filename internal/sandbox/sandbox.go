@@ -1,5 +1,6 @@
 // Package sandbox is where every untrusted child starts: runner sessions, verification commands and containment
-// probes. The orchestrator's own git and gh commands never pass through it.
+// probes. The orchestrator's own git and gh commands never pass through it. It also holds the helper the broker
+// installs into every sandbox (RunInit, --sandbox-init) and the containment checks that helper runs from inside.
 package sandbox
 
 import (
@@ -65,6 +66,18 @@ type Spec struct {
 
 // Root is the owned root directory a workspace belongs to.
 func (s Spec) Root() string { return filepath.Dir(s.Dir) }
+
+// runnerName is the wire name of a configured runner, by which both backends choose its program, or "" for a backend
+// that names none.
+func runnerName(backend config.Backend) string {
+	switch backend {
+	case config.BackendCodex:
+		return wire.RunnerCodex
+	case config.BackendOpencode:
+		return wire.RunnerOpenCode
+	}
+	return ""
+}
 
 // DeadlineWriter is a child's stdin: a pipe on the host, a framed stream for a container.
 type DeadlineWriter interface {

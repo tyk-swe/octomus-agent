@@ -1,3 +1,6 @@
+// Package broker is the only Octomus component that talks to the Docker daemon. It accepts a narrow request from the
+// control plane over a unix socket, validates it, and builds every sandbox container itself: the control plane can
+// choose a kind of work and an owned root, never an image, mount, capability or network.
 package broker
 
 import (
@@ -11,6 +14,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
+// Broker is one --sandboxd instance: it owns the sandbox slots, the sandboxes it has started and their egress leases.
 type Broker struct {
 	cfg    Config
 	engine *engineapi.Client
