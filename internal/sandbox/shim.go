@@ -30,7 +30,7 @@ func RunInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "opencode":
 		return runOpenCodeBridge(args[1:], stdin, stdout, stderr)
 	case ProbeVersions:
-		return printVersions(stdout)
+		return printVersions(stdout, stderr)
 	case ProbeContainment:
 		return runContainmentProbe(stdout)
 	}
@@ -184,23 +184,64 @@ func (c *stdioConn) SetDeadline(time.Time) error      { return nil }
 func (c *stdioConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *stdioConn) SetWriteDeadline(time.Time) error { return nil }
 
-// printVersions reports each runner's --version output from inside the sandbox image.
-func printVersions(stdout io.Writer) int {
+// versionTimeout bounds each runner's --version. Both runners together stay well inside the broker's 120 second limit
+// on the version probe.
+var versionTimeout = 30 * time.Second
+
+// printVersions reports each runner's --version output from inside the sandbox image. A runner that is not installed
+// is left out; one that is installed but fails is also left out, and the failure is written to stderr for the broker
+// to surface. The broker does not read it yet: it drops a successful probe's stderr, so such a runner still shows as
+// not installed.
+func printVersions(stdout, stderr io.Writer) int {
 	versions := map[string]string{}
 	for _, name := range []string{"codex", "opencode"} {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		out, err := exec.CommandContext(ctx, name, "--version").Output()
-		cancel()
-		if err == nil {
-			version := strings.TrimSpace(string(out))
-			if len(version) > 200 {
-				version = version[:200]
-			}
+		version, err := runnerVersion(name, versionTimeout)
+		switch {
+		case err == nil:
 			versions[name] = version
+		case !errors.Is(err, exec.ErrNotFound):
+			fmt.Fprintf(stderr, "%s --version failed: %s\n", name, err)
 		}
 	}
 	if err := json.NewEncoder(stdout).Encode(versions); err != nil {
 		return 1
 	}
 	return 0
+}
+
+// runnerVersion runs one runner's --version in a process group of its own. The runners are launchers that start a
+// native binary sharing their stdout, so the timeout kills the whole group, and WaitDelay bounds how long anything
+// that escaped it may hold the output open.
+func runnerVersion(name string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, "--version")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.Output()
+	if cmd.Process != nil {
+		// Whatever the launcher left behind in its group goes with it.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("timed out after %s", timeout)
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			if detail := strings.Join(strings.Fields(string(exit.Stderr)), " "); detail != "" {
+				if len(detail) > 200 {
+					detail = detail[len(detail)-200:]
+				}
+				return "", fmt.Errorf("%w: %s", err, strings.ToValidUTF8(detail, "�"))
+			}
+		}
+		return "", err
+	}
+	version := strings.TrimSpace(string(out))
+	if len(version) > 200 {
+		version = version[:200]
+	}
+	return version, nil
 }
