@@ -67,6 +67,9 @@ func (a *App) Tick() error {
 	if err := a.sandboxReady(); err != nil {
 		return err
 	}
+	if a.ctx.Err() != nil {
+		return nil
+	}
 	if err := cfg.Validate(true); err != nil {
 		return err
 	}

@@ -192,6 +192,9 @@ func (a *App) Control() (model.Control, error) {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	// A scheduler check may own the gate while waiting for the service context.
+	stop := context.AfterFunc(ctx, a.cancel)
+	defer stop()
 	ticker := time.NewTicker(schedulerInterval)
 	defer ticker.Stop()
 	for {
@@ -199,7 +202,7 @@ func (a *App) Run(ctx context.Context) error {
 			a.Shutdown()
 			return nil
 		}
-		if err := a.Tick(); err != nil {
+		if err := a.Tick(); err != nil && ctx.Err() == nil {
 			a.fail(err)
 		}
 		select {
@@ -207,7 +210,7 @@ func (a *App) Run(ctx context.Context) error {
 			a.Shutdown()
 			return nil
 		case <-a.ctx.Done():
-			a.wg.Wait()
+			a.Shutdown()
 			return nil
 		case <-ticker.C:
 		case <-a.wake:
@@ -216,8 +219,9 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) Shutdown() {
-	a.gate.Lock()
+	// Cancel checks holding the gate before waiting for the admission barrier.
 	a.cancel()
+	a.gate.Lock()
 	a.runtimeMu.Lock()
 	if a.runtime.cycle != nil {
 		a.runtime.cycle.cancel()
@@ -248,6 +252,9 @@ func (a *App) Drained() bool {
 func (a *App) fail(err error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
+	if a.ctx.Err() != nil {
+		return
+	}
 	message := redact.Error(err)
 	if control, loadErr := a.Control(); loadErr == nil {
 		redacted := redact.Text(message)

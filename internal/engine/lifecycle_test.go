@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
@@ -95,6 +97,87 @@ func TestRepeatedLifecycleLeavesNoLeaks(t *testing.T) {
 	}
 }
 
+// heldHealthBackend waits for cancellation like a stalled broker request, while release
+// lets a failing regression test join the scheduler without waiting for its health timeout.
+type heldHealthBackend struct {
+	sandbox.Host
+	started     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	lateSuccess bool
+}
+
+func (b *heldHealthBackend) Healthy(ctx context.Context) error {
+	b.once.Do(func() { close(b.started) })
+	select {
+	case <-ctx.Done():
+		if b.lateSuccess {
+			return nil
+		}
+		return ctx.Err()
+	case <-b.release:
+		return nil
+	}
+}
+
+func TestShutdownCancelsInFlightSchedulerHealthCheck(t *testing.T) {
+	t.Parallel()
+	for _, stop := range []string{"shutdown", "run context"} {
+		t.Run(stop, func(t *testing.T) {
+			state := testStore(t)
+			cfg := testConfig(t.TempDir())
+			control := model.DefaultControl()
+			control.SetMode(model.OperatingModeContinuous)
+			control.NextCycleAt = time.Now().Unix() + 3600
+			saveSettings(t, state, cfg, control)
+			backend := &heldHealthBackend{started: make(chan struct{}), release: make(chan struct{})}
+			app := New(state, t.TempDir(), WithSandbox(backend))
+			t.Cleanup(app.Shutdown)
+			deferHousekeeping(app)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- app.Run(ctx) }()
+			select {
+			case <-backend.started:
+			case <-time.After(5 * time.Second):
+				cancel()
+				t.Fatal("scheduler did not begin its health check")
+			}
+			stopped := make(chan struct{})
+			if stop == "shutdown" {
+				go func() { app.Shutdown(); close(stopped) }()
+			} else {
+				cancel()
+				close(stopped)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Error(err)
+				}
+			case <-time.After(time.Second):
+				t.Error("shutdown did not cancel the in-flight scheduler health check")
+				close(backend.release)
+				<-done
+			}
+			<-stopped
+			live, err := app.Control()
+			if err != nil || live.Mode != model.OperatingModeContinuous || live.Error != nil {
+				t.Fatalf("normal shutdown persisted a health failure: %+v, %v", live, err)
+			}
+			system := "system"
+			events, err := state.Events(&system)
+			if err != nil || len(events) != 0 {
+				t.Fatalf("normal shutdown recorded a service error: %+v, %v", events, err)
+			}
+			if !app.Drained() {
+				t.Fatal("shutdown returned before scheduler work drained")
+			}
+		})
+	}
+}
+
 func TestRunWithCancelledContextDoesNotDispatch(t *testing.T) {
 	t.Parallel()
 	state := testStore(t)
@@ -129,5 +212,51 @@ func TestRunWithCancelledContextDoesNotDispatch(t *testing.T) {
 	}
 	if !app.Drained() || app.Context().Err() != context.Canceled {
 		t.Fatal("cancelled run did not shut down cleanly")
+	}
+}
+
+func TestCancelledHealthCheckDoesNotDispatchLateSuccess(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	control := model.DefaultControl()
+	control.SetMode(model.OperatingModeContinuous)
+	control.NextCycleAt = time.Now().Unix() + 3600
+	saveSettings(t, state, cfg, control)
+	task := queuedTask(cfg, "late-health", "tyk/existing", "tyk/existing")
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	backend := &heldHealthBackend{started: make(chan struct{}), release: make(chan struct{}), lateSuccess: true}
+	started := make(chan struct{}, 1)
+	app := New(state, t.TempDir(), WithSandbox(backend), WithTaskRunner(TaskRunnerFunc(func(ctx context.Context, _ model.Task) error {
+		started <- struct{}{}
+		return ctx.Err()
+	})))
+	t.Cleanup(app.Shutdown)
+	deferHousekeeping(app)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- app.Run(ctx) }()
+	select {
+	case <-backend.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scheduler did not begin its health check")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled scheduler did not stop")
+	}
+	if len(started) != 0 {
+		t.Error("a late successful health check dispatched work after cancellation")
+	}
+	if saved := loadTask(t, state, task.ID); saved.Status != model.StatusQueued {
+		t.Errorf("cancelled health check changed queued task to %s", saved.Status)
 	}
 }
