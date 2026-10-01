@@ -228,7 +228,7 @@ func TestMeasureReportsTooDeepSubtreesWithoutFailing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Spelled out as one path, this chain is far beyond PATH_MAX.
-	nest(t, tree, "a", 2100)
+	nest(t, tree, "a", 2200)
 
 	for group, want := range map[int]string{
 		0: ".",
@@ -256,8 +256,8 @@ func TestMeasureReportsEachOwnerOnceWhateverTheFanOut(t *testing.T) {
 	}
 	root := t.TempDir()
 	long := strings.Repeat("n", 250)
-	// tasks/t1/workspace sits 3 levels down, so 252 more reach the deepest level the walk opens.
-	deepest := nest(t, filepath.Join(root, "tasks", "t1", "workspace"), long, 252)
+	// tasks/t1/workspace sits 3 levels down, so 2108 more reach the deepest level the walk opens.
+	deepest := nest(t, filepath.Join(root, "tasks", "t1", "workspace"), long, 2108)
 	file, err := unix.Openat(deepest, "counted.txt", unix.O_WRONLY|unix.O_CREAT|unix.O_CLOEXEC, 0o644)
 	if err != nil {
 		t.Fatal(err)

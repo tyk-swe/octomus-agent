@@ -163,7 +163,9 @@ transcripts. Storage admission remains a pre-turn check, not a filesystem quota.
 Measurement walks relative to each directory's descriptor, so nesting depth
 never lengthens a path it resolves, and it never follows a symlink. A directory
 below the measured root that denies access (or is swapped for a symlink or file
-during the walk), or that sits 256 or more levels below the data directory,
+during the walk), or that sits 2,112 or more levels below the data directory
+(beyond git's default `core.maxTreeDepth` of 2,048, so only a chain a sandbox built
+reaches it),
 holds unknown bytes: admission refuses its owning task, planning cycle or
 baseline with the storage limit until that work is resolved, while other owners'
 admissions count only what was measured. Such a directory outside those owned

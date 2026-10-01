@@ -199,7 +199,7 @@ func TestTooDeepWorkspaceBlocksOnlyItsOwner(t *testing.T) {
 	if err := os.MkdirAll(deep, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	nestDirectories(t, deep, 2100)
+	nestDirectories(t, deep, 2200)
 	other := filepath.Join(data, "tasks", "t2", "workspace")
 	if err := os.MkdirAll(other, 0o755); err != nil {
 		t.Fatal(err)
@@ -223,6 +223,34 @@ func TestTooDeepWorkspaceBlocksOnlyItsOwner(t *testing.T) {
 	}
 	if err := app.measureStorage(cfg); err != nil {
 		t.Fatalf("storage measurement beside a too-deep task tree = %v", err)
+	}
+}
+
+// A repository may track paths hundreds of directories deep, well within what git checks out; its clones, the trusted
+// checkout included, are measured like any other storage.
+func TestDeeplyNestedRepositoryContentIsMeasured(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	data := t.TempDir()
+	app := New(state, data)
+	t.Cleanup(app.Shutdown)
+	cfg := testConfig(t.TempDir())
+	saveSettings(t, state, cfg, model.DefaultControl())
+	deep := filepath.Join(slices.Repeat([]string{"a"}, 300)...)
+	for _, clone := range []string{"checkout", filepath.Join("tasks", "t1", "workspace")} {
+		path := filepath.Join(data, clone, deep, "file.txt")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("tracked"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := app.admit("cycle-1", &model.Task{ID: "t1", CycleID: "cycle-1"}, "executor", cfg.Roles["discovery"]); err != nil {
+		t.Fatalf("admission beside a repository tracking a 300-level path = %v; want a reserved session", err)
+	}
+	if size, err := app.measureFor(filepath.Join("tasks", "t1")); err != nil || size < 2*uint64(len("tracked")) {
+		t.Fatalf("measured %d bytes, %v; want both clones' files counted", size, err)
 	}
 }
 

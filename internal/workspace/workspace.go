@@ -49,7 +49,10 @@ func GitDir(workTree string) (string, error) {
 
 // maxMeasuredDepth bounds how deep a storage walk descends: it opens no directory that sits this many levels or more
 // below the measured one. A sandbox can nest directories without limit, and the walk holds one descriptor per level.
-const maxMeasuredDepth = 256
+// Git refuses trees deeper than its core.maxTreeDepth, 2048 by default, and every clone below the data directory
+// (the trusted checkout included) sits only a few levels down, so repository content never reaches this depth: only
+// a chain a sandbox built itself does.
+const maxMeasuredDepth = 2048 + 64
 
 // Usage is one storage measurement. Bytes counts every file the walk reached. Unmeasured names, once each and sorted,
 // the subtrees whose bytes are unknown because they could not be read or sit maxMeasuredDepth or more levels below the
