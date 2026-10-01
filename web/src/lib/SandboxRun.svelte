@@ -18,7 +18,7 @@
       <code>{shortImage(record.image_id)}</code>{record.runtime
         ? ` · ${record.runtime}`
         : ''}{#if record.oom}
-        · <strong class="sandbox-oom">stopped by the memory limit</strong
+        · <strong class="sandbox-oom">memory limit killed a process</strong
         >{/if}{#if record.incomplete}
         · <strong
           class="sandbox-oom"

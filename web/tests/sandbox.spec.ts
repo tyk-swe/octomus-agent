@@ -131,6 +131,9 @@ test('task details show each session sandbox and the egress it was refused', asy
   await expect(verification).toContainText('proxy.golang.org:443 ×5');
   // The broker could not read all of this command's record, so its short host list proves nothing.
   await expect(verification).toContainText('record incomplete');
+  // The command passed although the kernel killed one of its processes: the sandbox was not stopped.
+  await expect(verification).toContainText('memory limit killed a process');
+  await expect(verification).not.toContainText('stopped');
   await expect(verification.locator('.badge.failed')).toHaveCount(0);
   await expect(verification.locator('.badge.blocked')).toHaveCount(0);
 });
