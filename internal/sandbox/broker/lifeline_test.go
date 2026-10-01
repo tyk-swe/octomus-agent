@@ -160,8 +160,13 @@ func TestKillReportsWhatEndedTheSandbox(t *testing.T) {
 			done <- ended{report, err}
 		}()
 		<-e.WaitCreated(t, 1).Exited()
-		controls <- control{signal: signalKill}
-		got := <-done
+		var got ended
+		select {
+		case controls <- control{signal: signalKill}:
+			got = <-done
+		case got = <-done:
+			// The exit reached the broker before the kill could: the report must be the same.
+		}
 		if got.err != nil {
 			t.Fatal(got.err)
 		}

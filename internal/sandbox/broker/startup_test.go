@@ -2,10 +2,13 @@ package broker
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // startupConfig is a deployment whose directories exist, against the fake engine.
@@ -78,5 +81,59 @@ func TestStartupSweepsLeftoversBeforeAnyPreconditionCanFail(t *testing.T) {
 	}
 	if _, err := os.Stat(lease); !os.IsNotExist(err) {
 		t.Fatalf("a leftover egress lease survived a refused start: %v", err)
+	}
+}
+
+// inProgress is how Docker refuses a removal while another removal of the same container runs.
+func inProgress(c *fakeContainer) (int, string) {
+	return http.StatusConflict, "removal of container " + c.ID + " is already in progress"
+}
+
+// started runs New in the background and waits, at most 10 seconds, for its answer.
+func started(t *testing.T, cfg Config, executable string) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := New(context.Background(), cfg, executable)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("startup did not finish")
+		return nil
+	}
+}
+
+func TestStartupRemovesALeftoverWhoseEarlierRemovalFailed(t *testing.T) {
+	e := newFakeEngine(t)
+	left := e.leftover("octomus-octomus-runner-left", "octomus")
+	// The previous broker's force-removal was still running in the daemon when this one started, and then failed.
+	var refused atomic.Bool
+	e.remove = func(c *fakeContainer) (int, string) {
+		if c == left && refused.CompareAndSwap(false, true) {
+			return inProgress(c)
+		}
+		return 0, ""
+	}
+	cfg, executable := startupConfig(t, e)
+	if err := started(t, cfg, executable); err != nil {
+		t.Fatalf("startup with a leftover whose earlier removal failed = %v", err)
+	}
+	if remaining := e.Remaining(); len(remaining) != 0 {
+		t.Fatalf("containers after startup = %v; want the leftover removed", remaining)
+	}
+}
+
+func TestStartupFailsOnALeftoverItCannotRemove(t *testing.T) {
+	tune(t, &startupSweepWait, 300*time.Millisecond)
+	e := newFakeEngine(t)
+	left := e.leftover("octomus-octomus-runner-left", "octomus")
+	// A removal that never finishes in the daemon.
+	e.remove = inProgress
+	cfg, executable := startupConfig(t, e)
+	if err := started(t, cfg, executable); err == nil || !strings.Contains(err.Error(), "Removing leftover sandbox "+left.ID) {
+		t.Fatalf("startup with a leftover the daemon keeps removing = %v; want it to fail naming the leftover", err)
 	}
 }

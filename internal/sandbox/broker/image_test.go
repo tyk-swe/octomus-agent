@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -47,5 +48,46 @@ func TestRebuiltImageTakesEffectAndAVanishedOneFailsClearly(t *testing.T) {
 	e.mu.Unlock()
 	if err := run(); err == nil || !strings.Contains(err.Error(), "not available locally") {
 		t.Fatalf("sandbox after the tag vanished = %v; want a clear refusal", err)
+	}
+}
+
+func TestFailedProbeOfARebuiltImageIsNotRepeatedForEveryRequest(t *testing.T) {
+	e := newFakeEngine(t)
+	e.run = func(c *fakeContainer) {
+		if c.Spec.Image == "sha256:broken" {
+			c.Stderr("codex: not found")
+			c.End(127)
+			return
+		}
+		defaultRun(c)
+	}
+	cfg := testConfig(t)
+	b := e.broker(t, cfg)
+	// The operator rebuilds the image under the same tag, without its runners.
+	e.mu.Lock()
+	e.images[cfg.Image] = "sha256:broken"
+	e.mu.Unlock()
+	for range 3 {
+		if _, err := b.image(context.Background()); err == nil || !strings.Contains(err.Error(), "codex: not found") {
+			t.Fatalf("sandbox on an image whose probe fails = %v; want the probe failure", err)
+		}
+	}
+	if created := len(e.Created()); created != 1 {
+		t.Fatalf("three requests ran %d version probes; want one, remembered", created)
+	}
+	if info := b.Info(); info.ImageID != "sha256:first" {
+		t.Fatalf("broker info after a failed probe = %s; want the image it last probed", info.ImageID)
+	}
+}
+
+func TestImageInspectionFailureIsNotReportedAsAMissingImage(t *testing.T) {
+	e := newFakeEngine(t)
+	b := e.broker(t, testConfig(t))
+	e.mu.Lock()
+	e.imageStatus = http.StatusInternalServerError
+	e.mu.Unlock()
+	if _, err := b.image(context.Background()); err == nil || strings.Contains(err.Error(), "not available locally") ||
+		!strings.Contains(err.Error(), "Inspecting sandbox image") {
+		t.Fatalf("image inspection that failed = %v; want it reported as a failed inspection", err)
 	}
 }

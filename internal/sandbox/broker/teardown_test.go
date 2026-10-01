@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +30,6 @@ func TestSweepTriesEverySandboxAndAlwaysClearsLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := e.broker(t, cfg)
-	b.leases = &leases{dir: cfg.LeaseDir}
 	err := b.sweep(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "fixture remove failure") {
 		t.Fatalf("sweep = %v; want the failed removal reported", err)
@@ -68,5 +68,27 @@ func TestRemovalAlreadyInProgressIsAwaitedAndKeepsAnonymousVolumesOut(t *testing
 		if !strings.Contains(query, "force=1") || !strings.Contains(query, "v=1") {
 			t.Fatalf("removal query %q keeps the container's anonymous volumes", query)
 		}
+	}
+}
+
+func TestRemovalThatFailsElsewhereIsAskedForAgain(t *testing.T) {
+	e := newFakeEngine(t)
+	c := e.leftover("octomus-octomus-verify-stuck", "octomus")
+	// Another removal was running and then failed, as a force-removal whose kill gets no exit event does: Docker
+	// clears its in-progress mark and keeps the container, so only asking again removes it.
+	var refused atomic.Bool
+	e.remove = func(*fakeContainer) (int, string) {
+		if refused.CompareAndSwap(false, true) {
+			return http.StatusConflict, "removal of container " + c.ID + " is already in progress"
+		}
+		return 0, ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := engineapi.New(e.Socket()).ContainerRemove(ctx, c.ID); err != nil {
+		t.Fatalf("removal after another one failed = %v; want the container removed", err)
+	}
+	if remaining := e.Remaining(); len(remaining) != 0 {
+		t.Fatalf("ContainerRemove returned while %v still existed", remaining)
 	}
 }

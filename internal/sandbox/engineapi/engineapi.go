@@ -269,19 +269,18 @@ func (c *Client) ContainerKill(ctx context.Context, id, signal string) error {
 }
 
 // ContainerRemove force-removes a container, by ID or name, with its anonymous volumes, and returns once it is gone.
-// Named volumes are never removed. A removal already in progress elsewhere is waited for, not reported as a failure.
+// Named volumes are never removed. A removal already in progress elsewhere is not a failure: the daemon refuses a
+// second one meanwhile, so the removal is asked for again until the container is gone, or until it fails on its own
+// account. The other removal can fail and leave the container, so waiting for it alone could wait forever.
 func (c *Client) ContainerRemove(ctx context.Context, id string) error {
-	err := c.do(ctx, http.MethodDelete, path("/containers/%s", id)+"?force=1&v=1", nil, nil)
-	if IsNotFound(err) {
-		return nil
-	}
-	var engine *Error
-	if !errors.As(err, &engine) || engine.Status != http.StatusConflict || !strings.Contains(engine.Message, "already in progress") {
-		return err
-	}
 	for delay := 50 * time.Millisecond; ; delay = min(2*delay, time.Second) {
-		if _, err := c.ContainerInspect(ctx, id); IsNotFound(err) {
+		err := c.do(ctx, http.MethodDelete, path("/containers/%s", id)+"?force=1&v=1", nil, nil)
+		if err == nil || IsNotFound(err) {
 			return nil
+		}
+		var engine *Error
+		if !errors.As(err, &engine) || engine.Status != http.StatusConflict || !strings.Contains(engine.Message, "already in progress") {
+			return err
 		}
 		select {
 		case <-ctx.Done():

@@ -49,12 +49,30 @@ type Broker struct {
 	started time.Time
 	// closing closes when Serve begins to shut down.
 	closing chan struct{}
-	// refresh serializes probing an image the configured tag newly resolves to.
-	refresh sync.Mutex
+	// refresh admits one request at a time to probe an image the configured tag newly resolves to. Its holder owns
+	// failed.
+	refresh chan struct{}
+	// failed is the last rebuilt image whose probe failed, so requests soon after fail without probing it again.
+	failed imageFailure
 	// mu guards info and live.
 	mu   sync.Mutex
 	live map[string]string
 }
+
+type imageFailure struct {
+	id  string
+	err error
+	at  time.Time
+}
+
+var (
+	// startupSweepWait bounds the removal of a previous broker's leftovers, so one the daemon cannot remove fails
+	// startup, and the broker restarts, rather than leaving it waiting with nothing served.
+	startupSweepWait = 2 * time.Minute
+	// probeRetry is how long a rebuilt image whose runner versions could not be probed is refused without probing it
+	// again.
+	probeRetry = 30 * time.Second
+)
 
 func runnerBackend(name string) config.Backend {
 	if name == "opencode" {
@@ -66,17 +84,7 @@ func runnerBackend(name string) config.Backend {
 // New removes any sandbox a previous broker left behind, checks the daemon, image, networks and volumes and installs
 // the broker's executable for sandboxes. It refuses to serve a deployment that would weaken isolation.
 func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
-	b := &Broker{
-		cfg:     cfg,
-		engine:  engineapi.New(cfg.DockerSocket),
-		slots:   make(chan struct{}, cfg.Max),
-		started: time.Now(),
-		closing: make(chan struct{}),
-		live:    map[string]string{},
-	}
-	if cfg.LeaseDir != "" {
-		b.leases = &leases{dir: cfg.LeaseDir}
-	}
+	b := newBroker(cfg)
 	version, err := b.engine.Version(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("Docker Engine is unreachable at %s: %w", cfg.DockerSocket, err)
@@ -87,12 +95,15 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	}
 	// Leftovers go first: their time limits died with the previous broker, so a start that any later check refuses
 	// must not leave them running with live egress leases.
-	if err := b.sweep(ctx); err != nil {
+	sweepCtx, cancelSweep := context.WithTimeout(ctx, startupSweepWait)
+	err = b.sweep(sweepCtx)
+	cancelSweep()
+	if err != nil {
 		return nil, err
 	}
-	image, err := b.engine.ImageInspect(ctx, cfg.Image)
+	image, err := b.inspectImage(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Sandbox image %s is not available locally (the broker never pulls): %w", cfg.Image, err)
+		return nil, err
 	}
 	for _, name := range []string{cfg.RunnerNetwork, cfg.VerifyNetwork} {
 		network, err := b.engine.NetworkInspect(ctx, name)
@@ -144,13 +155,42 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	return b, nil
 }
 
+// newBroker is a broker for cfg that has checked nothing yet.
+func newBroker(cfg Config) *Broker {
+	b := &Broker{
+		cfg:     cfg,
+		engine:  engineapi.New(cfg.DockerSocket),
+		slots:   make(chan struct{}, cfg.Max),
+		started: time.Now(),
+		closing: make(chan struct{}),
+		refresh: make(chan struct{}, 1),
+		live:    map[string]string{},
+	}
+	if cfg.LeaseDir != "" {
+		b.leases = &leases{dir: cfg.LeaseDir}
+	}
+	return b
+}
+
+// inspectImage resolves the configured tag. Only an image the daemon does not have is reported as missing.
+func (b *Broker) inspectImage(ctx context.Context) (engineapi.Image, error) {
+	image, err := b.engine.ImageInspect(ctx, b.cfg.Image)
+	switch {
+	case engineapi.IsNotFound(err):
+		return image, fmt.Errorf("Sandbox image %s is not available locally (the broker never pulls): %w", b.cfg.Image, err)
+	case err != nil:
+		return image, fmt.Errorf("Inspecting sandbox image %s: %w", b.cfg.Image, err)
+	}
+	return image, nil
+}
+
 // image resolves the configured tag for a new sandbox. An image rebuilt under the same tag takes effect for the next
 // sandbox, with its runner versions probed again; a tag that no longer resolves fails clearly, rather than leaving
-// sandboxes on an image that may already be pruned.
+// sandboxes on an image that may already be pruned. A rebuilt image whose probe failed is refused for probeRetry.
 func (b *Broker) image(ctx context.Context) (string, error) {
-	image, err := b.engine.ImageInspect(ctx, b.cfg.Image)
+	image, err := b.inspectImage(ctx)
 	if err != nil {
-		return "", fmt.Errorf("Sandbox image %s is not available locally (the broker never pulls): %w", b.cfg.Image, err)
+		return "", err
 	}
 	current := func() string {
 		b.mu.Lock()
@@ -160,14 +200,26 @@ func (b *Broker) image(ctx context.Context) (string, error) {
 	if image.ID == current() {
 		return image.ID, nil
 	}
-	b.refresh.Lock()
-	defer b.refresh.Unlock()
+	select {
+	case b.refresh <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-b.refresh }()
 	if image.ID == current() {
 		return image.ID, nil
 	}
+	if b.failed.id == image.ID && time.Since(b.failed.at) < probeRetry {
+		return "", b.failed.err
+	}
 	versions, err := b.probeVersions(ctx, image.ID)
 	if err != nil {
-		return "", fmt.Errorf("Probing runner versions in the rebuilt sandbox image %s: %w", b.cfg.Image, err)
+		err = fmt.Errorf("Probing runner versions in the rebuilt sandbox image %s: %w", b.cfg.Image, err)
+		// A request that gave up says nothing about the image.
+		if ctx.Err() == nil {
+			b.failed = imageFailure{id: image.ID, err: err, at: time.Now()}
+		}
+		return "", err
 	}
 	b.mu.Lock()
 	b.info.ImageID, b.info.ImageDigests, b.info.Runners = image.ID, image.RepoDigests, versions
@@ -374,9 +426,7 @@ func (b *Broker) Serve(ctx context.Context, listener net.Listener) error {
 	select {
 	case <-ctx.Done():
 		cancelRequests()
-		if b.closing != nil {
-			close(b.closing)
-		}
+		close(b.closing)
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		shutdownErr := server.Shutdown(shutdown)
 		cancel()
@@ -384,8 +434,9 @@ func (b *Broker) Serve(ctx context.Context, listener net.Listener) error {
 			_ = server.Close()
 		}
 		// Shutdown does not track hijacked streams: their handlers are still removing their sandboxes. Racing them
-		// would only make the sweep's removals collide with theirs. The steps fit compose's 30s stop grace period.
-		b.awaitSandboxes(15 * time.Second)
+		// would only make the sweep's removals collide with theirs. The steps take at most 5s + 10s + 10s, inside
+		// compose's 30s stop grace period with time left to exit.
+		b.awaitSandboxes(10 * time.Second)
 		cleanup, cancelCleanup := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelCleanup()
 		return errors.Join(shutdownErr, b.sweep(cleanup))
@@ -443,7 +494,8 @@ func (b *Broker) handleSandbox(base context.Context, w http.ResponseWriter, r *h
 		return
 	}
 	// A full broker makes the request wait for as long as the client does. The control plane keeps its own count of
-	// the same slots, but frees one as soon as it reads an exit report, a moment before the broker can.
+	// the same slots, but one can stay taken after it counts it free: a removal the broker is still retrying, or a
+	// teardown the client stopped waiting for.
 	select {
 	case b.slots <- struct{}{}:
 	case <-r.Context().Done():

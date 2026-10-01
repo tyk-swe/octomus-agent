@@ -12,8 +12,10 @@ import (
 // runnerGitConfig replaces the global git configuration of runner sandboxes. The executor, repair and reviewer turns
 // of a task share one persistent home, so git's per-user files there (~/.gitconfig, ~/.config/git/config, attributes
 // and ignore) would let one turn change what git shows the next, such as the diff a fresh reviewer reads. With this
-// read-only file as the global configuration, nothing in the home reaches git; the image's own system configuration
-// still applies. Verification sandboxes keep their per-run home's configuration, which repository commands may set.
+// read-only file as the global configuration, git reads none of those files; the image's own system configuration
+// still applies. This covers git's own files only: the rest of the home, shell startup files and the runner's state
+// included, still carries over from turn to turn. Verification sandboxes keep their per-run home's configuration,
+// which repository commands may set.
 const runnerGitConfig = `# Written by the Octomus sandbox broker for runner sandboxes.
 [core]
 	attributesFile = /dev/null

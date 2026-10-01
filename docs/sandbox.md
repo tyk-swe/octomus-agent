@@ -75,7 +75,9 @@ filesystem, no capabilities and `no-new-privileges`. See
    could not remove keeps its slot until a retry succeeds, and its report says so.
 
 Executors, fresh reviewers and repair turns each get a new sandbox. Persistent repair
-threads resume from the runner session store (below), not from a live process. Each
+threads resume from the runner session store (below), not from a live process. These turns
+share the task's home, so what one leaves there, shell startup files included, reaches the
+next; only git's own per-user configuration in it is ignored. Each
 verification run starts from a fresh clone of exactly the reviewed commit, so nothing an
 agent left beside it can influence the result. Each verification command gets a fresh
 sandbox. Commands in one verification run share a home directory, so `npm ci` in one

@@ -38,6 +38,8 @@ type fakeEngine struct {
 	created    []*fakeContainer
 	deletes    []string
 	nextID     int
+	// imageStatus, when set, is how the daemon answers every image inspection.
+	imageStatus int
 
 	// run is what a started container does. It ends the container with End or Exit unless a kill ends it first.
 	run func(c *fakeContainer)
@@ -126,7 +128,8 @@ func (e *fakeEngine) broker(t *testing.T, cfg Config) *Broker {
 	if cfg.Log == nil {
 		cfg.Log = io.Discard
 	}
-	b := &Broker{cfg: cfg, engine: engineapi.New(e.Socket()), slots: make(chan struct{}, cfg.Max), live: map[string]string{}}
+	cfg.DockerSocket = e.Socket()
+	b := newBroker(cfg)
 	b.info.Limits.Max = cfg.Max
 	b.info.ImageID = e.images[cfg.Image]
 	return b
@@ -268,7 +271,12 @@ func (e *fakeEngine) mux() http.Handler {
 	mux.HandleFunc("GET "+prefix+"/images/{ref}/json", func(w http.ResponseWriter, r *http.Request) {
 		e.mu.Lock()
 		id, ok := e.images[r.PathValue("ref")]
+		status := e.imageStatus
 		e.mu.Unlock()
+		if status != 0 {
+			refuse(w, status, "fixture image inspection failure")
+			return
+		}
 		if !ok {
 			refuse(w, http.StatusNotFound, "No such image: "+r.PathValue("ref"))
 			return
@@ -334,10 +342,12 @@ func (e *fakeEngine) mux() http.Handler {
 		if err != nil {
 			return
 		}
-		_, _ = stream.WriteString("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
-		_ = stream.Flush()
+		// The stream is the container's before the broker can see the upgrade and start it, so a container that ends
+		// at once closes its output as a real one does.
 		c.mu.Lock()
 		c.attach = conn
+		_, _ = stream.WriteString("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+		_ = stream.Flush()
 		c.mu.Unlock()
 		close(c.attached)
 		// Stdin is read and dropped, so a sandbox writing it never blocks.
