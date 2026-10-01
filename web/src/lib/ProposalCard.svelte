@@ -7,8 +7,14 @@
   let {
     proposal,
     onexpand,
-    oninspect
-  }: { proposal: ProposalRow; onexpand: () => void; oninspect: () => void } = $props();
+    oninspect,
+    oncollapse
+  }: {
+    proposal: ProposalRow;
+    onexpand: () => void;
+    oninspect: () => void;
+    oncollapse?: () => void;
+  } = $props();
 </script>
 
 <article class="proposal-card">
@@ -29,6 +35,7 @@
   <details
     ontoggle={(event) => {
       if (event.currentTarget.open) onexpand();
+      else oncollapse?.();
     }}
   >
     <summary>Scope, evidence & execution prompt</summary>

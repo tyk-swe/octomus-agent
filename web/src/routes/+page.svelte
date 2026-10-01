@@ -890,6 +890,7 @@
                     return loadProposal(p);
                   }}
                   oninspect={() => inspectRun(p.cycle_id, p.id)}
+                  oncollapse={() => navigationGeneration++}
                 />{/each}
               {#if !proposals.length && listLoaded}<div class="empty">
                   <Icon name="proposals" size={34} />

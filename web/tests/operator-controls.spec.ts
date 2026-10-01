@@ -39,7 +39,8 @@ for (const delay of ['action', 'refresh']) {
     'proposal filters',
     'closed task',
     'pagination',
-    'inline details'
+    'inline details',
+    'inline collapse'
   ]) {
     test(`an audit waiting for ${delay} respects newer ${destination} navigation`, async ({
       page,
@@ -79,12 +80,16 @@ for (const delay of ['action', 'refresh']) {
       await page.clock.install();
       await login(page);
       await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
-      if (destination === 'proposal filters' || destination === 'inline details')
+      if (['proposal filters', 'inline details', 'inline collapse'].includes(destination))
         await openNavigation(page, 'Proposals', !!isMobile);
-      if (destination === 'inline details') {
+      if (destination === 'inline details' || destination === 'inline collapse') {
         await page.getByLabel('Cycle', { exact: true }).selectOption('cycle-1');
         await page.clock.runFor(100);
         await expect(page.locator('.proposal-card').first()).toBeVisible();
+        if (destination === 'inline collapse') {
+          await page.locator('.proposal-card summary').first().click();
+          await expect(page.locator('.proposal-card .prompt').first()).not.toHaveText('');
+        }
       }
       if (destination === 'pagination') {
         await openNavigation(page, 'Task queue', !!isMobile);
@@ -113,9 +118,18 @@ for (const delay of ['action', 'refresh']) {
             page.getByRole('button', { name: 'Previous page', exact: true })
           ).toBeEnabled();
           expect(cursors).toContain('42');
-        } else if (destination === 'inline details') {
+        } else if (destination === 'inline details' || destination === 'inline collapse') {
           await page.locator('.proposal-card summary').first().click();
-          await expect(page.locator('.proposal-card details').first()).toHaveAttribute('open', '');
+          if (destination === 'inline details')
+            await expect(page.locator('.proposal-card details').first()).toHaveAttribute(
+              'open',
+              ''
+            );
+          else
+            await expect(page.locator('.proposal-card details').first()).not.toHaveAttribute(
+              'open',
+              ''
+            );
         } else {
           await page
             .getByRole('button', { name: /Handle interrupted verification commands/ })
@@ -152,12 +166,11 @@ for (const delay of ['action', 'refresh']) {
             await expect(
               page.getByRole('button', { name: 'Previous page', exact: true })
             ).toBeEnabled();
-          } else if (destination === 'inline details') {
+          } else if (destination === 'inline details' || destination === 'inline collapse') {
             await expect(page.getByLabel('Cycle', { exact: true })).toHaveValue('cycle-1');
-            await expect(page.locator('.proposal-card details').first()).toHaveAttribute(
-              'open',
-              ''
-            );
+            const details = page.locator('.proposal-card details').first();
+            if (destination === 'inline details') await expect(details).toHaveAttribute('open', '');
+            else await expect(details).not.toHaveAttribute('open', '');
             await expect(page.locator('.proposal-card summary').first()).toBeFocused();
           } else {
             await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
@@ -221,6 +234,51 @@ test('passive history refresh does not cancel the audit redirect', async ({ page
     await expect.poll(() => reads, { timeout: 10000 }).toBeGreaterThan(before);
     gate.resolve();
     await expect(page.getByRole('heading', { name: 'Worth doing. Before doing.' })).toBeVisible();
+  } finally {
+    gate.resolve();
+  }
+});
+
+test('passive expanded proposal reloads do not cancel the audit redirect', async ({
+  page,
+  isMobile
+}) => {
+  const gate = deferred();
+  let revision = 1;
+  await auditSnapshot(page);
+  await page.route('**/api/proposals?*', async (route) => {
+    const response = await route.fetch();
+    const result = await response.json();
+    result.items = result.items.map((row: object) => ({ ...row, content_revision: revision }));
+    await route.fulfill({ response, json: result });
+  });
+  await page.route('**/api/proposals/cycle-1/*', async (route) => {
+    const response = await route.fetch();
+    const result = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...result, content_revision: revision, prompt: `Passive detail revision ${revision}` }
+    });
+  });
+  await page.route('**/api/control/audit', async (route) => {
+    await gate.promise;
+    await route.fulfill({ json: { paused: true } });
+  });
+  await login(page);
+  await openNavigation(page, 'Proposals', !!isMobile);
+  await page.getByLabel('Cycle', { exact: true }).selectOption('cycle-1');
+  await page.locator('.proposal-card summary').first().click();
+  await expect(page.getByText('Passive detail revision 1', { exact: true })).toBeVisible();
+  try {
+    await page.getByRole('button', { name: 'Run an audit', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Starting audit…', exact: true })).toBeDisabled();
+    revision = 2;
+    await expect(page.getByText('Passive detail revision 2', { exact: true })).toBeVisible({
+      timeout: 10000
+    });
+    gate.resolve();
+    await expect(page.getByLabel('Cycle', { exact: true })).toHaveValue('all');
+    await expect(page.getByRole('button', { name: 'Run an audit', exact: true })).toBeEnabled();
   } finally {
     gate.resolve();
   }
