@@ -116,8 +116,8 @@ rather than allowed to proceed unguarded.
 | Control | Enforcing seam | Fail-closed behavior |
 | --- | --- | --- |
 | Where untrusted children run | `internal/sandbox` | Every runner and verification command starts through the configured backend; the Docker backend never falls back to the host, and the scheduler error-pauses while the broker is unavailable. |
-| Sandbox construction | `internal/sandbox/broker` | Requests outside the owned-root patterns, with symlinked or foreign-owned directories, or beyond capacity are refused; networks that are not internal with an isolated gateway stop the broker from starting. |
-| Egress | `internal/egress` | No lease, an unlisted host, an IP literal or a non-public address refuses the tunnel before any lookup or connection. |
+| Sandbox construction | `internal/sandbox/broker` | Requests outside the owned-root patterns, or with symlinked or foreign-owned directories, are refused. Requests beyond capacity wait for a slot, and a slot is held until its container's removal is confirmed, so live sandboxes never exceed `OCTOMUS_SANDBOX_MAX`. A container Docker would not create exactly as specified (any create warning) is removed and refused. Docker Engine older than 28 (API 1.48), or a sandbox network that is not internal with an isolated gateway or that enables IPv6, stops the broker from starting. |
+| Egress | `internal/egress` | No lease, an unlisted host or an IP literal refuses the tunnel before any lookup; a name that resolves only to non-public addresses is refused after the lookup and before any connection. |
 | Trusted git metadata | `internal/git`, `internal/workspace` | Orchestrator git runs only against `repo.git` with hooks, fsmonitor and submodule recursion pinned off; new or moved gitlinks refuse the snapshot. |
 | Deployment-owned posture | `cmd/octomus-agent`, `internal/engine` | A saved configuration that repoints the pinned repository is refused; a GitHub token file or pinned repository with `--sandbox off` stops startup. |
 | Operator HTTP edge | `internal/httpapi` | Requests without a valid operator token are refused before reaching controls. |
