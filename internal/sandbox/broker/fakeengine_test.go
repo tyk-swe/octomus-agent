@@ -123,6 +123,9 @@ func (e *fakeEngine) leftover(name, instance string) *fakeContainer {
 // broker builds a broker against this engine without New's deployment checks.
 func (e *fakeEngine) broker(t *testing.T, cfg Config) *Broker {
 	t.Helper()
+	if cfg.Log == nil {
+		cfg.Log = io.Discard
+	}
 	b := &Broker{cfg: cfg, engine: engineapi.New(e.Socket()), slots: make(chan struct{}, cfg.Max), live: map[string]string{}}
 	b.info.Limits.Max = cfg.Max
 	b.info.ImageID = e.images[cfg.Image]

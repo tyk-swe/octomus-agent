@@ -171,7 +171,11 @@ func TestShutdownCancelsPreparationAndSweepsSandboxes(t *testing.T) {
 		removed.Store(true)
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("GET /v"+engineapi.APIVersion+"/images/{ref}/json", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"Id":"sha256:test"}`)
+	})
 	b := &Broker{cfg: testConfig(t), engine: engineapi.New(serveTestEngine(t, mux)), live: map[string]string{}, slots: make(chan struct{}, 1)}
+	b.info.ImageID = "sha256:test"
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

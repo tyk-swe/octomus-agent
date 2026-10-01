@@ -49,8 +49,11 @@ type Broker struct {
 	started time.Time
 	// closing closes when Serve begins to shut down.
 	closing chan struct{}
-	mu      sync.Mutex
-	live    map[string]string
+	// refresh serializes probing an image the configured tag newly resolves to.
+	refresh sync.Mutex
+	// mu guards info and live.
+	mu   sync.Mutex
+	live map[string]string
 }
 
 func runnerBackend(name string) config.Backend {
@@ -133,12 +136,44 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		Networks: sandbox.BrokerNetworks{Runner: cfg.RunnerNetwork, Verify: cfg.VerifyNetwork},
 		Egress:   cfg.EgressProxy != "",
 	}
-	versions, err := b.probeVersions(ctx)
+	versions, err := b.probeVersions(ctx, image.ID)
 	if err != nil {
 		return nil, fmt.Errorf("Probing runner versions in the sandbox image: %w", err)
 	}
 	b.info.Runners = versions
 	return b, nil
+}
+
+// image resolves the configured tag for a new sandbox. An image rebuilt under the same tag takes effect for the next
+// sandbox, with its runner versions probed again; a tag that no longer resolves fails clearly, rather than leaving
+// sandboxes on an image that may already be pruned.
+func (b *Broker) image(ctx context.Context) (string, error) {
+	image, err := b.engine.ImageInspect(ctx, b.cfg.Image)
+	if err != nil {
+		return "", fmt.Errorf("Sandbox image %s is not available locally (the broker never pulls): %w", b.cfg.Image, err)
+	}
+	current := func() string {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.info.ImageID
+	}
+	if image.ID == current() {
+		return image.ID, nil
+	}
+	b.refresh.Lock()
+	defer b.refresh.Unlock()
+	if image.ID == current() {
+		return image.ID, nil
+	}
+	versions, err := b.probeVersions(ctx, image.ID)
+	if err != nil {
+		return "", fmt.Errorf("Probing runner versions in the rebuilt sandbox image %s: %w", b.cfg.Image, err)
+	}
+	b.mu.Lock()
+	b.info.ImageID, b.info.ImageDigests, b.info.Runners = image.ID, image.RepoDigests, versions
+	b.mu.Unlock()
+	b.logf("Sandbox image %s now resolves to %s", b.cfg.Image, image.ID)
+	return image.ID, nil
 }
 
 func apiAtLeast(have, want string) bool {
@@ -211,11 +246,12 @@ func (b *Broker) sweep(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (b *Broker) probeVersions(ctx context.Context) (map[string]string, error) {
+func (b *Broker) probeVersions(ctx context.Context, image string) (map[string]string, error) {
 	p, err := b.cfg.plan(sandbox.Request{Kind: sandbox.KindProbe.String(), Mode: sandbox.ProbeVersions, Timeout: 120})
 	if err != nil {
 		return nil, err
 	}
+	p.image = image
 	var stdout, stderr bytes.Buffer
 	collect := func(buf *bytes.Buffer) func([]byte) error {
 		return func(p []byte) error {
@@ -245,10 +281,10 @@ func (b *Broker) probeVersions(ctx context.Context) (map[string]string, error) {
 
 // Info is what the broker serves the control plane about itself.
 func (b *Broker) Info() sandbox.BrokerInfo {
-	info := b.info
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	info := b.info
 	info.Live = len(b.live)
-	b.mu.Unlock()
 	return info
 }
 
@@ -404,7 +440,13 @@ func (b *Broker) handleSandbox(base context.Context, w http.ResponseWriter, r *h
 	case <-r.Context().Done():
 		return
 	}
-	prepared, err := b.prepare(r.Context(), base, p, sync.OnceFunc(func() { <-b.slots }))
+	release := sync.OnceFunc(func() { <-b.slots })
+	if p.image, err = b.image(r.Context()); err != nil {
+		release()
+		refuse(http.StatusInternalServerError, err.Error())
+		return
+	}
+	prepared, err := b.prepare(r.Context(), base, p, release)
 	if err != nil {
 		refuse(http.StatusInternalServerError, err.Error())
 		return
@@ -472,7 +514,8 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 		lease, extraEnv = token, proxyEnv(b.cfg.EgressProxy, token)
 	}
 	spec := b.cfg.container(p, extraEnv)
-	spec.Image = b.info.ImageID
+	// A sandbox runs the image ID its tag resolved to, so its evidence names exactly what ran.
+	spec.Image = p.image
 	if spec.Image == "" {
 		spec.Image = b.cfg.Image
 	}
