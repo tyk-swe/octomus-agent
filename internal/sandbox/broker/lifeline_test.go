@@ -257,6 +257,28 @@ func TestSandboxThatFailsAfterItStartedKeepsItsRecord(t *testing.T) {
 	}
 }
 
+func TestEvidenceWithoutCollector(t *testing.T) {
+	for _, lease := range []string{"", "sandbox-lease"} {
+		name := "unnetworked probe"
+		if lease != "" {
+			name = "leased sandbox"
+		}
+		t.Run(name, func(t *testing.T) {
+			log := &testutil.SyncBuffer{}
+			s := &prepared{b: &Broker{cfg: Config{Log: log}}, name: "sandbox", image: "sha256:image", lease: lease}
+			for _, oomKnown := range []bool{false, true} {
+				record := s.evidence(false, oomKnown)
+				if record.Incomplete != (lease != "" || !oomKnown) {
+					t.Fatalf("record with lease %q, known OOM %v = %+v", lease, oomKnown, record)
+				}
+			}
+			if strings.Contains(log.String(), "egress collector is not configured") != (lease != "") {
+				t.Fatalf("missing-collector log with lease %q = %q", lease, log.String())
+			}
+		})
+	}
+}
+
 func TestLostEvidenceMarksTheRecordIncomplete(t *testing.T) {
 	gateway := func(t *testing.T, listener net.Listener) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -264,7 +286,7 @@ func TestLostEvidenceMarksTheRecordIncomplete(t *testing.T) {
 		g := egress.New(egress.Policy{}, t.TempDir(), io.Discard)
 		go func() { _ = g.ServeCollector(ctx, listener) }()
 	}
-	// The containment probe holds an egress lease, as every agent and verification sandbox does.
+	// Verification sandboxes hold egress leases independently of containment-probe startup checks.
 	run := func(t *testing.T, e *fakeEngine, collector string) (*model.SandboxRecord, string) {
 		t.Helper()
 		cfg := testConfig(t)
@@ -272,7 +294,7 @@ func TestLostEvidenceMarksTheRecordIncomplete(t *testing.T) {
 		log := &testutil.SyncBuffer{}
 		cfg.Log = log
 		report, err := e.broker(t, cfg).runSandbox(context.Background(),
-			plan{kind: wire.KindProbe, probe: wire.ProbeContainment, timeout: time.Minute}, discard, discard, nil)
+			plan{kind: wire.KindVerify, timeout: time.Minute}, discard, discard, nil)
 		if err != nil || report.Sandbox == nil {
 			t.Fatalf("sandbox = %+v, %v", report, err)
 		}
@@ -289,6 +311,12 @@ func TestLostEvidenceMarksTheRecordIncomplete(t *testing.T) {
 		record, log := run(t, newFakeEngine(t), filepath.Join(t.TempDir(), "missing.sock"))
 		if !record.Incomplete || !strings.Contains(log, "egress record of sandbox") {
 			t.Fatalf("record without its egress = %+v (log %q); want it marked incomplete and logged", record, log)
+		}
+	})
+	t.Run("collector unconfigured", func(t *testing.T) {
+		record, log := run(t, newFakeEngine(t), "")
+		if !record.Incomplete || !strings.Contains(log, "egress collector is not configured") {
+			t.Fatalf("record without a configured collector = %+v (log %q); want it marked incomplete and logged", record, log)
 		}
 	})
 	t.Run("gateway restarted", func(t *testing.T) {
@@ -324,7 +352,7 @@ func TestLostEvidenceMarksTheRecordIncomplete(t *testing.T) {
 		log := &testutil.SyncBuffer{}
 		cfg.Log = log
 		report, err := e.broker(t, cfg).runSandbox(context.Background(),
-			plan{kind: wire.KindProbe, probe: wire.ProbeContainment, timeout: 100 * time.Millisecond}, discard, discard, nil)
+			plan{kind: wire.KindVerify, timeout: 100 * time.Millisecond}, discard, discard, nil)
 		if err != nil || !report.Killed || report.Sandbox == nil || !report.Sandbox.Incomplete || report.Sandbox.OOM ||
 			!strings.Contains(log.String(), "did not report its exit") {
 			t.Fatalf("sandbox killed without a reported exit = %+v (sandbox %+v), %v (log %q); want its record marked incomplete",

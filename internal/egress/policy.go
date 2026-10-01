@@ -67,6 +67,23 @@ func (p Policy) Allows(kind, host string, port uint16) bool {
 	return false
 }
 
+// probeTarget chooses a syntactically valid name outside the effective runner allowlist, including build hosts.
+// Keep the familiar target when it is denied; otherwise use reserved .invalid names. A parsed wildcard rule has
+// at least two labels in its suffix, so it cannot cover these two-label candidates. There are more candidates than
+// rules, hence an exact allowlist cannot exhaust them. Still fail closed if an unvalidated policy covers them all.
+func (p Policy) probeTarget() (string, error) {
+	if !p.Allows(wire.KindRunner, "example.com", 443) {
+		return "example.com:443", nil
+	}
+	for i := 0; i <= len(p.Model)+len(p.Build); i++ {
+		host := fmt.Sprintf("octomus-probe-%d.invalid", i)
+		if !p.Allows(wire.KindRunner, host, 443) {
+			return host + ":443", nil
+		}
+	}
+	return "", errors.New("no denied containment probe target")
+}
+
 // Describe lists the effective allowlists for logs and the dashboard.
 func (p Policy) Describe() map[string][]string {
 	describe := func(rules []Rule) []string {

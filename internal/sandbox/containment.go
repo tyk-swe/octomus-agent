@@ -23,6 +23,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/egress"
 )
 
 // probeTargets are paths a sandbox must never see: orchestrator state, deployment secrets and the Docker daemon.
@@ -74,7 +76,7 @@ func runContainmentProbe(stdout io.Writer) int {
 	if proxy == "" {
 		add("egress_gateway", "Egress is limited to the allowlist", true, "no egress gateway: sandboxes are offline")
 	} else {
-		refused, detail := egressRefusals(proxy)
+		refused, detail := egressRefusals(proxy, os.Getenv(egress.ProbeTargetEnv))
 		add("egress_gateway", "The egress gateway refuses unlisted, metadata and local targets", refused, detail)
 	}
 	if err := json.NewEncoder(stdout).Encode(report); err != nil {
@@ -483,20 +485,20 @@ func detailList(prefix string, items []string, otherwise string) string {
 	return prefix + " " + strings.Join(items, ", ")
 }
 
-// egressRefusalTargets are what the gateway must refuse a runner sandbox, each with the reason it must give: a public
-// name that is on no allowlist, refused by the runner allowlist itself rather than for some other cause, and the cloud
-// metadata service and a local port, refused because neither is a host name an allowlist could hold.
-var egressRefusalTargets = []struct{ target, reason string }{
-	{"example.com:443", "host is not on the " + KindRunner.String() + " allowlist"},
-	{"169.254.169.254:80", "target is not an allowlisted host name"},
-	{"localhost:4200", "target is not an allowlisted host name"},
-}
-
 // egressRefusals asks the gateway for each refusal target. Only a 403 with the expected reason counts: a 407 shows
-// the gateway did not accept the probe's lease, so its allowlist was never consulted.
-func egressRefusals(proxy string) (bool, string) {
+// the gateway did not accept the probe's lease, so its allowlist was never consulted. The broker obtains the unlisted
+// DNS target from the gateway's effective policy; no fixed name is necessarily outside a deployment's allowlist.
+func egressRefusals(proxy, unlisted string) (bool, string) {
+	if !egress.ValidProbeTarget(unlisted) {
+		return false, "not proven refused: the gateway's unlisted probe target is missing or invalid"
+	}
+	targets := []struct{ target, reason string }{
+		{unlisted, "host is not on the " + KindRunner.String() + " allowlist"},
+		{"169.254.169.254:80", "target is not an allowlisted host name"},
+		{"localhost:4200", "target is not an allowlisted host name"},
+	}
 	denied, failures := []string{}, []string{}
-	for _, refusal := range egressRefusalTargets {
+	for _, refusal := range targets {
 		code, reason, err := proxyConnect(proxy, refusal.target)
 		switch {
 		case err != nil:

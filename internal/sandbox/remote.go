@@ -184,6 +184,13 @@ func (r *Remote) open(ctx context.Context, req wire.Request) (net.Conn, *bufio.R
 	if err != nil {
 		return nil, nil, r.unavailable(err)
 	}
+	return upgradeSandbox(ctx, conn, body)
+}
+
+// upgradeSandbox waits for the broker to admit and prepare the sandbox. Only the caller's context bounds this
+// handshake: a slot wait, an image-version probe, create and attach can together outlast any one startup step.
+// Once upgraded, the stream belongs to the child and no longer follows this startup context.
+func upgradeSandbox(ctx context.Context, conn net.Conn, body []byte) (net.Conn, *bufio.Reader, error) {
 	httpReq, err := http.NewRequest(http.MethodPost, "http://sandboxd/v1/sandboxes", bytes.NewReader(body))
 	if err != nil {
 		conn.Close()
@@ -192,8 +199,6 @@ func (r *Remote) open(ctx context.Context, req wire.Request) (net.Conn, *bufio.R
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Connection", "Upgrade")
 	httpReq.Header.Set("Upgrade", wire.UpgradeProtocol)
-	// Creating a container can take a while on a busy host; the stream itself has no deadline once it is up.
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	if err := httpReq.Write(conn); err != nil {
@@ -213,12 +218,12 @@ func (r *Remote) open(ctx context.Context, req wire.Request) (net.Conn, *bufio.R
 		defer conn.Close()
 		return nil, nil, brokerError(resp)
 	}
-	if !stop() {
-		// A cancellation as the stream came up has closed it; the broker removes a sandbox whose stream closes.
+	if !stop() || ctx.Err() != nil {
+		// Cancellation raced the upgrade; even if its callback was stopped, the caller no longer wants the sandbox.
+		// The broker removes a sandbox whose stream closes.
 		conn.Close()
 		return nil, nil, process.ErrSessionCancelled
 	}
-	_ = conn.SetDeadline(time.Time{})
 	return conn, reader, nil
 }
 

@@ -237,6 +237,9 @@ so runner transcripts do not accumulate on the host's disk.
 
 Volumes have no disk quota. Octomus checks application storage before admitting work (see
 [configuration](configuration.md)); keep an eye on free space on a shared host.
+The storage walk keeps at most three directory descriptors open and bounds repeated
+ancestor traversal per owned workspace. An unreadable, excessively deep or expensive
+subtree blocks further admission for its owner without blocking unrelated workspaces.
 
 ## Trusted git metadata
 
@@ -288,7 +291,12 @@ sandbox checks, from inside:
 | Cannot resolve internet names directly | DNS lookups fail |
 | Has no gateway to the host or its neighbours | there is no default route, and the first address of the sandbox's subnet, where a bridge gateway would sit, answers neither ARP nor a connection on common host ports unless Docker names it as a container |
 | Runs under memory and process limits | cgroup `memory.max` and `pids.max` (on cgroup v1, `memory.limit_in_bytes` and `pids.max`) match the broker's configured limits |
-| The egress gateway refuses unlisted, metadata and local targets | with a runner lease, the gateway refuses `example.com` as not on the runner allowlist, and `169.254.169.254` and `localhost` as not host names |
+| The egress gateway refuses unlisted, metadata and local targets | with a runner lease, the gateway refuses a name outside its effective model and build allowlists, and `169.254.169.254` and `localhost` as not host names |
+
+For the unlisted-name check, the broker asks the running gateway's local collector for a
+denied target: `example.com` when unlisted, otherwise a reserved `.invalid` name outside
+both allowlists. A networked self-test requires a reachable `OCTOMUS_EGRESS_COLLECTOR`;
+without the gateway's policy-selected target, it fails before starting the probe.
 
 A failed check fails the connection check, names what the probe saw, and appears on the
 Overview. The last result is kept with the image it ran on.

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -23,6 +24,90 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
+
+func TestSandboxUpgradeAllowsTheWholeStartupLifecycle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client, broker := net.Pipe()
+		defer broker.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		finished := make(chan struct{})
+		defer close(finished)
+		go func() {
+			defer broker.Close()
+			req, err := http.ReadRequest(bufio.NewReader(broker))
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(io.Discard, req.Body)
+			// Waiting for a slot, probing a rebuilt image, creating and attaching can exceed two minutes together.
+			select {
+			case <-time.After(4 * time.Minute):
+			case <-finished:
+				return
+			}
+			if _, err := io.WriteString(broker, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: "+wire.UpgradeProtocol+"\r\n\r\n"); err != nil {
+				return
+			}
+			select {
+			case <-time.After(time.Minute):
+			case <-finished:
+				return
+			}
+			_, _ = io.WriteString(broker, "stream")
+		}()
+		conn, reader, err := upgradeSandbox(ctx, client, []byte(`{"kind":"probe","mode":"versions"}`))
+		if err != nil {
+			t.Fatalf("upgrade after lengthy broker startup = %v; want it to follow the caller's context", err)
+		}
+		defer conn.Close()
+		// The startup context no longer owns the successfully upgraded stream.
+		cancel()
+		synctest.Wait()
+		data := make([]byte, len("stream"))
+		if _, err := io.ReadFull(reader, data); err != nil || string(data) != "stream" {
+			t.Fatalf("stream after startup context cancellation = %q, %v", data, err)
+		}
+	})
+}
+
+func TestSandboxUpgradeStopsWithTheCallerContext(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		name := "cancelled"
+		if deadline {
+			name = "deadline"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				client, broker := net.Pipe()
+				defer broker.Close()
+				ctx, cancel := context.WithCancel(context.Background())
+				if deadline {
+					cancel()
+					ctx, cancel = context.WithTimeout(context.Background(), 3*time.Minute)
+				} else {
+					go func() {
+						select {
+						case <-time.After(3 * time.Minute):
+							cancel()
+						case <-ctx.Done():
+						}
+					}()
+				}
+				defer cancel()
+				go func() {
+					// Read the request but leave its startup pending until the client closes the connection.
+					_, _ = io.Copy(io.Discard, broker)
+				}()
+				start := time.Now()
+				_, _, err := upgradeSandbox(ctx, client, []byte(`{"kind":"probe","mode":"versions"}`))
+				if !errors.Is(err, process.ErrSessionCancelled) || time.Since(start) != 3*time.Minute {
+					t.Fatalf("upgrade stopped after %s with %v; want caller cancellation after 3m", time.Since(start), err)
+				}
+			})
+		})
+	}
+}
 
 // fakeBroker speaks the broker protocol with scripted sandboxes chosen by the verification command.
 type fakeBroker struct {

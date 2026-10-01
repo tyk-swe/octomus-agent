@@ -33,7 +33,7 @@ type prepared struct {
 }
 
 var (
-	// createTimeout matches how long the control plane waits for a sandbox to open.
+	// Each daemon preparation step is bounded separately; the control plane waits under its caller's context.
 	createTimeout = 2 * time.Minute
 	attachTimeout = time.Minute
 )
@@ -46,6 +46,15 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 	_, _ = rand.Read(suffix[:])
 	name := fmt.Sprintf("octomus-%s-%s-%s", b.cfg.Instance, p.kind, hex.EncodeToString(suffix[:]))
 	var extraEnv []string
+	probeTarget := ""
+	if b.leases != nil && p.kind == wire.KindProbe && p.probe == wire.ProbeContainment {
+		var err error
+		probeTarget, err = egress.FetchProbeTarget(ctx, b.cfg.EgressCollector)
+		if err != nil {
+			release()
+			return nil, fmt.Errorf("Choosing the containment probe's unlisted egress target: %w", err)
+		}
+	}
 	lease, granted := "", time.Time{}
 	if b.leases != nil && (p.kind != wire.KindProbe || p.probe == wire.ProbeContainment) {
 		// The containment probe proves what the gateway refuses a runner sandbox, so it holds a runner's lease.
@@ -60,6 +69,9 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 			return nil, fmt.Errorf("Granting the sandbox egress lease: %w", err)
 		}
 		lease, extraEnv = token, egress.ProxyEnv(b.cfg.EgressProxy, token)
+	}
+	if probeTarget != "" {
+		extraEnv = append(extraEnv, egress.ProbeTargetEnv+"="+probeTarget)
 	}
 	spec := b.cfg.container(p, extraEnv)
 	// A sandbox runs the image ID its tag resolved to, so its evidence names exactly what ran.
@@ -387,7 +399,12 @@ func (s *prepared) evidence(oom, oomKnown bool) *model.SandboxRecord {
 	b := s.b
 	record := &model.SandboxRecord{ImageID: s.image, Runtime: b.cfg.Runtime, Runs: 1, OOM: oom, Incomplete: !oomKnown,
 		Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{}}}
-	if b.cfg.EgressCollector == "" || s.lease == "" {
+	if s.lease == "" {
+		return record
+	}
+	if b.cfg.EgressCollector == "" {
+		b.logf("Reading the egress record of sandbox %s failed; its record is marked incomplete: egress collector is not configured", s.name)
+		record.Incomplete = true
 		return record
 	}
 	// The gateway counts accepted tunnels immediately, even when upstream connections are still closing.

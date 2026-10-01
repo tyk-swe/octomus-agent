@@ -292,27 +292,110 @@ func TestMeasureReportsEachOwnerOnceWhateverTheFanOut(t *testing.T) {
 	}
 }
 
-// Running out of descriptors is the service's own trouble, not something a sandbox did to its tree, so it fails the
-// measurement rather than hiding a subtree. The child process runs Measure under a descriptor limit it cannot meet.
+// lowerDescriptorLimit is used only in subprocesses, so changing the process-wide limit cannot affect other tests.
+func lowerDescriptorLimit(t *testing.T) {
+	t.Helper()
+	// Open a regular file first, so the runtime's own descriptors exist before counting.
+	if f, err := os.Open(os.Args[0]); err == nil {
+		_ = f.Close()
+	}
+	open, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skip("needs /proc/self/fd")
+	}
+	var limit unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
+		t.Fatal(err)
+	}
+	// The listing includes its own, now-closed descriptor, leaving three available for the walk.
+	limit.Cur = min(limit.Cur, uint64(len(open)+2))
+	if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMeasureKeepsDescriptorUseBounded(t *testing.T) {
+	const env = "OCTOMUS_MEASURE_BOUNDED_DESCRIPTORS"
+	if root := os.Getenv(env); root != "" {
+		lowerDescriptorLimit(t)
+		// Repeat to catch leaked descriptors as well as descriptors retained along a deep traversal. The normal
+		// tree has siblings at its deepest level, so returning to them must reopen the closed ancestors safely.
+		for range 3 {
+			usage, err := workspace.Measure(root, 2)
+			if err != nil {
+				t.Fatalf("Measure of deep trees under a descriptor limit = %v", err)
+			}
+			if usage.Bytes != 20 || !slices.Equal(usage.Unmeasured, []string{filepath.Join("tasks", "too-deep")}) {
+				t.Fatalf("usage = %+v; want 20 bytes and only tasks/too-deep unmeasured", usage)
+			}
+		}
+		return
+	}
+	root := t.TempDir()
+	deepest := nest(t, filepath.Join(root, "tasks", "normal", "workspace"), strings.Repeat("n", 80), 128)
+	for _, name := range []string{"left", "right"} {
+		if err := unix.Mkdirat(deepest, name, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.Mkdirat(deepest, name+"/sub", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		fd, err := unix.Openat(deepest, name+"/sub/counted.txt", unix.O_WRONLY|unix.O_CREAT|unix.O_CLOEXEC, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = unix.Write(fd, []byte("1234567"))
+		_ = unix.Close(fd)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A wide fanout of leaf directories must retain their parent rather than reopening the entire deep path for
+	// every sibling. The non-leaf siblings above still force the bounded-descriptor ancestor-reopen path.
+	for i := range 1000 {
+		if err := unix.Mkdirat(deepest, fmt.Sprintf("leaf-%04d", i), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks", "normal", "sibling.txt"), []byte("123456"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nest(t, filepath.Join(root, "tasks", "too-deep", "workspace"), "a", 2200)
+	child := exec.Command(os.Args[0], "-test.run=^TestMeasureKeepsDescriptorUseBounded$", "-test.count=1", "-test.v")
+	child.Env = append(os.Environ(), env+"="+root)
+	if out, err := child.CombinedOutput(); err != nil || !strings.Contains(string(out), "--- PASS") {
+		t.Fatalf("measuring deep trees under a descriptor limit: %v\n%s", err, out)
+	}
+}
+
+// Genuine process-wide descriptor exhaustion still fails the measurement rather than hiding a subtree. Unlike a
+// sandbox's deep directory chain, other users of the process's descriptors are not under the walk's control.
 func TestMeasureFailsOnErrorsASandboxCannotCause(t *testing.T) {
 	const env = "OCTOMUS_MEASURE_UNDER_FD_LIMIT"
 	if root := os.Getenv(env); root != "" {
-		// Open a regular file first, so the runtime's own descriptors exist before counting.
-		if f, err := os.Open(os.Args[0]); err == nil {
-			_ = f.Close()
+		lowerDescriptorLimit(t)
+		var held []int
+		defer func() {
+			for _, fd := range held {
+				_ = unix.Close(fd)
+			}
+		}()
+		for {
+			fd, err := unix.Open("/dev/null", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+			if errors.Is(err, unix.EMFILE) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			held = append(held, fd)
 		}
-		open, err := os.ReadDir("/proc/self/fd")
-		if err != nil {
-			t.Skip("needs /proc/self/fd")
+		if len(held) == 0 {
+			t.Fatal("no descriptor available for measured root")
 		}
-		var limit unix.Rlimit
-		if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
-			t.Fatal(err)
-		}
-		limit.Cur = uint64(len(open) + 8)
-		if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
-			t.Fatal(err)
-		}
+		// Leave precisely one descriptor for the measured root; even its immediate child cannot be opened.
+		_ = unix.Close(held[len(held)-1])
+		held = held[:len(held)-1]
 		usage, err := workspace.Measure(root, 2)
 		if !errors.Is(err, unix.EMFILE) {
 			t.Fatalf("Measure out of descriptors = %+v, %v; want EMFILE", usage, err)
@@ -320,7 +403,9 @@ func TestMeasureFailsOnErrorsASandboxCannotCause(t *testing.T) {
 		return
 	}
 	root := t.TempDir()
-	nest(t, filepath.Join(root, "tasks", "t1", "workspace"), "a", 64)
+	if err := os.Mkdir(filepath.Join(root, "tasks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	child := exec.Command(os.Args[0], "-test.run=^TestMeasureFailsOnErrorsASandboxCannotCause$", "-test.count=1", "-test.v")
 	child.Env = append(os.Environ(), env+"="+root)
 	if out, err := child.CombinedOutput(); err != nil || !strings.Contains(string(out), "--- PASS") {

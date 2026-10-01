@@ -173,7 +173,7 @@ var ownedRoots = []string{"tasks", "cycles", "baselines", scratchDir}
 const ownerDepth = 2
 
 // measureFor measures the data directory for an admission on behalf of owner, an owned root relative to it. A subtree
-// the walk could not measure, unreadable or nested too deeply, holds unknown bytes: it puts its own owner over the
+// the walk could not measure, unreadable or too costly to traverse, holds unknown bytes: it puts its own owner over the
 // limit, and puts everyone over it when it lies outside any owned root. Another owner's unmeasured subtree does not
 // stop this admission; that owner can admit nothing more until its retained work is resolved.
 func (a *App) measureFor(owner string) (uint64, error) {
@@ -185,11 +185,11 @@ func (a *App) measureFor(owner string) (uint64, error) {
 		parent, _, owned := strings.Cut(rel, string(filepath.Separator))
 		if !owned || !slices.Contains(ownedRoots, parent) {
 			// No sandbox writes here, so this is the host's own: lost+found at a filesystem's root, for example.
-			return 0, fmt.Errorf("Storage under %s in the data directory could not be measured; it is unreadable or nested too deeply. Make it readable to the service or move it out of the data directory: %w",
+			return 0, fmt.Errorf("Storage under %s in the data directory could not be measured; it is unreadable, nested too deeply, or too costly to traverse. Make it readable to the service or move it out of the data directory: %w",
 				redact.Text(rel), model.BlockedReasonStorageLimit)
 		}
 		if rel == owner {
-			return 0, fmt.Errorf("Workspace storage under %s could not be measured; it is unreadable or nested too deeply. Resolve that retained work: %w",
+			return 0, fmt.Errorf("Workspace storage under %s could not be measured; it is unreadable, nested too deeply, or too costly to traverse. Resolve that retained work: %w",
 				redact.Text(rel), model.BlockedReasonStorageLimit)
 		}
 	}
