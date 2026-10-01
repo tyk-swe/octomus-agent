@@ -21,23 +21,15 @@ func PrepareRoot(spec Spec) error {
 		return err
 	}
 	defer root.Close()
-	switch spec.Kind {
-	case KindRunner:
-		if err := plainDirectories(root, wire.RunnerHome); err != nil {
+	if spec.Kind == KindVerify && spec.FreshHome {
+		if err := workspace.RemoveOwnedDir(rootPath, filepath.Join(rootPath, wire.VerifyHome)); err != nil {
 			return err
 		}
-		for _, dir := range wire.RunnerHomeDirs {
-			if err := plainDirectories(root, filepath.Join(wire.RunnerHome, dir.Home)); err != nil {
-				return err
-			}
+	}
+	for _, dir := range wire.HomeDirs(spec.Kind.String()) {
+		if err := plainDirectories(root, dir); err != nil {
+			return err
 		}
-	case KindVerify:
-		if spec.FreshHome {
-			if err := workspace.RemoveOwnedDir(rootPath, filepath.Join(rootPath, wire.VerifyHome)); err != nil {
-				return err
-			}
-		}
-		return plainDirectories(root, wire.VerifyHome)
 	}
 	return nil
 }

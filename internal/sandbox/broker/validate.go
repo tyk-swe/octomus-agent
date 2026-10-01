@@ -133,14 +133,8 @@ func (c Config) resolveRoot(p *plan, dir string) error {
 	if !p.scratch {
 		required = append(required, filepath.Join(rel, "repo.git"))
 	}
-	switch p.kind {
-	case wire.KindRunner:
-		required = append(required, filepath.Join(rel, wire.RunnerHome))
-		for _, mount := range wire.RunnerHomeDirs {
-			required = append(required, filepath.Join(rel, wire.RunnerHome, mount.Home))
-		}
-	case wire.KindVerify:
-		required = append(required, filepath.Join(rel, wire.VerifyHome))
+	for _, dir := range wire.HomeDirs(p.kind) {
+		required = append(required, filepath.Join(rel, dir))
 	}
 	for _, path := range required {
 		if err := c.ownedDirectory(path); err != nil {

@@ -40,19 +40,11 @@ func makeRoot(t *testing.T, cfg Config, rel string, dirs ...string) string {
 	return filepath.Join(root, "workspace")
 }
 
-func runnerDirs() []string {
-	dirs := []string{wire.RunnerHome}
-	for _, dir := range wire.RunnerHomeDirs {
-		dirs = append(dirs, filepath.Join(wire.RunnerHome, dir.Home))
-	}
-	return dirs
-}
-
 // TestContainerSpecsAreGolden holds every hardening choice for each kind of sandbox. A change to a golden file is a
 // change to the isolation boundary and must be reviewed as one.
 func TestContainerSpecsAreGolden(t *testing.T) {
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(runnerDirs(), wire.VerifyHome)...)
+	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	cases := map[string]wire.Request{
 		"runner-codex":    {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true},
 		"runner-opencode": {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60, Env: []string{"OPENCODE_SERVER_PASSWORD=pw"}},
@@ -93,7 +85,7 @@ func TestContainerSpecsAreGolden(t *testing.T) {
 
 func TestEverySandboxIsHardened(t *testing.T) {
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(runnerDirs(), wire.VerifyHome)...)
+	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	for _, req := range []wire.Request{
 		{Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true},
 		{Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60},
@@ -139,8 +131,8 @@ func TestEverySandboxIsHardened(t *testing.T) {
 
 func TestPlanRefusesAnythingButOwnedRootsAndNarrowRequests(t *testing.T) {
 	cfg := testConfig(t)
-	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(runnerDirs(), wire.VerifyHome)...)
-	scratch := makeRoot(t, cfg, "system/"+testUUID, append(runnerDirs(), wire.VerifyHome)...)
+	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
+	scratch := makeRoot(t, cfg, "system/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	if err := os.RemoveAll(filepath.Join(filepath.Dir(scratch), "repo.git")); err != nil {
 		t.Fatal(err)
 	}
