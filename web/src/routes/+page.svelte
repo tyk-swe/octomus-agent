@@ -47,6 +47,7 @@
     lastUpdated = $state('');
   let panelOpener: HTMLElement | null = null;
   function rememberOpener() {
+    navigationGeneration++;
     if (selected || runPanel) return;
     panelOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   }
@@ -62,6 +63,7 @@
   }
   async function closePanels() {
     if (!selected && !runPanel) return;
+    navigationGeneration++;
     selected = null;
     runPanel = null;
     const opener = panelOpener;
@@ -176,6 +178,7 @@
   let lastScope = '';
   let lastPage = '';
   let sessionGeneration = 0;
+  let navigationGeneration = 0;
   let refreshing = false;
   let refreshQueued = false;
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
@@ -244,6 +247,7 @@
     const refreshNumber = listRefresh;
     const changed = scope !== lastScope;
     if (changed) {
+      navigationGeneration++;
       lastScope = scope;
       listBefore = null;
       previousPages = [];
@@ -460,6 +464,7 @@
     };
   });
   async function navigate(id: string) {
+    navigationGeneration++;
     const currentSession = sessionGeneration;
     view = id;
     if (id === 'settings') settingsVisited = true;
@@ -521,13 +526,16 @@
   async function control(action: ControlAction) {
     if (busy || !canControl[action]) return;
     const currentSession = sessionGeneration;
+    const currentNavigation = navigationGeneration;
     busy = true;
     pendingAction = action;
     error = '';
     try {
       await api(`/control/${action}`, 'POST');
+      if (currentSession !== sessionGeneration) return;
       await refresh();
-      if (action === 'audit') {
+      if (currentSession !== sessionGeneration) return;
+      if (action === 'audit' && currentNavigation === navigationGeneration) {
         proposalCycle = 'all';
         proposalFilter = 'all';
         await navigate('proposals');
@@ -535,12 +543,15 @@
     } catch (e) {
       if (currentSession === sessionGeneration) error = (e as Error).message;
     } finally {
-      busy = false;
-      pendingAction = '';
+      if (currentSession === sessionGeneration) {
+        busy = false;
+        pendingAction = '';
+      }
     }
   }
   function disconnect() {
     sessionGeneration++;
+    navigationGeneration++;
     connected = false;
     settingsVisited = false;
     data = null;
