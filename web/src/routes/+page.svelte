@@ -308,6 +308,7 @@
           Object.assign(previous, summary);
           if (detailChanged) {
             previous.detail = undefined;
+            previous.detailError = undefined;
             if (previous.detailRequested) void loadProposal(previous);
           }
           return previous;
@@ -375,10 +376,11 @@
         detail.content_revision === revision
       ) {
         p.detail = detail;
+        p.detailError = undefined;
       }
     } catch (e) {
       if (currentSession === sessionGeneration && p.content_revision === revision)
-        error = (e as Error).message;
+        p.detailError = (e as Error).message;
     } finally {
       if (p.detailLoading === revision) p.detailLoading = undefined;
     }
