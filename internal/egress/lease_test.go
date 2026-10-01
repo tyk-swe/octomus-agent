@@ -60,9 +60,9 @@ func TestLeasesClearKeepsOnlyOtherFiles(t *testing.T) {
 func TestFetchSummaryReadsTheCollector(t *testing.T) {
 	g := New(Policy{}, t.TempDir(), io.Discard)
 	g.started = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "api.openai.com", Port: 443, Decision: "allowed", BytesUp: 7}, "lease")
-	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "example.com", Port: 443, Decision: "denied"}, "lease")
-	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "example.org", Port: 443, Decision: "failed"}, "lease")
+	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "api.openai.com", Port: 443, Decision: "allowed", BytesUp: 7}, "lease", nil)
+	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "example.com", Port: 443, Decision: "denied"}, "lease", nil)
+	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "example.org", Port: 443, Decision: "failed"}, "lease", nil)
 	listener, socket := testutil.ListenUnix(t, "collector.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

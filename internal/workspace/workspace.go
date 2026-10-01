@@ -76,8 +76,8 @@ type Usage struct {
 // An unmeasured subtree is reported by its first group path components relative to path ("." for group 0), so the
 // report grows with the directories at those levels, not with what a sandbox builds below one, and the walk never
 // spells out a deeper path. Below path, only what a sandbox can cause in a tree it writes leaves a subtree unmeasured:
-// a denied directory, one nested too deeply, one requiring too much repeated ancestor traversal, or one replaced
-// while the walk runs. Any other error, and any failure to read path itself, fails the measurement.
+// a denied directory, one nested too deeply, one requiring too much repeated ancestor traversal, or an entry moved
+// or replaced while the walk runs. Any other error, and any failure to read path itself, fails the measurement.
 func Measure(path string, group int) (Usage, error) {
 	dir, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -111,7 +111,19 @@ type walker struct {
 // than through ".." (which could escape a renamed subtree) or a full path (which could exceed PATH_MAX).
 type measuredDir struct {
 	name string
-	meta unix.Stat_t
+	dev  uint64
+	ino  uint64
+}
+
+func (d measuredDir) matches(meta *unix.Stat_t) bool {
+	return d.dev == uint64(meta.Dev) && d.ino == uint64(meta.Ino)
+}
+
+func (w *walker) childPrefix(prefix, name string, depth int) string {
+	if depth < w.group {
+		return filepath.Join(prefix, name)
+	}
+	return prefix
 }
 
 // unmeasurable reports whether a walk error is one a sandbox can cause in a tree it writes: a directory it denied, or
@@ -143,44 +155,16 @@ func (w *walker) walk(dir *os.File, prefix string, path []measuredDir, releasePa
 	case err != nil:
 		return err
 	}
-	fd := int(dir.Fd())
-	// Count files before descending so a single-child chain is visited just once, without reopening every ancestor
-	// on the way back up. Reuse the names buffer for the directories still to visit.
-	directories := names[:0]
-	for _, name := range names {
-		var meta unix.Stat_t
-		if err := unix.Fstatat(fd, name, &meta, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-			switch {
-			case errors.Is(err, fs.ErrNotExist):
-				continue
-			case depth > 0 && unmeasurable(err):
-				// A directory that denies search denies every name in it.
-				w.unmeasured[prefix] = struct{}{}
-				return nil
-			}
-			return &fs.PathError{Op: "fstatat", Path: filepath.Join(dir.Name(), name), Err: err}
-		}
-		switch meta.Mode & unix.S_IFMT {
-		case unix.S_IFLNK:
-			continue
-		case unix.S_IFDIR:
-			directories = append(directories, name)
-		default:
-			if n := uint64(max(meta.Size, 0)); math.MaxUint64-w.bytes < n {
-				w.bytes = math.MaxUint64
-			} else {
-				w.bytes += n
-			}
-		}
+	directories, err := w.measureEntries(dir, prefix, depth, names)
+	if err != nil {
+		return err
 	}
-	for _, name := range directories {
+	for _, component := range directories {
+		name := component.name
 		if w.reopened[prefix] < 0 {
 			return nil
 		}
-		child := prefix
-		if depth < w.group {
-			child = filepath.Join(prefix, name)
-		}
+		child := w.childPrefix(prefix, name, depth)
 		if depth+1 >= maxMeasuredDepth {
 			w.unmeasured[child] = struct{}{}
 			continue
@@ -195,12 +179,10 @@ func (w *walker) walk(dir *os.File, prefix string, path []measuredDir, releasePa
 			releaseParent()
 			releaseParent = nil
 		}
-		// O_NOFOLLOW refuses a directory replaced by a symlink since the stat above.
+		// Refuse changed or missing children: their original bytes may remain in a scanned part of this owner.
 		childFd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			continue
-		case err != nil && unmeasurable(err):
+		case errors.Is(err, fs.ErrNotExist), err != nil && unmeasurable(err):
 			w.unmeasured[child] = struct{}{}
 			continue
 		case err != nil:
@@ -212,11 +194,53 @@ func (w *walker) walk(dir *os.File, prefix string, path []measuredDir, releasePa
 			childDir.Close()
 			return &fs.PathError{Op: "fstat", Path: name, Err: err}
 		}
-		if err := w.walk(childDir, child, append(path, measuredDir{name: name, meta: meta}), closeDir); err != nil {
+		if !component.matches(&meta) {
+			childDir.Close()
+			w.unmeasured[child] = struct{}{}
+			continue
+		}
+		if err := w.walk(childDir, child, append(path, component), closeDir); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// measureEntries counts files before any descent, so a single-child chain needs no ancestor reopens. Directory
+// identities are captured here, before opening any child: a renamed directory may keep its bytes in an already
+// scanned part of the owner's tree, and a replacement at the old name must not hide that missing measurement.
+func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []string) ([]measuredDir, error) {
+	fd := int(dir.Fd())
+	var directories []measuredDir
+	for _, name := range names {
+		var meta unix.Stat_t
+		if err := unix.Fstatat(fd, name, &meta, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				// Its type and bytes are unknown: even a file can move into an already-scanned directory.
+				w.unmeasured[w.childPrefix(prefix, name, depth)] = struct{}{}
+				continue
+			case depth > 0 && unmeasurable(err):
+				// A directory that denies search denies every name in it.
+				w.unmeasured[prefix] = struct{}{}
+				return nil, nil
+			}
+			return nil, &fs.PathError{Op: "fstatat", Path: filepath.Join(dir.Name(), name), Err: err}
+		}
+		switch meta.Mode & unix.S_IFMT {
+		case unix.S_IFLNK:
+			continue
+		case unix.S_IFDIR:
+			directories = append(directories, measuredDir{name: name, dev: uint64(meta.Dev), ino: uint64(meta.Ino)})
+		default:
+			if n := uint64(max(meta.Size, 0)); math.MaxUint64-w.bytes < n {
+				w.bytes = math.MaxUint64
+			} else {
+				w.bytes += n
+			}
+		}
+	}
+	return directories, nil
 }
 
 // reopen returns an ancestor with pending children, closing each temporary descriptor before continuing. Verify
@@ -268,7 +292,7 @@ func (w *walker) reopen(path []measuredDir, prefix string) (*os.File, error) {
 			dir.Close()
 			return nil, &fs.PathError{Op: "fstat", Path: component.name, Err: err}
 		}
-		if meta.Dev != component.meta.Dev || meta.Ino != component.meta.Ino {
+		if !component.matches(&meta) {
 			dir.Close()
 			w.unmeasured[prefix] = struct{}{}
 			return nil, nil

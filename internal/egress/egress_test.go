@@ -331,8 +331,8 @@ func TestGatewayCollectsOpenTunnelWithoutRecreatingSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary := f.gateway.Collect("octomus-test-runner")
-	if summary.Allowed["api.openai.com:443"].Count != 1 {
-		t.Fatalf("open tunnel absent from summary: %+v", summary)
+	if summary.Incomplete || summary.Allowed["api.openai.com:443"].Count != 1 {
+		t.Fatalf("open tunnel absent from complete summary: %+v", summary)
 	}
 	_ = tunnel.Close()
 	if !testutil.WaitUntil(2*time.Second, func() bool {
@@ -631,7 +631,7 @@ func TestGatewayClosesDeniedConnections(t *testing.T) {
 	}
 }
 
-func TestGatewayDropsDecisionsArrivingAfterCollect(t *testing.T) {
+func TestGatewayMarksDecisionsArrivingAfterCollectIncomplete(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
 	release := make(chan struct{})
 	started := make(chan struct{})
@@ -646,7 +646,9 @@ func TestGatewayDropsDecisionsArrivingAfterCollect(t *testing.T) {
 		done <- result{status, err}
 	}()
 	<-started
-	f.gateway.Collect("octomus-test-runner")
+	if summary := f.gateway.Collect("octomus-test-runner"); !summary.Incomplete {
+		t.Fatalf("pending DNS request collected as complete: %+v", summary)
+	}
 	close(release)
 	if got := <-done; got.err != nil || got.status != http.StatusBadGateway {
 		t.Fatalf("CONNECT = %d, %v", got.status, got.err)
