@@ -449,6 +449,9 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		if ctx.Err() != nil {
 			return nil, process.ErrCancelled
 		}
+		if outcome.sandboxFailed() {
+			return nil, &sandboxUnavailable{sandboxFailure(command, outcome.capture)}
+		}
 		failed := outcome.failed()
 		note := ""
 		switch {
@@ -582,6 +585,25 @@ type checkOutcome struct {
 
 func (o checkOutcome) failed() bool {
 	return o.capture != nil || !o.captured.Status.Success()
+}
+
+// sandboxFailed reports that the sandbox, not the command, failed: it refused the command, lost it or could not confirm
+// how it ended. The command then has no result of its own, so it is neither a verification failure nor a pass.
+func (o checkOutcome) sandboxFailed() bool {
+	return o.capture != nil && sandbox.Infrastructure(o.capture)
+}
+
+func sandboxFailure(command string, err error) error {
+	return fmt.Errorf("The sandbox could not run verification command %s: %w", debugString(command), err)
+}
+
+// sandboxUnavailable blocks a task as runner_unavailable, which a retry clears, when the sandbox failed one of its
+// verification commands. Nothing is recorded as that command's verification and no repair round is spent on it.
+type sandboxUnavailable struct{ err error }
+
+func (e *sandboxUnavailable) Error() string { return e.err.Error() }
+func (e *sandboxUnavailable) Unwrap() []error {
+	return []error{model.BlockedReasonRunnerUnavailable, e.err}
 }
 
 const (

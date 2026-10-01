@@ -15,6 +15,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -415,7 +416,8 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 		if err != nil {
 			check.Error = stringPointer(redact.Error(err))
 			switch {
-			case workCtx.Err() != nil:
+			// A sandbox that could not run a command says nothing about the repository's baseline.
+			case workCtx.Err() != nil, sandbox.Infrastructure(err):
 				return model.BaselineStatusInterrupted
 			case process.IsDeadlineElapsed(err):
 				return model.BaselineStatusTimedOut
@@ -509,6 +511,9 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 			return model.BaselineStatusRunning, process.ErrCancelled
 		}
 		outcome := runCheckCommand(ctx, a.sandbox, c, workspaceDir, command, *revision, i == 0)
+		if ctx.Err() == nil && outcome.sandboxFailed() {
+			return model.BaselineStatusRunning, sandboxFailure(command, outcome.capture)
+		}
 		timedOut := process.IsDeadlineElapsed(outcome.capture)
 		text, diagnosticTruncated, success := commandOutput(outcome.captured, outcome.capture)
 		var failure error

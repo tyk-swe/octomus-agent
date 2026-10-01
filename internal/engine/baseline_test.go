@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -597,5 +598,46 @@ func TestBaselineOverallDeadlineTimesOutAndCleansWorkspace(t *testing.T) {
 	}
 	if !testutil.ProcessGone(strings.TrimSpace(string(pid))) {
 		t.Fatal("the verification shell survived the overall deadline")
+	}
+}
+
+func TestBaselineSandboxFailureInterruptsInsteadOfFailing(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		backend brokenSandbox
+		want    string
+	}{
+		{name: "refused at start", backend: brokenSandbox{healed: new(atomic.Bool)}, want: "Sandbox broker is unavailable"},
+		{name: "stream lost", backend: brokenSandbox{lost: true, healed: new(atomic.Bool)}, want: "Sandbox stream was lost"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newPlanningFixture(t)
+			app := New(fixture.state, fixture.dataDir, WithSandbox(test.backend))
+			t.Cleanup(app.Shutdown)
+			check := makeCheck(fixture.cfg, model.BaselineStatusRunning)
+			check.Config.VerificationCommands = []string{"true"}
+			if err := app.Store.Put("baseline", check.ID, check); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(app.Context())
+			defer cancel()
+			app.runtimeMu.Lock()
+			app.runtime.baseline = &baselineJob{id: check.ID, cancel: cancel}
+			app.runtimeMu.Unlock()
+			app.baselineWorker(ctx, check.ID)
+
+			saved, err := store.Get[model.BaselineCheck](app.Store, "baseline", check.ID)
+			if err != nil || saved == nil {
+				t.Fatalf("load finished check: %v", err)
+			}
+			if saved.Status != model.BaselineStatusInterrupted || saved.Error == nil || !strings.Contains(*saved.Error, test.want) {
+				t.Fatalf("baseline after a sandbox failure = %s (%v); want interrupted, naming the failure", saved.Status, optionalText(saved.Error))
+			}
+			if len(saved.Commands) != 0 {
+				t.Fatalf("commands = %+v; a command the sandbox did not run has no result", saved.Commands)
+			}
+		})
 	}
 }
