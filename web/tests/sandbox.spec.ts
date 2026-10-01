@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test';
-import type { Snapshot } from '../src/lib/types';
+import type { SandboxSelfTest, Snapshot } from '../src/lib/types';
 import { hostMode, login, openNavigation, test } from './synthetic';
 
 async function patchState(page: Page, patch: (snapshot: Snapshot) => void) {
@@ -76,6 +76,27 @@ test('a failed containment check is named with what the probe observed', async (
     'Has no direct route to the internet reached 1.1.1.1:443'
   );
 });
+
+for (const [name, report, detail] of [
+  ['empty report', { passed: false, checks: [] }, 'No containment checks were recorded'],
+  ['recorded failure', { passed: false }, 'did not pass'],
+  ['empty recorded error', { error: '' }, 'did not complete']
+] satisfies [string, Partial<SandboxSelfTest>, string][]) {
+  test(`the overview and setup checklist never call ${name} proven`, async ({ page, isMobile }) => {
+    await patchState(page, (snapshot) => {
+      Object.assign(snapshot.sandbox.self_test!, report);
+    });
+    await login(page);
+    const panel = page.getByRole('region', { name: 'Sandbox' });
+    await expect(panel.locator('.badge.failed')).toBeVisible();
+    await expect(panel).toContainText(detail);
+    await expect(panel.locator('.sandbox-proof .eyebrow')).toContainText('LAST SELF-TEST');
+    await expect(panel).not.toContainText('LAST PROVEN');
+    await openNavigation(page, 'Configuration', !!isMobile);
+    await expect(page.locator('[data-step="sandbox"] .badge')).toHaveText('Self-test failed');
+    await expect(page.locator('[data-step="sandbox"]')).toContainText(detail);
+  });
+}
 
 test('Run self-test asks the service once and shows the new proof', async ({ page }) => {
   const calls: string[] = [];
