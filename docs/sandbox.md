@@ -145,8 +145,8 @@ Each sandbox receives proxy variables carrying its own random credential. The ga
   connection, and ends a sandbox's tunnels as soon as its lease is revoked;
 - logs each tunnel as a JSON line when it opens and again when it closes, and each refusal
   (`docker compose logs egress`); past 120 tunnels or 20 refusals a minute from one
-  sandbox, the rest are counted in a single `suppressed` line instead. Docker rotates that log, and
-  the gateway itself runs under memory and process limits.
+  sandbox, the rest are counted in a single `suppressed` line instead. Docker rotates that
+  log, and the gateway itself runs under memory and process limits.
 
 Two allowlists come from the deployment's `.env`:
 
