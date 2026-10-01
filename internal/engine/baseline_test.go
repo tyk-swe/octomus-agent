@@ -610,6 +610,7 @@ func TestBaselineSandboxFailureInterruptsInsteadOfFailing(t *testing.T) {
 	}{
 		{name: "refused at start", backend: brokenSandbox{healed: new(atomic.Bool)}, want: "Sandbox broker is unavailable"},
 		{name: "stream lost", backend: brokenSandbox{lost: true, healed: new(atomic.Bool)}, want: "Sandbox stream was lost"},
+		{name: "failed after the run", backend: brokenSandbox{evidence: ranRecord(), healed: new(atomic.Bool)}, want: "Sandbox container could not be removed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -638,6 +639,7 @@ func TestBaselineSandboxFailureInterruptsInsteadOfFailing(t *testing.T) {
 			if len(saved.Commands) != 0 {
 				t.Fatalf("commands = %+v; a command the sandbox did not run has no result", saved.Commands)
 			}
+			assertSandboxEvidence(t, app.Store, check.ID, test.backend.evidence)
 		})
 	}
 }

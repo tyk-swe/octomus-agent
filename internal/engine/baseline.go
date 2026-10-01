@@ -512,6 +512,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		}
 		outcome := runCheckCommand(ctx, a.sandbox, c, workspaceDir, command, *revision, i == 0)
 		if ctx.Err() == nil && outcome.sandboxFailed() {
+			a.keepSandboxEvidence(check.ID, command, outcome.sandbox)
 			return model.BaselineStatusRunning, sandboxFailure(command, outcome.capture)
 		}
 		timedOut := process.IsDeadlineElapsed(outcome.capture)

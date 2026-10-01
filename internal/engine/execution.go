@@ -450,6 +450,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 			return nil, process.ErrCancelled
 		}
 		if outcome.sandboxFailed() {
+			a.keepSandboxEvidence(task.ID, command, outcome.sandbox)
 			return nil, &sandboxUnavailable{sandboxFailure(command, outcome.capture)}
 		}
 		failed := outcome.failed()
@@ -595,6 +596,21 @@ func (o checkOutcome) sandboxFailed() bool {
 
 func sandboxFailure(command string, err error) error {
 	return fmt.Errorf("The sandbox could not run verification command %s: %w", debugString(command), err)
+}
+
+// keepSandboxEvidence keeps the broker's record of a sandbox whose command has no result of its own, as a session
+// keeps it for a failed turn. The broker reports one when the command ran and the sandbox failed after it, for example
+// removing its container: the image, runtime, OOM and egress of untrusted code that did run. It becomes an event on
+// entity beside the failure, never the command's verification.
+func (a *App) keepSandboxEvidence(entity, command string, record *model.SandboxRecord) {
+	if record == nil {
+		return
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return
+	}
+	_ = a.Store.Event(entity, "sandbox_evidence", debugString(command)+": "+string(data))
 }
 
 // sandboxUnavailable blocks a task as runner_unavailable, which a retry clears, when the sandbox failed one of its
