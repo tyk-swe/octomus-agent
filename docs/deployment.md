@@ -85,8 +85,16 @@ State lives in named volumes:
 - `octomus-tools`: the broker's helper binary, recreated on start.
 
 Keep the secret files under `secrets/` with the deployment. `setup.sh` gives them to the
-container user (uid 10001) at mode 0600; to rotate one, replace the file as root and run
-`docker compose up -d`.
+container user (uid 10001) at mode 0600. The control plane reads them only when it starts,
+and `docker compose up -d` does not notice a changed secret file. To rotate one, install
+the new value with the same owner and mode, then recreate the control plane:
+
+```bash
+sudo install -o 10001 -g 10001 -m 0600 /path/to/new-token secrets/github_token
+docker compose up -d --force-recreate octomus
+```
+
+After rotating `secrets/operator_token`, sign in to the dashboard with the new token.
 
 ## Dedicated VM without a sandbox
 
@@ -262,10 +270,14 @@ stack and archive its volumes and secrets together:
 ```bash
 docker compose stop
 docker run --rm --network none -v octomus-data:/backup/data:ro -v octomus-runner:/backup/runner:ro \
-  -v "$PWD":/out debian:trixie-slim tar czf /out/octomus-backup.tgz -C /backup data runner
-sudo tar czf octomus-secrets.tgz secrets .env
+  -v "$PWD":/out debian:trixie-slim sh -c 'umask 077 && tar czf /out/octomus-backup.tgz -C /backup data runner'
+sudo sh -c 'umask 077 && tar czf octomus-secrets.tgz secrets .env'
 docker compose start
 ```
+
+Both archives hold credentials: the runner logins, the GitHub token and the operator token.
+Only root can read them; move them off the host, or into a directory only you can read, and
+protect them as sensitive operator data.
 
 Under systemd:
 
