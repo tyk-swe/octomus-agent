@@ -12,9 +12,8 @@ import subprocess
 import tarfile
 import tempfile
 import urllib.error
-import urllib.request
 
-from harness import poll
+from harness import local_urlopen, poll
 
 PROJECT = Path(__file__).resolve().parents[1]
 TOKEN = 'distribution-fixture-token-at-least-32-characters'
@@ -40,7 +39,7 @@ def smoke(binary):
 
                     def healthy():
                         try:
-                            with urllib.request.urlopen(base + '/healthz', timeout=1) as response:
+                            with local_urlopen(base + '/healthz', timeout=1) as response:
                                 return json.load(response)['ok']
                         except (OSError, urllib.error.URLError):
                             assert process.poll() is None, 'Packaged service exited'
@@ -48,15 +47,15 @@ def smoke(binary):
 
                     if not poll(healthy, 5, interval=0.05):
                         raise AssertionError('Embedded service did not start')
-                    with urllib.request.urlopen(base + '/', timeout=15) as response:
+                    with local_urlopen(base + '/', timeout=15) as response:
                         html = response.read().decode()
                         assert response.headers['Content-Type'].startswith('text/html')
                     js = re.search(r'_app/immutable/entry/[^"\s]+\.js', html)
                     assert js, 'SPA boot script missing'
-                    with urllib.request.urlopen(base + '/' + js.group(), timeout=15) as response:
+                    with local_urlopen(base + '/' + js.group(), timeout=15) as response:
                         assert 'javascript' in response.headers['Content-Type']
                         assert response.read()
-                    with urllib.request.urlopen(base + '/proposals', timeout=15) as response:
+                    with local_urlopen(base + '/proposals', timeout=15) as response:
                         assert response.read().decode() == html
                 finally:
                     process.terminate()

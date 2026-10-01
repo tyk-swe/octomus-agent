@@ -100,6 +100,9 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	if err := testutil.IsolateGitEnvironment(); err != nil {
+		panic(err)
+	}
 	if err := os.Setenv(envSecretName, envSecretValue); err != nil {
 		panic(err)
 	}

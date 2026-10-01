@@ -18,6 +18,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if err := testutil.IsolateGitEnvironment(); err != nil {
+		panic(err)
+	}
 	cleanup, err := testutil.InstallFixtureCommands()
 	if err != nil {
 		panic(err)
