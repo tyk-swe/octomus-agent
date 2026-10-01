@@ -164,7 +164,7 @@ func (s Status) Err() error {
 	switch {
 	case s.Success():
 		return nil
-	case s.exit != nil && s.exit.Killed:
+	case s.exit != nil && s.exit.Killed && s.exit.Reason == "":
 		return ErrKilled
 	case s.exit != nil:
 		return errors.New(s.String())
