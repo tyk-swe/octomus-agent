@@ -79,13 +79,18 @@ threads resume from the runner session store (below), not from a live process. T
 share the task's home, so what one leaves there, shell startup files included, reaches the
 next; only git's own per-user configuration in it is ignored. Because what a turn leaves
 can still change what git shows inside the next one, the fresh reviewer's prompt also
-carries the change set as Octomus's own git reads it from the trusted metadata, as text
-whatever attribute files the work tree holds: the changed files always (their list cut at
-16 KiB), and the complete diff when it fits in 64 KiB. That account is authoritative over
-what git in the reviewer's sandbox shows; a larger diff the reviewer reads there and checks
-against the file list. Each verification run starts from a fresh clone of exactly the
-reviewed commit, so nothing an agent left beside it can influence the result. Each
-verification command gets a fresh sandbox. Commands in one verification run share a home
+carries the change set as Octomus's own git reads it from the trusted metadata. That
+account ignores every `.gitattributes` file, shows every file as text and every submodule
+entry as the commits it points at, and shows each control, invisible or line-separator
+character and each byte that is not UTF-8 as a `⟦…⟧` escape, so no statement hides behind
+a line break git does not split at. It lists every changed file with its line counts, and
+a change set whose list exceeds 32 KiB is not reviewed. Within 64 KiB it embeds the
+complete diff, or else the whole diffs of the smallest files, and names each file whose
+diff it leaves out: the reviewer reads those in its sandbox and treats them as unverified.
+The account is authoritative over what git in the reviewer's sandbox shows, apart from the
+differences the prompt names as expected. Each verification run starts from a fresh clone
+of exactly the reviewed commit, so nothing an agent left beside it can influence the
+result. Each verification command gets a fresh sandbox. Commands in one verification run share a home
 directory, so `npm ci` in one command can serve `npm test` in the next. The home starts empty at every new run.
 When the sandbox rather than the command fails (the broker refuses or loses the command,
 or cannot confirm how it ended), the command has no result. The task is blocked as

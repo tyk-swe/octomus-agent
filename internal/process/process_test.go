@@ -485,20 +485,33 @@ func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 	}
 }
 
-// Text for a reader keeps what is readable of output that is not UTF-8, within its limit, but a failed command still
-// fails.
-func TestTextCaptureReplacesWhatIsNotTextAndStopsAtItsLimit(t *testing.T) {
+// Text for a reader shows every character that could read as something else, or as nothing, as an escape no output
+// can forge, within its limit, but a failed command still fails.
+func TestTextCaptureEscapesWhatCouldBeMisreadAndStopsAtItsLimit(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
 	write := func(script string, limit int) (string, bool, error) {
 		return process.RunTextEnv(ctx, "python3", []string{"-c", "import sys; sys.stdout.buffer.write(" + script + ")"}, tmp, 10, nil, limit)
 	}
-	if text, complete, err := write(`b"caf\xe9 \x00 ok\n"`, 64); err != nil || !complete || text != "caf� � ok\n" {
-		t.Fatalf("text = %q, %v, %v; want invalid bytes and NUL replaced", text, complete, err)
+	for _, check := range []struct{ script, want string }{
+		{`b"caf\xe9 \x00 ok\tend\r\n"`, "caf⟦xE9⟧ ⟦U+0000⟧ ok\tend\r\n"},
+		// Line breaks other than newline: a lone CR (also at the end), VT, FF, NEL, U+2028 and U+2029.
+		{`b"# note\r    return True\r\x0b\x0c\xc2\x85\xe2\x80\xa8\xe2\x80\xa9\r"`, "# note⟦U+000D⟧    return True⟦U+000D⟧⟦U+000B⟧⟦U+000C⟧⟦U+0085⟧⟦U+2028⟧⟦U+2029⟧⟦U+000D⟧"},
+		// Escape sequences, DEL, zero-width, bidirectional, byte-order, tag, filler and variation-selector characters.
+		{`"\x1b[31m\x7f\u200b\u200d\u202e\u2066\ufeff\U000e0041\u3164\ufe0f".encode()`, "⟦U+001B⟧[31m⟦U+007F⟧⟦U+200B⟧⟦U+200D⟧⟦U+202E⟧⟦U+2066⟧⟦U+FEFF⟧⟦U+E0041⟧⟦U+3164⟧⟦U+FE0F⟧"},
+		// A literal escape is escaped in turn, and a literal U+FFFD stays apart from a byte that is not UTF-8.
+		{`"\u27e6U+000D\u27e7 \ufffd é".encode()`, "⟦U+27E6⟧U+000D⟧ \uFFFD é"},
+	} {
+		if text, complete, err := write(check.script, 1024); err != nil || !complete || text != check.want {
+			t.Errorf("text of %s = %q, %v, %v; want %q", check.script, text, complete, err, check.want)
+		}
 	}
 	if text, complete, err := write(`"abé".encode() * 4`, 7); err != nil || complete || text != "abéab" {
 		t.Fatalf("text past its limit = %q, %v, %v; want it cut at a character", text, complete, err)
+	}
+	if text, complete, err := write(`b"ab\x00cd"`, 8); err != nil || complete || text != "ab" {
+		t.Fatalf("text past its limit = %q, %v, %v; want it cut before the escape", text, complete, err)
 	}
 	if text, complete, err := write(`b"x" * 300000`, 1<<20); err != nil || complete || len(text) != process.DiagnosticLimit {
 		t.Fatalf("text past the capture = %d bytes, %v, %v; want the capture's limit", len(text), complete, err)

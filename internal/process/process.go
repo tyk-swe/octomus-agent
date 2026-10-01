@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/redact"
@@ -650,8 +651,8 @@ func machineResult(binary string, output *ProcessOutput, err error) (string, err
 	return string(output.Stdout.Bytes), nil
 }
 
-// RunTextEnv is RunMachineEnv for output a reader is shown rather than a program parses. Bytes that are not UTF-8, and
-// NUL, read as U+FFFD instead of failing the command. It returns at most limit bytes of that text (limit is at most
+// RunTextEnv is RunMachineEnv for output a reader is shown rather than a program parses, as visible renders it instead
+// of failing on bytes that are not UTF-8. It returns at most limit bytes of that text (limit is at most
 // DiagnosticLimit), and complete reports whether that was all of it.
 func RunTextEnv(ctx context.Context, binary string, args []string, cwd string, seconds uint64, env []string, limit int) (text string, complete bool, err error) {
 	output, err := CaptureEnv(ctx, binary, args, cwd, seconds, CaptureDiagnostic, env)
@@ -661,16 +662,36 @@ func RunTextEnv(ctx context.Context, binary string, args []string, cwd string, s
 	if err := ensureSuccess(binary, output); err != nil {
 		return "", false, err
 	}
-	text = strings.ReplaceAll(strings.ToValidUTF8(string(output.Stdout.Bytes), "�"), "\x00", "�")
-	limit = min(limit, DiagnosticLimit)
-	if !output.Stdout.Truncated && len(text) <= limit {
-		return text, true, nil
+	text, complete = visible(output.Stdout.Bytes, min(limit, DiagnosticLimit))
+	return text, complete && !output.Stdout.Truncated, nil
+}
+
+// visible renders raw output as text in which nothing reads differently than it is: a reader, or a language model,
+// sees every line break that is one and no character it cannot see. Tab, newline and CR before newline stay as they
+// are. Every other control character (C0, DEL and C1, so NUL, a lone CR, VT, FF and NEL), every format character
+// (zero-width, bidirectional and tag characters, U+FEFF among them), U+2028, U+2029, variation selectors and the
+// other default-ignorable characters show as ⟦U+XXXX⟧, and each byte that is not UTF-8 as ⟦xNN⟧. A literal ⟦ shows
+// as ⟦U+27E6⟧, so every ⟦ in the text opens an escape. It returns at most limit bytes, cut between characters or
+// escapes, and complete reports whether that was all of raw.
+func visible(raw []byte, limit int) (text string, complete bool) {
+	var out strings.Builder
+	for i := 0; i < len(raw); {
+		r, size := utf8.DecodeRune(raw[i:])
+		piece := raw[i : i+size]
+		switch {
+		case ' ' <= r && r < 0x7f, r == '\t', r == '\n', r == '\r' && i+1 < len(raw) && raw[i+1] == '\n':
+		case r == utf8.RuneError && size == 1:
+			piece = fmt.Appendf(nil, "⟦x%02X⟧", raw[i])
+		case r == '⟦' || unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point):
+			piece = fmt.Appendf(nil, "⟦U+%04X⟧", r)
+		}
+		if out.Len()+len(piece) > limit {
+			return out.String(), false
+		}
+		out.Write(piece)
+		i += size
 	}
-	cut := min(limit, len(text))
-	for cut > 0 && cut < len(text) && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut], false, nil
+	return out.String(), true
 }
 
 func ShellCheck(ctx context.Context, command string, cwd string, seconds uint64) (*ProcessOutput, error) {

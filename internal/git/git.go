@@ -93,7 +93,9 @@ func WorkGit(ctx context.Context, c config.Config, workTree string, args []strin
 // reads .gitattributes from its work tree and index, which a sandbox can write: an ignored file that ignores itself
 // is never committed, yet `* -diff` in it shows every change as binary. So git gets an empty directory and an empty
 // index instead, and attributes come only from the trusted metadata and the orchestrator's own configuration. --text
-// shows even a file git takes for binary as text, and no external diff or textconv runs. The output is text as
+// shows even a file git takes for binary as text, and no external diff or textconv runs. Submodule entries show as
+// the commits they point at: the command-line flag overrides both the hardened pin and a committed .gitmodules
+// `ignore`. Renames show as a deletion and an addition, so each path stands for itself. The output is text as
 // process.RunTextEnv returns it: at most limit bytes, and complete when that is all of it.
 func DiffText(ctx context.Context, c config.Config, workTree string, args []string, limit int) (text string, complete bool, err error) {
 	gitDir, err := workspace.GitDir(workTree)
@@ -110,7 +112,8 @@ func DiffText(ctx context.Context, c config.Config, workTree string, args []stri
 		return "", false, err
 	}
 	full := append([]string{"--git-dir=" + gitDir, "--work-tree=" + empty}, hardened...)
-	full = append(full, "-c", "core.quotePath=true", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text")
+	full = append(full, "-c", "core.quotePath=true", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
+		"--ignore-submodules=none", "--submodule=short", "--no-renames")
 	env := append(slices.Clone(isolatedConfig), "GIT_INDEX_FILE="+filepath.Join(scratch, "index"))
 	return process.RunTextEnv(ctx, "git", append(full, args...), empty, c.CommandTimeoutSeconds, env, limit)
 }

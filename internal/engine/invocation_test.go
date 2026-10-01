@@ -457,7 +457,7 @@ func TestReviewerIsGivenTheOrchestratorsDiff(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("reviewer turns = %d", len(turns))
 	}
-	for _, want := range []string{"feature.txt | 1 +", "Complete diff:\ndiff --git a/feature.txt b/feature.txt", "+fixed output", "is authoritative"} {
+	for _, want := range []string{"\n1\t0\tfeature.txt\n", "Complete diff:\ndiff --git a/feature.txt b/feature.txt", "+fixed output", "is authoritative"} {
 		if !strings.Contains(turns[0].Prompt, want) {
 			t.Fatalf("reviewer prompt lacks %q:\n%s", want, turns[0].Prompt)
 		}
