@@ -236,6 +236,24 @@ func TestOnlyAFailedCommandReportsTheMemoryLimit(t *testing.T) {
 	}
 }
 
+func TestSandboxThatFailsAfterItStartedKeepsItsRecord(t *testing.T) {
+	e := newFakeEngine(t)
+	// The daemon loses the wait while the program runs.
+	e.waitStatus = http.StatusInternalServerError
+	e.run = func(*fakeContainer) {}
+	child, err := serve(t, e.broker(t, testConfig(t))).Start(context.Background(), versionsProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, child.Stdout()) }()
+	if _, err := child.Wait(); err == nil || !strings.Contains(err.Error(), "Waiting for the sandbox") {
+		t.Fatalf("sandbox whose wait failed = %v; want the failure reported", err)
+	}
+	if sandbox.EvidenceOf(child) == nil {
+		t.Fatal("a sandbox whose program ran before it failed has no record")
+	}
+}
+
 func TestUnreadableEgressRecordIsLogged(t *testing.T) {
 	e := newFakeEngine(t)
 	cfg := testConfig(t)

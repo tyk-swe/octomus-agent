@@ -80,12 +80,14 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 			defer cancel()
 			controls := make(chan control)
 			done := make(chan error, 1)
+			var report wire.ExitReport
 			limit := time.Minute
 			if action == "timeout" {
 				limit = time.Second
 			}
 			go func() {
-				_, err := b.runSandbox(ctx, plan{kind: wire.KindProbe, stdin: true, timeout: limit},
+				var err error
+				report, err = b.runSandbox(ctx, plan{kind: wire.KindProbe, stdin: true, timeout: limit},
 					func([]byte) error { return nil }, func([]byte) error { return nil }, controls)
 				done <- err
 			}()
@@ -126,6 +128,9 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				if action == "backlog" {
 					if err == nil || !strings.Contains(err.Error(), "stdin backlog exceeded") {
 						t.Fatalf("full input queue = %v", err)
+					}
+					if report.Sandbox == nil {
+						t.Fatal("a sandbox that ran before its stdin backlog failed it has no record")
 					}
 				} else if err != nil {
 					t.Fatal(err)

@@ -51,6 +51,8 @@ type fakeEngine struct {
 	kill func(c *fakeContainer, signal string) (int, string)
 	// waitDelay holds back the reply to a wait after the container ends.
 	waitDelay time.Duration
+	// waitStatus, when set, is how the daemon answers every wait at once.
+	waitStatus int
 	// removeDelay is how long a removal takes; Docker refuses a second removal meanwhile.
 	removeDelay time.Duration
 }
@@ -363,6 +365,10 @@ func (e *fakeEngine) mux() http.Handler {
 	mux.HandleFunc("POST "+prefix+"/containers/{id}/wait", func(w http.ResponseWriter, r *http.Request) {
 		c := found(w, r)
 		if c == nil {
+			return
+		}
+		if e.waitStatus != 0 {
+			refuse(w, e.waitStatus, "fixture wait failure")
 			return
 		}
 		select {

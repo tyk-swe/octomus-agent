@@ -133,13 +133,16 @@ type ending struct {
 	cut bool
 	// err is a failure before the sandbox could report an exit.
 	err error
+	// started is set once the daemon started the container, so its program may have run.
+	started bool
 	// deadline bounds the teardown.
 	deadline time.Time
 }
 
 // execute starts a prepared container and pumps it until it exits, the time limit passes or the control source
 // ends, then tears it down within teardownBudget. It always removes the container, or leaves it to a reaper; a
-// report with an Error and no kill means the broker cannot vouch for how the sandbox ended.
+// report with an Error and no kill means the broker cannot vouch for how the sandbox ended. With a failure, the report
+// still carries the evidence of a sandbox that had started.
 func (s *prepared) execute(ctx context.Context, timeout time.Duration, out output, controls <-chan control) (wire.ExitReport, error) {
 	b := s.b
 	input := make(chan control)
@@ -182,6 +185,10 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 		report = wire.ExitReport{Killed: true, Error: streamClosed}
 	case end.err != nil:
 		failure = end.err
+		if end.started {
+			// The program ran before the sandbox failed, so what it did is still on record.
+			report.Sandbox = b.evidence(s.name, s.image, s.oomKilled(within(5*time.Second)))
+		}
 	default:
 		report = wire.ExitReport{Killed: end.killed, Error: end.reason}
 		oom := false
@@ -223,6 +230,7 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 		end.err = fmt.Errorf("Starting the sandbox: %w", err)
 		return end
 	}
+	end.started = true
 	waitCtx, cancelWait := context.WithCancel(context.Background())
 	defer cancelWait()
 	// Waiting for not-running after start also observes an exit that happened before the wait request arrived.
