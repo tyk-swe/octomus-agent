@@ -10,6 +10,39 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
+// Docker Engine still runs on cgroup v1 hosts, and gVisor offers only cgroup v1; there the runtime mounts the
+// container's own cgroup under each controller's directory.
+func TestCgroupLimitsFallBackToCgroupV1(t *testing.T) {
+	files := func(contents map[string]string) func(string) ([]byte, error) {
+		return func(path string) ([]byte, error) {
+			if text, ok := contents[path]; ok {
+				return []byte(text), nil
+			}
+			return nil, os.ErrNotExist
+		}
+	}
+	unified := cgroupLimits(files(map[string]string{"/sys/fs/cgroup/memory.max": "268435456\n", "/sys/fs/cgroup/pids.max": "256\n",
+		"/sys/fs/cgroup/memory/memory.limit_in_bytes": "4096\n"}))
+	if unified != (ProbeLimits{Memory: "268435456", Pids: "256"}) {
+		t.Fatalf("cgroup v2 limits = %+v", unified)
+	}
+	legacy := cgroupLimits(files(map[string]string{"/sys/fs/cgroup/memory/memory.limit_in_bytes": "268435456\n",
+		"/sys/fs/cgroup/pids/pids.max": "256\n"}))
+	if legacy != (ProbeLimits{Memory: "268435456", Pids: "256"}) {
+		t.Fatalf("cgroup v1 limits = %+v", legacy)
+	}
+	if none := cgroupLimits(files(nil)); none != (ProbeLimits{Memory: "unreadable", Pids: "unreadable"}) {
+		t.Fatalf("no cgroup files = %+v", none)
+	}
+	// cgroup v1 shows no memory limit as the largest page-aligned number, which no configured limit matches.
+	r := ProbeReport{Checks: []ProbeCheck{{ID: "resource_limits", Passed: true}},
+		Limits: ProbeLimits{Memory: "9223372036854771712", Pids: "256"}}
+	r.confirmLimits(&wire.BrokerLimits{Memory: 256 << 20, Pids: 256}, nil)
+	if r.Passed() || !strings.Contains(r.Checks[0].Detail, "configured 268435456") {
+		t.Fatalf("unlimited cgroup v1 memory = %+v", r.Checks[0])
+	}
+}
+
 // pids.max is a number on every systemd host whether or not the broker set a limit, and the probe's own cgroup holds
 // exactly what Docker set, so only a match with the broker's configured limits confirms the check.
 func TestConfirmLimitsHoldsTheProbeToTheBrokersLimits(t *testing.T) {

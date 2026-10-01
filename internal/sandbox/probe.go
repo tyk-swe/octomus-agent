@@ -30,7 +30,8 @@ type ProbeReport struct {
 	Limits ProbeLimits `json:"limits"`
 }
 
-// ProbeLimits are the cgroup v2 limits in force inside the probe sandbox, as the kernel reports them.
+// ProbeLimits are the cgroup limits in force inside the probe sandbox, as the kernel reports them: cgroup v2's
+// memory.max and pids.max, or cgroup v1's memory.limit_in_bytes and pids.max where v2's are absent.
 type ProbeLimits struct {
 	Memory string `json:"memory_max"`
 	Pids   string `json:"pids_max"`
@@ -86,9 +87,11 @@ func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
 }
 
 // confirmLimits holds the resource_limits check to the limits the broker configured. The probe reads its own cgroup
-// (its cgroup namespace makes that the root of /sys/fs/cgroup), which holds exactly what Docker set from the broker's
-// spec; no ancestor's limit shows there. So a number alone proves nothing (systemd gives every scope a pids limit of
-// its own), and a lower one is some other limit than the broker's: the check passes only when both match.
+// (its cgroup namespace makes that the root of /sys/fs/cgroup; on cgroup v1 the runtime mounts it under each
+// controller's directory), which holds exactly what Docker set from the broker's spec; no ancestor's limit shows
+// there. So a number alone proves nothing (systemd gives every scope a pids limit of its own), and a lower one is
+// some other limit than the broker's: the check passes only when both match. cgroup v1 shows no memory limit as the
+// largest page-aligned number, which matches no configured limit.
 func (r *ProbeReport) confirmLimits(want *wire.BrokerLimits, unknown error) {
 	for i := range r.Checks {
 		check := &r.Checks[i]

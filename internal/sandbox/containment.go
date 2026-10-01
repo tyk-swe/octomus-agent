@@ -67,7 +67,7 @@ func runContainmentProbe(stdout io.Writer) int {
 	add("no_external_dns", "Cannot resolve internet names directly", err != nil, detailList("resolved", resolved, "lookup refused"))
 	isolated, detail := hostIsolation(os.ReadFile, ownAddresses(), dialTCP, containerName)
 	add("no_host_route", "Has no gateway to the host or its neighbours", isolated, detail)
-	report.Limits = ProbeLimits{Memory: readTrim("/sys/fs/cgroup/memory.max"), Pids: readTrim("/sys/fs/cgroup/pids.max")}
+	report.Limits = cgroupLimits(os.ReadFile)
 	add("resource_limits", "Runs under memory and process limits", limited(report.Limits.Memory) && limited(report.Limits.Pids),
 		fmt.Sprintf("memory.max %s, pids.max %s", report.Limits.Memory, report.Limits.Pids))
 	proxy := os.Getenv("HTTPS_PROXY")
@@ -455,12 +455,21 @@ func containerName(addr netip.Addr) string {
 	return name
 }
 
-func readTrim(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
+// cgroupLimits reads the sandbox's memory and process limits from cgroup v2's files, or, where those are absent, from
+// cgroup v1's controller files: on a v1 host, and under gVisor, the runtime mounts the container's own cgroup there.
+func cgroupLimits(read func(string) ([]byte, error)) ProbeLimits {
+	first := func(paths ...string) string {
+		for _, path := range paths {
+			if data, err := read(path); err == nil {
+				return strings.TrimSpace(string(data))
+			}
+		}
 		return "unreadable"
 	}
-	return strings.TrimSpace(string(data))
+	return ProbeLimits{
+		Memory: first("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+		Pids:   first("/sys/fs/cgroup/pids.max", "/sys/fs/cgroup/pids/pids.max"),
+	}
 }
 
 func limited(value string) bool {

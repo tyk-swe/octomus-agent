@@ -254,7 +254,7 @@ sandbox checks, from inside:
 | Has no direct route to the internet | direct TCP connections get no answer, not even a refusal |
 | Cannot resolve internet names directly | DNS lookups fail |
 | Has no gateway to the host or its neighbours | there is no default route, and the first address of the sandbox's subnet, where a bridge gateway would sit, answers neither ARP nor a connection on common host ports unless Docker names it as a container |
-| Runs under memory and process limits | cgroup `memory.max` and `pids.max` match the broker's configured limits |
+| Runs under memory and process limits | cgroup `memory.max` and `pids.max` (on cgroup v1, `memory.limit_in_bytes` and `pids.max`) match the broker's configured limits |
 | The egress gateway refuses unlisted, metadata and local targets | with a runner lease, the gateway refuses `example.com` as not on the runner allowlist, and `169.254.169.254` and `localhost` as not host names |
 
 A failed check fails the connection check, names what the probe saw, and appears on the
