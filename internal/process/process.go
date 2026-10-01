@@ -164,7 +164,7 @@ func (s Status) Err() error {
 	switch {
 	case s.Success():
 		return nil
-	case s.exit != nil && s.exit.Killed:
+	case s.exit != nil && s.exit.Killed && s.exit.Reason == "":
 		return ErrKilled
 	case s.exit != nil:
 		return errors.New(s.String())
@@ -457,7 +457,7 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 		term:
 			for !haveWait {
 				select {
-				case <-waitCh:
+				case result = <-waitCh:
 					haveWait = true
 				case <-outCh:
 					haveOut = true
@@ -474,7 +474,7 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 		defer deadline.Stop()
 		for !haveWait || !haveOut || !haveErr {
 			select {
-			case <-waitCh:
+			case result = <-waitCh:
 				haveWait = true
 			case <-outCh:
 				haveOut = true
@@ -500,10 +500,10 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 			haveErr = true
 		case <-timer.C:
 			terminate()
-			return nil, fmt.Errorf("Command timed out: %w", errDeadlineElapsed)
+			return nil, stopped(fmt.Errorf("Command timed out: %w", errDeadlineElapsed), result.err)
 		case <-ctx.Done():
 			terminate()
-			return nil, ErrCancelled
+			return nil, stopped(ErrCancelled, result.err)
 		}
 	}
 	if result.err != nil {
@@ -520,6 +520,15 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 		Stdout: out.captured,
 		Stderr: errOut.captured,
 	}, nil
+}
+
+// stopped keeps why a child that was stopped could not report a clean end, such as a sandbox whose end its broker
+// never confirmed, beside why it was stopped: that end is not an ordinary timeout or cancellation.
+func stopped(why, ended error) error {
+	if ended == nil {
+		return why
+	}
+	return fmt.Errorf("%w: %w", why, ended)
 }
 
 const (
