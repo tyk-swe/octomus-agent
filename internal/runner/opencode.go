@@ -611,6 +611,9 @@ func (o *OpenCode) SandboxEvidence() *model.SandboxRecord { return sandbox.Evide
 func (o *OpenCode) Close() error {
 	o.once.Do(func() {
 		close(o.done)
+		// Drain raw stdout through the kill, as Codex.Close does: an HTTP/2 client that stopped reading it must not
+		// hold back the broker's exit report.
+		go func() { _, _ = io.Copy(io.Discard, o.stdout) }()
 		o.child.Kill()
 		o.stdout.Close()
 		o.client.CloseIdleConnections()
