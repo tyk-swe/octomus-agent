@@ -410,14 +410,19 @@ func (c *remoteChild) lose(err error) {
 	c.lost = &SandboxError{err}
 }
 
-// Wait reports how the sandbox ended. A lost stream, an unconfirmed kill and a sandbox the broker could not run are
-// the sandbox's failures, never the program's result.
+// TimeLimitReason is the broker's report of a sandbox it killed at its time limit. Running too long is the program's
+// own result, as a timeout is; any other error an exit report carries means the broker failed the sandbox.
+const TimeLimitReason = "Sandbox time limit reached"
+
+// Wait reports how the sandbox ended. A lost stream, an unconfirmed kill and every error the broker reports but its
+// time limit, such as a sandbox it could not start or remove, are the sandbox's failures, never the program's result,
+// even when the broker had killed it.
 func (c *remoteChild) Wait() (process.Status, error) {
 	<-c.done
 	if c.lost != nil {
 		return process.Status{}, c.lost
 	}
-	if c.report.Error != "" && !c.report.Killed {
+	if c.report.Error != "" && !(c.report.Killed && c.report.Error == TimeLimitReason) {
 		return process.Status{}, &SandboxError{errors.New(c.report.Error)}
 	}
 	return process.ExitStatus(process.Exit{Code: c.report.Code, OOM: c.report.OOM, Killed: c.report.Killed, Reason: c.report.Error}), nil

@@ -73,6 +73,9 @@ func exitFrame(out *FrameWriter, report ExitReport) {
 // startFailure is how the broker reports a container it created but could not start, after the upgrade.
 const startFailure = "Starting the sandbox: Error response from daemon: unknown or invalid runtime name: runsc"
 
+// removeFailure is how the broker reports a sandbox it could not remove, whatever ended it.
+const removeFailure = "Removing the sandbox failed: container is stuck"
+
 // killedEvidence is what the broker hands back about a killed sandbox: refused hosts exist nowhere else.
 func killedEvidence() ExitReport {
 	return ExitReport{Code: 137, Killed: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1,
@@ -123,7 +126,7 @@ func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 		exitFrame(out, ExitReport{Code: 137, OOM: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1, OOM: true,
 			Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"example.com:443": 2}}}})
 	case "limit":
-		exitFrame(out, ExitReport{Code: 137, Killed: true, Error: "Sandbox time limit reached"})
+		exitFrame(out, ExitReport{Code: 137, Killed: true, Error: TimeLimitReason})
 	case "bad-report":
 		_ = out.Frame(FrameExit, []byte("{"))
 	case "flood":
@@ -142,6 +145,12 @@ func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 		// A broker that never confirms the kill: hold the stream until the client cuts it.
 		awaitKill(reader)
 		_, _ = io.Copy(io.Discard, reader)
+	case "remove-fails":
+		// The kill worked, but the broker could not confirm the container is gone.
+		if awaitKill(reader) {
+			exitFrame(out, ExitReport{Code: 137, Killed: true, Error: removeFailure})
+		}
+
 	case "hang", "":
 		var echoed bytes.Buffer
 		for {
@@ -272,7 +281,7 @@ func TestRemoteExitReasons(t *testing.T) {
 		t.Fatalf("evidence = %+v; want the broker's record of the sandbox", evidence)
 	}
 	out, _, err = Verify(context.Background(), remote, ownedWorkspace(t), "limit", 30, true)
-	if err != nil || out.Status.Success() || out.Status.String() != "Sandbox time limit reached" {
+	if err != nil || out.Status.Success() || out.Status.String() != TimeLimitReason {
 		t.Fatalf("time limit = %v, %v", out, err)
 	}
 	// Every way the sandbox itself fails is reported as the sandbox's failure, never as the command's own result.
@@ -340,6 +349,18 @@ func TestRemoteKillConfirmsTheEndOrFails(t *testing.T) {
 	defer cancel()
 	if _, _, err := Verify(slot, remote, ownedWorkspace(t), "streams", 30, true); err != nil {
 		t.Fatalf("an unconfirmed kill kept its slot: %v", err)
+	}
+}
+
+func TestRemoteKilledSandboxTheBrokerFailedIsASandboxFailure(t *testing.T) {
+	f := startFakeBroker(t, 1)
+	child, err := NewRemote(f.socket).Start(context.Background(), Spec{Kind: KindVerify, Dir: ownedWorkspace(t), Command: "remove-fails"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child.Kill()
+	if status, err := child.Wait(); err == nil || !Infrastructure(err) || !strings.Contains(err.Error(), removeFailure) {
+		t.Fatalf("killed sandbox the broker could not remove = %v, %v; want a sandbox failure, never Octomus's own kill", status, err)
 	}
 }
 
