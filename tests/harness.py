@@ -28,8 +28,21 @@ CODEX_ROUTE = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
 HOLDS = ['reconcile-hold', 'audit-hold']
 
 
+def fixture_git_environment():
+    """A child-only Git environment for the fixture's local repositories.
+
+    Ambient configuration may require signing or run user hooks, and GIT_DIR,
+    GIT_WORK_TREE and GIT_INDEX_FILE can redirect writes outside the fixture.
+    Repository-local configuration still applies; fixture_service's explicit
+    environment overrides are applied after this default.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+    return env
+
+
 def git(*args, cwd):
-    return subprocess.check_output(['/usr/bin/git', *args], cwd=cwd, stderr=subprocess.DEVNULL, text=True).strip()
+    return subprocess.check_output(['/usr/bin/git', *args], cwd=cwd, env=fixture_git_environment(), stderr=subprocess.DEVNULL, text=True).strip()
 
 
 def poll(predicate, seconds, interval=0.1, tick=None):
@@ -211,7 +224,8 @@ class Service:
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             self.port = sock.getsockname()[1]
-        self.env = {key: value for key, value in os.environ.items() if key != 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'}
+        self.env = fixture_git_environment()
+        self.env.pop('OCTOMUS_NOTIFICATION_WEBHOOK_URL', None)
         # Fixture runners are host scripts; tests/e2e_sandbox.py covers the Docker sandbox.
         self.env.update({'OCTOMUS_TOKEN': TOKEN, 'OCTOMUS_FIXTURE': str(root), 'OCTOMUS_SANDBOX': 'off', 'PATH': f'{root / "bin"}:{os.environ["PATH"]}'})
 
