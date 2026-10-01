@@ -141,7 +141,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.GID = int(integer("OCTOMUS_SANDBOX_GID", 10001, 1, math.MaxInt32))
 	c.ClientUID = int(integer("OCTOMUS_SANDBOX_CLIENT_UID", int64(os.Getuid()), 0, math.MaxInt32))
 	cpus, err := strconv.ParseFloat(value("OCTOMUS_SANDBOX_CPUS", "2"), 64)
-	if err != nil || cpus < 0.1 || cpus > 256 {
+	// Written so NaN, which ParseFloat accepts and every comparison lets through, fails it.
+	if err != nil || !(cpus >= 0.1 && cpus <= 256) {
 		errs = append(errs, errors.New("OCTOMUS_SANDBOX_CPUS must be a number of CPUs from 0.1 to 256"))
 	}
 	c.NanoCPUs = int64(cpus * 1e9)
