@@ -451,6 +451,13 @@ func defaultRun(c *fakeContainer) {
 // serve runs b on a unix socket until the test ends and returns a client for it.
 func serve(t *testing.T, b *Broker) *sandbox.Remote {
 	t.Helper()
+	return sandbox.NewRemote(serveSocket(t, b))
+}
+
+// serveSocket runs b on a unix socket until the test ends and returns the socket, for tests that need more than one
+// client.
+func serveSocket(t *testing.T, b *Broker) string {
+	t.Helper()
 	listener, socket := testutil.ListenUnix(t, "sandboxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	served := make(chan error, 1)
@@ -463,5 +470,5 @@ func serve(t *testing.T, b *Broker) *sandbox.Remote {
 			t.Error("broker did not shut down")
 		}
 	})
-	return sandbox.NewRemote(socket)
+	return socket
 }

@@ -27,11 +27,10 @@ func TestFullBrokerMakesRequestsWait(t *testing.T) {
 	}
 	cfg := testConfig(t)
 	cfg.Max = 1
-	b := e.broker(t, cfg)
-	first := serve(t, b)
+	socket := serveSocket(t, e.broker(t, cfg))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	holder, err := first.Start(ctx, versionsProbe)
+	holder, err := sandbox.NewRemote(socket).Start(ctx, versionsProbe)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +42,7 @@ func TestFullBrokerMakesRequestsWait(t *testing.T) {
 	}
 	second := make(chan started, 1)
 	go func() {
-		child, err := sandbox.NewRemote(first.Socket()).Start(ctx, versionsProbe)
+		child, err := sandbox.NewRemote(socket).Start(ctx, versionsProbe)
 		second <- started{child, err}
 	}()
 	select {

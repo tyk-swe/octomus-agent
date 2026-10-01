@@ -40,8 +40,6 @@ func NewRemote(socket string) *Remote { return &Remote{socket: socket, killWait:
 
 func (r *Remote) Mode() Mode { return ModeDocker }
 
-func (r *Remote) Socket() string { return r.socket }
-
 func (r *Remote) dial(ctx context.Context) (net.Conn, error) {
 	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", r.socket)
 }

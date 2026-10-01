@@ -1,4 +1,4 @@
-package sandbox_test
+package sandbox
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 )
 
 // probeGateway serves the real egress gateway with one lease of the given kind and returns the proxy address a
@@ -66,7 +65,7 @@ func TestProbeEgressRefusalsComeFromTheRunnerAllowlist(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			address, token := probeGateway(t, c.kind, c.model)
-			refused, detail := sandbox.EgressRefusals("http://" + c.credential(token) + "@" + address)
+			refused, detail := egressRefusals("http://" + c.credential(token) + "@" + address)
 			if refused != c.refused || !strings.Contains(detail, c.detail) {
 				t.Fatalf("egress refusals = %v, %q; want %v with %q", refused, detail, c.refused, c.detail)
 			}
