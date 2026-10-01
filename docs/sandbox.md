@@ -132,8 +132,11 @@ Each sandbox receives proxy variables carrying its own random credential. The ga
   (including cloud metadata), carrier-grade NAT, documentation, benchmark, reserved or
   IPv4-embedding IPv6 addresses;
 - dials the address it checked, so DNS rebinding cannot redirect the tunnel;
-- bounds open tunnels per sandbox, and logs every decision as a JSON line
-  (`docker compose logs egress`).
+- bounds open tunnels per sandbox and connections per source, closes every refused
+  connection, and ends a sandbox's tunnels as soon as its lease is revoked;
+- logs each tunnel as a JSON line when it opens and again when it closes, and each refusal
+  (`docker compose logs egress`); refusals past 20 a minute from one sandbox are counted in
+  a single `suppressed` line instead.
 
 Two allowlists come from the deployment's `.env`:
 

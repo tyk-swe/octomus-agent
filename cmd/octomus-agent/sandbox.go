@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -90,15 +89,7 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 	}
 	described := policy.Describe()
 	fmt.Fprintf(stderr, "Octomus egress gateway on %s; model hosts %v; build hosts %v\n", listen, described["model"], described["build"])
-	server := &http.Server{Handler: gateway, ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
-		_ = server.Close()
-	}()
-	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+	return gateway.Serve(ctx, listener)
 }
 
 // runBroker serves the sandbox broker until a shutdown signal, then removes every sandbox it started.
