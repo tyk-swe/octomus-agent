@@ -75,10 +75,71 @@ func TestMeasureReopenChecksAncestorIdentity(t *testing.T) {
 				t.Fatal("reopened a changed ancestor")
 			}
 			_, reported := w.unmeasured["owner"]
-			if reported != (change != "removed") {
-				t.Fatalf("unmeasured after %s = %v; only a removed subtree may be ignored", change, w.unmeasured)
+			if !reported {
+				t.Fatalf("unmeasured after %s = %v; every changed or missing ancestor must fail closed", change, w.unmeasured)
 			}
 		})
+	}
+}
+
+func TestMeasureReportsAncestorMovedIntoScannedDirectory(t *testing.T) {
+	root := t.TempDir()
+	owner := filepath.Join(root, "owner")
+	scanned := filepath.Join(owner, "scanned")
+	moving := filepath.Join(owner, "moving")
+	moved := filepath.Join(scanned, "moved")
+	if err := os.MkdirAll(scanned, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"left", "right"} {
+		leaf := filepath.Join(moving, name, "leaf")
+		if err := os.MkdirAll(leaf, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(leaf, "counted.txt"), []byte("123"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	w := walker{root: dir, group: 1, unmeasured: map[string]struct{}{}}
+	visit := func(name string, releaseParent func()) {
+		t.Helper()
+		path := []measuredDir{{name: "owner"}, {name: name}}
+		for i, relative := range []string{"owner", filepath.Join("owner", name)} {
+			if err := unix.Stat(filepath.Join(root, relative), &path[i].meta); err != nil {
+				t.Fatal(err)
+			}
+		}
+		child, err := os.Open(filepath.Join(owner, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.walk(child, "owner", path, releaseParent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The target directory has already been scanned when an ancestor of pending children moves into it. The
+	// current descriptor still reaches the first child, then closes when that child descends into its leaf.
+	visit("scanned", nil)
+	visit("moving", func() {
+		if err := os.Rename(moving, moved); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if w.bytes != 3 {
+		t.Fatalf("bytes = %d; want exactly the first child reached before its ancestor must reopen", w.bytes)
+	}
+	if _, unknown := w.unmeasured["owner"]; !unknown || len(w.unmeasured) != 1 {
+		t.Fatalf("unmeasured = %v; missing ancestor with pending children must report owner", w.unmeasured)
+	}
+	for _, name := range []string{"left", "right"} {
+		if info, err := os.Stat(filepath.Join(moved, name, "leaf", "counted.txt")); err != nil || info.Size() != 3 {
+			t.Fatalf("moved %s file = %v, %v; all six bytes still belong to the measured owner", name, info, err)
+		}
 	}
 }
 

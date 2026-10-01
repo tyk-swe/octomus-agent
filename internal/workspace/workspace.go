@@ -252,6 +252,9 @@ func (w *walker) reopen(path []measuredDir, prefix string) (*os.File, error) {
 		}
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
+			// This ancestor had pending children. It may have moved into an already-scanned directory, so a
+			// missing old name does not establish that its remaining bytes left the measured ownership group.
+			w.unmeasured[prefix] = struct{}{}
 			return nil, nil
 		case err != nil && unmeasurable(err):
 			w.unmeasured[prefix] = struct{}{}
