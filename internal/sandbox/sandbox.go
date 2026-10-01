@@ -93,6 +93,20 @@ type StartError struct{ Err error }
 func (e *StartError) Error() string { return e.Err.Error() }
 func (e *StartError) Unwrap() error { return e.Err }
 
+// SandboxError reports that the sandbox, not the program in it, failed: the broker refused the child, lost its
+// stream, or could not confirm how it ended. Callers must not record it as the program's own result.
+type SandboxError struct{ Err error }
+
+func (e *SandboxError) Error() string { return e.Err.Error() }
+func (e *SandboxError) Unwrap() error { return e.Err }
+
+// Infrastructure reports whether err means the sandbox failed rather than the program it ran.
+func Infrastructure(err error) bool {
+	var started *StartError
+	var failed *SandboxError
+	return errors.As(err, &started) || errors.As(err, &failed)
+}
+
 // Backend starts sandboxed children. Implementations never fall back to one another.
 type Backend interface {
 	Mode() Mode
