@@ -1,5 +1,6 @@
 // Package wire is the contract between the control plane and the sandbox broker: the request, the framed stream, the
-// broker's info document and the owned-root layout both sides agree on. It starts nothing.
+// broker's info document, the runner and verification programs and the owned-root layout both sides agree on. It
+// starts nothing.
 package wire
 
 import (

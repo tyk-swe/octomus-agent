@@ -118,11 +118,15 @@ func brokerError(resp *http.Response) error {
 	return fmt.Errorf("Sandbox broker refused the request (HTTP %d): %s", resp.StatusCode, message)
 }
 
+// runnerName is the broker's name for a runner, or "" for a backend that names none.
 func runnerName(backend config.Backend) string {
-	if backend == config.BackendOpencode {
-		return "opencode"
+	switch backend {
+	case config.BackendCodex:
+		return wire.RunnerCodex
+	case config.BackendOpencode:
+		return wire.RunnerOpenCode
 	}
-	return "codex"
+	return ""
 }
 
 func (r *Remote) request(spec Spec) wire.Request {

@@ -29,7 +29,7 @@ func RunInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
-	case "opencode":
+	case wire.RunnerModeOpenCode:
 		return runOpenCodeBridge(args[1:], stdin, stdout, stderr)
 	case wire.ProbeVersions:
 		return printVersions(stdout, stderr)
@@ -196,7 +196,7 @@ var versionTimeout = 30 * time.Second
 // not installed.
 func printVersions(stdout, stderr io.Writer) int {
 	versions := map[string]string{}
-	for _, name := range []string{"codex", "opencode"} {
+	for _, name := range wire.Runners {
 		version, err := runnerVersion(name, versionTimeout)
 		switch {
 		case err == nil:

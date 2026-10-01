@@ -16,8 +16,8 @@ import (
 
 	whatwg "github.com/nlnwa/whatwg-url/url"
 
-	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Host runs untrusted children directly on this host with the service user's permissions. It isolates nothing; it
@@ -26,31 +26,20 @@ type Host struct{}
 
 func (Host) Mode() Mode { return ModeOff }
 
-// RunnerArgs are the fixed arguments each runner is served with.
-func RunnerArgs(backend config.Backend) []string {
-	switch backend {
-	case config.BackendCodex:
-		return []string{"app-server", "--listen", "stdio://"}
-	case config.BackendOpencode:
-		return []string{"serve", "--hostname", "127.0.0.1", "--port", "0"}
-	}
-	return nil
-}
-
 const stderrWaitDelay = 2 * time.Second
 
 func (Host) Start(ctx context.Context, spec Spec) (Child, error) {
 	if ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
 	}
-	binary, args := spec.Binary, RunnerArgs(spec.Runner)
+	binary, args := spec.Binary, wire.RunnerArgs(runnerName(spec.Runner))
 	switch spec.Kind {
 	case KindRunner:
 		if args == nil {
 			return nil, errors.New("Invalid backend")
 		}
 	case KindVerify:
-		binary, args = "bash", []string{"-o", "pipefail", "-c", spec.Command}
+		binary, args = wire.VerifyProgram(spec.Command)
 	default:
 		return nil, fmt.Errorf("The host backend cannot run %s sandboxes", spec.Kind)
 	}

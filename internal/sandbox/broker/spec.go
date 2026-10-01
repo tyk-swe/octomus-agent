@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
@@ -107,13 +106,14 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 func (c Config) program(p plan) ([]string, []string) {
 	switch p.kind {
 	case wire.KindRunner:
-		args := sandbox.RunnerArgs(runnerBackend(p.runner))
+		args := wire.RunnerArgs(p.runner)
 		if p.mode == wire.RunnerModeOpenCode {
-			return []string{toolsBinary, "--sandbox-init", "opencode", strconv.FormatUint(p.readiness, 10), "--", p.runner}, args
+			return []string{toolsBinary, "--sandbox-init", wire.RunnerModeOpenCode, strconv.FormatUint(p.readiness, 10), "--", p.runner}, args
 		}
 		return []string{p.runner}, args
 	case wire.KindVerify:
-		return []string{"bash"}, []string{"-o", "pipefail", "-c", p.command}
+		program, args := wire.VerifyProgram(p.command)
+		return []string{program}, args
 	}
 	return []string{toolsBinary, "--sandbox-init", p.probe}, nil
 }

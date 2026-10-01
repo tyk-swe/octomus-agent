@@ -25,7 +25,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	octomus "github.com/tyk-swe/octomus-agent"
-	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
@@ -73,13 +72,6 @@ var (
 	// again.
 	probeRetry = 30 * time.Second
 )
-
-func runnerBackend(name string) config.Backend {
-	if name == "opencode" {
-		return config.BackendOpencode
-	}
-	return config.BackendCodex
-}
 
 // New removes any sandbox a previous broker left behind, checks the daemon, image, networks and volumes and installs
 // the broker's executable for sandboxes. It refuses to serve a deployment that would weaken isolation.

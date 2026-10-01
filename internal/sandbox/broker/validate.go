@@ -53,11 +53,11 @@ func (c Config) plan(req wire.Request) (plan, error) {
 	case wire.KindRunner:
 		p.kind = wire.KindRunner
 		switch req.Runner {
-		case "codex":
+		case wire.RunnerCodex:
 			if req.Mode != wire.RunnerModeStdio {
 				return plan{}, errors.New("Codex runs only over stdio")
 			}
-		case "opencode":
+		case wire.RunnerOpenCode:
 			if req.Mode != wire.RunnerModeOpenCode {
 				return plan{}, errors.New("OpenCode runs only behind the sandbox HTTP bridge")
 			}

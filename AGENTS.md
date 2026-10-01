@@ -44,8 +44,9 @@ owns strict typed JSON boundaries for saved records and API requests.
   `--sandbox off`, `Remote` for the broker), owned-root preparation, the in-sandbox
   helper (`--sandbox-init`: OpenCode HTTP/2 bridge and version probe) and the
   containment probe. `sandbox/wire` is the broker wire contract: requests, stream
-  frames, the broker info document and the owned-root home layout. `sandbox/broker`
-  is `--sandboxd`: request validation, the golden container spec
+  frames, the broker info document, the runner names and the runner and verification
+  programs both backends start, and the owned-root home layout. `sandbox/broker` is
+  `--sandboxd`: request validation, the golden container spec
   (`testdata/spec-*.json`), streams, leases and sweeping; `sandbox/engineapi` is its
   minimal Docker Engine client. `internal/egress` is the `--egress` gateway.
 - `internal/redact`: the one secret scrubber and display bound, shared by every
