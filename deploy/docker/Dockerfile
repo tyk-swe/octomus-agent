@@ -34,7 +34,7 @@ RUN apt-get update \
  && groupadd --gid 10001 octomus \
  && useradd --uid 10001 --gid 10001 --home-dir /var/lib/octomus --no-create-home --shell /usr/sbin/nologin octomus \
  && install -d -o 10001 -g 10001 -m 0700 /var/lib/octomus /var/lib/octomus/data /var/lib/octomus/runner \
-      /opt/octomus-tools /run/octomus /run/octomus-egress \
+      /opt/octomus-tools /run/octomus /run/octomus-egress /run/octomus-login \
  && printf '[credential "https://github.com"]\n\thelper =\n\thelper = /usr/local/bin/octomus-agent --git-credential\n[core]\n\thooksPath = /dev/null\n\tfsmonitor = false\n' \
       > /etc/octomus-gitconfig
 COPY --from=binary /out/octomus-agent /usr/local/bin/octomus-agent

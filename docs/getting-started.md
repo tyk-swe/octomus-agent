@@ -49,7 +49,9 @@ The script:
 - builds the images and starts the stack.
 
 The control plane clones the repository into its own data volume on first start. Then sign
-in a runner; the login lands in a volume only runner sandboxes mount:
+in a runner; the login lands in a volume only runner sandboxes mount, and it reaches out only
+through the egress gateway. For OpenCode routes, first add `models.opencode.ai` and your
+provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS` in `.env` and run `docker compose up -d`.
 
 ```bash
 docker compose run --rm login codex login --device-auth

@@ -56,7 +56,7 @@ target repository.
 git clone https://github.com/tyk-swe/octomus-agent.git
 cd octomus-agent/deploy/docker
 ./setup.sh                                               # checks Docker, asks for OWNER/REPO and the token, starts the stack
-docker compose run --rm login codex login --device-auth  # or: opencode auth login
+docker compose run --rm login codex login --device-auth  # or: opencode auth login, once .env allows its hosts
 ssh -N -L 4200:127.0.0.1:4200 your-host                  # then open http://127.0.0.1:4200
 ```
 

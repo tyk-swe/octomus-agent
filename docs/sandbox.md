@@ -145,20 +145,39 @@ Each sandbox receives proxy variables carrying its own random credential. The ga
   connection, and ends a sandbox's tunnels as soon as its lease is revoked;
 - logs each tunnel as a JSON line when it opens and again when it closes, and each refusal
   (`docker compose logs egress`); past 120 tunnels or 20 refusals a minute from one
-  sandbox, the rest are counted in a single `suppressed` line instead.
+  sandbox, the rest are counted in a single `suppressed` line instead. Docker rotates that log, and
+  the gateway itself runs under memory and process limits.
 
 Two allowlists come from the deployment's `.env`:
 
 | Variable | Reachable from | Typical content |
 | --- | --- | --- |
-| `OCTOMUS_EGRESS_MODEL_HOSTS` | agent turns | `chatgpt.com,auth.openai.com,api.openai.com` for Codex; `models.opencode.ai` plus your providers for OpenCode |
+| `OCTOMUS_EGRESS_MODEL_HOSTS` | agent turns and [runner logins](#signing-in-a-runner) | `chatgpt.com,auth.openai.com,api.openai.com` for Codex; `models.opencode.ai` plus your providers for OpenCode |
 | `OCTOMUS_EGRESS_BUILD_HOSTS` | agent turns and verification | package registries, for example `proxy.golang.org,sum.golang.org` or `registry.npmjs.org` |
 
-Entries are host names or `*.suffix`, with an optional `:port` (default 443). List only
-what the project needs. Every allowed host is a way out for data, and an allowlist is not
-data-loss prevention: an allowed multi-tenant service, such as a package registry or a
-model API used with someone else's key, can still carry data to an account that is not
-yours.
+Entries are host names or `*.suffix`, with an optional `:port` (default 443). An empty
+`OCTOMUS_EGRESS_MODEL_HOSTS=` allows no model hosts; only a variable missing from `.env`
+gets the Codex hosts above. List only what the project needs. Every allowed host is a way
+out for data, and an allowlist is not data-loss prevention: an allowed multi-tenant
+service, such as a package registry or a model API used with someone else's key, can still
+carry data to an account that is not yours.
+
+## Signing in a runner
+
+`docker compose run --rm login …` runs Codex or OpenCode from the sandbox image to store a
+login in the `octomus-runner` volume. Runner sandboxes can write that volume, so the login
+gives nothing they leave there more reach than they have:
+- it joins `octomus-sandbox-runner` and reaches out only through the egress gateway, under
+  the runner allowlist. Just before it starts, a one-shot `login-lease` service with no
+  network grants it a lease and revokes the previous login's. That lease stays valid until
+  the next login or until the broker restarts;
+- it mounts only the Codex home and OpenCode's data directory, where the logins live.
+  OpenCode's configuration, plugins, cache and state start empty;
+- its image is read-only, and it runs without capabilities, under memory and process limits.
+
+Codex's sign-in hosts are in the default allowlist. For OpenCode, first add
+`models.opencode.ai` and your provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS` and run
+`docker compose up -d`; `docker compose logs egress` shows any host a login was refused.
 
 ## Resource limits
 
@@ -249,6 +268,8 @@ USER 10001:10001
 ```
 
 Build it, set `OCTOMUS_SANDBOX_IMAGE` in `.env` to its tag, and run `docker compose up -d`.
+`docker compose build octomus sandbox-image` rebuilds only the base, `octomus-sandbox:local`,
+so rebuild your image after each upgrade to pick up the new runners.
 The broker uses only images already present on the host and never pulls. Baking toolchains
 and warm caches into the image also keeps build hosts off the allowlist. Never put
 credentials in the image; every sandbox can read it.
@@ -265,7 +286,8 @@ support has not been validated with Octomus yet.
 - **Runner logins are readable inside runner sandboxes.** Runner sandboxes share the
   runner volume: the Codex or OpenCode login, and every session's transcript. A
   prompt-injected session can read them, and can leave runner configuration that a later
-  sandbox loads. It can send data only through the egress allowlist.
+  sandbox loads; a later [login](#signing-in-a-runner) still reads the Codex configuration
+  there. Either can send data only through the egress allowlist.
 - **Sandboxes on the same network can reach each other's listening ports.** Nothing else on
   the host is reachable.
 - **Docker socket access is root-equivalent.** The broker's validation is the boundary
