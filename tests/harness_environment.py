@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Keep fixture Git operations independent of the developer's Git environment."""
+"""Keep local fixture operations independent of developer Git/proxy settings."""
+import http.server
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 
-from harness import fixture_service, git
+from harness import Service, fixture_service, git, local_urlopen
 
 
 def check_fixture():
@@ -40,6 +43,69 @@ def check_fixture():
                                            cwd=root / 'checkout', env=service.env, text=True)
         assert identity.strip() == 'Explicit fixture identity', identity
     assert dict(os.environ) == before, 'fixture override changed the parent environment'
+
+
+def check_local_http():
+    class Peer(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({'path': self.path}).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Peer)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        with tempfile.TemporaryDirectory(prefix='octomus-local-http-') as directory:
+            service = Service(Path(directory))
+            service.port = server.server_port
+            try:
+                assert service.request('/fixture', timeout=2) == {'path': '/api/fixture'}
+                assert service.expect('/fixture', timeout=2) == (200, {'path': '/api/fixture'})
+                with local_urlopen(f'http://127.0.0.1:{service.port}/assets', timeout=2) as response:
+                    assert json.load(response) == {'path': '/assets'}
+            finally:
+                service.log.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def proxy_environment():
+    requests = []
+
+    class Proxy(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_error(502, 'Local fixture requests must not reach a proxy')
+
+        def log_message(self, *args):
+            pass
+
+    proxy = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Proxy)
+    thread = threading.Thread(target=proxy.serve_forever)
+    thread.start()
+    try:
+        env = {key: value for key, value in os.environ.items() if key.lower() not in ['http_proxy', 'https_proxy', 'all_proxy', 'no_proxy']}
+        env.pop('REQUEST_METHOD', None)  # urllib ignores HTTP_PROXY in CGI environments.
+        for key in ['http_proxy', 'HTTP_PROXY']:
+            result = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--check-http'],
+                                    env={**env, key: f'http://127.0.0.1:{proxy.server_port}', 'no_proxy': ''},
+                                    text=True, capture_output=True, timeout=15)
+            assert result.returncode == 0, f'{key}:\n{result.stdout}\n{result.stderr}'
+            assert not requests, f'local fixture requests reached {key}: {requests}'
+            print(f'PASS fixture HTTP environment: {key}', flush=True)
+    finally:
+        proxy.shutdown()
+        thread.join(timeout=5)
+        proxy.server_close()
 
 
 def main():
@@ -79,5 +145,8 @@ def main():
 if __name__ == '__main__':
     if sys.argv[1:] == ['--check']:
         check_fixture()
+    elif sys.argv[1:] == ['--check-http']:
+        check_local_http()
     else:
         main()
+        proxy_environment()
