@@ -249,7 +249,7 @@ sandbox checks, from inside:
 | Holds no Linux capabilities | effective, permitted and bounding sets are empty |
 | Cannot gain privileges through setuid programs | `no_new_privs` is set |
 | System calls are filtered by seccomp | seccomp mode 2 |
-| The image filesystem is read-only | the root mount is `ro`, and writes to `/`, `/usr` and `/etc` fail with a read-only filesystem error |
+| The image filesystem is read-only | the root mount is `ro`, and writes to `/`, `/usr` and `/etc` fail with a read-only filesystem error, or are refused for permission under a mount that is itself `ro` (gVisor checks permissions first) |
 | Cannot see Octomus state, secrets or the Docker socket | none of those paths exist |
 | Has no direct route to the internet | direct TCP connections get no answer, not even a refusal |
 | Cannot resolve internet names directly | DNS lookups fail |

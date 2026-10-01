@@ -100,41 +100,56 @@ func procStatus() map[string]string {
 }
 
 // readOnlyImage proves the image is mounted read-only: the root mount carries the ro option, and a write to `/`, `/usr`
-// and `/etc` fails with EROFS. Any other refusal proves nothing, because the probe user cannot write to those
-// root-owned directories on a writable image either.
+// and `/etc` fails. The probe user cannot write to those root-owned directories on a writable image either, so a
+// refusal counts only from a read-only mount: EROFS says so itself, and a permission refusal counts when the mount
+// that holds the directory carries the ro option. gVisor checks permissions before the mount's flags, so there every
+// write fails that way; a writable mount over /usr or /etc still fails the check.
 func readOnlyImage(read func(string) ([]byte, error), write func(path string) error) (bool, string) {
 	problems := []string{}
-	if mountinfo, err := read("/proc/self/mountinfo"); err != nil {
+	mountinfo, err := read("/proc/self/mountinfo")
+	if err != nil {
 		problems = append(problems, "mountinfo unreadable ("+errnoText(err)+")")
-	} else if options, ok := rootMountOptions(mountinfo); !ok {
+	} else if _, options, ok := holdingMount(mountinfo, "/"); !ok {
 		problems = append(problems, "no root mount in mountinfo")
-	} else if !slices.Contains(strings.Split(options, ","), "ro") {
+	} else if !readOnlyMount(options) {
 		problems = append(problems, "mount / "+options)
 	}
 	for _, dir := range []string{"/usr", "/etc", "/"} {
-		err := write(strings.TrimSuffix(dir, "/") + "/.octomus-probe")
+		path := strings.TrimSuffix(dir, "/") + "/.octomus-probe"
+		err := write(path)
+		point, options, held := holdingMount(mountinfo, path)
 		switch {
 		case err == nil:
 			problems = append(problems, "writable "+dir)
-		case !errors.Is(err, syscall.EROFS):
+		case errors.Is(err, syscall.EROFS):
+		case !errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EPERM) || !held:
 			problems = append(problems, dir+" refused without EROFS ("+errnoText(err)+")")
+		case !readOnlyMount(options):
+			problems = append(problems, fmt.Sprintf("%s refused without EROFS (%s) under mount %s %s", dir, errnoText(err), point, options))
 		}
 	}
 	return len(problems) == 0, detailList("not proven read-only:", problems, "read-only")
 }
 
-// rootMountOptions returns the per-mount options of the mount at "/" in /proc/self/mountinfo, the last one listed
-// when several are stacked.
-func rootMountOptions(mountinfo []byte) (string, bool) {
-	options, found := "", false
+// holdingMount returns the mount point and per-mount options of the mount that holds path in /proc/self/mountinfo:
+// the deepest mount point at or above it, the last one listed when several are stacked.
+func holdingMount(mountinfo []byte, path string) (string, string, bool) {
+	point, options, found := "", "", false
 	for _, line := range strings.Split(string(mountinfo), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) > 5 && fields[4] == "/" {
-			options, found = fields[5], true
+		if len(fields) <= 5 {
+			continue
+		}
+		mount := fields[4]
+		holds := mount == "/" || path == mount || strings.HasPrefix(path, mount+"/")
+		if holds && len(mount) >= len(point) {
+			point, options, found = mount, fields[5], true
 		}
 	}
-	return options, found
+	return point, options, found
 }
+
+func readOnlyMount(options string) bool { return slices.Contains(strings.Split(options, ","), "ro") }
 
 func tryWrite(path string) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
