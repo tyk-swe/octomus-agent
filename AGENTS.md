@@ -48,11 +48,18 @@ owns strict typed JSON boundaries for saved records and API requests.
   sandbox). `sandbox/wire` is the broker wire contract: requests, stream
   frames, the broker info document, the runner names and the runner and verification
   programs both backends start, and the owned-root home layout. `sandbox/broker` is
-  `--sandboxd`: request validation, the golden container spec
-  (`testdata/spec-*.json`), streams, leases and sweeping; `sandbox/engineapi` is its
-  minimal Docker Engine client. `internal/egress` is the `--egress` gateway and owns
-  its contract with the broker: lease files, proxy credentials and the summary
-  collector.
+  `--sandboxd`: `config.go` (deployment settings), `startup.go` (daemon, network
+  and volume checks, helper install), `image.go` (tag resolution and the
+  runner-version probe), `listen.go` (peer-credential socket), `serve.go` (HTTP and
+  the upgraded stream), `validate.go` (request and owned-root checks), `spec.go`
+  (the golden container spec, `testdata/spec-*.json`), `lifecycle.go` (create,
+  attach, run and evidence, granting egress leases) and `teardown.go` (teardown
+  bounds, removal, reaper and sweep); `sandbox/engineapi` is its minimal Docker
+  Engine client. `internal/egress` is the `--egress` gateway: `policy.go`
+  (allowlists, `PolicyFromEnv`), `gateway.go` (the CONNECT gateway) and `serve.go`
+  (listener bounds and the lease sweep). It owns its contract with the broker:
+  `lease.go` (lease files and proxy credentials) and `collector.go` (the summary
+  collector).
 - `internal/redact`: the one secret scrubber and display bound, shared by every
   package that records or returns text, the token and webhook variable names, and
   `Fragment` for text already cut by a capture or read limit.
