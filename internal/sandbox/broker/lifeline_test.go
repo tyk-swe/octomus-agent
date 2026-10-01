@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
@@ -57,6 +59,56 @@ func TestFailedTimeLimitKillIsRetried(t *testing.T) {
 	if err != nil || !report.Killed || report.Error != "Sandbox time limit reached" || report.Code != 137 {
 		t.Fatalf("time limit after a failed kill = %+v, %v; want the limit enforced", report, err)
 	}
+}
+
+func TestKillWhoseReplyIsLateStillReportsTheKill(t *testing.T) {
+	tune(t, &killWait, 200*time.Millisecond)
+	// Docker answers a SIGKILL only once the container has stopped; on a loaded host that outlasts the broker's wait.
+	slowKill := func(c *fakeContainer, signal string) (int, string) {
+		if signal == "SIGKILL" {
+			c.closeOutput()
+			c.Exit(137, false)
+			time.Sleep(600 * time.Millisecond)
+		}
+		return 0, ""
+	}
+	t.Run("time limit", func(t *testing.T) {
+		e := newFakeEngine(t)
+		e.kill, e.run = slowKill, func(*fakeContainer) {}
+		report, err := e.broker(t, testConfig(t)).runSandbox(context.Background(), probePlan(100*time.Millisecond), discard, discard, nil)
+		if err != nil || !report.Killed || report.Error != sandbox.TimeLimitReason || report.Code != 137 {
+			t.Fatalf("time limit whose kill reply came late = %+v, %v; want the limit named", report, err)
+		}
+	})
+	t.Run("client kill", func(t *testing.T) {
+		e := newFakeEngine(t)
+		e.kill, e.run = slowKill, func(*fakeContainer) {}
+		child, err := serve(t, e.broker(t, testConfig(t))).Start(context.Background(), versionsProbe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.WaitCreated(t, 1)
+		child.Kill()
+		if status, err := child.Wait(); !errors.Is(status.Err(), process.ErrKilled) || err != nil {
+			t.Fatalf("kill whose reply came late = %v, %v; want it reported as Octomus's kill", status, err)
+		}
+	})
+	t.Run("exit of its own", func(t *testing.T) {
+		e := newFakeEngine(t)
+		// The command ends on its own while a kill is still unanswered: its exit status stands.
+		e.kill = func(c *fakeContainer, signal string) (int, string) {
+			if signal == "SIGKILL" {
+				c.End(3)
+				time.Sleep(600 * time.Millisecond)
+			}
+			return 0, ""
+		}
+		e.run = func(*fakeContainer) {}
+		report, err := e.broker(t, testConfig(t)).runSandbox(context.Background(), probePlan(100*time.Millisecond), discard, discard, nil)
+		if err != nil || report.Killed || report.Code != 3 || report.Error != "" {
+			t.Fatalf("exit during an unanswered kill = %+v, %v; want the exit's own status", report, err)
+		}
+	})
 }
 
 func TestKillReportsWhatEndedTheSandbox(t *testing.T) {

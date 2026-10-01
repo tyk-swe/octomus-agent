@@ -119,6 +119,9 @@ type output struct {
 
 const streamClosed = "Sandbox stream closed"
 
+// sigkillStatus is the exit status Docker reports for a container a SIGKILL stopped.
+const sigkillStatus = 128 + 9
+
 // ending is how a sandbox's run ended.
 type ending struct {
 	// result is the exit the daemon reported, if it did.
@@ -212,7 +215,8 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 }
 
 // run starts the container and serves its controls until it ends. Only a SIGKILL the daemon delivered marks it
-// killed, and the first one names the reason: a kill that finds it already exited leaves its own exit status.
+// killed, and the first one names the reason: a kill that finds it already exited leaves its own exit status. A kill
+// whose answer never came counts as delivered when the sandbox then ends with a SIGKILL's status.
 func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-chan control, input chan<- control) (end ending) {
 	b := s.b
 	if err := b.engine.ContainerStart(ctx, s.id); err != nil {
@@ -230,11 +234,13 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 	defer retry.Stop()
 	var stopped <-chan time.Time
 	asked := ""
+	// unanswered is set when a SIGKILL request failed without a refusal: the daemon may have delivered it.
+	unanswered := false
 	kill := func(reason string) {
 		if end.deadline.IsZero() {
 			end.deadline, stopped, asked = time.Now().Add(teardownBudget), time.After(stopWait), reason
 		}
-		killCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		killCtx, cancel := context.WithTimeout(context.Background(), killWait)
 		err := b.engine.ContainerKill(killCtx, s.id, "SIGKILL")
 		cancel()
 		switch {
@@ -243,8 +249,9 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 				end.killed, end.reason = true, reason
 			}
 		case engineapi.IsConflict(err) || engineapi.IsNotFound(err):
-			// It is no longer running: it ended on its own, and the wait reports how.
+			// It is no longer running: it ended on its own, or by an unanswered kill, and the wait reports how.
 		default:
+			unanswered = true
 			b.logf("Killing sandbox %s failed; retrying: %v", s.name, err)
 			retry.Reset(time.Second)
 		}
@@ -264,6 +271,11 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			pendingInput = pendingInput[1:]
 		case result := <-results:
 			end.result = &result
+			// Docker answers a SIGKILL only once the container has stopped, so a busy daemon can deliver one after the
+			// request gave up: a SIGKILL's exit status after it was sent is that kill's.
+			if unanswered && !end.killed && result.StatusCode == sigkillStatus {
+				end.killed, end.reason = true, asked
+			}
 			return end
 		case err := <-errs:
 			end.err = fmt.Errorf("Waiting for the sandbox: %w", err)

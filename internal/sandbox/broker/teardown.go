@@ -15,6 +15,9 @@ var (
 	removeReserve = 15 * time.Second
 	// stopWait is how long a killed sandbox has to report its exit before the removal stops it by force.
 	stopWait = 15 * time.Second
+	// killWait bounds one kill request. Docker answers a SIGKILL only once the container has stopped, so a busy
+	// daemon can deliver a kill whose answer comes later than that.
+	killWait = 5 * time.Second
 	// drainWait is how long a sandbox's output has to end once the sandbox has.
 	drainWait = 10 * time.Second
 	// joinWait is how long the output pump has to finish once its source is closed.
