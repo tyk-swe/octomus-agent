@@ -211,13 +211,13 @@ sandbox checks, from inside:
 | Holds no Linux capabilities | effective, permitted and bounding sets are empty |
 | Cannot gain privileges through setuid programs | `no_new_privs` is set |
 | System calls are filtered by seccomp | seccomp mode 2 |
-| The image filesystem is read-only | writes to `/`, `/usr` and `/etc` fail |
+| The image filesystem is read-only | the root mount is `ro`, and writes to `/`, `/usr` and `/etc` fail with a read-only filesystem error |
 | Cannot see Octomus state, secrets or the Docker socket | none of those paths exist |
-| Has no direct route to the internet | direct TCP connections fail |
+| Has no direct route to the internet | direct TCP connections get no answer, not even a refusal |
 | Cannot resolve internet names directly | DNS lookups fail |
-| Has no gateway to the host or its neighbours | there is no default route |
-| Runs under memory and process limits | cgroup `memory.max` and `pids.max` are set |
-| The egress gateway refuses unlisted, metadata and local targets | the gateway refuses `example.com`, `169.254.169.254` and `localhost` |
+| Has no gateway to the host or its neighbours | there is no default route, and the first address of the sandbox's subnet, where a bridge gateway would sit, answers no connection on common host ports unless Docker names it as a container |
+| Runs under memory and process limits | cgroup `memory.max` and `pids.max` are no higher than the broker's configured limits |
+| The egress gateway refuses unlisted, metadata and local targets | with a runner lease, the gateway refuses `example.com` as not on the runner allowlist, and `169.254.169.254` and `localhost` as not host names |
 
 A failed check fails the connection check, names what the probe saw, and appears on the
 Overview. The last result is kept with the image it ran on.
@@ -277,9 +277,10 @@ runners would inherit the one and could rewrite the other.
 Automated tests hold:
 - the golden container spec for each sandbox kind, the broker's request validation and the
   gateway's policy (default suite);
-- the broker against a real Docker daemon: containment from inside, kill and dead-man
-  removal, memory-limit reporting, the OpenCode bridge with a 16 MB body and SSE, and
-  leaving other containers alone (`OCTOMUS_DOCKER_TEST=1`);
+- the broker against a real Docker daemon: containment from inside, the probe failing a
+  plain internal network and a writable image, kill and dead-man removal, memory-limit
+  reporting, the OpenCode bridge with a 16 MB body and SSE, and leaving other containers
+  alone (`OCTOMUS_DOCKER_TEST=1`);
 - the shipped compose file end to end with fixture runners: the self-test, a full Run once
   delivery through sandboxes, and a control-plane crash that leaves no sandbox running
   (`make test-sandbox`).
