@@ -74,7 +74,8 @@ in that image.
 | Restart after an `.env` change | `docker compose up -d` |
 | Upgrade | `git pull`, `docker compose build octomus sandbox-image`, rebuild any [derived sandbox image](sandbox.md#extend-the-sandbox-image), then `docker compose up -d` |
 
-The control plane stops gracefully within its 45-second grace period. Stopping it closes
+The control plane stops gracefully within its 75-second grace period, which covers its
+wait for the broker to confirm each running sandbox's removal. Stopping it closes
 every sandbox's stream, so the broker removes every running sandbox. The broker also
 removes any sandbox left from a previous run when it starts. It only ever touches
 containers carrying its own `octomus.sandbox.instance` label.

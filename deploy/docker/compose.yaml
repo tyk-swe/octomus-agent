@@ -47,7 +47,9 @@ services:
     ports:
       - "127.0.0.1:${OCTOMUS_PORT:-4200}:4200"
     networks: [control]
-    stop_grace_period: 45s
+    # Stopping kills each running sandbox and waits up to 60 s for the broker's report of it, after a verification's
+    # 2 s terminate grace and the broker's 5 s SIGTERM; the rest is margin to record what was interrupted.
+    stop_grace_period: 75s
     healthcheck:
       test: ["CMD", "/usr/local/bin/octomus-agent", "--healthcheck", "--listen", "0.0.0.0:4200"]
       interval: 30s

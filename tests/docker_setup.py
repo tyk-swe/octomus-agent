@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -177,6 +178,14 @@ def compose_contract():
     for name, service in services.items():
         assert service.get('logging', {}).get('options', {}).get('max-size'), f'{name} keeps an unrotated log'
     assert services['egress'].get('mem_limit') and services['egress'].get('pids_limit'), services['egress']
+    # Stopping the control plane kills each running sandbox and waits up to 60 s for the broker's report of it
+    # (killReportWait in internal/sandbox/remote.go), after a verification's 2 s terminate grace and the broker's 5 s
+    # SIGTERM. A shorter grace lets Compose kill the control plane before it records what it interrupted.
+    grace = services['octomus']['stop_grace_period']
+    parts = re.fullmatch(r'(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?', grace)
+    assert parts and grace, f'unreadable octomus stop grace {grace}'
+    hours, minutes, secs = (int(part or 0) for part in parts.groups())
+    assert hours * 3600 + minutes * 60 + secs >= 60 + 2 + 5 + 5, f'octomus stop grace {grace} is shorter than a sandbox kill'
 
     # Logins run runner programs against state runner sandboxes can write; they get no more reach than a sandbox.
     networks = config['networks']
