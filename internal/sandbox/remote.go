@@ -146,11 +146,11 @@ func (r *Remote) start(ctx context.Context, spec Spec, req Request) (*remoteChil
 		return nil, process.ErrSessionCancelled
 	}
 	if _, err := r.Info(ctx); err != nil {
-		return nil, err
+		return nil, notStarted(ctx, err)
 	}
 	if spec.Kind != KindProbe {
 		if err := PrepareRoot(spec); err != nil {
-			return nil, fmt.Errorf("Preparing the sandbox root: %w", err)
+			return nil, &SandboxError{fmt.Errorf("Preparing the sandbox root: %w", err)}
 		}
 	}
 	r.mu.Lock()
@@ -165,9 +165,17 @@ func (r *Remote) start(ctx context.Context, spec Spec, req Request) (*remoteChil
 	conn, reader, err := r.open(ctx, req)
 	if err != nil {
 		release()
-		return nil, err
+		return nil, notStarted(ctx, err)
 	}
 	return newRemoteChild(conn, reader, spec.Stderr, req.Stdin, r.killWait, release), nil
+}
+
+// notStarted reports a sandbox the broker did not provide as the sandbox's failure, unless the caller cancelled.
+func notStarted(ctx context.Context, err error) error {
+	if ctx.Err() != nil || errors.Is(err, process.ErrSessionCancelled) {
+		return process.ErrSessionCancelled
+	}
+	return &SandboxError{err}
 }
 
 // open asks the broker for a sandbox and returns the upgraded stream that is its lifeline.
@@ -238,7 +246,10 @@ func (r *Remote) StartOpenCode(ctx context.Context, spec Spec, readinessSeconds 
 	if err != nil {
 		stdout.Close()
 		child.Kill()
-		_, _ = child.Wait()
+		if _, werr := child.Wait(); werr != nil {
+			// The sandbox's own failure, such as a container that never started, is why no handshake came.
+			err = fmt.Errorf("%w: %w", err, werr)
+		}
 		return nil, err
 	}
 	return &OpenCodeServer{Base: "http://opencode.sandbox", Transport: streamTransport(child), Child: child, Drained: child.done}, nil
@@ -399,15 +410,15 @@ func (c *remoteChild) lose(err error) {
 	c.lost = &SandboxError{err}
 }
 
-// Wait reports how the sandbox ended. A lost stream and an unconfirmed kill are the sandbox's failures, never the
-// program's result.
+// Wait reports how the sandbox ended. A lost stream, an unconfirmed kill and a sandbox the broker could not run are
+// the sandbox's failures, never the program's result.
 func (c *remoteChild) Wait() (process.Status, error) {
 	<-c.done
 	if c.lost != nil {
 		return process.Status{}, c.lost
 	}
 	if c.report.Error != "" && !c.report.Killed {
-		return process.Status{}, errors.New(c.report.Error)
+		return process.Status{}, &SandboxError{errors.New(c.report.Error)}
 	}
 	return process.ExitStatus(process.Exit{Code: c.report.Code, OOM: c.report.OOM, Killed: c.report.Killed, Reason: c.report.Error}), nil
 }

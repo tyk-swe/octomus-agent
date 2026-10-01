@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,9 @@ func exitFrame(out *FrameWriter, report ExitReport) {
 	_ = out.Frame(FrameExit, payload)
 }
 
+// startFailure is how the broker reports a container it created but could not start, after the upgrade.
+const startFailure = "Starting the sandbox: Error response from daemon: unknown or invalid runtime name: runsc"
+
 // killedEvidence is what the broker hands back about a killed sandbox: refused hosts exist nowhere else.
 func killedEvidence() ExitReport {
 	return ExitReport{Code: 137, Killed: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1,
@@ -90,6 +94,10 @@ func awaitKill(reader *bufio.Reader) bool {
 
 func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 	out := NewFrameWriter(conn)
+	if req.Command == "start-fail" || slices.Contains(req.Env, "HANDSHAKE=start-fail") {
+		exitFrame(out, ExitReport{Error: startFailure})
+		return
+	}
 	if req.Mode == RunnerModeOpenCode {
 		handshake := strings.TrimPrefix(req.Env[0], "HANDSHAKE=")
 		_, _ = out.Data(FrameStdout, []byte(handshake))
@@ -116,6 +124,8 @@ func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 			Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"example.com:443": 2}}}})
 	case "limit":
 		exitFrame(out, ExitReport{Code: 137, Killed: true, Error: "Sandbox time limit reached"})
+	case "bad-report":
+		_ = out.Frame(FrameExit, []byte("{"))
 	case "slow-report":
 		if awaitKill(reader) {
 			time.Sleep(200 * time.Millisecond)
@@ -156,11 +166,13 @@ func TestRemoteOpenCodeFailedHandshakeClosesUnreadStdout(t *testing.T) {
 		handshake string
 		want      string
 		cancel    bool
+		sandbox   bool
 	}{
-		"oversized failure": {handshake: handshakeFailed + strings.Repeat("x", 2*handshakeLimit) + "\n", want: "exceeded its size limit"},
-		"unexpected line":   {handshake: "unexpected\n" + strings.Repeat("x", handshakeLimit), want: "unexpected handshake"},
-		"failure with tail": {handshake: handshakeFailed + "invalid URL\n" + strings.Repeat("x", handshakeLimit), want: "invalid URL"},
-		"cancelled startup": {handshake: "OCTOMUS-", cancel: true},
+		"sandbox never started": {handshake: "start-fail", want: startFailure, sandbox: true},
+		"oversized failure":     {handshake: handshakeFailed + strings.Repeat("x", 2*handshakeLimit) + "\n", want: "exceeded its size limit"},
+		"unexpected line":       {handshake: "unexpected\n" + strings.Repeat("x", handshakeLimit), want: "unexpected handshake"},
+		"failure with tail":     {handshake: handshakeFailed + "invalid URL\n" + strings.Repeat("x", handshakeLimit), want: "invalid URL"},
+		"cancelled startup":     {handshake: "OCTOMUS-", cancel: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := startFakeBroker(t, 1)
@@ -190,6 +202,9 @@ func TestRemoteOpenCodeFailedHandshakeClosesUnreadStdout(t *testing.T) {
 					}
 				} else if err == nil || !strings.Contains(err.Error(), tc.want) {
 					t.Fatalf("startup = %v; want %q", err, tc.want)
+				}
+				if Infrastructure(err) != tc.sandbox {
+					t.Fatalf("startup = %v; sandbox failure %v, want %v", err, Infrastructure(err), tc.sandbox)
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("failed startup hung while cleaning up unread stdout")
@@ -253,11 +268,17 @@ func TestRemoteExitReasons(t *testing.T) {
 	if err != nil || out.Status.Success() || out.Status.String() != "Sandbox time limit reached" {
 		t.Fatalf("time limit = %v, %v", out, err)
 	}
-	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "drop", 30, true); err == nil || !strings.Contains(err.Error(), "Sandbox stream was lost") {
-		t.Fatalf("dropped stream = %v; want an error, never a clean exit", err)
-	}
-	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "refuse", 30, true); err == nil || !strings.Contains(err.Error(), "not an owned root") {
-		t.Fatalf("refusal = %v; want the broker's reason", err)
+	// Every way the sandbox itself fails is reported as the sandbox's failure, never as the command's own result.
+	for command, want := range map[string]string{
+		"drop":       "Sandbox stream was lost",
+		"bad-report": "Sandbox stream was lost",
+		"refuse":     "not an owned root",
+		"start-fail": startFailure,
+	} {
+		if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), command, 30, true); err == nil ||
+			!strings.Contains(err.Error(), want) || !Infrastructure(err) {
+			t.Fatalf("%s = %v; want a sandbox failure naming %q", command, err, want)
+		}
 	}
 }
 
@@ -378,8 +399,8 @@ func TestRemoteUnavailableBrokerFailsClosed(t *testing.T) {
 	if err := remote.Healthy(context.Background()); err == nil || !strings.Contains(err.Error(), "Sandbox broker is unavailable") {
 		t.Fatalf("health = %v", err)
 	}
-	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "true", 30, true); err == nil {
-		t.Fatal("verification ran without a broker")
+	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "true", 30, true); err == nil || !Infrastructure(err) {
+		t.Fatalf("verification without a broker = %v; want a sandbox failure", err)
 	}
 }
 
