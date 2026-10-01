@@ -19,6 +19,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // fakeEngine is a scripted Docker Engine on a unix socket: enough of the API for a broker to check its deployment
@@ -451,7 +452,7 @@ func (e *fakeEngine) mux() http.Handler {
 
 // defaultRun answers a version probe with fixed versions and ends every other container at once with exit 0.
 func defaultRun(c *fakeContainer) {
-	if slices.Contains(c.Spec.Entrypoint, sandbox.ProbeVersions) {
+	if slices.Contains(c.Spec.Entrypoint, wire.ProbeVersions) {
 		c.Stdout(`{"codex":"codex-fake ` + c.Spec.Image + `","opencode":"opencode-fake"}`)
 	}
 	c.End(0)

@@ -15,6 +15,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
@@ -170,7 +171,7 @@ type SandboxPosture struct {
 	Mode             string              `json:"mode"`
 	Healthy          bool                `json:"healthy"`
 	Error            *string             `json:"error"`
-	Broker           *sandbox.BrokerInfo `json:"broker"`
+	Broker           *wire.BrokerInfo    `json:"broker"`
 	Egress           map[string][]string `json:"egress"`
 	PinnedRepository *string             `json:"pinned_repository"`
 	SelfTest         *SandboxSelfTest    `json:"self_test"`

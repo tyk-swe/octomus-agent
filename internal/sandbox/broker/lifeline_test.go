@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // tune sets a teardown bound for one test.
@@ -34,10 +35,10 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-var versionsProbe = sandbox.Spec{Kind: sandbox.KindProbe, Probe: sandbox.ProbeVersions}
+var versionsProbe = sandbox.Spec{Kind: sandbox.KindProbe, Probe: wire.ProbeVersions}
 
 func probePlan(timeout time.Duration) plan {
-	return plan{kind: sandbox.KindProbe, probe: sandbox.ProbeVersions, timeout: timeout}
+	return plan{kind: wire.KindProbe, probe: wire.ProbeVersions, timeout: timeout}
 }
 
 func TestFullBrokerMakesRequestsWait(t *testing.T) {
@@ -144,14 +145,14 @@ func TestFailedTimeLimitKillIsRetried(t *testing.T) {
 }
 
 func TestKillReportsWhatEndedTheSandbox(t *testing.T) {
-	run := func(t *testing.T, e *fakeEngine, timeout time.Duration) sandbox.ExitReport {
+	run := func(t *testing.T, e *fakeEngine, timeout time.Duration) wire.ExitReport {
 		t.Helper()
 		// The daemon reports the exit a moment late, so the kill arrives after the sandbox already ended.
 		e.waitDelay = 300 * time.Millisecond
 		b := e.broker(t, testConfig(t))
 		controls := make(chan control)
 		type ended struct {
-			report sandbox.ExitReport
+			report wire.ExitReport
 			err    error
 		}
 		done := make(chan ended, 1)
@@ -162,7 +163,7 @@ func TestKillReportsWhatEndedTheSandbox(t *testing.T) {
 		<-e.WaitCreated(t, 1).Exited()
 		var got ended
 		select {
-		case controls <- control{signal: sandbox.SignalKill}:
+		case controls <- control{signal: wire.SignalKill}:
 			got = <-done
 		case got = <-done:
 			// The exit reached the broker before the kill could: the report must be the same.

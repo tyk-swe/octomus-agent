@@ -20,12 +20,13 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // fakeBroker speaks the broker protocol with scripted sandboxes chosen by the verification command.
 type fakeBroker struct {
 	socket   string
-	requests chan Request
+	requests chan wire.Request
 }
 
 func startFakeBroker(t *testing.T, max int) *fakeBroker {
@@ -35,18 +36,18 @@ func startFakeBroker(t *testing.T, max int) *fakeBroker {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	f := &fakeBroker{socket: filepath.Join(dir, "sandboxd.sock"), requests: make(chan Request, 64)}
+	f := &fakeBroker{socket: filepath.Join(dir, "sandboxd.sock"), requests: make(chan wire.Request, 64)}
 	listener, err := net.Listen("unix", f.socket)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(BrokerInfo{Image: "sandbox:test", Limits: BrokerLimits{Max: max},
+		_ = json.NewEncoder(w).Encode(wire.BrokerInfo{Image: "sandbox:test", Limits: wire.BrokerLimits{Max: max},
 			Runners: map[string]string{"codex": "codex-cli 0.153.4"}})
 	})
 	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
-		var req Request
+		var req wire.Request
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.requests <- req
 		if req.Command == "refuse" {
@@ -56,7 +57,7 @@ func startFakeBroker(t *testing.T, max int) *fakeBroker {
 		}
 		conn, stream, _ := w.(http.Hijacker).Hijack()
 		defer conn.Close()
-		_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + UpgradeProtocol + "\r\n\r\n")
+		_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + wire.UpgradeProtocol + "\r\n\r\n")
 		_ = stream.Flush()
 		f.serve(req, conn, stream.Reader)
 	})
@@ -66,9 +67,9 @@ func startFakeBroker(t *testing.T, max int) *fakeBroker {
 	return f
 }
 
-func exitFrame(out *FrameWriter, report ExitReport) {
+func exitFrame(out *wire.FrameWriter, report wire.ExitReport) {
 	payload, _ := json.Marshal(report)
-	_ = out.Frame(FrameExit, payload)
+	_ = out.Frame(wire.FrameExit, payload)
 }
 
 // startFailure is how the broker reports a container it created but could not start, after the upgrade.
@@ -78,62 +79,62 @@ const startFailure = "Starting the sandbox: Error response from daemon: unknown 
 const removeFailure = "Removing the sandbox failed: container is stuck"
 
 // killedEvidence is what the broker hands back about a killed sandbox: refused hosts exist nowhere else.
-func killedEvidence() ExitReport {
-	return ExitReport{Code: 137, Killed: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1,
+func killedEvidence() wire.ExitReport {
+	return wire.ExitReport{Code: 137, Killed: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1,
 		Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"exfil.example.net:443": 40}}}}
 }
 
 // awaitKill reads control frames until the client asks for a kill, and reports whether it did.
 func awaitKill(reader *bufio.Reader) bool {
 	for {
-		kind, payload, err := ReadFrame(reader)
+		kind, payload, err := wire.ReadFrame(reader)
 		if err != nil {
 			return false
 		}
-		if kind == FrameSignal && string(payload) == SignalKill {
+		if kind == wire.FrameSignal && string(payload) == wire.SignalKill {
 			return true
 		}
 	}
 }
 
-func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
-	out := NewFrameWriter(conn)
+func (f *fakeBroker) serve(req wire.Request, conn net.Conn, reader *bufio.Reader) {
+	out := wire.NewFrameWriter(conn)
 	if req.Command == "start-fail" || slices.Contains(req.Env, "HANDSHAKE=start-fail") {
-		exitFrame(out, ExitReport{Error: startFailure})
+		exitFrame(out, wire.ExitReport{Error: startFailure})
 		return
 	}
-	if req.Mode == RunnerModeOpenCode {
+	if req.Mode == wire.RunnerModeOpenCode {
 		handshake := strings.TrimPrefix(req.Env[0], "HANDSHAKE=")
-		_, _ = out.Data(FrameStdout, []byte(handshake))
+		_, _ = out.Data(wire.FrameStdout, []byte(handshake))
 		for {
-			kind, _, err := ReadFrame(reader)
+			kind, _, err := wire.ReadFrame(reader)
 			if err != nil {
 				return
 			}
-			if kind == FrameSignal {
-				exitFrame(out, ExitReport{Code: 137, Killed: true})
+			if kind == wire.FrameSignal {
+				exitFrame(out, wire.ExitReport{Code: 137, Killed: true})
 				return
 			}
 		}
 	}
 	switch req.Command {
 	case "streams":
-		_, _ = out.Data(FrameStdout, []byte("out\n"))
-		_, _ = out.Data(FrameStderr, []byte("err\n"))
-		exitFrame(out, ExitReport{Code: 3})
+		_, _ = out.Data(wire.FrameStdout, []byte("out\n"))
+		_, _ = out.Data(wire.FrameStderr, []byte("err\n"))
+		exitFrame(out, wire.ExitReport{Code: 3})
 	case "drop":
-		_, _ = out.Data(FrameStdout, []byte("partial"))
+		_, _ = out.Data(wire.FrameStdout, []byte("partial"))
 	case "oom":
-		exitFrame(out, ExitReport{Code: 137, OOM: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1, OOM: true,
+		exitFrame(out, wire.ExitReport{Code: 137, OOM: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1, OOM: true,
 			Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"example.com:443": 2}}}})
 	case "limit":
-		exitFrame(out, ExitReport{Code: 137, Killed: true, Error: TimeLimitReason})
+		exitFrame(out, wire.ExitReport{Code: 137, Killed: true, Error: TimeLimitReason})
 	case "bad-report":
-		_ = out.Frame(FrameExit, []byte("{"))
+		_ = out.Frame(wire.FrameExit, []byte("{"))
 	case "flood":
 		// Output nobody reads, as when the OpenCode bridge's HTTP/2 client has stopped, then the kill's report.
-		_, _ = out.Data(FrameStdout, []byte("unread stdout"))
-		_, _ = out.Data(FrameStderr, []byte("unread stderr"))
+		_, _ = out.Data(wire.FrameStdout, []byte("unread stdout"))
+		_, _ = out.Data(wire.FrameStderr, []byte("unread stderr"))
 		if awaitKill(reader) {
 			exitFrame(out, killedEvidence())
 		}
@@ -149,36 +150,36 @@ func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 	case "remove-fails":
 		// The kill worked, but the broker could not confirm the container is gone.
 		if awaitKill(reader) {
-			exitFrame(out, ExitReport{Code: 137, Killed: true, Error: removeFailure})
+			exitFrame(out, wire.ExitReport{Code: 137, Killed: true, Error: removeFailure})
 		}
 	case "drop-on-signal":
 		// The broker goes away as the client starts to stop the sandbox.
 		for {
-			kind, _, err := ReadFrame(reader)
-			if err != nil || kind == FrameSignal {
+			kind, _, err := wire.ReadFrame(reader)
+			if err != nil || kind == wire.FrameSignal {
 				return
 			}
 		}
 	case "hang", "":
 		var echoed bytes.Buffer
 		for {
-			kind, payload, err := ReadFrame(reader)
+			kind, payload, err := wire.ReadFrame(reader)
 			if err != nil {
 				return
 			}
 			switch kind {
-			case FrameStdin:
+			case wire.FrameStdin:
 				echoed.Write(payload)
-				_, _ = out.Data(FrameStdout, payload)
-			case FrameStdinEOF:
-				exitFrame(out, ExitReport{Code: 0})
+				_, _ = out.Data(wire.FrameStdout, payload)
+			case wire.FrameStdinEOF:
+				exitFrame(out, wire.ExitReport{Code: 0})
 				return
-			case FrameSignal:
-				if string(payload) == SignalTerminate {
-					exitFrame(out, ExitReport{Code: 143})
+			case wire.FrameSignal:
+				if string(payload) == wire.SignalTerminate {
+					exitFrame(out, wire.ExitReport{Code: 143})
 					return
 				}
-				exitFrame(out, ExitReport{Code: 137, Killed: true})
+				exitFrame(out, wire.ExitReport{Code: 137, Killed: true})
 				return
 			}
 		}
@@ -261,7 +262,7 @@ func TestRemoteVerifyStreamsAndExit(t *testing.T) {
 	if req.Kind != "verify" || req.Dir != dir || req.Command != "streams" || !req.FreshHome || req.Timeout != 30+verifyGrace {
 		t.Fatalf("request = %+v", req)
 	}
-	if info, err := os.Lstat(filepath.Join(filepath.Dir(dir), VerifyHome)); err != nil || !info.IsDir() {
+	if info, err := os.Lstat(filepath.Join(filepath.Dir(dir), wire.VerifyHome)); err != nil || !info.IsDir() {
 		t.Fatalf("verification home was not prepared: %v", err)
 	}
 }
@@ -524,59 +525,39 @@ func TestPrepareRootReplacesPlantedLinksAndRefreshesVerificationHome(t *testing.
 	dir := ownedWorkspace(t)
 	root := filepath.Dir(dir)
 	outside := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, RunnerHome), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, wire.RunnerHome), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(root, RunnerHome, ".codex")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(root, wire.RunnerHome, ".codex")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, RunnerHome, ".local"), []byte("file"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, wire.RunnerHome, ".local"), []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := PrepareRoot(Spec{Kind: KindRunner, Dir: dir}); err != nil {
 		t.Fatal(err)
 	}
-	for _, mount := range RunnerHomeDirs {
-		if info, err := os.Lstat(filepath.Join(root, RunnerHome, mount.Home)); err != nil || !info.IsDir() {
+	for _, mount := range wire.RunnerHomeDirs {
+		if info, err := os.Lstat(filepath.Join(root, wire.RunnerHome, mount.Home)); err != nil || !info.IsDir() {
 			t.Fatalf("%s = %v, %v; want a plain directory", mount.Home, info, err)
 		}
 	}
 	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
 		t.Fatalf("preparation wrote through a planted link: %v", entries)
 	}
-	if err := os.MkdirAll(filepath.Join(root, VerifyHome, "cache"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, wire.VerifyHome, "cache"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := PrepareRoot(Spec{Kind: KindVerify, Dir: dir}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, VerifyHome, "cache")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, wire.VerifyHome, "cache")); err != nil {
 		t.Fatal("a later command of the same run lost its home")
 	}
 	if err := PrepareRoot(Spec{Kind: KindVerify, Dir: dir, FreshHome: true}); err != nil {
 		t.Fatal(err)
 	}
-	if entries, err := os.ReadDir(filepath.Join(root, VerifyHome)); err != nil || len(entries) != 0 {
+	if entries, err := os.ReadDir(filepath.Join(root, wire.VerifyHome)); err != nil || len(entries) != 0 {
 		t.Fatalf("fresh verification home = %v, %v", entries, err)
 	}
-}
-
-func FuzzReadFrame(f *testing.F) {
-	var seed bytes.Buffer
-	_ = NewFrameWriter(&seed).Frame(FrameStdout, []byte("hello"))
-	f.Add(seed.Bytes())
-	f.Add([]byte{FrameExit, 0xff, 0xff, 0xff, 0xff})
-	f.Fuzz(func(t *testing.T, data []byte) {
-		kind, payload, err := ReadFrame(bytes.NewReader(data))
-		if err != nil {
-			return
-		}
-		if len(payload) > maxFrame || len(data) < 5+len(payload) {
-			t.Fatalf("frame %d with %d bytes from %d input bytes", kind, len(payload), len(data))
-		}
-		var again bytes.Buffer
-		if err := NewFrameWriter(&again).Frame(kind, payload); err != nil || !bytes.Equal(again.Bytes(), data[:5+len(payload)]) {
-			t.Fatal("frame does not round-trip")
-		}
-	})
 }

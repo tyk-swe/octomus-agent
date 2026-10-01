@@ -7,22 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
-)
-
-// RunnerHomeDirs are where the shared runner state appears inside a runner sandbox's home, with the runner volume
-// subdirectory each one mounts.
-var RunnerHomeDirs = []struct{ Home, Volume string }{
-	{".codex", "codex"},
-	{".local/share/opencode", "opencode/data"},
-	{".config/opencode", "opencode/config"},
-	{".cache/opencode", "opencode/cache"},
-	{".local/state/opencode", "opencode/state"},
-}
-
-const (
-	RunnerHome = "home"
-	VerifyHome = "verify-home"
 )
 
 // PrepareRoot makes the directories a sandbox of this kind mounts inside its owned root. Anything an earlier sandbox
@@ -37,21 +23,21 @@ func PrepareRoot(spec Spec) error {
 	defer root.Close()
 	switch spec.Kind {
 	case KindRunner:
-		if err := plainDirectories(root, RunnerHome); err != nil {
+		if err := plainDirectories(root, wire.RunnerHome); err != nil {
 			return err
 		}
-		for _, dir := range RunnerHomeDirs {
-			if err := plainDirectories(root, filepath.Join(RunnerHome, dir.Home)); err != nil {
+		for _, dir := range wire.RunnerHomeDirs {
+			if err := plainDirectories(root, filepath.Join(wire.RunnerHome, dir.Home)); err != nil {
 				return err
 			}
 		}
 	case KindVerify:
 		if spec.FreshHome {
-			if err := workspace.RemoveOwnedDir(rootPath, filepath.Join(rootPath, VerifyHome)); err != nil {
+			if err := workspace.RemoveOwnedDir(rootPath, filepath.Join(rootPath, wire.VerifyHome)); err != nil {
 				return err
 			}
 		}
-		return plainDirectories(root, VerifyHome)
+		return plainDirectories(root, wire.VerifyHome)
 	}
 	return nil
 }

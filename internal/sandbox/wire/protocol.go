@@ -1,4 +1,6 @@
-package sandbox
+// Package wire is the contract between the control plane and the sandbox broker: the request, the framed stream, the
+// broker's info document and the owned-root layout both sides agree on. It starts nothing.
+package wire
 
 import (
 	"encoding/binary"
@@ -12,6 +14,13 @@ import (
 // UpgradeProtocol names the framed stream a broker switches to after accepting a sandbox request. One stream carries
 // one sandbox for its whole life: when it closes, the broker kills and removes the container.
 const UpgradeProtocol = "octomus-sandbox/1"
+
+// Request.Kind names what a sandbox runs.
+const (
+	KindRunner = "runner"
+	KindVerify = "verify"
+	KindProbe  = "probe"
+)
 
 const (
 	FrameStdin    byte = 1

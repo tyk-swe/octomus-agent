@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // ProbeCheck is one containment property observed from inside a real sandbox.
@@ -72,7 +73,7 @@ func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
 	if backend.Mode() != ModeDocker {
 		return ProbeReport{}, errors.New("The containment probe needs the Docker sandbox")
 	}
-	child, err := backend.Start(ctx, Spec{Kind: KindProbe, Probe: ProbeContainment, Timeout: 120})
+	child, err := backend.Start(ctx, Spec{Kind: KindProbe, Probe: wire.ProbeContainment, Timeout: 120})
 	if err != nil {
 		return ProbeReport{}, err
 	}
@@ -87,12 +88,12 @@ func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
 	if err := json.Unmarshal(out.Stdout.Bytes, &report); err != nil {
 		return ProbeReport{}, fmt.Errorf("Containment probe answered unreadable output: %w", err)
 	}
-	var limits *BrokerLimits
+	var limits *wire.BrokerLimits
 	var limitsErr error = errors.New("the sandbox backend reports no limits")
 	if informed, ok := backend.(interface {
-		Info(context.Context) (BrokerInfo, error)
+		Info(context.Context) (wire.BrokerInfo, error)
 	}); ok {
-		var info BrokerInfo
+		var info wire.BrokerInfo
 		if info, limitsErr = informed.Info(ctx); limitsErr == nil {
 			limits = &info.Limits
 		}
@@ -108,7 +109,7 @@ func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
 // (its cgroup namespace makes that the root of /sys/fs/cgroup), which holds exactly what Docker set from the broker's
 // spec; no ancestor's limit shows there. So a number alone proves nothing (systemd gives every scope a pids limit of
 // its own), and a lower one is some other limit than the broker's: the check passes only when both match.
-func (r *ProbeReport) confirmLimits(want *BrokerLimits, unknown error) {
+func (r *ProbeReport) confirmLimits(want *wire.BrokerLimits, unknown error) {
 	for i := range r.Checks {
 		check := &r.Checks[i]
 		if check.ID != "resource_limits" {

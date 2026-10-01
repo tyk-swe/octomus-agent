@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // probeContainer runs the containment helper in a container the test configures itself, so the probe can be shown
@@ -24,7 +25,7 @@ func probeContainer(t *testing.T, network string, readOnly bool) map[string]sand
 	if readOnly {
 		args = append(args, "--read-only")
 	}
-	args = append(args, "debian:trixie-slim", "/octomus/octomus-agent", "--sandbox-init", sandbox.ProbeContainment)
+	args = append(args, "debian:trixie-slim", "/octomus/octomus-agent", "--sandbox-init", wire.ProbeContainment)
 	var report sandbox.ProbeReport
 	if err := json.Unmarshal([]byte(docker(t, args...)), &report); err != nil {
 		t.Fatal(err)

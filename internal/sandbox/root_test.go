@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // A runner turn owns its home and can chmod any directory in it, including the mount points of the runner volume.
@@ -14,9 +16,9 @@ func TestPrepareRootRestoresDirectoriesASandboxLocked(t *testing.T) {
 	}
 	dir := ownedWorkspace(t)
 	root := filepath.Dir(dir)
-	home := filepath.Join(root, RunnerHome)
+	home := filepath.Join(root, wire.RunnerHome)
 	t.Cleanup(func() {
-		for _, path := range []string{home, filepath.Join(home, ".cache"), filepath.Join(home, ".config"), filepath.Join(root, VerifyHome)} {
+		for _, path := range []string{home, filepath.Join(home, ".cache"), filepath.Join(home, ".config"), filepath.Join(root, wire.VerifyHome)} {
 			_ = os.Chmod(path, 0o700)
 		}
 	})
@@ -54,7 +56,7 @@ func TestPrepareRootRestoresDirectoriesASandboxLocked(t *testing.T) {
 		}
 		prepare()
 	}
-	verifyHome := filepath.Join(root, VerifyHome)
+	verifyHome := filepath.Join(root, wire.VerifyHome)
 	if err := PrepareRoot(Spec{Kind: KindVerify, Dir: dir}); err != nil {
 		t.Fatal(err)
 	}

@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 func serveTestEngine(t *testing.T, handler http.Handler) string {
@@ -110,7 +110,7 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				limit = time.Second
 			}
 			go func() {
-				_, err := b.runSandbox(ctx, plan{kind: sandbox.KindProbe, stdin: true, timeout: limit},
+				_, err := b.runSandbox(ctx, plan{kind: wire.KindProbe, stdin: true, timeout: limit},
 					func([]byte) error { return nil }, func([]byte) error { return nil }, controls)
 				done <- err
 			}()
@@ -131,7 +131,7 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				close(controls)
 			case "kill":
 				select {
-				case controls <- control{signal: sandbox.SignalKill}:
+				case controls <- control{signal: wire.SignalKill}:
 				case <-time.After(2 * time.Second):
 					t.Fatal("kill was blocked behind stdin")
 				}
@@ -201,7 +201,7 @@ func TestShutdownCancelsPreparationAndSweepsSandboxes(t *testing.T) {
 		defer close(requestDone)
 		req, _ := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+"/v1/sandboxes",
 			bytes.NewBufferString(`{"kind":"probe","mode":"versions"}`))
-		req.Header.Set("Upgrade", sandbox.UpgradeProtocol)
+		req.Header.Set("Upgrade", wire.UpgradeProtocol)
 		resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
@@ -312,7 +312,7 @@ func TestPreparedObservesContainerThatExitsDuringStart(t *testing.T) {
 	b := brokerOn(t, socket, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	p := plan{kind: sandbox.KindProbe, timeout: time.Second}
+	p := plan{kind: wire.KindProbe, timeout: time.Second}
 	report, err := b.runSandbox(ctx, p, func([]byte) error { return nil }, func([]byte) error { return nil }, nil)
 	if err != nil || report.Code != 7 || report.Killed {
 		t.Fatalf("quick exit = %+v, %v; want exit code 7", report, err)

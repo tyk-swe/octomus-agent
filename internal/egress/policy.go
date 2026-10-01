@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Rule allows one host, or every subdomain of one (*.example.com), on one port.
@@ -53,9 +53,9 @@ type Policy struct {
 func (p Policy) Allows(kind, host string, port uint16) bool {
 	var rules []Rule
 	switch kind {
-	case sandbox.KindRunner.String():
+	case wire.KindRunner:
 		rules = append(append(rules, p.Model...), p.Build...)
-	case sandbox.KindVerify.String():
+	case wire.KindVerify:
 		rules = p.Build
 	}
 	for _, rule := range rules {

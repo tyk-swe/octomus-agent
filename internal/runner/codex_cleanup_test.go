@@ -16,11 +16,12 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // startBroker answers every sandbox request with an upgraded stream that serve scripts, so runner cleanup and
 // connect failures can be checked against the remote backend without Docker.
-func startBroker(t *testing.T, serve func(out *sandbox.FrameWriter, frames *bufio.Reader)) *sandbox.Remote {
+func startBroker(t *testing.T, serve func(out *wire.FrameWriter, frames *bufio.Reader)) *sandbox.Remote {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "runner-broker-")
 	if err != nil {
@@ -34,7 +35,7 @@ func startBroker(t *testing.T, serve func(out *sandbox.FrameWriter, frames *bufi
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(sandbox.BrokerInfo{Limits: sandbox.BrokerLimits{Max: 2}})
+		_ = json.NewEncoder(w).Encode(wire.BrokerInfo{Limits: wire.BrokerLimits{Max: 2}})
 	})
 	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -45,9 +46,9 @@ func startBroker(t *testing.T, serve func(out *sandbox.FrameWriter, frames *bufi
 		}
 		defer conn.Close()
 		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-		_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + sandbox.UpgradeProtocol + "\r\n\r\n")
+		_, _ = stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + wire.UpgradeProtocol + "\r\n\r\n")
 		_ = stream.Flush()
-		serve(sandbox.NewFrameWriter(conn), stream.Reader)
+		serve(wire.NewFrameWriter(conn), stream.Reader)
 	})
 	server := &http.Server{Handler: mux}
 	go func() { _ = server.Serve(listener) }()
@@ -55,19 +56,19 @@ func startBroker(t *testing.T, serve func(out *sandbox.FrameWriter, frames *bufi
 	return sandbox.NewRemote(socket)
 }
 
-func reportExit(out *sandbox.FrameWriter, report sandbox.ExitReport) {
+func reportExit(out *wire.FrameWriter, report wire.ExitReport) {
 	payload, _ := json.Marshal(report)
-	_ = out.Frame(sandbox.FrameExit, payload)
+	_ = out.Frame(wire.FrameExit, payload)
 }
 
 // awaitKill reads control frames until the client asks for a kill, and reports whether it did.
 func awaitKill(frames *bufio.Reader) bool {
 	for {
-		kind, payload, err := sandbox.ReadFrame(frames)
+		kind, payload, err := wire.ReadFrame(frames)
 		if err != nil {
 			return false
 		}
-		if kind == sandbox.FrameSignal && string(payload) == sandbox.SignalKill {
+		if kind == wire.FrameSignal && string(payload) == wire.SignalKill {
 			return true
 		}
 	}
@@ -95,18 +96,18 @@ func TestCodexCloseDrainsRemoteStdoutForKillEvidence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			outputStarted := make(chan struct{})
-			remote := startBroker(t, func(out *sandbox.FrameWriter, frames *bufio.Reader) {
+			remote := startBroker(t, func(out *wire.FrameWriter, frames *bufio.Reader) {
 				killed := make(chan struct{})
 				go func() {
 					defer close(killed)
 					awaitKill(frames)
 				}()
 				close(outputStarted)
-				if _, err := out.Data(sandbox.FrameStdout, []byte(tc.payload)); err != nil {
+				if _, err := out.Data(wire.FrameStdout, []byte(tc.payload)); err != nil {
 					return
 				}
 				<-killed
-				reportExit(out, sandbox.ExitReport{Killed: true, Sandbox: &model.SandboxRecord{ImageID: "fixture-image", Runs: 1}})
+				reportExit(out, wire.ExitReport{Killed: true, Sandbox: &model.SandboxRecord{ImageID: "fixture-image", Runs: 1}})
 			})
 			child, err := remote.Start(context.Background(), sandbox.Spec{Kind: sandbox.KindProbe, Stdin: true})
 			if err != nil {
@@ -138,13 +139,13 @@ func TestCodexCloseDrainsRemoteStdoutForKillEvidence(t *testing.T) {
 func TestOpenCodeCloseKeepsKillEvidenceBehindUnreadStdout(t *testing.T) {
 	t.Parallel()
 	flooded := make(chan struct{})
-	remote := startBroker(t, func(out *sandbox.FrameWriter, frames *bufio.Reader) {
-		_, _ = out.Data(sandbox.FrameStdout, []byte("OCTOMUS-READY\n"))
+	remote := startBroker(t, func(out *wire.FrameWriter, frames *bufio.Reader) {
+		_, _ = out.Data(wire.FrameStdout, []byte("OCTOMUS-READY\n"))
 		// Bytes a sandbox process wrote into the bridge's stdout: the HTTP/2 client has stopped reading.
-		_, _ = out.Data(sandbox.FrameStdout, []byte("garbage"))
+		_, _ = out.Data(wire.FrameStdout, []byte("garbage"))
 		close(flooded)
 		if awaitKill(frames) {
-			reportExit(out, sandbox.ExitReport{Killed: true, Sandbox: &model.SandboxRecord{ImageID: "fixture-image", Runs: 1,
+			reportExit(out, wire.ExitReport{Killed: true, Sandbox: &model.SandboxRecord{ImageID: "fixture-image", Runs: 1,
 				Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"exfil.example.net:443": 40}}}})
 		}
 	})
@@ -179,8 +180,8 @@ func TestRunnerConnectFailuresKeepWhyTheSandboxEnded(t *testing.T) {
 	cfg := config.Default()
 	cfg.SessionTimeoutSeconds, cfg.CommandTimeoutSeconds = 5, 5
 	// The broker created the container and answered the upgrade, then could not start it.
-	neverStarted := startBroker(t, func(out *sandbox.FrameWriter, _ *bufio.Reader) {
-		reportExit(out, sandbox.ExitReport{Error: failure})
+	neverStarted := startBroker(t, func(out *wire.FrameWriter, _ *bufio.Reader) {
+		reportExit(out, wire.ExitReport{Error: failure})
 	})
 	codex, err := ConnectCodex(context.Background(), cfg, ownedWorkspace(t), nil, "fixture", neverStarted)
 	if codex != nil {
@@ -199,8 +200,8 @@ func TestRunnerConnectFailuresKeepWhyTheSandboxEnded(t *testing.T) {
 		t.Fatalf("OpenCode connect = %v; want the sandbox's own failure", err)
 	}
 	// The stream is lost after readiness: the health check only sees its request fail.
-	lost := startBroker(t, func(out *sandbox.FrameWriter, _ *bufio.Reader) {
-		_, _ = out.Data(sandbox.FrameStdout, []byte("OCTOMUS-READY\n"))
+	lost := startBroker(t, func(out *wire.FrameWriter, _ *bufio.Reader) {
+		_, _ = out.Data(wire.FrameStdout, []byte("OCTOMUS-READY\n"))
 	})
 	opencode, err = ConnectOpenCode(context.Background(), cfg, ownedWorkspace(t), nil, "fixture", lost)
 	if opencode != nil {

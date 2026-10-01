@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // TestRunnerGitIgnoresWhatEarlierTurnsLeftInTheHome holds runner sandboxes' git to the broker's configuration: the
@@ -65,7 +65,7 @@ func TestRunnerGitIgnoresWhatEarlierTurnsLeftInTheHome(t *testing.T) {
 	}
 	cfg := testConfig(t)
 	taskDir := makeRoot(t, cfg, "tasks/"+testUUID, runnerDirs()...)
-	p, err := cfg.plan(sandbox.Request{Kind: "runner", Runner: "codex", Mode: sandbox.RunnerModeStdio, Dir: taskDir, Stdin: true})
+	p, err := cfg.plan(wire.Request{Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true})
 	if err != nil {
 		t.Fatal(err)
 	}

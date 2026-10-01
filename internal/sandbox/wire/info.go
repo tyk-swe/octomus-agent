@@ -1,4 +1,4 @@
-package sandbox
+package wire
 
 // BrokerInfo is what a sandbox broker reports about the isolation it enforces.
 type BrokerInfo struct {

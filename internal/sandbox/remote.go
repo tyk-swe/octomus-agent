@@ -19,6 +19,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Remote runs every untrusted child in a container through the sandbox broker. It never falls back to the host: when
@@ -26,7 +27,7 @@ import (
 type Remote struct {
 	socket string
 	mu     sync.Mutex
-	info   BrokerInfo
+	info   wire.BrokerInfo
 	infoAt time.Time
 	slots  chan struct{}
 	// killWait is how long a kill waits for the broker's exit report: killReportWait outside tests.
@@ -46,7 +47,7 @@ func (r *Remote) dial(ctx context.Context) (net.Conn, error) {
 }
 
 // Info reports the broker's posture, refreshed at most every few seconds.
-func (r *Remote) Info(ctx context.Context) (BrokerInfo, error) {
+func (r *Remote) Info(ctx context.Context) (wire.BrokerInfo, error) {
 	r.mu.Lock()
 	if !r.infoAt.IsZero() && time.Since(r.infoAt) < infoTTL {
 		info := r.info
@@ -60,22 +61,22 @@ func (r *Remote) Info(ctx context.Context) (BrokerInfo, error) {
 	}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://sandboxd/v1/info", nil)
 	if err != nil {
-		return BrokerInfo{}, err
+		return wire.BrokerInfo{}, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return BrokerInfo{}, r.unavailable(err)
+		return wire.BrokerInfo{}, r.unavailable(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return BrokerInfo{}, brokerError(resp)
+		return wire.BrokerInfo{}, brokerError(resp)
 	}
-	var info BrokerInfo
+	var info wire.BrokerInfo
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&info); err != nil {
-		return BrokerInfo{}, fmt.Errorf("Sandbox broker answered unreadable info: %w", err)
+		return wire.BrokerInfo{}, fmt.Errorf("Sandbox broker answered unreadable info: %w", err)
 	}
 	if info.Limits.Max < 1 {
-		return BrokerInfo{}, errors.New("Sandbox broker reported no sandbox capacity")
+		return wire.BrokerInfo{}, errors.New("Sandbox broker reported no sandbox capacity")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -124,11 +125,11 @@ func runnerName(backend config.Backend) string {
 	return "codex"
 }
 
-func (r *Remote) request(spec Spec) Request {
-	req := Request{Kind: spec.Kind.String(), Dir: spec.Dir, Env: spec.Env, Stdin: spec.Stdin, FreshHome: spec.FreshHome, Timeout: spec.Timeout}
+func (r *Remote) request(spec Spec) wire.Request {
+	req := wire.Request{Kind: spec.Kind.String(), Dir: spec.Dir, Env: spec.Env, Stdin: spec.Stdin, FreshHome: spec.FreshHome, Timeout: spec.Timeout}
 	switch spec.Kind {
 	case KindRunner:
-		req.Runner, req.Mode = runnerName(spec.Runner), RunnerModeStdio
+		req.Runner, req.Mode = runnerName(spec.Runner), wire.RunnerModeStdio
 	case KindVerify:
 		req.Command = spec.Command
 	case KindProbe:
@@ -141,7 +142,7 @@ func (r *Remote) Start(ctx context.Context, spec Spec) (Child, error) {
 	return r.start(ctx, spec, r.request(spec))
 }
 
-func (r *Remote) start(ctx context.Context, spec Spec, req Request) (*remoteChild, error) {
+func (r *Remote) start(ctx context.Context, spec Spec, req wire.Request) (*remoteChild, error) {
 	if ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
 	}
@@ -179,7 +180,7 @@ func notStarted(ctx context.Context, err error) error {
 }
 
 // open asks the broker for a sandbox and returns the upgraded stream that is its lifeline.
-func (r *Remote) open(ctx context.Context, req Request) (net.Conn, *bufio.Reader, error) {
+func (r *Remote) open(ctx context.Context, req wire.Request) (net.Conn, *bufio.Reader, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, nil, err
@@ -195,7 +196,7 @@ func (r *Remote) open(ctx context.Context, req Request) (net.Conn, *bufio.Reader
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Connection", "Upgrade")
-	httpReq.Header.Set("Upgrade", UpgradeProtocol)
+	httpReq.Header.Set("Upgrade", wire.UpgradeProtocol)
 	// Creating a container can take a while on a busy host; the stream itself has no deadline once it is up.
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -229,7 +230,7 @@ func (r *Remote) open(ctx context.Context, req Request) (net.Conn, *bufio.Reader
 func (r *Remote) StartOpenCode(ctx context.Context, spec Spec, readinessSeconds uint64) (*OpenCodeServer, error) {
 	spec.Stdin = true
 	req := r.request(spec)
-	req.Mode, req.Readiness = RunnerModeOpenCode, readinessSeconds
+	req.Mode, req.Readiness = wire.RunnerModeOpenCode, readinessSeconds
 	child, err := r.start(ctx, spec, req)
 	if err != nil {
 		return nil, err
@@ -317,12 +318,12 @@ func (r *Remote) RunnerVersion(ctx context.Context, spec Spec, _ uint64) (string
 // remoteChild is one sandbox seen through its broker stream.
 type remoteChild struct {
 	conn   net.Conn
-	out    *FrameWriter
+	out    *wire.FrameWriter
 	stdin  *remoteStdin
 	stdout *io.PipeReader
 	stderr *io.PipeReader
 	done   chan struct{}
-	report ExitReport
+	report wire.ExitReport
 	// lost is why the stream ended without a readable exit report, decided when it ended.
 	lost   error
 	killed atomic.Bool
@@ -335,7 +336,7 @@ type remoteChild struct {
 func newRemoteChild(conn net.Conn, reader *bufio.Reader, sink io.Writer, stdin bool, wait time.Duration, release func()) *remoteChild {
 	stdoutR, stdoutW := io.Pipe()
 	stderrR, stderrW := io.Pipe()
-	c := &remoteChild{conn: conn, out: NewFrameWriter(conn), stdout: stdoutR, stderr: stderrR,
+	c := &remoteChild{conn: conn, out: wire.NewFrameWriter(conn), stdout: stdoutR, stderr: stderrR,
 		done: make(chan struct{}), wait: wait, release: release}
 	if stdin {
 		c.stdin = newRemoteStdin(c)
@@ -352,23 +353,23 @@ func newRemoteChild(conn net.Conn, reader *bufio.Reader, sink io.Writer, stdin b
 		defer stderrW.Close()
 		outBroken, errBroken := false, false
 		for {
-			kind, payload, err := ReadFrame(reader)
+			kind, payload, err := wire.ReadFrame(reader)
 			if err != nil {
 				c.lose(err)
 				return
 			}
 			switch kind {
-			case FrameStdout:
+			case wire.FrameStdout:
 				if !outBroken {
 					_, werr := stdoutW.Write(payload)
 					outBroken = werr != nil
 				}
-			case FrameStderr:
+			case wire.FrameStderr:
 				if !errBroken {
 					_, werr := errSink.Write(payload)
 					errBroken = werr != nil
 				}
-			case FrameExit:
+			case wire.FrameExit:
 				if err := json.Unmarshal(payload, &c.report); err != nil {
 					c.lose(err)
 				}
@@ -430,10 +431,10 @@ func (c *remoteChild) Wait() (process.Status, error) {
 
 func (c *remoteChild) signal(name string) {
 	_ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	_ = c.out.Frame(FrameSignal, []byte(name))
+	_ = c.out.Frame(wire.FrameSignal, []byte(name))
 }
 
-func (c *remoteChild) Terminate() { c.signal(SignalTerminate) }
+func (c *remoteChild) Terminate() { c.signal(wire.SignalTerminate) }
 
 // killReportWait is how long a kill waits for the broker's exit report, which confirms the container is gone and
 // carries the sandbox's evidence. The broker bounds its teardown, removal included, well inside it.
@@ -452,7 +453,7 @@ func (c *remoteChild) Kill() {
 	default:
 		c.stdout.Close()
 		c.stderr.Close()
-		c.signal(SignalKill)
+		c.signal(wire.SignalKill)
 		timer := time.NewTimer(c.wait)
 		select {
 		case <-c.done:
@@ -485,7 +486,7 @@ func newRemoteStdin(child *remoteChild) *remoteStdin {
 		for {
 			select {
 			case data := <-s.queue:
-				if _, err := child.out.Data(FrameStdin, data); err != nil {
+				if _, err := child.out.Data(wire.FrameStdin, data); err != nil {
 					s.failed.Store(&err)
 				}
 			case <-s.closed:
@@ -538,7 +539,7 @@ func (s *remoteStdin) Close() error {
 		case <-s.child.done:
 		}
 		close(s.closed)
-		err = s.child.out.Frame(FrameStdinEOF, nil)
+		err = s.child.out.Frame(wire.FrameStdinEOF, nil)
 	})
 	return err
 }

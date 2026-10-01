@@ -7,6 +7,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // runnerGitConfig replaces the global git configuration of runner sandboxes. The executor, repair and reviewer turns
@@ -29,7 +30,7 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 	user := fmt.Sprintf("%d:%d", c.UID, c.GID)
 	entrypoint, cmd := c.program(p)
 	workdir := p.dir
-	if p.kind == sandbox.KindProbe {
+	if p.kind == wire.KindProbe {
 		workdir = "/tmp"
 	}
 	env := []string{
@@ -40,7 +41,7 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_OPTIONAL_LOCKS=0",
 	}
-	if p.kind == sandbox.KindRunner {
+	if p.kind == wire.KindRunner {
 		env = append(env, "GIT_CONFIG_GLOBAL="+toolsGitConfig)
 	}
 	env = append(env, extraEnv...)
@@ -55,12 +56,12 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 	}
 	network := "none"
 	switch p.kind {
-	case sandbox.KindRunner:
+	case wire.KindRunner:
 		network = c.RunnerNetwork
-	case sandbox.KindVerify:
+	case wire.KindVerify:
 		network = c.VerifyNetwork
-	case sandbox.KindProbe:
-		if p.probe == sandbox.ProbeContainment {
+	case wire.KindProbe:
+		if p.probe == wire.ProbeContainment {
 			network = c.RunnerNetwork
 		}
 		tmpfs[sandboxHome] = fmt.Sprintf("rw,nosuid,nodev,size=%d,uid=%d,gid=%d,mode=0700", 64<<20, c.UID, c.GID)
@@ -72,7 +73,7 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 		Cmd:          cmd,
 		WorkingDir:   workdir,
 		Env:          env,
-		Labels:       map[string]string{instanceLabel: c.Instance, kindLabel: p.kind.String(), rootLabel: p.rel},
+		Labels:       map[string]string{instanceLabel: c.Instance, kindLabel: p.kind, rootLabel: p.rel},
 		AttachStdin:  p.stdin,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -105,13 +106,13 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 
 func (c Config) program(p plan) ([]string, []string) {
 	switch p.kind {
-	case sandbox.KindRunner:
+	case wire.KindRunner:
 		args := sandbox.RunnerArgs(runnerBackend(p.runner))
-		if p.mode == sandbox.RunnerModeOpenCode {
+		if p.mode == wire.RunnerModeOpenCode {
 			return []string{toolsBinary, "--sandbox-init", "opencode", strconv.FormatUint(p.readiness, 10), "--", p.runner}, args
 		}
 		return []string{p.runner}, args
-	case sandbox.KindVerify:
+	case wire.KindVerify:
 		return []string{"bash"}, []string{"-o", "pipefail", "-c", p.command}
 	}
 	return []string{toolsBinary, "--sandbox-init", p.probe}, nil
@@ -124,7 +125,7 @@ func (c Config) mounts(p plan) []engineapi.Mount {
 	}
 	mounts := []engineapi.Mount{{Type: "volume", Source: c.ToolsVolume, Target: toolsMount, ReadOnly: true,
 		VolumeOptions: &engineapi.VolumeOptions{NoCopy: true}}}
-	if p.kind == sandbox.KindProbe {
+	if p.kind == wire.KindProbe {
 		return mounts
 	}
 	mounts = append(mounts, data(filepath.Join(p.rel, "workspace"), p.dir, false))
@@ -137,14 +138,14 @@ func (c Config) mounts(p plan) []engineapi.Mount {
 		)
 	}
 	switch p.kind {
-	case sandbox.KindRunner:
-		mounts = append(mounts, data(filepath.Join(p.rel, sandbox.RunnerHome), sandboxHome, false))
-		for _, dir := range sandbox.RunnerHomeDirs {
+	case wire.KindRunner:
+		mounts = append(mounts, data(filepath.Join(p.rel, wire.RunnerHome), sandboxHome, false))
+		for _, dir := range wire.RunnerHomeDirs {
 			mounts = append(mounts, engineapi.Mount{Type: "volume", Source: c.RunnerVolume,
 				Target: filepath.Join(sandboxHome, dir.Home), VolumeOptions: &engineapi.VolumeOptions{NoCopy: true, Subpath: dir.Volume}})
 		}
-	case sandbox.KindVerify:
-		mounts = append(mounts, data(filepath.Join(p.rel, sandbox.VerifyHome), sandboxHome, false))
+	case wire.KindVerify:
+		mounts = append(mounts, data(filepath.Join(p.rel, wire.VerifyHome), sandboxHome, false))
 	}
 	return mounts
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Kind names what a sandbox runs. The backend, not the caller, chooses the program for each kind.
@@ -27,11 +28,11 @@ const (
 func (k Kind) String() string {
 	switch k {
 	case KindRunner:
-		return "runner"
+		return wire.KindRunner
 	case KindVerify:
-		return "verify"
+		return wire.KindVerify
 	case KindProbe:
-		return "probe"
+		return wire.KindProbe
 	}
 	return "unknown"
 }

@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Integration tests run deterministic runner fixtures inside real sandboxes. They read and write a fixture directory
@@ -15,7 +15,7 @@ import (
 func init() {
 	fixtureMounts = func(p plan) ([]engineapi.Mount, []string) {
 		volume, path := os.Getenv("OCTOMUS_SANDBOX_FIXTURE_VOLUME"), os.Getenv("OCTOMUS_SANDBOX_FIXTURE_PATH")
-		if volume == "" || !filepath.IsAbs(path) || p.kind == sandbox.KindProbe && p.probe != sandbox.ProbeVersions {
+		if volume == "" || !filepath.IsAbs(path) || p.kind == wire.KindProbe && p.probe != wire.ProbeVersions {
 			return nil, nil
 		}
 		return []engineapi.Mount{{Type: "volume", Source: volume, Target: path, VolumeOptions: &engineapi.VolumeOptions{NoCopy: true}}},

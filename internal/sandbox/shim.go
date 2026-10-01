@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // RunInit is the helper the broker installs into every sandbox (octomus-agent --sandbox-init). It runs inside the
@@ -29,9 +31,9 @@ func RunInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "opencode":
 		return runOpenCodeBridge(args[1:], stdin, stdout, stderr)
-	case ProbeVersions:
+	case wire.ProbeVersions:
 		return printVersions(stdout, stderr)
-	case ProbeContainment:
+	case wire.ProbeContainment:
 		return runContainmentProbe(stdout)
 	}
 	fmt.Fprintf(stderr, "Error: unknown --sandbox-init mode %q\n", args[0])

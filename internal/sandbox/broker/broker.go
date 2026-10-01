@@ -27,8 +27,8 @@ import (
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // isolatedGateway is the bridge option that gives an internal network no address on the host, so sandboxes cannot
@@ -42,7 +42,7 @@ const isolatedGatewayAPI = "1.48"
 type Broker struct {
 	cfg    Config
 	engine *engineapi.Client
-	info   sandbox.BrokerInfo
+	info   wire.BrokerInfo
 	// slots admits sandboxes up to the limit. A sandbox gives its slot back only once its removal is confirmed.
 	slots   chan struct{}
 	leases  *leases
@@ -125,7 +125,7 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 			return nil, fmt.Errorf("Sandbox volume %s: %w", name, err)
 		}
 	}
-	for _, dir := range sandbox.RunnerHomeDirs {
+	for _, dir := range wire.RunnerHomeDirs {
 		if err := os.MkdirAll(filepath.Join(cfg.RunnerDir, dir.Volume), 0o700); err != nil {
 			return nil, fmt.Errorf("Preparing the runner state volume: %w", err)
 		}
@@ -133,7 +133,7 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	if err := installTools(executable, cfg.ToolsDir); err != nil {
 		return nil, fmt.Errorf("Installing the sandbox helper: %w", err)
 	}
-	b.info = sandbox.BrokerInfo{
+	b.info = wire.BrokerInfo{
 		Version:       octomus.Version,
 		DockerVersion: version.Version,
 		APIVersion:    version.APIVersion,
@@ -141,10 +141,10 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		ImageID:       image.ID,
 		ImageDigests:  image.RepoDigests,
 		Runtime:       cfg.Runtime,
-		Limits: sandbox.BrokerLimits{
+		Limits: wire.BrokerLimits{
 			NanoCPUs: cfg.NanoCPUs, Memory: cfg.Memory, Pids: cfg.Pids, Tmpfs: cfg.Tmpfs, Max: cfg.Max, MaxSeconds: cfg.MaxSeconds,
 		},
-		Networks: sandbox.BrokerNetworks{Runner: cfg.RunnerNetwork, Verify: cfg.VerifyNetwork},
+		Networks: wire.BrokerNetworks{Runner: cfg.RunnerNetwork, Verify: cfg.VerifyNetwork},
 		Egress:   cfg.EgressProxy != "",
 	}
 	versions, err := b.probeVersions(ctx, image.ID)
@@ -308,7 +308,7 @@ func (b *Broker) sweep(ctx context.Context) error {
 }
 
 func (b *Broker) probeVersions(ctx context.Context, image string) (map[string]string, error) {
-	p, err := b.cfg.plan(sandbox.Request{Kind: sandbox.KindProbe.String(), Mode: sandbox.ProbeVersions, Timeout: 120})
+	p, err := b.cfg.plan(wire.Request{Kind: wire.KindProbe, Mode: wire.ProbeVersions, Timeout: 120})
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +341,7 @@ func (b *Broker) probeVersions(ctx context.Context, image string) (map[string]st
 }
 
 // Info is what the broker serves the control plane about itself.
-func (b *Broker) Info() sandbox.BrokerInfo {
+func (b *Broker) Info() wire.BrokerInfo {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	info := b.info
@@ -477,11 +477,11 @@ func (b *Broker) handleSandbox(base context.Context, w http.ResponseWriter, r *h
 	refuse := func(status int, message string) {
 		writeJSON(w, status, map[string]string{"error": message})
 	}
-	if !strings.EqualFold(r.Header.Get("Upgrade"), sandbox.UpgradeProtocol) {
-		refuse(http.StatusUpgradeRequired, "Sandbox requests must upgrade to "+sandbox.UpgradeProtocol)
+	if !strings.EqualFold(r.Header.Get("Upgrade"), wire.UpgradeProtocol) {
+		refuse(http.StatusUpgradeRequired, "Sandbox requests must upgrade to "+wire.UpgradeProtocol)
 		return
 	}
-	var req sandbox.Request
+	var req wire.Request
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
@@ -525,7 +525,7 @@ func (b *Broker) handleSandbox(base context.Context, w http.ResponseWriter, r *h
 	}
 	defer conn.Close()
 	if _, err := stream.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " +
-		sandbox.UpgradeProtocol + "\r\n\r\n"); err != nil || stream.Flush() != nil {
+		wire.UpgradeProtocol + "\r\n\r\n"); err != nil || stream.Flush() != nil {
 		prepared.discard()
 		return
 	}
@@ -561,11 +561,11 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 	name := fmt.Sprintf("octomus-%s-%s-%s", b.cfg.Instance, p.kind, hex.EncodeToString(suffix[:]))
 	var extraEnv []string
 	lease := ""
-	if b.leases != nil && (p.kind != sandbox.KindProbe || p.probe == sandbox.ProbeContainment) {
+	if b.leases != nil && (p.kind != wire.KindProbe || p.probe == wire.ProbeContainment) {
 		// The containment probe proves what the gateway refuses a runner sandbox, so it holds a runner's lease.
 		kind := p.kind
-		if kind == sandbox.KindProbe {
-			kind = sandbox.KindRunner
+		if kind == wire.KindProbe {
+			kind = wire.KindRunner
 		}
 		token, err := b.leases.grant(name, kind)
 		if err != nil {
@@ -742,7 +742,7 @@ type ending struct {
 // execute starts a prepared container and pumps it until it exits, the time limit passes or the control source
 // ends, then tears it down within teardownBudget. It always removes the container, or leaves it to a reaper; a
 // report with an Error and no kill means the broker cannot vouch for how the sandbox ended.
-func (s *prepared) execute(ctx context.Context, timeout time.Duration, out output, controls <-chan control) (sandbox.ExitReport, error) {
+func (s *prepared) execute(ctx context.Context, timeout time.Duration, out output, controls <-chan control) (wire.ExitReport, error) {
 	b := s.b
 	input := make(chan control)
 	stopInput, inputDone := make(chan struct{}), make(chan struct{})
@@ -777,15 +777,15 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 	// Draining closes the attach stream, which also ends a blocked stdin write.
 	truncated, outErr := s.drain(end, attached, out, within)
 	<-inputDone
-	var report sandbox.ExitReport
+	var report wire.ExitReport
 	var failure error
 	switch {
 	case end.cut:
-		report = sandbox.ExitReport{Killed: true, Error: streamClosed}
+		report = wire.ExitReport{Killed: true, Error: streamClosed}
 	case end.err != nil:
 		failure = end.err
 	default:
-		report = sandbox.ExitReport{Killed: end.killed, Error: end.reason}
+		report = wire.ExitReport{Killed: end.killed, Error: end.reason}
 		oom := false
 		if end.result != nil {
 			report.Code = end.result.StatusCode
@@ -899,11 +899,11 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 				}
 				pendingInput = append(pendingInput, msg)
 				pendingBytes += len(msg.stdin)
-			case msg.signal == sandbox.SignalTerminate:
+			case msg.signal == wire.SignalTerminate:
 				termCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = b.engine.ContainerKill(termCtx, s.id, "SIGTERM")
 				cancel()
-			case msg.signal == sandbox.SignalKill:
+			case msg.signal == wire.SignalKill:
 				kill("")
 			}
 		}
@@ -1003,10 +1003,10 @@ func (b *Broker) evidence(name, image string, oom bool) *model.SandboxRecord {
 }
 
 // runSandbox runs a plan to completion without a control-plane stream, for the broker's own probes.
-func (b *Broker) runSandbox(ctx context.Context, p plan, stdout, stderr func([]byte) error, controls <-chan control) (sandbox.ExitReport, error) {
+func (b *Broker) runSandbox(ctx context.Context, p plan, stdout, stderr func([]byte) error, controls <-chan control) (wire.ExitReport, error) {
 	prepared, err := b.prepare(ctx, ctx, p, func() {})
 	if err != nil {
-		return sandbox.ExitReport{}, err
+		return wire.ExitReport{}, err
 	}
 	if controls == nil {
 		controls = make(chan control)
@@ -1036,29 +1036,29 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 // the container is killed and removed.
 func (b *Broker) stream(ctx context.Context, s *prepared, p plan, conn net.Conn, reader *bufio.Reader) {
 	written := &streamWriter{conn: conn}
-	out := sandbox.NewFrameWriter(written)
+	out := wire.NewFrameWriter(written)
 	controls := make(chan control)
 	lifeline, cut := context.WithCancel(ctx)
 	defer cut()
 	go func() {
 		defer cut()
 		for {
-			kind, payload, err := sandbox.ReadFrame(reader)
+			kind, payload, err := wire.ReadFrame(reader)
 			if err != nil {
 				return
 			}
 			var msg control
 			switch kind {
-			case sandbox.FrameStdin:
+			case wire.FrameStdin:
 				if !p.stdin {
 					continue
 				}
 				msg.stdin = payload
-			case sandbox.FrameStdinEOF:
+			case wire.FrameStdinEOF:
 				msg.eof = true
-			case sandbox.FrameSignal:
+			case wire.FrameSignal:
 				msg.signal = string(payload)
-				if msg.signal != sandbox.SignalTerminate && msg.signal != sandbox.SignalKill {
+				if msg.signal != wire.SignalTerminate && msg.signal != wire.SignalKill {
 					continue
 				}
 			default:
@@ -1077,15 +1077,15 @@ func (b *Broker) stream(ctx context.Context, s *prepared, p plan, conn net.Conn,
 			return err
 		}
 	}
-	report, err := s.execute(lifeline, p.timeout, output{stdout: forward(sandbox.FrameStdout), stderr: forward(sandbox.FrameStderr),
+	report, err := s.execute(lifeline, p.timeout, output{stdout: forward(wire.FrameStdout), stderr: forward(wire.FrameStderr),
 		interrupt: func() { _ = conn.SetWriteDeadline(time.Now()) }}, controls)
 	if err != nil {
-		report = sandbox.ExitReport{Error: err.Error()}
+		report = wire.ExitReport{Error: err.Error()}
 	}
 	if lifeline.Err() != nil && report.Error == streamClosed || written.failed.Load() {
 		return
 	}
 	payload, _ := json.Marshal(report)
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	_ = out.Frame(sandbox.FrameExit, payload)
+	_ = out.Frame(wire.FrameExit, payload)
 }

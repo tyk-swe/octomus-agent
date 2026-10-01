@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 func discard([]byte) error { return nil }
@@ -22,7 +23,7 @@ func TestCreateWarningsRefuseTheSandbox(t *testing.T) {
 	b := e.broker(t, testConfig(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := b.runSandbox(ctx, plan{kind: sandbox.KindProbe, probe: sandbox.ProbeVersions, timeout: time.Minute}, discard, discard, nil)
+	_, err := b.runSandbox(ctx, plan{kind: wire.KindProbe, probe: wire.ProbeVersions, timeout: time.Minute}, discard, discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "swap limit") {
 		t.Fatalf("create with a dropped limit = %v; want a refusal naming the warning", err)
 	}
@@ -46,7 +47,7 @@ func TestClientGivingUpDuringCreateLeavesNoContainer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan error, 1)
 	go func() {
-		_, err := remote.Start(ctx, sandbox.Spec{Kind: sandbox.KindProbe, Probe: sandbox.ProbeVersions})
+		_, err := remote.Start(ctx, sandbox.Spec{Kind: sandbox.KindProbe, Probe: wire.ProbeVersions})
 		started <- err
 	}()
 	select {
@@ -94,11 +95,11 @@ func TestContainmentProbeHoldsARunnerLease(t *testing.T) {
 	b.leases = &leases{dir: cfg.LeaseDir}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := b.runSandbox(ctx, plan{kind: sandbox.KindProbe, probe: sandbox.ProbeContainment, timeout: time.Minute}, discard, discard, nil); err != nil {
+	if _, err := b.runSandbox(ctx, plan{kind: wire.KindProbe, probe: wire.ProbeContainment, timeout: time.Minute}, discard, discard, nil); err != nil {
 		t.Fatal(err)
 	}
 	// The probe proves what the gateway refuses a runner sandbox; a lease of its own kind matches no allowlist.
-	if kind := <-kinds; kind != sandbox.KindRunner.String() {
+	if kind := <-kinds; kind != wire.KindRunner {
 		t.Fatalf("containment probe lease kind = %q; want runner", kind)
 	}
 }

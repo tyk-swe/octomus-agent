@@ -15,13 +15,13 @@ import (
 // leases are the egress gateway's record of which proxy credential belongs to which live sandbox.
 type leases struct{ dir string }
 
-func (l *leases) grant(name string, kind sandbox.Kind) (string, error) {
+func (l *leases) grant(name, kind string) (string, error) {
 	var secret [32]byte
 	if _, err := rand.Read(secret[:]); err != nil {
 		return "", err
 	}
 	token := hex.EncodeToString(secret[:])
-	data, err := json.Marshal(sandbox.Lease{Sandbox: name, Kind: kind.String()})
+	data, err := json.Marshal(sandbox.Lease{Sandbox: name, Kind: kind})
 	if err != nil {
 		return "", err
 	}

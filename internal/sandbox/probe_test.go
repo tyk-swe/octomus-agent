@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 const (
@@ -211,14 +213,14 @@ func TestConfirmLimitsHoldsTheProbeToTheBrokersLimits(t *testing.T) {
 			Limits: ProbeLimits{Memory: memory, Pids: pids},
 		}
 	}
-	want := &BrokerLimits{Memory: 256 << 20, Pids: 256}
+	want := &wire.BrokerLimits{Memory: 256 << 20, Pids: 256}
 	page := int64(os.Getpagesize())
-	unaligned := &BrokerLimits{Memory: 256<<20 + page/2, Pids: 256}
-	large := &BrokerLimits{Memory: 256 << 20, Pids: 32768}
+	unaligned := &wire.BrokerLimits{Memory: 256<<20 + page/2, Pids: 256}
+	large := &wire.BrokerLimits{Memory: 256 << 20, Pids: 32768}
 	cases := []struct {
 		name         string
 		memory, pids string
-		want         *BrokerLimits
+		want         *wire.BrokerLimits
 		passed       bool
 		detail       string
 	}{
@@ -230,7 +232,7 @@ func TestConfirmLimitsHoldsTheProbeToTheBrokersLimits(t *testing.T) {
 			"memory.max " + strconv.FormatInt(256<<20-page, 10) + ", configured 268435456"},
 		{"no memory limit", "max", "256", want, false, "memory.max max, not a numeric limit"},
 		{"unreadable pids limit", "268435456", "unreadable", want, false, "pids.max unreadable, not a numeric limit"},
-		{"no configured pids limit", "268435456", "256", &BrokerLimits{Memory: 256 << 20}, false,
+		{"no configured pids limit", "268435456", "256", &wire.BrokerLimits{Memory: 256 << 20}, false,
 			"pids.max 256, but the broker reports no configured limit"},
 		{"unknown broker limits", "268435456", "256", nil, false, "the broker's configured limits are unknown: broker gone"},
 	}
