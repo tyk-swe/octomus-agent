@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise deployment setup with offline Docker and ownership fixtures, and the shipped compose file's rendering."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -145,10 +146,39 @@ def render(env_file):
         return json.loads(result.stdout)
 
 
+def login_lease_matches_the_broker(service):
+    """Run login-lease's script against scratch directories: it must write the lease the broker writes
+    (internal/sandbox/lease.go: sha256(token).json holding {sandbox, kind}) and revoke the previous login's."""
+    assert service['entrypoint'][:2] == ['/bin/sh', '-euc'], service['entrypoint']
+    with tempfile.TemporaryDirectory(prefix='octomus-lease-') as directory:
+        leases, login = Path(directory) / 'egress', Path(directory) / 'login'
+        leases.mkdir()
+        login.mkdir()
+        script = (service['entrypoint'][2].replace('$$', '$')
+                  .replace('/run/octomus-egress', str(leases)).replace('/run/octomus-login', str(login)))
+
+        def issue():
+            subprocess.run(['sh', '-euc', script], check=True, timeout=10)
+            proxy = (login / 'proxy').read_text().strip()
+            prefix, suffix = 'http://sandbox:', '@egress:3128'
+            assert proxy.startswith(prefix) and proxy.endswith(suffix), proxy
+            token = proxy[len(prefix):-len(suffix)]
+            assert len(token) == 64 and set(token) <= set('0123456789abcdef'), token
+            lease = leases / (hashlib.sha256(token.encode()).hexdigest() + '.json')
+            assert json.loads(lease.read_text()) == {'sandbox': 'login', 'kind': 'runner'}, lease.read_text()
+            for path in [lease, login / 'proxy']:
+                assert path.stat().st_mode & 0o777 == 0o600, path
+            return lease
+        first = issue()
+        second = issue()
+        assert first != second and [path.name for path in leases.glob('*.json')] == [second.name], list(leases.iterdir())
+
+
 def compose_contract():
+    """Returns whether the contract ran: it needs the docker compose plugin to render the file."""
     if subprocess.run(['docker', 'compose', 'version'], capture_output=True).returncode != 0:
         print('SKIP compose contract: docker compose is not installed')
-        return
+        return False
     example = (PROJECT / 'deploy/docker/env.example').read_text()
     required = 'OCTOMUS_GITHUB_REPO=owner/repository\nDOCKER_GID=999\n'
     config = render(example + required)
@@ -168,12 +198,15 @@ def compose_contract():
     assert mounted == {'codex', 'opencode/data'}, mounted
     assert all(mount['source'] != 'egress-state' for mount in login['volumes']), login['volumes']
     assert login['read_only'] and login['cap_drop'] == ['ALL'], login
+    login_lease_matches_the_broker(services['login-lease'])
     for name, service in services.items():
         if name != 'egress':
             assert 'egress-out' not in service.get('networks', {}), f'{name} reaches the internet directly'
 
-    # Building never retags the operator's derived sandbox image.
+    # Building never retags the operator's derived sandbox image, and a missing image is never pulled.
     assert 'build' not in login, login
+    for name in ['login', 'login-lease']:
+        assert services[name].get('pull_policy') == 'never', f'{name} would pull a missing image'
     assert services['sandbox-image']['image'] == 'octomus-sandbox:local', services['sandbox-image']
     derived = render(example + required + 'OCTOMUS_SANDBOX_IMAGE=my-sandbox:go\n')['services']
     assert derived['login']['image'] == 'my-sandbox:go' and derived['sandbox-image']['image'] == 'octomus-sandbox:local'
@@ -183,6 +216,7 @@ def compose_contract():
     assert hosts(required + 'OCTOMUS_EGRESS_MODEL_HOSTS=\n') == '', 'a blank model allowlist was widened'
     assert hosts(required) == 'chatgpt.com,auth.openai.com,api.openai.com'
     assert hosts(required + 'OCTOMUS_EGRESS_MODEL_HOSTS=models.opencode.ai\n') == 'models.opencode.ai'
+    return True
 
 
 def main():
@@ -192,8 +226,10 @@ def main():
     setup_keeps_a_new_token_when_startup_fails()
     setup_asks_for_github_first_and_restores_echo()
     setup_tunnel_uses_the_published_port()
-    compose_contract()
-    print('PASS Docker setup: secret ownership, token display, terminal echo, tunnel port and the compose contract')
+    checked = 'secret ownership, token display, terminal echo, tunnel port'
+    if compose_contract():
+        checked += ' and the compose contract'
+    print(f'PASS Docker setup: {checked}')
 
 
 if __name__ == '__main__':

@@ -136,6 +136,8 @@ services:
   login-lease:
     <<: *hardened
     image: ${OCTOMUS_IMAGE:-octomus-agent:local}
+    # Like the broker, tool services use only images already on this host and never pull one.
+    pull_policy: never
     profiles: [tools]
     restart: "no"
     network_mode: none
@@ -159,6 +161,7 @@ services:
 
   login:
     image: ${OCTOMUS_SANDBOX_IMAGE:-octomus-sandbox:local}
+    pull_policy: never
     profiles: [tools]
     user: "10001:10001"
     read_only: true
