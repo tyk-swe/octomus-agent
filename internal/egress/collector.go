@@ -13,10 +13,12 @@ import (
 
 // Summary is what one sandbox did through the gateway, kept until the broker collects it. Denied holds policy
 // refusals; Failed holds allowlisted hosts the gateway could not reach (DNS, upstream, or the tunnel bound).
+// GatewayStarted is when this gateway began counting: it never saw what a sandbox leased before then did.
 type Summary struct {
-	Allowed map[string]HostCount `json:"allowed"`
-	Denied  map[string]HostCount `json:"denied"`
-	Failed  map[string]HostCount `json:"failed"`
+	Allowed        map[string]HostCount `json:"allowed"`
+	Denied         map[string]HostCount `json:"denied"`
+	Failed         map[string]HostCount `json:"failed"`
+	GatewayStarted time.Time            `json:"gateway_started"`
 }
 
 type HostCount struct {
@@ -28,17 +30,20 @@ func emptySummary() Summary {
 	return Summary{Allowed: map[string]HostCount{}, Denied: map[string]HostCount{}, Failed: map[string]HostCount{}}
 }
 
-// Collect returns and forgets what a finished sandbox did.
+// Collect returns and forgets what a finished sandbox did. A sandbox it has no entry for made no connection since
+// the gateway started.
 func (g *Gateway) Collect(sandboxName string) Summary {
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
 	entry := g.stats[sandboxName]
 	delete(g.stats, sandboxName)
 	g.collected[sandboxName] = g.now()
-	if entry == nil {
-		return emptySummary()
+	summary := emptySummary()
+	if entry != nil {
+		summary = entry.summary
 	}
-	return entry.summary
+	summary.GatewayStarted = g.started
+	return summary
 }
 
 // SummaryPath is where the collector answers for one sandbox, named by its "sandbox" query parameter.

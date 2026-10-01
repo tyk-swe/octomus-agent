@@ -59,6 +59,7 @@ func TestLeasesClearKeepsOnlyOtherFiles(t *testing.T) {
 
 func TestFetchSummaryReadsTheCollector(t *testing.T) {
 	g := New(Policy{}, t.TempDir(), io.Discard)
+	g.started = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "api.openai.com", Port: 443, Decision: "allowed", BytesUp: 7}, "lease")
 	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "example.com", Port: 443, Decision: "denied"}, "lease")
 	g.countDecision(Decision{Sandbox: "octomus-test-runner", Host: "example.org", Port: 443, Decision: "failed"}, "lease")
@@ -72,11 +73,15 @@ func TestFetchSummaryReadsTheCollector(t *testing.T) {
 		Allowed: map[string]HostCount{"api.openai.com:443": {Count: 1, Bytes: 7}},
 		Denied:  map[string]HostCount{"example.com:443": {Count: 1}},
 		Failed:  map[string]HostCount{"example.org:443": {Count: 1}},
+		// The broker tells a sandbox that made no connection from one a restarted gateway never saw by it.
+		GatewayStarted: g.started,
 	}
 	if err != nil || !reflect.DeepEqual(summary, want) {
 		t.Fatalf("summary = %+v, %v; want %+v", summary, err, want)
 	}
-	if again, err := FetchSummary(ctx, socket, "octomus-test-runner"); err != nil || !reflect.DeepEqual(again, emptySummary()) {
+	empty := emptySummary()
+	empty.GatewayStarted = g.started
+	if again, err := FetchSummary(ctx, socket, "octomus-test-runner"); err != nil || !reflect.DeepEqual(again, empty) {
 		t.Fatalf("second collection = %+v, %v; want it empty", again, err)
 	}
 	if _, err := FetchSummary(ctx, socket, ""); err == nil || err.Error() != "400 Bad Request" {

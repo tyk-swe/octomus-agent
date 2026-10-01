@@ -95,3 +95,17 @@ func TestSandboxRecordsWithoutEgressFailuresStillLoad(t *testing.T) {
 		t.Fatalf("round trip = %+v, %v", again, err)
 	}
 }
+
+func TestIncompleteSandboxEvidenceIsKeptThroughMerges(t *testing.T) {
+	t.Parallel()
+	var record model.SandboxRecord
+	saved := `{"image_id":"sha256:image","runtime":"","runs":1,"oom":false,"egress":{"allowed":{},"denied":{},"failed":{}}}`
+	if err := wirejson.DecodeRecord([]byte(saved), &record); err != nil || record.Incomplete {
+		t.Fatalf("record saved before lost evidence was marked = %+v, %v", record, err)
+	}
+	merged := model.MergeSandbox(&record, &model.SandboxRecord{ImageID: "sha256:image", Runs: 1, Incomplete: true})
+	merged = model.MergeSandbox(merged, run(false, nil, nil))
+	if !merged.Incomplete || merged.Runs != 3 {
+		t.Fatalf("a run whose evidence was lost no longer marks the record = %+v", merged)
+	}
+}

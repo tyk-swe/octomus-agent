@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/egress"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
@@ -254,17 +257,59 @@ func TestSandboxThatFailsAfterItStartedKeepsItsRecord(t *testing.T) {
 	}
 }
 
-func TestUnreadableEgressRecordIsLogged(t *testing.T) {
-	e := newFakeEngine(t)
-	cfg := testConfig(t)
-	cfg.EgressCollector = filepath.Join(t.TempDir(), "missing.sock")
-	log := &testutil.SyncBuffer{}
-	cfg.Log = log
-	report, err := e.broker(t, cfg).runSandbox(context.Background(), probePlan(time.Minute), discard, discard, nil)
-	if err != nil || report.Sandbox == nil {
-		t.Fatalf("sandbox = %+v, %v", report, err)
+func TestLostEvidenceMarksTheRecordIncomplete(t *testing.T) {
+	gateway := func(t *testing.T, listener net.Listener) {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		g := egress.New(egress.Policy{}, t.TempDir(), io.Discard)
+		go func() { _ = g.ServeCollector(ctx, listener) }()
 	}
-	if !strings.Contains(log.String(), "egress record of sandbox") {
-		t.Fatalf("broker log = %q; want the lost egress record noted", log.String())
+	// The containment probe holds an egress lease, as every agent and verification sandbox does.
+	run := func(t *testing.T, e *fakeEngine, collector string) (*model.SandboxRecord, string) {
+		t.Helper()
+		cfg := testConfig(t)
+		cfg.LeaseDir, cfg.EgressProxy, cfg.EgressCollector = t.TempDir(), "egress:3128", collector
+		log := &testutil.SyncBuffer{}
+		cfg.Log = log
+		report, err := e.broker(t, cfg).runSandbox(context.Background(),
+			plan{kind: wire.KindProbe, probe: wire.ProbeContainment, timeout: time.Minute}, discard, discard, nil)
+		if err != nil || report.Sandbox == nil {
+			t.Fatalf("sandbox = %+v, %v", report, err)
+		}
+		return report.Sandbox, log.String()
 	}
+	t.Run("complete", func(t *testing.T) {
+		listener, socket := testutil.ListenUnix(t, "collector.sock")
+		gateway(t, listener)
+		if record, log := run(t, newFakeEngine(t), socket); record.Incomplete {
+			t.Fatalf("record read in full = %+v (log %q); want it complete", record, log)
+		}
+	})
+	t.Run("collector unreachable", func(t *testing.T) {
+		record, log := run(t, newFakeEngine(t), filepath.Join(t.TempDir(), "missing.sock"))
+		if !record.Incomplete || !strings.Contains(log, "egress record of sandbox") {
+			t.Fatalf("record without its egress = %+v (log %q); want it marked incomplete and logged", record, log)
+		}
+	})
+	t.Run("gateway restarted", func(t *testing.T) {
+		listener, socket := testutil.ListenUnix(t, "collector.sock")
+		e := newFakeEngine(t)
+		// The gateway that answers started while the sandbox ran: what came before is lost to it.
+		e.run = func(c *fakeContainer) {
+			gateway(t, listener)
+			c.End(0)
+		}
+		if record, log := run(t, e, socket); !record.Incomplete || !strings.Contains(log, "restarted") {
+			t.Fatalf("record from a restarted gateway = %+v (log %q); want it marked incomplete", record, log)
+		}
+	})
+	t.Run("state unreadable", func(t *testing.T) {
+		listener, socket := testutil.ListenUnix(t, "collector.sock")
+		gateway(t, listener)
+		e := newFakeEngine(t)
+		e.inspectStatus = http.StatusInternalServerError
+		if record, log := run(t, e, socket); !record.Incomplete || record.OOM {
+			t.Fatalf("record without the memory state = %+v (log %q); want it marked incomplete", record, log)
+		}
+	})
 }

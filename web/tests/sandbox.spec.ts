@@ -125,9 +125,12 @@ test('task details show each session sandbox and the egress it was refused', asy
   await expect(record.locator('.badge.failed')).toHaveText('example.com:443 ×2');
   await expect(record.locator('.badge.blocked')).toHaveText('registry.npmjs.org:443 ×1');
   await expect(record).toContainText('api.openai.com:443 ×14');
+  await expect(record).not.toContainText('record incomplete');
   await page.getByRole('tab', { name: 'Verification' }).click();
   const verification = page.getByLabel('Sandbox record').first();
   await expect(verification).toContainText('proxy.golang.org:443 ×5');
+  // The broker could not read all of this command's record, so its short host list proves nothing.
+  await expect(verification).toContainText('record incomplete');
   await expect(verification.locator('.badge.failed')).toHaveCount(0);
   await expect(verification.locator('.badge.blocked')).toHaveCount(0);
 });

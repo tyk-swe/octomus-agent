@@ -53,6 +53,8 @@ type fakeEngine struct {
 	waitDelay time.Duration
 	// waitStatus, when set, is how the daemon answers every wait at once.
 	waitStatus int
+	// inspectStatus, when set, is how the daemon answers every container inspection.
+	inspectStatus int
 	// removeDelay is how long a removal takes; Docker refuses a second removal meanwhile.
 	removeDelay time.Duration
 }
@@ -406,6 +408,10 @@ func (e *fakeEngine) mux() http.Handler {
 	mux.HandleFunc("GET "+prefix+"/containers/{id}/json", func(w http.ResponseWriter, r *http.Request) {
 		c := found(w, r)
 		if c == nil {
+			return
+		}
+		if e.inspectStatus != 0 {
+			refuse(w, e.inspectStatus, "fixture inspection failure")
 			return
 		}
 		c.mu.Lock()

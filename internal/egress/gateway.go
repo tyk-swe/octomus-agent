@@ -41,6 +41,9 @@ type Gateway struct {
 	running   sync.WaitGroup
 	tunnelIDs atomic.Uint64
 	now       func() time.Time
+	// started is when the gateway began counting; summaries carry it so the broker can tell a sandbox that made no
+	// connection from one whose connections a restarted gateway never saw.
+	started time.Time
 
 	perBox        int
 	halfCloseIdle time.Duration
@@ -91,6 +94,7 @@ func New(policy Policy, leaseDir string, log io.Writer) *Gateway {
 		open:          map[string]int{},
 		tunnels:       map[*tunnel]struct{}{},
 		now:           time.Now,
+		started:       time.Now(),
 		perBox:        maxTunnelsPerSandbox,
 		halfCloseIdle: halfCloseIdle,
 		lifetime:      maxTunnelLifetime,

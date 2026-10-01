@@ -18,12 +18,14 @@ import (
 
 // prepared is a created container with its attach stream already registered, not yet started.
 type prepared struct {
-	b      *Broker
-	id     string
-	name   string
-	image  string
-	lease  string
-	attach *engineapi.Attached
+	b     *Broker
+	id    string
+	name  string
+	image string
+	lease string
+	// granted is when the egress lease was granted: a gateway that started later never saw all of the sandbox.
+	granted time.Time
+	attach  *engineapi.Attached
 	// release gives the sandbox's admission slot back, once its removal is confirmed.
 	release func()
 	once    sync.Once
@@ -44,13 +46,14 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 	_, _ = rand.Read(suffix[:])
 	name := fmt.Sprintf("octomus-%s-%s-%s", b.cfg.Instance, p.kind, hex.EncodeToString(suffix[:]))
 	var extraEnv []string
-	lease := ""
+	lease, granted := "", time.Time{}
 	if b.leases != nil && (p.kind != wire.KindProbe || p.probe == wire.ProbeContainment) {
 		// The containment probe proves what the gateway refuses a runner sandbox, so it holds a runner's lease.
 		kind := p.kind
 		if kind == wire.KindProbe {
 			kind = wire.KindRunner
 		}
+		granted = time.Now()
 		token, err := b.leases.Grant(name, kind)
 		if err != nil {
 			release()
@@ -83,7 +86,7 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 	b.mu.Lock()
 	b.live[id] = p.rel
 	b.mu.Unlock()
-	s := &prepared{b: b, id: id, name: name, image: spec.Image, lease: lease, release: release}
+	s := &prepared{b: b, id: id, name: name, image: spec.Image, lease: lease, granted: granted, release: release}
 	if len(warnings) > 0 {
 		// Docker drops a limit the host cannot enforce and only warns; every limit in the spec is part of the boundary.
 		s.discard()
@@ -144,7 +147,6 @@ type ending struct {
 // report with an Error and no kill means the broker cannot vouch for how the sandbox ended. With a failure, the report
 // still carries the evidence of a sandbox that had started.
 func (s *prepared) execute(ctx context.Context, timeout time.Duration, out output, controls <-chan control) (wire.ExitReport, error) {
-	b := s.b
 	input := make(chan control)
 	stopInput, inputDone := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -187,19 +189,19 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 		failure = end.err
 		if end.started {
 			// The program ran before the sandbox failed, so what it did is still on record.
-			report.Sandbox = b.evidence(s.name, s.image, s.oomKilled(within(5*time.Second)))
+			report.Sandbox = s.evidence(s.oomKilled(within(5 * time.Second)))
 		}
 	default:
 		report = wire.ExitReport{Killed: end.killed, Error: end.reason}
-		oom := false
+		oom, known := false, true
 		if end.result != nil {
 			report.Code = end.result.StatusCode
-			oom = s.oomKilled(within(5 * time.Second))
+			oom, known = s.oomKilled(within(5 * time.Second))
 		}
 		// Docker marks a container OOM-killed when the kernel killed any process in it. The evidence keeps that; the
 		// status says the memory limit ended the command only when the command failed.
 		report.OOM = oom && report.Code != 0
-		report.Sandbox = b.evidence(s.name, s.image, oom)
+		report.Sandbox = s.evidence(oom, known)
 		switch {
 		case end.killed:
 		case truncated:
@@ -360,30 +362,38 @@ func (s *prepared) drain(end ending, attached <-chan error, out output, within f
 	return true, nil
 }
 
-// oomKilled reports whether the kernel killed any process in the sandbox for memory.
-func (s *prepared) oomKilled(wait time.Duration) bool {
+// oomKilled reports whether the kernel killed any process in the sandbox for memory, and whether the daemon said.
+func (s *prepared) oomKilled(wait time.Duration) (killed, known bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	state, err := s.b.engine.ContainerInspect(ctx, s.id)
 	if err != nil {
-		s.b.logf("Reading the state of sandbox %s failed; a memory-limit kill would go unrecorded: %v", s.name, err)
-		return false
+		s.b.logf("Reading the state of sandbox %s failed; its record is marked incomplete: %v", s.name, err)
+		return false, false
 	}
-	return state.State.OOMKilled
+	return state.State.OOMKilled, true
 }
 
-// evidence records what one finished sandbox ran and, when the gateway is configured, where it reached out.
-func (b *Broker) evidence(name, image string, oom bool) *model.SandboxRecord {
-	record := &model.SandboxRecord{ImageID: image, Runtime: b.cfg.Runtime, Runs: 1, OOM: oom,
+// evidence records what one finished sandbox ran and, when it held an egress lease, where it reached out. What the
+// broker could not read leaves the record marked incomplete rather than reading as nothing.
+func (s *prepared) evidence(oom, oomKnown bool) *model.SandboxRecord {
+	b := s.b
+	record := &model.SandboxRecord{ImageID: s.image, Runtime: b.cfg.Runtime, Runs: 1, OOM: oom, Incomplete: !oomKnown,
 		Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{}}}
-	if b.cfg.EgressCollector == "" {
+	if b.cfg.EgressCollector == "" || s.lease == "" {
 		return record
 	}
 	// The gateway counts accepted tunnels immediately, even when upstream connections are still closing.
-	summary, err := egress.FetchSummary(context.Background(), b.cfg.EgressCollector, name)
+	summary, err := egress.FetchSummary(context.Background(), b.cfg.EgressCollector, s.name)
 	if err != nil {
-		b.logf("Reading the egress record of sandbox %s failed; its record shows no connections: %v", name, err)
+		b.logf("Reading the egress record of sandbox %s failed; its record is marked incomplete: %v", s.name, err)
+		record.Incomplete = true
 		return record
+	}
+	if summary.GatewayStarted.IsZero() || summary.GatewayStarted.After(s.granted) {
+		// A gateway that started after the lease lost whatever the sandbox did before then.
+		b.logf("The egress gateway restarted while sandbox %s ran; its record is marked incomplete", s.name)
+		record.Incomplete = true
 	}
 	for host, count := range summary.Allowed {
 		record.Egress.Allowed[host] = uint64(count.Count)

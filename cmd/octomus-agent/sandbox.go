@@ -90,7 +90,11 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 		if err != nil {
 			return err
 		}
-		go func() { _ = gateway.ServeCollector(ctx, socket) }()
+		go func() {
+			if err := gateway.ServeCollector(ctx, socket); err != nil {
+				fmt.Fprintf(stderr, "Octomus egress collector stopped; the broker marks sandbox records incomplete until the gateway restarts: %v\n", err)
+			}
+		}()
 	}
 	described := policy.Describe()
 	fmt.Fprintf(stderr, "Octomus egress gateway on %s; model hosts %v; build hosts %v\n", listen, described["model"], described["build"])

@@ -18,7 +18,13 @@
       <code>{shortImage(record.image_id)}</code>{record.runtime
         ? ` · ${record.runtime}`
         : ''}{#if record.oom}
-        · <strong class="sandbox-oom">stopped by the memory limit</strong>{/if}
+        · <strong class="sandbox-oom">stopped by the memory limit</strong
+        >{/if}{#if record.incomplete}
+        · <strong
+          class="sandbox-oom"
+          title="The broker could not read all of this record: egress may be missing, and a memory-limit kill would not show."
+          >record incomplete</strong
+        >{/if}
     </p>
     {#if denied.length}<p class="sandbox-hosts">
         <span>Blocked egress</span>

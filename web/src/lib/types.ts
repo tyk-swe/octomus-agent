@@ -107,6 +107,7 @@ export type SandboxRecord = {
   runtime: string;
   runs: number;
   oom: boolean;
+  incomplete: boolean;
   egress: SandboxEgress;
 };
 export type Session = {

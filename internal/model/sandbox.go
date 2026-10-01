@@ -7,13 +7,17 @@ import (
 )
 
 // SandboxRecord is what the sandboxes behind one session or command did: the image they ran, how many there were,
-// whether a memory limit stopped one, and which hosts the egress gateway let them reach, refused or could not reach.
+// whether the memory limit killed a process in one, and which hosts the egress gateway let them reach, refused or
+// could not reach. Incomplete is set when the broker could not read all of that for one of them (its egress record
+// or its memory state), so empty host lists or no OOM do not prove nothing happened; records saved before it existed
+// read as complete.
 type SandboxRecord struct {
-	ImageID string        `json:"image_id"`
-	Runtime string        `json:"runtime"`
-	Runs    uint64        `json:"runs"`
-	OOM     bool          `json:"oom"`
-	Egress  SandboxEgress `json:"egress"`
+	ImageID    string        `json:"image_id"`
+	Runtime    string        `json:"runtime"`
+	Runs       uint64        `json:"runs"`
+	OOM        bool          `json:"oom"`
+	Incomplete bool          `json:"incomplete" wire:"default"`
+	Egress     SandboxEgress `json:"egress"`
 }
 
 func (v *SandboxRecord) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
@@ -63,6 +67,7 @@ func MergeSandbox(into *SandboxRecord, run *SandboxRecord) *SandboxRecord {
 	}
 	merged.Runs += run.Runs
 	merged.OOM = merged.OOM || run.OOM
+	merged.Incomplete = merged.Incomplete || run.Incomplete
 	addHosts(merged.Egress.Allowed, run.Egress.Allowed)
 	addHosts(merged.Egress.Denied, run.Egress.Denied)
 	addHosts(merged.Egress.Failed, run.Egress.Failed)

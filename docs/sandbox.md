@@ -104,6 +104,12 @@ A refused host is often the first sign of prompt injection, or of a registry mis
 `OCTOMUS_EGRESS_BUILD_HOSTS`. An allowlisted host the gateway could not reach (a failed
 lookup or connection, or too many open tunnels) is listed apart, as unreachable.
 
+When the broker could not read part of a sandbox's record, the record is marked
+**incomplete**: the gateway's count was unreachable or lost to a gateway restart, or
+Docker did not say whether the memory limit killed a process. Empty host lists in an
+incomplete record do not mean the sandbox made no connections; `docker compose logs
+egress` may still hold them.
+
 Host names come from untrusted code, so they stay in private task records and the
 dashboard. They are never part of exported [run evidence](run-evidence.md). Planning
 sessions and baseline commands carry the same record.
