@@ -188,12 +188,17 @@ func (r *Runners) Client(backend config.Backend, cwd string) (Adapter, error) {
 }
 
 // Release stops every open runner while keeping the checked catalogs, so nothing a runner started outlives the turn
-// it served. The next request starts a fresh runner.
+// it served. The next request starts a fresh runner. A sandbox that failed as it closed, such as one whose end the
+// broker could not confirm, makes the runner unavailable, as one that failed to start does.
 func (r *Runners) Release() error {
 	errs := []error{}
 	for backend, client := range r.clients {
 		delete(r.clients, backend)
-		errs = append(errs, client.adapter.Close())
+		err := client.adapter.Close()
+		if sandbox.Infrastructure(err) {
+			err = unavailable(err)
+		}
+		errs = append(errs, err)
 		if evidenced, ok := client.adapter.(interface{ SandboxEvidence() *model.SandboxRecord }); ok {
 			r.evidence = model.MergeSandbox(r.evidence, evidenced.SandboxEvidence())
 		}

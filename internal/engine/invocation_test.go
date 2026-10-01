@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"golang.org/x/sys/unix"
 )
@@ -406,6 +408,26 @@ func TestExecutorCleanupFailureBlocksPublication(t *testing.T) {
 	}
 	if len(script.Turns(routes.Reviewer)) != 0 || saved.OutputCommit != nil || saved.PRNumber != nil {
 		t.Fatalf("task reached review or publication after failed cleanup: %+v", saved)
+	}
+}
+
+func TestSandboxFailureClosingARunnerBlocksAsRunnerUnavailable(t *testing.T) {
+	t.Parallel()
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	routes, script := fixture.routes, fixture.script
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature.txt", Effect: func(cwd string) error {
+		// The broker did not confirm the end of the executor's sandbox once its turn was over.
+		script.FailClose(routes.Executor.Backend, &sandbox.SandboxError{Err: errors.New("Sandbox end is unconfirmed")})
+		return writeFile("feature.txt", "fixed output\n")(cwd)
+	}})
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	saveExecutionTask(t, fixture.planningFixture, task)
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonRunnerUnavailable {
+		t.Fatalf("sandbox failure on release = %+v; want the task blocked as runner_unavailable", saved)
+	}
+	if actions := saved.AllowedActions(); !slices.Contains(actions, "retry") || !slices.Contains(actions, "supersede") {
+		t.Fatalf("actions after a sandbox failure on release = %v; want retry and supersede", actions)
 	}
 }
 
