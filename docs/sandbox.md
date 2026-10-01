@@ -90,11 +90,11 @@ control plane or broker.
 Task details show a sandbox record for every session and verification command:
 - how many containers it ran in, and the image;
 - whether the memory limit stopped one;
-- the hosts the gateway let it reach, those it refused, and allowlisted hosts it could not
-  reach (a failed lookup or connection, or too many open tunnels), with counts.
+- the hosts the gateway let it reach, and those it refused, with counts.
 
 A refused host is often the first sign of prompt injection, or of a registry missing from
-`OCTOMUS_EGRESS_BUILD_HOSTS`.
+`OCTOMUS_EGRESS_BUILD_HOSTS`. An allowlisted host the gateway could not reach (a failed
+lookup or connection, or too many open tunnels) is listed apart, as unreachable.
 
 Host names come from untrusted code, so they stay in private task records and the
 dashboard. They are never part of exported [run evidence](run-evidence.md). Planning
