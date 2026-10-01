@@ -418,7 +418,12 @@ func (b *Broker) prepare(ctx, base context.Context, p plan) (*prepared, error) {
 	var extraEnv []string
 	lease := ""
 	if b.leases != nil && (p.kind != sandbox.KindProbe || p.probe == sandbox.ProbeContainment) {
-		token, err := b.leases.grant(name, p.kind)
+		// The containment probe proves what the gateway refuses a runner sandbox, so it holds a runner's lease.
+		kind := p.kind
+		if kind == sandbox.KindProbe {
+			kind = sandbox.KindRunner
+		}
+		token, err := b.leases.grant(name, kind)
 		if err != nil {
 			return nil, fmt.Errorf("Granting the sandbox egress lease: %w", err)
 		}

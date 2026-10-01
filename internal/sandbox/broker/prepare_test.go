@@ -2,7 +2,10 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -64,5 +67,38 @@ func TestClientGivingUpDuringCreateLeavesNoContainer(t *testing.T) {
 				len(e.Created()), e.Remaining(), b.Info().Live, len(b.slots))
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestContainmentProbeHoldsARunnerLease(t *testing.T) {
+	e := newFakeEngine(t)
+	cfg := testConfig(t)
+	cfg.LeaseDir, cfg.EgressProxy = t.TempDir(), "egress:3128"
+	kinds := make(chan string, 1)
+	e.run = func(c *fakeContainer) {
+		kind := "no lease"
+		for _, entry := range c.Spec.Env {
+			if proxy, ok := strings.CutPrefix(entry, "HTTPS_PROXY=http://"+sandbox.ProxyUser+":"); ok {
+				token, _, _ := strings.Cut(proxy, "@")
+				var lease sandbox.Lease
+				data, err := os.ReadFile(filepath.Join(cfg.LeaseDir, sandbox.LeaseFile(token)))
+				if err == nil && json.Unmarshal(data, &lease) == nil {
+					kind = lease.Kind
+				}
+			}
+		}
+		kinds <- kind
+		c.End(0)
+	}
+	b := e.broker(t, cfg)
+	b.leases = &leases{dir: cfg.LeaseDir}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := b.runSandbox(ctx, plan{kind: sandbox.KindProbe, probe: sandbox.ProbeContainment, timeout: time.Minute}, discard, discard, nil); err != nil {
+		t.Fatal(err)
+	}
+	// The probe proves what the gateway refuses a runner sandbox; a lease of its own kind matches no allowlist.
+	if kind := <-kinds; kind != sandbox.KindRunner.String() {
+		t.Fatalf("containment probe lease kind = %q; want runner", kind)
 	}
 }
