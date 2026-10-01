@@ -259,12 +259,27 @@ func (c *Client) ContainerKill(ctx context.Context, id, signal string) error {
 	return c.do(ctx, http.MethodPost, path("/containers/%s/kill", id)+"?signal="+url.QueryEscape(signal), nil, nil)
 }
 
+// ContainerRemove force-removes a container, by ID or name, with its anonymous volumes, and returns once it is gone.
+// Named volumes are never removed. A removal already in progress elsewhere is waited for, not reported as a failure.
 func (c *Client) ContainerRemove(ctx context.Context, id string) error {
-	err := c.do(ctx, http.MethodDelete, path("/containers/%s", id)+"?force=1&v=0", nil, nil)
+	err := c.do(ctx, http.MethodDelete, path("/containers/%s", id)+"?force=1&v=1", nil, nil)
 	if IsNotFound(err) {
 		return nil
 	}
-	return err
+	var engine *Error
+	if !errors.As(err, &engine) || engine.Status != http.StatusConflict || !strings.Contains(engine.Message, "already in progress") {
+		return err
+	}
+	for delay := 50 * time.Millisecond; ; delay = min(2*delay, time.Second) {
+		if _, err := c.ContainerInspect(ctx, id); IsNotFound(err) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("Waiting for the removal of container %s: %w", id, ctx.Err())
+		case <-time.After(delay):
+		}
+	}
 }
 
 type ContainerState struct {

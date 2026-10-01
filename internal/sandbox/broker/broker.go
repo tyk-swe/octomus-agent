@@ -56,8 +56,8 @@ func runnerBackend(name string) config.Backend {
 	return config.BackendCodex
 }
 
-// New checks the daemon, image, networks and volumes, installs the broker's executable for sandboxes and removes any
-// sandbox a previous broker left behind. It refuses to serve a deployment that would weaken isolation.
+// New removes any sandbox a previous broker left behind, checks the daemon, image, networks and volumes and installs
+// the broker's executable for sandboxes. It refuses to serve a deployment that would weaken isolation.
 func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	b := &Broker{
 		cfg:     cfg,
@@ -76,6 +76,11 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	if !apiAtLeast(version.APIVersion, isolatedGatewayAPI) {
 		return nil, fmt.Errorf("Docker Engine API %s is older than %s; sandboxes need Docker Engine 28 or later to isolate their networks from the host",
 			version.APIVersion, isolatedGatewayAPI)
+	}
+	// Leftovers go first: their time limits died with the previous broker, so a start that any later check refuses
+	// must not leave them running with live egress leases.
+	if err := b.sweep(ctx); err != nil {
+		return nil, err
 	}
 	image, err := b.engine.ImageInspect(ctx, cfg.Image)
 	if err != nil {
@@ -108,9 +113,6 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	}
 	if err := installTools(executable, cfg.ToolsDir); err != nil {
 		return nil, fmt.Errorf("Installing the sandbox helper: %w", err)
-	}
-	if err := b.sweep(ctx); err != nil {
-		return nil, err
 	}
 	b.info = sandbox.BrokerInfo{
 		Version:       octomus.Version,
@@ -180,24 +182,28 @@ func installTools(executable, dir string) error {
 }
 
 // sweep removes sandboxes this instance left behind. Only containers carrying this broker's instance label are ever
-// touched; everything else on the host is not the broker's to manage.
+// touched; everything else on the host is not the broker's to manage. One failure does not stop the rest, and every
+// egress lease is cleared even then: no sandbox an earlier broker started keeps its way out.
 func (b *Broker) sweep(ctx context.Context) error {
+	var errs []error
 	containers, err := b.engine.ContainerList(ctx, map[string]string{instanceLabel: b.cfg.Instance})
 	if err != nil {
-		return fmt.Errorf("Listing leftover sandboxes: %w", err)
+		errs = append(errs, fmt.Errorf("Listing leftover sandboxes: %w", err))
 	}
 	for _, container := range containers {
 		if container.Labels[instanceLabel] != b.cfg.Instance {
 			continue
 		}
 		if err := b.engine.ContainerRemove(ctx, container.ID); err != nil {
-			return fmt.Errorf("Removing leftover sandbox %s: %w", container.ID, err)
+			errs = append(errs, fmt.Errorf("Removing leftover sandbox %s: %w", container.ID, err))
 		}
 	}
 	if b.leases != nil {
-		return b.leases.clear()
+		if err := b.leases.clear(); err != nil {
+			errs = append(errs, fmt.Errorf("Clearing egress leases: %w", err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (b *Broker) probeVersions(ctx context.Context) (map[string]string, error) {

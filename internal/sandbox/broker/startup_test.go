@@ -56,3 +56,25 @@ func TestStartupAlwaysRequiresIsolatedGateways(t *testing.T) {
 		t.Fatalf("plain internal networks = %v; want a refusal whatever the environment says", err)
 	}
 }
+
+func TestStartupSweepsLeftoversBeforeAnyPreconditionCanFail(t *testing.T) {
+	e := newFakeEngine(t)
+	cfg, executable := startupConfig(t, e)
+	e.leftover("octomus-octomus-runner-left", cfg.Instance)
+	e.leftover("someone-elses", "other")
+	lease := filepath.Join(cfg.LeaseDir, "0123.json")
+	if err := os.WriteFile(lease, []byte(`{"sandbox":"octomus-octomus-runner-left","kind":"runner"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The image tag was pruned while the previous broker's sandboxes still ran.
+	delete(e.images, cfg.Image)
+	if _, err := New(context.Background(), cfg, executable); err == nil || !strings.Contains(err.Error(), "not available locally") {
+		t.Fatalf("missing image = %v", err)
+	}
+	if remaining := e.Remaining(); len(remaining) != 1 || remaining[0] != "someone-elses" {
+		t.Fatalf("containers after a refused start = %v; want only the one this broker does not own", remaining)
+	}
+	if _, err := os.Stat(lease); !os.IsNotExist(err) {
+		t.Fatalf("a leftover egress lease survived a refused start: %v", err)
+	}
+}
