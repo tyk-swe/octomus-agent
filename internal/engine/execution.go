@@ -428,37 +428,41 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	return review, nil
 }
 
-// reviewDiffLimit bounds the diff a review prompt carries; past it the prompt carries the changed files only.
-const reviewDiffLimit = 256 << 10
+// The review prompt carries the trusted change set within these bounds: the diff whole or not at all, and the file
+// list cut at a line.
+const (
+	reviewDiffLimit = 64 << 10
+	reviewStatLimit = 16 << 10
+)
 
-// changeSet is a revision's change set as the orchestrator's trusted git shows it: the --stat summary, and the whole
-// diff unless omitted says why it is not included.
+// changeSet is a revision's change set as the orchestrator's trusted git shows it: the --stat file list, and the
+// whole diff unless diffTooLarge says it exceeds reviewDiffLimit.
 type changeSet struct {
-	stat, diff, omitted string
+	stat, diff   string
+	diffTooLarge bool
 }
 
 // trustedChangeSet reads the change set from base to revision with the orchestrator's git against the trusted
-// metadata. The fresh reviewer's own git runs in a sandbox whose home and runner configuration earlier turns of the
-// task could change, so it must not be the only account of what changed.
+// metadata, as text whatever attributes a sandbox left in the work tree and whatever bytes the files hold. The fresh
+// reviewer's own git runs in a sandbox whose home and runner configuration earlier turns of the task could change,
+// so it must not be the only account of what changed.
 func trustedChangeSet(ctx context.Context, cfg config.Config, ws, base, revision string) (changeSet, error) {
-	args := []string{"-c", "core.quotePath=true", "diff", "--no-color", "--no-ext-diff", "--no-textconv"}
-	stat, err := gitops.WorkGit(ctx, cfg, ws, append(slices.Clone(args), "--stat=200", base, revision))
+	stat, complete, err := gitops.DiffText(ctx, cfg, ws, []string{"--stat=200", base, revision}, reviewStatLimit)
 	if err != nil {
 		return changeSet{}, err
 	}
-	if len(stat) > reviewDiffLimit {
-		stat = stat[:reviewDiffLimit] + "\n[file list cut at " + strconv.Itoa(reviewDiffLimit) + " bytes]"
+	if !complete {
+		stat = stat[:strings.LastIndexByte(stat, '\n')+1] + "[file list cut at " + strconv.Itoa(reviewStatLimit) + " bytes]"
 	}
-	set := changeSet{stat: stat}
-	diff, err := gitops.WorkGit(ctx, cfg, ws, append(slices.Clone(args), base, revision))
-	switch {
-	case err != nil:
-		// A diff too large to capture, or not UTF-8, still leaves the reviewer the file list.
-		set.omitted = "the orchestrator could not read it as text: " + redact.Text(err.Error())
-	case len(diff) > reviewDiffLimit:
-		set.omitted = "it exceeds " + strconv.Itoa(reviewDiffLimit) + " bytes"
-	default:
-		set.diff = diff
+	set := changeSet{stat: strings.TrimRight(stat, "\n")}
+	diff, complete, err := gitops.DiffText(ctx, cfg, ws, []string{base, revision}, reviewDiffLimit)
+	if err != nil {
+		return changeSet{}, err
+	}
+	if complete {
+		set.diff = strings.TrimRight(diff, "\n")
+	} else {
+		set.diffTooLarge = true
 	}
 	return set, nil
 }
@@ -473,9 +477,9 @@ func reviewPrompt(task *model.Task, revision string, trusted changeSet) string {
 	prompt += "\nThe orchestrator's own git computed this change set. Git inside your sandbox reads configuration and shell startup files earlier turns could change, " +
 		"so wherever its output differs from what follows, what follows is authoritative and the difference is itself a finding.\n" +
 		fmt.Sprintf("Changed files (git diff --stat %s %s):\n%s\n", task.ComparisonBase, revision, trusted.stat)
-	if trusted.omitted != "" {
-		return prompt + fmt.Sprintf("The complete diff is not included because %s: read it with git diff %s HEAD and check it against the files above.",
-			trusted.omitted, task.ComparisonBase)
+	if trusted.diffTooLarge {
+		return prompt + fmt.Sprintf("The complete diff is too large to embed (over %d bytes): read it with git diff %s HEAD and check it against the files above.",
+			reviewDiffLimit, task.ComparisonBase)
 	}
 	return prompt + "Complete diff:\n" + trusted.diff
 }

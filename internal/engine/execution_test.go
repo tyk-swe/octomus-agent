@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1245,5 +1246,134 @@ func TestExecutionDeliversFullLifecycleViaOpenCode(t *testing.T) {
 	used, err := fixture.state.SessionsToday()
 	if err != nil || used != 6 {
 		t.Fatalf("opencode admissions = %d, want 6 (executor + 3 reviewers + 2 repairs)", used)
+	}
+}
+
+// changeSetClone is an owned clone, in the split layout, of a fresh repository holding files, and the revision it
+// starts at.
+func changeSetClone(t *testing.T, files map[string]string) (config.Config, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	repo := filepath.Join(root, "repository")
+	git(t, root, "init", "--initial-branch=main", repo)
+	git(t, repo, "config", "user.name", "Fixture")
+	git(t, repo, "config", "user.email", "fixture@example.com")
+	writeTree(t, repo, files)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "Initial fixture")
+	git(t, repo, "remote", "add", "origin", "https://github.com/fixture/project.git")
+	cfg := testConfig(repo)
+	cfg.CommandTimeoutSeconds = 30
+	base := git(t, repo, "rev-parse", "HEAD")
+	ws := filepath.Join(root, "task", "workspace")
+	if err := gitops.CloneAt(context.Background(), cfg, ws, base); err != nil {
+		t.Fatal(err)
+	}
+	return cfg, ws, base
+}
+
+func writeTree(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// An executor can leave attribute files that ignore themselves, so they are never committed and the work tree reads
+// as clean, and commit files that are not UTF-8. Neither may hide a change from the trusted change set.
+func TestTrustedChangeSetShowsEveryChangeAsText(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg, ws, base := changeSetClone(t, map[string]string{"app.js": "one();\n", "lib/util.js": "util();\n"})
+	writeTree(t, ws, map[string]string{
+		"app.js":             "one();\nevil();\n",
+		".gitignore":         "/.gitignore\n/.gitattributes\n",
+		".gitattributes":     "* -diff\n",
+		"sub/.gitignore":     ".gitignore\n.gitattributes\n",
+		"sub/.gitattributes": "* -diff\n",
+		"sub/lib.c":          "hidden();\n",
+		// A committed attribute file is part of the change set, but it does not hide the files beside it either.
+		"lib/.gitattributes": "* -diff\n",
+		"lib/util.js":        "util();\nalso();\n",
+		"NOTES.txt":          "caf\xe9\n",
+		// Only content marks a file binary for the stat; the diff shows it as text all the same.
+		"blob.bin": "a\x00b\n",
+	})
+	revision, err := gitops.Snapshot(ctx, cfg, ws, "Hide the change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean, err := gitops.WorkGit(ctx, cfg, ws, []string{"status", "--porcelain"}); err != nil || clean != "" {
+		t.Fatalf("work tree after the snapshot = %q, %v; want it clean with the attribute files ignored", clean, err)
+	}
+	// Git on the work tree, as before, takes every changed file for binary.
+	if hidden, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--no-ext-diff", "--no-textconv", "--text", "--stat", base, revision}); err != nil ||
+		!strings.Contains(hidden, "Bin 7 -> 15 bytes") {
+		t.Fatalf("work-tree stat = %q, %v; want the planted attributes in effect", hidden, err)
+	}
+	set, err := trustedChangeSet(ctx, cfg, ws, base, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"app.js", "sub/lib.c", "lib/util.js", "lib/.gitattributes", "NOTES.txt"} {
+		if !regexp.MustCompile(`(?m)^ ` + regexp.QuoteMeta(file) + ` +\| +1 \+$`).MatchString(set.stat) {
+			t.Fatalf("trusted stat lacks one added line in %s:\n%s", file, set.stat)
+		}
+	}
+	if !regexp.MustCompile(`(?m)^ blob\.bin +\| Bin 0 -> 4 bytes$`).MatchString(set.stat) {
+		t.Fatalf("trusted stat does not mark the file holding NUL binary:\n%s", set.stat)
+	}
+	for _, want := range []string{"+evil();", "+hidden();", "+also();", "+* -diff", "+caf\uFFFD\n", "+a\uFFFDb\n"} {
+		if set.diffTooLarge || !strings.Contains(set.diff, want) {
+			t.Fatalf("trusted diff lacks %q:\n%s", want, set.diff)
+		}
+	}
+	if strings.Count(set.stat, "Bin") != 1 || strings.Contains(set.diff, "Binary files") || !utf8.ValidString(set.diff) {
+		t.Fatalf("trusted change set shows a binary change or is not UTF-8:\n%s\n%s", set.stat, set.diff)
+	}
+}
+
+// The prompt embeds the diff only within its budget; past it, the bounded file list says what changed.
+func TestTrustedChangeSetKeepsTheReviewPromptWithinItsBudget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg, ws, base := changeSetClone(t, map[string]string{"README.md": "fixture\n"})
+	writeTree(t, ws, map[string]string{"small.txt": strings.Repeat("line\n", 100)})
+	small, err := gitops.Snapshot(ctx, cfg, ws, "Small change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set, err := trustedChangeSet(ctx, cfg, ws, base, small); err != nil || set.diffTooLarge || !strings.Contains(set.diff, "+line") {
+		t.Fatalf("small change set = %+v, %v; want its diff embedded", set, err)
+	}
+	files := map[string]string{}
+	for i := range 200 {
+		files[fmt.Sprintf("generated/%s-%03d.txt", strings.Repeat("n", 80), i)] = strings.Repeat("generated line\n", 30)
+	}
+	writeTree(t, ws, files)
+	large, err := gitops.Snapshot(ctx, cfg, ws, "Large change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := trustedChangeSet(ctx, cfg, ws, base, large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "\n[file list cut at 16384 bytes]"
+	listed := strings.Split(strings.TrimSuffix(set.stat, marker), "\n")
+	if !set.diffTooLarge || set.diff != "" || !strings.HasSuffix(set.stat, marker) || len(set.stat) > reviewStatLimit+len(marker) ||
+		!regexp.MustCompile(`^ generated/n+-\d{3}\.txt \|  30 \++$`).MatchString(listed[len(listed)-1]) {
+		t.Fatalf("large change set: diff left out %v, %d diff bytes, stat of %d bytes:\n%s", set.diffTooLarge, len(set.diff), len(set.stat), set.stat)
+	}
+	task, _ := promptTask()
+	prompt := reviewPrompt(task, large, set)
+	if len(prompt) > reviewStatLimit+4096 || !strings.Contains(prompt, "The complete diff is too large to embed (over 65536 bytes)") {
+		t.Fatalf("review prompt of %d bytes for a large change set:\n%s", len(prompt), prompt)
 	}
 }

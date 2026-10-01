@@ -79,13 +79,14 @@ threads resume from the runner session store (below), not from a live process. T
 share the task's home, so what one leaves there, shell startup files included, reaches the
 next; only git's own per-user configuration in it is ignored. Because what a turn leaves
 can still change what git shows inside the next one, the fresh reviewer's prompt also
-carries the change set as Octomus's own git reads it from the trusted metadata: the
-changed files always, the complete diff up to 256 KiB, authoritative over what git in its
-sandbox shows. Each
-verification run starts from a fresh clone of exactly the reviewed commit, so nothing an
-agent left beside it can influence the result. Each verification command gets a fresh
-sandbox. Commands in one verification run share a home directory, so `npm ci` in one
-command can serve `npm test` in the next. The home starts empty at every new run.
+carries the change set as Octomus's own git reads it from the trusted metadata, as text
+whatever attribute files the work tree holds: the changed files always (their list cut at
+16 KiB), and the complete diff when it fits in 64 KiB. That account is authoritative over
+what git in the reviewer's sandbox shows; a larger diff the reviewer reads there and checks
+against the file list. Each verification run starts from a fresh clone of exactly the
+reviewed commit, so nothing an agent left beside it can influence the result. Each
+verification command gets a fresh sandbox. Commands in one verification run share a home
+directory, so `npm ci` in one command can serve `npm test` in the next. The home starts empty at every new run.
 When the sandbox rather than the command fails (the broker refuses or loses the command,
 or cannot confirm how it ended), the command has no result. The task is blocked as
 `runner_unavailable` for a retry, with no verification record and no repair round spent,

@@ -485,6 +485,29 @@ func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 	}
 }
 
+// Text for a reader keeps what is readable of output that is not UTF-8, within its limit, but a failed command still
+// fails.
+func TestTextCaptureReplacesWhatIsNotTextAndStopsAtItsLimit(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	ctx := context.Background()
+	write := func(script string, limit int) (string, bool, error) {
+		return process.RunTextEnv(ctx, "python3", []string{"-c", "import sys; sys.stdout.buffer.write(" + script + ")"}, tmp, 10, nil, limit)
+	}
+	if text, complete, err := write(`b"caf\xe9 \x00 ok\n"`, 64); err != nil || !complete || text != "caf� � ok\n" {
+		t.Fatalf("text = %q, %v, %v; want invalid bytes and NUL replaced", text, complete, err)
+	}
+	if text, complete, err := write(`"abé".encode() * 4`, 7); err != nil || complete || text != "abéab" {
+		t.Fatalf("text past its limit = %q, %v, %v; want it cut at a character", text, complete, err)
+	}
+	if text, complete, err := write(`b"x" * 300000`, 1<<20); err != nil || complete || len(text) != process.DiagnosticLimit {
+		t.Fatalf("text past the capture = %d bytes, %v, %v; want the capture's limit", len(text), complete, err)
+	}
+	if _, _, err := process.RunTextEnv(ctx, "python3", []string{"-c", "print('partial'); raise SystemExit(3)"}, tmp, 10, nil, 64); err == nil {
+		t.Fatal("a failed command must fail")
+	}
+}
+
 func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()

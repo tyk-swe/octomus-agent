@@ -650,6 +650,29 @@ func machineResult(binary string, output *ProcessOutput, err error) (string, err
 	return string(output.Stdout.Bytes), nil
 }
 
+// RunTextEnv is RunMachineEnv for output a reader is shown rather than a program parses. Bytes that are not UTF-8, and
+// NUL, read as U+FFFD instead of failing the command. It returns at most limit bytes of that text (limit is at most
+// DiagnosticLimit), and complete reports whether that was all of it.
+func RunTextEnv(ctx context.Context, binary string, args []string, cwd string, seconds uint64, env []string, limit int) (text string, complete bool, err error) {
+	output, err := CaptureEnv(ctx, binary, args, cwd, seconds, CaptureDiagnostic, env)
+	if err != nil {
+		return "", false, err
+	}
+	if err := ensureSuccess(binary, output); err != nil {
+		return "", false, err
+	}
+	text = strings.ReplaceAll(strings.ToValidUTF8(string(output.Stdout.Bytes), "�"), "\x00", "�")
+	limit = min(limit, DiagnosticLimit)
+	if !output.Stdout.Truncated && len(text) <= limit {
+		return text, true, nil
+	}
+	cut := min(limit, len(text))
+	for cut > 0 && cut < len(text) && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut], false, nil
+}
+
 func ShellCheck(ctx context.Context, command string, cwd string, seconds uint64) (*ProcessOutput, error) {
 	return Capture(ctx, "bash", []string{"-o", "pipefail", "-c", command}, cwd, seconds, CaptureDiagnostic)
 }

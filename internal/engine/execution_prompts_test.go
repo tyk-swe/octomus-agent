@@ -60,9 +60,9 @@ func TestReviewPromptIsByteStable(t *testing.T) {
 	if got := reviewPrompt(task, "reviewed-sha", trusted); got != want {
 		t.Fatalf("review prompt changed:\n got %q\nwant %q", got, want)
 	}
-	trusted.diff, trusted.omitted = "", "it exceeds 262144 bytes"
+	trusted.diff, trusted.diffTooLarge = "", true
 	if got := reviewPrompt(task, "reviewed-sha", trusted); !strings.HasSuffix(got, "Changed files (git diff --stat base-sha reviewed-sha):\n parser.go | 2 +-\n"+
-		"The complete diff is not included because it exceeds 262144 bytes: read it with git diff base-sha HEAD and check it against the files above.") {
+		"The complete diff is too large to embed (over 65536 bytes): read it with git diff base-sha HEAD and check it against the files above.") {
 		t.Fatalf("review prompt without the diff:\n%s", got)
 	}
 }
