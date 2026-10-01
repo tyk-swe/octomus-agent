@@ -26,15 +26,15 @@ type Resolver interface {
 type Dialer func(ctx context.Context, address netip.AddrPort) (net.Conn, error)
 
 type Gateway struct {
-	policy   Policy
-	leaseDir string
-	resolve  Resolver
-	dial     Dialer
-	log      io.Writer
-	logMu    sync.Mutex
-	budgets  map[string]*logBudget
-	statsMu  sync.Mutex
-	stats    map[string]*usage
+	policy  Policy
+	leases  Leases
+	resolve Resolver
+	dial    Dialer
+	log     io.Writer
+	logMu   sync.Mutex
+	budgets map[string]*logBudget
+	statsMu sync.Mutex
+	stats   map[string]*usage
 	// collected remembers sandboxes the broker has collected, so a decision that lands after collection (a lookup
 	// or dial still in flight) is not kept for a summary nobody will collect.
 	collected map[string]time.Time
@@ -80,9 +80,9 @@ const (
 func New(policy Policy, leaseDir string, log io.Writer) *Gateway {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	return &Gateway{
-		policy:   policy,
-		leaseDir: leaseDir,
-		resolve:  net.DefaultResolver,
+		policy:  policy,
+		leases:  Leases{Dir: leaseDir},
+		resolve: net.DefaultResolver,
 		dial: func(ctx context.Context, address netip.AddrPort) (net.Conn, error) {
 			return dialer.DialContext(ctx, "tcp", address.String())
 		},
@@ -336,7 +336,7 @@ func (g *Gateway) lease(header string) (Lease, string, bool) {
 	if !ok || user != ProxyUser {
 		return Lease{}, "", false
 	}
-	return Leases{Dir: g.leaseDir}.lookup(token)
+	return g.leases.lookup(token)
 }
 
 // refusedHost names a refused target for the summary without carrying arbitrary text into it: the normalized host

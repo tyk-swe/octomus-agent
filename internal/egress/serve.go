@@ -5,8 +5,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -72,7 +70,7 @@ func (g *Gateway) sweep() {
 	g.statsMu.Unlock()
 	gone := map[string]bool{}
 	for lease := range leases {
-		if _, err := os.Stat(filepath.Join(g.leaseDir, lease)); errors.Is(err, os.ErrNotExist) {
+		if g.leases.revoked(lease) {
 			gone[lease] = true
 		}
 	}

@@ -114,6 +114,12 @@ func (l Leases) lookup(token string) (Lease, string, bool) {
 	return lease, file, true
 }
 
+// revoked reports whether the lease named file is gone.
+func (l Leases) revoked(file string) bool {
+	_, err := os.Stat(filepath.Join(l.Dir, file))
+	return errors.Is(err, os.ErrNotExist)
+}
+
 // ProxyURL is the gateway's address with a sandbox's proxy credential.
 func ProxyURL(proxy, token string) string {
 	return "http://" + ProxyUser + ":" + token + "@" + proxy
