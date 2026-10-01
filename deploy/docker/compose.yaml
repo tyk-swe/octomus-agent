@@ -3,7 +3,8 @@
 #   octomus    control plane: state, scheduler, dashboard (127.0.0.1:4200 only) and GitHub publication
 #   sandboxd   broker: the only holder of the Docker socket; no network at all
 #   egress     gateway: the only way out for sandboxes, allowlisted per sandbox kind
-#   login      one-off runner logins into the runner volume (docker compose run --rm login codex login --device-auth)
+#   login      one-off runner logins into the runner volume (docker compose run --rm login codex login --device-auth),
+#              reaching out only through the egress gateway, like a runner sandbox
 #
 # Every agent turn and verification command runs in its own short-lived sandbox container that the broker builds.
 name: octomus
@@ -130,24 +131,74 @@ services:
     entrypoint: ["true"]
     logging: *logging
 
+  # Issues the login its egress lease, as the broker does for a runner sandbox, and replaces the previous login's lease.
+  # `docker compose run login` runs it first; it has no network and sees no runner state.
+  login-lease:
+    <<: *hardened
+    image: ${OCTOMUS_IMAGE:-octomus-agent:local}
+    profiles: [tools]
+    restart: "no"
+    network_mode: none
+    entrypoint:
+      - /bin/sh
+      - -euc
+      - |
+        umask 077
+        cd /run/octomus-egress
+        previous=$$(cat login.lease 2>/dev/null || :)
+        case $$previous in */*) ;; [0-9a-f]*.json) rm -f "./$$previous" ;; esac
+        token=$$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+        digest=$$(printf %s "$$token" | sha256sum | cut -c1-64)
+        printf '{"sandbox":"login","kind":"runner"}' > .lease-login
+        mv .lease-login "$$digest.json"
+        printf '%s.json\n' "$$digest" > login.lease
+        printf 'http://sandbox:%s@egress:3128\n' "$$token" > /run/octomus-login/proxy
+    volumes:
+      - egress-state:/run/octomus-egress
+      - login-proxy:/run/octomus-login
+
   login:
     image: ${OCTOMUS_SANDBOX_IMAGE:-octomus-sandbox:local}
     profiles: [tools]
     user: "10001:10001"
+    read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    init: true
+    mem_limit: 2g
+    pids_limit: 512
     logging: *logging
+    depends_on:
+      egress:
+        condition: service_started
+      login-lease:
+        condition: service_completed_successfully
+    # Runner sandboxes can write the runner volume, so a login must not run what they left there with more reach than
+    # they have: it joins the runner sandboxes' internal network, reaches out only through the egress gateway under
+    # the runner allowlist, and loads no OpenCode configuration, plugins or cache from the volume.
+    entrypoint:
+      - /bin/sh
+      - -euc
+      - |
+        proxy=$$(cat /run/octomus-login/proxy)
+        export HTTP_PROXY=$$proxy HTTPS_PROXY=$$proxy ALL_PROXY=$$proxy http_proxy=$$proxy https_proxy=$$proxy all_proxy=$$proxy
+        exec "$$@"
+      - login
     environment:
       HOME: /home/octomus
-    # Logins land exactly where runner sandboxes mount them. The broker creates these subdirectories when it starts,
-    # so run logins after `docker compose up -d`.
+      XDG_CONFIG_HOME: /tmp/config
+      XDG_CACHE_HOME: /tmp/cache
+      XDG_STATE_HOME: /tmp/state
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
+    tmpfs: ["/home/octomus:uid=10001,gid=10001,mode=0700", "/tmp:size=256m"]
+    # Only the logins themselves land in the runner volume, where runner sandboxes mount them. The broker creates these
+    # subdirectories when it starts, so run logins after `docker compose up -d`.
     volumes:
       - {type: volume, source: runner, target: /home/octomus/.codex, volume: {subpath: codex}}
       - {type: volume, source: runner, target: /home/octomus/.local/share/opencode, volume: {subpath: opencode/data}}
-      - {type: volume, source: runner, target: /home/octomus/.config/opencode, volume: {subpath: opencode/config}}
-      - {type: volume, source: runner, target: /home/octomus/.cache/opencode, volume: {subpath: opencode/cache}}
-      - {type: volume, source: runner, target: /home/octomus/.local/state/opencode, volume: {subpath: opencode/state}}
-    networks: [egress-out]
+      - login-proxy:/run/octomus-login:ro
+    networks: [sandbox-runner]
 
 secrets:
   operator_token:
@@ -164,6 +215,7 @@ volumes:
     name: octomus-tools
   broker: {}
   egress-state: {}
+  login-proxy: {}
 
 networks:
   control: {}

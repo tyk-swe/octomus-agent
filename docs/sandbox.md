@@ -140,7 +140,7 @@ Two allowlists come from the deployment's `.env`:
 
 | Variable | Reachable from | Typical content |
 | --- | --- | --- |
-| `OCTOMUS_EGRESS_MODEL_HOSTS` | agent turns | `chatgpt.com,auth.openai.com,api.openai.com` for Codex; `models.opencode.ai` plus your providers for OpenCode |
+| `OCTOMUS_EGRESS_MODEL_HOSTS` | agent turns and [runner logins](#signing-in-a-runner) | `chatgpt.com,auth.openai.com,api.openai.com` for Codex; `models.opencode.ai` plus your providers for OpenCode |
 | `OCTOMUS_EGRESS_BUILD_HOSTS` | agent turns and verification | package registries, for example `proxy.golang.org,sum.golang.org` or `registry.npmjs.org` |
 
 Entries are host names or `*.suffix`, with an optional `:port` (default 443). An empty
@@ -149,6 +149,23 @@ gets the Codex hosts above. List only what the project needs. Every allowed host
 out for data, and an allowlist is not data-loss prevention: an allowed multi-tenant
 service, such as a package registry or a model API used with someone else's key, can still
 carry data to an account that is not yours.
+
+## Signing in a runner
+
+`docker compose run --rm login …` runs Codex or OpenCode from the sandbox image to store a
+login in the `octomus-runner` volume. Runner sandboxes can write that volume, so the login
+gives nothing they leave there more reach than they have:
+- it joins `octomus-sandbox-runner` and reaches out only through the egress gateway, under
+  the runner allowlist. Just before it starts, a one-shot `login-lease` service with no
+  network grants it a lease and revokes the previous login's. That lease stays valid until
+  the next login or until the broker restarts;
+- it mounts only the Codex home and OpenCode's data directory, where the logins live.
+  OpenCode's configuration, plugins, cache and state start empty;
+- its image is read-only, and it runs without capabilities, under memory and process limits.
+
+Codex's sign-in hosts are in the default allowlist. For OpenCode, first add
+`models.opencode.ai` and your provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS`;
+`docker compose logs egress` shows any host a login was refused.
 
 ## Resource limits
 
@@ -257,7 +274,8 @@ support has not been validated with Octomus yet.
 - **Runner logins are readable inside runner sandboxes.** Runner sandboxes share the
   runner volume: the Codex or OpenCode login, and every session's transcript. A
   prompt-injected session can read them, and can leave runner configuration that a later
-  sandbox loads. It can send data only through the egress allowlist.
+  sandbox loads; a later [login](#signing-in-a-runner) still reads the Codex configuration
+  there. Either can send data only through the egress allowlist.
 - **Sandboxes on the same network can reach each other's listening ports.** Nothing else on
   the host is reachable.
 - **Docker socket access is root-equivalent.** The broker's validation is the boundary

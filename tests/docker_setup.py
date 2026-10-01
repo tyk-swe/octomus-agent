@@ -119,8 +119,22 @@ def compose_contract():
         assert service.get('logging', {}).get('options', {}).get('max-size'), f'{name} keeps an unrotated log'
     assert services['egress'].get('mem_limit') and services['egress'].get('pids_limit'), services['egress']
 
-    # Building never retags the operator's derived sandbox image.
+    # Logins run runner programs against state runner sandboxes can write; they get no more reach than a sandbox.
+    networks = config['networks']
     login = services['login']
+    assert list(login['networks']) == ['sandbox-runner'] and networks['sandbox-runner']['internal'], login['networks']
+    assert login['depends_on']['login-lease']['condition'] == 'service_completed_successfully', login['depends_on']
+    assert services['login-lease']['network_mode'] == 'none', services['login-lease']
+    assert services['login-lease']['restart'] == 'no', services['login-lease']
+    mounted = {mount.get('volume', {}).get('subpath') for mount in login['volumes'] if mount['source'] == 'runner'}
+    assert mounted == {'codex', 'opencode/data'}, mounted
+    assert all(mount['source'] != 'egress-state' for mount in login['volumes']), login['volumes']
+    assert login['read_only'] and login['cap_drop'] == ['ALL'], login
+    for name, service in services.items():
+        if name != 'egress':
+            assert 'egress-out' not in service.get('networks', {}), f'{name} reaches the internet directly'
+
+    # Building never retags the operator's derived sandbox image.
     assert 'build' not in login, login
     assert services['sandbox-image']['image'] == 'octomus-sandbox:local', services['sandbox-image']
     derived = render(example + required + 'OCTOMUS_SANDBOX_IMAGE=my-sandbox:go\n')['services']
