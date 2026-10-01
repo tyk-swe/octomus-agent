@@ -8,6 +8,9 @@ import shutil
 import socket
 import subprocess
 import tempfile
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
 PROJECT = Path(__file__).resolve().parents[1]
 COMPOSE = PROJECT / 'deploy/docker/compose.yaml'
@@ -168,7 +171,11 @@ def login_lease_runs_the_agent_mode(services):
 
 def compose_contract():
     """Returns whether the contract ran: it needs the docker compose plugin to render the file."""
-    if subprocess.run(['docker', 'compose', 'version'], capture_output=True).returncode != 0:
+    try:
+        available = subprocess.run(['docker', 'compose', 'version'], capture_output=True).returncode == 0
+    except FileNotFoundError:
+        available = False
+    if not available:
         print('SKIP compose contract: docker compose is not installed')
         return False
     example = (PROJECT / 'deploy/docker/env.example').read_text()
@@ -217,7 +224,18 @@ def compose_contract():
     return True
 
 
+def compose_contract_skips_missing_tools():
+    """An optional rendering check must skip both an absent Docker CLI and an absent Compose plugin."""
+    for result in [FileNotFoundError('docker'), subprocess.CompletedProcess(['docker', 'compose', 'version'], 1)]:
+        kwargs = {'side_effect': result} if isinstance(result, Exception) else {'return_value': result}
+        with patch.object(subprocess, 'run', **kwargs) as run, redirect_stdout(StringIO()) as output:
+            assert compose_contract() is False
+            run.assert_called_once_with(['docker', 'compose', 'version'], capture_output=True)
+            assert 'SKIP compose contract' in output.getvalue()
+
+
 def main():
+    compose_contract_skips_missing_tools()
     setup_secret_ownership(10001, 10001)
     setup_secret_ownership(1000, 10001)
     setup_secret_ownership(10001, 1000, recreate_github=True)

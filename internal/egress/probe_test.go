@@ -57,7 +57,7 @@ func TestFetchProbeTargetReadsEffectivePolicyWithoutCollectingEvidence(t *testin
 		t.Fatal(err)
 	}
 	gateway := New(Policy{Build: rules}, t.TempDir(), io.Discard)
-	gateway.countDecision(Decision{Sandbox: "probe", Host: "other.example", Port: 443, Decision: "denied"}, "lease")
+	gateway.countDecision(Decision{Sandbox: "probe", Host: "other.example", Port: 443, Decision: "denied"}, "lease", nil)
 	listener, socket := testutil.ListenUnix(t, "collector.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

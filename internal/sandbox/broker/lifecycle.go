@@ -407,16 +407,27 @@ func (s *prepared) evidence(oom, oomKnown bool) *model.SandboxRecord {
 		record.Incomplete = true
 		return record
 	}
-	// The gateway counts accepted tunnels immediately, even when upstream connections are still closing.
+	// The gateway counts accepted tunnels immediately, even when upstream connections are still closing; an
+	// unresolved request (for example, DNS still in flight) makes the summary incomplete.
 	summary, err := egress.FetchSummary(context.Background(), b.cfg.EgressCollector, s.name)
 	if err != nil {
 		b.logf("Reading the egress record of sandbox %s failed; its record is marked incomplete: %v", s.name, err)
 		record.Incomplete = true
 		return record
 	}
+	return s.egressEvidence(record, summary)
+}
+
+// egressEvidence preserves known host counts even when the collector could not resolve every request.
+func (s *prepared) egressEvidence(record *model.SandboxRecord, summary egress.Summary) *model.SandboxRecord {
+	b := s.b
 	if summary.GatewayStarted.IsZero() || summary.GatewayStarted.After(s.granted) {
 		// A gateway that started after the lease lost whatever the sandbox did before then.
 		b.logf("The egress gateway restarted while sandbox %s ran; its record is marked incomplete", s.name)
+		record.Incomplete = true
+	}
+	if summary.Incomplete {
+		b.logf("The egress record of sandbox %s has unresolved requests; its record is marked incomplete", s.name)
 		record.Incomplete = true
 	}
 	for host, count := range summary.Allowed {

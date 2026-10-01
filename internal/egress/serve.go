@@ -87,12 +87,12 @@ func (g *Gateway) sweep() {
 		case !gone[entry.lease]:
 		case entry.revoked.IsZero():
 			entry.revoked = now
-		case now.Sub(entry.revoked) >= revokedGrace && g.open[name] == 0:
+		case now.Sub(entry.revoked) >= revokedGrace && g.open[name] == 0 && entry.pending == 0:
 			delete(g.stats, name)
 		}
 	}
-	for name, at := range g.collected {
-		if now.Sub(at) >= collectedFor {
+	for name, collected := range g.collected {
+		if now.Sub(collected.at) >= collectedFor {
 			delete(g.collected, name)
 		}
 	}

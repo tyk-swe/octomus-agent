@@ -14,11 +14,13 @@ import (
 // Summary is what one sandbox did through the gateway, kept until the broker collects it. Denied holds policy
 // refusals; Failed holds allowlisted hosts the gateway could not reach (DNS, upstream, or the tunnel bound).
 // GatewayStarted is when this gateway began counting: it never saw what a sandbox leased before then did.
+// Incomplete means at least one request had no recorded outcome when collected.
 type Summary struct {
 	Allowed        map[string]HostCount `json:"allowed"`
 	Denied         map[string]HostCount `json:"denied"`
 	Failed         map[string]HostCount `json:"failed"`
 	GatewayStarted time.Time            `json:"gateway_started"`
+	Incomplete     bool                 `json:"incomplete,omitempty"`
 }
 
 type HostCount struct {
@@ -31,17 +33,19 @@ func emptySummary() Summary {
 }
 
 // Collect returns and forgets what a finished sandbox did. A sandbox it has no entry for made no connection since
-// the gateway started.
+// the gateway started. Repeated collection keeps only a previous incompleteness mark until it expires.
 func (g *Gateway) Collect(sandboxName string) Summary {
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
 	entry := g.stats[sandboxName]
 	delete(g.stats, sandboxName)
-	g.collected[sandboxName] = g.now()
 	summary := emptySummary()
 	if entry != nil {
 		summary = entry.summary
+		summary.Incomplete = summary.Incomplete || entry.pending > 0
 	}
+	summary.Incomplete = summary.Incomplete || g.collected[sandboxName].incomplete
+	g.collected[sandboxName] = collection{at: g.now(), incomplete: summary.Incomplete}
 	summary.GatewayStarted = g.started
 	return summary
 }

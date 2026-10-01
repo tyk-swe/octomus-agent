@@ -37,7 +37,7 @@ type Gateway struct {
 	stats   map[string]*usage
 	// collected remembers sandboxes the broker has collected, so a decision that lands after collection (a lookup
 	// or dial still in flight) is not kept for a summary nobody will collect.
-	collected map[string]time.Time
+	collected map[string]collection
 	open      map[string]int
 	tunnels   map[*tunnel]struct{}
 	running   sync.WaitGroup
@@ -92,7 +92,7 @@ func New(policy Policy, leaseDir string, log io.Writer) *Gateway {
 		log:           log,
 		budgets:       map[string]*logBudget{},
 		stats:         map[string]*usage{},
-		collected:     map[string]time.Time{},
+		collected:     map[string]collection{},
 		open:          map[string]int{},
 		tunnels:       map[*tunnel]struct{}{},
 		now:           time.Now,
@@ -142,11 +142,21 @@ const (
 	foldedNameLimit = 1024
 )
 
+// collection prevents late outcomes from recreating forgotten summaries. It preserves known incompleteness so a
+// repeated collection cannot turn an unresolved request into apparently complete evidence.
+type collection struct {
+	at         time.Time
+	incomplete bool
+}
+
 // usage is one sandbox's uncollected summary and the lease it was made under.
 type usage struct {
 	summary Summary
 	lease   string
 	revoked time.Time
+	// pending counts authenticated requests until their refusal, failure or allowed tunnel is recorded. Open
+	// tunnels whose allowed decision was recorded are not pending, even if their closing bytes arrive later.
+	pending int
 	// named holds the decision and host of each host the summary folded into "other" whose first decision was logged.
 	named map[string]struct{}
 }
@@ -159,12 +169,6 @@ type logBudget struct {
 	class      string
 	sandbox    string
 	kind       string
-}
-
-// record counts and logs a refusal or failure; budget names whose log budget it spends.
-func (g *Gateway) record(d Decision, lease, budget string) {
-	_, _, unnamed := g.countDecision(d, lease)
-	g.logRefusal(d, budget, unnamed)
 }
 
 func (g *Gateway) logDecision(d Decision) {
@@ -262,15 +266,45 @@ func summaryKey(host string, port uint16) string {
 	return net.JoinHostPort(host, strconv.Itoa(int(port)))
 }
 
+// beginDecision registers a request before policy, DNS or dialing can leave its outcome pending. Collection and
+// admission share the lock: a request arriving after collection cannot open a tunnel absent from that evidence.
+func (g *Gateway) beginDecision(sandboxName, lease string) *usage {
+	g.statsMu.Lock()
+	defer g.statsMu.Unlock()
+	if _, done := g.collected[sandboxName]; done {
+		return nil
+	}
+	entry := g.stats[sandboxName]
+	if entry == nil {
+		entry = &usage{summary: emptySummary(), lease: lease}
+		g.stats[sandboxName] = entry
+	}
+	entry.pending++
+	return entry
+}
+
+// abandonDecision leaves evidence incomplete if the request ended without a decision, for example when its
+// client went away while the HTTP connection was being hijacked.
+func (g *Gateway) abandonDecision(entry *usage) {
+	g.statsMu.Lock()
+	defer g.statsMu.Unlock()
+	entry.pending--
+	entry.summary.Incomplete = true
+}
+
 // countDecision adds a decision to its sandbox's summary and returns the entry and key it counted under. unnamed
 // reports the first decision for a host the summary counts only under "other", up to foldedNameLimit such hosts, so
-// its log line names the host whatever the log budget.
-func (g *Gateway) countDecision(d Decision, lease string) (entry *usage, key string, unnamed bool) {
+// its log line names the host whatever the log budget. pending, when supplied, settles that request atomically with
+// recording its outcome, so collection cannot mistake a recorded decision for an unresolved one.
+func (g *Gateway) countDecision(d Decision, lease string, pending *usage) (entry *usage, key string, unnamed bool) {
+	g.statsMu.Lock()
+	defer g.statsMu.Unlock()
+	if pending != nil {
+		pending.pending--
+	}
 	if d.Sandbox == "" || d.Host == "" {
 		return nil, "", false
 	}
-	g.statsMu.Lock()
-	defer g.statsMu.Unlock()
 	if _, done := g.collected[d.Sandbox]; done {
 		return nil, "", false
 	}
@@ -360,9 +394,27 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Octomus egress: only sandboxes with a live lease may connect", http.StatusProxyAuthRequired)
 		return
 	}
+	pending := g.beginDecision(lease.Sandbox, leaseFile)
+	if pending == nil {
+		g.logRefusal(Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Decision: "denied", Reason: "sandbox evidence already collected"},
+			"sandbox "+lease.Sandbox, false)
+		http.Error(w, "Octomus egress: this sandbox's evidence has already been collected", http.StatusForbidden)
+		return
+	}
+	settled := false
+	defer func() {
+		if !settled {
+			g.abandonDecision(pending)
+		}
+	}()
+	count := func(d Decision) (*usage, string, bool) {
+		settled = true
+		return g.countDecision(d, leaseFile, pending)
+	}
 	refuse := func(decision string, status int, host string, port uint16, reason string) {
-		g.record(Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: port, Decision: decision, Reason: reason},
-			leaseFile, "sandbox "+lease.Sandbox)
+		d := Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: port, Decision: decision, Reason: reason}
+		_, _, unnamed := count(d)
+		g.logRefusal(d, "sandbox "+lease.Sandbox, unnamed)
 		http.Error(w, "Octomus egress blocked this connection: "+reason, status)
 	}
 	deny := func(status int, host string, port uint16, reason string) {
@@ -452,7 +504,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer g.untrack(t)
 	decision := Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: uint16(port), Decision: "allowed",
 		Tunnel: g.tunnelIDs.Add(1)}
-	entry, key, unnamed := g.countDecision(decision, leaseFile)
+	entry, key, unnamed := count(decision)
 	logged := g.logOpened(decision, unnamed)
 	started := g.now()
 	var up, down int64

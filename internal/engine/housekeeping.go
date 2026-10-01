@@ -346,11 +346,19 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 	return nil
 }
 
-// measuredBytes is what the dashboard shows: the bytes a walk could reach. Admission accounts for unmeasured subtrees
-// itself (measureFor).
+var errStorageIncomplete = errors.New("Storage measurement is incomplete")
+
+// measuredBytes returns only complete observations. An unknown subtree must not turn a partial byte count into a
+// fresh measured total; application snapshots retain their previous timestamp and runner observations report error.
 func measuredBytes(path string) (uint64, error) {
 	usage, err := workspace.Measure(path, 0)
-	return usage.Bytes, err
+	if err != nil {
+		return 0, err
+	}
+	if len(usage.Unmeasured) != 0 {
+		return 0, fmt.Errorf("%w: %s contains unreadable, changed, or traversal-limited entries", errStorageIncomplete, path)
+	}
+	return usage.Bytes, nil
 }
 
 func (a *App) measureStorage(cfg config.Config) error {
