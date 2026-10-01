@@ -118,28 +118,27 @@ func startDockerBroker(t *testing.T, tune func(*broker.Config)) *dockerBroker {
 		t.Cleanup(func() { _ = exec.Command("docker", "network", "rm", network).Run() })
 	}
 	cfg := broker.Config{
-		Socket:                 filepath.Join(shortDir(t), "sandboxd.sock"),
-		DockerSocket:           "/var/run/docker.sock",
-		Image:                  image,
-		DataDir:                dirs["data"],
-		DataVolume:             "octomus-test-" + id + "-data",
-		RunnerVolume:           "octomus-test-" + id + "-runner",
-		RunnerDir:              dirs["runner"],
-		ToolsVolume:            "octomus-test-" + id + "-tools",
-		ToolsDir:               dirs["tools"],
-		RunnerNetwork:          "octomus-test-" + id + "-runner",
-		VerifyNetwork:          "octomus-test-" + id + "-verify",
-		Instance:               "test-" + id,
-		UID:                    os.Getuid(),
-		GID:                    os.Getgid(),
-		ClientUID:              os.Getuid(),
-		NanoCPUs:               1e9,
-		Memory:                 256 << 20,
-		Pids:                   256,
-		Tmpfs:                  64 << 20,
-		Max:                    4,
-		MaxSeconds:             120,
-		RequireIsolatedGateway: true,
+		Socket:        filepath.Join(shortDir(t), "sandboxd.sock"),
+		DockerSocket:  "/var/run/docker.sock",
+		Image:         image,
+		DataDir:       dirs["data"],
+		DataVolume:    "octomus-test-" + id + "-data",
+		RunnerVolume:  "octomus-test-" + id + "-runner",
+		RunnerDir:     dirs["runner"],
+		ToolsVolume:   "octomus-test-" + id + "-tools",
+		ToolsDir:      dirs["tools"],
+		RunnerNetwork: "octomus-test-" + id + "-runner",
+		VerifyNetwork: "octomus-test-" + id + "-verify",
+		Instance:      "test-" + id,
+		UID:           os.Getuid(),
+		GID:           os.Getgid(),
+		ClientUID:     os.Getuid(),
+		NanoCPUs:      1e9,
+		Memory:        256 << 20,
+		Pids:          256,
+		Tmpfs:         64 << 20,
+		Max:           4,
+		MaxSeconds:    120,
 	}
 	if tune != nil {
 		tune(&cfg)
@@ -159,7 +158,9 @@ func startDockerBroker(t *testing.T, tune func(*broker.Config)) *dockerBroker {
 	go func() { h.served <- b.Serve(ctx, listener) }()
 	t.Cleanup(func() {
 		cancel()
-		<-h.served
+		if err := <-h.served; err != nil {
+			t.Errorf("broker shutdown = %v", err)
+		}
 		if left := h.containers(t); left != "" {
 			t.Errorf("broker left sandboxes behind: %s", left)
 			_ = exec.Command("sh", "-c", "docker ps -aq --filter label=octomus.sandbox.instance="+h.instance+" | xargs -r docker rm -f").Run()
@@ -380,12 +381,41 @@ func TestDockerKillAndDeadManRemoveTheSandbox(t *testing.T) {
 func TestDockerMemoryLimitIsReported(t *testing.T) {
 	h := startDockerBroker(t, func(cfg *broker.Config) { cfg.Memory = 64 << 20 })
 	ws := h.taskRoot(t)
-	out, _, err := sandbox.Verify(context.Background(), h.remote, ws, "head -c 512m /dev/zero | tail > /dev/null", 60, true)
+	out, record, err := sandbox.Verify(context.Background(), h.remote, ws, "head -c 512m /dev/zero | tail > /dev/null", 60, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.Status.OOM() || out.Status.Success() || !strings.Contains(out.Status.String(), "memory limit") {
-		t.Fatalf("status = %v; want a reported memory-limit kill", out.Status)
+	if !out.Status.OOM() || out.Status.Success() || !strings.Contains(out.Status.String(), "memory limit") || record == nil || !record.OOM {
+		t.Fatalf("status = %v, evidence %+v; want a reported memory-limit kill", out.Status, record)
+	}
+	// Only a child is killed for memory; the command recovers and succeeds. The evidence still records the kill.
+	out, record, err = sandbox.Verify(context.Background(), h.remote, ws,
+		"(head -c 512m /dev/zero | tail > /dev/null); echo survived; exit 0", 60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status.OOM() || !out.Status.Success() || string(out.Stdout.Bytes) != "survived\n" || record == nil || !record.OOM {
+		t.Fatalf("status = %v with %q, evidence %+v; want a success whose evidence records the memory kill",
+			out.Status, out.Stdout.Bytes, record)
+	}
+}
+
+func TestDockerShutdownRemovesLiveSandboxes(t *testing.T) {
+	h := startDockerBroker(t, nil)
+	ws := h.taskRoot(t)
+	for range 4 {
+		if _, err := h.remote.Start(context.Background(), sandbox.Spec{Kind: sandbox.KindVerify, Dir: ws, Command: "sleep 300"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, func() bool { return len(strings.Fields(h.containers(t))) == 4 })
+	h.cancel()
+	if err := <-h.served; err != nil {
+		t.Fatalf("broker shutdown with live sandboxes = %v", err)
+	}
+	h.served <- nil
+	if left := h.containers(t); left != "" {
+		t.Fatalf("shutdown left sandboxes behind: %s", left)
 	}
 }
 
@@ -474,7 +504,9 @@ func TestDockerBrokerRefusesUnownedRootsAndLeavesOtherContainers(t *testing.T) {
 		t.Error("the broker mounted a symlinked repo.git")
 	}
 	h.cancel()
-	<-h.served
+	if err := <-h.served; err != nil {
+		t.Fatalf("broker shutdown = %v", err)
+	}
 	h.served <- nil
 	if state := docker(t, "inspect", "-f", "{{.State.Running}}", decoy); state != "true" {
 		t.Fatalf("broker shutdown touched a container it does not own (running=%s)", state)

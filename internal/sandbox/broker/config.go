@@ -6,6 +6,7 @@ package broker
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -33,29 +34,31 @@ type Config struct {
 	UID      int
 	GID      int
 	// ClientUID is the only peer uid the broker serves.
-	ClientUID  int
-	NanoCPUs   int64
-	Memory     int64
-	Pids       int64
-	Tmpfs      int64
-	Max        int
-	MaxSeconds uint64
-	Runtime    string
-	// RequireIsolatedGateway refuses internal networks through whose gateway sandboxes could reach the host.
-	RequireIsolatedGateway bool
-	EgressProxy            string
-	LeaseDir               string
+	ClientUID   int
+	NanoCPUs    int64
+	Memory      int64
+	Pids        int64
+	Tmpfs       int64
+	Max         int
+	MaxSeconds  uint64
+	Runtime     string
+	EgressProxy string
+	LeaseDir    string
 	// EgressCollector is the gateway's local socket for a finished sandbox's egress summary.
 	EgressCollector string
+	// Log receives what the broker could not do on its own, such as a removal it keeps retrying; nil is stderr.
+	Log io.Writer
 }
 
 const (
-	sandboxHome   = "/home/octomus"
-	toolsMount    = "/opt/octomus"
-	toolsBinary   = toolsMount + "/octomus-agent"
-	instanceLabel = "octomus.sandbox.instance"
-	kindLabel     = "octomus.sandbox.kind"
-	rootLabel     = "octomus.sandbox.root"
+	sandboxHome = "/home/octomus"
+	toolsMount  = "/opt/octomus"
+	toolsBinary = toolsMount + "/octomus-agent"
+	// toolsGitConfig is runner sandboxes' global git configuration, read-only in the tools volume.
+	toolsGitConfig = toolsMount + "/gitconfig"
+	instanceLabel  = "octomus.sandbox.instance"
+	kindLabel      = "octomus.sandbox.kind"
+	rootLabel      = "octomus.sandbox.root"
 )
 
 var instancePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
@@ -70,23 +73,22 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return fallback
 	}
 	c := Config{
-		Socket:                 value("OCTOMUS_SANDBOXD_SOCKET", "/run/octomus/sandboxd.sock"),
-		DockerSocket:           value("OCTOMUS_DOCKER_SOCKET", "/var/run/docker.sock"),
-		Image:                  value("OCTOMUS_SANDBOX_IMAGE", ""),
-		DataDir:                value("OCTOMUS_DATA_DIR", ""),
-		DataVolume:             value("OCTOMUS_SANDBOX_DATA_VOLUME", ""),
-		RunnerVolume:           value("OCTOMUS_SANDBOX_RUNNER_VOLUME", ""),
-		RunnerDir:              value("OCTOMUS_SANDBOX_RUNNER_DIR", "/var/lib/octomus/runner"),
-		ToolsVolume:            value("OCTOMUS_SANDBOX_TOOLS_VOLUME", ""),
-		ToolsDir:               value("OCTOMUS_SANDBOX_TOOLS_DIR", "/opt/octomus-tools"),
-		RunnerNetwork:          value("OCTOMUS_SANDBOX_RUNNER_NETWORK", ""),
-		VerifyNetwork:          value("OCTOMUS_SANDBOX_VERIFY_NETWORK", ""),
-		Instance:               value("OCTOMUS_SANDBOX_INSTANCE", "octomus"),
-		Runtime:                value("OCTOMUS_SANDBOX_RUNTIME", ""),
-		EgressProxy:            value("OCTOMUS_EGRESS_PROXY", ""),
-		LeaseDir:               value("OCTOMUS_EGRESS_LEASES", ""),
-		EgressCollector:        value("OCTOMUS_EGRESS_COLLECTOR", ""),
-		RequireIsolatedGateway: value("OCTOMUS_SANDBOX_REQUIRE_ISOLATED_GATEWAY", "true") != "false",
+		Socket:          value("OCTOMUS_SANDBOXD_SOCKET", "/run/octomus/sandboxd.sock"),
+		DockerSocket:    value("OCTOMUS_DOCKER_SOCKET", "/var/run/docker.sock"),
+		Image:           value("OCTOMUS_SANDBOX_IMAGE", ""),
+		DataDir:         value("OCTOMUS_DATA_DIR", ""),
+		DataVolume:      value("OCTOMUS_SANDBOX_DATA_VOLUME", ""),
+		RunnerVolume:    value("OCTOMUS_SANDBOX_RUNNER_VOLUME", ""),
+		RunnerDir:       value("OCTOMUS_SANDBOX_RUNNER_DIR", "/var/lib/octomus/runner"),
+		ToolsVolume:     value("OCTOMUS_SANDBOX_TOOLS_VOLUME", ""),
+		ToolsDir:        value("OCTOMUS_SANDBOX_TOOLS_DIR", "/opt/octomus-tools"),
+		RunnerNetwork:   value("OCTOMUS_SANDBOX_RUNNER_NETWORK", ""),
+		VerifyNetwork:   value("OCTOMUS_SANDBOX_VERIFY_NETWORK", ""),
+		Instance:        value("OCTOMUS_SANDBOX_INSTANCE", "octomus"),
+		Runtime:         value("OCTOMUS_SANDBOX_RUNTIME", ""),
+		EgressProxy:     value("OCTOMUS_EGRESS_PROXY", ""),
+		LeaseDir:        value("OCTOMUS_EGRESS_LEASES", ""),
+		EgressCollector: value("OCTOMUS_EGRESS_COLLECTOR", ""),
 	}
 	var errs []error
 	for key, v := range map[string]string{
@@ -141,7 +143,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.GID = int(integer("OCTOMUS_SANDBOX_GID", 10001, 1, math.MaxInt32))
 	c.ClientUID = int(integer("OCTOMUS_SANDBOX_CLIENT_UID", int64(os.Getuid()), 0, math.MaxInt32))
 	cpus, err := strconv.ParseFloat(value("OCTOMUS_SANDBOX_CPUS", "2"), 64)
-	if err != nil || cpus < 0.1 || cpus > 256 {
+	// Written so NaN, which ParseFloat accepts and every comparison lets through, fails it.
+	if err != nil || !(cpus >= 0.1 && cpus <= 256) {
 		errs = append(errs, errors.New("OCTOMUS_SANDBOX_CPUS must be a number of CPUs from 0.1 to 256"))
 	}
 	c.NanoCPUs = int64(cpus * 1e9)

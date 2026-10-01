@@ -37,6 +37,18 @@ func serveTestEngine(t *testing.T, handler http.Handler) string {
 	return socket
 }
 
+// brokerOn builds a broker against a test engine without New's deployment checks; limit, when set, caps its
+// sandboxes.
+func brokerOn(t *testing.T, socket string, limit int) *Broker {
+	t.Helper()
+	cfg := testConfig(t)
+	cfg.DockerSocket, cfg.Log = socket, io.Discard
+	if limit > 0 {
+		cfg.Max = limit
+	}
+	return newBroker(cfg)
+}
+
 func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 	for _, action := range []string{"cancel", "disconnect", "kill", "timeout", "backlog"} {
 		t.Run(action, func(t *testing.T) {
@@ -88,7 +100,7 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				stop()
 				w.WriteHeader(http.StatusNoContent)
 			})
-			b := &Broker{cfg: testConfig(t), engine: engineapi.New(serveTestEngine(t, mux)), live: map[string]string{}}
+			b := brokerOn(t, serveTestEngine(t, mux), 0)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			controls := make(chan control)
@@ -171,7 +183,11 @@ func TestShutdownCancelsPreparationAndSweepsSandboxes(t *testing.T) {
 		removed.Store(true)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	b := &Broker{cfg: testConfig(t), engine: engineapi.New(serveTestEngine(t, mux)), live: map[string]string{}, slots: make(chan struct{}, 1)}
+	mux.HandleFunc("GET /v"+engineapi.APIVersion+"/images/{ref}/json", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"Id":"sha256:test"}`)
+	})
+	b := brokerOn(t, serveTestEngine(t, mux), 1)
+	b.info.ImageID = "sha256:test"
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +236,7 @@ func TestShutdownReportsSweepFailure(t *testing.T) {
 	socket := serveTestEngine(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "fixture sweep failure", http.StatusServiceUnavailable)
 	}))
-	b := &Broker{cfg: testConfig(t), engine: engineapi.New(socket)}
+	b := brokerOn(t, socket, 0)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -293,7 +309,7 @@ func TestPreparedObservesContainerThatExitsDuringStart(t *testing.T) {
 	server := &http.Server{Handler: mux}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { server.Close() })
-	b := &Broker{cfg: testConfig(t), engine: engineapi.New(socket), live: map[string]string{}}
+	b := brokerOn(t, socket, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	p := plan{kind: sandbox.KindProbe, timeout: time.Second}

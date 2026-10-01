@@ -43,6 +43,8 @@ type plan struct {
 	stdin     bool
 	timeout   time.Duration
 	readiness uint64
+	// image is the image ID the configured tag resolved to for this sandbox.
+	image string
 }
 
 func (c Config) plan(req sandbox.Request) (plan, error) {

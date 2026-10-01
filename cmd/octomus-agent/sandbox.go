@@ -110,6 +110,7 @@ func runBroker(env func(string) (string, bool), stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	cfg.Log = stderr
 	executable, err := os.Executable()
 	if err != nil {
 		return err

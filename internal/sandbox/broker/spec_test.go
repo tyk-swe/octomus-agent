@@ -210,7 +210,7 @@ func TestLoadConfigRequiresTheDeploymentAndBoundsLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Memory != 4<<30 || cfg.Pids != 1024 || cfg.Max != 12 || cfg.NanoCPUs != 2e9 || cfg.UID != 10001 || !cfg.RequireIsolatedGateway {
+	if cfg.Memory != 4<<30 || cfg.Pids != 1024 || cfg.Max != 12 || cfg.NanoCPUs != 2e9 || cfg.UID != 10001 {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 	for key, value := range map[string]string{
@@ -230,6 +230,14 @@ func TestLoadConfigRequiresTheDeploymentAndBoundsLimits(t *testing.T) {
 		}
 		env[key] = previous
 	}
+	// ParseFloat accepts NaN, which every range comparison lets through.
+	for _, cpus := range []string{"NaN", "nan", "-nan", "+Inf", "-Inf", "0.05", "257"} {
+		env["OCTOMUS_SANDBOX_CPUS"] = cpus
+		if cfg, err := LoadConfig(getenv); err == nil || !strings.Contains(err.Error(), "OCTOMUS_SANDBOX_CPUS") {
+			t.Errorf("OCTOMUS_SANDBOX_CPUS=%s accepted as %d nano CPUs (%v)", cpus, cfg.NanoCPUs, err)
+		}
+	}
+	delete(env, "OCTOMUS_SANDBOX_CPUS")
 	if n, err := ParseBytes("512m"); err != nil || n != 512<<20 {
 		t.Fatalf("ParseBytes(512m) = %d, %v", n, err)
 	}

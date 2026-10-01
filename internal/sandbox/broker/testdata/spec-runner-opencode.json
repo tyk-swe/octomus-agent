@@ -24,6 +24,7 @@
     "TMPDIR=/tmp",
     "GIT_TERMINAL_PROMPT=0",
     "GIT_OPTIONAL_LOCKS=0",
+    "GIT_CONFIG_GLOBAL=/opt/octomus/gitconfig",
     "HTTPS_PROXY=http://sandbox:token@egress:3128",
     "OPENCODE_SERVER_PASSWORD=pw"
   ],
