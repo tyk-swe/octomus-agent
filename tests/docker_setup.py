@@ -95,6 +95,44 @@ def setup_secret_ownership(operator_uid, github_uid, recreate_github=False):
             assert (s.secrets / name).stat().st_mode & 0o777 == 0o600, name
 
 
+def setup_keeps_a_new_token_when_startup_fails():
+    with tempfile.TemporaryDirectory(prefix='octomus-setup-') as directory:
+        s = Setup(Path(directory))
+        s.secret('github_token', 'fixture-github-token')
+        failed = s.run(FIXTURE_UP_STATUS='1')
+        assert failed.returncode != 0, failed.stdout
+        token = (s.secrets / 'operator_token').read_text().strip()
+        assert len(token) == 64 and token in failed.stdout, (failed.stdout, failed.stderr)
+        # A later run cannot show a token it did not make, but says where it is.
+        again = s.run()
+        assert again.returncode == 0, again.stderr
+        assert token not in again.stdout, again.stdout
+        assert f'sudo cat {s.secrets / "operator_token"}' in again.stdout, again.stdout
+
+
+def setup_asks_for_github_first_and_restores_echo():
+    with tempfile.TemporaryDirectory(prefix='octomus-setup-') as directory:
+        s = Setup(Path(directory))
+        result = s.run(stdin='')
+        assert result.returncode != 0 and 'A GitHub token is required' in result.stderr, result.stderr
+        assert s.stty_log.read_text().splitlines() == ['-echo', 'echo'], s.stty_log.read_text()
+        assert not (s.secrets / 'operator_token').exists(), 'an abandoned setup left an operator token nobody saw'
+        assert 'compose up -d' not in s.calls(), s.calls()
+
+
+def setup_tunnel_uses_the_published_port():
+    with tempfile.TemporaryDirectory(prefix='octomus-setup-') as directory:
+        s = Setup(Path(directory), env_file='OCTOMUS_GITHUB_REPO=fixture/repo\nOCTOMUS_PORT="4300"\n')
+        s.secret('operator_token', 'fixture-operator-token')
+        s.secret('github_token', 'fixture-github-token')
+        result = s.run()
+        assert result.returncode == 0, result.stderr
+        assert 'ssh -N -L 4200:127.0.0.1:4300 ' in result.stdout, result.stdout
+        # Compose prefers the invoking shell's value over .env, and so does the printed tunnel.
+        result = s.run(OCTOMUS_PORT='4400')
+        assert 'ssh -N -L 4200:127.0.0.1:4400 ' in result.stdout, result.stdout
+
+
 def render(env_file):
     """The compose file as Compose resolves it with this .env, every profile enabled."""
     with tempfile.TemporaryDirectory(prefix='octomus-compose-') as directory:
@@ -151,8 +189,11 @@ def main():
     setup_secret_ownership(10001, 10001)
     setup_secret_ownership(1000, 10001)
     setup_secret_ownership(10001, 1000, recreate_github=True)
+    setup_keeps_a_new_token_when_startup_fails()
+    setup_asks_for_github_first_and_restores_echo()
+    setup_tunnel_uses_the_published_port()
     compose_contract()
-    print('PASS Docker setup: secret ownership and the compose contract')
+    print('PASS Docker setup: secret ownership, token display, terminal echo, tunnel port and the compose contract')
 
 
 if __name__ == '__main__':

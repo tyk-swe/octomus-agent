@@ -27,7 +27,8 @@ cd octomus-agent/deploy/docker
 - writes `.env` from [env.example](../deploy/docker/env.example), including the Docker
   socket's group for the broker;
 - asks for `OWNER/REPOSITORY` and the GitHub token;
-- generates the operator token, printing it once;
+- generates the operator token and prints it once, even when a later step fails (a later
+  run says where it is: `sudo cat deploy/docker/secrets/operator_token`);
 - stores both secrets as files that only the control plane's user can read;
 - builds the control-plane and sandbox images;
 - runs `docker compose up -d`.
