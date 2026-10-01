@@ -20,7 +20,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from harness import CODEX_ROUTE, PROJECT, TOKEN, poll, run_selected, setup
+from harness import CODEX_ROUTE, PROJECT, TOKEN, local_urlopen, poll, run_selected, setup
 
 COMPOSE = PROJECT / 'deploy/docker/compose.yaml'
 IMAGES = {'base': 'octomus-agent:e2e-base', 'control': 'octomus-agent:e2e', 'sandbox': 'octomus-sandbox:e2e'}
@@ -127,7 +127,7 @@ class Stack:
 
     def wait_healthy(self):
         def healthy():
-            with urllib.request.urlopen(f'http://127.0.0.1:{self.port}/healthz', timeout=2) as response:
+            with local_urlopen(f'http://127.0.0.1:{self.port}/healthz', timeout=2) as response:
                 return json.load(response)['ok']
         if not poll(healthy, 120, interval=0.5):
             raise AssertionError(f'{self.project} never became healthy\n{self.logs()}')
@@ -142,7 +142,7 @@ class Stack:
                                          headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'},
                                          data=json.dumps(value or {}).encode() if method != 'GET' else None)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with local_urlopen(request, timeout=timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             raise AssertionError(f'{method} {path}: HTTP {error.code} {error.read()[:2000].decode(errors="replace")}') from None

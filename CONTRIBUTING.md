@@ -41,7 +41,8 @@ SQLite and local Git with deterministic Codex, OpenCode and GitHub peers
 writes:
 
 - `tests/harness_environment.py`: fixture setup and child Git operations under
-  hostile inherited configuration and repository-location variables.
+  hostile inherited configuration and repository-location variables, plus direct
+  loopback HTTP access under inherited proxy settings.
 - `tests/binary_contract.py`: startup order, signal shutdown and lock release, and the
   embedded dashboard.
 - `tests/evidence_snapshot.py`: the documented SQLite backup and `--export-run`
