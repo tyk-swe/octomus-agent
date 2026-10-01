@@ -195,6 +195,10 @@ func (a *App) Run(ctx context.Context) error {
 	ticker := time.NewTicker(schedulerInterval)
 	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil {
+			a.Shutdown()
+			return nil
+		}
 		if err := a.Tick(); err != nil {
 			a.fail(err)
 		}

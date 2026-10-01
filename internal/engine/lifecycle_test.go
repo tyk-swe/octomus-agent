@@ -94,3 +94,40 @@ func TestRepeatedLifecycleLeavesNoLeaks(t *testing.T) {
 			extraFDs, extraG, beforeFDs, beforeG)
 	}
 }
+
+func TestRunWithCancelledContextDoesNotDispatch(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	control := model.DefaultControl()
+	control.SetMode(model.OperatingModeContinuous)
+	control.NextCycleAt = time.Now().Unix() + 3600
+	saveSettings(t, state, cfg, control)
+	task := queuedTask(cfg, "cancelled-run", "tyk/existing", "tyk/existing")
+	if err := state.Put("task", task.ID, task); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	app := New(state, t.TempDir(), WithTaskRunner(TaskRunnerFunc(func(ctx context.Context, _ model.Task) error {
+		started <- struct{}{}
+		return ctx.Err()
+	})))
+	t.Cleanup(app.Shutdown)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := app.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 0 {
+		t.Error("a cancelled service context dispatched a task")
+	}
+	if saved := loadTask(t, state, task.ID); saved.Status != model.StatusQueued {
+		t.Errorf("cancelled run changed queued task to %s", saved.Status)
+	}
+	if !app.runtime.lastRetention.IsZero() || !app.runtime.lastObserve.IsZero() || !app.runtime.lastPrAttempt.IsZero() {
+		t.Error("a cancelled service context started background maintenance")
+	}
+	if !app.Drained() || app.Context().Err() != context.Canceled {
+		t.Fatal("cancelled run did not shut down cleanly")
+	}
+}
