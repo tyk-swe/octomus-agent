@@ -303,6 +303,34 @@ func TestLostEvidenceMarksTheRecordIncomplete(t *testing.T) {
 			t.Fatalf("record from a restarted gateway = %+v (log %q); want it marked incomplete", record, log)
 		}
 	})
+	t.Run("exit never reported", func(t *testing.T) {
+		tune(t, &stopWait, 300*time.Millisecond)
+		listener, socket := testutil.ListenUnix(t, "collector.sock")
+		gateway(t, listener)
+		e := newFakeEngine(t)
+		// The daemon answers no kill and reports no exit, so the broker removes the sandbox without reading its state.
+		e.kill = func(c *fakeContainer, signal string) (int, string) {
+			if signal == "SIGKILL" {
+				c.mu.Lock()
+				c.oom = true
+				c.mu.Unlock()
+				return http.StatusInternalServerError, "fixture kill failure"
+			}
+			return 0, ""
+		}
+		e.run = func(*fakeContainer) {}
+		cfg := testConfig(t)
+		cfg.LeaseDir, cfg.EgressProxy, cfg.EgressCollector = t.TempDir(), "egress:3128", socket
+		log := &testutil.SyncBuffer{}
+		cfg.Log = log
+		report, err := e.broker(t, cfg).runSandbox(context.Background(),
+			plan{kind: wire.KindProbe, probe: wire.ProbeContainment, timeout: 100 * time.Millisecond}, discard, discard, nil)
+		if err != nil || !report.Killed || report.Sandbox == nil || !report.Sandbox.Incomplete || report.Sandbox.OOM ||
+			!strings.Contains(log.String(), "did not report its exit") {
+			t.Fatalf("sandbox killed without a reported exit = %+v (sandbox %+v), %v (log %q); want its record marked incomplete",
+				report, report.Sandbox, err, log.String())
+		}
+	})
 	t.Run("state unreadable", func(t *testing.T) {
 		listener, socket := testutil.ListenUnix(t, "collector.sock")
 		gateway(t, listener)

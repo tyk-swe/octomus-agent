@@ -198,7 +198,9 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 		}
 	default:
 		report = wire.ExitReport{Killed: end.killed, Error: end.reason}
-		oom, known := false, true
+		// A sandbox that never reported its exit after a kill was removed by force without its state being read, so
+		// nothing says whether the memory limit killed a process in it.
+		oom, known := false, false
 		if end.result != nil {
 			report.Code = end.result.StatusCode
 			oom, known = s.oomKilled(within(5 * time.Second))
