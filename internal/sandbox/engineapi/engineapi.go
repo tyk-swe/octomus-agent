@@ -125,19 +125,6 @@ func (c *Client) Version(ctx context.Context) (Version, error) {
 	return v, err
 }
 
-type Info struct {
-	Runtimes        map[string]json.RawMessage `json:"Runtimes"`
-	DefaultRuntime  string                     `json:"DefaultRuntime"`
-	SecurityOptions []string                   `json:"SecurityOptions"`
-	CgroupVersion   string                     `json:"CgroupVersion"`
-}
-
-func (c *Client) Info(ctx context.Context) (Info, error) {
-	var info Info
-	err := c.do(ctx, http.MethodGet, path("/info"), nil, &info)
-	return info, err
-}
-
 type Image struct {
 	ID          string   `json:"Id"`
 	RepoTags    []string `json:"RepoTags"`

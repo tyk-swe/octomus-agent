@@ -145,8 +145,6 @@ func newClient(transport http.RoundTripper) *http.Client {
 	}
 }
 
-func newLoopbackClient() *http.Client { return newClient(sandbox.LoopbackTransport()) }
-
 func (o *OpenCode) ProtocolSchema(cwd string) (any, error) {
 	return o.call("GET", "/doc", cwd, nil, 60)
 }

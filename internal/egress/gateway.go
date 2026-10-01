@@ -6,14 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -648,19 +646,6 @@ func (g *Gateway) splice(t *tunnel, buffered io.Reader) (int64, int64) {
 	return up, down
 }
 
-// Describe lists the effective allowlists for logs and the dashboard.
-func (p Policy) Describe() map[string][]string {
-	describe := func(rules []Rule) []string {
-		out := []string{}
-		for _, rule := range rules {
-			out = append(out, rule.String())
-		}
-		sort.Strings(out)
-		return out
-	}
-	return map[string][]string{"model": describe(p.Model), "build": describe(p.Build)}
-}
-
 // ServeCollector answers the broker's request for a finished sandbox's summary on a local socket.
 func (g *Gateway) ServeCollector(ctx context.Context, listener net.Listener) error {
 	mux := http.NewServeMux()
@@ -683,8 +668,4 @@ func (g *Gateway) ServeCollector(ctx context.Context, listener net.Listener) err
 		return nil
 	}
 	return err
-}
-
-func (d Decision) String() string {
-	return fmt.Sprintf("%s %s:%d %s", d.Decision, d.Host, d.Port, d.Reason)
 }

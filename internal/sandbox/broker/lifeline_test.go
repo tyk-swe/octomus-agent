@@ -162,7 +162,7 @@ func TestKillReportsWhatEndedTheSandbox(t *testing.T) {
 		<-e.WaitCreated(t, 1).Exited()
 		var got ended
 		select {
-		case controls <- control{signal: signalKill}:
+		case controls <- control{signal: sandbox.SignalKill}:
 			got = <-done
 		case got = <-done:
 			// The exit reached the broker before the kill could: the report must be the same.

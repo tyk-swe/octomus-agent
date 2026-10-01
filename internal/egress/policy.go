@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -63,6 +64,19 @@ func (p Policy) Allows(kind, host string, port uint16) bool {
 		}
 	}
 	return false
+}
+
+// Describe lists the effective allowlists for logs and the dashboard.
+func (p Policy) Describe() map[string][]string {
+	describe := func(rules []Rule) []string {
+		out := []string{}
+		for _, rule := range rules {
+			out = append(out, rule.String())
+		}
+		sort.Strings(out)
+		return out
+	}
+	return map[string][]string{"model": describe(p.Model), "build": describe(p.Build)}
 }
 
 var labelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)

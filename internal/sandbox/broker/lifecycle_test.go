@@ -131,7 +131,7 @@ func TestBlockedStdinDoesNotBlockSandboxLifecycle(t *testing.T) {
 				close(controls)
 			case "kill":
 				select {
-				case controls <- control{signal: signalKill}:
+				case controls <- control{signal: sandbox.SignalKill}:
 				case <-time.After(2 * time.Second):
 					t.Fatal("kill was blocked behind stdin")
 				}

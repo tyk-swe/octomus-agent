@@ -3,7 +3,6 @@ package sandbox
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 
@@ -123,22 +122,4 @@ func (f *FrameWriter) Data(kind byte, p []byte) (int, error) {
 		p = p[n:]
 	}
 	return written, nil
-}
-
-func frameName(kind byte) string {
-	switch kind {
-	case FrameStdin:
-		return "stdin"
-	case FrameStdinEOF:
-		return "stdin-eof"
-	case FrameStdout:
-		return "stdout"
-	case FrameStderr:
-		return "stderr"
-	case FrameExit:
-		return "exit"
-	case FrameSignal:
-		return "signal"
-	}
-	return fmt.Sprintf("unknown(%d)", kind)
 }

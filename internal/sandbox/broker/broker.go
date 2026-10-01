@@ -899,11 +899,11 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 				}
 				pendingInput = append(pendingInput, msg)
 				pendingBytes += len(msg.stdin)
-			case msg.signal == signalTerm:
+			case msg.signal == sandbox.SignalTerminate:
 				termCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = b.engine.ContainerKill(termCtx, s.id, "SIGTERM")
 				cancel()
-			case msg.signal == signalKill:
+			case msg.signal == sandbox.SignalKill:
 				kill("")
 			}
 		}
@@ -1002,11 +1002,6 @@ func (b *Broker) evidence(name, image string, oom bool) *model.SandboxRecord {
 	return model.MergeSandbox(nil, record)
 }
 
-const (
-	signalTerm = sandbox.SignalTerminate
-	signalKill = sandbox.SignalKill
-)
-
 // runSandbox runs a plan to completion without a control-plane stream, for the broker's own probes.
 func (b *Broker) runSandbox(ctx context.Context, p plan, stdout, stderr func([]byte) error, controls <-chan control) (sandbox.ExitReport, error) {
 	prepared, err := b.prepare(ctx, ctx, p, func() {})
@@ -1063,7 +1058,7 @@ func (b *Broker) stream(ctx context.Context, s *prepared, p plan, conn net.Conn,
 				msg.eof = true
 			case sandbox.FrameSignal:
 				msg.signal = string(payload)
-				if msg.signal != signalTerm && msg.signal != signalKill {
+				if msg.signal != sandbox.SignalTerminate && msg.signal != sandbox.SignalKill {
 					continue
 				}
 			default:

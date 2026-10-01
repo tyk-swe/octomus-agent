@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
@@ -595,6 +596,8 @@ func TestStatusErrorRedactsBeforeCutting(t *testing.T) {
 		t.Fatalf("whole body: %q", err)
 	}
 }
+
+func newLoopbackClient() *http.Client { return newClient(sandbox.LoopbackTransport()) }
 
 func TestStalledErrorBodyEndsPromptly(t *testing.T) {
 	t.Parallel()

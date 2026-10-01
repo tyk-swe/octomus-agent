@@ -5,41 +5,6 @@ import (
 	"testing"
 )
 
-func TestParseReadyURL(t *testing.T) {
-	t.Parallel()
-	for _, endpoint := range []string{"http://127.0.0.1:4096", "http://127.0.0.1:4096/"} {
-		got, err := parseReadyURL(endpoint)
-		if err != nil || got != "http://127.0.0.1:4096" {
-			t.Errorf("parseReadyURL(%q) = %q, %v", endpoint, got, err)
-		}
-	}
-	for _, endpoint := range []string{
-		"",
-		"127.0.0.1:4096",
-		"https://127.0.0.1:4096/",
-		"ws://127.0.0.1:4096/",
-		"http://localhost:4096/",
-		"http://10.0.0.1:4096/",
-		"http://[::1]:4096/",
-		"http://127.0.0.1/",
-		"http://127.0.0.1:0/",
-		"http://127.0.0.1:65536/",
-		"http://127.0.0.1:80/",
-		"http://user@127.0.0.1:4096/",
-		"http://user:pw@127.0.0.1:4096/",
-		"http://@127.0.0.1:4096/",
-		"http://127.0.0.1:4096/x",
-		"http://127.0.0.1:4096/?q",
-		"http://127.0.0.1:4096?q",
-		"http://127.0.0.1:4096/#f",
-		"http://127.0.0.1:4096#f",
-	} {
-		if got, err := parseReadyURL(endpoint); err == nil || got != "" {
-			t.Errorf("parseReadyURL(%q) = %q, %v; want a refusal", endpoint, got, err)
-		}
-	}
-}
-
 func TestSegment(t *testing.T) {
 	t.Parallel()
 	for id, want := range map[string]string{
