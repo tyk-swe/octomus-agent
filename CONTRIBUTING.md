@@ -78,11 +78,11 @@ Scenarios run with up to four workers; `OCTOMUS_TEST_JOBS` sets the limit
 (1 runs serially; lower it on a loaded machine if a scenario's own timing
 assertion, such as the harness suite's signal-shutdown check, gets crowded out).
 Set `OCTOMUS_TEST_BINARY` to test another executable. The Python fixture harness
-isolates Git configuration and repository-location environment variables in its
-child processes, so personal signing settings, hooks and shell Git overrides
-cannot change fixture setup or redirect its writes. Repository-local settings
-and explicit `fixture_service(env=...)` overrides still apply. Go tests share polling and
-process helpers through `internal/testutil`, and inject `internal/runner/runnertest`
+and the Go engine, Git and HTTP fixture suites isolate inherited Git configuration
+and repository-location environment variables, so personal signing settings,
+hooks and shell Git overrides cannot change fixture setup or redirect its writes.
+Repository-local settings and explicit test environment overrides still apply.
+Go tests share polling and process helpers through `internal/testutil`, and inject `internal/runner/runnertest`
 in place of runner processes; `internal/schemas/schematest` holds each structured-output
 schema to the Go type that decodes its answers. `web/types_contract_test.go` and
 `internal/config/dashboard_test.go` hold the dashboard's TypeScript types, limits and

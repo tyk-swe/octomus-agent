@@ -14,9 +14,13 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func TestMain(m *testing.M) {
+	if err := testutil.IsolateGitEnvironment(); err != nil {
+		panic(err)
+	}
 	if err := os.Setenv("OCTOMUS_HTTPAPI_TEST_SECRET", "verification_commands"); err != nil {
 		os.Exit(2)
 	}
