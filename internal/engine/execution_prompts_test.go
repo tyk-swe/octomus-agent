@@ -53,8 +53,17 @@ func TestReviewPromptIsByteStable(t *testing.T) {
 		`Existing PR: Some("https://github.com/fixture/project/pull/7"). ` +
 		"Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. " +
 		"Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings."
-	if got := reviewPrompt(task, "reviewed-sha"); got != want {
+	trusted := changeSet{stat: " parser.go | 2 +-", diff: "diff --git a/parser.go b/parser.go\n-old\n+new"}
+	want += "\nThe orchestrator's own git computed this change set. Git inside your sandbox reads configuration and shell startup files earlier turns could change, " +
+		"so wherever its output differs from what follows, what follows is authoritative and the difference is itself a finding.\n" +
+		"Changed files (git diff --stat base-sha reviewed-sha):\n parser.go | 2 +-\nComplete diff:\ndiff --git a/parser.go b/parser.go\n-old\n+new"
+	if got := reviewPrompt(task, "reviewed-sha", trusted); got != want {
 		t.Fatalf("review prompt changed:\n got %q\nwant %q", got, want)
+	}
+	trusted.diff, trusted.omitted = "", "it exceeds 262144 bytes"
+	if got := reviewPrompt(task, "reviewed-sha", trusted); !strings.HasSuffix(got, "Changed files (git diff --stat base-sha reviewed-sha):\n parser.go | 2 +-\n"+
+		"The complete diff is not included because it exceeds 262144 bytes: read it with git diff base-sha HEAD and check it against the files above.") {
+		t.Fatalf("review prompt without the diff:\n%s", got)
 	}
 }
 
@@ -100,7 +109,7 @@ func TestTaskPromptsKeepFixturePrefixesAndPolicy(t *testing.T) {
 		requires             []string
 	}{
 		{"executor", executorPrompt(task, cfg), "Implement this accepted task", []string{"Do not push, publish, merge or deploy", "Full comparison base: base-sha"}},
-		{"reviewer", reviewPrompt(task, "reviewed-sha"), "Perform a fresh code review", []string{"git diff base-sha HEAD", "Recorded HEAD: reviewed-sha", "do not modify files"}},
+		{"reviewer", reviewPrompt(task, "reviewed-sha", changeSet{}), "Perform a fresh code review", []string{"git diff base-sha HEAD", "Recorded HEAD: reviewed-sha", "do not modify files"}},
 		{"repair", repair, "Repair actionable findings", []string{"Do not push, publish, merge or deploy", "Full comparison base: base-sha"}},
 	} {
 		if !strings.HasPrefix(check.prompt, check.prefix) {

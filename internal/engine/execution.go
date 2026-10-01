@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -400,6 +401,10 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	if !ok {
 		return model.Review{}, errors.New("code_reviewer route is missing")
 	}
+	trusted, err := trustedChangeSet(ctx, cfg, ws, task.ComparisonBase, revision)
+	if err != nil {
+		return model.Review{}, err
+	}
 	var review model.Review
 	judge := func(thread, answer string) (string, error) {
 		if err := json.Unmarshal([]byte(answer), &review); err != nil {
@@ -416,17 +421,63 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	}
 	if _, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "reviewer", route: route, workspace: ws,
-		prompt: reviewPrompt(task, revision), schema: schemas.ReviewSchema(), judge: judge,
+		prompt: reviewPrompt(task, revision, trusted), schema: schemas.ReviewSchema(), judge: judge,
 	}); err != nil {
 		return model.Review{}, err
 	}
 	return review, nil
 }
 
-func reviewPrompt(task *model.Task, revision string) string {
-	return fmt.Sprintf(
+// reviewDiffLimit bounds the diff a review prompt carries; past it the prompt carries the changed files only.
+const reviewDiffLimit = 256 << 10
+
+// changeSet is a revision's change set as the orchestrator's trusted git shows it: the --stat summary, and the whole
+// diff unless omitted says why it is not included.
+type changeSet struct {
+	stat, diff, omitted string
+}
+
+// trustedChangeSet reads the change set from base to revision with the orchestrator's git against the trusted
+// metadata. The fresh reviewer's own git runs in a sandbox whose home and runner configuration earlier turns of the
+// task could change, so it must not be the only account of what changed.
+func trustedChangeSet(ctx context.Context, cfg config.Config, ws, base, revision string) (changeSet, error) {
+	args := []string{"-c", "core.quotePath=true", "diff", "--no-color", "--no-ext-diff", "--no-textconv"}
+	stat, err := gitops.WorkGit(ctx, cfg, ws, append(slices.Clone(args), "--stat=200", base, revision))
+	if err != nil {
+		return changeSet{}, err
+	}
+	if len(stat) > reviewDiffLimit {
+		stat = stat[:reviewDiffLimit] + "\n[file list cut at " + strconv.Itoa(reviewDiffLimit) + " bytes]"
+	}
+	set := changeSet{stat: stat}
+	diff, err := gitops.WorkGit(ctx, cfg, ws, append(slices.Clone(args), base, revision))
+	switch {
+	case err != nil:
+		// A diff too large to capture, or not UTF-8, still leaves the reviewer the file list.
+		set.omitted = "the orchestrator could not read it as text: " + redact.Text(err.Error())
+	case len(diff) > reviewDiffLimit:
+		set.omitted = "it exceeds " + strconv.Itoa(reviewDiffLimit) + " bytes"
+	default:
+		set.diff = diff
+	}
+	return set, nil
+}
+
+func reviewPrompt(task *model.Task, revision string, trusted changeSet) string {
+	prompt := fmt.Sprintf(
 		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
 		task.ComparisonBase, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
+	if trusted.stat == "" {
+		return prompt
+	}
+	prompt += "\nThe orchestrator's own git computed this change set. Git inside your sandbox reads configuration and shell startup files earlier turns could change, " +
+		"so wherever its output differs from what follows, what follows is authoritative and the difference is itself a finding.\n" +
+		fmt.Sprintf("Changed files (git diff --stat %s %s):\n%s\n", task.ComparisonBase, revision, trusted.stat)
+	if trusted.omitted != "" {
+		return prompt + fmt.Sprintf("The complete diff is not included because %s: read it with git diff %s HEAD and check it against the files above.",
+			trusted.omitted, task.ComparisonBase)
+	}
+	return prompt + "Complete diff:\n" + trusted.diff
 }
 
 func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision string) ([]string, error) {

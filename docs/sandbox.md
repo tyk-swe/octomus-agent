@@ -77,7 +77,11 @@ filesystem, no capabilities and `no-new-privileges`. See
 Executors, fresh reviewers and repair turns each get a new sandbox. Persistent repair
 threads resume from the runner session store (below), not from a live process. These turns
 share the task's home, so what one leaves there, shell startup files included, reaches the
-next; only git's own per-user configuration in it is ignored. Each
+next; only git's own per-user configuration in it is ignored. Because what a turn leaves
+can still change what git shows inside the next one, the fresh reviewer's prompt also
+carries the change set as Octomus's own git reads it from the trusted metadata: the
+changed files always, the complete diff up to 256 KiB, authoritative over what git in its
+sandbox shows. Each
 verification run starts from a fresh clone of exactly the reviewed commit, so nothing an
 agent left beside it can influence the result. Each verification command gets a fresh
 sandbox. Commands in one verification run share a home directory, so `npm ci` in one

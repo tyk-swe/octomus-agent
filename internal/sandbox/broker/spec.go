@@ -14,8 +14,9 @@ import (
 // and ignore) would let one turn change what git shows the next, such as the diff a fresh reviewer reads. With this
 // read-only file as the global configuration, git reads none of those files; the image's own system configuration
 // still applies. This covers git's own files only: the rest of the home, shell startup files and the runner's state
-// included, still carries over from turn to turn. Verification sandboxes keep their per-run home's configuration,
-// which repository commands may set.
+// included, still carries over from turn to turn, so the reviewer is also given the change set as the orchestrator's
+// own git reads it. Verification sandboxes keep their per-run home's configuration, which repository commands may
+// set.
 const runnerGitConfig = `# Written by the Octomus sandbox broker for runner sandboxes.
 [core]
 	attributesFile = /dev/null

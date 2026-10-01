@@ -439,6 +439,31 @@ func TestExecutorCleanupFailureBlocksPublication(t *testing.T) {
 	}
 }
 
+// The fresh reviewer shares the executor's home, which can change what git inside its sandbox shows, so it is given
+// the change set as the orchestrator's own git sees it.
+func TestReviewerIsGivenTheOrchestratorsDiff(t *testing.T) {
+	t.Parallel()
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	routes, script := fixture.routes, fixture.script
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Wrote feature.txt", Effect: writeFile("feature.txt", "fixed output\n")})
+	script.Answer(routes.Reviewer, cleanReview("Reviewed"))
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	saveExecutionTask(t, fixture.planningFixture, task)
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if saved.Status != model.StatusPublished {
+		t.Fatalf("task = %+v; want it published", saved)
+	}
+	turns := script.Turns(routes.Reviewer)
+	if len(turns) != 1 {
+		t.Fatalf("reviewer turns = %d", len(turns))
+	}
+	for _, want := range []string{"feature.txt | 1 +", "Complete diff:\ndiff --git a/feature.txt b/feature.txt", "+fixed output", "is authoritative"} {
+		if !strings.Contains(turns[0].Prompt, want) {
+			t.Fatalf("reviewer prompt lacks %q:\n%s", want, turns[0].Prompt)
+		}
+	}
+}
+
 func TestSandboxFailureClosingARunnerBlocksAsRunnerUnavailable(t *testing.T) {
 	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
