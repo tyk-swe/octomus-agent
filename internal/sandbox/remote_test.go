@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -150,7 +151,14 @@ func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 		if awaitKill(reader) {
 			exitFrame(out, ExitReport{Code: 137, Killed: true, Error: removeFailure})
 		}
-
+	case "drop-on-signal":
+		// The broker goes away as the client starts to stop the sandbox.
+		for {
+			kind, _, err := ReadFrame(reader)
+			if err != nil || kind == FrameSignal {
+				return
+			}
+		}
 	case "hang", "":
 		var echoed bytes.Buffer
 		for {
@@ -361,6 +369,51 @@ func TestRemoteKilledSandboxTheBrokerFailedIsASandboxFailure(t *testing.T) {
 	child.Kill()
 	if status, err := child.Wait(); err == nil || !Infrastructure(err) || !strings.Contains(err.Error(), removeFailure) {
 		t.Fatalf("killed sandbox the broker could not remove = %v, %v; want a sandbox failure, never Octomus's own kill", status, err)
+	}
+}
+
+// A command Octomus stops at its timeout or on cancellation keeps the sandbox's failure to end cleanly: the timeout
+// alone would let verification read the work tree, or start its next command, beside a container that may still run.
+func TestRemoteStoppedCommandKeepsAnUnconfirmedEnd(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		cancel  bool
+		want    string
+	}{
+		{command: "ignore-kill", want: "Sandbox end is unconfirmed"},
+		{command: "drop-on-signal", want: "Sandbox stream was lost"},
+		{command: "ignore-kill", cancel: true, want: "Sandbox end is unconfirmed"},
+	} {
+		t.Run(fmt.Sprintf("%s cancel=%v", tc.command, tc.cancel), func(t *testing.T) {
+			t.Parallel()
+			f := startFakeBroker(t, 1)
+			remote := NewRemote(f.socket)
+			remote.killWait = 300 * time.Millisecond
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			seconds := uint64(1)
+			if tc.cancel {
+				seconds = 30
+				go func() {
+					<-f.requests
+					time.Sleep(200 * time.Millisecond)
+					cancel()
+				}()
+			}
+			_, _, err := Verify(ctx, remote, ownedWorkspace(t), tc.command, seconds, true)
+			stoppedFor := process.IsDeadlineElapsed(err)
+			if tc.cancel {
+				stoppedFor = errors.Is(err, process.ErrCancelled)
+			}
+			if !stoppedFor || !Infrastructure(err) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("stopped command = %v; want why it was stopped and the sandbox failure %q", err, tc.want)
+			}
+			slot, cancelSlot := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancelSlot()
+			if _, _, err := Verify(slot, remote, ownedWorkspace(t), "streams", 30, true); err != nil {
+				t.Fatalf("the stopped command kept its slot: %v", err)
+			}
+		})
 	}
 }
 
