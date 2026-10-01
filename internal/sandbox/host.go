@@ -1,20 +1,11 @@
 package sandbox
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
-	"strconv"
-	"strings"
-	"sync"
 	"time"
-
-	whatwg "github.com/nlnwa/whatwg-url/url"
 
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
@@ -92,20 +83,13 @@ func (h Host) StartOpenCode(ctx context.Context, spec Spec, readinessSeconds uin
 		return nil, err
 	}
 	stdout := child.Stdout()
-	lines := bufio.NewReaderSize(stdout, readyLineLimit+1)
-	found := make(chan error, 1)
-	var base string
-	go func() {
-		var err error
-		base, err = awaitReadyLine(lines)
-		found <- err
-	}()
-	_, err = process.Bounded(ctx, readinessSeconds, "OpenCode startup timed out", func(wctx context.Context) (struct{}, error) {
+	lines, ready := watchReadyLine(stdout)
+	base, err := process.Bounded(ctx, readinessSeconds, openCodeStartupTimeout, func(wctx context.Context) (string, error) {
 		select {
-		case err := <-found:
-			return struct{}{}, err
+		case result := <-ready:
+			return result.base, result.err
 		case <-wctx.Done():
-			return struct{}{}, wctx.Err()
+			return "", wctx.Err()
 		}
 	})
 	if err != nil {
@@ -121,71 +105,6 @@ func (h Host) StartOpenCode(ctx context.Context, spec Spec, readinessSeconds uin
 	}()
 	return &OpenCodeServer{Base: base, Transport: LoopbackTransport(), Child: child, Drained: drained}, nil
 }
-
-const (
-	readyLineLimit = 16_384
-	readyLineCount = 1000
-	readyPrefix    = "opencode server listening on "
-)
-
-func awaitReadyLine(r *bufio.Reader) (string, error) {
-	for range readyLineCount {
-		line, err := readBoundedLine(r)
-		if len(line) > 0 || err == nil {
-			if endpoint, ok := strings.CutPrefix(string(line), readyPrefix); ok {
-				return ParseLoopbackURL(strings.TrimSpace(endpoint))
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return "", errors.New("OpenCode exited before server readiness")
-			}
-			return "", err
-		}
-	}
-	return "", errors.New("OpenCode exceeded the startup output limit")
-}
-
-func readBoundedLine(r *bufio.Reader) ([]byte, error) {
-	chunk, err := r.ReadSlice('\n')
-	line := bytes.TrimSuffix(chunk, []byte("\n"))
-	if errors.Is(err, bufio.ErrBufferFull) || len(line) > readyLineLimit {
-		return nil, fmt.Errorf("line exceeds the %d byte protocol limit", readyLineLimit)
-	}
-	return bytes.Clone(line), err
-}
-
-// ParseLoopbackURL accepts only the plain loopback address a runner server reports once it is listening.
-func ParseLoopbackURL(endpoint string) (string, error) {
-	u, err := whatwg.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("Invalid OpenCode server address: %w", err)
-	}
-	port, perr := strconv.Atoi(u.Port())
-	authority := endpoint
-	if i := strings.Index(authority, "://"); i >= 0 {
-		authority = authority[i+3:]
-	}
-	if i := strings.IndexByte(authority, '/'); i >= 0 {
-		authority = authority[:i]
-	}
-	if u.Scheme() != "http" || u.Hostname() != "127.0.0.1" || perr != nil || port <= 0 ||
-		u.Username() != "" || u.Password() != "" || strings.Contains(authority, "@") ||
-		u.Pathname() != "/" || strings.ContainsAny(endpoint, "?#") {
-		return "", fmt.Errorf("OpenCode did not bind to a local server address")
-	}
-	return fmt.Sprintf("http://127.0.0.1:%s", u.Port()), nil
-}
-
-var loopback = sync.OnceValue(func() *http.Transport {
-	return &http.Transport{
-		Proxy:       nil,
-		DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-	}
-})
-
-// LoopbackTransport reaches servers on this host's loopback and never consults a proxy.
-func LoopbackTransport() http.RoundTripper { return loopback().Clone() }
 
 func (Host) RunnerVersion(ctx context.Context, spec Spec, seconds uint64) (string, error) {
 	return process.RunMachine(ctx, spec.Binary, []string{"--version"}, spec.Dir, seconds)

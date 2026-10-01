@@ -41,9 +41,11 @@ owns strict typed JSON boundaries for saved records and API requests.
   `capacity.go` and `notifications.go` serve operational views, PR capacity and the
   outbox.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
-  `--sandbox off`, `Remote` for the broker), owned-root preparation, the in-sandbox
-  helper (`--sandbox-init`: OpenCode HTTP/2 bridge and version probe) and the
-  containment probe. `sandbox/wire` is the broker wire contract: requests, stream
+  `--sandbox off`, `Remote` for the broker), owned-root preparation, OpenCode
+  readiness and its stream connection (`opencode.go`), the in-sandbox helper
+  (`init.go`, `--sandbox-init`: OpenCode HTTP/2 bridge and version probe) and the
+  containment probe (`probe.go` runs it, `containment.go` checks from inside the
+  sandbox). `sandbox/wire` is the broker wire contract: requests, stream
   frames, the broker info document, the runner names and the runner and verification
   programs both backends start, and the owned-root home layout. `sandbox/broker` is
   `--sandboxd`: request validation, the golden container spec

@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -65,32 +64,21 @@ func runOpenCodeBridge(args []string, stdin io.Reader, stdout, stderr io.Writer)
 		verdict(handshakeFailed + "Could not start OpenCode: " + err.Error())
 		return 3
 	}
-	stop := func() {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		timer := time.AfterFunc(2*time.Second, func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
-		_ = cmd.Wait()
-		timer.Stop()
-	}
-	lines := bufio.NewReaderSize(serverOut, readyLineLimit+1)
-	found := make(chan error, 1)
-	var base string
-	go func() {
-		var err error
-		base, err = awaitReadyLine(lines)
-		found <- err
-	}()
+	stop := func() { stopGroup(cmd.Process.Pid, func() { _ = cmd.Wait() }) }
+	lines, ready := watchReadyLine(serverOut)
+	var result readyResult
 	select {
-	case err = <-found:
+	case result = <-ready:
 	case <-time.After(time.Duration(seconds) * time.Second):
-		err = errors.New("OpenCode startup timed out")
+		result.err = errors.New(openCodeStartupTimeout)
 	}
-	if err != nil {
-		verdict(handshakeFailed + strings.ReplaceAll(err.Error(), "\n", " "))
+	if result.err != nil {
+		verdict(handshakeFailed + strings.ReplaceAll(result.err.Error(), "\n", " "))
 		stop()
 		return 3
 	}
 	go func() { _, _ = io.Copy(io.Discard, lines) }()
-	target, err := url.Parse(base)
+	target, err := url.Parse(result.base)
 	if err != nil {
 		verdict(handshakeFailed + err.Error())
 		stop()
@@ -107,17 +95,11 @@ func runOpenCodeBridge(args []string, stdin io.Reader, stdout, stderr io.Writer)
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		serveStream(&stdioConn{r: stdin, w: stdout}, proxy)
+		serveStream(&pipeConn{r: stdin, w: stdout, local: "sandbox", remote: "control"}, proxy)
 	}()
 	select {
 	case <-served:
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		select {
-		case <-exited:
-		case <-time.After(2 * time.Second):
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			<-exited
-		}
+		stopGroup(cmd.Process.Pid, func() { <-exited })
 		return 0
 	case err := <-exited:
 		var exit *exec.ExitError
@@ -129,6 +111,17 @@ func runOpenCodeBridge(args []string, stdin io.Reader, stdout, stderr io.Writer)
 		}
 		return 0
 	}
+}
+
+// terminationGrace is how long OpenCode's process group has to exit after SIGTERM before it is killed.
+const terminationGrace = 2 * time.Second
+
+// stopGroup terminates a process group, kills it once terminationGrace has passed, and returns when wait does.
+func stopGroup(pid int, wait func()) {
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	timer := time.AfterFunc(terminationGrace, func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	wait()
+	timer.Stop()
 }
 
 // serveStream answers HTTP/2 without TLS on one already-open connection and returns when that connection closes.
@@ -170,21 +163,6 @@ func (l *singleListener) Close() error {
 }
 
 func (l *singleListener) Addr() net.Addr { return &net.UnixAddr{Name: "stdio", Net: "unix"} }
-
-// stdioConn is the sandbox side of the one connection the control plane has into it.
-type stdioConn struct {
-	r io.Reader
-	w io.Writer
-}
-
-func (c *stdioConn) Read(p []byte) (int, error)       { return c.r.Read(p) }
-func (c *stdioConn) Write(p []byte) (int, error)      { return c.w.Write(p) }
-func (c *stdioConn) Close() error                     { return nil }
-func (c *stdioConn) LocalAddr() net.Addr              { return &net.UnixAddr{Name: "sandbox", Net: "unix"} }
-func (c *stdioConn) RemoteAddr() net.Addr             { return &net.UnixAddr{Name: "control", Net: "unix"} }
-func (c *stdioConn) SetDeadline(time.Time) error      { return nil }
-func (c *stdioConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *stdioConn) SetWriteDeadline(time.Time) error { return nil }
 
 // versionTimeout bounds each runner's --version. Both runners together stay well inside the broker's 120 second limit
 // on the version probe.

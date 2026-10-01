@@ -240,7 +240,7 @@ func (r *Remote) StartOpenCode(ctx context.Context, spec Spec, readinessSeconds 
 		return nil, err
 	}
 	stdout := child.Stdout()
-	_, err = process.Bounded(ctx, readinessSeconds+10, "OpenCode startup timed out", func(wctx context.Context) (struct{}, error) {
+	_, err = process.Bounded(ctx, readinessSeconds+10, openCodeStartupTimeout, func(wctx context.Context) (struct{}, error) {
 		stop := context.AfterFunc(wctx, func() {
 			stdout.Close()
 			child.Kill()
@@ -260,35 +260,6 @@ func (r *Remote) StartOpenCode(ctx context.Context, spec Spec, readinessSeconds 
 	return &OpenCodeServer{Base: "http://opencode.sandbox", Transport: streamTransport(child), Child: child, Drained: child.done}, nil
 }
 
-const (
-	handshakeReady  = "OCTOMUS-READY"
-	handshakeFailed = "OCTOMUS-FAILED "
-	handshakeLimit  = 4096
-)
-
-// readHandshake reads the shim's one-line verdict byte by byte, so nothing of the HTTP/2 stream behind it is consumed.
-func readHandshake(r io.Reader) error {
-	var line []byte
-	var one [1]byte
-	for len(line) < handshakeLimit {
-		if _, err := io.ReadFull(r, one[:]); err != nil {
-			return errors.New("OpenCode exited before server readiness")
-		}
-		if one[0] == '\n' {
-			text := string(line)
-			if text == handshakeReady {
-				return nil
-			}
-			if message, ok := strings.CutPrefix(text, handshakeFailed); ok {
-				return errors.New(strings.ToValidUTF8(message, "�"))
-			}
-			return errors.New("OpenCode sandbox answered an unexpected handshake")
-		}
-		line = append(line, one[0])
-	}
-	return errors.New("OpenCode sandbox handshake exceeded its size limit")
-}
-
 // streamTransport speaks HTTP/2 without TLS over the sandbox's standard streams. It dials exactly once: the stream is
 // the only way into the sandbox, and a lost stream is a lost server.
 func streamTransport(child *remoteChild) http.RoundTripper {
@@ -302,7 +273,7 @@ func streamTransport(child *remoteChild) http.RoundTripper {
 			if used.Swap(true) {
 				return nil, errors.New("OpenCode sandbox stream is closed")
 			}
-			return &streamConn{r: child.Stdout(), w: child.stdin}, nil
+			return &pipeConn{r: child.Stdout(), w: child.stdin, local: "control", remote: "sandbox"}, nil
 		},
 	}
 }
@@ -551,30 +522,3 @@ func (s *remoteStdin) Close() error {
 func (s *remoteStdin) stop() {
 	s.once.Do(func() { close(s.closed) })
 }
-
-// streamConn presents a sandbox's standard streams as the single connection an HTTP/2 client needs.
-type streamConn struct {
-	r io.Reader
-	w *remoteStdin
-}
-
-func (c *streamConn) Read(p []byte) (int, error) { return c.r.Read(p) }
-
-func (c *streamConn) Write(p []byte) (int, error) {
-	written := 0
-	for written < len(p) {
-		n, err := c.w.Write(p[written:])
-		written += n
-		if err != nil {
-			return written, err
-		}
-	}
-	return written, nil
-}
-
-func (c *streamConn) Close() error                     { return nil }
-func (c *streamConn) LocalAddr() net.Addr              { return &net.UnixAddr{Name: "control", Net: "unix"} }
-func (c *streamConn) RemoteAddr() net.Addr             { return &net.UnixAddr{Name: "sandbox", Net: "unix"} }
-func (c *streamConn) SetDeadline(time.Time) error      { return nil }
-func (c *streamConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *streamConn) SetWriteDeadline(time.Time) error { return nil }
