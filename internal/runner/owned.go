@@ -86,6 +86,15 @@ func exitErr(status process.Status, err error) error {
 	return status.Err()
 }
 
+// connectFailed keeps how a runner that could not connect ended, such as a sandbox that never started, beside the
+// connect error, which often saw only its stream go away.
+func connectFailed(err, closeErr error) error {
+	if closeErr == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %w", err, closeErr)
+}
+
 // runnerSetupHint names where a runner that cannot start must be fixed.
 func runnerSetupHint(box sandbox.Backend, action string) string {
 	if box.Mode() == sandbox.ModeDocker {
