@@ -165,7 +165,8 @@ class Stack:
         self.request('/config', 'PUT', {'expected_revision': view['revision'], 'config': config})
 
     def teardown(self):
-        self.compose('down', '--volumes', '--remove-orphans', '--timeout', '30', check=False)
+        # Every profile: `compose run login` leaves the exited login-lease container, which holds two project volumes.
+        self.compose('--profile', '*', 'down', '--volumes', '--remove-orphans', '--timeout', '30', check=False)
         for container in self.sandboxes():
             docker('rm', '-f', container, check=False)
         # Sandboxes wrote fixture files as uid 10001; remove them with a matching owner before the directory goes.
