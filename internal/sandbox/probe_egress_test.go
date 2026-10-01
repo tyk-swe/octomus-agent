@@ -61,11 +61,11 @@ func TestProbeEgressRefusalsComeFromTheRunnerAllowlist(t *testing.T) {
 		{"runner lease", "runner", "api.openai.com", func(token string) string { return "sandbox:" + token }, true,
 			"refused example.com:443, 169.254.169.254:80, localhost:4200"},
 		{"probe lease the gateway gives nothing", "probe", "api.openai.com", func(token string) string { return "sandbox:" + token },
-			false, "example.com:443 (HTTP 403 for another reason: Octomus egress blocked this connection: host is not on the probe allowlist)"},
+			false, "not proven refused: example.com:443 (HTTP 403 for another reason: Octomus egress blocked this connection: host is not on the probe allowlist)"},
 		{"unknown credential", "runner", "api.openai.com", func(string) string { return "sandbox:" + strings.Repeat("ef", 32) },
-			false, "example.com:443 (the gateway refused the probe's credential, HTTP 407)"},
+			false, "not proven refused: example.com:443 (the gateway refused the probe's credential, HTTP 407)"},
 		{"an allowlist that holds the unlisted name", "runner", "example.com", func(token string) string { return "sandbox:" + token },
-			false, "not refused example.com:443 (HTTP 502)"},
+			false, "not proven refused: example.com:443 (HTTP 502)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -104,9 +104,10 @@ func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
 	return report, nil
 }
 
-// confirmLimits holds the resource_limits check to the limits the broker configured. A number in memory.max or
-// pids.max shows only that some cgroup sets one (systemd gives every scope a pids limit of its own); the check passes
-// only when both are no higher than the broker's.
+// confirmLimits holds the resource_limits check to the limits the broker configured. The probe reads its own cgroup
+// (its cgroup namespace makes that the root of /sys/fs/cgroup), which holds exactly what Docker set from the broker's
+// spec; no ancestor's limit shows there. So a number alone proves nothing (systemd gives every scope a pids limit of
+// its own), and a lower one is some other limit than the broker's: the check passes only when both match.
 func (r *ProbeReport) confirmLimits(want *BrokerLimits, unknown error) {
 	for i := range r.Checks {
 		check := &r.Checks[i]
@@ -119,11 +120,13 @@ func (r *ProbeReport) confirmLimits(want *BrokerLimits, unknown error) {
 			return
 		}
 		problems := []string{}
-		if !withinLimit(r.Limits.Memory, want.Memory) {
-			problems = append(problems, fmt.Sprintf("memory.max %s exceeds the configured %d", r.Limits.Memory, want.Memory))
+		// The kernel keeps memory.max in whole pages, rounding the configured bytes down. The probe shares the control
+		// plane's kernel, so this page size is the sandbox's.
+		if problem := limitMismatch("memory.max", r.Limits.Memory, want.Memory, int64(os.Getpagesize())); problem != "" {
+			problems = append(problems, problem)
 		}
-		if !withinLimit(r.Limits.Pids, want.Pids) {
-			problems = append(problems, fmt.Sprintf("pids.max %s exceeds the configured %d", r.Limits.Pids, want.Pids))
+		if problem := limitMismatch("pids.max", r.Limits.Pids, want.Pids, 1); problem != "" {
+			problems = append(problems, problem)
 		}
 		if len(problems) > 0 {
 			check.Passed, check.Detail = false, strings.Join(problems, ", ")
@@ -132,9 +135,19 @@ func (r *ProbeReport) confirmLimits(want *BrokerLimits, unknown error) {
 	}
 }
 
-func withinLimit(observed string, limit int64) bool {
+// limitMismatch says how an observed cgroup limit differs from the configured one, or returns "" when it is the
+// configured value rounded down to a whole granule.
+func limitMismatch(file, observed string, limit, granule int64) string {
 	value, err := strconv.ParseInt(observed, 10, 64)
-	return err == nil && limit > 0 && value > 0 && value <= limit
+	switch {
+	case err != nil:
+		return fmt.Sprintf("%s %s, not a numeric limit", file, observed)
+	case limit <= 0:
+		return fmt.Sprintf("%s %d, but the broker reports no configured limit", file, value)
+	case value <= 0 || value > limit || value <= limit-granule:
+		return fmt.Sprintf("%s %d, configured %d", file, value, limit)
+	}
+	return ""
 }
 
 // runContainmentProbe observes, from inside the sandbox, every boundary the deployment promises.
@@ -156,11 +169,7 @@ func runContainmentProbe(stdout io.Writer) int {
 	add("no_new_privileges", "Cannot gain privileges through setuid programs", status["NoNewPrivs"] == "1",
 		"no_new_privs "+status["NoNewPrivs"])
 	add("seccomp", "System calls are filtered by seccomp", status["Seccomp"] == "2", "seccomp mode "+status["Seccomp"])
-	mountinfo, err := os.ReadFile("/proc/self/mountinfo")
-	if err != nil {
-		mountinfo = nil
-	}
-	readOnly, detail := readOnlyImage(mountinfo, tryWrite)
+	readOnly, detail := readOnlyImage(os.ReadFile, tryWrite)
 	add("read_only_image", "The image filesystem is read-only", readOnly, detail)
 	visible := []string{}
 	for _, path := range probeTargets {
@@ -213,9 +222,11 @@ func procStatus() map[string]string {
 // readOnlyImage proves the image is mounted read-only: the root mount carries the ro option, and a write to `/`, `/usr`
 // and `/etc` fails with EROFS. Any other refusal proves nothing, because the probe user cannot write to those
 // root-owned directories on a writable image either.
-func readOnlyImage(mountinfo []byte, write func(path string) error) (bool, string) {
+func readOnlyImage(read func(string) ([]byte, error), write func(path string) error) (bool, string) {
 	problems := []string{}
-	if options, ok := rootMountOptions(mountinfo); !ok {
+	if mountinfo, err := read("/proc/self/mountinfo"); err != nil {
+		problems = append(problems, "mountinfo unreadable ("+errnoText(err)+")")
+	} else if options, ok := rootMountOptions(mountinfo); !ok {
 		problems = append(problems, "no root mount in mountinfo")
 	} else if !slices.Contains(strings.Split(options, ","), "ro") {
 		problems = append(problems, "mount / "+options)
@@ -304,8 +315,10 @@ var hostPorts = []uint16{22, 53, 80, 443, 2375, 2376, 4200}
 
 // hostIsolation proves the sandbox cannot reach the host. It needs no default route, and the first address of each
 // on-link subnet, where Docker puts a bridge network's gateway on the host, must answer no connection on hostPorts.
-// An isolated gateway leaves that address free for a container, so an answer from an address Docker's DNS names as a
-// container on the network is a neighbour, which sandboxes may reach, not the host. An unreadable routing table fails.
+// A host firewall that drops those ports still answers ARP, which the dials set off, so an IPv4 address with a
+// complete ARP entry has answered too. An isolated gateway leaves that address free for a container, so an answer from
+// an address Docker's DNS names as a container on the network is a neighbour, which sandboxes may reach, not the host.
+// An unreadable routing or ARP table fails.
 func hostIsolation(read func(string) ([]byte, error), own []netip.Addr, dial dialFunc, container func(netip.Addr) string) (bool, string) {
 	route, err := read("/proc/net/route")
 	if err != nil {
@@ -339,6 +352,16 @@ func hostIsolation(read func(string) ([]byte, error), own []netip.Addr, dial dia
 		}
 	}
 	answers := reachable(addresses, 3*time.Second, dial)
+	arpAnswered := map[netip.Addr]bool{}
+	if slices.ContainsFunc(targets, netip.Addr.Is4) {
+		arp, err := read("/proc/net/arp")
+		if err != nil {
+			return false, "ARP table unreadable: " + errnoText(err)
+		}
+		if arpAnswered, err = completeARP(arp); err != nil {
+			return false, "ARP table unreadable: " + err.Error()
+		}
+	}
 	reached := []string{}
 	for _, target := range targets {
 		ports := []string{}
@@ -347,12 +370,14 @@ func hostIsolation(read func(string) ([]byte, error), own []netip.Addr, dial dia
 				ports = append(ports, address)
 			}
 		}
-		if len(ports) == 0 {
+		if len(ports) == 0 && !arpAnswered[target] {
 			notes = append(notes, "no answer from "+target.String())
 		} else if name := container(target); name != "" {
 			notes = append(notes, target.String()+" is the container "+name)
-		} else {
+		} else if len(ports) > 0 {
 			reached = append(reached, ports...)
+		} else {
+			reached = append(reached, target.String()+" (answered ARP)")
 		}
 	}
 	if len(reached) > 0 {
@@ -445,6 +470,34 @@ func parseRoutes(route, route6 []byte) ([]string, []netip.Addr, error) {
 		}
 	}
 	return defaults, gateways, nil
+}
+
+// arpComplete is ATF_COM from the kernel's if_arp.h: the neighbour answered and its hardware address is known.
+const arpComplete = 0x2
+
+// completeARP reads /proc/net/arp and returns the IPv4 addresses whose entries are complete. An address that never
+// answered stays incomplete until the kernel drops it.
+func completeARP(table []byte) (map[netip.Addr]bool, error) {
+	lines := strings.Split(strings.TrimSpace(string(table)), "\n")
+	if !strings.HasPrefix(lines[0], "IP address") {
+		return nil, errors.New("unexpected /proc/net/arp format")
+	}
+	complete := map[netip.Addr]bool{}
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			return nil, fmt.Errorf("unexpected ARP entry %q", line)
+		}
+		addr, err1 := netip.ParseAddr(fields[0])
+		flags, err2 := strconv.ParseUint(fields[2], 0, 32)
+		if err := errors.Join(err1, err2); err != nil {
+			return nil, fmt.Errorf("unexpected ARP entry %q", line)
+		}
+		if flags&arpComplete != 0 {
+			complete[addr] = true
+		}
+	}
+	return complete, nil
 }
 
 // firstAddress is the first host address of a subnet, the one Docker's default IPAM gives the bridge gateway. A /31,
@@ -554,7 +607,7 @@ func egressRefusals(proxy string) (bool, string) {
 			failures = append(failures, fmt.Sprintf("%s (HTTP %d)", refusal.target, code))
 		}
 	}
-	return len(failures) == 0, detailList("not refused", failures, "refused "+strings.Join(denied, ", "))
+	return len(failures) == 0, detailList("not proven refused:", failures, "refused "+strings.Join(denied, ", "))
 }
 
 // proxyConnect asks the configured egress gateway for a tunnel and returns its status and the first line of its

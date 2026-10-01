@@ -189,7 +189,9 @@ func (c *stdioConn) SetWriteDeadline(time.Time) error { return nil }
 var versionTimeout = 30 * time.Second
 
 // printVersions reports each runner's --version output from inside the sandbox image. A runner that is not installed
-// is left out; one that is installed but fails is also left out, and the failure is written to stderr.
+// is left out; one that is installed but fails is also left out, and the failure is written to stderr for the broker
+// to surface. The broker does not read it yet: it drops a successful probe's stderr, so such a runner still shows as
+// not installed.
 func printVersions(stdout, stderr io.Writer) int {
 	versions := map[string]string{}
 	for _, name := range []string{"codex", "opencode"} {
