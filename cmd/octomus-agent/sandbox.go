@@ -101,16 +101,14 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 // the login reads. It first revokes the previous login's lease, whose credential is in the file it replaces, so only
 // the latest login can reach out.
 func loginLease(env func(string) (string, bool)) error {
-	values := map[string]string{}
+	value := getenv(env)
 	for _, key := range []string{"OCTOMUS_EGRESS_LEASES", "OCTOMUS_EGRESS_PROXY", "OCTOMUS_LOGIN_PROXY_FILE"} {
-		v, ok := env(key)
-		if !ok || v == "" {
+		if value(key) == "" {
 			return fmt.Errorf("%s is required", key)
 		}
-		values[key] = v
 	}
-	leases := egress.Leases{Dir: values["OCTOMUS_EGRESS_LEASES"]}
-	file := values["OCTOMUS_LOGIN_PROXY_FILE"]
+	leases := egress.Leases{Dir: value("OCTOMUS_EGRESS_LEASES")}
+	file := value("OCTOMUS_LOGIN_PROXY_FILE")
 	if previous, err := os.ReadFile(file); err == nil {
 		if address, err := url.Parse(strings.TrimSpace(string(previous))); err == nil {
 			if token, ok := address.User.Password(); ok {
@@ -122,7 +120,7 @@ func loginLease(env func(string) (string, bool)) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(file, []byte(egress.ProxyURL(values["OCTOMUS_EGRESS_PROXY"], token)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(egress.ProxyURL(value("OCTOMUS_EGRESS_PROXY"), token)+"\n"), 0o600); err != nil {
 		leases.Revoke(token)
 		return err
 	}
