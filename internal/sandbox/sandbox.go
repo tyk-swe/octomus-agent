@@ -55,7 +55,8 @@ type Spec struct {
 	Stderr io.Writer
 	// FreshHome gives a verification sandbox an empty home: set on the first command of each verification run.
 	FreshHome bool
-	// Timeout is the backend's hard limit in seconds, beyond the caller's own graceful one; zero is the backend maximum.
+	// Timeout is a hard limit in seconds, beyond the caller's own graceful one. The Docker backend's broker enforces it,
+	// capped at and defaulting (zero) to its maximum; the host backend sets no limit beyond the caller's own.
 	Timeout uint64
 	// Probe names the KindProbe check to run.
 	Probe string
@@ -112,6 +113,8 @@ type Backend interface {
 	Mode() Mode
 	Start(ctx context.Context, spec Spec) (Child, error)
 	StartOpenCode(ctx context.Context, spec Spec, readinessSeconds uint64) (*OpenCodeServer, error)
+	// RunnerVersion reports the runner's version. The host backend runs its --version, bounded by seconds; the Docker
+	// backend runs nothing and reports the version its broker probed in the current sandbox image.
 	RunnerVersion(ctx context.Context, spec Spec, seconds uint64) (string, error)
 }
 
