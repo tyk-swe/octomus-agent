@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
@@ -128,8 +127,8 @@ func newGatewayFixture(t *testing.T, kind string, configure ...func(*Gateway)) *
 	t.Helper()
 	leases := t.TempDir()
 	token := strings.Repeat("ab", 32)
-	data, _ := json.Marshal(sandbox.Lease{Sandbox: "octomus-test-" + kind, Kind: kind})
-	if err := os.WriteFile(filepath.Join(leases, sandbox.LeaseFile(token)), data, 0o600); err != nil {
+	data, _ := json.Marshal(Lease{Sandbox: "octomus-test-" + kind, Kind: kind})
+	if err := os.WriteFile(filepath.Join(leases, leaseFile(token)), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	echo, err := net.Listen("tcp", "127.0.0.1:0")
@@ -230,7 +229,7 @@ func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 func TestGatewayTunnelsOnlyAllowlistedHostsToPublicAddresses(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
-	credential := sandbox.ProxyUser + ":" + f.token
+	credential := ProxyUser + ":" + f.token
 	status, tunnel := f.connect(t, "api.openai.com:443", credential)
 	if status != http.StatusOK {
 		t.Fatalf("allowlisted tunnel = %d", status)
@@ -282,15 +281,15 @@ func TestGatewayRequiresALiveLeaseAndAppliesItsKind(t *testing.T) {
 	for name, credential := range map[string]string{
 		"missing":     "",
 		"wrong user":  "someone:" + f.token,
-		"short token": sandbox.ProxyUser + ":abc",
-		"unknown":     sandbox.ProxyUser + ":" + strings.Repeat("cd", 32),
-		"not hex":     sandbox.ProxyUser + ":" + strings.Repeat("zz", 32),
+		"short token": ProxyUser + ":abc",
+		"unknown":     ProxyUser + ":" + strings.Repeat("cd", 32),
+		"not hex":     ProxyUser + ":" + strings.Repeat("zz", 32),
 	} {
 		if status, _ := f.connect(t, "registry.npmjs.org:443", credential); status != http.StatusProxyAuthRequired {
 			t.Errorf("%s credential = %d; want 407", name, status)
 		}
 	}
-	credential := sandbox.ProxyUser + ":" + f.token
+	credential := ProxyUser + ":" + f.token
 	if status, _ := f.connect(t, "api.openai.com:443", credential); status != http.StatusForbidden {
 		t.Errorf("verification sandbox reached a model host: %d", status)
 	}
@@ -315,7 +314,7 @@ func TestGatewayRequiresALiveLeaseAndAppliesItsKind(t *testing.T) {
 func TestGatewayBoundsTunnelsPerSandbox(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
 	f.gateway.perBox = 2
-	credential := sandbox.ProxyUser + ":" + f.token
+	credential := ProxyUser + ":" + f.token
 	var open []net.Conn
 	for range 2 {
 		status, tunnel := f.connect(t, "api.openai.com:443", credential)
@@ -334,7 +333,7 @@ func TestGatewayBoundsTunnelsPerSandbox(t *testing.T) {
 
 func TestGatewayCollectsOpenTunnelWithoutRecreatingSummary(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
-	status, tunnel := f.connect(t, "api.openai.com:443", sandbox.ProxyUser+":"+f.token)
+	status, tunnel := f.connect(t, "api.openai.com:443", ProxyUser+":"+f.token)
 	if status != http.StatusOK {
 		t.Fatalf("tunnel = %d", status)
 	}
@@ -366,7 +365,7 @@ func TestGatewayCollectsOpenTunnelWithoutRecreatingSummary(t *testing.T) {
 
 func TestGatewayRetainsCompletedTunnelBytes(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
-	_, tunnel := f.connect(t, "api.openai.com:443", sandbox.ProxyUser+":"+f.token)
+	_, tunnel := f.connect(t, "api.openai.com:443", ProxyUser+":"+f.token)
 	defer tunnel.Close()
 	_ = tunnel.SetDeadline(time.Now().Add(2 * time.Second))
 	_, _ = io.WriteString(tunnel, "ping")
@@ -419,7 +418,7 @@ func TestGatewayRetriesOnlyPublicDNSAddresses(t *testing.T) {
 				}
 				return nil, errors.New("unreachable address")
 			}
-			status, tunnel := f.connect(t, "api.openai.com:443", sandbox.ProxyUser+":"+f.token)
+			status, tunnel := f.connect(t, "api.openai.com:443", ProxyUser+":"+f.token)
 			if tunnel != nil {
 				defer tunnel.Close()
 				_ = tunnel.SetDeadline(time.Now().Add(time.Second))
@@ -524,7 +523,7 @@ func TestPublicAddressRefusesEmbeddedAndSpecialIPv6(t *testing.T) {
 
 func TestGatewayResolvesRootedNames(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
-	status, tunnel := f.connect(t, "api.openai.com.:443", sandbox.ProxyUser+":"+f.token)
+	status, tunnel := f.connect(t, "api.openai.com.:443", ProxyUser+":"+f.token)
 	if status != http.StatusOK {
 		t.Fatalf("tunnel = %d", status)
 	}
@@ -561,7 +560,7 @@ func (f *gatewayFixture) plainRequest(t *testing.T, request string) (*http.Respo
 
 func TestGatewayRecordsRefusedLiteralsAndPlainHTTPPorts(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
-	credential := sandbox.ProxyUser + ":" + f.token
+	credential := ProxyUser + ":" + f.token
 	auth := "Proxy-Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(credential)) + "\r\n"
 	for _, target := range []string{"169.254.169.254:443", "[::ffff:a9fe:a9fe]:443", "[::1]:443", "localhost:443", "bad_name.example:443"} {
 		if status, _ := f.connect(t, target, credential); status != http.StatusForbidden {
@@ -611,7 +610,7 @@ func TestGatewayKeepsHalfClosedTunnelUntilTheReply(t *testing.T) {
 	f.gateway.dial = func(ctx context.Context, _ netip.AddrPort) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Addr().String())
 	}
-	status, tunnel := f.connect(t, "api.openai.com:443", sandbox.ProxyUser+":"+f.token)
+	status, tunnel := f.connect(t, "api.openai.com:443", ProxyUser+":"+f.token)
 	if status != http.StatusOK {
 		t.Fatalf("tunnel = %d", status)
 	}
@@ -629,7 +628,7 @@ func TestGatewayKeepsHalfClosedTunnelUntilTheReply(t *testing.T) {
 
 func TestGatewayClosesDeniedConnections(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
-	credential := "Proxy-Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(sandbox.ProxyUser+":"+f.token)) + "\r\n"
+	credential := "Proxy-Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(ProxyUser+":"+f.token)) + "\r\n"
 	for name, request := range map[string]string{
 		"no credential": "CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\n\r\n",
 		"unlisted":      "CONNECT attacker.example.net:443 HTTP/1.1\r\nHost: attacker.example.net:443\r\n" + credential + "\r\n",
@@ -696,7 +695,7 @@ func (c *fakeClock) now() time.Time          { return time.Unix(0, c.at.Load()) 
 func (c *fakeClock) advance(d time.Duration) { c.at.Add(int64(d)) }
 func (c *fakeClock) install(g *Gateway)      { g.now = c.now }
 
-func (f *gatewayFixture) credential() string { return sandbox.ProxyUser + ":" + f.token }
+func (f *gatewayFixture) credential() string { return ProxyUser + ":" + f.token }
 
 func (f *gatewayFixture) summaries() int {
 	f.gateway.statsMu.Lock()
@@ -707,7 +706,7 @@ func (f *gatewayFixture) summaries() int {
 // revoke removes the sandbox's lease file, as the broker does when it removes the sandbox.
 func (f *gatewayFixture) revoke(t *testing.T) {
 	t.Helper()
-	if err := os.Remove(filepath.Join(f.leases, sandbox.LeaseFile(f.token))); err != nil {
+	if err := os.Remove(filepath.Join(f.leases, leaseFile(f.token))); err != nil {
 		t.Fatal(err)
 	}
 }

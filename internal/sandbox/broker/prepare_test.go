@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/egress"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
@@ -79,12 +80,14 @@ func TestContainmentProbeHoldsARunnerLease(t *testing.T) {
 	e.run = func(c *fakeContainer) {
 		kind := "no lease"
 		for _, entry := range c.Spec.Env {
-			if proxy, ok := strings.CutPrefix(entry, "HTTPS_PROXY=http://"+sandbox.ProxyUser+":"); ok {
-				token, _, _ := strings.Cut(proxy, "@")
-				var lease sandbox.Lease
-				data, err := os.ReadFile(filepath.Join(cfg.LeaseDir, sandbox.LeaseFile(token)))
-				if err == nil && json.Unmarshal(data, &lease) == nil {
-					kind = lease.Kind
+			if strings.HasPrefix(entry, "HTTPS_PROXY=http://"+egress.ProxyUser+":") {
+				// The sandbox's lease is the only one granted.
+				var lease egress.Lease
+				files, _ := filepath.Glob(filepath.Join(cfg.LeaseDir, "*.json"))
+				if len(files) == 1 {
+					if data, err := os.ReadFile(files[0]); err == nil && json.Unmarshal(data, &lease) == nil {
+						kind = lease.Kind
+					}
 				}
 			}
 		}
@@ -92,7 +95,7 @@ func TestContainmentProbeHoldsARunnerLease(t *testing.T) {
 		c.End(0)
 	}
 	b := e.broker(t, cfg)
-	b.leases = &leases{dir: cfg.LeaseDir}
+	b.leases = &egress.Leases{Dir: cfg.LeaseDir}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := b.runSandbox(ctx, plan{kind: wire.KindProbe, probe: wire.ProbeContainment, timeout: time.Minute}, discard, discard, nil); err != nil {

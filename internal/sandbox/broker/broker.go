@@ -13,7 +13,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,6 +24,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	octomus "github.com/tyk-swe/octomus-agent"
+	"github.com/tyk-swe/octomus-agent/internal/egress"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
@@ -44,7 +44,7 @@ type Broker struct {
 	info   wire.BrokerInfo
 	// slots admits sandboxes up to the limit. A sandbox gives its slot back only once its removal is confirmed.
 	slots   chan struct{}
-	leases  *leases
+	leases  *egress.Leases
 	started time.Time
 	// closing closes when Serve begins to shut down.
 	closing chan struct{}
@@ -159,7 +159,7 @@ func newBroker(cfg Config) *Broker {
 		live:    map[string]string{},
 	}
 	if cfg.LeaseDir != "" {
-		b.leases = &leases{dir: cfg.LeaseDir}
+		b.leases = &egress.Leases{Dir: cfg.LeaseDir}
 	}
 	return b
 }
@@ -292,7 +292,7 @@ func (b *Broker) sweep(ctx context.Context) error {
 		}
 	}
 	if b.leases != nil {
-		if err := b.leases.clear(); err != nil {
+		if err := b.leases.Clear(); err != nil {
 			errs = append(errs, fmt.Errorf("Clearing egress leases: %w", err))
 		}
 	}
@@ -559,12 +559,12 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 		if kind == wire.KindProbe {
 			kind = wire.KindRunner
 		}
-		token, err := b.leases.grant(name, kind)
+		token, err := b.leases.Grant(name, kind)
 		if err != nil {
 			release()
 			return nil, fmt.Errorf("Granting the sandbox egress lease: %w", err)
 		}
-		lease, extraEnv = token, proxyEnv(b.cfg.EgressProxy, token)
+		lease, extraEnv = token, egress.ProxyEnv(b.cfg.EgressProxy, token)
 	}
 	spec := b.cfg.container(p, extraEnv)
 	// A sandbox runs the image ID its tag resolved to, so its evidence names exactly what ran.
@@ -577,7 +577,7 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 	cancel()
 	if err != nil {
 		if lease != "" {
-			b.leases.revoke(lease)
+			b.leases.Revoke(lease)
 		}
 		// A create cut short can still finish in the daemon; removing by name finds the container if it did.
 		removeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -622,7 +622,7 @@ func (s *prepared) remove(ctx context.Context) error {
 		}
 		// Egress is cut at once; that needs no confirmation.
 		if s.lease != "" {
-			s.b.leases.revoke(s.lease)
+			s.b.leases.Revoke(s.lease)
 		}
 		if s.removed = s.b.removeContainer(ctx, s.id); s.removed != nil {
 			s.b.logf("Removing sandbox %s failed; it keeps its slot while the broker retries: %v", s.name, s.removed)
@@ -957,39 +957,20 @@ func (b *Broker) evidence(name, image string, oom bool) *model.SandboxRecord {
 		return record
 	}
 	// The gateway counts accepted tunnels immediately, even when upstream connections are still closing.
-	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", b.cfg.EgressCollector)
-		}}}
-	unrecorded := func(why any) *model.SandboxRecord {
-		b.logf("Reading the egress record of sandbox %s failed; its record shows no connections: %v", name, why)
+	summary, err := egress.FetchSummary(context.Background(), b.cfg.EgressCollector, name)
+	if err != nil {
+		b.logf("Reading the egress record of sandbox %s failed; its record shows no connections: %v", name, err)
 		return record
 	}
-	resp, err := client.Get("http://egress/v1/summary?sandbox=" + url.QueryEscape(name))
-	if err != nil {
-		return unrecorded(err)
-	}
-	defer resp.Body.Close()
-	var summary struct {
-		Allowed map[string]struct{ Count uint64 } `json:"allowed"`
-		Denied  map[string]struct{ Count uint64 } `json:"denied"`
-		Failed  map[string]struct{ Count uint64 } `json:"failed"`
-	}
-	if resp.StatusCode != http.StatusOK {
-		return unrecorded(resp.Status)
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&summary); err != nil {
-		return unrecorded(err)
-	}
 	for host, count := range summary.Allowed {
-		record.Egress.Allowed[host] = count.Count
+		record.Egress.Allowed[host] = uint64(count.Count)
 	}
 	for host, count := range summary.Denied {
-		record.Egress.Denied[host] = count.Count
+		record.Egress.Denied[host] = uint64(count.Count)
 	}
 	record.Egress.Failed = map[string]uint64{}
 	for host, count := range summary.Failed {
-		record.Egress.Failed[host] = count.Count
+		record.Egress.Failed[host] = uint64(count.Count)
 	}
 	return model.MergeSandbox(nil, record)
 }

@@ -148,7 +148,7 @@ def render(env_file):
 
 def login_lease_matches_the_broker(service):
     """Run login-lease's script against scratch directories: it must write the lease the broker writes
-    (internal/sandbox/lease.go: sha256(token).json holding {sandbox, kind}) and revoke the previous login's."""
+    (internal/egress/lease.go: sha256(token).json holding {sandbox, kind}) and revoke the previous login's."""
     assert service['entrypoint'][:2] == ['/bin/sh', '-euc'], service['entrypoint']
     with tempfile.TemporaryDirectory(prefix='octomus-lease-') as directory:
         leases, login = Path(directory) / 'egress', Path(directory) / 'login'

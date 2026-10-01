@@ -2,14 +2,11 @@ package sandbox_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,9 +19,8 @@ import (
 func probeGateway(t *testing.T, kind, model string) (string, string) {
 	t.Helper()
 	leases := t.TempDir()
-	token := strings.Repeat("cd", 32)
-	data, _ := json.Marshal(sandbox.Lease{Sandbox: "octomus-test-probe", Kind: kind})
-	if err := os.WriteFile(filepath.Join(leases, sandbox.LeaseFile(token)), data, 0o600); err != nil {
+	token, err := egress.Leases{Dir: leases}.Grant("octomus-test-probe", kind)
+	if err != nil {
 		t.Fatal(err)
 	}
 	rules, err := egress.ParseRules(model)

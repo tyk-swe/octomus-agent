@@ -3,22 +3,18 @@ package egress
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
-	"path/filepath"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 )
 
 // Resolver is the part of net.Resolver the gateway uses, replaceable in tests.
@@ -327,32 +323,20 @@ func (g *Gateway) Collect(sandboxName string) Summary {
 
 // lease identifies the sandbox behind a proxy credential and names its lease file. The credential is only ever
 // compared through the digest that names that file.
-func (g *Gateway) lease(header string) (sandbox.Lease, string, bool) {
+func (g *Gateway) lease(header string) (Lease, string, bool) {
 	encoded, ok := strings.CutPrefix(header, "Basic ")
 	if !ok {
-		return sandbox.Lease{}, "", false
+		return Lease{}, "", false
 	}
 	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
 	if err != nil {
-		return sandbox.Lease{}, "", false
+		return Lease{}, "", false
 	}
 	user, token, ok := strings.Cut(string(decoded), ":")
-	if !ok || user != sandbox.ProxyUser || len(token) != 64 {
-		return sandbox.Lease{}, "", false
+	if !ok || user != ProxyUser {
+		return Lease{}, "", false
 	}
-	if _, err := hex.DecodeString(token); err != nil {
-		return sandbox.Lease{}, "", false
-	}
-	file := sandbox.LeaseFile(token)
-	data, err := os.ReadFile(filepath.Join(g.leaseDir, file))
-	if err != nil || len(data) > 4096 {
-		return sandbox.Lease{}, "", false
-	}
-	var lease sandbox.Lease
-	if json.Unmarshal(data, &lease) != nil || lease.Sandbox == "" {
-		return sandbox.Lease{}, "", false
-	}
-	return lease, file, true
+	return Leases{Dir: g.leaseDir}.lookup(token)
 }
 
 // refusedHost names a refused target for the summary without carrying arbitrary text into it: the normalized host
@@ -646,10 +630,13 @@ func (g *Gateway) splice(t *tunnel, buffered io.Reader) (int64, int64) {
 	return up, down
 }
 
+// SummaryPath is where the collector answers for one sandbox, named by its "sandbox" query parameter.
+const SummaryPath = "/v1/summary"
+
 // ServeCollector answers the broker's request for a finished sandbox's summary on a local socket.
 func (g *Gateway) ServeCollector(ctx context.Context, listener net.Listener) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/summary", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET "+SummaryPath, func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("sandbox")
 		if name == "" || len(name) > 128 {
 			http.Error(w, "sandbox required", http.StatusBadRequest)
@@ -668,4 +655,29 @@ func (g *Gateway) ServeCollector(ctx context.Context, listener net.Listener) err
 		return nil
 	}
 	return err
+}
+
+// FetchSummary collects a finished sandbox's summary from the collector on socket.
+func FetchSummary(ctx context.Context, socket, sandboxName string) (Summary, error) {
+	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		}}}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://egress"+SummaryPath+"?sandbox="+url.QueryEscape(sandboxName), nil)
+	if err != nil {
+		return Summary{}, err
+	}
+	resp, err := client.Do(request)
+	if err != nil {
+		return Summary{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Summary{}, errors.New(resp.Status)
+	}
+	var summary Summary
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&summary); err != nil {
+		return Summary{}, err
+	}
+	return summary, nil
 }

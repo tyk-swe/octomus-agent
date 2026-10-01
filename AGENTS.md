@@ -48,7 +48,9 @@ owns strict typed JSON boundaries for saved records and API requests.
   programs both backends start, and the owned-root home layout. `sandbox/broker` is
   `--sandboxd`: request validation, the golden container spec
   (`testdata/spec-*.json`), streams, leases and sweeping; `sandbox/engineapi` is its
-  minimal Docker Engine client. `internal/egress` is the `--egress` gateway.
+  minimal Docker Engine client. `internal/egress` is the `--egress` gateway and owns
+  its contract with the broker: lease files, proxy credentials and the summary
+  collector.
 - `internal/redact`: the one secret scrubber and display bound, shared by every
   package that records or returns text, the token and webhook variable names, and
   `Fragment` for text already cut by a capture or read limit.
