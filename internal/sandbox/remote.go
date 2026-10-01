@@ -434,9 +434,10 @@ func (c *remoteChild) Terminate() { c.signal(SignalTerminate) }
 // carries the sandbox's evidence. The broker bounds its teardown, removal included, well inside it.
 const killReportWait = 60 * time.Second
 
-// Kill stops the sandbox and waits for the broker's report of it. Cutting the stream afterwards holds even when the
-// kill frame cannot be written: the broker kills and removes a container whose stream closes, but without its report
-// Wait cannot call the end clean.
+// Kill stops the sandbox and waits for the broker's report of it. Its output is discarded from then on, so a reader
+// that stopped cannot hold the report back. Cutting the stream afterwards holds even when the kill frame cannot be
+// written: the broker kills and removes a container whose stream closes, but without its report Wait cannot call the
+// end clean.
 func (c *remoteChild) Kill() {
 	if c.killed.Swap(true) {
 		return
@@ -444,6 +445,8 @@ func (c *remoteChild) Kill() {
 	select {
 	case <-c.done:
 	default:
+		c.stdout.Close()
+		c.stderr.Close()
 		c.signal(SignalKill)
 		timer := time.NewTimer(c.wait)
 		select {

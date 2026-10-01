@@ -126,6 +126,13 @@ func (f *fakeBroker) serve(req Request, conn net.Conn, reader *bufio.Reader) {
 		exitFrame(out, ExitReport{Code: 137, Killed: true, Error: "Sandbox time limit reached"})
 	case "bad-report":
 		_ = out.Frame(FrameExit, []byte("{"))
+	case "flood":
+		// Output nobody reads, as when the OpenCode bridge's HTTP/2 client has stopped, then the kill's report.
+		_, _ = out.Data(FrameStdout, []byte("unread stdout"))
+		_, _ = out.Data(FrameStderr, []byte("unread stderr"))
+		if awaitKill(reader) {
+			exitFrame(out, killedEvidence())
+		}
 	case "slow-report":
 		if awaitKill(reader) {
 			time.Sleep(200 * time.Millisecond)
@@ -330,6 +337,29 @@ func TestRemoteKillConfirmsTheEndOrFails(t *testing.T) {
 	}
 	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "streams", 30, true); err != nil {
 		t.Fatalf("an unconfirmed kill kept its slot: %v", err)
+	}
+}
+
+func TestRemoteKillNeverWaitsOnUnreadOutput(t *testing.T) {
+	f := startFakeBroker(t, 1)
+	remote := NewRemote(f.socket)
+	remote.killWait = 5 * time.Second
+	child, err := remote.Start(context.Background(), Spec{Kind: KindVerify, Dir: ownedWorkspace(t), Command: "flood"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-f.requests
+	time.Sleep(100 * time.Millisecond) // Let the output reach the client, where nobody reads it.
+	start := time.Now()
+	child.Kill()
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("kill took %v behind unread output", elapsed)
+	}
+	if status, err := child.Wait(); err != nil || !errors.Is(status.Err(), process.ErrKilled) {
+		t.Fatalf("killed = %v, %v", status, err)
+	}
+	if evidence := EvidenceOf(child); evidence == nil || evidence.Egress.Denied["exfil.example.net:443"] != 40 {
+		t.Fatalf("evidence = %+v; the kill's report must reach the client past unread output", evidence)
 	}
 }
 
