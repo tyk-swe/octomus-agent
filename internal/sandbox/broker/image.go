@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
@@ -63,7 +64,7 @@ func (b *Broker) image(ctx context.Context) (string, error) {
 	if b.failed.id == image.ID && time.Since(b.failed.at) < probeRetry {
 		return "", b.failed.err
 	}
-	versions, err := b.probeVersions(ctx, image.ID)
+	versions, failures, err := b.probeVersions(ctx, image.ID)
 	if err != nil {
 		err = fmt.Errorf("Probing runner versions in the rebuilt sandbox image %s: %w", b.cfg.Image, err)
 		// A request that gave up says nothing about the image.
@@ -73,16 +74,18 @@ func (b *Broker) image(ctx context.Context) (string, error) {
 		return "", err
 	}
 	b.mu.Lock()
-	b.info.ImageID, b.info.ImageDigests, b.info.Runners = image.ID, image.RepoDigests, versions
+	b.info.ImageID, b.info.ImageDigests, b.info.Runners, b.info.RunnerErrors = image.ID, image.RepoDigests, versions, failures
 	b.mu.Unlock()
 	b.logf("Sandbox image %s now resolves to %s", b.cfg.Image, image.ID)
 	return image.ID, nil
 }
 
-func (b *Broker) probeVersions(ctx context.Context, image string) (map[string]string, error) {
+// probeVersions runs the version probe on image. It returns each installed runner's version, and why each runner that
+// is installed but did not answer failed (nil when none did), so the broker never reports that one as missing.
+func (b *Broker) probeVersions(ctx context.Context, image string) (map[string]string, map[string]string, error) {
 	p, err := b.cfg.plan(wire.Request{Kind: wire.KindProbe, Mode: wire.ProbeVersions, Timeout: 120})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	p.image = image
 	var stdout, stderr bytes.Buffer
@@ -97,17 +100,29 @@ func (b *Broker) probeVersions(ctx context.Context, image string) (map[string]st
 	}
 	report, err := b.runSandbox(ctx, p, collect(&stdout), collect(&stderr), nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if report.Error != "" && !report.Killed {
-		return nil, fmt.Errorf("version probe failed: %s", report.Error)
+		return nil, nil, fmt.Errorf("version probe failed: %s", report.Error)
 	}
 	if report.Code != 0 || report.Killed || report.OOM {
-		return nil, fmt.Errorf("version probe failed with exit %d: %s", report.Code, strings.TrimSpace(stderr.String()))
+		return nil, nil, fmt.Errorf("version probe failed with exit %d: %s", report.Code, strings.TrimSpace(stderr.String()))
 	}
 	versions := map[string]string{}
 	if err := json.Unmarshal(stdout.Bytes(), &versions); err != nil {
-		return nil, fmt.Errorf("version probe output: %w", err)
+		return nil, nil, fmt.Errorf("version probe output: %w", err)
 	}
-	return versions, nil
+	var failures map[string]string
+	for _, line := range strings.Split(stderr.String(), "\n") {
+		for _, name := range wire.Runners {
+			if reason, ok := strings.CutPrefix(line, name+wire.VersionFailed); ok && versions[name] == "" {
+				if failures == nil {
+					failures = map[string]string{}
+				}
+				failures[name] = redact.Text(strings.ToValidUTF8(reason, "�"))
+				b.logf("Runner %s is in sandbox image %s but its --version failed: %s", name, image, failures[name])
+			}
+		}
+	}
+	return versions, failures, nil
 }

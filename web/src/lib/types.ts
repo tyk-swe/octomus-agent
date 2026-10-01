@@ -503,6 +503,7 @@ export type BrokerInfo = {
   image_digests: string[] | null;
   runtime: string;
   runners: Record<string, string> | null;
+  runner_errors: Record<string, string> | null;
   limits: BrokerLimits;
   networks: BrokerNetworks;
   egress: boolean;

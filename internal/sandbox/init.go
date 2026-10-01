@@ -169,9 +169,8 @@ func (l *singleListener) Addr() net.Addr { return &net.UnixAddr{Name: "stdio", N
 var versionTimeout = 30 * time.Second
 
 // printVersions reports each runner's --version output from inside the sandbox image. A runner that is not installed
-// is left out; one that is installed but fails is also left out, and the failure is written to stderr for the broker
-// to surface. The broker does not read it yet: it drops a successful probe's stderr, so such a runner still shows as
-// not installed.
+// is left out; one that is installed but fails is also left out, and the failure is written to stderr, one line per
+// runner, which the broker reports as that runner's error.
 func printVersions(stdout, stderr io.Writer) int {
 	versions := map[string]string{}
 	for _, name := range wire.Runners {
@@ -180,7 +179,7 @@ func printVersions(stdout, stderr io.Writer) int {
 		case err == nil:
 			versions[name] = version
 		case !errors.Is(err, exec.ErrNotFound):
-			fmt.Fprintf(stderr, "%s --version failed: %s\n", name, err)
+			fmt.Fprintf(stderr, "%s%s%s\n", name, wire.VersionFailed, strings.Join(strings.Fields(err.Error()), " "))
 		}
 	}
 	if err := json.NewEncoder(stdout).Encode(versions); err != nil {

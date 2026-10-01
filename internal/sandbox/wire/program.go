@@ -9,6 +9,9 @@ const (
 // Runners are every runner a sandbox can serve.
 var Runners = []string{RunnerCodex, RunnerOpenCode}
 
+// VersionFailed joins a runner's name and why its --version failed on a line of the version probe's stderr.
+const VersionFailed = " --version failed: "
+
 // RunnerArgs are the fixed arguments each runner is served with, or nil for an unknown runner.
 func RunnerArgs(name string) []string {
 	switch name {

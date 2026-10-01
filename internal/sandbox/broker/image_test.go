@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func TestRebuiltImageTakesEffectAndAVanishedOneFailsClearly(t *testing.T) {
@@ -85,6 +87,45 @@ func TestContainmentProbeNamesTheImageItRanOn(t *testing.T) {
 	// The posture the dashboard compares that proof with is read again, not served from before the rebuild.
 	if info, err := remote.Info(context.Background()); err != nil || info.ImageID != "sha256:second" {
 		t.Fatalf("info after the probe = %s, %v; want the image the probe moved the broker to", info.ImageID, err)
+	}
+}
+
+func TestRunnerWhoseVersionFailsIsNotReportedAsMissing(t *testing.T) {
+	e := newFakeEngine(t)
+	e.run = func(c *fakeContainer) {
+		if c.Spec.Image != "sha256:second" {
+			defaultRun(c)
+			return
+		}
+		// OpenCode is installed but hangs on its first run; the probe itself succeeds.
+		c.Stdout(`{"codex":"codex-fake"}`)
+		c.Stderr("opencode --version failed: timed out after 30s\n")
+		c.End(0)
+	}
+	cfg := testConfig(t)
+	log := &testutil.SyncBuffer{}
+	cfg.Log = log
+	b := e.broker(t, cfg)
+	remote := serve(t, b)
+	e.mu.Lock()
+	e.images[cfg.Image] = "sha256:second"
+	e.mu.Unlock()
+	if _, err := b.image(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if info := b.Info(); info.Runners["codex"] != "codex-fake" || !strings.Contains(info.RunnerErrors["opencode"], "timed out after 30s") {
+		t.Fatalf("broker info = runners %v, errors %v; want OpenCode's failure kept", info.Runners, info.RunnerErrors)
+	}
+	if !strings.Contains(log.String(), "opencode") || !strings.Contains(log.String(), "timed out after 30s") {
+		t.Fatalf("broker log = %q; want the failed runner named", log.String())
+	}
+	_, err := remote.RunnerVersion(context.Background(), sandbox.Spec{Runner: config.BackendOpencode}, 10)
+	if err == nil || strings.Contains(err.Error(), "not installed") || !strings.Contains(err.Error(), "--version failed") ||
+		!strings.Contains(err.Error(), "timed out after 30s") {
+		t.Fatalf("OpenCode version = %v; want its failure, not a missing runner", err)
+	}
+	if _, err := remote.RunnerVersion(context.Background(), sandbox.Spec{Runner: config.BackendCodex}, 10); err != nil {
+		t.Fatalf("Codex version = %v", err)
 	}
 }
 

@@ -274,11 +274,15 @@ func (r *Remote) RunnerVersion(ctx context.Context, spec Spec, _ uint64) (string
 	if err != nil {
 		return "", err
 	}
-	version := strings.TrimSpace(info.Runners[runnerName(spec.Runner)])
-	if version == "" {
-		return "", fmt.Errorf("%s is not installed in the sandbox image %s", spec.Runner.Display(), info.Image)
+	name := runnerName(spec.Runner)
+	version := strings.TrimSpace(info.Runners[name])
+	switch {
+	case version != "":
+		return version, nil
+	case info.RunnerErrors[name] != "":
+		return "", fmt.Errorf("%s --version failed in the sandbox image %s: %s", spec.Runner.Display(), info.Image, info.RunnerErrors[name])
 	}
-	return version, nil
+	return "", fmt.Errorf("%s is not installed in the sandbox image %s", spec.Runner.Display(), info.Image)
 }
 
 // remoteChild is one sandbox seen through its broker stream.

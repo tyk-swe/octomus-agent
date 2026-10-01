@@ -93,11 +93,11 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		Networks: wire.BrokerNetworks{Runner: cfg.RunnerNetwork, Verify: cfg.VerifyNetwork},
 		Egress:   cfg.EgressProxy != "",
 	}
-	versions, err := b.probeVersions(ctx, image.ID)
+	versions, failures, err := b.probeVersions(ctx, image.ID)
 	if err != nil {
 		return nil, fmt.Errorf("Probing runner versions in the sandbox image: %w", err)
 	}
-	b.info.Runners = versions
+	b.info.Runners, b.info.RunnerErrors = versions, failures
 	return b, nil
 }
 
