@@ -42,7 +42,8 @@ func (v SandboxEgress) MarshalJSON() ([]byte, error) {
 	return wirejson.Record(plain(v))
 }
 
-// SandboxHostLimit bounds the hosts one record keeps per decision; the rest are counted under "other".
+// SandboxHostLimit bounds the hosts one record names per decision; the rest are counted under "other". The egress
+// gateway names as many per sandbox, so a single sandbox's record keeps every host its summary named.
 const SandboxHostLimit = 64
 
 // MergeSandbox adds one run's record to what a session or command already recorded.
@@ -74,7 +75,13 @@ func MergeSandbox(into *SandboxRecord, run *SandboxRecord) *SandboxRecord {
 	return &merged
 }
 
+// addHosts adds one run's counts per host. Only named hosts count toward SandboxHostLimit: a run's own "other" adds to
+// the record's, so it never takes the place of a host the run named.
 func addHosts(into, from map[string]uint64) {
+	named := len(into)
+	if _, folded := into["other"]; folded {
+		named--
+	}
 	hosts := make([]string, 0, len(from))
 	for host := range from {
 		hosts = append(hosts, host)
@@ -82,8 +89,12 @@ func addHosts(into, from map[string]uint64) {
 	sort.Strings(hosts)
 	for _, host := range hosts {
 		key := host
-		if _, known := into[key]; !known && len(into) >= SandboxHostLimit {
-			key = "other"
+		if _, known := into[key]; !known && key != "other" {
+			if named >= SandboxHostLimit {
+				key = "other"
+			} else {
+				named++
+			}
 		}
 		into[key] += from[host]
 	}

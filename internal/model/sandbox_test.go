@@ -31,6 +31,19 @@ func TestMergeSandboxCountsRunsHostsAndKeepsAnOOM(t *testing.T) {
 	if len(bounded.Egress.Denied) != model.SandboxHostLimit+1 || bounded.Egress.Denied["other"] != 10 {
 		t.Fatalf("bounded denied hosts = %d, other = %d", len(bounded.Egress.Denied), bounded.Egress.Denied["other"])
 	}
+	// A run that already folded hosts keeps every host it named, even those that sort after "other".
+	folded := map[string]uint64{"other": 3}
+	for i := range model.SandboxHostLimit {
+		folded[fmt.Sprintf("%c%02d.example:443", 'a'+25*(i%2), i)] = 1
+	}
+	kept := model.MergeSandbox(nil, run(false, folded, nil))
+	if len(kept.Egress.Allowed) != model.SandboxHostLimit+1 || kept.Egress.Allowed["other"] != 3 || kept.Egress.Allowed["z63.example:443"] != 1 {
+		t.Fatalf("hosts kept from a folded run = %d, other = %d", len(kept.Egress.Allowed), kept.Egress.Allowed["other"])
+	}
+	kept = model.MergeSandbox(kept, run(false, map[string]uint64{"new.example:443": 2, "z63.example:443": 1}, nil))
+	if len(kept.Egress.Allowed) != model.SandboxHostLimit+1 || kept.Egress.Allowed["other"] != 5 || kept.Egress.Allowed["z63.example:443"] != 2 {
+		t.Fatalf("a later run's new host = %d hosts, other = %d; want it counted under other", len(kept.Egress.Allowed), kept.Egress.Allowed["other"])
+	}
 }
 
 func TestMergeSandboxKeepsMixedIdentity(t *testing.T) {

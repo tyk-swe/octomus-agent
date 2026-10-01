@@ -108,9 +108,12 @@ A refused host is often the first sign of prompt injection, or of a registry mis
 `OCTOMUS_EGRESS_BUILD_HOSTS`. An allowlisted host the gateway could not reach (a failed
 lookup or connection, or too many open tunnels) is listed apart, as unreachable.
 
-Each list names at most 64 hosts and counts the rest under `other`. The gateway log names
-each host a sandbox's record counts only under `other` the first time it appears, outside
-the log's per-minute budget, for up to 1,024 such hosts per sandbox.
+Each list names at most 64 hosts and counts the rest under `other`. Within one sandbox, the
+gateway log names each host past a list's first 64 the first time it appears, outside the
+log's per-minute budget, for up to 1,024 such hosts per sandbox. A session whose turns ran
+in several sandboxes, such as a resumed repair thread, merges their lists under the same
+limit, so its list can count under `other` a host one of those sandboxes named; the log
+names that host only where its per-minute budget allowed.
 
 When the broker could not read part of a sandbox's record, the record is marked
 **incomplete**: the gateway's count was unreachable or lost to a gateway restart, or

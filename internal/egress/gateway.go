@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
 // Resolver is the part of net.Resolver the gateway uses, replaceable in tests.
@@ -132,8 +134,9 @@ type Decision struct {
 }
 
 const (
-	// summaryHostLimit bounds the hosts a summary names per decision; the rest are counted under "other".
-	summaryHostLimit = 64
+	// summaryHostLimit bounds the hosts a summary names per decision; the rest are counted under "other". It is the
+	// task record's own limit, so the broker's record of one sandbox keeps every host its summary named.
+	summaryHostLimit = model.SandboxHostLimit
 	// foldedNameLimit bounds, per sandbox, the hosts past summaryHostLimit whose first decision the log names whatever
 	// its budget, so a sandbox cannot flood the log with names either.
 	foldedNameLimit = 1024
