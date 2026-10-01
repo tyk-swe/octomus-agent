@@ -72,6 +72,26 @@ func TestClientGivingUpDuringCreateLeavesNoContainer(t *testing.T) {
 	}
 }
 
+func TestCreateThatFinishesAfterItTimedOutIsRemoved(t *testing.T) {
+	tune(t, &createTimeout, 200*time.Millisecond)
+	e := newFakeEngine(t)
+	// The daemon stalls on the create, which then completes after the broker gave up. Docker reserves the name at
+	// once but finds the container by it only once the create completes, as the fake engine does.
+	e.create = func(string, *http.Request) (int, []string) {
+		time.Sleep(time.Second)
+		return 0, nil
+	}
+	b := e.broker(t, testConfig(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := b.runSandbox(ctx, probePlan(time.Minute), discard, discard, nil); err == nil || !strings.Contains(err.Error(), "Creating the sandbox") {
+		t.Fatalf("create past its time limit = %v; want it failed", err)
+	}
+	waitUntil(t, "the container whose create finished late was removed", func() bool {
+		return len(e.Created()) == 1 && len(e.Remaining()) == 0
+	})
+}
+
 func TestContainmentProbeHoldsARunnerLease(t *testing.T) {
 	e := newFakeEngine(t)
 	cfg := testConfig(t)

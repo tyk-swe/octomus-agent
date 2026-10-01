@@ -32,7 +32,7 @@ type prepared struct {
 	removed error
 }
 
-const (
+var (
 	// createTimeout matches how long the control plane waits for a sandbox to open.
 	createTimeout = 2 * time.Minute
 	attachTimeout = time.Minute
@@ -74,12 +74,17 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 		if lease != "" {
 			b.leases.Revoke(lease)
 		}
-		// A create cut short can still finish in the daemon; removing by name finds the container if it did.
+		// A create cut short can still finish in the daemon; removing by name finds the container if it already has.
 		removeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := b.engine.ContainerRemove(removeCtx, name); err != nil {
 			b.logf("Removing sandbox %s after its create failed did not succeed; the next sweep removes it: %v", name, err)
 		}
 		cancel()
+		var refused *engineapi.Error
+		if !errors.As(err, &refused) {
+			// The daemon never answered, so the create may still be running, and it cannot be found until it ends.
+			b.removeLate(name)
+		}
 		release()
 		return nil, fmt.Errorf("Creating the sandbox: %w", err)
 	}

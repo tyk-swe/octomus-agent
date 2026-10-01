@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 )
 
 // Teardown bounds. Once a sandbox ends, or a kill is asked for, the broker drains its output, reads its state and
@@ -18,6 +20,9 @@ var (
 	// killWait bounds one kill request. Docker answers a SIGKILL only once the container has stopped, so a busy
 	// daemon can deliver a kill whose answer comes later than that.
 	killWait = 5 * time.Second
+	// lateCreateWait is how long the broker looks for a container whose create it gave up on: as long again as it
+	// waited for the create.
+	lateCreateWait = 2 * time.Minute
 	// drainWait is how long a sandbox's output has to end once the sandbox has.
 	drainWait = 10 * time.Second
 	// joinWait is how long the output pump has to finish once its source is closed.
@@ -100,6 +105,42 @@ func (b *Broker) removeContainer(ctx context.Context, id string) error {
 		case <-time.After(delay):
 		}
 	}
+}
+
+// removeLate removes the container of a create the broker stopped waiting for, should the daemon still finish it.
+// Docker reserves the name when a create begins but finds the container by it only once the create completes, so a
+// removal by name in between finds nothing. It looks for the name for lateCreateWait; what appears later, or during
+// shutdown, is left to the next sweep.
+func (b *Broker) removeLate(name string) {
+	go func() {
+		deadline := time.Now().Add(lateCreateWait)
+		for delay := 250 * time.Millisecond; ; delay = min(2*delay, 5*time.Second) {
+			select {
+			case <-time.After(delay):
+			case <-b.closing:
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			container, err := b.engine.ContainerInspect(ctx, name)
+			if err == nil {
+				err = b.removeContainer(ctx, container.ID)
+				if err == nil {
+					b.logf("Removed sandbox %s, whose create finished after the broker gave up on it", name)
+				}
+			}
+			cancel()
+			switch {
+			case err == nil:
+				return
+			case !engineapi.IsNotFound(err):
+				b.logf("Removing sandbox %s, whose create the broker gave up on, failed; retrying: %v", name, err)
+			}
+			if time.Now().After(deadline) {
+				b.logf("Sandbox %s, whose create the broker gave up on, never appeared; the next sweep removes it if it does", name)
+				return
+			}
+		}
+	}()
 }
 
 // reap keeps removing a sandbox whose teardown could not confirm its removal. Shutdown hands it to the final sweep.
