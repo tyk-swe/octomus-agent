@@ -9,6 +9,17 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 )
 
+// runnerGitConfig replaces the global git configuration of runner sandboxes. The executor, repair and reviewer turns
+// of a task share one persistent home, so git's per-user files there (~/.gitconfig, ~/.config/git/config, attributes
+// and ignore) would let one turn change what git shows the next, such as the diff a fresh reviewer reads. With this
+// read-only file as the global configuration, nothing in the home reaches git; the image's own system configuration
+// still applies. Verification sandboxes keep their per-run home's configuration, which repository commands may set.
+const runnerGitConfig = `# Written by the Octomus sandbox broker for runner sandboxes.
+[core]
+	attributesFile = /dev/null
+	excludesFile = /dev/null
+`
+
 // container builds the one container spec a plan can produce. Every hardening choice lives here, so a golden test can
 // hold it: non-root, no capabilities, no privilege escalation, a read-only image, bounded resources, no log copy of
 // transcripts, and only the mounts the plan's kind needs.
@@ -26,6 +37,9 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 		"TMPDIR=/tmp",
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_OPTIONAL_LOCKS=0",
+	}
+	if p.kind == sandbox.KindRunner {
+		env = append(env, "GIT_CONFIG_GLOBAL="+toolsGitConfig)
 	}
 	env = append(env, extraEnv...)
 	env = append(env, p.env...)

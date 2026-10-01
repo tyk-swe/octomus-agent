@@ -51,12 +51,14 @@ type Config struct {
 }
 
 const (
-	sandboxHome   = "/home/octomus"
-	toolsMount    = "/opt/octomus"
-	toolsBinary   = toolsMount + "/octomus-agent"
-	instanceLabel = "octomus.sandbox.instance"
-	kindLabel     = "octomus.sandbox.kind"
-	rootLabel     = "octomus.sandbox.root"
+	sandboxHome = "/home/octomus"
+	toolsMount  = "/opt/octomus"
+	toolsBinary = toolsMount + "/octomus-agent"
+	// toolsGitConfig is runner sandboxes' global git configuration, read-only in the tools volume.
+	toolsGitConfig = toolsMount + "/gitconfig"
+	instanceLabel  = "octomus.sandbox.instance"
+	kindLabel      = "octomus.sandbox.kind"
+	rootLabel      = "octomus.sandbox.root"
 )
 
 var instancePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)

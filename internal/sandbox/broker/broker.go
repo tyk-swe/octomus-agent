@@ -189,21 +189,30 @@ func apiAtLeast(have, want string) bool {
 }
 
 // installTools copies the broker's own static executable into the tools volume so every sandbox, whatever its image,
-// runs the matching helper for OpenCode bridging and probes.
+// runs the matching helper for OpenCode bridging and probes. It also writes the git configuration runner sandboxes
+// use instead of their home's.
 func installTools(executable, dir string) error {
 	source, err := os.ReadFile(executable)
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(dir, "octomus-agent")
-	if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, source) {
-		return nil
-	}
-	temp := filepath.Join(dir, ".octomus-agent."+strconv.Itoa(os.Getpid()))
-	if err := os.WriteFile(temp, source, 0o755); err != nil {
+	if err := install(dir, filepath.Base(toolsBinary), source, 0o755); err != nil {
 		return err
 	}
-	if err := os.Chmod(temp, 0o755); err != nil {
+	return install(dir, filepath.Base(toolsGitConfig), []byte(runnerGitConfig), 0o644)
+}
+
+// install atomically replaces dir/name with data unless it already holds exactly that.
+func install(dir, name string, data []byte, mode os.FileMode) error {
+	target := filepath.Join(dir, name)
+	if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
+	temp := filepath.Join(dir, "."+name+"."+strconv.Itoa(os.Getpid()))
+	if err := os.WriteFile(temp, data, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(temp, mode); err != nil {
 		os.Remove(temp)
 		return err
 	}
@@ -215,8 +224,8 @@ func installTools(executable, dir string) error {
 	if err != nil {
 		return err
 	}
-	if sha256.Sum256(installed) != sha256.Sum256(source) {
-		return errors.New("installed helper does not match the broker executable")
+	if sha256.Sum256(installed) != sha256.Sum256(data) {
+		return fmt.Errorf("installed %s does not match what the broker wrote", name)
 	}
 	return nil
 }
