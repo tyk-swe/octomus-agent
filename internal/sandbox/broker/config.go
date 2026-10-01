@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 type Config struct {
@@ -73,7 +75,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return fallback
 	}
 	c := Config{
-		Socket:          value("OCTOMUS_SANDBOXD_SOCKET", "/run/octomus/sandboxd.sock"),
+		Socket:          value("OCTOMUS_SANDBOXD_SOCKET", wire.DefaultSocket),
 		DockerSocket:    value("OCTOMUS_DOCKER_SOCKET", "/var/run/docker.sock"),
 		Image:           value("OCTOMUS_SANDBOX_IMAGE", ""),
 		DataDir:         value("OCTOMUS_DATA_DIR", ""),

@@ -19,31 +19,37 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
-const defaultBrokerSocket = "/run/octomus/sandboxd.sock"
-
 // sandboxBackend picks where untrusted children run. Off is an explicit choice for a dedicated VM and says so.
 func sandboxBackend(mode sandbox.Mode, env func(string) (string, bool), stderr io.Writer) sandbox.Backend {
 	if mode == sandbox.ModeOff {
 		fmt.Fprintln(stderr, "Sandbox is off: runners and verification commands run with this service user's permissions. Use only on a dedicated VM.")
 		return sandbox.Host{}
 	}
-	socket := defaultBrokerSocket
+	return sandbox.NewRemote(brokerSocket(env))
+}
+
+// brokerSocket is the broker's socket the control plane dials.
+func brokerSocket(env func(string) (string, bool)) string {
 	if v, ok := env("OCTOMUS_SANDBOXD_SOCKET"); ok && v != "" {
-		socket = v
+		return v
 	}
-	return sandbox.NewRemote(socket)
+	return wire.DefaultSocket
+}
+
+// getenv adapts env to a lookup that reads an unset variable as empty.
+func getenv(env func(string) (string, bool)) func(string) string {
+	return func(key string) string {
+		v, _ := env(key)
+		return v
+	}
 }
 
 // sandboxdCheck asks the broker over its own socket whether it serves sandboxes, for the sandboxd container's
 // HEALTHCHECK, so the control plane starts only once it can really isolate work.
 func sandboxdCheck(env func(string) (string, bool), stderr io.Writer) int {
-	socket := defaultBrokerSocket
-	if v, ok := env("OCTOMUS_SANDBOXD_SOCKET"); ok && v != "" {
-		socket = v
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := sandbox.NewRemote(socket).Info(ctx); err != nil {
+	if _, err := sandbox.NewRemote(brokerSocket(env)).Info(ctx); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -62,13 +68,9 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 	if leases == "" {
 		return errors.New("OCTOMUS_EGRESS_LEASES is required")
 	}
-	policy := egress.Policy{}
-	for key, rules := range map[string]*[]egress.Rule{"OCTOMUS_EGRESS_MODEL_HOSTS": &policy.Model, "OCTOMUS_EGRESS_BUILD_HOSTS": &policy.Build} {
-		parsed, err := egress.ParseRules(value(key, ""))
-		if err != nil {
-			return fmt.Errorf("%s: %w", key, err)
-		}
-		*rules = parsed
+	policy, err := egress.PolicyFromEnv(getenv(env))
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
@@ -129,10 +131,7 @@ func loginLease(env func(string) (string, bool)) error {
 
 // runBroker serves the sandbox broker until a shutdown signal, then removes every sandbox it started.
 func runBroker(env func(string) (string, bool), stderr io.Writer) error {
-	cfg, err := broker.LoadConfig(func(key string) string {
-		v, _ := env(key)
-		return v
-	})
+	cfg, err := broker.LoadConfig(getenv(env))
 	if err != nil {
 		return err
 	}

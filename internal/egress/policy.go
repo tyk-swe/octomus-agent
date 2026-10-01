@@ -130,6 +130,23 @@ func ParseRules(list string) ([]Rule, error) {
 	return rules, nil
 }
 
+// PolicyFromEnv reads the deployment's allowlists from OCTOMUS_EGRESS_MODEL_HOSTS and OCTOMUS_EGRESS_BUILD_HOSTS; an
+// unset or empty list allows nothing.
+func PolicyFromEnv(getenv func(string) string) (Policy, error) {
+	policy := Policy{}
+	for _, list := range []struct {
+		key   string
+		rules *[]Rule
+	}{{"OCTOMUS_EGRESS_MODEL_HOSTS", &policy.Model}, {"OCTOMUS_EGRESS_BUILD_HOSTS", &policy.Build}} {
+		parsed, err := ParseRules(getenv(list.key))
+		if err != nil {
+			return Policy{}, fmt.Errorf("%s: %w", list.key, err)
+		}
+		*list.rules = parsed
+	}
+	return policy, nil
+}
+
 // globalIPv6 is the only IPv6 range assigned for global unicast. Outside it lie the IPv4-compatible (::/96) and
 // translated (::ffff:0:0:0/96) forms, deprecated site-local addresses and the SRv6 and other special ranges.
 var globalIPv6 = netip.MustParsePrefix("2000::/3")

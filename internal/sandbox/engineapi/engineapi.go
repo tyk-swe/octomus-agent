@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,18 +27,18 @@ type Client struct {
 }
 
 func New(socket string) *Client {
-	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", socket)
-	}
-	return &Client{
-		socket: socket,
-		http: &http.Client{Transport: &http.Transport{
-			Proxy:               nil,
-			DialContext:         dial,
-			MaxIdleConnsPerHost: 8,
-			IdleConnTimeout:     30 * time.Second,
-		}},
-	}
+	c := &Client{socket: socket}
+	c.http = &http.Client{Transport: &http.Transport{
+		Proxy:               nil,
+		DialContext:         func(ctx context.Context, _, _ string) (net.Conn, error) { return c.dial(ctx) },
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     30 * time.Second,
+	}}
+	return c
+}
+
+func (c *Client) dial(ctx context.Context) (net.Conn, error) {
+	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", c.socket)
 }
 
 // Error is a daemon refusal with its HTTP status.
@@ -345,9 +346,7 @@ func (c *Client) ContainerWait(ctx context.Context, id string) (<-chan WaitResul
 	}
 	// A wait holds its connection open for the container's whole life, so it gets a connection of its own.
 	client := &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", c.socket)
-		}}}
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return c.dial(ctx) }}}
 	go func() {
 		resp, err := client.Do(req)
 		if err != nil {
@@ -383,7 +382,7 @@ func (a *Attached) Close() error { return a.Conn.Close() }
 // ContainerAttach hijacks an attach stream before the container starts, so no early output is lost. ctx bounds the
 // handshake; the stream itself outlives it.
 func (c *Client) ContainerAttach(ctx context.Context, id string, stdin bool) (*Attached, error) {
-	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", c.socket)
+	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +440,7 @@ func Demux(r io.Reader, stdout, stderr func([]byte) error) error {
 			}
 			return err
 		}
-		size := int(uint32(header[4])<<24 | uint32(header[5])<<16 | uint32(header[6])<<8 | uint32(header[7]))
+		size := int(binary.BigEndian.Uint32(header[4:8]))
 		sink := stdout
 		switch header[0] {
 		case 1:
