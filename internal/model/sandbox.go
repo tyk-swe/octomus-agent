@@ -7,7 +7,7 @@ import (
 )
 
 // SandboxRecord is what the sandboxes behind one session or command did: the image they ran, how many there were,
-// whether a memory limit stopped one, and which hosts the egress gateway let them reach or refused.
+// whether a memory limit stopped one, and which hosts the egress gateway let them reach, refused or could not reach.
 type SandboxRecord struct {
 	ImageID string        `json:"image_id"`
 	Runtime string        `json:"runtime"`
@@ -22,11 +22,14 @@ func (v SandboxRecord) MarshalJSON() ([]byte, error) {
 	return wirejson.Record(plain(v))
 }
 
-// SandboxEgress counts tunnels per host:port. Host names come from untrusted code, so they stay in private task
-// records and the dashboard and are never exported as run evidence.
+// SandboxEgress counts tunnels per host:port. Denied holds policy refusals; Failed holds allowlisted hosts the gateway
+// could not reach (DNS, upstream or the open-tunnel bound), and is empty in records saved before it existed. Host
+// names come from untrusted code, so they stay in private task records and the dashboard and are never exported as
+// run evidence.
 type SandboxEgress struct {
 	Allowed map[string]uint64 `json:"allowed"`
 	Denied  map[string]uint64 `json:"denied"`
+	Failed  map[string]uint64 `json:"failed" wire:"default"`
 }
 
 func (v *SandboxEgress) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
@@ -43,14 +46,13 @@ func MergeSandbox(into *SandboxRecord, run *SandboxRecord) *SandboxRecord {
 	if run == nil {
 		return into
 	}
-	merged := SandboxRecord{Egress: SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{}}}
+	merged := SandboxRecord{}
 	if into != nil {
 		merged = wirejson.Clone(*into)
-		if merged.Egress.Allowed == nil {
-			merged.Egress.Allowed = map[string]uint64{}
-		}
-		if merged.Egress.Denied == nil {
-			merged.Egress.Denied = map[string]uint64{}
+	}
+	for _, counts := range []*map[string]uint64{&merged.Egress.Allowed, &merged.Egress.Denied, &merged.Egress.Failed} {
+		if *counts == nil {
+			*counts = map[string]uint64{}
 		}
 	}
 	if into != nil && (into.ImageID == "mixed" || into.ImageID != run.ImageID || into.Runtime != run.Runtime) {
@@ -63,6 +65,7 @@ func MergeSandbox(into *SandboxRecord, run *SandboxRecord) *SandboxRecord {
 	merged.OOM = merged.OOM || run.OOM
 	addHosts(merged.Egress.Allowed, run.Egress.Allowed)
 	addHosts(merged.Egress.Denied, run.Egress.Denied)
+	addHosts(merged.Egress.Failed, run.Egress.Failed)
 	return &merged
 }
 

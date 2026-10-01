@@ -15,9 +15,12 @@ func run(oom bool, allowed, denied map[string]uint64) *model.SandboxRecord {
 func TestMergeSandboxCountsRunsHostsAndKeepsAnOOM(t *testing.T) {
 	t.Parallel()
 	merged := model.MergeSandbox(nil, run(true, map[string]uint64{"api.openai.com:443": 2}, map[string]uint64{"example.com:443": 1}))
-	merged = model.MergeSandbox(merged, run(false, map[string]uint64{"api.openai.com:443": 3}, map[string]uint64{}))
+	unreachable := run(false, map[string]uint64{"api.openai.com:443": 3}, map[string]uint64{})
+	unreachable.Egress.Failed = map[string]uint64{"registry.npmjs.org:443": 2}
+	merged = model.MergeSandbox(merged, unreachable)
 	merged = model.MergeSandbox(merged, nil)
-	if merged.Runs != 2 || !merged.OOM || merged.Egress.Allowed["api.openai.com:443"] != 5 || merged.Egress.Denied["example.com:443"] != 1 {
+	if merged.Runs != 2 || !merged.OOM || merged.Egress.Allowed["api.openai.com:443"] != 5 || merged.Egress.Denied["example.com:443"] != 1 ||
+		len(merged.Egress.Denied) != 1 || merged.Egress.Failed["registry.npmjs.org:443"] != 2 {
 		t.Fatalf("merged = %+v", merged)
 	}
 	many := map[string]uint64{}
@@ -70,5 +73,25 @@ func TestSessionsWithoutSandboxRecordsStillLoad(t *testing.T) {
 	var again model.Session
 	if err := wirejson.DecodeRecord(data, &again); err != nil || again.Sandbox.Egress.Allowed["api.openai.com:443"] != 1 || again.Sandbox.Egress.Denied == nil {
 		t.Fatalf("round trip = %+v, %v", again.Sandbox, err)
+	}
+}
+
+func TestSandboxRecordsWithoutEgressFailuresStillLoad(t *testing.T) {
+	t.Parallel()
+	var record model.SandboxRecord
+	saved := `{"image_id":"sha256:image","runtime":"","runs":1,"oom":false,"egress":{"allowed":{},"denied":{"example.com:443":2}}}`
+	if err := wirejson.DecodeRecord([]byte(saved), &record); err != nil || record.Egress.Failed == nil || len(record.Egress.Failed) != 0 ||
+		record.Egress.Denied["example.com:443"] != 2 {
+		t.Fatalf("record saved before egress failures = %+v, %v", record, err)
+	}
+	merged := model.MergeSandbox(&record, &model.SandboxRecord{ImageID: "sha256:image", Runs: 1,
+		Egress: model.SandboxEgress{Failed: map[string]uint64{"api.openai.com:443": 1}}})
+	data, err := wirejson.Marshal(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again model.SandboxRecord
+	if err := wirejson.DecodeRecord(data, &again); err != nil || again.Egress.Failed["api.openai.com:443"] != 1 || again.Runs != 2 {
+		t.Fatalf("round trip = %+v, %v", again, err)
 	}
 }

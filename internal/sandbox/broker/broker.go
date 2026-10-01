@@ -576,6 +576,7 @@ func (b *Broker) evidence(name string, oom bool) *model.SandboxRecord {
 	var summary struct {
 		Allowed map[string]struct{ Count uint64 } `json:"allowed"`
 		Denied  map[string]struct{ Count uint64 } `json:"denied"`
+		Failed  map[string]struct{ Count uint64 } `json:"failed"`
 	}
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&summary) != nil {
 		return record
@@ -585,6 +586,10 @@ func (b *Broker) evidence(name string, oom bool) *model.SandboxRecord {
 	}
 	for host, count := range summary.Denied {
 		record.Egress.Denied[host] = count.Count
+	}
+	record.Egress.Failed = map[string]uint64{}
+	for host, count := range summary.Failed {
+		record.Egress.Failed[host] = count.Count
 	}
 	return model.MergeSandbox(nil, record)
 }

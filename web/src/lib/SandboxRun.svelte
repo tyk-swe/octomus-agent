@@ -10,6 +10,7 @@
 
 {#if record}
   {@const denied = hosts(record.egress.denied)}
+  {@const failed = hosts(record.egress.failed)}
   {@const allowed = hosts(record.egress.allowed)}
   <div class="sandbox-run" aria-label="Sandbox record">
     <p class="command-meta">
@@ -22,6 +23,11 @@
     {#if denied.length}<p class="sandbox-hosts">
         <span>Blocked egress</span>
         {#each denied as [host, count] (host)}<span class="badge failed">{host} ×{count}</span
+          >{/each}
+      </p>{/if}
+    {#if failed.length}<p class="sandbox-hosts">
+        <span>Unreachable egress</span>
+        {#each failed as [host, count] (host)}<span class="badge blocked">{host} ×{count}</span
           >{/each}
       </p>{/if}
     {#if allowed.length}<p class="sandbox-hosts">

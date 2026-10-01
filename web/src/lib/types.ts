@@ -100,6 +100,7 @@ export type Proposal = {
 export type SandboxEgress = {
   allowed: Record<string, number>;
   denied: Record<string, number>;
+  failed: Record<string, number>;
 };
 export type SandboxRecord = {
   image_id: string;
