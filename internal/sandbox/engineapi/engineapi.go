@@ -240,15 +240,18 @@ type RestartPolicy struct {
 	Name string `json:"Name"`
 }
 
-func (c *Client) ContainerCreate(ctx context.Context, name string, config ContainerConfig) (string, error) {
+// ContainerCreate creates a container and returns its ID with the daemon's warnings. The daemon drops a setting the
+// host cannot enforce, such as a swap or process limit, and says so only in a warning.
+func (c *Client) ContainerCreate(ctx context.Context, name string, config ContainerConfig) (string, []string, error) {
 	var created struct {
-		ID string `json:"Id"`
+		ID       string   `json:"Id"`
+		Warnings []string `json:"Warnings"`
 	}
 	target := path("/containers/create") + "?name=" + url.QueryEscape(name)
 	if err := c.do(ctx, http.MethodPost, target, config, &created); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return created.ID, nil
+	return created.ID, created.Warnings, nil
 }
 
 func (c *Client) ContainerStart(ctx context.Context, id string) error {
@@ -385,7 +388,8 @@ func (a *Attached) CloseStdin() error { return a.Conn.CloseWrite() }
 
 func (a *Attached) Close() error { return a.Conn.Close() }
 
-// ContainerAttach hijacks an attach stream before the container starts, so no early output is lost.
+// ContainerAttach hijacks an attach stream before the container starts, so no early output is lost. ctx bounds the
+// handshake; the stream itself outlives it.
 func (c *Client) ContainerAttach(ctx context.Context, id string, stdin bool) (*Attached, error) {
 	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", c.socket)
 	if err != nil {
@@ -406,19 +410,29 @@ func (c *Client) ContainerAttach(ctx context.Context, id string, stdin bool) (*A
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
-	if err := req.Write(conn); err != nil {
+	// The handshake runs on the raw connection, so cancellation reaches it as an expired deadline.
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	fail := func(err error) (*Attached, error) {
+		stop()
 		conn.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
+	}
+	if err := req.Write(conn); err != nil {
+		return fail(err)
 	}
 	reader := bufio.NewReaderSize(conn, 64<<10)
 	resp, err := http.ReadResponse(reader, req)
 	if err != nil {
-		conn.Close()
-		return nil, err
+		return fail(err)
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols && resp.StatusCode != http.StatusOK {
-		defer conn.Close()
-		return nil, readError(resp)
+		return fail(readError(resp))
+	}
+	if !stop() {
+		return fail(ctx.Err())
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return &Attached{Conn: unixConn, Reader: reader}, nil

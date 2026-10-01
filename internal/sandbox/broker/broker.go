@@ -304,7 +304,7 @@ func (b *Broker) Serve(ctx context.Context, listener net.Listener) error {
 	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, b.Info())
 	})
-	mux.HandleFunc("POST /v1/sandboxes", b.handleSandbox)
+	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) { b.handleSandbox(requests, w, r) })
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second,
 		BaseContext: func(net.Listener) context.Context { return requests }}
 	done := make(chan error, 1)
@@ -332,7 +332,8 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func (b *Broker) handleSandbox(w http.ResponseWriter, r *http.Request) {
+// handleSandbox serves one sandbox request. base is the broker's serving lifetime, which outlasts the request.
+func (b *Broker) handleSandbox(base context.Context, w http.ResponseWriter, r *http.Request) {
 	refuse := func(status int, message string) {
 		writeJSON(w, status, map[string]string{"error": message})
 	}
@@ -366,7 +367,7 @@ func (b *Broker) handleSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer release()
-	prepared, err := b.prepare(r.Context(), p)
+	prepared, err := b.prepare(r.Context(), base, p)
 	if err != nil {
 		refuse(http.StatusInternalServerError, err.Error())
 		return
@@ -401,7 +402,16 @@ type prepared struct {
 	once   sync.Once
 }
 
-func (b *Broker) prepare(ctx context.Context, p plan) (*prepared, error) {
+const (
+	// createTimeout matches how long the control plane waits for a sandbox to open.
+	createTimeout = 2 * time.Minute
+	attachTimeout = time.Minute
+)
+
+// prepare creates a sandbox's container and attaches to it. ctx is the request's; the create alone runs under base,
+// the broker's lifetime, because a client that gives up mid-create must not leave behind a container the daemon
+// still finishes: once created, it has an ID and is removed like any other.
+func (b *Broker) prepare(ctx, base context.Context, p plan) (*prepared, error) {
 	var suffix [6]byte
 	_, _ = rand.Read(suffix[:])
 	name := fmt.Sprintf("octomus-%s-%s-%s", b.cfg.Instance, p.kind, hex.EncodeToString(suffix[:]))
@@ -419,26 +429,41 @@ func (b *Broker) prepare(ctx context.Context, p plan) (*prepared, error) {
 	if spec.Image == "" {
 		spec.Image = b.cfg.Image
 	}
-	fail := func(err error) (*prepared, error) {
+	createCtx, cancel := context.WithTimeout(base, createTimeout)
+	id, warnings, err := b.engine.ContainerCreate(createCtx, name, spec)
+	cancel()
+	if err != nil {
 		if lease != "" {
 			b.leases.revoke(lease)
 		}
-		return nil, err
-	}
-	id, err := b.engine.ContainerCreate(ctx, name, spec)
-	if err != nil {
-		return fail(fmt.Errorf("Creating the sandbox: %w", err))
-	}
-	cleanup := &prepared{b: b, id: id, name: name, lease: lease}
-	attach, err := b.engine.ContainerAttach(ctx, id, p.stdin)
-	if err != nil {
-		cleanup.remove()
-		return nil, fmt.Errorf("Attaching to the sandbox: %w", err)
+		// A create cut short can still finish in the daemon; removing by name finds the container if it did.
+		removeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = b.engine.ContainerRemove(removeCtx, name)
+		cancel()
+		return nil, fmt.Errorf("Creating the sandbox: %w", err)
 	}
 	b.mu.Lock()
 	b.live[id] = p.rel
 	b.mu.Unlock()
-	return &prepared{b: b, id: id, name: name, lease: lease, attach: attach}, nil
+	s := &prepared{b: b, id: id, name: name, lease: lease}
+	if len(warnings) > 0 {
+		// Docker drops a limit the host cannot enforce and only warns; every limit in the spec is part of the boundary.
+		s.remove()
+		return nil, fmt.Errorf("Docker Engine would not enforce the sandbox spec: %s", strings.Join(warnings, " "))
+	}
+	if err := ctx.Err(); err != nil {
+		s.remove()
+		return nil, fmt.Errorf("Creating the sandbox: %w", err)
+	}
+	attachCtx, cancel := context.WithTimeout(ctx, attachTimeout)
+	attach, err := b.engine.ContainerAttach(attachCtx, id, p.stdin)
+	cancel()
+	if err != nil {
+		s.remove()
+		return nil, fmt.Errorf("Attaching to the sandbox: %w", err)
+	}
+	s.attach = attach
+	return s, nil
 }
 
 func (s *prepared) remove() {
@@ -607,7 +632,7 @@ const (
 
 // runSandbox runs a plan to completion without a control-plane stream, for the broker's own probes.
 func (b *Broker) runSandbox(ctx context.Context, p plan, stdout, stderr func([]byte) error, controls <-chan control) (sandbox.ExitReport, error) {
-	prepared, err := b.prepare(ctx, p)
+	prepared, err := b.prepare(ctx, ctx, p)
 	if err != nil {
 		return sandbox.ExitReport{}, err
 	}
