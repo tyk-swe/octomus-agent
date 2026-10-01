@@ -799,7 +799,11 @@ func updatePR(ctx context.Context, c config.Config, task model.Task, p model.Pul
 	if err != nil {
 		return model.PullRequest{}, err
 	}
-	if err := ValidatePublication(task, published, true, false); err != nil {
+	marker, err = TaskMarker(ctx, c, task.ID, published)
+	if err != nil {
+		return model.PullRequest{}, err
+	}
+	if err := ValidatePublication(task, published, marker, false); err != nil {
 		return model.PullRequest{}, err
 	}
 	return published, nil
