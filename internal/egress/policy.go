@@ -117,7 +117,7 @@ func ParseRules(list string) ([]Rule, error) {
 }
 
 // globalIPv6 is the only IPv6 range assigned for global unicast. Outside it lie the IPv4-compatible (::/96) and
-// translated (::ffff:0:0/96) forms, deprecated site-local addresses and the SRv6 and other special ranges.
+// translated (::ffff:0:0:0/96) forms, deprecated site-local addresses and the SRv6 and other special ranges.
 var globalIPv6 = netip.MustParsePrefix("2000::/3")
 
 var blockedPrefixes = func() []netip.Prefix {

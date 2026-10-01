@@ -30,7 +30,8 @@ func (g *Gateway) Serve(ctx context.Context, listener net.Listener) error {
 	server := &http.Server{
 		Handler:           g,
 		ReadHeaderTimeout: 10 * time.Second,
-		// A tunnel's lookup and dial take at most 20 s before it is hijacked and leaves these deadlines behind.
+		// ReadTimeout bounds reading a refused request's body. A CONNECT has none, so its lookup and dial are not
+		// under it, and a hijacked tunnel leaves the server's deadlines behind; splice bounds the tunnel instead.
 		ReadTimeout:    30 * time.Second,
 		IdleTimeout:    30 * time.Second,
 		MaxHeaderBytes: 16 << 10,

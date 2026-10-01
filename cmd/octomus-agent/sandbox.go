@@ -47,7 +47,7 @@ func sandboxdCheck(env func(string) (string, bool), stderr io.Writer) int {
 	return 0
 }
 
-// runEgress serves the egress gateway on the sandbox networks, logging every decision as a JSON line.
+// runEgress serves the egress gateway on the sandbox networks, logging tunnels and refusals as JSON lines.
 func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error {
 	value := func(key, fallback string) string {
 		if v, ok := env(key); ok && v != "" {

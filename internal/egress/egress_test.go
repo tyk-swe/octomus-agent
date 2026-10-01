@@ -653,16 +653,20 @@ func TestGatewayDropsDecisionsArrivingAfterCollect(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{})
 	f.gateway.resolve = blockingResolver{started: started, release: release}
-	done := make(chan int, 1)
+	type result struct {
+		status int
+		err    error
+	}
+	done := make(chan result, 1)
 	go func() {
-		status, _ := f.connect(t, "api.openai.com:443", sandbox.ProxyUser+":"+f.token)
-		done <- status
+		status, _, err := f.tryConnect("api.openai.com:443", f.credential())
+		done <- result{status, err}
 	}()
 	<-started
 	f.gateway.Collect("octomus-test-runner")
 	close(release)
-	if status := <-done; status != http.StatusBadGateway {
-		t.Fatalf("CONNECT = %d", status)
+	if got := <-done; got.err != nil || got.status != http.StatusBadGateway {
+		t.Fatalf("CONNECT = %d, %v", got.status, got.err)
 	}
 	f.gateway.statsMu.Lock()
 	defer f.gateway.statsMu.Unlock()
@@ -814,6 +818,53 @@ func TestGatewayBoundsTunnelLifetimeAndHalfClosedIdle(t *testing.T) {
 	}
 }
 
+func TestGatewayKeepsAnActiveHalfClosedTunnel(t *testing.T) {
+	f := newGatewayFixture(t, "runner", func(g *Gateway) { g.halfCloseIdle = 400 * time.Millisecond })
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	const chunks = 15
+	go func() {
+		conn, err := upstream.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.ReadAll(conn)
+		// A download that outlasts the idle bound several times over, but never pauses for as long as it.
+		for range chunks {
+			time.Sleep(100 * time.Millisecond)
+			if _, err := conn.Write([]byte{'x'}); err != nil {
+				return
+			}
+		}
+	}()
+	f.gateway.dial = func(ctx context.Context, _ netip.AddrPort) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Addr().String())
+	}
+	status, tunnel := f.connect(t, "api.openai.com:443", f.credential())
+	if status != http.StatusOK {
+		t.Fatalf("tunnel = %d", status)
+	}
+	defer tunnel.Close()
+	_ = tunnel.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := tunnel.(*bufferedConn).Conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	received, err := io.ReadAll(tunnel)
+	if err != nil || len(received) != chunks {
+		t.Fatalf("received %d of %d bytes, %v; a half-closed tunnel still carrying data was cut", len(received), chunks, err)
+	}
+	if !testutil.WaitUntil(2*time.Second, func() bool { return strings.Contains(f.log.String(), `"decision":"closed"`) }) {
+		t.Fatalf("no closing line: %s", f.log.String())
+	}
+	if log := f.log.String(); strings.Contains(log, "idle after one side closed") {
+		t.Fatalf("log = %s; an active half-closed tunnel was treated as idle", log)
+	}
+}
+
 func TestGatewayLogsAllowedTunnelWhenItOpens(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
 	status, tunnel := f.connect(t, "api.openai.com:443", f.credential())
@@ -903,7 +954,7 @@ func TestGatewaySeparatesFailuresFromRefusals(t *testing.T) {
 
 func TestGatewayBoundsRefusalLogging(t *testing.T) {
 	clock := newFakeClock()
-	f := newGatewayFixture(t, "runner", clock.install, func(g *Gateway) { g.logBurst = 3 })
+	f := newGatewayFixture(t, "runner", clock.install, func(g *Gateway) { g.refusalBurst = 3 })
 	for range 10 {
 		f.connect(t, "attacker.example.net:443", f.credential())
 		f.connect(t, "attacker.example.net:443", "")
@@ -914,7 +965,7 @@ func TestGatewayBoundsRefusalLogging(t *testing.T) {
 	if summary := f.gateway.Collect("octomus-test-runner"); summary.Denied["attacker.example.net:443"].Count != 10 {
 		t.Fatalf("summary = %+v; suppressed lines must still be counted", summary)
 	}
-	clock.advance(refusalLogWindow)
+	clock.advance(logWindow)
 	f.gateway.sweep()
 	var suppressed []Decision
 	for _, d := range decisions(t, f.log.String()) {
@@ -928,6 +979,42 @@ func TestGatewayBoundsRefusalLogging(t *testing.T) {
 	f.connect(t, "attacker.example.net:443", f.credential())
 	if last := decisions(t, f.log.String()); last[len(last)-1].Decision != "denied" {
 		t.Fatalf("a new window did not log again: %+v", last[len(last)-1])
+	}
+}
+
+func TestGatewayBoundsTunnelLogging(t *testing.T) {
+	clock := newFakeClock()
+	f := newGatewayFixture(t, "runner", clock.install, func(g *Gateway) { g.tunnelBurst = 2 })
+	for range 5 {
+		status, tunnel := f.connect(t, "api.openai.com:443", f.credential())
+		if status != http.StatusOK {
+			t.Fatalf("tunnel = %d", status)
+		}
+		tunnel.Close()
+	}
+	if !testutil.WaitUntil(2*time.Second, func() bool {
+		f.gateway.statsMu.Lock()
+		defer f.gateway.statsMu.Unlock()
+		return len(f.gateway.open) == 0
+	}) {
+		t.Fatal("tunnels did not end")
+	}
+	byDecision := map[string]int{}
+	for _, d := range decisions(t, f.log.String()) {
+		byDecision[d.Decision]++
+	}
+	if byDecision["allowed"] != 2 || byDecision["closed"] != 2 || len(byDecision) != 2 {
+		t.Fatalf("log = %v; want the opening and closing lines of the first 2 tunnels only", byDecision)
+	}
+	if summary := f.gateway.Collect("octomus-test-runner"); summary.Allowed["api.openai.com:443"].Count != 5 {
+		t.Fatalf("summary = %+v; tunnels past the log budget must still be counted", summary)
+	}
+	clock.advance(logWindow)
+	f.gateway.sweep()
+	last := decisions(t, f.log.String())
+	if got := last[len(last)-1]; got.Decision != "suppressed" || got.Suppressed != 3 || got.Sandbox != "octomus-test-runner" ||
+		got.Reason != "tunnels over the log budget" {
+		t.Fatalf("suppressed line = %+v; want a count of 3 tunnels", got)
 	}
 }
 

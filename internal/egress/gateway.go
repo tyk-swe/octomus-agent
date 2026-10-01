@@ -54,7 +54,8 @@ type Gateway struct {
 	halfCloseIdle time.Duration
 	lifetime      time.Duration
 	sweepEvery    time.Duration
-	logBurst      int
+	refusalBurst  int
+	tunnelBurst   int
 	logWindow     time.Duration
 	maxConns      int
 	maxPerSource  int
@@ -74,11 +75,12 @@ const (
 	collectedFor = 2 * time.Minute
 	// revokedGrace is how long a summary outlives its lease before the gateway forgets it uncollected.
 	revokedGrace = 2 * time.Minute
-	// refusalLogBurst refusals per sandbox (or credential-less source) are logged in each refusalLogWindow; the rest
-	// are counted and reported in one line, so no sandbox can flood the log.
-	refusalLogBurst  = 20
-	refusalLogWindow = time.Minute
-	logBudgetKeys    = 1024
+	// Each logWindow, refusalLogBurst refusals per sandbox (or credential-less source) and tunnelLogBurst tunnels per
+	// sandbox are logged; the rest are counted and reported in one line, so no sandbox can flood the log.
+	refusalLogBurst = 20
+	tunnelLogBurst  = 120
+	logWindow       = time.Minute
+	logBudgetKeys   = 1024
 )
 
 func New(policy Policy, leaseDir string, log io.Writer) *Gateway {
@@ -101,8 +103,9 @@ func New(policy Policy, leaseDir string, log io.Writer) *Gateway {
 		halfCloseIdle: halfCloseIdle,
 		lifetime:      maxTunnelLifetime,
 		sweepEvery:    sweepEvery,
-		logBurst:      refusalLogBurst,
-		logWindow:     refusalLogWindow,
+		refusalBurst:  refusalLogBurst,
+		tunnelBurst:   tunnelLogBurst,
+		logWindow:     logWindow,
 		maxConns:      maxConnections,
 		maxPerSource:  maxConnectionsPerSource,
 	}
@@ -116,7 +119,7 @@ func (g *Gateway) WithNetwork(resolve Resolver, dial Dialer) *Gateway {
 
 // Decision is one logged gateway outcome: "allowed" when a tunnel opens and "closed" when it ends (both carry the
 // tunnel's id), "denied" for a policy refusal, "failed" when an allowlisted host could not be reached, and
-// "suppressed" for the refusals a flooding sandbox made beyond its log budget.
+// "suppressed" for the refusals or tunnels a sandbox made beyond its log budget.
 type Decision struct {
 	Time       string `json:"time"`
 	Sandbox    string `json:"sandbox,omitempty"`
@@ -158,11 +161,12 @@ type usage struct {
 	revoked time.Time
 }
 
-// logBudget counts one sandbox's (or source's) logged refusals in the current window.
+// logBudget counts one sandbox's (or source's) logged lines of one class, refusals or tunnels, in the current window.
 type logBudget struct {
 	start      time.Time
 	logged     int
 	suppressed int
+	class      string
 	sandbox    string
 	kind       string
 }
@@ -187,22 +191,42 @@ func (g *Gateway) writeLocked(d Decision) {
 	}
 }
 
-// logRefusal logs a refusal unless its sandbox or source has used this window's budget, in which case it is only
-// counted; the count is logged as one "suppressed" line when the window ends.
-func (g *Gateway) logRefusal(d Decision, key string) {
+// logRefusal logs a refusal unless its sandbox or source has spent this window's refusal budget.
+func (g *Gateway) logRefusal(d Decision, source string) {
 	g.logMu.Lock()
 	defer g.logMu.Unlock()
+	if g.spendLocked("refusals", source, g.refusalBurst, d) {
+		g.writeLocked(d)
+	}
+}
+
+// logOpened logs a tunnel's opening line and reports whether it did. Past its sandbox's tunnel budget the tunnel is
+// only counted, and its closing line is left out too, so every logged tunnel has both lines.
+func (g *Gateway) logOpened(d Decision) bool {
+	g.logMu.Lock()
+	defer g.logMu.Unlock()
+	if !g.spendLocked("tunnels", "sandbox "+d.Sandbox, g.tunnelBurst, d) {
+		return false
+	}
+	g.writeLocked(d)
+	return true
+}
+
+// spendLocked spends one line of a source's budget for a class of lines and reports whether it may be written. Past
+// the burst a line is only counted; the count is logged as one "suppressed" line when the window ends.
+func (g *Gateway) spendLocked(class, source string, burst int, d Decision) bool {
 	now := g.now()
+	key := class + " " + source
 	budget := g.budgets[key]
 	if budget == nil {
 		sandboxName, kind := d.Sandbox, d.Kind
 		if len(g.budgets) >= logBudgetKeys {
-			// Past the bound every new source shares one budget, reported without a sandbox name.
-			key, sandboxName, kind = "", "", ""
+			// Past the bound every new source shares one budget per class, reported without a sandbox name.
+			key, sandboxName, kind = class, "", ""
 			budget = g.budgets[key]
 		}
 		if budget == nil {
-			budget = &logBudget{start: now, sandbox: sandboxName, kind: kind}
+			budget = &logBudget{start: now, class: class, sandbox: sandboxName, kind: kind}
 			g.budgets[key] = budget
 		}
 	}
@@ -210,18 +234,18 @@ func (g *Gateway) logRefusal(d Decision, key string) {
 		g.flushLocked(budget)
 		budget.start, budget.logged = now, 0
 	}
-	if budget.logged >= g.logBurst {
+	if budget.logged >= burst {
 		budget.suppressed++
-		return
+		return false
 	}
 	budget.logged++
-	g.writeLocked(d)
+	return true
 }
 
 func (g *Gateway) flushLocked(budget *logBudget) {
 	if budget.suppressed > 0 {
 		g.writeLocked(Decision{Sandbox: budget.sandbox, Kind: budget.kind, Decision: "suppressed",
-			Reason: "refusals over the log budget", Suppressed: budget.suppressed})
+			Reason: budget.class + " over the log budget", Suppressed: budget.suppressed})
 		budget.suppressed = 0
 	}
 }
@@ -444,9 +468,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer client.Close()
-	// The server's request deadlines do not apply to the tunnel; splice bounds it instead.
-	_ = client.SetDeadline(time.Time{})
-	t, ok := g.track(lease.Sandbox, leaseFile, client, upstream)
+	t, ok := g.track(leaseFile, client, upstream)
 	if !ok {
 		return
 	}
@@ -454,7 +476,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	decision := Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: uint16(port), Decision: "allowed",
 		Tunnel: g.tunnelIDs.Add(1)}
 	entry, key := g.countDecision(decision, leaseFile)
-	g.logDecision(decision)
+	logged := g.logOpened(decision)
 	started := g.now()
 	var up, down int64
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
@@ -463,10 +485,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		up, down = g.splice(t, buffered)
 	}
 	g.addTunnelBytes(lease.Sandbox, entry, key, up+down)
-	closed := decision
-	closed.Decision, closed.Reason = "closed", t.reason()
-	closed.BytesUp, closed.BytesDown, closed.Millis = up, down, g.now().Sub(started).Milliseconds()
-	g.logDecision(closed)
+	if logged {
+		closed := decision
+		closed.Decision, closed.Reason = "closed", t.reason()
+		closed.BytesUp, closed.BytesDown, closed.Millis = up, down, g.now().Sub(started).Milliseconds()
+		g.logDecision(closed)
+	}
 }
 
 // dialAddresses shares a bounded connection budget among the remaining vetted addresses, so a stalled attempt
@@ -511,7 +535,7 @@ func (g *Gateway) releaseTunnel(sandboxName string) {
 
 // tunnel is one open CONNECT tunnel, tied to the lease that admitted it so revoking the lease ends it.
 type tunnel struct {
-	sandbox, lease   string
+	lease            string
 	client, upstream net.Conn
 	cause            atomic.Pointer[string]
 }
@@ -532,13 +556,13 @@ func (t *tunnel) reason() string {
 }
 
 // track registers an open tunnel; it refuses once the gateway is stopping.
-func (g *Gateway) track(sandboxName, lease string, client, upstream net.Conn) (*tunnel, bool) {
+func (g *Gateway) track(lease string, client, upstream net.Conn) (*tunnel, bool) {
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
 	if g.tunnels == nil {
 		return nil, false
 	}
-	t := &tunnel{sandbox: sandboxName, lease: lease, client: client, upstream: upstream}
+	t := &tunnel{lease: lease, client: client, upstream: upstream}
 	g.tunnels[t] = struct{}{}
 	g.running.Add(1)
 	return t, true
