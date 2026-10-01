@@ -1444,6 +1444,28 @@ func TestTrustedChangeSetShowsSubmoduleEntries(t *testing.T) {
 
 // The prompt lists every changed file and embeds whole diffs, the smallest first, within its budget, naming each file
 // whose diff it leaves out; a change set whose file list does not fit is not reviewed at all.
+func TestTrustedChangeSetSkipsOversizedDiffAndKeepsLaterFiles(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg, ws, base := changeSetClone(t, map[string]string{"README.md": "fixture\n"})
+	writeTree(t, ws, map[string]string{
+		"large.txt": strings.Repeat("x", reviewDiffLimit) + "\n",
+		"small.txt": "first\nsecond\n",
+	})
+	revision, err := gitops.Snapshot(ctx, cfg, ws, "Long line before short lines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := trustedChangeSet(ctx, cfg, ws, base, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(set.omitted, []string{"large.txt"}) || len(set.diff) > reviewDiffLimit ||
+		!strings.Contains(set.diff, "+++ b/small.txt\n@@ -0,0 +1,2 @@\n+first\n+second\n") {
+		t.Fatalf("change set omitted %q with %d diff bytes: %s", set.omitted, len(set.diff), set.diff)
+	}
+}
+
 func TestTrustedChangeSetKeepsTheReviewPromptWithinItsBudget(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

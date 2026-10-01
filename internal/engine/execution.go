@@ -506,7 +506,8 @@ func trustedChangeSet(ctx context.Context, cfg config.Config, ws, base, revision
 			return changeSet{}, err
 		}
 		if !complete {
-			break
+			// Line count does not predict byte size: later files can still fit.
+			continue
 		}
 		if text == "" {
 			return changeSet{}, fmt.Errorf("Git shows no diff for the changed file %s", changed[i].listed)

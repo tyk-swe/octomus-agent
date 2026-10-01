@@ -39,11 +39,25 @@ type dockerBroker struct {
 
 func docker(t *testing.T, args ...string) string {
 	t.Helper()
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	cmd := exec.Command("docker", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("docker %s: %v\n%s", strings.Join(args, " "), err, out)
+		t.Fatalf("docker %s: %v\n%s\n%s", strings.Join(args, " "), err, out, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func TestDockerOutputExcludesPullProgress(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\nprintf 'Unable to find image locally\\n' >&2\nprintf '{\"checks\": []}\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got := docker(t, "run", "probe-image"); got != `{"checks": []}` {
+		t.Fatalf("docker stdout = %q; want only the probe JSON", got)
+	}
 }
 
 func repoRoot(t *testing.T) string {
