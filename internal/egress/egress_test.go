@@ -482,3 +482,19 @@ func TestGatewayDialBudgetAndCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestPublicAddressRefusesEmbeddedAndSpecialIPv6(t *testing.T) {
+	for _, addr := range []string{
+		"::7f00:1", "::a9fe:a9fe", "::ffff:0:a9fe:a9fe", "::ffff:0:7f00:1", "fec0::1", "3fff::1", "2001:2::1",
+		"2001:10::1", "2001:20::1", "5f00::1",
+	} {
+		if PublicAddress(netip.MustParseAddr(addr)) {
+			t.Errorf("%s was treated as public", addr)
+		}
+	}
+	for _, addr := range []string{"2a00:1450:4001:80b::200e", "2001:4860:4860::8888"} {
+		if !PublicAddress(netip.MustParseAddr(addr)) {
+			t.Errorf("%s was refused", addr)
+		}
+	}
+}
