@@ -620,12 +620,13 @@ func (catalogFailingAdapter) Models(string) ([]runner.Model, error) {
 }
 
 // probedSandbox is a Docker-mode backend whose containment probe prints report on the host, or, with hold, runs until
-// its caller gives up.
+// its caller gives up. With image, the probe's sandbox record names that image, as the broker's does.
 type probedSandbox struct {
 	sandbox.Host
 	dir    string
 	report string
 	hold   bool
+	image  string
 }
 
 func (probedSandbox) Mode() sandbox.Mode { return sandbox.ModeDocker }
@@ -638,7 +639,29 @@ func (p probedSandbox) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Ch
 	if p.hold {
 		command = "sleep 60"
 	}
-	return p.Host.Start(ctx, sandbox.Spec{Kind: sandbox.KindVerify, Dir: p.dir, Command: command})
+	child, err := p.Host.Start(ctx, sandbox.Spec{Kind: sandbox.KindVerify, Dir: p.dir, Command: command})
+	if err != nil || p.image == "" {
+		return child, err
+	}
+	return evidencedChild{Child: child, record: &model.SandboxRecord{ImageID: p.image, Runtime: "runsc", Runs: 1}}, nil
+}
+
+type evidencedChild struct {
+	sandbox.Child
+	record *model.SandboxRecord
+}
+
+func (c evidencedChild) Evidence() *model.SandboxRecord { return c.record }
+
+func TestSelfTestNamesTheImageItsProbeRanOn(t *testing.T) {
+	t.Parallel()
+	contained := `{"checks":[{"id":"non_root","label":"Runs as an unprivileged user","passed":true,"detail":"uid 10001"}],"kernel":"6.1"}`
+	app := New(testStore(t), t.TempDir(), WithSandbox(probedSandbox{dir: t.TempDir(), report: contained, image: "sha256:rebuilt"}))
+	t.Cleanup(app.Shutdown)
+	record, err := app.SelfTest(context.Background())
+	if err != nil || record.ImageID != "sha256:rebuilt" || record.Runtime != "runsc" {
+		t.Fatalf("self-test = %+v, %v; want it kept with the image and runtime its probe ran on", record, err)
+	}
 }
 
 const uncontainedReport = `{"checks":[{"id":"non_root","label":"Runs as an unprivileged user","passed":false,"detail":"uid 0"}],"kernel":"6.1"}`

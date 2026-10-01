@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
@@ -28,6 +29,9 @@ type ProbeReport struct {
 	// Limits are the raw cgroup limits the probe read. Only the broker knows what it configured, so Probe compares
 	// them outside the sandbox.
 	Limits ProbeLimits `json:"limits"`
+	// Sandbox is the broker's record of the probe's sandbox, which names the image the checks ran on. It never comes
+	// from the probe's own output.
+	Sandbox *model.SandboxRecord `json:"-"`
 }
 
 // ProbeLimits are the cgroup limits in force inside the probe sandbox, as the kernel reports them: cgroup v2's
@@ -69,6 +73,7 @@ func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
 	if err := json.Unmarshal(out.Stdout.Bytes, &report); err != nil {
 		return ProbeReport{}, fmt.Errorf("Containment probe answered unreadable output: %w", err)
 	}
+	report.Sandbox = EvidenceOf(child)
 	var limits *wire.BrokerLimits
 	var limitsErr error = errors.New("the sandbox backend reports no limits")
 	if informed, ok := backend.(interface {

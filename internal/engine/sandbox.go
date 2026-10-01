@@ -142,6 +142,11 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 		record.Error = &message
 	} else {
 		record.Checks, record.Kernel, record.Passed = report.Checks, report.Kernel, report.Passed()
+		if report.Sandbox != nil {
+			// The probe's own request can move the broker to an image rebuilt under the same tag since the info above
+			// was read: the proof belongs to the image it ran on.
+			record.ImageID, record.Runtime = report.Sandbox.ImageID, report.Sandbox.Runtime
+		}
 	}
 	if err := a.Store.Put("settings", selfTestRecord, record); err != nil {
 		return record, err

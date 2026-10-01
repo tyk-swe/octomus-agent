@@ -158,6 +158,11 @@ func (r *Remote) start(ctx context.Context, spec Spec, req wire.Request) (*remot
 		release()
 		return nil, notStarted(ctx, err)
 	}
+	// The broker resolves its image tag for each sandbox, so this one may have moved it to an image rebuilt since the
+	// cached info: the next Info asks again.
+	r.mu.Lock()
+	r.infoAt = time.Time{}
+	r.mu.Unlock()
 	return newRemoteChild(conn, reader, spec.Stderr, req.Stdin, r.killWait, release), nil
 }
 

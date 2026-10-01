@@ -4,8 +4,12 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 func TestRebuiltImageTakesEffectAndAVanishedOneFailsClearly(t *testing.T) {
@@ -48,6 +52,39 @@ func TestRebuiltImageTakesEffectAndAVanishedOneFailsClearly(t *testing.T) {
 	e.mu.Unlock()
 	if err := run(); err == nil || !strings.Contains(err.Error(), "not available locally") {
 		t.Fatalf("sandbox after the tag vanished = %v; want a clear refusal", err)
+	}
+}
+
+func TestContainmentProbeNamesTheImageItRanOn(t *testing.T) {
+	e := newFakeEngine(t)
+	e.run = func(c *fakeContainer) {
+		if !slices.Contains(c.Spec.Entrypoint, wire.ProbeContainment) {
+			defaultRun(c)
+			return
+		}
+		c.Stdout(`{"checks":[{"id":"non_root","label":"Runs as an unprivileged user","passed":true,"detail":"uid 10001"}],"kernel":"6.1"}`)
+		c.End(0)
+	}
+	cfg := testConfig(t)
+	remote := serve(t, e.broker(t, cfg))
+	// The broker's info is read, and cached, before the operator rebuilds the image under the same tag.
+	if info, err := remote.Info(context.Background()); err != nil || info.ImageID != "sha256:first" {
+		t.Fatalf("info = %+v, %v", info, err)
+	}
+	e.mu.Lock()
+	e.images[cfg.Image] = "sha256:second"
+	e.mu.Unlock()
+	report, err := sandbox.Probe(context.Background(), remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The probe's own request moved the broker to the rebuilt image, so only its record names what it proved.
+	if report.Sandbox == nil || report.Sandbox.ImageID != "sha256:second" {
+		t.Fatalf("probe sandbox record = %+v; want the rebuilt image it ran on", report.Sandbox)
+	}
+	// The posture the dashboard compares that proof with is read again, not served from before the rebuild.
+	if info, err := remote.Info(context.Background()); err != nil || info.ImageID != "sha256:second" {
+		t.Fatalf("info after the probe = %s, %v; want the image the probe moved the broker to", info.ImageID, err)
 	}
 }
 
