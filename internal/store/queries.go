@@ -530,10 +530,14 @@ func statusCounts(c *sql.Conn, counts map[string]int64) error {
 	return rows.Err()
 }
 
+const cleanupEligible = `kind=?1 AND discarded IS NULL
+    AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle')))
+    AND julianday(COALESCE(archived,json_extract(summary,'$.completed_at'),json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2)`
+
 func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.completed_at'),json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq<=COALESCE((SELECT seq FROM record_meta WHERE kind=?1 AND id=?3),0),seq LIMIT 100", kind, cutoff, after)
+	raw, err := queryStrings(s.conn, "SELECT id FROM record_meta WHERE "+cleanupEligible+" ORDER BY seq<=COALESCE((SELECT seq FROM record_meta WHERE kind=?1 AND id=?3),0),seq LIMIT 100", kind, cutoff, after)
 	if err != nil {
 		return nil, err
 	}
@@ -542,6 +546,16 @@ func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) 
 		ids = append(ids, string(id))
 	}
 	return ids, nil
+}
+
+// CleanupEligible rechecks a candidate after the retention pass released the operator gate.
+// Archiving another candidate during a slow removal restarts that candidate's retention period.
+func (s *Store) CleanupEligible(kind, id, cutoff string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var eligible bool
+	err := s.conn.QueryRowContext(background, "SELECT EXISTS(SELECT 1 FROM record_meta WHERE id=?3 AND "+cleanupEligible+")", kind, cutoff, id).Scan(&eligible)
+	return eligible, err
 }
 
 func (s *Store) LatestPrOutput(repository string, number uint64) (*string, error) {

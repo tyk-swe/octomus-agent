@@ -146,7 +146,7 @@ func (a *App) retention(cfg config.Config) error {
 			}
 			a.advanceRetentionCursor(kind, id)
 			a.gate.Lock()
-			err := a.retainCandidateLocked(kind, id)
+			err := a.retainCandidateLocked(kind, id, cutoff)
 			a.gate.Unlock()
 			if err == nil {
 				a.clearCleanupReport(kind, id)
@@ -202,7 +202,11 @@ func (a *App) clearCleanupReport(kind cleanupKind, id string) {
 	a.runtimeMu.Unlock()
 }
 
-func (a *App) retainCandidateLocked(kind cleanupKind, id string) error {
+func (a *App) retainCandidateLocked(kind cleanupKind, id, cutoff string) error {
+	eligible, err := a.Store.CleanupEligible(string(kind), id, cutoff)
+	if err != nil || !eligible {
+		return err
+	}
 	if kind == cleanupTask {
 		task, err := store.Get[model.Task](a.Store, "task", id)
 		if err != nil || task == nil || task.Lifecycle.DiscardedAt != nil {
