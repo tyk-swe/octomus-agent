@@ -165,7 +165,10 @@
     conflict = false;
     message = '';
     try {
-      const draft: Config = { ...config, verification_commands: parseCommands(commands) };
+      const draft: Config = { ...config };
+      // Saved commands can contain newlines or whitespace that the line editor cannot round-trip.
+      if (commands !== savedCommands || replaced.verification_commands)
+        draft.verification_commands = parseCommands(commands);
       const patch: Record<string, unknown> = {};
       for (const key of Object.keys(draft) as (keyof Config)[]) {
         if (JSON.stringify(draft[key]) !== JSON.stringify(savedConfig?.[key]))
