@@ -210,8 +210,18 @@ func (s *Store) MarkerSet(kind, id string) (bool, error) {
 }
 
 func (s *Store) CommitPlan(cycle model.Cycle, tasks []model.Task) error {
+	return s.CommitPlanContext(background, cycle, tasks)
+}
+
+// CommitPlanContext uses ctx only for admission after acquiring the store mutex.
+// Once admitted, cancellation does not interrupt the plan transaction: it finishes
+// atomically, like other store writes.
+func (s *Store) CommitPlanContext(ctx context.Context, cycle model.Cycle, tasks []model.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return s.transaction(false, func(c *sql.Conn) error {
 		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {
 			return err
