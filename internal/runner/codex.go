@@ -284,17 +284,32 @@ func (c *Codex) receive(deadline time.Time, what string) (map[string]any, error)
 }
 
 func (c *Codex) rpc(method string, params map[string]any) (any, error) {
-	return c.rpcUntil(method, params, time.Now().Add(60*time.Second), "Codex RPC timed out")
+	return c.rpcWithTimeout(method, params, 60*time.Second, time.Time{}, "Codex RPC timed out")
 }
 
 func (c *Codex) rpcUntil(method string, params map[string]any, deadline time.Time, what string) (any, error) {
-	if rpcDeadline := time.Now().Add(60 * time.Second); rpcDeadline.Before(deadline) {
+	return c.rpcWithTimeout(method, params, 60*time.Second, deadline, what)
+}
+
+func (c *Codex) rpcWithTimeout(method string, params map[string]any, responseTimeout time.Duration, deadline time.Time, what string) (any, error) {
+	if rpcDeadline := time.Now().Add(responseTimeout); !deadline.IsZero() && rpcDeadline.Before(deadline) {
 		deadline, what = rpcDeadline, "Codex RPC timed out"
 	}
 	c.serial++
 	id := c.serial
-	if err := c.sendUntil(map[string]any{"id": id, "method": method, "params": params}, deadline, what); err != nil {
+	request := map[string]any{"id": id, "method": method, "params": params}
+	var err error
+	if deadline.IsZero() {
+		err = c.send(request)
+	} else {
+		err = c.sendUntil(request, deadline, what)
+	}
+	if err != nil {
 		return nil, err
+	}
+	// Ordinary RPCs get their response allowance after writing. Only a turn supplies an overall deadline.
+	if deadline.IsZero() {
+		deadline, what = time.Now().Add(responseTimeout), "Codex RPC timed out"
 	}
 	for {
 		bound, receiveWhat := deadline, what

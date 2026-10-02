@@ -1,9 +1,11 @@
 package runner
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -13,6 +15,74 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
+
+func TestCodexRPCResponseAllowanceFollowsWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		turnDeadline  bool
+		responseDelay time.Duration
+		wantError     string
+	}{
+		{"ordinary RPC keeps its response allowance", false, 100 * time.Millisecond, ""},
+		{"ordinary response remains bounded", false, 1500 * time.Millisecond, "Codex RPC timed out"},
+		{"turn RPC still bounds its write", true, 100 * time.Millisecond, "Codex session time limit exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stdin, peer := net.Pipe()
+			ctx, cancel := context.WithCancel(context.Background())
+			lines := make(chan lineResult)
+			client := &Codex{ctx: ctx, stdin: stdin, lines: lines, timeout: 10}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				// Hold the write longer than the response allowance. The two budgets are independent for ordinary RPCs.
+				timer := time.NewTimer(1500 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					return
+				}
+				if _, err := bufio.NewReader(peer).ReadString('\n'); err != nil {
+					return
+				}
+				timer.Reset(tc.responseDelay)
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					return
+				}
+				select {
+				case lines <- lineResult{line: []byte(`{"id":1,"result":{"ok":true}}`)}:
+				case <-ctx.Done():
+				}
+			}()
+			defer func() {
+				cancel()
+				stdin.Close()
+				peer.Close()
+				<-done
+			}()
+			var deadline time.Time
+			method := "model/list"
+			if tc.turnDeadline {
+				deadline = time.Now().Add(time.Second)
+				method = "turn/start"
+			}
+			value, err := client.rpcWithTimeout(method, map[string]any{}, time.Second, deadline, "Codex session time limit exceeded")
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("deadline error: got %v, want %s", err, tc.wantError)
+				}
+				return
+			}
+			if result, _ := asObject(value); err != nil || result["ok"] != true {
+				t.Fatalf("write time consumed the ordinary RPC response allowance: %v, %v", value, err)
+			}
+		})
+	}
+}
 
 func TestCodexTurnDeadlineIncludesStartRPC(t *testing.T) {
 	const thread = "019a0000-0000-7000-8000-000000000001"
