@@ -33,6 +33,10 @@ the executable needs no build toolchain or minimum glibc at runtime.
 
 The archive contains `octomus-agent/octomus-agent`, license, policies and operator
 documentation. It never packages live state or separate runtime dashboard files.
+`scripts/release-files.txt` lists every public input besides the executable;
+update it and the exact archive contract in `tests/package_guards.py` when adding
+release documentation or deployment files. Packaging works without Git metadata
+and rejects symlinked manifest files, listed inputs and their parent directories.
 The installer validates a single matching SHA-256 entry before extracting only
 the executable, then replaces the destination binary. Set an absolute writable
 `INSTALL_DIR` to avoid sudo. Downloads and checksums come from the same release;
