@@ -185,11 +185,14 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	}
 	defer state.Close()
 	backend := sandboxBackend(parsed.sandbox, env, stderr)
-	startup, stopStartup := signal.NotifyContext(context.Background(), shutdownSignals()...)
-	deployment, err := prepareDeployment(startup, parsed.sandbox, data, env, stderr)
-	stopStartup()
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
+	defer stopSignals()
+	deployment, err := prepareDeployment(sigCtx, parsed.sandbox, data, env, stderr)
 	if err != nil {
 		return err
+	}
+	if sigCtx.Err() != nil {
+		return nil
 	}
 	app := engine.New(state, data, engine.WithSandbox(backend), engine.WithDeployment(deployment))
 	if parsed.doctor {
@@ -197,8 +200,6 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		if parsed.audit {
 			mode = model.CycleModeAudit
 		}
-		sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
-		defer stopSignals()
 		return runDoctor(sigCtx, app, mode, stdout, stderr)
 	}
 	token, ok := env(redact.TokenEnv)
@@ -223,8 +224,6 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		}
 	}
 	webhook, _ := env(redact.WebhookEnv)
-	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
-	defer stopSignals()
 	server := newHTTPServer(httpapi.Router(app, token, assetsOverride, octomus.Version))
 	components := serviceComponents{
 		scheduler: app,
