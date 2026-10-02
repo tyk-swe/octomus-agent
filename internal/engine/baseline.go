@@ -222,11 +222,20 @@ func (a *App) CancelBaseline(id string) error {
 		cancel = a.runtime.baseline.cancel
 	}
 	a.runtimeMu.Unlock()
-	if cancel == nil {
-		return conflictError("The baseline check is no longer running")
-	}
 	if err := a.Store.Put("baseline_cancel", id, model.Now()); err != nil {
 		return err
+	}
+	if cancel == nil {
+		// A refused terminal write can leave a running record after its worker exits.
+		// Let the operator settle it once storage recovers, preserving its evidence.
+		if err := a.abandonBaseline(check,
+			"Cancelled by the operator after the check worker exited",
+			"Baseline check worker exited unexpectedly"); err != nil {
+			return err
+		}
+		// Like the worker path, activity is best-effort after terminal state commits.
+		_ = a.Store.Event(id, "baseline", baselineStatusDebug[check.Status])
+		return nil
 	}
 	cancel()
 	return nil
@@ -456,8 +465,9 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	check.CompletedAt = stringPointer(model.Now())
 	if err := a.Store.Put("baseline", id, *check); err != nil {
 		_ = a.Store.Event(id, "baseline_error", redact.Error(err))
+	} else {
+		_ = a.Store.Event(id, "baseline", baselineStatusDebug[status])
 	}
-	_ = a.Store.Event(id, "baseline", baselineStatusDebug[status])
 	a.gate.Unlock()
 	if err := a.removeBaselineWorkspace(check); err != nil {
 		_ = a.Store.Event(id, "cleanup_error", redact.Error(err))
