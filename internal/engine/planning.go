@@ -76,6 +76,21 @@ func (a *App) interruptOrphanedCycles() error {
 			return err
 		}
 	}
+	if activeID != "" {
+		return nil
+	}
+	// Retry control settlement even if an earlier pass interrupted the cycle
+	// successfully but could not pause its now-workerless planning batch.
+	control, err := a.Control()
+	if err != nil {
+		return err
+	}
+	if control.Mode == model.OperatingModeRunOnce && control.Batch != nil && control.Batch.Phase == model.BatchPhasePlanning {
+		message := "Run once was interrupted before its planning transaction committed"
+		control.SetMode(model.OperatingModePaused)
+		control.Error = &message
+		return a.Store.SaveControl(control)
+	}
 	return nil
 }
 

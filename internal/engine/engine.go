@@ -337,23 +337,7 @@ func (a *App) Recover() error {
 		}
 	}
 
-	if err := a.interruptOrphanedCycles(); err != nil {
-		return err
-	}
-
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	if control.Mode == model.OperatingModeRunOnce && control.Batch != nil && control.Batch.Phase == model.BatchPhasePlanning {
-		message := "Run once was interrupted before its planning transaction committed"
-		control.SetMode(model.OperatingModePaused)
-		control.Error = &message
-		if err := a.Store.SaveControl(control); err != nil {
-			return err
-		}
-	}
-	return nil
+	return a.interruptOrphanedCycles()
 }
 
 func stringPointer(value string) *string { return &value }

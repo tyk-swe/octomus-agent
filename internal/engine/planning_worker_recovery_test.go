@@ -232,3 +232,108 @@ func TestTickExcludesActiveCycleBeforeDecodingEvidence(t *testing.T) {
 		t.Fatalf("excluding active evidence prevented orphan recovery: %+v, %v", saved, err)
 	}
 }
+
+func TestTickRetriesOrphanedRunOnceControlRecovery(t *testing.T) {
+	t.Parallel()
+	fixture := newScriptedPlanningFixture(t)
+	completePlan(t, fixture).queue(fixture)
+	app := fixture.pausedApp(t)
+	schedulerSQL(t, fixture.state, `CREATE TEMP TRIGGER refuse_cycle_terminal BEFORE UPDATE ON records
+		WHEN NEW.kind='cycle' AND json_extract(NEW.data,'$.status')!='running'
+		BEGIN SELECT RAISE(ABORT, 'synthetic cycle terminal refusal'); END`)
+	schedulerSQL(t, fixture.state, `CREATE TEMP TRIGGER refuse_planning_pause BEFORE UPDATE ON records
+		WHEN NEW.kind='settings' AND NEW.id='control' AND json_extract(NEW.data,'$.mode')='paused'
+		BEGIN SELECT RAISE(ABORT, 'synthetic planning pause refusal'); END`)
+	if err := app.RunOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	app.wg.Wait()
+	control, err := app.Control()
+	if err != nil || control.Mode != model.OperatingModeRunOnce || control.Batch == nil || control.Batch.Phase != model.BatchPhasePlanning || control.Batch.CycleID == nil {
+		t.Fatalf("refused worker finalization: %+v, %v", control, err)
+	}
+	id := *control.Batch.CycleID
+	before, err := store.Get[model.Cycle](fixture.state, "cycle", id)
+	if err != nil || before == nil || before.Status != model.CycleRunning || !app.runtimeIdle() {
+		t.Fatalf("worker did not leave an orphaned planning cycle: %+v, %v", before, err)
+	}
+	schedulerSQL(t, fixture.state, "DROP TRIGGER refuse_cycle_terminal")
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := app.Tick(); err == nil || !strings.Contains(err.Error(), "synthetic planning pause refusal") {
+			t.Errorf("control recovery attempt %d = %v; want retryable pause refusal", attempt, err)
+		}
+		current, err := app.Control()
+		if err != nil || !wirejson.Equal(current, control) {
+			t.Fatalf("refused pause changed the batch: %+v, %v", current, err)
+		}
+	}
+	interrupted, err := store.Get[model.Cycle](fixture.state, "cycle", id)
+	if err != nil || interrupted == nil || interrupted.Status != model.CycleInterrupted {
+		t.Fatalf("cycle did not settle before retrying control: %+v, %v", interrupted, err)
+	}
+	schedulerSQL(t, fixture.state, "DROP TRIGGER refuse_planning_pause")
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := app.Control()
+	if err != nil || saved.Mode != model.OperatingModePaused || saved.Batch != nil || saved.Error == nil || *saved.Error != "Run once was interrupted before its planning transaction committed" {
+		t.Fatalf("healed storage left the planning batch stuck: %+v, %v", saved, err)
+	}
+	if cycle, err := store.Get[model.Cycle](fixture.state, "cycle", id); err != nil || !wirejson.Equal(cycle, interrupted) {
+		t.Fatalf("control retry rewrote the retained cycle: %+v, %v", cycle, err)
+	}
+	if tasks, err := store.List[model.Task](fixture.state, "task"); err != nil || len(tasks) != 0 {
+		t.Fatalf("interrupted plan dispatched work: %+v, %v", tasks, err)
+	}
+	assertAdmissions(t, fixture.state, fixture.cfg.PlanningAdmissionsRequired(), "control recovery cannot replay planning")
+	completePlan(t, fixture).queue(fixture)
+	if _, err := app.ControlAction("cycle"); err != nil {
+		t.Fatalf("operator could not start a fresh run once: %v", err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	app.wg.Wait()
+	next, err := app.Control()
+	if err != nil || next.Mode != model.OperatingModeRunOnce || next.Batch == nil || next.Batch.Phase != model.BatchPhaseExecuting || next.Batch.CycleID == nil || *next.Batch.CycleID == id {
+		t.Fatalf("fresh run once failed to commit its new plan: %+v, %v", next, err)
+	}
+	assertAdmissions(t, fixture.state, 2*fixture.cfg.PlanningAdmissionsRequired(), "only the operator's fresh run may plan again")
+}
+
+func TestTickKeepsLiveRunOncePlanningControl(t *testing.T) {
+	t.Parallel()
+	fixture := newScriptedPlanningFixture(t)
+	plan := completePlan(t, fixture)
+	gate := runnertest.NewGate()
+	plan.grounding.Gate = gate
+	plan.queue(fixture)
+	app := fixture.pausedApp(t)
+	t.Cleanup(gate.Release)
+	if err := app.RunOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	waitPlanningStorage(t, gate.Entered())
+	before, err := app.Control()
+	if err != nil || before.Batch == nil || before.Batch.Phase != model.BatchPhasePlanning {
+		t.Fatalf("live planning control: %+v, %v", before, err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if current, err := app.Control(); err != nil || !wirejson.Equal(current, before) {
+		t.Fatalf("live planning was paused: %+v, %v", current, err)
+	}
+	gate.Release()
+	app.wg.Wait()
+	current, err := app.Control()
+	if err != nil || current.Batch == nil || current.Batch.Phase != model.BatchPhaseExecuting {
+		t.Fatalf("live planning did not commit: %+v, %v", current, err)
+	}
+}
