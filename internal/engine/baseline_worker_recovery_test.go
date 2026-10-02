@@ -37,6 +37,12 @@ func TestBaselineCancellationRecoversTerminalWriteRefusal(t *testing.T) {
 	if before.Status != model.BaselineStatusRunning || len(before.Commands) != 1 || !before.Commands[0].Success || view["eligible"] != true {
 		t.Fatalf("expected retained running evidence without a worker: %+v", view)
 	}
+	if !hasEvent(t, f.state, check.ID, "baseline_error", "synthetic terminal refusal") {
+		t.Fatal("terminal write refusal missing from activity")
+	}
+	if hasEvent(t, f.state, check.ID, "baseline", "Passed") {
+		t.Fatalf("refused terminal write recorded Passed while saved status is %s", before.Status)
+	}
 	if err := a.CancelBaseline(check.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +61,9 @@ func TestBaselineCancellationRecoversTerminalWriteRefusal(t *testing.T) {
 	if !hasEvent(t, f.state, check.ID, "baseline", "Cancelled") {
 		t.Fatal("recovered cancellation missing from activity")
 	}
+	if hasEvent(t, f.state, check.ID, "baseline", "Passed") {
+		t.Fatal("cancelled check has a conflicting Passed outcome in activity")
+	}
 	if err := a.CancelBaseline(check.ID); err == nil || !IsActionConflict(err) {
 		t.Fatalf("finished check accepted another cancellation: %v", err)
 	}
@@ -66,6 +75,38 @@ func TestBaselineCancellationRecoversTerminalWriteRefusal(t *testing.T) {
 	latest, err := f.state.LatestBaseline()
 	if err != nil || latest == nil || latest.ID != next.ID || latest.Status != model.BaselineStatusPassed {
 		t.Fatalf("next baseline result: %+v, %v", latest, err)
+	}
+	if !hasEvent(t, f.state, next.ID, "baseline", "Passed") {
+		t.Fatal("durable passing result missing from activity")
+	}
+}
+
+func TestBaselineWorkerPreservesPassedStatusWhenActivityFails(t *testing.T) {
+	t.Parallel()
+	f := newPlanningFixture(t)
+	a := New(f.state, f.dataDir)
+	t.Cleanup(a.Shutdown)
+	fingerprint, err := f.cfg.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedulerSQL(t, f.state, `CREATE TEMP TRIGGER refuse_activity BEFORE INSERT ON events
+		WHEN NEW.kind='baseline' AND NEW.message='Passed'
+		BEGIN SELECT RAISE(ABORT, 'synthetic activity refusal'); END`)
+	check, err := a.StartBaseline(fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.wg.Wait()
+	saved, err := store.Get[model.BaselineCheck](f.state, "baseline", check.ID)
+	if err != nil || saved == nil || saved.Status != model.BaselineStatusPassed || saved.CompletedAt == nil || !saved.WorkspaceRemoved {
+		t.Fatalf("durable passing result: %+v, %v", saved, err)
+	}
+	if hasEvent(t, f.state, check.ID, "baseline", "Passed") {
+		t.Fatal("refused passing activity was stored")
+	}
+	if hasEvent(t, f.state, check.ID, "baseline_error", "") {
+		t.Fatal("activity refusal reported as a terminal state write failure")
 	}
 }
 

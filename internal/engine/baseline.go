@@ -465,8 +465,9 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	check.CompletedAt = stringPointer(model.Now())
 	if err := a.Store.Put("baseline", id, *check); err != nil {
 		_ = a.Store.Event(id, "baseline_error", redact.Error(err))
+	} else {
+		_ = a.Store.Event(id, "baseline", baselineStatusDebug[status])
 	}
-	_ = a.Store.Event(id, "baseline", baselineStatusDebug[status])
 	a.gate.Unlock()
 	if err := a.removeBaselineWorkspace(check); err != nil {
 		_ = a.Store.Event(id, "cleanup_error", redact.Error(err))
