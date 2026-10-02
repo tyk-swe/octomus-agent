@@ -304,6 +304,8 @@ table in `internal/httpapi/httpapi.go` (`buildRoutes`) is authoritative.
 - Every `POST` and `PUT` must send `Content-Type: application/json`, even without a
   body (for example `POST /api/control/pause`); otherwise the answer is
   `415 {"error":"Use application/json"}`.
+  The media type is case-insensitive and allows valid parameters; other media
+  types and malformed parameters are rejected before the handler runs.
 - Checks run in this order: an unknown path answers `404 {"error":"Unknown API route"}`
   before authentication; a missing or wrong token answers `401` after the
   failed-authentication backoff; then the content type is checked; a known path with
