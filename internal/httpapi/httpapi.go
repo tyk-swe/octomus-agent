@@ -169,7 +169,12 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		contentTypes := r.Header.Values("Content-Type")
+		if len(contentTypes) != 1 {
+			writeAPIError(w, http.StatusUnsupportedMediaType, "Use application/json")
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
 		if err != nil || mediaType != "application/json" {
 			writeAPIError(w, http.StatusUnsupportedMediaType, "Use application/json")
 			return
