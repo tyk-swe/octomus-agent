@@ -388,7 +388,8 @@ mistyped default. Without an override, an invalid default refuses the command;
 from the environment in [compose.yaml](../deploy/docker/compose.yaml). `--sandboxd-check` asks
 the broker over its socket whether it serves sandboxes; the sandboxd container's HEALTHCHECK runs
 it, and the control plane waits for that health before starting. `--healthcheck` asks
-the local service for `/healthz`. The container image also uses
+the service at `--listen` (or `OCTOMUS_LISTEN`) for `/healthz`; wildcard bind addresses
+use loopback in the same IP family. The container image also uses
 `--sandbox-init` (the in-sandbox helper) and `--git-credential` (the control plane's Git
 credential helper); neither is meant to be run by hand. `--assets`/`OCTOMUS_ASSETS`
 explicitly replaces embedded serving with a directory containing `200.html`; the default
