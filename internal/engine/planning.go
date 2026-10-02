@@ -223,6 +223,9 @@ func checkRediscoveryDecisions(requests []rediscoveryRequest, proposals []model.
 func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task) error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
+	if err := a.ctx.Err(); err != nil {
+		return err
+	}
 	return a.Store.CommitPlan(cycle, tasks)
 }
 
