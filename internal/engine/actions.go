@@ -134,6 +134,7 @@ func (a *App) retryTask(task *model.Task) error {
 	}
 	task.Attempts++
 	task.ReviewBaseline = uint64(len(task.Reviews))
+	task.RepairProgress = nil
 	task.Error = nil
 	task.BlockedReason = nil
 	task.Status = model.StatusQueued

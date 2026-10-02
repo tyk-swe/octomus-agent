@@ -165,6 +165,11 @@ export type CycleSummary = Pick<
   decisions: Record<string, number>;
   lifecycle: WorkspaceLifecycle;
 };
+export type RepairProgress = {
+  revision: string;
+  no_progress_rounds: number;
+  awaiting_review: boolean;
+};
 export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   proposal: Proposal;
   allowed_actions: string[];
@@ -188,6 +193,7 @@ export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   reviews: ReviewRound[];
   attempts: number;
   review_baseline: number;
+  repair_progress: RepairProgress | null;
   verification: {
     command: string;
     success: boolean;

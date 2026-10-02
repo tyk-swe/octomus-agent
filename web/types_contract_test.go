@@ -112,6 +112,7 @@ func TestDashboardTypesMirrorGoJSON(t *testing.T) {
 		"Proposal":                 model.Proposal{},
 		"Session":                  model.Session{},
 		"ReviewRound":              model.ReviewRound{},
+		"RepairProgress":           model.RepairProgress{},
 		"WorkspaceLifecycle":       model.WorkspaceLifecycle{},
 		"PR":                       model.PullRequest{},
 		"PrObservation":            model.PrObservation{},

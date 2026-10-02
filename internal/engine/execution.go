@@ -152,8 +152,6 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	if err := a.runExecutor(ctx, task, client, admissionReserved); err != nil {
 		return err
 	}
-	previous := ""
-	noProgress := uint64(0)
 	for {
 		revision, err := gitops.Snapshot(ctx, cfg, ws, task.Proposal.Title)
 		if err != nil {
@@ -196,14 +194,22 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		if task.AttemptReviews() > cfg.MaxRepairRounds {
 			return fmt.Errorf("Repair budget exhausted (max_repair_rounds %d): %w", cfg.MaxRepairRounds, model.BlockedReasonVerificationFailed)
 		}
-		if previous == revision {
-			noProgress++
-		} else {
-			noProgress = 0
-			previous = revision
-		}
-		if noProgress >= cfg.MaxNoProgressRounds {
-			return fmt.Errorf("Repairs made no progress on the reviewed revision (max_no_progress_rounds %d): %w", cfg.MaxNoProgressRounds, model.BlockedReasonVerificationFailed)
+		if progress := task.RepairProgress; progress != nil {
+			if progress.Revision != revision {
+				progress.NoProgressRounds = 0
+			} else if progress.AwaitingReview {
+				progress.NoProgressRounds++
+			}
+			progress.Revision = revision
+			progress.AwaitingReview = false
+			// Consume the completed repair before another turn can start. Recovery may review this same revision
+			// again after a shutdown here, but must not count that repair a second time.
+			if err := a.saveTask(task); err != nil {
+				return err
+			}
+			if progress.NoProgressRounds >= cfg.MaxNoProgressRounds {
+				return fmt.Errorf("Repairs made no progress on the reviewed revision (max_no_progress_rounds %d): %w", cfg.MaxNoProgressRounds, model.BlockedReasonVerificationFailed)
+			}
 		}
 		if err := a.repair(ctx, task, client, review, verificationErrors); err != nil {
 			return err
@@ -711,6 +717,14 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 		cycleID: task.CycleID, task: task, role: "repair", route: cfg.RepairRoute, workspace: task.Workspace,
 		resume: task.RepairSession, keep: func(session string) { task.RepairSession = &session },
 		prompt: prompt,
+		judge: func(_, answer string) (string, error) {
+			if task.RepairProgress == nil {
+				task.RepairProgress = &model.RepairProgress{}
+			}
+			task.RepairProgress.Revision = task.Reviews[len(task.Reviews)-1].Revision
+			task.RepairProgress.AwaitingReview = true
+			return answer, nil
+		},
 	})
 	return err
 }
