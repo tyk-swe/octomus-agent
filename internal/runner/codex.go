@@ -292,9 +292,6 @@ func (c *Codex) rpcUntil(method string, params map[string]any, deadline time.Tim
 }
 
 func (c *Codex) rpcWithTimeout(method string, params map[string]any, responseTimeout time.Duration, deadline time.Time, what string) (any, error) {
-	if rpcDeadline := time.Now().Add(responseTimeout); !deadline.IsZero() && rpcDeadline.Before(deadline) {
-		deadline, what = rpcDeadline, "Codex RPC timed out"
-	}
 	c.serial++
 	id := c.serial
 	request := map[string]any{"id": id, "method": method, "params": params}
@@ -307,9 +304,9 @@ func (c *Codex) rpcWithTimeout(method string, params map[string]any, responseTim
 	if err != nil {
 		return nil, err
 	}
-	// Ordinary RPCs get their response allowance after writing. Only a turn supplies an overall deadline.
-	if deadline.IsZero() {
-		deadline, what = time.Now().Add(responseTimeout), "Codex RPC timed out"
+	// Every RPC gets its response allowance after writing, capped by the original overall turn deadline if supplied.
+	if rpcDeadline := time.Now().Add(responseTimeout); deadline.IsZero() || rpcDeadline.Before(deadline) {
+		deadline, what = rpcDeadline, "Codex RPC timed out"
 	}
 	for {
 		bound, receiveWhat := deadline, what

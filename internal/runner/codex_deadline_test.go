@@ -18,25 +18,41 @@ import (
 
 func TestCodexRPCResponseAllowanceFollowsWrite(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		turnDeadline  bool
-		responseDelay time.Duration
-		wantError     string
+		name            string
+		turnLimit       time.Duration
+		writeTimeout    uint64
+		responseTimeout time.Duration
+		responseDelay   time.Duration
+		wantError       string
+		wantWritten     bool
 	}{
-		{"ordinary RPC keeps its response allowance", false, 100 * time.Millisecond, ""},
-		{"ordinary response remains bounded", false, 1500 * time.Millisecond, "Codex RPC timed out"},
-		{"turn RPC still bounds its write", true, 100 * time.Millisecond, "Codex session time limit exceeded"},
+		{name: "ordinary RPC keeps its response allowance", responseDelay: 100 * time.Millisecond},
+		{name: "ordinary response remains bounded", responseDelay: 1500 * time.Millisecond,
+			wantError: "Codex RPC timed out", wantWritten: true},
+		{name: "turn RPC keeps its response allowance", turnLimit: 5 * time.Second, responseDelay: 100 * time.Millisecond},
+		{name: "turn response remains bounded", turnLimit: 5 * time.Second, responseDelay: 1500 * time.Millisecond,
+			wantError: "Codex RPC timed out", wantWritten: true},
+		{name: "turn deadline bounds its write", turnLimit: time.Second, responseDelay: 100 * time.Millisecond,
+			wantError: "Codex session time limit exceeded"},
+		{name: "turn deadline bounds its response", turnLimit: 3 * time.Second, responseTimeout: 10 * time.Second,
+			responseDelay: 2 * time.Second, wantError: "Codex session time limit exceeded", wantWritten: true},
+		{name: "write keeps its own bound", turnLimit: 5 * time.Second, writeTimeout: 1, responseTimeout: 3 * time.Second,
+			responseDelay: 100 * time.Millisecond, wantError: "Codex write timed out"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			stdin, peer := net.Pipe()
 			ctx, cancel := context.WithCancel(context.Background())
 			lines := make(chan lineResult)
-			client := &Codex{ctx: ctx, stdin: stdin, lines: lines, timeout: 10}
+			client := &Codex{ctx: ctx, stdin: stdin, lines: lines, timeout: tc.writeTimeout}
+			if client.timeout == 0 {
+				client.timeout = 10
+			}
 			done := make(chan struct{})
+			written := make(chan struct{})
 			go func() {
 				defer close(done)
-				// Hold the write longer than the response allowance. The two budgets are independent for ordinary RPCs.
+				// Hold the write longer than the usual response allowance to prove the budgets are independent.
 				timer := time.NewTimer(1500 * time.Millisecond)
 				defer timer.Stop()
 				select {
@@ -47,6 +63,7 @@ func TestCodexRPCResponseAllowanceFollowsWrite(t *testing.T) {
 				if _, err := bufio.NewReader(peer).ReadString('\n'); err != nil {
 					return
 				}
+				close(written)
 				timer.Reset(tc.responseDelay)
 				select {
 				case <-timer.C:
@@ -66,11 +83,22 @@ func TestCodexRPCResponseAllowanceFollowsWrite(t *testing.T) {
 			}()
 			var deadline time.Time
 			method := "model/list"
-			if tc.turnDeadline {
-				deadline = time.Now().Add(time.Second)
+			if tc.turnLimit != 0 {
+				deadline = time.Now().Add(tc.turnLimit)
 				method = "turn/start"
 			}
-			value, err := client.rpcWithTimeout(method, map[string]any{}, time.Second, deadline, "Codex session time limit exceeded")
+			responseTimeout := tc.responseTimeout
+			if responseTimeout == 0 {
+				responseTimeout = time.Second
+			}
+			value, err := client.rpcWithTimeout(method, map[string]any{}, responseTimeout, deadline, "Codex session time limit exceeded")
+			if tc.wantWritten {
+				select {
+				case <-written:
+				default:
+					t.Fatal("RPC failed before entering its response phase")
+				}
+			}
 			if tc.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 					t.Fatalf("deadline error: got %v, want %s", err, tc.wantError)
@@ -78,7 +106,7 @@ func TestCodexRPCResponseAllowanceFollowsWrite(t *testing.T) {
 				return
 			}
 			if result, _ := asObject(value); err != nil || result["ok"] != true {
-				t.Fatalf("write time consumed the ordinary RPC response allowance: %v, %v", value, err)
+				t.Fatalf("write time consumed the RPC response allowance: %v, %v", value, err)
 			}
 		})
 	}
