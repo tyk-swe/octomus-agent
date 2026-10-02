@@ -105,6 +105,7 @@ for line in sys.stdin:
                     sys.exit(0)
         if mode() == 'hold':
             emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
+            emit({'method': 'item/completed', 'params': {'threadId': identity, 'turnId': turn, 'item': {'type': 'agentMessage', 'phase': 'commentary', 'text': 'Fixture holding turn.'}}})
             (root / 'codex-entered').touch()
             stopped = False
             while mode() == 'hold':
