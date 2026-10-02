@@ -149,6 +149,8 @@ operator actions; stale context requires supersession and fresh discovery.
 The scheduler marks a running cycle interrupted once its planning worker has
 exited, including after storage recovers from refused terminal writes, so its
 retained evidence can be inspected and archived without restarting the service.
+Continuous operation keeps its saved schedule and starts a fresh cycle when due,
+with new grounding and sessions rather than resuming the interrupted plan.
 
 ## Bounded observation and storage
 

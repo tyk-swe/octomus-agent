@@ -122,6 +122,26 @@ const selfTestRecord = "sandbox_self_test"
 // rather than describing it: every check is made from inside.
 func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 	record := SandboxSelfTest{At: model.Now(), Checks: []sandbox.ProbeCheck{}}
+	if err := a.admitDiagnostic(); err != nil {
+		return record, err
+	}
+	defer a.wg.Done()
+	// A direct HTTP request owns its caller context, but the service still owns
+	// the child and must cancel and join it before shutdown closes the store.
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(a.ctx, cancel)
+	defer stop()
+	defer cancel()
+	cancellation := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// AfterFunc propagates service cancellation asynchronously.
+		return a.ctx.Err()
+	}
+	if err := cancellation(); err != nil {
+		return record, err
+	}
 	if a.sandbox.Mode() != sandbox.ModeDocker {
 		return record, conflictError("The sandbox is off; there is no containment to test")
 	}
@@ -131,9 +151,9 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 		}
 	}
 	report, err := sandbox.Probe(ctx, a.sandbox)
-	if err != nil && ctx.Err() != nil {
-		// A probe its caller abandoned observed nothing about containment; the last result stands.
-		return record, err
+	if cancelErr := cancellation(); cancelErr != nil {
+		// A probe canceled by its caller or shutdown observed nothing about containment; the last result stands.
+		return record, cancelErr
 	}
 	if err != nil {
 		message := redact.Error(err)
@@ -145,6 +165,9 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 			// was read: the proof belongs to the image it ran on.
 			record.ImageID, record.Runtime = report.Sandbox.ImageID, report.Sandbox.Runtime
 		}
+	}
+	if err := cancellation(); err != nil {
+		return record, err
 	}
 	if err := a.Store.Put("settings", selfTestRecord, record); err != nil {
 		return record, err

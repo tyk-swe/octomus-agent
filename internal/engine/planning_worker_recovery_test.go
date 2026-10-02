@@ -260,6 +260,16 @@ func TestTickRetriesOrphanedRunOnceControlRecovery(t *testing.T) {
 	if err != nil || before == nil || before.Status != model.CycleRunning || !app.runtimeIdle() {
 		t.Fatalf("worker did not leave an orphaned planning cycle: %+v, %v", before, err)
 	}
+	refreshContext, cancelRefresh := context.WithCancel(app.Context())
+	defer cancelRefresh()
+	refresh := &prRefreshJob{cancel: cancelRefresh}
+	app.runtimeMu.Lock()
+	observation := app.runtime.prObservation
+	app.runtime.prRefresh = refresh
+	app.runtimeMu.Unlock()
+	if observation == nil {
+		t.Fatal("failed planning did not retain its PR observation")
+	}
 	schedulerSQL(t, fixture.state, "DROP TRIGGER refuse_cycle_terminal")
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := app.Tick(); err == nil || !strings.Contains(err.Error(), "synthetic planning pause refusal") {
@@ -268,6 +278,12 @@ func TestTickRetriesOrphanedRunOnceControlRecovery(t *testing.T) {
 		current, err := app.Control()
 		if err != nil || !wirejson.Equal(current, control) {
 			t.Fatalf("refused pause changed the batch: %+v, %v", current, err)
+		}
+		app.runtimeMu.Lock()
+		unchanged := app.runtime.prObservation == observation && app.runtime.prRefresh == refresh
+		app.runtimeMu.Unlock()
+		if !unchanged || refreshContext.Err() != nil {
+			t.Fatal("refused pause invalidated PR authority before its control write committed")
 		}
 	}
 	interrupted, err := store.Get[model.Cycle](fixture.state, "cycle", id)
@@ -281,6 +297,12 @@ func TestTickRetriesOrphanedRunOnceControlRecovery(t *testing.T) {
 	saved, err := app.Control()
 	if err != nil || saved.Mode != model.OperatingModePaused || saved.Batch != nil || saved.Error == nil || *saved.Error != "Run once was interrupted before its planning transaction committed" {
 		t.Fatalf("healed storage left the planning batch stuck: %+v, %v", saved, err)
+	}
+	app.runtimeMu.Lock()
+	invalidated := app.runtime.prObservation == nil && app.runtime.prRefresh == nil
+	app.runtimeMu.Unlock()
+	if !invalidated || refreshContext.Err() == nil {
+		t.Fatal("successful recovery pause retained PR admission authority or its refresh")
 	}
 	if cycle, err := store.Get[model.Cycle](fixture.state, "cycle", id); err != nil || !wirejson.Equal(cycle, interrupted) {
 		t.Fatalf("control retry rewrote the retained cycle: %+v, %v", cycle, err)
