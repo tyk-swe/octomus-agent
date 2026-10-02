@@ -112,6 +112,9 @@ func TestSessionTransitionsPreserveEvidence(t *testing.T) {
 		t.Fatal(sessions)
 	}
 	sessions[0].MarkRunning()
+	if sessions[0].Summary != "" {
+		t.Fatal("a resumed turn retained an earlier turn's summary", sessions[0])
+	}
 	InterruptRunning(sessions)
 	if sessions[0].Status != SessionInterrupted || CompletedSessions(sessions) != 1 {
 		t.Fatal(sessions)

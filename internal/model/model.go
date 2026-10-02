@@ -140,7 +140,7 @@ func Assessments() []string { return []string{DecisionAccepted, DecisionRejected
 func NewSession(id, role string, route config.Route) Session {
 	return Session{ID: id, Role: role, Route: route.Clone(), Status: SessionRunning, StartedAt: Now()}
 }
-func (s *Session) MarkRunning()                 { s.Status = SessionRunning }
+func (s *Session) MarkRunning()                 { s.Status = SessionRunning; s.Summary = "" }
 func (s *Session) MarkCompleted(summary string) { s.Status = SessionCompleted; s.Summary = summary }
 func (s *Session) MarkFailed(summary string)    { s.Status = SessionFailed; s.Summary = summary }
 func (s *Session) MarkInterrupted()             { s.Status = SessionInterrupted }
