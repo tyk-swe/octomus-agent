@@ -103,13 +103,15 @@
     <strong class="status-value"
       ><span class={'status-dot ' + data.status}></span>{data.status}</strong
     ><small
-      >{data.control.paused
-        ? 'New work is paused'
-        : data.cycle_active
-          ? 'Discovering the next opportunity'
-          : data.active_tasks
-            ? 'Making steady progress'
-            : 'Waiting for the next cycle'}</small
+      >{data.recovery_error
+        ? 'Waiting for saved state to recover'
+        : data.control.paused
+          ? 'New work is paused'
+          : data.cycle_active
+            ? 'Discovering the next opportunity'
+            : data.active_tasks
+              ? 'Making steady progress'
+              : 'Waiting for the next cycle'}</small
     >
   </article>
   <article class="stat">

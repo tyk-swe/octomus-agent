@@ -527,6 +527,7 @@ export type SandboxPosture = {
 };
 export type Snapshot = {
   status: string;
+  recovery_error?: string | null;
   control: {
     paused: boolean;
     mode: OperatingMode;
