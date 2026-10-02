@@ -349,6 +349,37 @@ func TestCleanlinessAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestSnapshotCommitsSubmoduleOnlyRemoval(t *testing.T) {
+	t.Parallel()
+	c, root := fixtureRoot(t)
+	ctx := context.Background()
+	writeFile(t, filepath.Join(c.Repository, ".gitmodules"), "[submodule \"vendor/lib\"]\n\tpath = vendor/lib\n\turl = https://example.invalid/lib.git\n\tignore = all\n")
+	realGit(t, c.Repository, "add", ".gitmodules")
+	realGit(t, c.Repository, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("1", 40)+",vendor/lib")
+	realGit(t, c.Repository, "commit", "-m", "Track an optional submodule")
+	base := realGit(t, c.Repository, "rev-parse", "HEAD")
+	ws := filepath.Join(root, "task", "workspace")
+	if err := git.CloneAt(ctx, c, ws, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(ws, "vendor", "lib")); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := git.Snapshot(ctx, c, ws, "Remove the optional submodule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commit == base {
+		t.Fatal("removing only a tracked submodule must produce a new snapshot commit")
+	}
+	if files, err := git.WorkGit(ctx, c, ws, []string{"ls-tree", "-r", "--name-only", commit}); err != nil || strings.Contains(files, "vendor/lib") {
+		t.Fatalf("snapshot files = %q, %v; want the removed submodule absent", files, err)
+	}
+	if again, err := git.Snapshot(ctx, c, ws, "No further change"); err != nil || again != commit {
+		t.Fatalf("repeated snapshot = %s, %v; want %s", again, err, commit)
+	}
+}
+
 func TestSnapshotScrubsCommitMessage(t *testing.T) {
 	t.Parallel()
 	c, _ := fixtureRoot(t)

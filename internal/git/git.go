@@ -366,7 +366,7 @@ func Snapshot(ctx context.Context, c config.Config, path string, message string)
 	if err := refuseGitlinks(ctx, c, path); err != nil {
 		return "", err
 	}
-	changed, err := WorkGit(ctx, c, path, []string{"diff", "--cached", "--name-only"})
+	changed, err := WorkGit(ctx, c, path, []string{"diff", "--cached", "--name-only", "--ignore-submodules=none"})
 	if err != nil {
 		return "", err
 	}

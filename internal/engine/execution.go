@@ -162,7 +162,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		if revision == task.SourceRevision {
 			return fmt.Errorf("No changes were committed on top of the source revision: %w", model.BlockedReasonVerificationFailed)
 		}
-		names, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--name-only", task.SourceRevision, revision})
+		names, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--name-only", "--ignore-submodules=none", task.SourceRevision, revision})
 		if err != nil {
 			return err
 		}
