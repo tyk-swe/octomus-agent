@@ -247,7 +247,15 @@ func (o ProcessOutput) SafeCaptures() (stdout, stderr SafeCapture) {
 
 func (o ProcessOutput) safeParts() ([]string, int) {
 	stdoutParts := o.Stdout.previewParts()
-	return redact.Streams(stdoutParts, o.Stderr.previewParts()), len(stdoutParts)
+	boundary := len(stdoutParts)
+	safe := redact.Streams(stdoutParts, o.Stderr.previewParts())
+	// A newline-leading secret can put its replacement in the synthetic
+	// separator. Keep that evidence in stderr when callers omit the separator.
+	if separator := safe[boundary]; separator != "" && separator != "\n" {
+		safe[boundary+1] = separator + safe[boundary+1]
+		safe[boundary] = ""
+	}
+	return safe, boundary
 }
 
 type OutputTooLarge struct {
