@@ -276,13 +276,7 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 			*dst = v
 		}
 	}
-	if v, ok := env("OCTOMUS_SANDBOX"); ok {
-		mode, err := sandbox.ParseMode(v)
-		if err != nil {
-			return a, "", fmt.Errorf("invalid value %q for OCTOMUS_SANDBOX: %w", v, err)
-		}
-		a.sandbox = mode
-	}
+	sandboxDefault, hasSandboxDefault := env("OCTOMUS_SANDBOX")
 	if v, ok := env("OCTOMUS_ASSETS"); ok {
 		a.assets = &v
 	}
@@ -360,6 +354,15 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 		default:
 			return a, "", fmt.Errorf("unexpected argument '%s'", arg)
 		}
+	}
+	// Validate an ambient default only after an explicit flag or a display
+	// command has had the opportunity to override it.
+	if hasSandboxDefault && !seen["--sandbox"] {
+		mode, err := sandbox.ParseMode(sandboxDefault)
+		if err != nil {
+			return a, "", fmt.Errorf("invalid value %q for OCTOMUS_SANDBOX: %w", sandboxDefault, err)
+		}
+		a.sandbox = mode
 	}
 	if a.dataDir == "" || (a.assets != nil && *a.assets == "") {
 		return a, "", fmt.Errorf("a nonempty path is required")

@@ -22,6 +22,28 @@ def run(binary, args, cwd, environment=None):
                           text=True, capture_output=True, timeout=15)
 
 
+def cli_environment_contracts():
+    with tempfile.TemporaryDirectory(prefix='octomus-binary-environment-') as directory:
+        root = Path(directory)
+        # Display commands need neither valid deployment defaults nor helper programs.
+        env = {'OCTOMUS_SANDBOX': 'mistyped', 'OCTOMUS_DATA_DIR': str(root / 'state'),
+               'PATH': str(root / 'no-helper-programs')}
+        for arg, expected in [('--help', '--sandbox'), ('-h', '--sandbox'),
+                              ('--version', 'octomus-agent'), ('-V', 'octomus-agent')]:
+            result = run(BINARY, [arg], root, {**env, 'OCTOMUS_LISTEN': 'mistyped'})
+            assert result.returncode == 0 and expected in result.stdout and not result.stderr, (arg, result)
+        for flag in [['--sandbox', 'docker'], ['--sandbox=off']]:
+            result = run(BINARY, [*flag, '--print-config'], root, env)
+            assert result.returncode == 0 and '"verification_commands"' in result.stdout and not result.stderr, (flag, result)
+        for args, diagnostic in [([], 'for OCTOMUS_SANDBOX'),
+                                 (['--print-config'], 'for OCTOMUS_SANDBOX'),
+                                 (['--sandbox=mistyped', '--help'], "for '--sandbox'"),
+                                 (['--sandbox=mistyped', '--version'], "for '--sandbox'")]:
+            result = run(BINARY, args, root, env)
+            assert result.returncode == 2 and not result.stdout and diagnostic in result.stderr, (args, result)
+        assert not list(root.iterdir()), 'CLI display/validation created state'
+
+
 def service_startup():
     with tempfile.TemporaryDirectory(prefix='octomus-binary-service-') as directory:
         root = Path(directory)
@@ -147,7 +169,8 @@ def embedding_contracts():
 
 
 if __name__ == '__main__':
+    cli_environment_contracts()
     service_startup()
     signal_shutdown_releases_lock()
     embedding_contracts()
-    print('Go binary contracts passed: startup order, signal shutdown, state lock release and embedded dashboard.')
+    print('Go binary contracts passed: environment overrides, display commands, startup order, signal shutdown, state lock release and embedded dashboard.')
