@@ -122,6 +122,19 @@ const selfTestRecord = "sandbox_self_test"
 // rather than describing it: every check is made from inside.
 func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 	record := SandboxSelfTest{At: model.Now(), Checks: []sandbox.ProbeCheck{}}
+	if err := a.admitDiagnostic(); err != nil {
+		return record, err
+	}
+	defer a.wg.Done()
+	// A direct HTTP request owns its caller context, but the service still owns
+	// the child and must cancel and join it before shutdown closes the store.
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(a.ctx, cancel)
+	defer stop()
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return record, err
+	}
 	if a.sandbox.Mode() != sandbox.ModeDocker {
 		return record, conflictError("The sandbox is off; there is no containment to test")
 	}
@@ -132,7 +145,7 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 	}
 	report, err := sandbox.Probe(ctx, a.sandbox)
 	if err != nil && ctx.Err() != nil {
-		// A probe its caller abandoned observed nothing about containment; the last result stands.
+		// A probe canceled by its caller or shutdown observed nothing about containment; the last result stands.
 		return record, err
 	}
 	if err != nil {
