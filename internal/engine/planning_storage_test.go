@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -299,4 +300,75 @@ func TestPlanningCleanupFinishesAfterCancelledStorageWait(t *testing.T) {
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Fatalf("cancelled cleanup left its role root: %v", err)
 	}
+}
+
+func TestPlanningWorkspaceWorkProceedsWhileReservationWaits(t *testing.T) {
+	t.Parallel()
+	f := newScriptedPlanningFixture(t)
+	app := f.pausedApp(t)
+	cycle := groundingCycle(t, f, model.CycleModeAudit)
+	if err := app.admit(app.ctx, cycle.ID, nil, "discovery-0", f.routes.Discovery); err != nil {
+		t.Fatal(err)
+	}
+	revision := git(t, f.repo, "rev-parse", "HEAD")
+	workspace := roleWorkspace(f, cycle.ID, "discovery-0")
+	// Hold the real store mutex in a snapshot so the sibling can measure storage but cannot reserve its admission.
+	storeEntered, storeReleased := make(chan struct{}), make(chan struct{})
+	releaseStore := sync.OnceFunc(func() { close(storeReleased) })
+	t.Cleanup(releaseStore)
+	storeDone := make(chan error, 1)
+	app.wg.Go(func() {
+		storeDone <- f.state.Snapshot(func(*sql.Conn) error {
+			close(storeEntered)
+			<-storeReleased
+			return nil
+		})
+	})
+	waitPlanningStorage(t, storeEntered)
+
+	app.planningStorage.RLock()
+	releaseReader := sync.OnceFunc(app.planningStorage.RUnlock)
+	t.Cleanup(releaseReader)
+	admission := startPlanningStorageAdmission(app, f, cycle.ID)
+	waitPlanningStorageWriter(t, app)
+	// Writer preference puts the measurement before these operations; they cannot simply outrun the admission.
+	trustedDone := make(chan error, 1)
+	app.wg.Go(func() {
+		err := app.withPlanningWorkspace(app.ctx, func() error {
+			return gitops.CloneAt(app.ctx, f.cfg, workspace, revision)
+		})
+		if err == nil {
+			err = app.withPlanningWorkspace(app.ctx, func() error {
+				unchanged, err := gitops.At(app.ctx, f.cfg, workspace, revision)
+				if err == nil && !unchanged {
+					return errors.New("trusted planning clone changed")
+				}
+				return err
+			})
+		}
+		if err == nil {
+			err = app.removePlanningWorkspace(filepath.Dir(workspace))
+		}
+		trustedDone <- err
+	})
+	releaseReader()
+	if err := waitPlanningStorage(t, trustedDone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(workspace)); !os.IsNotExist(err) {
+		t.Fatalf("trusted clone/status/cleanup did not finish during the reservation wait: %v", err)
+	}
+	select {
+	case err := <-admission:
+		t.Fatalf("reservation returned while the store remained held: %v", err)
+	default:
+	}
+	releaseStore()
+	if err := waitPlanningStorage(t, storeDone); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitPlanningStorage(t, admission); err != nil {
+		t.Fatal(err)
+	}
+	assertAdmissions(t, f.state, 2, "the reservation commits once the store is available")
 }

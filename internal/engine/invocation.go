@@ -156,18 +156,13 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 }
 
 func (a *App) admit(ctx context.Context, cycleID string, task *model.Task, role string, route config.Route) error {
-	a.planningStorage.Lock()
-	defer a.planningStorage.Unlock()
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("Operation cancelled: %w", err)
-	}
 	owner := filepath.Join("cycles", cycleID)
 	var taskID *string
 	if task != nil {
 		taskID = &task.ID
 		owner = filepath.Join("tasks", task.ID)
 	}
-	size, err := a.measureFor(owner)
+	size, err := a.measureForAdmission(ctx, owner)
 	if err != nil {
 		return err
 	}
@@ -175,6 +170,17 @@ func (a *App) admit(ctx context.Context, cycleID string, task *model.Task, role 
 		return fmt.Errorf("Operation cancelled: %w", err)
 	}
 	return a.Store.ReserveSession(size, store.NewAdmission(cycleID, taskID, role, route))
+}
+
+func (a *App) measureForAdmission(ctx context.Context, owner string) (uint64, error) {
+	a.planningStorage.Lock()
+	defer a.planningStorage.Unlock()
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("Operation cancelled: %w", err)
+	}
+	// Storage is a pre-turn snapshot, not a disk reservation. Exclude trusted filesystem changes only for the scan;
+	// the store independently serializes budget reservations and must not stall unrelated setup/status/cleanup.
+	return a.measureFor(owner)
 }
 
 // ownedRoots are the data directory's parents of owned roots, each <parent>/<id>, where sandboxes write.

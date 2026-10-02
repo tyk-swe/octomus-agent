@@ -119,8 +119,8 @@ type App struct {
 	removeDir  func(root, path string) error
 	wg         sync.WaitGroup
 
-	// planningStorage excludes admission scans from trusted planning filesystem changes. Readers may overlap,
-	// but must never hold it across store calls, gate acquisition, runner work, or another acquisition of this lock.
+	// planningStorage excludes admission scans from trusted planning filesystem changes. Hold it only during
+	// filesystem work, never across store calls, gate acquisition, runner work, or another acquisition of this lock.
 	planningStorage sync.RWMutex
 }
 
