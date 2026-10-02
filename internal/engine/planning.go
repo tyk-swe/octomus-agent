@@ -537,10 +537,17 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 		cycleID: cycleID, role: label, route: route, workspace: roleWorkspace,
 		prompt: prompt, schema: schema, ownsClients: true,
 		prepare: func() error {
-			return gitops.CloneAt(ctx, cfg, roleWorkspace, revision)
+			return a.withPlanningWorkspace(ctx, func() error {
+				return gitops.CloneAt(ctx, cfg, roleWorkspace, revision)
+			})
 		},
 		judge: func(_, answer string) (string, error) {
-			unchanged, err := gitops.At(ctx, cfg, roleWorkspace, revision)
+			var unchanged bool
+			err := a.withPlanningWorkspace(ctx, func() error {
+				var err error
+				unchanged, err = gitops.At(ctx, cfg, roleWorkspace, revision)
+				return err
+			})
 			if err != nil {
 				return "", err
 			}
@@ -551,11 +558,30 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 		},
 	})
 	if outcome.err == nil {
-		if err := a.removeDir(filepath.Dir(roleRoot), roleRoot); err != nil {
+		if err := a.removePlanningWorkspace(roleRoot); err != nil {
 			_ = a.Store.Event(cycleID, "cleanup_error", fmt.Sprintf("%s: %s", label, redact.Error(err)))
 		}
 	}
 	return outcome
+}
+
+// Independent role setup and status checks can overlap, but their transient git metadata must not race an admission
+// scan of the same cycle. This only coordinates trusted host work; untrusted runners remain subject to Measure's
+// bounded, fail-closed traversal. Check cancellation after waiting before starting any new filesystem work.
+func (a *App) withPlanningWorkspace(ctx context.Context, work func() error) error {
+	a.planningStorage.RLock()
+	defer a.planningStorage.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("Operation cancelled: %w", err)
+	}
+	return work()
+}
+
+func (a *App) removePlanningWorkspace(roleRoot string) error {
+	a.planningStorage.RLock()
+	defer a.planningStorage.RUnlock()
+	// Completed, already-owned cleanup must finish even if shutdown cancelled the role while this lock was queued.
+	return a.removeDir(filepath.Dir(roleRoot), roleRoot)
 }
 
 func runRoles(n int, run func(i int) roleOutcome) []roleOutcome {

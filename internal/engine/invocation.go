@@ -53,7 +53,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		}
 	}
 	if !inv.reserved {
-		if err := a.admit(inv.cycleID, inv.task, inv.role, inv.route); err != nil {
+		if err := a.admit(ctx, inv.cycleID, inv.task, inv.role, inv.route); err != nil {
 			return "", err
 		}
 	}
@@ -61,6 +61,9 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		if err := inv.prepare(); err != nil {
 			return "", err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("Operation cancelled: %w", err)
 	}
 	session, err := clients.Start(inv.route, inv.workspace, resume)
 	if err != nil {
@@ -152,7 +155,12 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 	return answer, summary, nil
 }
 
-func (a *App) admit(cycleID string, task *model.Task, role string, route config.Route) error {
+func (a *App) admit(ctx context.Context, cycleID string, task *model.Task, role string, route config.Route) error {
+	a.planningStorage.Lock()
+	defer a.planningStorage.Unlock()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("Operation cancelled: %w", err)
+	}
 	owner := filepath.Join("cycles", cycleID)
 	var taskID *string
 	if task != nil {
@@ -162,6 +170,9 @@ func (a *App) admit(cycleID string, task *model.Task, role string, route config.
 	size, err := a.measureFor(owner)
 	if err != nil {
 		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("Operation cancelled: %w", err)
 	}
 	return a.Store.ReserveSession(size, store.NewAdmission(cycleID, taskID, role, route))
 }
