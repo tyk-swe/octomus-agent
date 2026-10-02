@@ -557,7 +557,7 @@
       try {
         await loadCycles();
       } catch (e) {
-        if (currentSession === sessionGeneration) error = (e as Error).message;
+        if (currentSession === sessionGeneration) connectionError = (e as Error).message;
       }
     }
   }
