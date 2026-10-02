@@ -49,6 +49,9 @@ func (a *App) Tick() error {
 	if err != nil {
 		return err
 	}
+	if a.ctx.Err() != nil {
+		return nil
+	}
 	a.maybeStartHousekeeping(cfg)
 	a.runtimeMu.Lock()
 	reconciling := a.runtime.reconcilingPublication
@@ -66,6 +69,9 @@ func (a *App) Tick() error {
 	}
 	if err := a.sandboxReady(); err != nil {
 		return err
+	}
+	if a.ctx.Err() != nil {
+		return nil
 	}
 	if err := cfg.Validate(true); err != nil {
 		return err
@@ -97,6 +103,9 @@ func (a *App) Tick() error {
 	if err != nil {
 		return err
 	}
+	if a.ctx.Err() != nil {
+		return nil
+	}
 	blocked, err := a.validateQueuedCycles(tasks)
 	if err != nil {
 		return err
@@ -111,7 +120,7 @@ func (a *App) Tick() error {
 	if err != nil {
 		return err
 	}
-	if started || waiting {
+	if a.ctx.Err() != nil || started || waiting {
 		return nil
 	}
 
@@ -147,6 +156,9 @@ func (a *App) pauseLocked(control *model.Control, message *string) error {
 }
 
 func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
+	if a.ctx.Err() != nil {
+		return nil
+	}
 	message := "Run once completed; new work paused"
 	if unresolved > 0 {
 		message = "Run once finished with unresolved work"
@@ -158,6 +170,9 @@ func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 }
 
 func (a *App) maybePlan(cfg config.Config, control model.Control) error {
+	if a.ctx.Err() != nil {
+		return nil
+	}
 	a.runtimeMu.Lock()
 	if !a.runtime.idle() {
 		a.runtimeMu.Unlock()
@@ -168,10 +183,17 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 	if err != nil {
 		return err
 	}
+	if a.ctx.Err() != nil {
+		return nil
+	}
 	if !capacity.Available() {
 		return a.handlePlanningCapacity(control, capacity)
 	}
 	a.runtimeMu.Lock()
+	if a.ctx.Err() != nil {
+		a.runtimeMu.Unlock()
+		return nil
+	}
 	a.runtime.startPreflight(model.CycleModeExecution)
 	a.runtimeMu.Unlock()
 	snapshot := cfg.Clone()
@@ -215,6 +237,9 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 }
 
 func (a *App) handlePlanningCapacity(control model.Control, capacity model.PlanningCapacity) error {
+	if a.ctx.Err() != nil {
+		return nil
+	}
 	if control.Mode == model.OperatingModeContinuous {
 		control.Error = nil
 		control.NextCycleAt = capacity.NextResetAt
@@ -247,6 +272,9 @@ func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 	}
 	blocked := false
 	for cycleID := range cycleIDs {
+		if a.ctx.Err() != nil {
+			return blocked, nil
+		}
 		a.runtimeMu.Lock()
 		_, checked := a.runtime.checkedCycles[cycleID]
 		a.runtimeMu.Unlock()
@@ -259,6 +287,9 @@ func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 		}
 		if err := ValidateTaskPlan(cycleTasks); err != nil {
 			for i := range cycleTasks {
+				if a.ctx.Err() != nil {
+					return blocked, nil
+				}
 				if cycleTasks[i].Status == model.StatusQueued {
 					blocked = true
 					if blockErr := a.setTaskError(&cycleTasks[i], invalidPlan(err.Error())); blockErr != nil {
@@ -303,12 +334,15 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 	inventoryChecked := false
 	refreshRequested := false
 	requestRefresh := func() {
-		if !refreshRequested {
+		if !refreshRequested && a.ctx.Err() == nil {
 			refreshRequested = true
 			a.startPrRefresh(cfg)
 		}
 	}
 	for i := range tasks {
+		if a.ctx.Err() != nil {
+			return started, waiting, nil
+		}
 		task := &tasks[i]
 		if task.Status != model.StatusQueued {
 			continue
@@ -324,6 +358,9 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 		ready, blocked, err := a.dependenciesReady(*task, control)
 		if err != nil {
 			return started, waiting, err
+		}
+		if a.ctx.Err() != nil {
+			return started, waiting, nil
 		}
 		if blocked != nil {
 			if err := a.setTaskError(task, blocked); err != nil {
@@ -343,6 +380,9 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 		if err != nil {
 			return started, waiting, err
 		}
+		if a.ctx.Err() != nil {
+			return started, waiting, nil
+		}
 		admitted := false
 		if task.Proposal.Target == task.Config.DefaultBranch && !reservation {
 			if !inventoryChecked {
@@ -353,6 +393,9 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 				requestRefresh()
 				waiting = true
 				continue
+			}
+			if a.ctx.Err() != nil {
+				return started, waiting, nil
 			}
 			admitted, err = a.Store.AdmitNewPrTask(task, *inventory)
 			if err != nil {
@@ -372,6 +415,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 		activeByBranch[task.Branch] = struct{}{}
 		available--
 		started = true
+		// A durable admission that already began still needs its joined worker.
 		a.runTask(*task)
 	}
 	return started, waiting, nil
