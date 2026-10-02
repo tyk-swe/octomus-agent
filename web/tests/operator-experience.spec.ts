@@ -2256,7 +2256,7 @@ test('an action taken while a poll is in flight shows the state after the action
   const resumed = page.waitForResponse('**/api/control/resume');
   await start.click();
   await resumed;
-  await expect(start).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeEnabled();
   gate.resolve();
   await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
 });

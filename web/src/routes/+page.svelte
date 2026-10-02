@@ -202,6 +202,9 @@
   }
   let refreshing = false;
   let refreshQueued = false;
+  let refreshRequest = Promise.resolve();
+  let controlGeneration = 0;
+  let controlStatePending = $state(false);
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
   let proposalTabCounts = $derived({
@@ -212,10 +215,15 @@
   type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
   const planningBlocked = $derived(!!planningBlocker(data?.planning_capacity));
   const canControl = $derived({
-    resume: !!data?.configured && data.active_cycle_mode !== 'audit' && !data.baseline_active,
+    resume:
+      !!data?.configured &&
+      !controlStatePending &&
+      data.active_cycle_mode !== 'audit' &&
+      !data.baseline_active,
     pause: !!data?.configured && data.active_cycle_mode !== 'audit',
     cycle:
       !!data?.configured &&
+      !controlStatePending &&
       !planningBlocked &&
       data.control.paused &&
       !data.cycle_active &&
@@ -223,6 +231,7 @@
       !data.baseline_active,
     audit:
       !!data?.audit_configured &&
+      !controlStatePending &&
       !planningBlocked &&
       data.control.paused &&
       !data.cycle_active &&
@@ -245,6 +254,7 @@
           queued: data.counts.queued ?? 0,
           latest: data.cycles[0] ?? null,
           planning_capacity: data.planning_capacity,
+          control_state_pending: controlStatePending,
           sandbox: data.sandbox
         }
       : null
@@ -453,31 +463,44 @@
       if (currentSession === sessionGeneration) cyclesLoading = false;
     }
   }
-  async function refresh() {
-    if (!connected) return;
+  function refresh() {
+    if (!connected) return Promise.resolve();
     if (refreshing) {
       refreshQueued = true;
-      return;
+      return refreshRequest;
     }
     const currentSession = sessionGeneration;
     refreshing = true;
-    try {
-      data = await api<Snapshot>('/state');
-      if (!listLoading) listRefresh++;
-      if (view === 'proposals') await loadCycles();
-      connectionError = '';
-      lastUpdated = clockTime();
-    } catch (e) {
-      if (connected && currentSession === sessionGeneration) connectionError = (e as Error).message;
-    } finally {
-      if (currentSession === sessionGeneration) {
-        refreshing = false;
-        if (refreshQueued) {
+    refreshRequest = (async () => {
+      try {
+        do {
           refreshQueued = false;
-          void refresh();
-        }
+          const currentControl = controlGeneration;
+          try {
+            const snapshot = await api<Snapshot>('/state');
+            if (currentSession !== sessionGeneration) return;
+            // A poll started before a successful control cannot describe its result.
+            if (currentControl !== controlGeneration) continue;
+            data = snapshot;
+            controlStatePending = false;
+            if (!listLoading) listRefresh++;
+            if (view === 'proposals') await loadCycles();
+            connectionError = '';
+            lastUpdated = clockTime();
+          } catch (e) {
+            if (
+              connected &&
+              currentSession === sessionGeneration &&
+              currentControl === controlGeneration
+            )
+              connectionError = (e as Error).message;
+          }
+        } while (currentSession === sessionGeneration && refreshQueued);
+      } finally {
+        if (currentSession === sessionGeneration) refreshing = false;
       }
-    }
+    })();
+    return refreshRequest;
   }
   async function login() {
     busy = true;
@@ -578,12 +601,22 @@
     if (busy || !canControl[action]) return;
     const currentSession = sessionGeneration;
     const currentNavigation = navigationGeneration;
+    let ownsBusy = true;
     busy = true;
     pendingAction = action;
     error = '';
     try {
-      await api(`/control/${action}`, 'POST');
+      const result = await api<Snapshot['control']>(`/control/${action}`, 'POST');
       if (currentSession !== sessionGeneration) return;
+      controlGeneration++;
+      controlStatePending = true;
+      if (data) data.control = result;
+      // Confirmed running operation must remain pausable while its state read waits.
+      if (!result.paused) {
+        busy = false;
+        pendingAction = '';
+        ownsBusy = false;
+      }
       await refresh();
       if (currentSession !== sessionGeneration) return;
       if (action === 'audit' && currentNavigation === navigationGeneration) {
@@ -594,7 +627,7 @@
     } catch (e) {
       if (currentSession === sessionGeneration) error = (e as Error).message;
     } finally {
-      if (currentSession === sessionGeneration) {
+      if (ownsBusy && currentSession === sessionGeneration) {
         busy = false;
         pendingAction = '';
       }
@@ -614,6 +647,8 @@
     listRequest?.abort();
     refreshing = false;
     refreshQueued = false;
+    refreshRequest = Promise.resolve();
+    controlStatePending = false;
     listLoading = false;
     listLoaded = false;
     listError = '';
