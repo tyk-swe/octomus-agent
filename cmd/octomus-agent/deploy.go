@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,8 +162,17 @@ func healthcheck(listen string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	host := address.Addr().Unmap()
+	if host.IsUnspecified() {
+		if host.Is4() {
+			host = netip.AddrFrom4([4]byte{127, 0, 0, 1})
+		} else {
+			host = netip.IPv6Loopback()
+		}
+	}
+	target := url.URL{Scheme: "http", Host: netip.AddrPortFrom(host, address.Port()).String(), Path: "/healthz"}
 	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", address.Port()))
+	resp, err := client.Get(target.String())
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
