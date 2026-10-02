@@ -10,6 +10,7 @@ import type {
   ModelCatalog,
   NotificationHealth,
   OperatingMode,
+  PlanningCapacity,
   Route,
   SandboxPosture
 } from './types';
@@ -37,6 +38,7 @@ export type SetupStatus = {
   queued: number;
   latest: CycleSummary | null;
   sandbox: SandboxPosture;
+  planning_capacity?: PlanningCapacity | null;
 };
 
 const REPOSITORY_FIELDS = ['repository', 'github_repo', 'default_branch', 'branch_prefix'] as const;
@@ -299,6 +301,15 @@ export function baselineStep(status: SetupStatus | null): SetupStep {
   };
 }
 
+export function planningBlocker(capacity: PlanningCapacity | null | undefined): string {
+  if (capacity?.status !== 'daily_exhausted' && capacity?.status !== 'limit_too_low') return '';
+  return `A complete planning pass requires ${capacity.required} daily admissions; ${capacity.remaining} remain today. ${
+    capacity.status === 'limit_too_low'
+      ? 'The configured daily limit cannot fund a complete planning pass; increase it in Configuration.'
+      : 'Wait until midnight UTC or increase the daily limit.'
+  }`;
+}
+
 export function chooseStep(status: SetupStatus | null): SetupStep {
   const contract =
     'An audit plans only: it records decisions and queues nothing, and no later cycle executes its recommendations. Run once drains the existing queue, plans one cycle, finishes accepted tasks and pauses. Continuous operation is a separate, explicit control.';
@@ -322,11 +333,16 @@ export function chooseStep(status: SetupStatus | null): SetupStep {
                 ? 'Continuous operation is running; Pause stops new work first.'
                 : 'A run-once cycle is in progress.'
               : '';
+  const planning = planningBlocker(status.planning_capacity);
+  const actionAvailability = (configured: boolean) =>
+    !configured ? 'saved configuration incomplete' : planning ? 'unavailable' : 'available';
   const availability = blocker
     ? `Unavailable now: ${blocker}`
-    : `Audit: ${status.audit_configured ? 'available' : 'saved configuration incomplete'}. Run once: ${
-        status.configured ? 'available' : 'saved configuration incomplete'
-      }${status.queued ? `, and ${plural(status.queued, 'queued task')} would be drained first` : ''}.`;
+    : `Audit: ${actionAvailability(status.audit_configured)}. Run once: ${actionAvailability(status.configured)}${
+        status.queued && !planning
+          ? `, and ${plural(status.queued, 'queued task')} would be drained first`
+          : ''
+      }.${planning && (status.audit_configured || status.configured) ? ` ${planning}` : ''}`;
   if (status.latest) {
     const latest = status.latest;
     return {

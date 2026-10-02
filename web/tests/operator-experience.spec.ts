@@ -1580,6 +1580,84 @@ test('setup checklist links focus existing controls, hands off to the Overview a
   expect(writes.map((write) => write.path)).toEqual(['/api/model-catalog']);
 });
 
+for (const capacity of ['daily_exhausted', 'limit_too_low'] as const) {
+  test(`the Configuration checklist explains ${capacity} and recovers with refreshed capacity`, async ({
+    page,
+    isMobile
+  }) => {
+    let planning: Snapshot['planning_capacity']['status'] = capacity;
+    let activeAudit = false;
+    let configured = true;
+    await configurationFixture(page, {
+      snapshot: (snapshot) => {
+        snapshot.configured = configured;
+        snapshot.audit_configured = true;
+        snapshot.counts = { ...snapshot.counts, queued: 2 };
+        snapshot.cycle_active = activeAudit;
+        snapshot.active_cycle_mode = activeAudit ? 'audit' : null;
+        snapshot.planning_capacity = {
+          ...snapshot.planning_capacity,
+          limit: planning === 'limit_too_low' ? 12 : 150,
+          required: 13,
+          used: planning === 'daily_exhausted' ? 138 : 0,
+          remaining: planning === 'ready' ? 150 : 12,
+          status: planning
+        };
+      }
+    });
+    const writes = trackWrites(page);
+    const navigate = navigatorFor(page, !!isMobile);
+    const choose = page.locator('[data-step="choose"]');
+    await page.clock.install();
+    await login(page);
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await navigate('Configuration');
+    await expect(choose).toContainText('Audit: unavailable. Run once: unavailable.');
+    await expect(choose).toContainText('13 daily admissions; 12 remain today.');
+    await expect(choose).toContainText(
+      capacity === 'daily_exhausted'
+        ? 'Wait until midnight UTC or increase the daily limit.'
+        : 'The configured daily limit cannot fund a complete planning pass; increase it in Configuration.'
+    );
+    await expect(choose).not.toContainText('queued tasks would be drained first');
+    await choose.getByRole('button', { name: 'Audit on the Overview' }).click();
+    await expect(page.getByRole('button', { name: 'Run an audit', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Run once', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Start continuous', exact: true })).toBeEnabled();
+    await expect(page.locator('#main-content')).toBeFocused();
+    await navigate('Configuration');
+
+    activeAudit = true;
+    await page.clock.runFor(4000);
+    await expect(choose).toContainText('Unavailable now: An audit is in progress.');
+    await expect(choose).not.toContainText('13 daily admissions');
+    activeAudit = false;
+    configured = false;
+    await page.clock.runFor(4000);
+    await expect(choose).toContainText(
+      'Audit: unavailable. Run once: saved configuration incomplete.'
+    );
+
+    configured = true;
+    planning = 'ready';
+    await page.clock.runFor(4000);
+    await expect(choose).toContainText(
+      'Audit: available. Run once: available, and 2 queued tasks would be drained first.'
+    );
+    await expect(choose).not.toContainText('13 daily admissions');
+    const action = capacity === 'daily_exhausted' ? 'Audit' : 'Run once';
+    await choose.getByRole('button', { name: `${action} on the Overview` }).focus();
+    await page.keyboard.press('Enter');
+    await expect(
+      page.getByRole('button', {
+        name: action === 'Audit' ? 'Run an audit' : 'Run once',
+        exact: true
+      })
+    ).toBeFocused();
+    expect(writes).toEqual([]);
+  });
+}
+
 for (const boundary of ['disconnect', 'expiry', 'reload']) {
   test(`configuration drafts and catalogs clear on ${boundary}`, async ({ page, isMobile }) => {
     await configurationFixture(page);

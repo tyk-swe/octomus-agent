@@ -144,6 +144,7 @@ func TestCodexCancellationStopsTurn(t *testing.T) {
 	t.Parallel()
 	f := codexFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	client, err := f.connectCodex(ctx)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -155,8 +156,21 @@ func TestCodexCancellationStopsTurn(t *testing.T) {
 	}
 	f.mode("codex", "hold")
 	turn := turnIn(client, session, codexRoute(), f.workspace, "Fixture prompt", nil)
-	if !testutil.WaitUntil(5*time.Second, func() bool { return f.exists("codex-entered") }) {
-		t.Fatal("the fixture never entered the codex turn")
+	// A peer-side marker cannot prove that the client consumed the start response.
+	// Wait for a processed turn event so cancellation has an acknowledged ID to interrupt.
+	if !testutil.WaitUntil(5*time.Second, func() bool {
+		events, err := f.state.Events(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.Kind == "session_progress" && event.Message == session+" · agentMessage · completed" {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatal("the client never processed the held codex turn")
 	}
 	cancel()
 	result, err := await(turn, 10*time.Second)
