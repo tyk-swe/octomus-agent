@@ -72,7 +72,8 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	}
 	session, err := clients.Start(inv.route, inv.workspace, resume)
 	if err != nil {
-		return "", err
+		// A failed start has no turn to release the runner and retain its exit status.
+		return "", errors.Join(err, clients.Release())
 	}
 
 	if inv.task == nil {
