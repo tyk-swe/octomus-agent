@@ -1,4 +1,4 @@
-import { copyMessage, copyText } from './clipboard';
+import { createCopyController } from './clipboard';
 
 export type CopyFeedback = {
   readonly status: string;
@@ -8,18 +8,10 @@ export type CopyFeedback = {
 
 export function createCopyFeedback(): CopyFeedback {
   let status = $state('');
-  let timer: ReturnType<typeof setTimeout> | undefined;
   return {
     get status() {
       return status;
     },
-    async copy(value: string, label: string) {
-      clearTimeout(timer);
-      status = copyMessage(label, await copyText(value));
-      timer = setTimeout(() => (status = ''), 4000);
-    },
-    dispose() {
-      clearTimeout(timer);
-    }
+    ...createCopyController((value) => (status = value))
   };
 }
