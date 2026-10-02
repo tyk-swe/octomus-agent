@@ -99,9 +99,7 @@ func (a *App) validateRoutes(clients *runner.Runners, cfg config.Config, audit b
 	}
 	defer discard()
 	err = clients.ValidateRoutes(cfg, scratch, audit)
-	if released := clients.Release(); err == nil {
-		err = released
-	}
+	err = errors.Join(err, clients.Release())
 	// Catalog checks belong to no session, so their sandboxes are not attributed to the next turn.
 	clients.TakeEvidence()
 	return err
