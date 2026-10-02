@@ -249,6 +249,36 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 	return a.published(task, p)
 }
 
+// Caller holds the gate so a publication cannot acquire or release its worker
+// claim while recovery checks ownership and preserves its checkpoint.
+func (a *App) blockOrphanedPublications() error {
+	a.runtimeMu.Lock()
+	excluded := make([]string, 0, len(a.runtime.tasks)+len(a.runtime.cleanups))
+	for id := range a.runtime.tasks {
+		excluded = append(excluded, id)
+	}
+	for key := range a.runtime.cleanups {
+		if key.kind == cleanupTask {
+			excluded = append(excluded, key.id)
+		}
+	}
+	a.runtimeMu.Unlock()
+	tasks, err := a.Store.PublishingTasksExcept(excluded)
+	if err != nil {
+		return err
+	}
+	for i := range tasks {
+		if a.ctx.Err() != nil {
+			return nil
+		}
+		err := fmt.Errorf("Publication has no active worker; reconcile publication to check delivery: %w", model.BlockedReasonPublicationUncertain)
+		if err := a.setTaskError(&tasks[i], err); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *App) publishedDependency(id string) (model.Task, error) {
 	dependency, err := store.Get[model.Task](a.Store, "task", id)
 	if err != nil {

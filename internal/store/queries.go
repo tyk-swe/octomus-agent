@@ -264,6 +264,18 @@ func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
 }
 
+// PublishingTasksExcept excludes live workers and cleanup claims before decoding their evidence.
+func (s *Store) PublishingTasksExcept(excludedIDs []string) ([]model.Task, error) {
+	ids, err := json.Marshal(excludedIDs)
+	if err != nil {
+		return nil, err
+	}
+	return listRecords[model.Task](s, `SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id
+        WHERE m.kind='task' AND m.status='publishing' AND m.archived IS NULL AND m.discarded IS NULL
+            AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id) AND json_extract(r.data,'$.output_commit') IS NOT NULL
+        ORDER BY m.seq ASC LIMIT 500`, string(ids))
+}
+
 func (s *Store) RunningCycles() ([]model.Cycle, error) {
 	return listRecords[model.Cycle](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'")
 }

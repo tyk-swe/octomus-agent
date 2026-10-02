@@ -45,6 +45,9 @@ func (a *App) Tick() error {
 	if err := a.interruptOrphanedCycles(); err != nil {
 		return err
 	}
+	if err := a.blockOrphanedPublications(); err != nil {
+		return err
+	}
 	control, err := a.Control()
 	if err != nil {
 		return err
