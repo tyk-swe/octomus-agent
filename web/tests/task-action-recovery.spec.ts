@@ -105,7 +105,11 @@ async function openTask(page: Page, mobile: boolean, action: Action = 'archive')
   await expect(
     page.getByRole('dialog').getByRole('button', { name: labels[action], exact: true })
   ).toBeEnabled();
-  // Let the initial list debounce and detail reads finish before controlling polling.
+  // Polling skips overlapping detail loads, including their evidence request.
+  await expect(
+    page.getByRole('dialog').getByText('No review recorded', { exact: true })
+  ).toBeVisible();
+  // Let the initial list debounce finish before controlling polling.
   await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
 }
 
