@@ -191,6 +191,20 @@ func (v Session) MarshalJSON() ([]byte, error) {
 }
 func (v Session) Clone() Session { return wirejson.Clone(v) }
 
+// RepairProgress accounts for completed repairs after review or verification still requires further work.
+// AwaitingReview prevents a restart between that accounting and the next repair from charging the same repair twice.
+type RepairProgress struct {
+	Revision         string `json:"revision"`
+	NoProgressRounds uint64 `json:"no_progress_rounds"`
+	AwaitingReview   bool   `json:"awaiting_review"`
+}
+
+func (v *RepairProgress) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v RepairProgress) MarshalJSON() ([]byte, error) {
+	type plain RepairProgress
+	return wirejson.Record(plain(v))
+}
+
 type Task struct {
 	ID                   string             `json:"id"`
 	CycleID              string             `json:"cycle_id"`
@@ -217,6 +231,7 @@ type Task struct {
 	UpdatedAt            string             `json:"updated_at"`
 	AttemptPolicy        *AttemptPolicy     `json:"attempt_policy"`
 	ReviewBaseline       uint64             `json:"review_baseline"`
+	RepairProgress       *RepairProgress    `json:"repair_progress"`
 	BlockedReason        *BlockedReason     `json:"blocked_reason"`
 	RunID                *string            `json:"run_id"`
 	SupersededBy         []string           `json:"superseded_by"`
