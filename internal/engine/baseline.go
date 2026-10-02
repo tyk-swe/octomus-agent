@@ -222,11 +222,18 @@ func (a *App) CancelBaseline(id string) error {
 		cancel = a.runtime.baseline.cancel
 	}
 	a.runtimeMu.Unlock()
-	if cancel == nil {
-		return conflictError("The baseline check is no longer running")
-	}
 	if err := a.Store.Put("baseline_cancel", id, model.Now()); err != nil {
 		return err
+	}
+	if cancel == nil {
+		// A refused terminal write can leave a running record after its worker exits.
+		// Let the operator settle it once storage recovers, preserving its evidence.
+		if err := a.abandonBaseline(check,
+			"Cancelled by the operator after the check worker exited",
+			"Baseline check worker exited unexpectedly"); err != nil {
+			return err
+		}
+		return a.Store.Event(id, "baseline", baselineStatusDebug[check.Status])
 	}
 	cancel()
 	return nil
