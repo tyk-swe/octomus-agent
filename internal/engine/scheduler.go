@@ -43,10 +43,10 @@ func (a *App) Tick() error {
 	}
 	// A failed terminal write can outlive its planning worker, including while paused.
 	if err := a.interruptOrphanedCycles(); err != nil {
-		return err
+		return &recoveryError{err: err}
 	}
 	if err := a.blockOrphanedPublications(); err != nil {
-		return err
+		return &recoveryError{err: err}
 	}
 	control, err := a.Control()
 	if err != nil {
