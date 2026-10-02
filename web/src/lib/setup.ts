@@ -39,6 +39,7 @@ export type SetupStatus = {
   latest: CycleSummary | null;
   sandbox: SandboxPosture;
   planning_capacity?: PlanningCapacity | null;
+  control_state_pending?: boolean;
 };
 
 const REPOSITORY_FIELDS = ['repository', 'github_repo', 'default_branch', 'branch_prefix'] as const;
@@ -335,14 +336,24 @@ export function chooseStep(status: SetupStatus | null): SetupStep {
               : '';
   const planning = planningBlocker(status.planning_capacity);
   const actionAvailability = (configured: boolean) =>
-    !configured ? 'saved configuration incomplete' : planning ? 'unavailable' : 'available';
+    !configured
+      ? 'saved configuration incomplete'
+      : planning || status.control_state_pending
+        ? 'unavailable'
+        : 'available';
   const availability = blocker
     ? `Unavailable now: ${blocker}`
     : `Audit: ${actionAvailability(status.audit_configured)}. Run once: ${actionAvailability(status.configured)}${
-        status.queued && !planning
+        status.queued && !planning && !status.control_state_pending
           ? `, and ${plural(status.queued, 'queued task')} would be drained first`
           : ''
-      }.${planning && (status.audit_configured || status.configured) ? ` ${planning}` : ''}`;
+      }.${
+        planning && (status.audit_configured || status.configured)
+          ? ` ${planning}`
+          : status.control_state_pending
+            ? ' Control accepted. Current activity is unknown until the service state refreshes.'
+            : ''
+      }`;
   if (status.latest) {
     const latest = status.latest;
     return {
