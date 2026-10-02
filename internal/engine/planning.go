@@ -55,6 +55,30 @@ func groundingSchema() schemas.Schema {
 
 const interruptedPlanningMessage = "Discovery interrupted; incomplete proposals were not dispatched"
 
+// Caller holds the gate so worker ownership cannot change during recovery.
+func (a *App) interruptOrphanedCycles() error {
+	a.runtimeMu.Lock()
+	activeID := ""
+	if a.runtime.cycle != nil {
+		activeID = a.runtime.cycle.id
+	}
+	a.runtimeMu.Unlock()
+	cycles, err := a.Store.RunningCyclesExcept(activeID)
+	if err != nil {
+		return err
+	}
+	for _, cycle := range cycles {
+		model.InterruptRunning(cycle.Sessions)
+		cycle.Status = model.CycleInterrupted
+		cycle.CompletedAt = stringPointer(model.Now())
+		cycle.Error = stringPointer(interruptedPlanningMessage)
+		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycle) {
 	err := a.plan(ctx, cfg, &cycle)
 	shuttingDown := err != nil && a.ctx.Err() != nil

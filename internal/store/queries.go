@@ -268,6 +268,14 @@ func (s *Store) RunningCycles() ([]model.Cycle, error) {
 	return listRecords[model.Cycle](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'")
 }
 
+// RunningCyclesExcept excludes live worker evidence before reading and decoding it.
+func (s *Store) RunningCyclesExcept(activeID string) ([]model.Cycle, error) {
+	if activeID == "" {
+		return s.RunningCycles()
+	}
+	return listRecords[model.Cycle](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running' AND m.id!=?1", activeID)
+}
+
 func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
 	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')='running'")
 }

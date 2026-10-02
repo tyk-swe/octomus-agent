@@ -146,6 +146,9 @@ batch failure or silently join the batch. The successful cycle, complete queue,
 decision memory, lineage and one-shot phase change commit together. Interrupted
 planning is never replayed automatically. Typed blocked reasons determine valid
 operator actions; stale context requires supersession and fresh discovery.
+The scheduler marks a running cycle interrupted once its planning worker has
+exited, including after storage recovers from refused terminal writes, so its
+retained evidence can be inspected and archived without restarting the service.
 
 ## Bounded observation and storage
 
