@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"slices"
 	"strconv"
@@ -167,9 +168,17 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 	if !a.authenticate(w, r) {
 		return
 	}
-	if r.Method != http.MethodGet && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		writeAPIError(w, http.StatusUnsupportedMediaType, "Use application/json")
-		return
+	if r.Method != http.MethodGet {
+		contentTypes := r.Header.Values("Content-Type")
+		if len(contentTypes) != 1 {
+			writeAPIError(w, http.StatusUnsupportedMediaType, "Use application/json")
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
+		if err != nil || mediaType != "application/json" {
+			writeAPIError(w, http.StatusUnsupportedMediaType, "Use application/json")
+			return
+		}
 	}
 	if matched == nil {
 		w.Header().Set("Allow", strings.Join(allowed, ", "))
