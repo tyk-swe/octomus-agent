@@ -54,11 +54,12 @@ func commandOutput(output *process.ProcessOutput, err error) (string, bool, bool
 	if err != nil {
 		return err.Error(), false, false
 	}
+	stdout, stderr := output.SafeCaptures()
 	var text strings.Builder
-	text.WriteString(output.Stdout.SafeText())
+	text.WriteString(stdout.Head)
 	if len(output.Stderr.Bytes) > 0 {
 		text.WriteString("\n[stderr]\n")
-		text.WriteString(output.Stderr.SafeText())
+		text.WriteString(stderr.Head)
 	}
 	if !output.Status.Success() {
 		text.WriteString("\n" + output.Status.String())

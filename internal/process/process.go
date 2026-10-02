@@ -226,6 +226,38 @@ type ProcessOutput struct {
 	Stderr Captured
 }
 
+// SafeCapture contains a stream's retained fragments after capture cuts and secret
+// redaction. The caller chooses its display separators and bounds only afterwards.
+type SafeCapture struct {
+	Head, Tail string
+	Truncated  bool
+}
+
+// SafeCaptures scrubs both streams together, before a caller inserts a stderr
+// label or trims whitespace that may separate a bearer prefix from its token.
+// It preserves each stream's head and tail for their different display policies.
+func (o ProcessOutput) SafeCaptures() (stdout, stderr SafeCapture) {
+	safe, stdoutParts := o.safeParts()
+	convert := func(parts []string) SafeCapture {
+		p := scrubbedPreview(parts)
+		return SafeCapture{Head: p.head, Tail: p.tail, Truncated: p.truncated}
+	}
+	return convert(safe[:stdoutParts]), convert(safe[stdoutParts+1:])
+}
+
+func (o ProcessOutput) safeParts() ([]string, int) {
+	stdoutParts := o.Stdout.previewParts()
+	boundary := len(stdoutParts)
+	safe := redact.Streams(stdoutParts, o.Stderr.previewParts())
+	// A newline-leading secret can put its replacement in the synthetic
+	// separator. Keep that evidence in stderr when callers omit the separator.
+	if separator := safe[boundary]; separator != "" && separator != "\n" {
+		safe[boundary+1] = separator + safe[boundary+1]
+		safe[boundary] = ""
+	}
+	return safe, boundary
+}
+
 type OutputTooLarge struct {
 	Limit int
 }
@@ -548,16 +580,13 @@ func ensureSuccess(binary string, output *ProcessOutput) error {
 func failureText(binary string, output *ProcessOutput) string {
 	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
 	budget := failureTextLimit - utf8.RuneCountInString(prefix)
-	stdoutParts := output.Stdout.previewParts()
-	parts := append(stdoutParts, redact.Part{Text: "\n"})
-	parts = append(parts, output.Stderr.previewParts()...)
 	// Keep both streams intact until all overlapping secret spans are found.
 	// The same scrubbed parts feed both the complete and shortened error forms.
-	safe := redact.Parts(parts...)
+	safe, stdoutParts := output.safeParts()
 	if joined := strings.Join(safe, ""); utf8.RuneCountInString(joined) <= budget {
 		return prefix + joined
 	}
-	stdout, stderr := scrubbedPreview(safe[:len(stdoutParts)]), scrubbedPreview(safe[len(stdoutParts)+1:])
+	stdout, stderr := scrubbedPreview(safe[:stdoutParts]), scrubbedPreview(safe[stdoutParts+1:])
 	if stderr.text() == "" {
 		return prefix + stdout.elide(budget)
 	}
