@@ -210,7 +210,9 @@ func (w *Worker) deliverNext() {
 		return
 	}
 	status, category := w.deliver(delivery)
-	if w.ctx.Err() != nil {
+	// A completed response remains definitive even if shutdown begins before
+	// it is recorded. Only an interrupted request needs uncertain-send recovery.
+	if category != "" && w.ctx.Err() != nil {
 		return
 	}
 	switch {
