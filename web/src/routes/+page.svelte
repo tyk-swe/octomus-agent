@@ -359,9 +359,16 @@
         const params = new URLSearchParams({ limit: '100' });
         if (before !== null) params.set('before', String(before));
         const page = await api<Page<CycleSummary>>(`/cycles?${params}`);
-        rows.push(...page.items);
+        const boundary = oldest ? page.items.findIndex((c) => c.id === oldest) : -1;
+        rows.push(...(boundary < 0 ? page.items : page.items.slice(0, boundary + 1)));
+        if (boundary >= 0) {
+          // The page may extend past the loaded history. Keep its existing opaque
+          // cursor so Load older resumes at the first row we have not retained.
+          before = cycleCursor;
+          break;
+        }
         before = page.next_cursor;
-      } while (!more && before !== null && oldest && !rows.some((c) => c.id === oldest));
+      } while (!more && before !== null && oldest);
       cycleRows = more ? [...cycleRows, ...rows] : rows;
       cycleCursor = before;
       if (!more && completedAction && completedAction === cycleRefreshMessage) {
