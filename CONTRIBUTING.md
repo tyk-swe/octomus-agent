@@ -40,6 +40,8 @@ SQLite and local Git with deterministic Codex, OpenCode and GitHub peers
 (`tests/fixtures`) in temporary directories, without live model calls or network
 writes:
 
+- `tests/workflows.py`: immutable event-commit checkouts across CI jobs, moving
+  branch/PR refs, and explicit reusable-workflow release overrides.
 - `tests/harness_environment.py`: fixture setup and child Git operations under
   hostile inherited configuration and repository-location variables, plus direct
   loopback HTTP access under inherited proxy settings.

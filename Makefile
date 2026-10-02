@@ -15,6 +15,7 @@ define GO_TESTS
 endef
 
 define CONTRACT_CORE
+	python3 tests/workflows.py
 	python3 tests/harness_environment.py
 	$(E2E_ENV) python3 tests/binary_contract.py
 	$(E2E_ENV) python3 tests/evidence_snapshot.py
