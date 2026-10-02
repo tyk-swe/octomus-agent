@@ -75,6 +75,16 @@ async function pendingPoll(page: Page, state: Awaited<ReturnType<typeof controlF
   return oldRead;
 }
 
+async function watchConfigurationWrites(page: Page) {
+  const writes: string[] = [];
+  await page.route('**/api/config', async (route) => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    writes.push(route.request().method());
+    await route.fulfill({ status: 409, json: { error: 'Synthetic active work conflict' } });
+  });
+  return writes;
+}
+
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
@@ -251,13 +261,20 @@ test('Configuration describes unknown activity after an accepted audit and a fai
   isMobile
 }) => {
   const state = await controlFixture(page);
+  const configurationWrites = await watchConfigurationWrites(page);
   state.outage = true;
   await page.locator('#run-audit-control').click();
   await expect(page.getByRole('alert')).toContainText('Synthetic state refresh outage');
   await openNavigation(page, 'Configuration', !!isMobile);
   const choose = page.locator('[data-step="choose"]');
   const commands = page.getByRole('textbox', { name: /^Verification commands/ });
-  await expect(commands).toBeDisabled();
+  await expect(commands).toBeEnabled();
+  await commands.fill('go test ./...');
+  const save = page.getByRole('button', { name: 'Save configuration' });
+  await expect(save).toBeDisabled();
+  await page.locator('form').filter({ has: save }).dispatchEvent('submit');
+  await page.clock.runFor(100);
+  expect(configurationWrites).toEqual([]);
   await expect(choose).toContainText('Audit: unavailable. Run once: unavailable.');
   await expect(choose).toContainText(
     'Control accepted. Current activity is unknown until the service state refreshes.'
@@ -277,11 +294,12 @@ test('Configuration describes unknown activity after an accepted audit and a fai
   expect(state.writes).toEqual(['audit']);
 });
 
-test('Configuration retains edits but locks them until an accepted audit is confirmed idle', async ({
+test('Configuration retains draft focus but blocks saving until an accepted audit is confirmed idle', async ({
   page,
   isMobile
 }) => {
   const state = await controlFixture(page);
+  const configurationWrites = await watchConfigurationWrites(page);
   await openNavigation(page, 'Configuration', !!isMobile);
   const commands = page.getByRole('textbox', { name: /^Verification commands/ });
   const draft = `${await commands.inputValue()}\ngo test ./...`;
@@ -296,12 +314,18 @@ test('Configuration retains edits but locks them until an accepted audit is conf
     await page.locator('#run-audit-control').click();
     await expect.poll(() => state.writes).toEqual(['audit']);
     await openNavigation(page, 'Configuration', !!isMobile);
-    await expect(commands).toBeDisabled();
+    await expect(commands).toBeEnabled();
+    await commands.focus();
     await expect(save).toBeDisabled();
+    await page.locator('form').filter({ has: save }).dispatchEvent('submit');
+    await page.clock.runFor(100);
+    expect(configurationWrites).toEqual([]);
+    await expect(commands).toBeFocused();
     const before = state.reads;
     oldRead.resolve();
     await expect.poll(() => state.reads).toBe(before + 1);
-    await expect(commands).toBeDisabled();
+    await expect(commands).toBeEnabled();
+    await expect(commands).toBeFocused();
     const refreshed = page.waitForResponse('**/api/state');
     newRead.resolve();
     await (await refreshed).finished();

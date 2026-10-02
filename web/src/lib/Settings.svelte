@@ -159,7 +159,7 @@
     if (!loadError && !dirty) message = 'Edits discarded. Saved configuration reloaded.';
   }
   async function save() {
-    if (!config || !editable || busy || loading || !dirty) return;
+    if (!config || !editable || status?.control_state_pending || busy || loading || !dirty) return;
     pending = 'save';
     error = '';
     conflict = false;
@@ -546,6 +546,9 @@
         <p class="muted">
           Changes apply to new work. Drafts stay in this tab until disconnect or reload.
         </p>
+        {#if status?.control_state_pending}<p class="muted" role="status">
+            Waiting for current service activity before saving configuration.
+          </p>{/if}
       </div>
       <div class="actions">
         <button class="button" type="button" onclick={discard} disabled={!dirty || busy}
@@ -554,7 +557,7 @@
         <button
           class="button primary"
           type="submit"
-          disabled={!editable || busy || loading || !dirty}
+          disabled={!editable || status?.control_state_pending || busy || loading || !dirty}
           >{pending === 'save' ? 'Saving configuration…' : 'Save configuration'}<Icon
             name="check"
             size={16}
