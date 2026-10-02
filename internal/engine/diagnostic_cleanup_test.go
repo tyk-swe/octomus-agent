@@ -80,6 +80,60 @@ func TestDiagnosticRequestsReportRunnerCleanupFailure(t *testing.T) {
 	}
 }
 
+func TestRoutePreflightReportsValidationAndCleanupFailures(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"audit", "execution"} {
+		t.Run(operation, func(t *testing.T) {
+			fixture := newScriptedFixture(t, withGitHubIdentity())
+			fixture.script.SetCatalog()
+			const cleanupMessage = "fixture runner cleanup could not confirm container removal"
+			fixture.script.FailClose(config.BackendCodex, &sandbox.SandboxError{Err: errors.New(cleanupMessage)})
+			var message string
+			if operation == "audit" {
+				app := fixture.pausedApp(t)
+				id, err := app.StartAudit(context.Background())
+				if err == nil || id != "" {
+					t.Fatalf("audit passed a missing route: id=%q error=%v", id, err)
+				}
+				message = err.Error()
+				if !app.runtimeIdle() {
+					t.Error("failed audit left preflight active")
+				}
+			} else {
+				task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+				saveExecutionTask(t, fixture.planningFixture, task)
+				saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+				if !blockedAs(saved, model.BlockedReasonRunnerUnavailable) || saved.Error == nil {
+					t.Fatalf("execution passed a missing route: %+v", saved)
+				}
+				message = *saved.Error
+				if saved.Workspace != "" || len(saved.Sessions) != 0 {
+					t.Errorf("failed route preflight initialized execution: %+v", saved)
+				}
+			}
+			for _, want := range []string{"unavailable in this runtime", cleanupMessage} {
+				if !strings.Contains(message, want) {
+					t.Errorf("%s preflight omitted %q: %s", operation, want, message)
+				}
+			}
+			closed := 0
+			for _, call := range fixture.script.Calls() {
+				switch call.Kind {
+				case runnertest.CallClose:
+					closed++
+				case runnertest.CallStart, runnertest.CallTurn:
+					t.Errorf("failed preflight started a model session: %+v", call)
+				}
+			}
+			if closed != 1 {
+				t.Errorf("runner closed %d times; want once", closed)
+			}
+			assertAdmissions(t, fixture.state, 0, "failed route preflight")
+			assertNoOpenClients(t, fixture.script)
+		})
+	}
+}
+
 type diagnosticCatalogFailure struct {
 	runner.Adapter
 	err    error
