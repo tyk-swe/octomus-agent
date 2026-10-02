@@ -135,3 +135,30 @@ func TestOrphanBaselineCancellationCanRetryStorageRefusals(t *testing.T) {
 		})
 	}
 }
+
+func TestOrphanBaselineCancellationAcknowledgesStatusWhenActivityFails(t *testing.T) {
+	t.Parallel()
+	a, cfg := baselineApp(t)
+	t.Cleanup(a.Shutdown)
+	check := makeCheck(cfg, model.BaselineStatusRunning)
+	if err := a.Store.Put("baseline", check.ID, check); err != nil {
+		t.Fatal(err)
+	}
+	schedulerSQL(t, a.Store, `CREATE TEMP TRIGGER refuse_activity BEFORE INSERT ON events
+		WHEN NEW.kind='baseline' AND NEW.message='Cancelled'
+		BEGIN SELECT RAISE(ABORT, 'synthetic activity refusal'); END`)
+	if err := a.CancelBaseline(check.ID); err != nil {
+		t.Fatalf("durable cancellation reported failure when only activity failed: %v", err)
+	}
+	saved, err := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
+	if err != nil || saved == nil || saved.Status != model.BaselineStatusCancelled || saved.CompletedAt == nil {
+		t.Fatalf("durable cancellation result: %+v, %v", saved, err)
+	}
+	if events, err := a.Store.Events(&check.ID); err != nil || len(events) != 0 {
+		t.Fatalf("refused activity was stored: %+v, %v", events, err)
+	}
+	schedulerSQL(t, a.Store, "DROP TRIGGER refuse_activity")
+	if err := a.CancelBaseline(check.ID); !IsActionConflict(err) {
+		t.Fatalf("acknowledged cancellation was replayed: %v", err)
+	}
+}

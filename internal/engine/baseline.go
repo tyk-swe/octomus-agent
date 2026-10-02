@@ -233,7 +233,9 @@ func (a *App) CancelBaseline(id string) error {
 			"Baseline check worker exited unexpectedly"); err != nil {
 			return err
 		}
-		return a.Store.Event(id, "baseline", baselineStatusDebug[check.Status])
+		// Like the worker path, activity is best-effort after terminal state commits.
+		_ = a.Store.Event(id, "baseline", baselineStatusDebug[check.Status])
+		return nil
 	}
 	cancel()
 	return nil
