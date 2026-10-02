@@ -307,7 +307,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	models := []runner.Model{}
 	warnings := []string{}
 	for _, backend := range backends {
-		checkErr := func() error {
+		checkErr := func() (err error) {
 			scratch, discard, err := a.scratchWorkspace()
 			if err != nil {
 				return err
@@ -317,7 +317,11 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 			if err != nil {
 				return err
 			}
-			defer client.Close()
+			defer func() {
+				if closeErr := client.Close(); closeErr != nil {
+					err = errors.Join(err, fmt.Errorf("Runner cleanup failed: %s", redact.Error(closeErr)))
+				}
+			}()
 			diagnostic, err := client.Diagnose(scratch)
 			if err != nil {
 				return err
@@ -370,7 +374,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	return result, warnings, nil
 }
 
-func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Model, error) {
+func (a *App) ModelCatalog(backend config.Backend, binary string) (_ []runner.Model, err error) {
 	if err := config.ValidateBinary(binary); err != nil {
 		return nil, err
 	}
@@ -395,7 +399,11 @@ func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Mode
 	if err != nil {
 		return nil, err
 	}
-	defer client.Close()
+	defer func() {
+		if closeErr := client.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("Runner cleanup failed: %s", redact.Error(closeErr)))
+		}
+	}()
 	return client.Models(scratch)
 }
 
