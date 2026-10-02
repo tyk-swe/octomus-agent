@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -573,8 +575,14 @@ func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
 	if view["eligible"] != true {
 		t.Fatalf("eligible after finish: %v", view)
 	}
-	if sessions, err := state.SessionsToday(); err != nil || sessions != 0 {
-		t.Fatalf("sessions: %d %v", sessions, err)
+	// Baseline checks must not consume any admissions, including before midnight.
+	var admissions, sessions uint64
+	if err := state.Snapshot(func(conn *sql.Conn) error {
+		return conn.QueryRowContext(context.Background(), `SELECT
+			(SELECT COUNT(*) FROM admissions),
+			(SELECT COALESCE(SUM(sessions), 0) FROM usage)`).Scan(&admissions, &sessions)
+	}); err != nil || admissions != 0 || sessions != 0 {
+		t.Fatalf("fixture admissions: %d, usage: %d, %v", admissions, sessions, err)
 	}
 	if running, err := state.RunningCycles(); err != nil || len(running) != 0 {
 		t.Fatalf("cycles: %d", len(running))

@@ -141,9 +141,7 @@ func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
 	if err := app.admit("cycle-1", nil, "discovery", cfg.Roles["discovery"]); err != nil {
 		t.Fatalf("admission with an unreadable workspace directory = %v; want a reserved session", err)
 	}
-	if used, err := state.SessionsToday(); err != nil || used != 1 {
-		t.Fatalf("sessions today = %d, %v; want 1", used, err)
-	}
+	assertAdmissions(t, state, 1, "admission beside an unreadable workspace directory")
 	if err := app.measureStorage(cfg); !errors.Is(err, errStorageIncomplete) {
 		t.Fatalf("storage measurement with an unreadable workspace directory = %v; want incomplete", err)
 	}
@@ -214,9 +212,7 @@ func TestTooDeepWorkspaceBlocksOnlyItsOwner(t *testing.T) {
 	if model.BlockedReasonFromError(err) != model.BlockedReasonStorageLimit || !strings.Contains(err.Error(), filepath.Join("tasks", "t1")) {
 		t.Fatalf("admission for the task owning the too-deep tree = %v; want a storage limit naming it", err)
 	}
-	if used, err := state.SessionsToday(); err != nil || used != 2 {
-		t.Fatalf("sessions today = %d, %v; want 2", used, err)
-	}
+	assertAdmissions(t, state, 2, "only the owner of the too-deep workspace is blocked")
 	if err := app.measureStorage(cfg); !errors.Is(err, errStorageIncomplete) {
 		t.Fatalf("storage measurement beside a too-deep task tree = %v; want incomplete", err)
 	}

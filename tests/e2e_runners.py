@@ -17,7 +17,7 @@ def successful_workflow(mode):
         assert any(m['available'] for m in models)
         assert not any(word in json.dumps(models) for word in ['fixture-credential', 'another-fixture-secret', 'PRIVATE_API_KEY'])
         assert service.request('/config')['config']['opencode_binary'] == 'opencode'
-        assert service.request('/state')['sessions_today'] == 0 and not (root / 'protocol.jsonl').exists()
+        assert not usage_report(root)['admissions'] and not (root / 'protocol.jsonl').exists()
         c = configuration(service, **({'planning': 'codex', 'reviewer': 'codex'} if mode == 'mixed' else {'executor': 'codex', 'repair': 'codex'} if mode == 'reverse-mixed' else {}))
         diagnostic = service.request('/doctor', 'POST')
         assert {d['backend'] for d in diagnostic['backends']} == ({'opencode'} if mode in ['opencode', 'recovery'] else {'codex', 'opencode'})
