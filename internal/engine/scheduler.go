@@ -45,6 +45,11 @@ func (a *App) Tick() error {
 	if err := a.interruptOrphanedCycles(); err != nil {
 		return &recoveryError{err: err}
 	}
+	// Reset only after every maintenance recovery step succeeds.
+	a.recordedRecoveryError = nil
+	a.runtimeMu.Lock()
+	a.runtime.activeRecoveryError = nil
+	a.runtimeMu.Unlock()
 	control, err := a.Control()
 	if err != nil {
 		return err

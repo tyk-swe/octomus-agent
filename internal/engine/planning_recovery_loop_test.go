@@ -46,9 +46,14 @@ func TestRunRetriesPlanningRecoveryWithoutChangingContinuousSchedule(t *testing.
 			completePlan(t, fixture).queue(fixture)
 			backend := &runLoopHealthProbe{}
 			app := fixture.pausedApp(t, WithSandbox(backend))
+			// Count refused recovery writes independently of whether activity is
+			// inserted or coalesced. FAIL preserves this test counter, not the cycle write.
+			schedulerSQL(t, fixture.state, "CREATE TEMP TABLE recovery_write_attempts (count INTEGER)")
+			schedulerSQL(t, fixture.state, "INSERT INTO recovery_write_attempts VALUES (0)")
 			schedulerSQL(t, fixture.state, `CREATE TEMP TRIGGER refuse_cycle_terminal BEFORE UPDATE ON records
 				WHEN NEW.kind='cycle' AND json_extract(NEW.data,'$.status')!='running'
-				BEGIN SELECT RAISE(ABORT, 'synthetic cycle terminal refusal bearer fixtureplanningsecret123'); END`)
+				BEGIN UPDATE recovery_write_attempts SET count=count+1;
+				SELECT RAISE(FAIL, 'synthetic cycle terminal refusal bearer fixtureplanningsecret123'); END`)
 			if err := app.Resume(); err != nil {
 				t.Fatal(err)
 			}
@@ -82,22 +87,16 @@ func TestRunRetriesPlanningRecoveryWithoutChangingContinuousSchedule(t *testing.
 			if observation == nil {
 				t.Fatal("failed planning lost its retained PR observation before recovery")
 			}
-			// Count actual failure-handler attempts, including when activity itself is
-			// refused. SQLite FAIL keeps the counter update but refuses the event row.
-			schedulerSQL(t, fixture.state, "CREATE TEMP TABLE recovery_event_attempts (count INTEGER)")
-			schedulerSQL(t, fixture.state, "INSERT INTO recovery_event_attempts VALUES (0)")
-			refusal := ""
 			if tc.refuseEvents {
-				refusal = "SELECT RAISE(FAIL, 'synthetic activity refusal');"
+				schedulerSQL(t, fixture.state, `CREATE TEMP TRIGGER refuse_recovery_activity BEFORE INSERT ON events
+					WHEN NEW.entity_id='system' AND NEW.kind IN ('error','recovery_error')
+					BEGIN SELECT RAISE(ABORT, 'synthetic activity refusal'); END`)
 			}
-			schedulerSQL(t, fixture.state, `CREATE TEMP TRIGGER observe_recovery_activity BEFORE INSERT ON events
-				WHEN NEW.entity_id='system' AND NEW.kind IN ('error','recovery_error')
-				BEGIN UPDATE recovery_event_attempts SET count=count+1; `+refusal+` END`)
 			attempts := func() int {
 				t.Helper()
 				var count int
 				if err := fixture.state.Snapshot(func(conn *sql.Conn) error {
-					return conn.QueryRowContext(context.Background(), "SELECT count FROM recovery_event_attempts").Scan(&count)
+					return conn.QueryRowContext(context.Background(), "SELECT count FROM recovery_write_attempts").Scan(&count)
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -109,6 +108,7 @@ func TestRunRetriesPlanningRecoveryWithoutChangingContinuousSchedule(t *testing.
 				t.Cleanup(grounding.Release)
 			}
 			initialHealth := backend.calls.Load()
+			initialAttempts := attempts()
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
 			go func() { done <- app.Run(ctx) }()
@@ -118,7 +118,9 @@ func TestRunRetriesPlanningRecoveryWithoutChangingContinuousSchedule(t *testing.
 					t.Error(err)
 				}
 			})
-			if !testutil.WaitUntil(10*time.Second, func() bool { return attempts() >= 2 }) {
+			// Entering a third recovery write proves two prior Run failure handlers
+			// completed, even when an identical activity entry was coalesced.
+			if !testutil.WaitUntil(10*time.Second, func() bool { return attempts() >= initialAttempts+3 }) {
 				t.Fatal("Run did not retry the failed recovery")
 			}
 			if saved, err := app.Control(); err != nil || !wirejson.Equal(saved, control) {
@@ -154,7 +156,7 @@ func TestRunRetriesPlanningRecoveryWithoutChangingContinuousSchedule(t *testing.
 					}
 				}
 			}
-			if tc.refuseEvents && recoveryEvents != 0 || !tc.refuseEvents && recoveryEvents < 2 {
+			if tc.refuseEvents && recoveryEvents != 0 || !tc.refuseEvents && recoveryEvents != 1 {
 				t.Fatalf("recorded recovery errors=%d with activity refusal=%t", recoveryEvents, tc.refuseEvents)
 			}
 			if tc.due {

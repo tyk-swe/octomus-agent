@@ -88,6 +88,7 @@ type runtimeState struct {
 	cleanups               map[cleanupKey]struct{}
 	cleanupReports         map[cleanupKey]cleanupReport
 	retentionCursors       map[cleanupKind]string
+	activeRecoveryError    *string
 }
 
 func (r *runtimeState) idle() bool {
@@ -118,6 +119,9 @@ type App struct {
 	deployment Deployment
 	removeDir  func(root, path string) error
 	wg         sync.WaitGroup
+
+	// Guarded by gate; remember only successfully recorded recovery activity.
+	recordedRecoveryError *string
 
 	// planningStorage excludes admission scans from trusted planning filesystem changes. Hold it only during
 	// filesystem work, never across store calls, gate acquisition, runner work, or another acquisition of this lock.
@@ -269,7 +273,14 @@ func (a *App) fail(err error) {
 	message := redact.Error(err)
 	var recovery *recoveryError
 	if errors.As(err, &recovery) {
-		_ = a.Store.Event("system", "recovery_error", message)
+		a.runtimeMu.Lock()
+		a.runtime.activeRecoveryError = &message
+		a.runtimeMu.Unlock()
+		if a.recordedRecoveryError == nil || *a.recordedRecoveryError != message {
+			if err := a.Store.Event("system", "recovery_error", message); err == nil {
+				a.recordedRecoveryError = &message
+			}
+		}
 		return
 	}
 	if control, loadErr := a.Control(); loadErr == nil {
