@@ -369,11 +369,13 @@ func TestDockerKillAndDeadManRemoveTheSandbox(t *testing.T) {
 func TestDockerMemoryLimitIsReported(t *testing.T) {
 	h := startDockerBroker(t, func(cfg *broker.Config) { cfg.Memory = 64 << 20 })
 	ws := h.taskRoot(t)
+	started := time.Now()
 	out, record, err := sandbox.Verify(context.Background(), h.remote, ws, "head -c 512m /dev/zero | tail > /dev/null", 60, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !out.Status.OOM() || out.Status.Success() || !strings.Contains(out.Status.String(), "memory limit") || record == nil || !record.OOM {
+		h.memoryFailureEvents(t, started)
 		t.Fatalf("status = %v, evidence %+v; want a reported memory-limit kill", out.Status, record)
 	}
 	// Only a child is killed for memory; the command recovers and succeeds. The evidence still records the kill.
@@ -381,6 +383,7 @@ func TestDockerMemoryLimitIsReported(t *testing.T) {
 	// process in a sandbox is as likely to be chosen, so a run whose shell was killed instead proves nothing and is
 	// tried once more.
 	for attempt := 1; ; attempt++ {
+		started = time.Now()
 		out, record, err = sandbox.Verify(context.Background(), h.remote, ws,
 			"(head -c 512m /dev/zero | tail > /dev/null); echo survived; sleep 1; exit 0", 60, true)
 		if err != nil {
@@ -392,6 +395,7 @@ func TestDockerMemoryLimitIsReported(t *testing.T) {
 		t.Logf("the memory limit killed the shell, not only its child (%v); trying again", out.Status)
 	}
 	if out.Status.OOM() || !out.Status.Success() || string(out.Stdout.Bytes) != "survived\n" || record == nil || !record.OOM {
+		h.memoryFailureEvents(t, started)
 		t.Fatalf("status = %v with %q, evidence %+v; want a success whose evidence records the memory kill",
 			out.Status, out.Stdout.Bytes, record)
 	}
