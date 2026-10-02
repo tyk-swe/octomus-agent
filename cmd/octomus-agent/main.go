@@ -188,11 +188,14 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stopSignals()
 	deployment, err := prepareDeployment(sigCtx, parsed.sandbox, data, env, stderr)
+	if sigCtx.Err() != nil {
+		if parsed.doctor {
+			return errors.New("Doctor interrupted")
+		}
+		return nil
+	}
 	if err != nil {
 		return err
-	}
-	if sigCtx.Err() != nil {
-		return nil
 	}
 	app := engine.New(state, data, engine.WithSandbox(backend), engine.WithDeployment(deployment))
 	if parsed.doctor {
