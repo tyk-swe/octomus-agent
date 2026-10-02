@@ -257,6 +257,109 @@ func TestSchedulingTasksListsActiveWorkAndBothQueuedWindows(t *testing.T) {
 	}
 }
 
+func TestCycleCleanupRetentionStartsAtCompletion(t *testing.T) {
+	t.Parallel()
+	const (
+		old    = "2026-09-01T00:00:00Z"
+		cutoff = "2026-09-18T00:00:00Z"
+		recent = "2026-10-01T00:00:00Z"
+	)
+	for _, tc := range []struct {
+		name              string
+		status            string
+		completed         *string
+		missingCompletion bool
+		archived          *string
+		discarded         *string
+		want              bool
+	}{
+		{name: "recent completion", status: model.CycleCompleted, completed: str(recent)},
+		{name: "recent idle", status: model.CycleIdle, completed: str(recent)},
+		{name: "old completion", status: model.CycleCompleted, completed: str(old), want: true},
+		{name: "old idle", status: model.CycleIdle, completed: str(old), want: true},
+		{name: "completion at cutoff", status: model.CycleCompleted, completed: str(cutoff)},
+		{name: "null completion fallback", status: model.CycleCompleted, want: true},
+		{name: "missing completion fallback", status: model.CycleCompleted, missingCompletion: true, want: true},
+		{name: "recent archive", status: model.CycleCompleted, completed: str(old), archived: str(recent)},
+		{name: "old archive", status: model.CycleCompleted, completed: str(recent), archived: str(old), want: true},
+		{name: "running", status: model.CycleRunning},
+		{name: "failed", status: model.CycleFailed, completed: str(old)},
+		{name: "discarded", status: model.CycleCompleted, completed: str(old), discarded: str(old)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := open(t, statePath(t))
+			cycle := cycleFor(task())
+			cycle.StartedAt = old
+			must(t, s.Put("cycle", cycle.ID, cycle))
+			cycle.Status = tc.status
+			cycle.CompletedAt = tc.completed
+			cycle.Lifecycle.ArchivedAt = tc.archived
+			cycle.Lifecycle.DiscardedAt = tc.discarded
+			must(t, s.Put("cycle", cycle.ID, cycle))
+			if tc.missingCompletion {
+				value, found, err := s.GetValue("cycle", cycle.ID)
+				must(t, err)
+				if !found {
+					t.Fatal("saved cycle is missing")
+				}
+				data := value.(map[string]any)
+				delete(data, "completed_at")
+				must(t, s.Put("cycle", cycle.ID, data))
+			}
+
+			got, err := s.CleanupCandidates("cycle", cutoff, "")
+			must(t, err)
+			want := []string{}
+			if tc.want {
+				want = append(want, cycle.ID)
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("cleanup candidates = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestTaskCleanupRetentionUsesUpdateOrArchive(t *testing.T) {
+	t.Parallel()
+	const (
+		old    = "2026-09-01T00:00:00Z"
+		cutoff = "2026-09-18T00:00:00Z"
+		recent = "2026-10-01T00:00:00Z"
+	)
+	for _, tc := range []struct {
+		name     string
+		updated  string
+		archived *string
+		want     bool
+	}{
+		{name: "recent publication", updated: recent},
+		{name: "old publication", updated: old, want: true},
+		{name: "recent archive", updated: old, archived: str(recent)},
+		{name: "old archive", updated: recent, archived: str(old), want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := open(t, statePath(t))
+			task := task()
+			task.Status = model.StatusPublished
+			task.CreatedAt = old
+			task.UpdatedAt = tc.updated
+			task.Lifecycle.ArchivedAt = tc.archived
+			must(t, s.Put("task", task.ID, task))
+
+			got, err := s.CleanupCandidates("task", cutoff, "")
+			must(t, err)
+			want := []string{}
+			if tc.want {
+				want = append(want, task.ID)
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("cleanup candidates = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestCleanupCandidatesResumeAfterTheCursorAndWrap(t *testing.T) {
 	t.Parallel()
 	testutil.SkipVolumeUnderRace(t)
