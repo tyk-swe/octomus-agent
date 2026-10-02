@@ -3,16 +3,159 @@ package engine
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
+
+func TestPlanningMemoryReusesFingerprintsWithinRefresh(t *testing.T) {
+	t.Parallel()
+	fixture := newScriptedFixture(t)
+	cfg := fixture.cfg
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(cfg.Repository, "guide.md"), []byte("Guide\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, cfg.Repository, "add", "guide.md")
+	git(t, cfg.Repository, "commit", "-m", "Add guide")
+	recorded := git(t, cfg.Repository, "rev-parse", "HEAD")
+	pr := ownedPR("octomus/open")
+	pr.Head = recorded
+	want := decisionMemory{decisions: []decisionRecord{}, requests: []rediscoveryRequest{}}
+	for _, test := range []struct {
+		id, target, problem, verdict, cycle, repository string
+		paths                                           []string
+		expired, due, excluded                          bool
+	}{
+		{id: "readme", paths: []string{"README.md"}, due: true},
+		{id: "readme-repeat", paths: []string{"README.md"}, due: true},
+		{id: "guide", paths: []string{"guide.md"}},
+		{id: "guide-expired", paths: []string{"guide.md"}, expired: true, due: true},
+		{id: "pair", paths: []string{"README.md", "guide.md"}, due: true},
+		{id: "pair-reversed", paths: []string{"guide.md", "README.md"}, due: true},
+		{id: "literal", paths: []string{":(glob)*.md"}},
+		{id: "pr-readme", target: pr.Branch, paths: []string{"README.md"}},
+		{id: "accepted", problem: "shared", verdict: model.DecisionAccepted, paths: []string{"guide.md"}},
+		{id: "absorbed", problem: "shared", paths: []string{"guide.md"}, excluded: true},
+		{id: "older-cycle", problem: "shared", cycle: "older", paths: []string{"guide.md"}},
+		{id: "foreign", repository: "other/project", paths: []string{"guide.md"}, excluded: true},
+		{id: "closed", target: "octomus/closed", paths: []string{"README.md"}, excluded: true},
+		{id: "pathless", paths: []string{}, due: true},
+	} {
+		record := decisionRecord{
+			ID: test.id, CycleMode: model.CycleModeExecution, Repository: cfg.GitHubRepo,
+			Target: cfg.DefaultBranch, ProblemKey: test.id, RelevantPaths: test.paths,
+			Decision: model.DecisionRejected, Reason: "Reason for " + test.id,
+			SourceRevision: recorded, ReconsiderAfter: "2999-01-01T00:00:00Z", CycleID: "cycle",
+		}
+		if test.target != "" {
+			record.Target = test.target
+		}
+		if test.problem != "" {
+			record.ProblemKey = test.problem
+		}
+		if test.verdict != "" {
+			record.Decision = test.verdict
+		}
+		if test.cycle != "" {
+			record.CycleID = test.cycle
+		}
+		if test.repository != "" {
+			record.Repository = test.repository
+		}
+		if test.expired {
+			record.ReconsiderAfter = "2000-01-01T00:00:00Z"
+		}
+		var err error
+		record.ContextFingerprint, err = decisionFingerprint(ctx, cfg, recorded, record.RelevantPaths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.state.Put("decision", record.ID, durableDecisionMap(record)); err != nil {
+			t.Fatal(err)
+		}
+		if !test.excluded {
+			record.Kind, record.ReconsiderationDue = "decision", test.due
+			want.decisions = append(want.decisions, record)
+		}
+	}
+	slices.Reverse(want.decisions)
+	cancelled := queuedTask(cfg, "rediscover", cfg.DefaultBranch, "octomus/rediscover")
+	cancelled.Status, cancelled.RediscoveryRequested = model.StatusCancelled, true
+	if err := fixture.state.Put("task", cancelled.ID, cancelled); err != nil {
+		t.Fatal(err)
+	}
+	want.requests = append(want.requests, rediscoveryRequest{ID: cancelled.ID, Target: cfg.DefaultBranch, entry: map[string]any{
+		"id": cancelled.ID, "title": cancelled.Proposal.Title, "target": cfg.DefaultBranch,
+		"problem": cancelled.Proposal.Problem, "scope": cancelled.Proposal.Scope,
+	}})
+	wantJSON, err := wirejson.Marshal(want.promptEntries())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.Repository, "README.md"), []byte("Changed contract\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, cfg.Repository, "commit", "-am", "Change README")
+	grounding := model.Grounding{Revision: git(t, cfg.Repository, "rev-parse", "HEAD"), PRs: []model.PullRequest{pr}}
+	const command = `#!/bin/sh
+if [ "$1" = --literal-pathspecs ] && [ "$2" = ls-tree ]; then
+	printf 'ls-tree\n' >> "$OCTOMUS_FIXTURE/tree-calls"
+	if [ -f "$OCTOMUS_FIXTURE/fail-tree" ]; then
+		echo 'tree unavailable' >&2
+		exit 1
+	fi
+fi
+exec /usr/bin/git "$@"
+`
+	if err := os.WriteFile(filepath.Join(fixture.root, "bin", "git"), []byte(command), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	app := New(fixture.state, fixture.dataDir)
+	t.Cleanup(app.Shutdown)
+	for refresh := 1; refresh <= 2; refresh++ {
+		memory, err := app.planningMemory(ctx, cfg, grounding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotJSON, err := wirejson.Marshal(memory.promptEntries())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(gotJSON) != string(wantJSON) {
+			t.Fatalf("refresh %d changed the prompt:\n got %s\nwant %s", refresh, gotJSON, wantJSON)
+		}
+		calls, err := os.ReadFile(filepath.Join(fixture.root, "tree-calls"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Five exact path lists at the current revision, plus README at the PR
+		// revision. Reversed path lists stay separate; pathless records need no Git.
+		if got := strings.Count(string(calls), "ls-tree\n"); got != 6*refresh {
+			t.Fatalf("refresh %d ran %d Git tree reads; want %d", refresh, got, 6*refresh)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(fixture.root, "fail-tree"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if memory, err := app.planningMemory(ctx, cfg, grounding); err == nil || !strings.Contains(err.Error(), "tree unavailable") || len(memory.decisions) != 0 || len(memory.requests) != 0 {
+		t.Fatalf("later Git failure returned memory %+v, error %v", memory, err)
+	}
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if memory, err := app.planningMemory(cancelledCtx, cfg, grounding); !errors.Is(err, process.ErrCancelled) || len(memory.decisions) != 0 || len(memory.requests) != 0 {
+		t.Fatalf("cancelled refresh returned memory %+v, error %v", memory, err)
+	}
+}
 
 func TestDecisionFingerprintTreatsPathsLiterally(t *testing.T) {
 	t.Parallel()

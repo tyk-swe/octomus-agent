@@ -77,6 +77,10 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 		records = append(records, record)
 	}
 	memory := decisionMemory{decisions: make([]decisionRecord, 0, len(records)), requests: []rediscoveryRequest{}}
+	// Historical decisions often cover the same paths. Reuse successful tree
+	// fingerprints for this refresh only; still reevaluate each decision's date.
+	type fingerprintKey struct{ revision, paths string }
+	fingerprints := make(map[fingerprintKey]string)
 	for _, record := range records {
 		if decisionAbsorbed(record, records) {
 			continue
@@ -89,9 +93,18 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 		if target != nil {
 			revision = target.Head
 		}
-		fingerprint, err := decisionFingerprint(ctx, cfg, revision, record.RelevantPaths)
+		paths, err := json.Marshal(record.RelevantPaths)
 		if err != nil {
 			return decisionMemory{}, err
+		}
+		key := fingerprintKey{revision, string(paths)}
+		fingerprint, found := fingerprints[key]
+		if !found || ctx.Err() != nil {
+			fingerprint, err = decisionFingerprint(ctx, cfg, revision, record.RelevantPaths)
+			if err != nil {
+				return decisionMemory{}, err
+			}
+			fingerprints[key] = fingerprint
 		}
 		due := fingerprint != record.ContextFingerprint
 		if until, err := time.Parse(time.RFC3339, record.ReconsiderAfter); err == nil && !time.Now().Before(until) {
