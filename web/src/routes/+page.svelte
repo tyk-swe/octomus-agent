@@ -163,6 +163,11 @@
   );
   let cycleCursor = $state<number | null>(null);
   let cyclesLoading = $state(false);
+  let cycleRefreshMessage = $state('');
+  let cycleRefreshError = $state('');
+  let cycleRetryButton = $state<HTMLButtonElement>();
+  let cyclePicker = $state<HTMLSelectElement>();
+  let cycleRetryNavigation = -1;
   let decisionCounts = $state<Record<string, number>>({});
   let queueTabCounts = $state<Record<string, number>>({});
   let listBefore = $state<number | null>(null);
@@ -179,6 +184,18 @@
   let lastPage = '';
   let sessionGeneration = 0;
   let navigationGeneration = 0;
+  $effect.pre(() => {
+    if (
+      !cycleRefreshMessage &&
+      connected &&
+      view === 'proposals' &&
+      cycleRetryNavigation === navigationGeneration &&
+      cycleRetryButton &&
+      document.activeElement === cycleRetryButton &&
+      cyclePicker?.isConnected
+    )
+      cyclePicker.focus();
+  });
   // Operator interactions invalidate the redirect; background data loads must not.
   function noteNavigationIntent() {
     navigationGeneration++;
@@ -334,6 +351,7 @@
     const request = cycleRequest.then(async () => {
       if (!connected || currentSession !== sessionGeneration) return;
       if (more && cycleCursor === null) return;
+      const completedAction = cycleRefreshMessage;
       let before = more ? cycleCursor : null;
       const oldest = more ? undefined : cycleRows.at(-1)?.id;
       const rows: CycleSummary[] = [];
@@ -346,6 +364,10 @@
       } while (!more && before !== null && oldest && !rows.some((c) => c.id === oldest));
       cycleRows = more ? [...cycleRows, ...rows] : rows;
       cycleCursor = before;
+      if (!more && completedAction && completedAction === cycleRefreshMessage) {
+        cycleRefreshMessage = '';
+        cycleRefreshError = '';
+      }
     });
     cycleRequest = request.catch(() => {});
     return request;
@@ -390,20 +412,45 @@
     }
   }
   async function cycleAction(value: 'archive' | 'discard') {
-    if (busy) return;
+    if (busy || cycleRefreshMessage) return;
     const currentSession = sessionGeneration;
+    let applied = false;
     busy = true;
     pendingAction = value;
     error = '';
     try {
       await api(`/cycles/${encodeURIComponent(proposalCycle)}/${value}`, 'POST');
+      if (currentSession !== sessionGeneration) return;
+      applied = true;
+      cycleRefreshMessage = value === 'archive' ? 'Cycle archived.' : 'Cycle workspaces discarded.';
+      cycleRefreshError = '';
       await loadCycles();
+      if (currentSession !== sessionGeneration) return;
       await refresh();
     } catch (e) {
-      if (currentSession === sessionGeneration) error = (e as Error).message;
+      if (currentSession === sessionGeneration) {
+        if (applied) cycleRefreshError = (e as Error).message;
+        else error = `Cycle action failed. ${(e as Error).message}`;
+      }
     } finally {
-      busy = false;
-      pendingAction = '';
+      if (currentSession === sessionGeneration) {
+        busy = false;
+        pendingAction = '';
+      }
+    }
+  }
+  async function retryCycleHistory() {
+    if (cyclesLoading) return;
+    const currentSession = sessionGeneration;
+    cyclesLoading = true;
+    try {
+      await loadCycles();
+      if (currentSession !== sessionGeneration) return;
+      await refresh();
+    } catch (e) {
+      if (currentSession === sessionGeneration) cycleRefreshError = (e as Error).message;
+    } finally {
+      if (currentSession === sessionGeneration) cyclesLoading = false;
     }
   }
   async function refresh() {
@@ -580,6 +627,8 @@
     cycleCursor = null;
     cycleRequest = Promise.resolve();
     cyclesLoading = false;
+    cycleRefreshMessage = '';
+    cycleRefreshError = '';
     decisionCounts = {};
     queueTabCounts = {};
     listBefore = null;
@@ -834,6 +883,26 @@
             Audits record recommendations without queuing work. A later execution cycle plans
             afresh.
           </p>
+          {#if cycleRefreshMessage}<div
+              class="notice"
+              class:error={!!cycleRefreshError}
+              role={cycleRefreshError ? 'alert' : 'status'}
+            >
+              <Icon name={cycleRefreshError ? 'alert' : 'refresh'} size={18} /><span
+                >{cycleRefreshMessage}
+                {cycleRefreshError
+                  ? `Cycle history could not be refreshed. ${cycleRefreshError}`
+                  : 'Refreshing cycle history…'}</span
+              >
+              {#if cycleRefreshError}<button
+                  bind:this={cycleRetryButton}
+                  class="button small"
+                  aria-disabled={cyclesLoading}
+                  onfocus={() => (cycleRetryNavigation = navigationGeneration)}
+                  onclick={retryCycleHistory}
+                  >{cyclesLoading ? 'Retrying cycle history…' : 'Retry cycle history'}</button
+                >{/if}
+            </div>{/if}
           <div class="actions">
             {#if cycleCursor !== null}<button
                 class="button"
@@ -843,12 +912,12 @@
             {#if selectedCycle && selectedCycle.status !== 'running' && !selectedCycle.lifecycle.discarded_at}
               {#if !selectedCycle.lifecycle.archived_at}<button
                   class="button"
-                  disabled={busy}
+                  disabled={busy || !!cycleRefreshMessage}
                   onclick={() => cycleAction('archive')}
                   >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
                 >{:else if !selectedCycle.lifecycle.discarded_at}<button
                   class="button danger"
-                  disabled={busy}
+                  disabled={busy || !!cycleRefreshMessage}
                   onclick={() => cycleAction('discard')}
                   >{pendingAction === 'discard'
                     ? 'Discarding workspaces…'
@@ -859,7 +928,12 @@
           <div class="proposal-controls">
             <div class="cycle-picker">
               <label for="proposal-cycle">Cycle</label>
-              <select id="proposal-cycle" bind:value={proposalCycle} onfocus={noteNavigationIntent}>
+              <select
+                id="proposal-cycle"
+                bind:this={cyclePicker}
+                bind:value={proposalCycle}
+                onfocus={noteNavigationIntent}
+              >
                 <option value="all">All cycles</option>
                 {#each cycleRows as cycle}<option value={cycle.id}
                     >{cycleLabel(cycle)} · {cycle.status}{cycle.lifecycle.discarded_at
