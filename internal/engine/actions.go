@@ -72,7 +72,7 @@ func (a *App) TaskAction(_ context.Context, id, action string) error {
 		actionErr = a.discardTask(task)
 	}
 	if actionErr == nil {
-		actionErr = a.Store.Event(id, "operator", action)
+		_ = a.Store.Event(id, "operator", action)
 	}
 	a.notify()
 	return actionErr
@@ -225,9 +225,9 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		if err := a.saveTask(task); err != nil {
 			return err
 		}
-		err := a.Store.Event(id, "operator", "reconcile")
+		_ = a.Store.Event(id, "operator", "reconcile")
 		a.notify()
-		return err
+		return nil
 	}
 	if err := a.Store.ClearCancel(id); err != nil {
 		return err
@@ -278,9 +278,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		recordTaskError(task, publishErr)
 		actionErr = a.transition(task, previousStatus)
 	}
-	if eventErr := a.Store.Event(id, "operator", "reconcile"); actionErr == nil {
-		actionErr = eventErr
-	}
+	_ = a.Store.Event(id, "operator", "reconcile")
 	current, loadErr := store.Get[model.Task](a.Store, "task", id)
 	if loadErr == nil && current != nil && current.Status.Active() {
 		_ = a.setTaskError(current, errors.New("Task worker exited unexpectedly; inspect the preserved workspace"))

@@ -146,8 +146,12 @@ func TestQueuedCancellationEventRefusalPreservesTerminalState(t *testing.T) {
 			} else {
 				err = app.TaskAction(context.Background(), task.ID, "cancel")
 			}
-			if err == nil || !strings.Contains(err.Error(), "synthetic cancellation event refusal") {
-				t.Fatalf("cancellation event error = %v", err)
+			if recovered {
+				if err == nil || !strings.Contains(err.Error(), "synthetic cancellation event refusal") {
+					t.Fatalf("scheduler cancellation event error = %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("durable operator cancellation reported failure: %v", err)
 			}
 			if saved := loadTask(t, state, task.ID); saved.Status != model.StatusCancelled {
 				t.Fatalf("event refusal undid durable cancellation: %s", saved.Status)
@@ -159,8 +163,8 @@ func TestQueuedCancellationEventRefusalPreservesTerminalState(t *testing.T) {
 			if err := app.TaskAction(context.Background(), task.ID, "cancel"); !IsActionConflict(err) {
 				t.Fatalf("terminal cancellation repeated: %v", err)
 			}
-			// Like TaskAction, an event refusal is reported after the status
-			// commits. A later Tick must not replay the action or resume work.
+			// The scheduler reports its event error; the operator request acknowledges
+			// its committed cancellation. Neither path may replay or resume the task.
 			if count := cancellationEvents(t, state, task.ID); count != 0 {
 				t.Fatalf("refused event was replayed: %d", count)
 			}

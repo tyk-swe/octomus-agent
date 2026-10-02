@@ -71,9 +71,8 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	default:
 		return nil, ErrUnknownControl
 	}
-	if err := a.Store.Event("system", "operator", action); err != nil {
-		return nil, err
-	}
+	// Activity is best-effort after the operator change has committed.
+	_ = a.Store.Event("system", "operator", action)
 	body, err := wirejson.GenericMap(control)
 	if err != nil {
 		return nil, err
@@ -154,7 +153,8 @@ func (a *App) CycleAction(id, action string) error {
 			return err
 		}
 	}
-	return a.Store.Event(id, "operator", action)
+	_ = a.Store.Event(id, "operator", action)
+	return nil
 }
 
 type SettingsView struct {
