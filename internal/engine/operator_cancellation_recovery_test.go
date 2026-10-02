@@ -123,6 +123,9 @@ func TestQueuedPublicationCheckpointIgnoresCancellationMarker(t *testing.T) {
 		t.Fatal("publication recovery changed retained execution evidence")
 	}
 	assertAdmissions(t, fixture.state, 0, "checkpoint recovery publishes without another model turn")
+	if count := cancellationEvents(t, fixture.state, task.ID); count != 0 {
+		t.Fatalf("publication checkpoint recorded a cancellation: %d", count)
+	}
 	if entries := publications(t, fixture.planningFixture); len(entries) != 1 || entries[0]["action"] != "create" {
 		t.Fatalf("checkpoint publication = %+v", entries)
 	}

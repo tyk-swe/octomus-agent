@@ -106,11 +106,11 @@ func (a *App) Tick() error {
 	if a.ctx.Err() != nil {
 		return nil
 	}
-	blocked, err := a.validateQueuedCycles(tasks)
+	changed, err := a.validateQueuedCycles(tasks)
 	if err != nil {
 		return err
 	}
-	if blocked {
+	if changed {
 		tasks, err = a.Store.SchedulingTasks(runID)
 		if err != nil {
 			return err
@@ -264,45 +264,98 @@ func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 		}
 	}
 	a.runtimeMu.Unlock()
-	cycleIDs := map[string]struct{}{}
+	queuedCycles := map[string][]model.Task{}
 	for _, task := range tasks {
 		if task.Status == model.StatusQueued {
-			cycleIDs[task.CycleID] = struct{}{}
+			queuedCycles[task.CycleID] = append(queuedCycles[task.CycleID], task)
 		}
 	}
-	blocked := false
-	for cycleID := range cycleIDs {
+	changed := false
+	for cycleID, cycleTasks := range queuedCycles {
 		if a.ctx.Err() != nil {
-			return blocked, nil
+			return changed, nil
 		}
 		a.runtimeMu.Lock()
 		_, checked := a.runtime.checkedCycles[cycleID]
 		a.runtimeMu.Unlock()
+		if !checked {
+			var err error
+			cycleTasks, err = a.Store.TasksForCycle(cycleID)
+			if err != nil {
+				return changed, err
+			}
+		}
+		// Cancellation must precede invalid-plan writes, including for queued
+		// members outside the scheduling window. Checked cycles still need this
+		// pass when an operator cancellation was only partially persisted.
+		cancelled, err := a.cancelQueuedTasks(cycleTasks)
+		changed = changed || cancelled
+		if err != nil {
+			return changed, err
+		}
 		if checked {
 			continue
 		}
-		cycleTasks, err := a.Store.TasksForCycle(cycleID)
-		if err != nil {
-			return blocked, err
-		}
+		deferred := false
 		if err := ValidateTaskPlan(cycleTasks); err != nil {
 			for i := range cycleTasks {
 				if a.ctx.Err() != nil {
-					return blocked, nil
+					return changed, nil
 				}
 				if cycleTasks[i].Status == model.StatusQueued {
-					blocked = true
+					if a.cleanupClaimed(cleanupTask, cycleTasks[i].ID) {
+						deferred = true
+						continue
+					}
+					changed = true
 					if blockErr := a.setTaskError(&cycleTasks[i], invalidPlan(err.Error())); blockErr != nil {
-						return blocked, blockErr
+						return changed, blockErr
 					}
 				}
 			}
 		}
-		a.runtimeMu.Lock()
-		a.runtime.checkedCycles[cycleID] = struct{}{}
-		a.runtimeMu.Unlock()
+		if !deferred {
+			a.runtimeMu.Lock()
+			a.runtime.checkedCycles[cycleID] = struct{}{}
+			a.runtimeMu.Unlock()
+		}
 	}
-	return blocked, nil
+	return changed, nil
+}
+
+func (a *App) cancelQueuedTasks(tasks []model.Task) (bool, error) {
+	changed := false
+	for i := range tasks {
+		if a.ctx.Err() != nil {
+			return changed, nil
+		}
+		task := &tasks[i]
+		if task.Status != model.StatusQueued || task.OutputCommit != nil || a.cleanupClaimed(cleanupTask, task.ID) {
+			continue
+		}
+		marked, err := a.Store.MarkerSet("cancel", task.ID)
+		if err != nil {
+			return changed, err
+		}
+		if a.ctx.Err() != nil {
+			return changed, nil
+		}
+		if !marked {
+			continue
+		}
+		cancelled, err := a.Store.CancelTask(task.ID)
+		if err != nil {
+			return changed, err
+		}
+		if cancelled {
+			changed = true
+			task.Status = model.StatusCancelled
+			if err := a.Store.Event(task.ID, "operator", "cancel"); err != nil {
+				return changed, err
+			}
+		}
+	}
+	return changed, nil
 }
 
 func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.Task) (bool, bool, error) {
@@ -350,23 +403,6 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 		if a.cleanupClaimed(cleanupTask, task.ID) {
 			waiting = true
 			continue
-		}
-		if task.OutputCommit == nil {
-			cancelled, err := a.Store.MarkerSet("cancel", task.ID)
-			if err != nil {
-				return started, waiting, err
-			}
-			if a.ctx.Err() != nil {
-				return started, waiting, nil
-			}
-			if cancelled {
-				// The cancellation marker can outlive a refused status write.
-				// Finish that request before admitting any further task work.
-				if _, err := a.Store.CancelTask(task.ID); err != nil {
-					return started, waiting, err
-				}
-				continue
-			}
 		}
 		if available == 0 {
 			waiting = true
