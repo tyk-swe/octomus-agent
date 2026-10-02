@@ -100,12 +100,13 @@ async function taskFixture(page: Page, action: Action, failedRead: 'task' | 'eve
 async function openTask(page: Page, mobile: boolean, action: Action = 'archive') {
   await page.clock.install();
   await login(page);
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
   await openNavigation(page, 'Task queue', mobile);
   await page.getByRole('button', { name: /Handle interrupted verification commands/ }).click();
   await expect(
     page.getByRole('dialog').getByRole('button', { name: labels[action], exact: true })
   ).toBeEnabled();
+  // Let the initial list debounce and detail reads finish before controlling polling.
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
 }
 
 test.afterEach(async ({ page }) => {
@@ -297,6 +298,7 @@ test('a pre-action read cannot clear recovery and closing it cannot affect a new
       await openNavigation(page, 'Overview', !!isMobile);
       await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
       await openNavigation(page, 'Task queue', !!isMobile);
+      await page.clock.runFor(100);
       await opener.click();
       await expect(dialog.getByRole('button', { name: 'Discard workspace' })).toBeEnabled();
       await expect(dialog.getByRole('alert')).toHaveCount(0);
