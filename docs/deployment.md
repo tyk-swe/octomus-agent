@@ -166,8 +166,9 @@ placeholder or commit the actual URL. Unset the variable to disable notification
 URL rotation cancels old pending deliveries rather than forwarding them to a new
 receiver. No dashboard URL editor or inbound integration is provided.
 
-Notices cover newly blocked/failed tasks and error-paused service episodes; historical
-failures are not backfilled. The receiver accepts an `application/json` POST whose
+Notices cover newly blocked/failed tasks and error-paused service episodes, including
+those discovered during restart recovery; historical failures are not backfilled.
+The receiver accepts an `application/json` POST whose
 body always carries every key below:
 
 | Key | Value |
