@@ -262,6 +262,10 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 }
 
 func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
+	if err := a.admitDiagnostic(); err != nil {
+		return nil, nil, err
+	}
+	defer a.wg.Done()
 	// The containment self-test needs no configuration, so it runs first: a broken sandbox is reported even when the
 	// configuration or repository check fails too.
 	errs := []string{}
@@ -376,6 +380,10 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 }
 
 func (a *App) ModelCatalog(backend config.Backend, binary string) (_ []runner.Model, err error) {
+	if err := a.admitDiagnostic(); err != nil {
+		return nil, err
+	}
+	defer a.wg.Done()
 	if err := config.ValidateBinary(binary); err != nil {
 		return nil, err
 	}
@@ -406,6 +414,18 @@ func (a *App) ModelCatalog(backend config.Backend, binary string) (_ []runner.Mo
 		}
 	}()
 	return client.Models(scratch)
+}
+
+// Diagnostics own runner children and scratch roots even though they do not start
+// model turns. Join their cleanup before shutdown can close the service store.
+func (a *App) admitDiagnostic() error {
+	a.gate.Lock()
+	defer a.gate.Unlock()
+	if err := a.ctx.Err(); err != nil {
+		return err
+	}
+	a.wg.Add(1)
+	return nil
 }
 
 func (a *App) StateView() (map[string]any, error) {
