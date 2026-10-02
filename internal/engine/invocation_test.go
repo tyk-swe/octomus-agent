@@ -354,7 +354,7 @@ func TestInvocationCloseFailureFailsPlanningTurn(t *testing.T) {
 		cycleID: cycleID, role: "discovery-0", route: route, workspace: t.TempDir(),
 		prompt: "Discover", ownsClients: true,
 	})
-	if err == nil || !strings.Contains(err.Error(), "fixture close") {
+	if err == nil || strings.Count(err.Error(), "fixture close") != 1 {
 		t.Fatalf("close failure error = %v", err)
 	}
 	if answer != "" {

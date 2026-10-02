@@ -35,7 +35,12 @@ type invocation struct {
 
 func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocation) (answer string, err error) {
 	if inv.ownsClients {
-		defer func() { _ = clients.Close() }()
+		defer func() {
+			// A failed start still owns a runner whose exit can explain the failure.
+			if closeErr := clients.Close(); closeErr != nil && !errors.Is(err, closeErr) {
+				err = errors.Join(err, closeErr)
+			}
+		}()
 	}
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("Operation cancelled: %w", err)
