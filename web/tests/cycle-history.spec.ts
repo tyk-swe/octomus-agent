@@ -69,6 +69,92 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
+for (const scenario of ['plain', 'later action failure', 'navigation away and back']) {
+  test(`an initial cycle-history outage clears on polling recovery: ${scenario}`, async ({
+    page,
+    isMobile
+  }) => {
+    const refusedAction = scenario === 'later action failure';
+    let outage = true;
+    let reads = 0;
+    let writes = 0;
+    await page.route('**/api/cycles?*', async (route) => {
+      reads++;
+      if (outage)
+        await route.fulfill({ status: 503, json: { error: 'Synthetic initial history outage' } });
+      else await route.fulfill({ json: await (await route.fetch()).json() });
+    });
+    await page.route('**/api/state', async (route) => {
+      const snapshot = await (await route.fetch()).json();
+      snapshot.configured = true;
+      snapshot.active_cycle_mode = null;
+      snapshot.baseline_active = false;
+      snapshot.control.paused = true;
+      snapshot.control.mode = 'paused';
+      await route.fulfill({ json: snapshot });
+    });
+    await page.route('**/api/control/resume', async (route) => {
+      writes++;
+      await route.fulfill({ status: 409, json: { error: 'Synthetic control refusal' } });
+    });
+    await page.clock.install();
+    await login(page);
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await openNavigation(page, 'Proposals', !!isMobile);
+    const picker = page.getByLabel('Cycle', { exact: true });
+    const historyError = page
+      .getByRole('alert')
+      .filter({ hasText: 'Synthetic initial history outage' });
+    await expect(historyError).toBeVisible();
+    await expect(picker.locator('option')).toHaveCount(1);
+    if (refusedAction) {
+      await page.getByRole('button', { name: 'Start continuous', exact: true }).click();
+      await expect(
+        page.getByRole('alert').filter({ hasText: 'Synthetic control refusal' })
+      ).toBeVisible();
+    }
+    outage = false;
+    if (scenario === 'navigation away and back') {
+      await openNavigation(page, 'Overview', !!isMobile);
+      await openNavigation(page, 'Proposals', !!isMobile);
+      await expect(picker.locator('option[value="cycle-1"]')).toHaveCount(1);
+    }
+    const beforeRecovery = reads;
+    await page.clock.runFor(4000);
+    await expect.poll(() => reads).toBeGreaterThan(beforeRecovery);
+    await expect(picker.locator('option[value="cycle-1"]')).toHaveCount(1);
+    await expect(historyError).toHaveCount(0);
+    if (refusedAction)
+      await expect(page.getByRole('alert')).toHaveText('Synthetic control refusal');
+    else await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(writes).toBe(refusedAction ? 1 : 0);
+  });
+}
+
+test('a successful history poll keeps a failed older-page request visible until it is retried', async ({
+  page,
+  isMobile
+}) => {
+  const { state } = await historyFixture(page);
+  const picker = await openHistory(page, !!isMobile);
+  const older = page.getByRole('button', { name: 'Load older cycles' });
+  state.failOlder = true;
+  await older.click();
+  const failure = page.getByRole('alert');
+  await expect(failure).toHaveText('Could not load older cycles. Synthetic older history outage');
+  state.failOlder = false;
+  const reads = state.reads.length;
+  await page.clock.runFor(4000);
+  await expect.poll(() => state.reads.length).toBeGreaterThan(reads);
+  await expect(picker.locator('option')).toHaveCount(101);
+  await expect(failure).toHaveText('Could not load older cycles. Synthetic older history outage');
+  await expect(older).toBeEnabled();
+  await older.click();
+  await expect(picker.locator('option')).toHaveCount(201);
+  await expect(failure).toHaveCount(0);
+  expect(state.writes).toEqual([]);
+});
+
 test('new cycles do not expand loaded history by whole pages or skip older cycles', async ({
   page,
   isMobile
