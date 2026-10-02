@@ -366,10 +366,7 @@ func TestUnaffordableAuditHasNoSideEffects(t *testing.T) {
 	if err != nil || len(cycles) != 0 {
 		t.Fatalf("unaffordable audit created a cycle: %d, %v", len(cycles), err)
 	}
-	used, err := state.SessionsToday()
-	if err != nil || used != 0 {
-		t.Fatalf("unaffordable audit consumed admissions: %d, %v", used, err)
-	}
+	assertAdmissions(t, state, 0, "unaffordable audit")
 }
 
 func TestPersistedPrInventoryIsNotProcessAuthority(t *testing.T) {

@@ -198,10 +198,7 @@ func TestPlanningPreflightRejectsMissingAuthenticationBeforeSideEffects(t *testi
 			if err != nil || len(cycles) != 0 {
 				t.Fatalf("unauthenticated preflight created cycles: %d, %v", len(cycles), err)
 			}
-			used, err := fixture.state.SessionsToday()
-			if err != nil || used != 0 {
-				t.Fatalf("unauthenticated preflight consumed admissions: %d, %v", used, err)
-			}
+			assertAdmissions(t, fixture.state, 0, "unauthenticated preflight")
 			if !app.runtimeIdle() {
 				t.Fatal("failed preflight retained runtime work")
 			}

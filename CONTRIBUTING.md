@@ -83,6 +83,9 @@ and the Go engine, Git and HTTP fixture suites isolate inherited Git configurati
 and repository-location environment variables, so personal signing settings,
 hooks and shell Git overrides cannot change fixture setup or redirect its writes.
 Repository-local settings and explicit test environment overrides still apply.
+Fresh-fixture scenario admission assertions compare the complete ledger and summed
+daily counters, so a run crossing UTC midnight still checks every turn. Use
+current-day counts only when testing daily budget behavior itself.
 Go tests share polling and process helpers through `internal/testutil`, and inject `internal/runner/runnertest`
 in place of runner processes; `internal/schemas/schematest` holds each structured-output
 schema to the Go type that decodes its answers. `web/types_contract_test.go` and

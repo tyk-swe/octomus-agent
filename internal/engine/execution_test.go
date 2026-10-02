@@ -174,10 +174,7 @@ func TestExecutionDeliversFullLifecycle(t *testing.T) {
 	if head["ref"] != saved.Branch || pr["state"] != "open" || !strings.Contains(body, "<!-- octomus:task:"+saved.ID+" -->") {
 		t.Fatalf("publication PR identity wrong: %+v", pr)
 	}
-	used, err := fixture.state.SessionsToday()
-	if err != nil || used != 6 {
-		t.Fatalf("admissions = %d, want 6 (executor + 3 reviewers + 2 repairs)", used)
-	}
+	assertAdmissions(t, fixture.state, 6, "executor + 3 reviewers + 2 repairs")
 }
 
 func verificationFixture(t *testing.T, commands []string) (*App, model.Task, string) {
@@ -1243,10 +1240,7 @@ func TestExecutionDeliversFullLifecycleViaOpenCode(t *testing.T) {
 	if backendCount == 0 {
 		t.Fatal("no opencode protocol traffic recorded")
 	}
-	used, err := fixture.state.SessionsToday()
-	if err != nil || used != 6 {
-		t.Fatalf("opencode admissions = %d, want 6 (executor + 3 reviewers + 2 repairs)", used)
-	}
+	assertAdmissions(t, fixture.state, 6, "OpenCode executor + 3 reviewers + 2 repairs")
 }
 
 // changeSetClone is an owned clone, in the split layout, of a fresh repository holding files, and the revision it

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -108,8 +110,16 @@ func (f *scriptedFixture) newApp(t *testing.T, options ...Option) *App {
 
 func assertAdmissions(t *testing.T, state *store.Store, want uint64, label string) {
 	t.Helper()
-	if used, err := state.SessionsToday(); err != nil || used != want {
-		t.Fatalf("admissions = %d, %v; want %d (%s)", used, err, want, label)
+	// These fresh-fixture scenarios assert all turns, even across UTC midnight.
+	// Check both the ledger and durable daily counters in the same snapshot.
+	var admissions, sessions uint64
+	err := state.Snapshot(func(conn *sql.Conn) error {
+		return conn.QueryRowContext(context.Background(), `SELECT
+			(SELECT COUNT(*) FROM admissions),
+			(SELECT COALESCE(SUM(sessions), 0) FROM usage)`).Scan(&admissions, &sessions)
+	})
+	if err != nil || admissions != want || sessions != want {
+		t.Fatalf("fixture admissions = %d, usage = %d, %v; want %d (%s)", admissions, sessions, err, want, label)
 	}
 }
 

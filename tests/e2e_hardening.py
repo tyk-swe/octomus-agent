@@ -205,7 +205,7 @@ def run(mode):
             service.request('/control/cycle', 'POST')
             task = service.wait(service.terminal_task, 'stale task blocked')
             assert task['blocked_reason'] == 'stale_base' and 'retry' not in task['allowed_actions']
-            assert service.request('/state')['sessions_today'] == 13
+            assert len(usage_report(root)['admissions']) == 13
             code, body = service.expect('/tasks/' + task['id'] + '/retry', 'POST')
             assert code == 409, ('Stale task retry was accepted', code, body)
             if mode == 'stale-retry':
