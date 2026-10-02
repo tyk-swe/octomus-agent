@@ -136,7 +136,48 @@ func decodePage(rows []pageRow, limit int) Page {
 func (s *Store) HistoryPage(kind string, query HistoryQuery) (Page, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return page(s.conn, kind, query)
+	if kind != "task" {
+		return page(s.conn, kind, query)
+	}
+	var result Page
+	err := s.transaction(false, func(c *sql.Conn) error {
+		var err error
+		result, err = page(c, kind, query)
+		if err != nil {
+			return err
+		}
+		return taskHistoryCounts(c, result.Counts)
+	})
+	return result, err
+}
+
+// History retains archived tasks; only the attention filter excludes them.
+// Counts describe each whole filter, independent of search and pagination.
+func taskHistoryCounts(c *sql.Conn, counts map[string]int64) error {
+	rows, err := c.QueryContext(background, "SELECT status,sum(count),sum(CASE WHEN archived=0 THEN count ELSE 0 END) FROM record_counts WHERE kind='task' GROUP BY status HAVING sum(count)>0")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	counts["all"], counts["active"], counts["attention"] = 0, 0, 0
+	for rows.Next() {
+		var status string
+		var count, unarchived int64
+		if err := rows.Scan(&status, &count, &unarchived); err != nil {
+			return err
+		}
+		counts[status] = count
+		counts["all"] += count
+		for _, attention := range model.AttentionStatuses() {
+			if status == attention.String() {
+				counts["attention"] += unarchived
+			}
+		}
+	}
+	for _, active := range model.ActiveStatuses() {
+		counts["active"] += counts[active.String()]
+	}
+	return rows.Err()
 }
 
 func (s *Store) ProposalPage(q HistoryQuery) (Page, error) {
