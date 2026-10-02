@@ -62,6 +62,8 @@ for line in sys.stdin:
     elif method == 'model/list':
         result = {'data': [{'model': m, 'displayName': m, 'supportedReasoningEfforts': [{'reasoningEffort': e} for e in ['low', 'medium', 'high', 'xhigh', 'max']]} for m in ['gpt-6-astra', 'gpt-5.6-luna']], 'nextCursor': None}
     elif method in ['thread/start', 'thread/resume']:
+        if mode() == 'exit-on-start':
+            os._exit(37)
         executor_start_failed = (root / 'failed-executor-start').exists() and method == 'thread/start' and Path(params['cwd']).parent.parent == root / '.octomus/tasks'
         if (root / 'failed-start').exists() or executor_start_failed:
             emit({'id': request['id'], 'error': {'code': -32000, 'message': 'Fixture failed start'}})
