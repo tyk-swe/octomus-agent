@@ -108,6 +108,54 @@ func TestExecutionMalformedAndIncompleteReviewsNeverPublish(t *testing.T) {
 	}
 }
 
+func TestExecutionPublishesSubmoduleOnlyRemoval(t *testing.T) {
+	t.Parallel()
+	fixture := newScriptedFixture(t, withGitHubIdentity())
+	fixture.configure(t, func(cfg *config.Config) {
+		cfg.VerificationCommands = []string{"test ! -e vendor/lib"}
+	})
+	checkout := fixture.cfg.Repository
+	writeTree(t, checkout, map[string]string{".gitmodules": "[submodule \"vendor/lib\"]\n\tpath = vendor/lib\n\turl = https://example.invalid/lib.git\n\tignore = all\n"})
+	git(t, checkout, "add", ".gitmodules")
+	git(t, checkout, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("1", 40)+",vendor/lib")
+	git(t, checkout, "commit", "-m", "Track an optional submodule")
+	git(t, checkout, "push", "origin", fixture.cfg.DefaultBranch)
+
+	routes, script := fixture.routes, fixture.script
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Removed the optional submodule", Effect: func(cwd string) error {
+		return os.Remove(filepath.Join(cwd, "vendor", "lib"))
+	}})
+	script.Answer(routes.Reviewer, cleanReview("The submodule deletion is complete"))
+	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	task.Proposal.Prompt = "Remove the optional vendor/lib gitlink while preserving its configuration for downstream users."
+	task.Proposal.Title = "Remove the optional submodule"
+	saveExecutionTask(t, fixture.planningFixture, task)
+
+	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	if saved.Status != model.StatusPublished || saved.OutputCommit == nil || saved.PRNumber == nil {
+		t.Fatalf("submodule removal status = %s, error = %q; want published", saved.Status, optionalText(saved.Error))
+	}
+	if len(saved.Reviews) != 1 || len(saved.Verification) != 1 || !saved.Verification[0].Success ||
+		saved.Reviews[0].Revision != *saved.OutputCommit || saved.Verification[0].Revision != *saved.OutputCommit {
+		t.Fatalf("submodule removal evidence: reviews=%+v verification=%+v", saved.Reviews, saved.Verification)
+	}
+	turns := script.Turns(routes.Reviewer)
+	if len(turns) != 1 || !strings.Contains(turns[0].Prompt, "delete mode 160000 vendor/lib") {
+		t.Fatalf("review did not include the submodule deletion: %+v", turns)
+	}
+	remote := remoteHead(t, fixture.planningFixture, saved.Branch)
+	if remote != *saved.OutputCommit {
+		t.Fatalf("remote branch = %s; want reviewed output %s", remote, *saved.OutputCommit)
+	}
+	changed := git(t, fixture.root, "--git-dir", filepath.Join(fixture.root, "remote.git"),
+		"diff", "--ignore-submodules=none", "--name-status", saved.SourceRevision, remote)
+	if changed != "D\tvendor/lib" {
+		t.Fatalf("published change = %q; want only the submodule deletion", changed)
+	}
+	assertAdmissions(t, fixture.state, 2, "executor + reviewer")
+	assertNoOpenClients(t, script)
+}
+
 func TestExecutionReviewerWorkspaceEditBlocks(t *testing.T) {
 	t.Parallel()
 	fixture := newScriptedFixture(t)
