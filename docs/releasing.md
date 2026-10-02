@@ -39,7 +39,10 @@ release documentation or deployment files. Packaging works without Git metadata
 and rejects symlinked manifest files, listed inputs and their parent directories.
 The installer validates a single matching SHA-256 entry before extracting only
 the executable, then replaces the destination binary. Set an absolute writable
-`INSTALL_DIR` to avoid sudo. Downloads and checksums come from the same release;
+`INSTALL_DIR` to avoid sudo. A failed copy or rename leaves the previous
+destination intact and removes the temporary executable. The destination must
+not be a directory; an existing symlink is replaced without following its target.
+Downloads and checksums come from the same release;
 release archives do not include Sigstore signatures.
 
 ## GitHub release workflow

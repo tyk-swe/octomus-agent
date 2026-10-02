@@ -20,7 +20,19 @@ case "$version" in *[!a-zA-Z0-9.+-]*) fail 'Invalid version';; esac
 dest=${INSTALL_DIR:-/usr/local/bin}
 case "$dest" in /*) ;; *) fail 'INSTALL_DIR must be absolute';; esac
 stage=$(mktemp -d)
-trap 'rm -rf "$stage"' EXIT HUP INT TERM
+pending=
+privileged=false
+cleanup() {
+  rm -rf "$stage"
+  [ -n "$pending" ] || return 0
+  if [ "$privileged" = true ]; then
+    sudo rm -f "$pending"
+  else
+    rm -f "$pending"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 asset=octomus-agent-$version-$target.tar.gz
 url=$repo/releases/download/$version
 curl --proto '=https' --proto-redir '=https' -fsSL "$url/$asset" -o "$stage/$asset" || fail 'Release download failed'
@@ -35,14 +47,18 @@ tar -xOzf "$stage/$asset" octomus-agent/octomus-agent > "$stage/octomus-agent" |
 # Create a missing destination as the invoking user so sudo never creates root-owned directories under a user-writable path.
 [ -d "$dest" ] || mkdir -p "$dest" 2>/dev/null || :
 if [ -d "$dest" ] && [ -w "$dest" ]; then
-  install -m 755 "$stage/octomus-agent" "$dest/.octomus-agent.$$"
-  mv -f "$dest/.octomus-agent.$$" "$dest/octomus-agent"
+  pending=$dest/.octomus-agent.$$
+  install -m 755 "$stage/octomus-agent" "$pending" || fail 'Could not stage executable; nothing installed'
+  mv -fT "$pending" "$dest/octomus-agent" || fail 'Could not replace executable; previous destination preserved'
 else
   command -v sudo >/dev/null || fail "Create a writable $dest or install sudo"
   sudo mkdir -p "$dest"
-  sudo install -m 755 "$stage/octomus-agent" "$dest/.octomus-agent.$$"
-  sudo mv -f "$dest/.octomus-agent.$$" "$dest/octomus-agent"
+  privileged=true
+  pending=$dest/.octomus-agent.$$
+  sudo install -m 755 "$stage/octomus-agent" "$pending" || fail 'Could not stage executable; nothing installed'
+  sudo mv -fT "$pending" "$dest/octomus-agent" || fail 'Could not replace executable; previous destination preserved'
 fi
+pending=
 printf '\nInstalled %s to %s/octomus-agent\n' "$version" "$dest"
 cat <<'NEXT'
 Next, as the service user on your dedicated VM (prerequisites and full steps:

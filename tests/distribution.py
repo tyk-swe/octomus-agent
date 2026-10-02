@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -137,6 +138,19 @@ status=0
 chmod 555 "$INSTALLER_SUDO_DIR"
 exit "$status"
 ''')
+        for command in ('install', 'mv'):
+            executable = shlex.quote(shutil.which(command))
+            (peers / command).write_text(f'''#!/bin/sh
+if [ "$INSTALLER_MODE" = '{command}-fails' ]; then
+    if [ '{command}' = install ]; then
+        for destination do :; done
+        printf 'partial executable' > "$destination"
+    fi
+    echo 'synthetic {command} failure' >&2
+    exit 1
+fi
+exec {executable} "$@"
+''')
         for peer in peers.iterdir():
             peer.chmod(0o755)
         dest = root / 'bin'
@@ -157,11 +171,30 @@ exit "$status"
             assert 'OCTOMUS_TOKEN="$(openssl rand -hex 32)"' in result.stdout, result.stdout
             assert 'octomus-agent --data-dir /var/lib/octomus/.octomus\n' in result.stdout, result.stdout
 
-        def refused(result, message):
+        def refused(result, message, path=installed):
             assert result.returncode != 0, result.stdout
+            assert path.read_text() == 'previous installation'
+            assert not list(path.parent.glob('.octomus-agent.*')), 'temporary executable left behind'
             assert f'octomus installer: {message}' in result.stderr, result.stderr
-            assert installed.read_text() == 'previous installation'
-            assert not list(dest.glob('.octomus-agent.*')), 'temporary executable left behind'
+
+        def interrupted_installs(path, **overrides):
+            for mode, message in [('install-fails', 'Could not stage executable'),
+                                  ('mv-fails', 'Could not replace executable')]:
+                refused(install(mode=mode, INSTALL_DIR=str(path.parent), **overrides), message, path)
+                installed_binary(install(INSTALL_DIR=str(path.parent), **overrides), path)
+                path.write_text('previous installation')
+
+        def destination_directory(parent, **overrides):
+            path = parent / 'octomus-agent'
+            path.mkdir()
+            marker = path / 'keep'
+            marker.write_text('previous destination')
+            result = install(INSTALL_DIR=str(parent), **overrides)
+            assert result.returncode != 0, result.stdout
+            assert 'Could not replace executable' in result.stderr, result.stderr
+            assert marker.read_text() == 'previous destination'
+            assert list(path.iterdir()) == [marker], 'executable moved inside destination directory'
+            assert not list(parent.glob('.octomus-agent.*')), 'temporary executable left behind'
 
         for arch, target in [('x86_64', 'x86_64-unknown-linux-gnu'), ('aarch64', 'aarch64-unknown-linux-gnu')]:
             env.update(INSTALLER_ARCH=arch, INSTALLER_TARGET=target)
@@ -182,6 +215,20 @@ exit "$status"
         result = install(INSTALL_DIR=str(fresh))
         assert not (root / 'sudo-used').exists(), 'installer used sudo: ' + (root / 'sudo-used').read_text()
         installed_binary(result, fresh / 'octomus-agent')
+        interrupted_installs(installed)
+        directory_destination = root / 'directory-destination'
+        directory_destination.mkdir()
+        destination_directory(directory_destination)
+        # A symlink is replaced at the requested path, never followed into its directory.
+        linked_destination = root / 'linked-destination'
+        linked_destination.mkdir()
+        linked_directory = root / 'linked-directory'
+        linked_directory.mkdir()
+        linked_executable = linked_destination / 'octomus-agent'
+        linked_executable.symlink_to(linked_directory, target_is_directory=True)
+        installed_binary(install(INSTALL_DIR=str(linked_destination)), linked_executable)
+        assert not linked_executable.is_symlink()
+        assert not list(linked_directory.iterdir()), 'installer followed the destination symlink'
         sudo = 'sudo for a non-writable INSTALL_DIR'
         if os.geteuid() == 0:
             sudo = 'sudo branch skipped as root'
@@ -197,9 +244,17 @@ exit "$status"
             installed_binary(result, protected / 'octomus-agent')
             used = [line.split()[0] for line in (root / 'sudo-used').read_text().splitlines()]
             assert used == ['mkdir', 'install', 'mv'], used
+            (protected / 'octomus-agent').write_text('previous installation')
+            protected.chmod(0o555)
+            try:
+                interrupted_installs(protected / 'octomus-agent', INSTALLER_SUDO_DIR=str(protected))
+            finally:
+                protected.chmod(0o755)
     print('PASS installer: architectures, latest/versioned/OCTOMUS_VERSION release, no stable release, '
           'sudo-free new INSTALL_DIR, ' + sudo + '; refuses ' + ', '.join(INSTALLER_FAILURES)
-          + ', invalid version and relative INSTALL_DIR' + (', real package archive' if package else ''))
+          + ', invalid version and relative INSTALL_DIR; failed copy/rename cleanup and retry, '
+          'destination directory preservation and symlink replacement'
+          + (', real package archive' if package else ''))
 
 
 DENIED_DIRECTORIES = {'.octomus', 'node_modules', 'tests', 'fixtures', '.git',
