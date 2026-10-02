@@ -111,10 +111,11 @@ func (a *App) Tick() error {
 		return err
 	}
 	if changed {
-		tasks, err = a.Store.SchedulingTasks(runID)
-		if err != nil {
-			return err
-		}
+		// Removing queued rows can expose a new window that has not been
+		// prepared. Release the gate before preparing that window on the next
+		// pass; do not dispatch it or start planning in between.
+		a.notify()
+		return nil
 	}
 	started, waiting, err := a.dispatch(cfg, control, tasks)
 	if err != nil {

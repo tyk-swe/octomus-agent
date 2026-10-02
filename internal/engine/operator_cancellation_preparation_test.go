@@ -196,6 +196,12 @@ func TestQueuedCancellationAfterCycleValidationFinishesRunOnce(t *testing.T) {
 	if pending, unresolved, err := state.BatchCounts(control.Batch.ID); err != nil || pending != 0 || unresolved != 1 {
 		t.Fatalf("cancelled batch counts = %d/%d, %v", pending, unresolved, err)
 	}
+	if saved, err := app.Control(); err != nil || saved.Mode != model.OperatingModeRunOnce {
+		t.Fatalf("cancellation preparation did not yield before batch completion: %+v, %v", saved, err)
+	}
+	if err := app.Tick(); err != nil {
+		t.Fatal(err)
+	}
 	if saved, err := app.Control(); err != nil || saved.Mode != model.OperatingModePaused || saved.Batch != nil {
 		t.Fatalf("cancelled batch did not finish: %+v, %v", saved, err)
 	}

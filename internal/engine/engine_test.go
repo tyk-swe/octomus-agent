@@ -702,6 +702,12 @@ func TestRunOnceStopsWhenDrainBecomesUnresolvedDuringTick(t *testing.T) {
 	if err := a.Tick(); err != nil {
 		t.Fatal(err)
 	}
+	if control, err := a.Control(); err != nil || control.Mode != model.OperatingModeRunOnce {
+		t.Fatalf("preparation did not yield before finishing the batch: %+v, %v", control, err)
+	}
+	if err := a.Tick(); err != nil {
+		t.Fatal(err)
+	}
 	control, err := a.Control()
 	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil || control.Error != nil {
 		t.Fatalf("failed drain proceeded to planning: %+v, %v", control, err)
