@@ -351,6 +351,23 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 			waiting = true
 			continue
 		}
+		if task.OutputCommit == nil {
+			cancelled, err := a.Store.MarkerSet("cancel", task.ID)
+			if err != nil {
+				return started, waiting, err
+			}
+			if a.ctx.Err() != nil {
+				return started, waiting, nil
+			}
+			if cancelled {
+				// The cancellation marker can outlive a refused status write.
+				// Finish that request before admitting any further task work.
+				if _, err := a.Store.CancelTask(task.ID); err != nil {
+					return started, waiting, err
+				}
+				continue
+			}
+		}
 		if available == 0 {
 			waiting = true
 			break
