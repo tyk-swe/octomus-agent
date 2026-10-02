@@ -534,10 +534,29 @@ const cleanupEligible = `kind=?1 AND discarded IS NULL
     AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle')))
     AND julianday(COALESCE(archived,json_extract(summary,'$.completed_at'),json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2)`
 
+// Walk each side of the cursor in index order, then sort only the bounded page.
+// Materialize following so the wrap skips its scan when the page is full. A single
+// statement keeps the cursor, both ranges and eligibility in one read snapshot.
+const cleanupCandidatesSQL = `WITH cursor AS (
+    SELECT COALESCE((SELECT seq FROM record_meta WHERE kind=?1 AND id=?3),0) AS seq
+), following AS MATERIALIZED (
+    SELECT id,seq FROM record_meta WHERE ` + cleanupEligible + `
+    AND seq>(SELECT seq FROM cursor) ORDER BY seq LIMIT 100
+), wrapped AS (
+    SELECT id,seq FROM record_meta WHERE ` + cleanupEligible + `
+    AND seq<=(SELECT seq FROM cursor) ORDER BY seq
+    LIMIT (SELECT 100-count(*) FROM following)
+)
+SELECT id FROM (
+    SELECT id,seq,0 AS phase FROM following
+    UNION ALL
+    SELECT id,seq,1 AS phase FROM wrapped
+) ORDER BY phase,seq LIMIT 100`
+
 func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT id FROM record_meta WHERE "+cleanupEligible+" ORDER BY seq<=COALESCE((SELECT seq FROM record_meta WHERE kind=?1 AND id=?3),0),seq LIMIT 100", kind, cutoff, after)
+	raw, err := queryStrings(s.conn, cleanupCandidatesSQL, kind, cutoff, after)
 	if err != nil {
 		return nil, err
 	}
