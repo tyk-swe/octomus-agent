@@ -987,6 +987,82 @@ test('failed configuration loads retry, failed saves retain exact drafts, and su
   await expect(commands).toHaveValue('fixture new test\nfixture new build');
 });
 
+test('unrelated saves preserve exact command boundaries through discard and reload, while edits use one command per line', async ({
+  page,
+  isMobile
+}) => {
+  const original = ['cd subdir\n./test.sh', "  printf 'tail  '  \n"];
+  const state = await configurationFixture(page, {
+    saved: { verification_commands: original }
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const commands = page.getByRole('textbox', { name: /^Verification commands/ });
+  const branch = page.getByLabel('Default branch', { exact: true });
+  const save = page.getByRole('button', { name: 'Save configuration' });
+  const discard = page.getByRole('button', { name: 'Discard changes' });
+  const unsaved = page.getByText('Unsaved changes', { exact: true });
+  const policy = page.locator('[data-step="verification"]');
+  await expect(commands).toHaveValue(original.join('\n'));
+  await expect(policy.locator('.badge')).toHaveText('Saved');
+  await expect(policy).toContainText('2 saved commands');
+  await expect(save).toBeDisabled();
+  await commands.fill('draft');
+  await expect(unsaved).toBeVisible();
+  await expect(policy.locator('.badge')).toHaveText('Entered, not saved');
+  await commands.fill(original.join('\n'));
+  await expect(unsaved).toHaveCount(0);
+  await expect(policy.locator('.badge')).toHaveText('Saved');
+  await expect(save).toBeDisabled();
+
+  await branch.fill('command-main');
+  await save.click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)!.config).toEqual({ default_branch: 'command-main' });
+  expect(state.saved!.verification_commands).toEqual(original);
+  await expect(commands).toHaveValue(original.join('\n'));
+  await expect(policy.locator('.badge')).toHaveText('Saved');
+
+  await commands.fill('discard this command');
+  await discard.click();
+  await branch.fill('after-discard');
+  await save.click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)!.config).toEqual({ default_branch: 'after-discard' });
+  expect(state.saved!.verification_commands).toEqual(original);
+  await expect(policy.locator('.badge')).toHaveText('Saved');
+
+  const reloaded = ['cd another\n./check.sh', '  true  '];
+  state.saved!.verification_commands = reloaded;
+  await branch.fill('stale-main');
+  await save.click();
+  await expect(page.getByRole('alert')).toContainText('Synthetic save conflict');
+  await page.getByRole('button', { name: 'Discard edits and reload' }).click();
+  await expect(commands).toHaveValue(reloaded.join('\n'));
+  await expect(policy.locator('.badge')).toHaveText('Saved');
+  await expect(unsaved).toHaveCount(0);
+  await expect(save).toBeDisabled();
+  await branch.fill('after-reload');
+  await save.click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)!.config).toEqual({ default_branch: 'after-reload' });
+  expect(state.saved!.verification_commands).toEqual(reloaded);
+  await expect(policy.locator('.badge')).toHaveText('Saved');
+
+  await commands.fill('  fixture new test  \n\nfixture new build\n');
+  await expect(policy.locator('.badge')).toHaveText('Entered, not saved');
+  await save.click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)!.config).toEqual({
+    verification_commands: ['fixture new test', 'fixture new build']
+  });
+  await expect(save).toBeDisabled();
+  await commands.fill('another draft');
+  await discard.click();
+  await expect(commands).toHaveValue('fixture new test\nfixture new build');
+  await expect(policy.locator('.badge')).toHaveText('Saved');
+});
+
 test('a successful save clears an earlier failed configuration refresh', async ({
   page,
   isMobile
@@ -1118,9 +1194,12 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
   page,
   isMobile
 }) => {
+  const original = ['echo ghp_syntheticsecrettoken123\n./test.sh', '  true  '];
+  const preview = ['echo [redacted]\n./test.sh', '  true  '];
   const state = await configurationFixture(page, {
+    saved: { verification_commands: original },
     transformed: {
-      overrides: { verification_commands: ['echo [redacted] > /dev/null'] },
+      overrides: { verification_commands: preview },
       fields: [
         {
           field: 'verification_commands',
@@ -1135,7 +1214,8 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
   await navigate('Configuration');
   const commands = page.getByRole('textbox', { name: /^Verification commands/ });
 
-  await expect(commands).toHaveValue('echo [redacted] > /dev/null');
+  await expect(commands).toHaveValue(preview.join('\n'));
+  await expect(page.locator('[data-step="verification"] .badge')).toHaveText('Saved');
   const loaded = state.revision();
   await expect(commands).toHaveJSProperty('readOnly', true);
   await expect(page.locator('#preview-verification_commands')).toContainText('hidden value');
@@ -1146,8 +1226,9 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0].expected_revision).toBe(loaded);
   expect(state.writes[0].config).toEqual({ default_branch: 'preview-main' });
-  expect(state.saved!.verification_commands).toEqual(['fixture saved test']);
-  await expect(commands).toHaveValue('echo [redacted] > /dev/null');
+  expect(state.saved!.verification_commands).toEqual(original);
+  await expect(commands).toHaveValue(preview.join('\n'));
+  await expect(page.locator('[data-step="verification"] .badge')).toHaveText('Saved');
 
   state.saved!.default_branch = 'external-main';
   await page.getByLabel('Default branch', { exact: true }).fill('stale-main');
@@ -1157,7 +1238,14 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
   await navigate('Overview');
   await navigate('Configuration');
   await expect(page.getByLabel('Default branch', { exact: true })).toHaveValue('external-main');
-  await expect(commands).toHaveValue('echo [redacted] > /dev/null');
+  await expect(commands).toHaveValue(preview.join('\n'));
+
+  await page.locator('#replace-verification_commands').click();
+  await expect(commands).toHaveValue('');
+  await page.getByRole('button', { name: 'Discard changes' }).click();
+  await expect(commands).toHaveValue(preview.join('\n'));
+  await expect(commands).toHaveJSProperty('readOnly', true);
+  await expect(page.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
 
   await page.locator('#replace-verification_commands').click();
   await expect(commands).toHaveValue('');

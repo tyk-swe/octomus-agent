@@ -52,6 +52,12 @@
     config !== null && (JSON.stringify(config) !== savedJson || commands !== savedCommands)
   );
   const savedConfig = $derived<Config | null>(savedJson ? JSON.parse(savedJson) : null);
+  // Saved commands can contain newlines or whitespace that the line editor cannot round-trip.
+  const draftCommands = $derived(
+    commands !== savedCommands || replaced.verification_commands
+      ? parseCommands(commands)
+      : (config?.verification_commands ?? [])
+  );
   const transformedByField = $derived(new Map(transformed.map((entry) => [entry.field, entry])));
   const locked = (field: string) => transformedByField.has(field) && !replaced[field];
   const pinnedRepository = $derived(status?.sandbox.pinned_repository ?? null);
@@ -165,7 +171,7 @@
     conflict = false;
     message = '';
     try {
-      const draft: Config = { ...config, verification_commands: parseCommands(commands) };
+      const draft: Config = { ...config, verification_commands: draftCommands };
       const patch: Record<string, unknown> = {};
       for (const key of Object.keys(draft) as (keyof Config)[]) {
         if (JSON.stringify(draft[key]) !== JSON.stringify(savedConfig?.[key]))
@@ -293,7 +299,7 @@
     draft={config}
     saved={savedConfig}
     {revision}
-    {commands}
+    commands={draftCommands}
     {dirty}
     {catalogs}
     {preflight}
