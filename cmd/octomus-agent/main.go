@@ -118,9 +118,13 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		return 0
 	}
 	if parsed.usageReport || parsed.exportRun != nil {
-		stateDB := filepath.Join(parsed.dataDir, stateDBName)
+		data, err := canonicalDataDir(parsed.dataDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: Cannot resolve existing state database directory: %v\n", err)
+			return 1
+		}
+		stateDB := filepath.Join(data, stateDBName)
 		var value map[string]any
-		var err error
 		if parsed.usageReport {
 			value, err = report.UsageReport(stateDB)
 		} else {
@@ -142,6 +146,16 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 	return 0
 }
 
+// Resolve symlinks before joining child paths: cleaning link/.. first can select
+// a different directory. Service startup and read-only exports must agree.
+func canonicalDataDir(path string) (string, error) {
+	data, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(data)
+}
+
 func service(parsed arguments, env func(string) (string, bool), stdout, stderr io.Writer) error {
 	env, err := loadSecretFiles(env, os.Setenv)
 	if err != nil {
@@ -153,11 +167,8 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	if err := os.Chmod(parsed.dataDir, 0o700); err != nil {
 		return err
 	}
-	data, err := filepath.EvalSymlinks(parsed.dataDir)
+	data, err := canonicalDataDir(parsed.dataDir)
 	if err != nil {
-		return err
-	}
-	if data, err = filepath.Abs(data); err != nil {
 		return err
 	}
 	lock, err := os.OpenFile(filepath.Join(data, "service.lock"), os.O_CREATE|os.O_RDWR, 0o600)
@@ -218,6 +229,9 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	components := serviceComponents{
 		scheduler: app,
 		http:      server,
+		prepareWorker: func() error {
+			return notifications.Configure(state, webhook)
+		},
 		startWorker: func() (func(), error) {
 			worker, err := notifications.Start(app.Context(), state, webhook)
 			if err != nil || worker == nil {

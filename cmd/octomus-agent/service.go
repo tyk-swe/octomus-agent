@@ -24,13 +24,20 @@ type serviceHTTPServer interface {
 }
 
 type serviceComponents struct {
-	scheduler   serviceScheduler
-	http        serviceHTTPServer
-	startWorker func() (stop func(), err error)
-	listen      func(network, address string) (net.Listener, error)
+	scheduler     serviceScheduler
+	http          serviceHTTPServer
+	prepareWorker func() error
+	startWorker   func() (stop func(), err error)
+	listen        func(network, address string) (net.Listener, error)
 }
 
 func (c serviceComponents) run(ctx context.Context, address string, stderr io.Writer) error {
+	if c.prepareWorker != nil {
+		if err := c.prepareWorker(); err != nil {
+			c.scheduler.Shutdown()
+			return err
+		}
+	}
 	if err := c.scheduler.Recover(); err != nil {
 		c.scheduler.Shutdown()
 		return err

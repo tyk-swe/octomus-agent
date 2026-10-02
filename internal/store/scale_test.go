@@ -143,3 +143,53 @@ func TestDuplicateHistoryScale(t *testing.T) {
 	t.Logf("history=2000 evidence_bytes=65536 proposals=20 elapsed_us=%d peak_bytes=%d",
 		elapsed.Microseconds(), peak)
 }
+
+func TestRetentionCandidatesScale(t *testing.T) {
+	if os.Getenv("OCTOMUS_SCALE_TEST") == "" {
+		t.Skip("OCTOMUS_SCALE_TEST is not set: explicit 100,000-record retention latency measurement")
+	}
+	path := statePath(t)
+	s := open(t, path)
+	writer := raw(t, path)
+	const data = `{"status":"published","updated_at":"2020-01-01T00:00:00Z"}`
+	inserted := 0
+	for _, count := range []int{1000, 10000, 100000} {
+		tx, err := writer.Begin()
+		must(t, err)
+		stmt, err := tx.Prepare("INSERT INTO records VALUES ('task',?1,?2)")
+		must(t, err)
+		for i := inserted; i < count; i++ {
+			_, err := stmt.Exec(fmt.Sprintf("retained-%d", i), data)
+			must(t, err)
+		}
+		must(t, stmt.Close())
+		must(t, tx.Commit())
+		inserted = count
+		for _, cursor := range []int{-1, count / 2, count - 51, count - 1} {
+			after := ""
+			if cursor >= 0 {
+				after = fmt.Sprintf("retained-%d", cursor)
+			}
+			want := make([]string, 100)
+			for i := range want {
+				want[i] = fmt.Sprintf("retained-%d", (cursor+1+i)%count)
+			}
+			var elapsed []time.Duration
+			var peak uint64
+			for range 5 {
+				startAlloc := heapAllocated()
+				start := time.Now()
+				got, err := s.CleanupCandidates("task", "2021-01-01T00:00:00Z", after)
+				elapsed = append(elapsed, time.Since(start))
+				peak = max(peak, heapAllocated()-startAlloc)
+				must(t, err)
+				if !slices.Equal(got, want) {
+					t.Fatalf("history=%d after=%q: candidates=%v; want %v", count, after, got, want)
+				}
+			}
+			slices.Sort(elapsed)
+			t.Logf("history=%d after=%q p50_us=%d max_us=%d peak_bytes=%d",
+				count, after, elapsed[2].Microseconds(), elapsed[4].Microseconds(), peak)
+		}
+	}
+}

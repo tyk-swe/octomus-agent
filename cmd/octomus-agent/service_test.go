@@ -67,7 +67,7 @@ func (failingServiceHTTP) Close() error { return nil }
 
 func TestSchedulerRecoveryFailureNeverOpensHealthListener(t *testing.T) {
 	startupErr := errors.New("cannot recover scheduler state")
-	var recovered, workerStarted, listenerOpened atomic.Int32
+	var prepared, recovered, workerStarted, listenerOpened atomic.Int32
 	components := serviceComponents{
 		scheduler: testServiceScheduler{
 			recover: func() error {
@@ -82,6 +82,7 @@ func TestSchedulerRecoveryFailureNeverOpensHealthListener(t *testing.T) {
 		http: &http.Server{Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("health was served after failed recovery")
 		})},
+		prepareWorker: func() error { prepared.Add(1); return nil },
 		startWorker: func() (func(), error) {
 			workerStarted.Add(1)
 			return nil, nil
@@ -96,9 +97,37 @@ func TestSchedulerRecoveryFailureNeverOpensHealthListener(t *testing.T) {
 	if !errors.Is(err, startupErr) {
 		t.Fatalf("startup error = %v, want %v", err, startupErr)
 	}
-	if recovered.Load() != 1 || workerStarted.Load() != 0 || listenerOpened.Load() != 0 || output.Len() != 0 {
+	if prepared.Load() != 1 || recovered.Load() != 1 || workerStarted.Load() != 0 || listenerOpened.Load() != 0 || output.Len() != 0 {
 		t.Fatalf("failed recovery exposed service: recoveries=%d workers=%d listeners=%d output=%q",
 			recovered.Load(), workerStarted.Load(), listenerOpened.Load(), output.String())
+	}
+}
+
+func TestWorkerPreparationFailureStopsBeforeRecovery(t *testing.T) {
+	preparationErr := errors.New("cannot configure notification policy")
+	var shutdown atomic.Int32
+	components := serviceComponents{
+		scheduler: testServiceScheduler{
+			recover: func() error {
+				t.Fatal("recovery ran with an outdated notification policy")
+				return nil
+			},
+			shutdown: func() { shutdown.Add(1) },
+		},
+		prepareWorker: func() error { return preparationErr },
+		startWorker: func() (func(), error) {
+			t.Fatal("worker started after failed preparation")
+			return nil, nil
+		},
+		listen: func(string, string) (net.Listener, error) {
+			t.Fatal("listener opened after failed preparation")
+			return nil, nil
+		},
+	}
+	var output bytes.Buffer
+	err := components.run(context.Background(), "127.0.0.1:0", &output)
+	if !errors.Is(err, preparationErr) || shutdown.Load() != 1 || output.Len() != 0 {
+		t.Fatalf("preparation failure: error=%v shutdown=%d output=%q", err, shutdown.Load(), output.String())
 	}
 }
 

@@ -166,8 +166,9 @@ placeholder or commit the actual URL. Unset the variable to disable notification
 URL rotation cancels old pending deliveries rather than forwarding them to a new
 receiver. No dashboard URL editor or inbound integration is provided.
 
-Notices cover newly blocked/failed tasks and error-paused service episodes; historical
-failures are not backfilled. The receiver accepts an `application/json` POST whose
+Notices cover newly blocked/failed tasks and error-paused service episodes, including
+those discovered during restart recovery; historical failures are not backfilled.
+The receiver accepts an `application/json` POST whose
 body always carries every key below:
 
 | Key | Value |
@@ -377,8 +378,10 @@ octomus-agent --version
 ```
 
 `--data-dir` defaults to `.octomus` in the working directory and `--listen` to
-`127.0.0.1:4200`. Environment equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`,
-`OCTOMUS_ASSETS`; the service also requires `OCTOMUS_TOKEN` (or `OCTOMUS_TOKEN_FILE`).
+`127.0.0.1:4200`. Service startup and read-only exports resolve `--data-dir`
+symlinks before parent (`..`) segments, so the same path selects the same state.
+Read-only exports require that directory to exist and never create it. Environment
+equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`, `OCTOMUS_ASSETS`; the service also requires `OCTOMUS_TOKEN` (or `OCTOMUS_TOKEN_FILE`).
 `--sandbox` (`OCTOMUS_SANDBOX`) defaults to `docker`, which runs every runner and
 verification command through the broker at `OCTOMUS_SANDBOXD_SOCKET`; `off` runs them on
 this host. An explicit `--sandbox` overrides the environment default, including a
