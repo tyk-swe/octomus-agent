@@ -87,3 +87,32 @@ func TestHistoryRoutesPageTheirOwnKind(t *testing.T) {
 		t.Fatalf("prs: %v", item)
 	}
 }
+
+func TestTaskHistoryReturnsFilterCountsIncludingArchivedRecords(t *testing.T) {
+	app, state := testApp(t)
+	for _, id := range []string{"archived", "queued-a", "queued-b"} {
+		task := queuedTask(config.Default())
+		task.ID = id
+		task.Status = model.StatusQueued
+		if id == "archived" {
+			task.Status = model.StatusFailed
+			task.Lifecycle.ArchivedAt = new(model.Now())
+		}
+		if err := state.Put("task", id, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	router := Router(app, token, "", "test")
+	for _, query := range []string{"?limit=1", "?status=failed", "?status=attention", "?q=no-match"} {
+		response := call(t, router, "GET", "/api/tasks"+query, "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", query, response.Code, response.Body.String())
+		}
+		counts, _ := decode(t, response)["counts"].(map[string]any)
+		for key, want := range map[string]float64{"all": 3, "queued": 2, "failed": 1, "active": 0, "attention": 0} {
+			if counts[key] != want {
+				t.Errorf("%s: %s count = %v, want %v", query, key, counts[key], want)
+			}
+		}
+	}
+}

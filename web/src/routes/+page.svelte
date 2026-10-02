@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { api, clockTime, setToken, onUnauthorized, relative } from '$lib/api';
-  import { ACTIVE_STATUSES } from '$lib/types';
   import type {
     Snapshot,
     TaskRow,
@@ -165,6 +164,7 @@
   let cycleCursor = $state<number | null>(null);
   let cyclesLoading = $state(false);
   let decisionCounts = $state<Record<string, number>>({});
+  let queueTabCounts = $state<Record<string, number>>({});
   let listBefore = $state<number | null>(null);
   let listNext = $state<number | null>(null);
   let previousPages = $state<(number | null)[]>([]);
@@ -187,19 +187,6 @@
   let refreshQueued = false;
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
-  let queueTabCounts = $derived.by(() => {
-    const counts = data?.counts ?? {};
-    const sum = (keys: readonly string[]) => keys.reduce((n, k) => n + (counts[k] ?? 0), 0);
-    return {
-      all: sum(Object.keys(counts)),
-      active: sum(ACTIVE_STATUSES),
-      queued: counts.queued,
-      published: counts.published,
-      attention: attentionCount,
-      blocked: counts.blocked,
-      cancelled: counts.cancelled
-    } as Record<string, number | undefined>;
-  });
   let proposalTabCounts = $derived({
     all: Object.values(decisionCounts).reduce((n, v) => n + v, 0),
     ...decisionCounts
@@ -265,6 +252,7 @@
       proposals = [];
       prRows = [];
       decisionCounts = {};
+      queueTabCounts = {};
       listNext = null;
       listLoaded = false;
       listError = '';
@@ -305,7 +293,10 @@
         controller.signal
       );
       if (current !== listGeneration || controller.signal.aborted) return;
-      if (view === 'queue') filtered = page.items as TaskRow[];
+      if (view === 'queue') {
+        filtered = page.items as TaskRow[];
+        queueTabCounts = page.counts;
+      }
       if (view === 'proposals') {
         proposals = (page.items as ProposalRow[]).map((summary) => {
           const previous = proposals.find(
@@ -586,6 +577,7 @@
     cycleRequest = Promise.resolve();
     cyclesLoading = false;
     decisionCounts = {};
+    queueTabCounts = {};
     listBefore = null;
     listNext = null;
     previousPages = [];
