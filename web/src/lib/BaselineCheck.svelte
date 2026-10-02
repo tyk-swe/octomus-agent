@@ -81,7 +81,8 @@
         // Cancellation is acknowledged before the worker has necessarily stopped.
         const awaitingCancellation =
           cancellingId !== '' && next.check?.id === cancellingId && next.check.status === 'running';
-        acknowledgedCheck = awaitingCancellation ? next.check : null;
+        // Keep the last known running resource when navigation clears the detail view.
+        acknowledgedCheck = next.check?.status === 'running' ? next.check : null;
         if (!awaitingCancellation) {
           actionRecovery = '';
           cancellingId = '';
@@ -160,9 +161,10 @@
     } finally {
       pending = '';
     }
-    if (accepted && active) {
-      await load(true);
-      if (!disposed && active) onchanged();
+    if (accepted && !disposed) {
+      // Global controls must reflect the accepted write even when this panel is hidden.
+      onchanged();
+      if (active) await load(true);
     }
   }
   async function cancel() {
@@ -186,9 +188,10 @@
     } finally {
       pending = '';
     }
-    if (accepted && active) {
-      await load(true);
-      if (!disposed && active) onchanged();
+    if (accepted && !disposed) {
+      // Global controls must reflect the accepted write even when this panel is hidden.
+      onchanged();
+      if (active) await load(true);
     }
   }
 </script>

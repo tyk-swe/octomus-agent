@@ -26,6 +26,8 @@ async function fixture(page: Page) {
       caveat: 'Synthetic baseline caveat'
     } as BaselineView,
     reads: 0,
+    stateReads: 0,
+    baselineActive: false,
     starts: 0,
     cancels: 0,
     failRead: false,
@@ -34,13 +36,14 @@ async function fixture(page: Page) {
     readGate: null as ReturnType<typeof deferred> | null
   };
   await page.route('**/api/state', async (route) => {
+    state.stateReads++;
     const response = await route.fetch();
     const snapshot: Snapshot = await response.json();
     snapshot.control.paused = true;
     snapshot.control.mode = 'paused';
     snapshot.active_tasks = 0;
     snapshot.cycle_active = false;
-    snapshot.baseline_active = false;
+    snapshot.baseline_active = state.baselineActive;
     await route.fulfill({ json: snapshot });
   });
   await page.route('**/api/config', async (route) => {
@@ -295,3 +298,94 @@ test('a read that started before the baseline mutation cannot overwrite its acce
   await expect(panel.getByRole('button', { name: 'Cancel baseline check' })).toBeEnabled();
   expect(state.starts).toBe(1);
 });
+
+test('a running baseline survives successful refresh followed by inactive navigation and a status outage', async ({
+  page,
+  isMobile
+}) => {
+  const state = await fixture(page);
+  const writes = trackWrites(page);
+  await open(page, !!isMobile);
+  await begin(page);
+  const panel = panelFor(page);
+  // Prove the successful running GET was applied before hiding the component.
+  await expect(panel.getByRole('status')).toHaveCount(0);
+  await expect(panel.getByText('Matches the saved configuration', { exact: true })).toBeVisible();
+  state.failRead = true;
+  await openNavigation(page, 'Overview', !!isMobile);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  await expect(panel.getByRole('alert')).toContainText('Synthetic baseline read outage');
+  await expect(panel.getByText('Running', { exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Check clean baseline' })).toBeDisabled();
+  await panel.getByRole('button', { name: 'Cancel baseline check', exact: true }).click();
+  await expect(panel.getByRole('alert')).toContainText('Baseline cancellation requested.');
+  await expect(panel.getByRole('button', { name: 'Cancellation requested' })).toBeDisabled();
+  state.failRead = false;
+  finish(state, 'cancelled');
+  await panel.getByRole('button', { name: 'Retry baseline status' }).click();
+  await expect(panel.getByText('Cancelled', { exact: true })).toBeVisible();
+  // A terminal read must release the retained running resource.
+  state.failRead = true;
+  await openNavigation(page, 'Overview', !!isMobile);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  await expect(panel.getByRole('alert')).toContainText('Synthetic baseline read outage');
+  await expect(panel.getByText('Running', { exact: true })).toHaveCount(0);
+  await expect(
+    panel.getByRole('button', { name: /Cancel baseline check|Cancellation requested/ })
+  ).toHaveCount(0);
+  expect(state.starts).toBe(1);
+  expect(state.cancels).toBe(1);
+  expect(writes).toHaveLength(2);
+});
+
+for (const action of ['start', 'cancel'] as const) {
+  for (const leaveBeforeResponse of [false, true]) {
+    test(`accepted baseline ${action} refreshes global controls ${leaveBeforeResponse ? 'while inactive' : 'before a stalled detail read'}`, async ({
+      page,
+      isMobile
+    }) => {
+      const state = await fixture(page);
+      const writes = trackWrites(page);
+      await open(page, !!isMobile);
+      const panel = panelFor(page);
+      if (action === 'cancel') {
+        state.baselineActive = true;
+        const stateReads = state.stateReads;
+        await begin(page);
+        await expect.poll(() => state.stateReads).toBe(stateReads + 1);
+        await expect(panel.getByRole('button', { name: 'Cancel baseline check' })).toBeEnabled();
+        await expect(page.getByLabel('Default branch', { exact: true })).toBeDisabled();
+      }
+      const postGate = (state.postGate = deferred());
+      if (action === 'start') await begin(page);
+      else await panel.getByRole('button', { name: 'Cancel baseline check' }).click();
+      await expect.poll(() => (action === 'start' ? state.starts : state.cancels)).toBe(1);
+      if (leaveBeforeResponse) await openNavigation(page, 'Overview', !!isMobile);
+      const reads = state.reads;
+      const stateReads = state.stateReads;
+      const readGate = (state.readGate = deferred());
+      state.baselineActive = action === 'start';
+      if (action === 'cancel') finish(state, 'cancelled');
+      postGate.resolve();
+      try {
+        // The clock stays paused, so only the accepted action can refresh /state.
+        await expect.poll(() => state.stateReads).toBe(stateReads + 1);
+        if (leaveBeforeResponse) expect(state.reads).toBe(reads);
+        else {
+          await expect.poll(() => state.reads).toBe(reads + 1);
+          await openNavigation(page, 'Overview', !!isMobile);
+        }
+        for (const name of ['Start continuous', 'Run once', 'Run an audit']) {
+          const control = page.getByRole('button', { name, exact: true });
+          if (action === 'start') await expect(control).toBeDisabled();
+          else await expect(control).toBeEnabled();
+        }
+        expect(state.starts).toBe(1);
+        expect(state.cancels).toBe(action === 'cancel' ? 1 : 0);
+        expect(writes).toHaveLength(action === 'cancel' ? 2 : 1);
+      } finally {
+        readGate.resolve();
+      }
+    });
+  }
+}
