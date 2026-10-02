@@ -1089,7 +1089,8 @@
         {#if settingsVisited}<div hidden={view !== 'settings'}>
             <Settings
               active={view === 'settings'}
-              editable={data.control.paused &&
+              editable={!controlStatePending &&
+                data.control.paused &&
                 !data.active_tasks &&
                 !data.cycle_active &&
                 !data.baseline_active}

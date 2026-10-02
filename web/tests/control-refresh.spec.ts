@@ -256,6 +256,8 @@ test('Configuration describes unknown activity after an accepted audit and a fai
   await expect(page.getByRole('alert')).toContainText('Synthetic state refresh outage');
   await openNavigation(page, 'Configuration', !!isMobile);
   const choose = page.locator('[data-step="choose"]');
+  const commands = page.getByRole('textbox', { name: /^Verification commands/ });
+  await expect(commands).toBeDisabled();
   await expect(choose).toContainText('Audit: unavailable. Run once: unavailable.');
   await expect(choose).toContainText(
     'Control accepted. Current activity is unknown until the service state refreshes.'
@@ -266,11 +268,55 @@ test('Configuration describes unknown activity after an accepted audit and a fai
   state.outage = false;
   await page.clock.runFor(4000);
   await expect(choose).toContainText('Unavailable now: An audit is in progress.');
+  await expect(commands).toBeDisabled();
   await expect(choose).not.toContainText('Current activity is unknown');
   state.auditing = false;
   await page.clock.runFor(4000);
   await expect(choose).toContainText('Audit: available. Run once: available');
+  await expect(commands).toBeEnabled();
   expect(state.writes).toEqual(['audit']);
+});
+
+test('Configuration retains edits but locks them until an accepted audit is confirmed idle', async ({
+  page,
+  isMobile
+}) => {
+  const state = await controlFixture(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const commands = page.getByRole('textbox', { name: /^Verification commands/ });
+  const draft = `${await commands.inputValue()}\ngo test ./...`;
+  await commands.fill(draft);
+  const save = page.getByRole('button', { name: 'Save configuration' });
+  await expect(save).toBeEnabled();
+  await openNavigation(page, 'Overview', !!isMobile);
+  const oldRead = await pendingPoll(page, state);
+  const newRead = deferred();
+  state.holds.push(newRead);
+  try {
+    await page.locator('#run-audit-control').click();
+    await expect.poll(() => state.writes).toEqual(['audit']);
+    await openNavigation(page, 'Configuration', !!isMobile);
+    await expect(commands).toBeDisabled();
+    await expect(save).toBeDisabled();
+    const before = state.reads;
+    oldRead.resolve();
+    await expect.poll(() => state.reads).toBe(before + 1);
+    await expect(commands).toBeDisabled();
+    const refreshed = page.waitForResponse('**/api/state');
+    newRead.resolve();
+    await (await refreshed).finished();
+    await expect(commands).toBeDisabled();
+    await expect(save).toBeDisabled();
+    state.auditing = false;
+    await page.clock.runFor(4000);
+    await expect(commands).toBeEnabled();
+    await expect(commands).toHaveValue(draft);
+    await expect(save).toBeEnabled();
+    expect(state.writes).toEqual(['audit']);
+  } finally {
+    oldRead.resolve();
+    newRead.resolve();
+  }
 });
 
 test('Pause remains responsive during a resume refresh and its pending write survives older cleanup', async ({
