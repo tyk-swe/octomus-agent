@@ -71,8 +71,8 @@ filesystem, no capabilities and `no-new-privileges`. See
    turn ended, the operator cancelled or the control plane crashed, the broker kills and
    removes the container.
 4. The broker revokes the lease and removes the container, then reports the exit code,
-   whether the memory limit killed it and whether a time limit stopped it. A sandbox it
-   could not remove keeps its slot until a retry succeeds, and its report says so.
+   whether Docker reported an out-of-memory kill and whether a time limit stopped it. A
+   sandbox it could not remove keeps its slot until a retry succeeds, and its report says so.
 
 Executors, fresh reviewers and repair turns each get a new sandbox. Persistent repair
 threads resume from the runner session store (below), not from a live process. These turns
@@ -107,7 +107,7 @@ control plane or broker.
 
 Task details show a sandbox record for every session and verification command:
 - how many containers it ran in, and the image;
-- whether the memory limit killed a process in one;
+- whether Docker reported an out-of-memory kill in one;
 - the hosts the gateway let it reach, and those it refused, with counts.
 
 A refused host is often the first sign of prompt injection, or of a registry missing from
@@ -126,6 +126,14 @@ When the broker could not read part of a sandbox's record, the record is marked
 Docker did not say whether the memory limit killed a process. Empty host lists in an
 incomplete record do not mean the sandbox made no connections; `docker compose logs
 egress` may still hold them.
+
+The OOM flag comes from Docker's `State.OOMKilled`. On systemd-managed cgroup v2 hosts,
+containerd can miss an OOM event if systemd removes the cgroup before its memory counters
+are read; [containerd documents this reporting limitation](https://github.com/containerd/containerd/blob/ee2735368117d2eb259779949d5e75cdafec9761/internal/cri/server/events.go#L210-L227).
+Consequently, `oom: false` does not rule out an OOM kill, even with `incomplete: false`:
+the incomplete flag records collection failures the broker can detect. Exit code 137
+alone never sets the OOM flag. This reporting limitation does not disable the configured
+memory limit.
 
 Host names come from untrusted code, so they stay in private task records and the
 dashboard. They are never part of exported [run evidence](run-evidence.md). Planning
@@ -231,9 +239,9 @@ below), so keep your copy and install it again whenever in doubt.
 | `OCTOMUS_SANDBOX_RUNTIME` | Docker's default | Container runtime, for example `runsc` |
 
 The worst case is `OCTOMUS_SANDBOX_MAX` × `OCTOMUS_SANDBOX_MEMORY`. A planning pass starts
-eight to ten discovery agents at once, so size these for the host. A command killed by the
-memory limit is recorded as such in its evidence. Sandbox logs are never kept by Docker,
-so runner transcripts do not accumulate on the host's disk.
+eight to ten discovery agents at once, so size these for the host. Evidence of memory-limit
+kills depends on [Docker's OOM reporting](#what-each-session-recorded). Sandbox logs are
+never kept by Docker, so runner transcripts do not accumulate on the host's disk.
 
 Volumes have no disk quota. Octomus checks application storage before admitting work (see
 [configuration](configuration.md)); keep an eye on free space on a shared host.
