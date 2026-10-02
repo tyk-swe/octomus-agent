@@ -215,13 +215,24 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 	// The checkpoint and operator eligibility share the gate. A successful
 	// cancellation must win before a fresh output commit authorizes publication;
 	// after the checkpoint, a refused cancellation must not stop the worker.
-	a.gate.Lock()
-	err := ctx.Err()
-	if err == nil {
+	err := func() error {
+		a.gate.Lock()
+		defer a.gate.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		previousStatus, previousOutput, previousUpdated := task.Status, task.OutputCommit, task.UpdatedAt
 		task.OutputCommit = &revision
-		err = a.transition(task, model.StatusPublishing)
-	}
-	a.gate.Unlock()
+		task.Status = model.StatusPublishing
+		if err := a.saveTask(task); err != nil {
+			// A failed write cannot authorize later publication or override a
+			// cancellation accepted after this gate is released.
+			task.Status, task.OutputCommit, task.UpdatedAt = previousStatus, previousOutput, previousUpdated
+			return err
+		}
+		// The checkpoint is durable even if its separate status event fails.
+		return a.Store.Event(task.ID, "status", statusEventName(model.StatusPublishing))
+	}()
 	if err != nil {
 		return err
 	}
