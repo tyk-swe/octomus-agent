@@ -7,8 +7,14 @@
   let {
     proposal,
     onexpand,
-    oninspect
-  }: { proposal: ProposalRow; onexpand: () => Promise<void>; oninspect: () => void } = $props();
+    oninspect,
+    oncollapse
+  }: {
+    proposal: ProposalRow;
+    onexpand: () => Promise<void>;
+    oninspect: () => void;
+    oncollapse?: () => void;
+  } = $props();
   let summary = $state<HTMLElement>();
   let retryButton = $state<HTMLButtonElement>();
 
@@ -46,6 +52,7 @@
   <details
     ontoggle={(event) => {
       if (event.currentTarget.open) onexpand();
+      else oncollapse?.();
     }}
   >
     <summary bind:this={summary}>Scope, evidence & execution prompt</summary>

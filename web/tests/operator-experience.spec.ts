@@ -1873,7 +1873,19 @@ test('the attention link opens the attention queue, and the list search answers 
   const clear = page.getByRole('button', { name: 'Clear search', exact: true });
   await clear.click();
   await expect(search).toHaveValue('');
+  await expect(search).toBeFocused();
   await expect(clear).toHaveCount(0);
+  await expect(setup).toHaveCount(1);
+  await expect.poll(() => queries.at(-1)).toEqual({ status: 'all', q: '' });
+
+  await page.keyboard.type('documentation');
+  await expect(setup).toHaveCount(0);
+  await expect.poll(() => queries.at(-1)).toEqual({ status: 'all', q: 'documentation' });
+  await page.keyboard.press('Tab');
+  await expect(clear).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(search).toHaveValue('');
+  await expect(search).toBeFocused();
   await expect(setup).toHaveCount(1);
   await expect.poll(() => queries.at(-1)).toEqual({ status: 'all', q: '' });
 });
