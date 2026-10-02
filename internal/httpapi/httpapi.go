@@ -292,7 +292,7 @@ func (e *bodyError) Error() string { return e.message }
 func writeBodyError(w http.ResponseWriter, err *bodyError) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(err.status)
-	_, _ = w.Write([]byte(err.message))
+	_, _ = w.Write([]byte(redact.Text(err.message)))
 }
 
 func (a *api) stateView(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {

@@ -26,10 +26,29 @@ TOKEN = 'fixture-operator-token-with-at-least-32-characters'
 RACE_EXIT_STATUS = 66
 CODEX_ROUTE = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
 HOLDS = ['reconcile-hold', 'audit-hold']
+LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def local_urlopen(request, *, timeout):
+    """Open a local fixture request directly, regardless of ambient proxy settings."""
+    return LOCAL_HTTP.open(request, timeout=timeout)
+
+
+def fixture_git_environment():
+    """A child-only Git environment for the fixture's local repositories.
+
+    Ambient configuration may require signing or run user hooks, and GIT_DIR,
+    GIT_WORK_TREE and GIT_INDEX_FILE can redirect writes outside the fixture.
+    Repository-local configuration still applies; fixture_service's explicit
+    environment overrides are applied after this default.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+    return env
 
 
 def git(*args, cwd):
-    return subprocess.check_output(['/usr/bin/git', *args], cwd=cwd, stderr=subprocess.DEVNULL, text=True).strip()
+    return subprocess.check_output(['/usr/bin/git', *args], cwd=cwd, env=fixture_git_environment(), stderr=subprocess.DEVNULL, text=True).strip()
 
 
 def poll(predicate, seconds, interval=0.1, tick=None):
@@ -206,12 +225,13 @@ class Service:
     def __init__(self, root):
         self.root = root
         self.process = None
-        self.race_reported = False
+        self.stopped_process = None
         self.log = (root / 'service.log').open('a')
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             self.port = sock.getsockname()[1]
-        self.env = {key: value for key, value in os.environ.items() if key != 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'}
+        self.env = fixture_git_environment()
+        self.env.pop('OCTOMUS_NOTIFICATION_WEBHOOK_URL', None)
         # Fixture runners are host scripts; tests/e2e_sandbox.py covers the Docker sandbox.
         self.env.update({'OCTOMUS_TOKEN': TOKEN, 'OCTOMUS_FIXTURE': str(root), 'OCTOMUS_SANDBOX': 'off', 'PATH': f'{root / "bin"}:{os.environ["PATH"]}'})
 
@@ -220,23 +240,36 @@ class Service:
         self.wait(lambda: self.request('/healthz', api=False), 'service startup')
 
     def stop(self, crash=False):
-        if self.process and self.process.poll() is None:
-            self.process.kill() if crash else self.process.terminate()
+        process = self.process
+        if process is None or process is self.stopped_process:
+            return
+        requested_kill = False
+        if process.poll() is None:
+            if crash:
+                process.kill()
+                requested_kill = True
+            else:
+                process.terminate()
             try:
-                self.process.wait(timeout=15)
+                process.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=5)
+                process.kill()
+                process.wait(timeout=5)
+                self.stopped_process = process
                 raise AssertionError(f'service did not stop within 15s of {"SIGKILL" if crash else "SIGTERM"}; service.log tail:\n{service_log(self.root, tail=100)}')
-        if self.process and self.process.returncode == RACE_EXIT_STATUS and not self.race_reported:
-            self.race_reported = True
+        # Teardown can run again after a scenario already stopped this process.
+        # Report a failure once, while checking every replacement after restart.
+        self.stopped_process = process
+        if process.returncode == RACE_EXIT_STATUS:
             raise AssertionError(f'service exited with status {RACE_EXIT_STATUS}: the race detector reported a data race; service.log tail:\n{service_log(self.root, tail=200)}')
+        if process.returncode != 0 and not (requested_kill and process.returncode == -signal.SIGKILL):
+            raise AssertionError(f'service exited with status {process.returncode}; service.log tail:\n{service_log(self.root, tail=100)}')
 
     def _open(self, path, method, value, api, timeout):
         """Sends one authenticated request; `timeout` bounds each socket operation,
         so a response the service holds longer than that raises TimeoutError."""
         request = urllib.request.Request(f'http://127.0.0.1:{self.port}{"/api" if api else ""}{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
-        return urllib.request.urlopen(request, timeout=timeout)
+        return local_urlopen(request, timeout=timeout)
 
     def request(self, path, method='GET', value=None, api=True, timeout=5):
         """One request that must succeed: returns the JSON body, raises HTTPError otherwise."""

@@ -31,6 +31,25 @@ import (
 )
 
 func (a *App) superviseTask(ctx context.Context, task model.Task) error {
+	if a.ctx.Err() != nil {
+		// Admission may commit after shutdown begins. This worker has not
+		// started execution, so defer it without consuming a retry attempt.
+		a.gate.Lock()
+		current, err := store.Get[model.Task](a.Store, "task", task.ID)
+		if err != nil || current == nil || !current.Status.Active() {
+			a.gate.Unlock()
+			return err
+		}
+		operatorCancelled, err := a.Store.MarkerSet("cancel", task.ID)
+		if err == nil && !operatorCancelled {
+			err = a.transition(current, model.StatusQueued)
+		}
+		a.gate.Unlock()
+		if err != nil || !operatorCancelled {
+			return err
+		}
+		task = *current
+	}
 	return a.superviseExecution(ctx, task, a.execute)
 }
 

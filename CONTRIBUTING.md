@@ -40,6 +40,9 @@ SQLite and local Git with deterministic Codex, OpenCode and GitHub peers
 (`tests/fixtures`) in temporary directories, without live model calls or network
 writes:
 
+- `tests/harness_environment.py`: fixture setup and child Git operations under
+  hostile inherited configuration and repository-location variables, plus direct
+  loopback HTTP access under inherited proxy settings.
 - `tests/binary_contract.py`: startup order, signal shutdown and lock release, and the
   embedded dashboard.
 - `tests/evidence_snapshot.py`: the documented SQLite backup and `--export-run`
@@ -75,8 +78,12 @@ The e2e suites share `tests/harness.py` and accept scenario names, for example
 Scenarios run with up to four workers; `OCTOMUS_TEST_JOBS` sets the limit
 (1 runs serially; lower it on a loaded machine if a scenario's own timing
 assertion, such as the harness suite's signal-shutdown check, gets crowded out).
-Set `OCTOMUS_TEST_BINARY` to test another executable. Go tests share polling and
-process helpers through `internal/testutil`, and inject `internal/runner/runnertest`
+Set `OCTOMUS_TEST_BINARY` to test another executable. The Python fixture harness
+and the Go engine, Git and HTTP fixture suites isolate inherited Git configuration
+and repository-location environment variables, so personal signing settings,
+hooks and shell Git overrides cannot change fixture setup or redirect its writes.
+Repository-local settings and explicit test environment overrides still apply.
+Go tests share polling and process helpers through `internal/testutil`, and inject `internal/runner/runnertest`
 in place of runner processes; `internal/schemas/schematest` holds each structured-output
 schema to the Go type that decodes its answers. `web/types_contract_test.go` and
 `internal/config/dashboard_test.go` hold the dashboard's TypeScript types, limits and
@@ -91,7 +98,12 @@ directory to the nearest fixture root and execs that fixture's `bin/git` or
 `bin/gh`, so fixture setup costs a shell fork instead of a Python interpreter
 start. Both the Go and Python suites redirect the fixture's GitHub identity
 through the same `tests/fixtures/git.sh`; `tests/fixtures/git_rollback.py`
-holds only the dependency-rollback fault it execs into. `make test-go` and
+holds only the dependency-rollback fault it execs into. Fixture lookup also supports
+`go test -trimpath` and `GOFLAGS=-trimpath`: the source checkout is resolved before
+tests run, so later working-directory changes do not redirect fixtures. Standalone
+trimmed test binaries that use these fixtures must be launched from inside the
+source checkout; the scripts are not embedded in the test executable.
+`make test-go` and
 `make test-go-race` run with `-shuffle=on`; a failure prints its seed
 (`-test.shuffle N`) so any hidden test-order coupling reproduces. Under
 `-race`, single-goroutine data-volume checks (thousands of rows written by one

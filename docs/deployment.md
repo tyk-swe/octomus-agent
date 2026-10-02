@@ -201,8 +201,10 @@ notice and a service notice:
 
 HTTPS is required except literal loopback HTTP for local receivers. Redirects and
 implicit proxies are disabled. Requests time out after ten seconds and have at most
-five attempts with 30/120/600/1,800-second backoffs. Delivery is rate-limited to one
-request per second, expires after 24 hours, and bounds pending backlog to 1,000.
+five attempts with 30/120/600/1,800-second backoffs. Delivery waits one second after each
+attempt completes before checking for another notification, so slow database or
+HTTP work cannot cause a catch-up burst. Events expire after 24 hours, and the
+pending backlog is bounded to 1,000.
 Retries after ambiguous acceptance may duplicate an event. Queue overflow, expiry,
 invalid setup and delivery failures remain visible in Configuration.
 

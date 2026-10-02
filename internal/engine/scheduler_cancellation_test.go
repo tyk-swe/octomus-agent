@@ -197,3 +197,95 @@ func TestDispatchCancellationStopsLaterTaskAdmissions(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatchCancellationBeforeWorkerStartsPreservesRestartEligibility(t *testing.T) {
+	// Register SQLite hooks before the package's parallel database tests start.
+	for _, target := range []string{"existing branch", "new PR"} {
+		t.Run(target, func(t *testing.T) {
+			state, hook, cancel := cancellationStore(t)
+			cfg := testConfig(t.TempDir())
+			control := model.DefaultControl()
+			control.SetMode(model.OperatingModeContinuous)
+			saveSettings(t, state, cfg, control)
+			task := queuedTask(cfg, "newly-admitted", "tyk/existing", "tyk/existing")
+			if target == "new PR" {
+				task.Proposal.Target = cfg.DefaultBranch
+			}
+			if err := state.Put("task", task.ID, task); err != nil {
+				t.Fatal(err)
+			}
+			app := New(state, t.TempDir())
+			t.Cleanup(app.Shutdown)
+			*cancel = app.cancel
+			if target == "new PR" {
+				inventory := model.OpenPrInventory{Repository: cfg.GitHubRepo, ObservedAt: model.Now(), PRs: []model.PullRequest{}}
+				if persisted, err := state.PersistPrInventory(inventory, nil); err != nil || !persisted {
+					t.Fatalf("inventory: %t, %v", persisted, err)
+				}
+				app.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory, fetchedAt: time.Now()}
+			}
+			schedulerSQL(t, state, fmt.Sprintf(`CREATE TEMP TRIGGER cancel_during_admission AFTER UPDATE ON records
+				WHEN NEW.kind='task' AND NEW.id='newly-admitted' AND json_extract(NEW.data,'$.status')='executing'
+				BEGIN SELECT %s(); END`, hook))
+			app.gate.Lock()
+			admitted, _, err := app.dispatch(cfg, control, []model.Task{task})
+			app.gate.Unlock()
+			if err != nil || !admitted || app.Context().Err() != context.Canceled {
+				t.Fatalf("cancelled admission: admitted %t, context %v, error %v", admitted, app.Context().Err(), err)
+			}
+			app.Shutdown()
+			stopped := loadTask(t, state, task.ID)
+			if stopped.Status != model.StatusQueued || stopped.Error != nil || stopped.BlockedReason != nil || stopped.Attempts != task.Attempts {
+				t.Fatalf("unstarted task lost restart eligibility: status %s, attempts %d, error %q", stopped.Status, stopped.Attempts, optionalText(stopped.Error))
+			}
+			if stopped.Workspace != "" || stopped.ExecutionSession != nil || len(stopped.Sessions) != 0 || !app.Drained() {
+				t.Fatalf("unstarted task retained work: %+v; drained %t", stopped, app.Drained())
+			}
+			if reserved, err := state.HasPrReservation(task.ID); err != nil || reserved != (target == "new PR") {
+				t.Fatalf("admission reservation: %t, %v", reserved, err)
+			}
+			restarted := New(state, app.DataDir)
+			t.Cleanup(restarted.Shutdown)
+			if err := restarted.Recover(); err != nil {
+				t.Fatal(err)
+			}
+			if recovered := loadTask(t, state, task.ID); !wirejson.Equal(recovered, stopped) {
+				t.Fatalf("restart changed the deferred task: %+v", recovered)
+			}
+		})
+	}
+}
+
+func TestUnstartedTaskDeferralPreservesOperatorCancellation(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"cancel marker", "cancelled record"} {
+		t.Run(stage, func(t *testing.T) {
+			state := testStore(t)
+			cfg := testConfig(t.TempDir())
+			task := queuedTask(cfg, model.ID(), "tyk/existing", "tyk/existing")
+			task.Status = model.StatusExecuting
+			if err := state.Put("task", task.ID, task); err != nil {
+				t.Fatal(err)
+			}
+			app := New(state, t.TempDir())
+			t.Cleanup(app.Shutdown)
+			app.gate.Lock()
+			app.cancel()
+			app.runTask(task)
+			if stage == "cancel marker" {
+				if err := state.MarkCancel(task.ID); err != nil {
+					app.gate.Unlock()
+					t.Fatal(err)
+				}
+			} else if cancelled, err := state.CancelTask(task.ID); err != nil || !cancelled {
+				app.gate.Unlock()
+				t.Fatalf("cancel task: %t, %v", cancelled, err)
+			}
+			app.gate.Unlock()
+			app.Shutdown()
+			if stopped := loadTask(t, state, task.ID); stopped.Status != model.StatusCancelled || stopped.Attempts != task.Attempts {
+				t.Fatalf("unstarted task overwrote %s: %+v", stage, stopped)
+			}
+		})
+	}
+}

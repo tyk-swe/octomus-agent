@@ -399,7 +399,8 @@ def harness_scenario():
     Error responses, even ones whose body is cut short, are retried until the
     predicate succeeds. A timeout raises one labelled report with the last
     error, the /state outcome (even when unreadable) and the service.log tail.
-    Service.stop reports a race-detector exit status once. process_gone tells
+    Service.stop reports unexpected exits once per process, including race-detector
+    exits across restarts, and permits only crashes it requested. process_gone tells
     a live process from a zombie or a reaped one. fixture_service passes a
     scenario failure through after releasing holds before the service stops.
     update_prs waits for the gh fixture's lock and replaces prs.json whole.
@@ -460,11 +461,31 @@ def harness_scenario():
                 report = str(error)
             assert report and report.startswith('service exited with status 66: the race detector reported a data race; service.log tail:\n'), report
             service.stop()
-            service.race_reported = False
+            for code in [1, 2, 66]:
+                service.process = subprocess.Popen([sys.executable, '-c', f'raise SystemExit({code})'])
+                service.process.wait(timeout=5)
+                try:
+                    service.stop()
+                except AssertionError as error:
+                    assert f'exited with status {code}' in str(error), error
+                    assert 'last service line' in str(error), error
+                else:
+                    raise AssertionError(f'teardown accepted service exit {code}')
+                service.stop()  # A second teardown must not obscure the first failure.
             for command in ['pass', 'import time; time.sleep(30)']:
                 service.process = subprocess.Popen([sys.executable, '-c', command])
                 service.stop(crash=True)
                 assert service.process.returncode in [0, -9], service.process.returncode
+                service.stop()  # A requested crash remains accepted during final teardown.
+            service.process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            service.process.kill()
+            service.process.wait(timeout=5)
+            try:
+                service.stop(crash=True)
+            except AssertionError as error:
+                assert 'exited with status -9' in str(error), error
+            else:
+                raise AssertionError('an earlier unexpected kill was accepted as a requested crash')
         finally:
             server.shutdown()
             server.server_close()
@@ -601,7 +622,7 @@ def harness_scenario():
             raise AssertionError(f'a duplicate registry was accepted: {bad}')
         except SystemExit:
             pass
-    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; race exits fail the stop; process_gone reads the state field; fixture teardown releases holds first; update_prs takes the gh lock; scenarios run by name with bounded concurrency and failures wait for teardown; suite selection expands aliases and qualified names in registry order, deduplicates overlaps and refuses unknown names and duplicate registries')
+    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; unexpected exits fail the stop once per process; only requested crashes are accepted; process_gone reads the state field; fixture teardown releases holds first; update_prs takes the gh lock; scenarios run by name with bounded concurrency and failures wait for teardown; suite selection expands aliases and qualified names in registry order, deduplicates overlaps and refuses unknown names and duplicate registries')
 
 
 SCENARIOS = [
