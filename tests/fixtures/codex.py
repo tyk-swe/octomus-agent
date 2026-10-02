@@ -3,6 +3,7 @@
 import json
 import os
 import select
+import subprocess
 from pathlib import Path
 import sys
 import uuid
@@ -93,6 +94,15 @@ for line in sys.stdin:
         turn = str(uuid.uuid4())
         with (root / 'protocol.jsonl').open('a') as log:
             log.write(json.dumps({'thread': identity, 'prompt': prompt, 'cwd': str(cwd), 'model': params['model'], 'effort': params['effort'], 'sandbox': params['sandboxPolicy'], 'approval': params['approvalPolicy']}) + '\n')
+        if mode() == 'hold-start':
+            child = subprocess.Popen(['sleep', '120'])
+            (root / 'codex-held-pids.json').write_text(json.dumps([os.getpid(), child.pid]))
+            (root / 'codex-entered').touch()
+            while True:
+                emit({'method': 'thread/status/changed', 'params': {'threadId': identity}})
+                ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if ready and not sys.stdin.readline():
+                    sys.exit(0)
         if mode() == 'hold':
             emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
             (root / 'codex-entered').touch()
