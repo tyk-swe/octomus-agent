@@ -533,7 +533,7 @@ func statusCounts(c *sql.Conn, counts map[string]int64) error {
 func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, "SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq<=COALESCE((SELECT seq FROM record_meta WHERE kind=?1 AND id=?3),0),seq LIMIT 100", kind, cutoff, after)
+	raw, err := queryStrings(s.conn, "SELECT id FROM record_meta WHERE kind=?1 AND discarded IS NULL AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle'))) AND julianday(COALESCE(archived,json_extract(summary,'$.completed_at'),json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2) ORDER BY seq<=COALESCE((SELECT seq FROM record_meta WHERE kind=?1 AND id=?3),0),seq LIMIT 100", kind, cutoff, after)
 	if err != nil {
 		return nil, err
 	}
