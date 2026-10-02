@@ -32,6 +32,7 @@
     $props();
   let task = $state<Task | null>(null),
     error = $state(''),
+    actionError = $state(''),
     tab = $state('Overview'),
     busy = $state(false),
     events = $state<Event[]>([]);
@@ -158,14 +159,15 @@
   let delivery = $derived(prVerdict(evidence));
   let outputSha = $derived(evidence?.revisions.output ?? null);
   async function action(value: string) {
+    if (busy) return;
     busy = true;
-    error = '';
+    actionError = '';
     try {
       await api(`/tasks/${encodeURIComponent(id)}/${encodeURIComponent(value)}`, 'POST');
       await load(true);
       onaction();
     } catch (e) {
-      error = (e as Error).message;
+      actionError = (e as Error).message;
     } finally {
       busy = false;
     }
@@ -183,10 +185,21 @@
         >{taskStale ? 'Retained task details · stale. ' : ''}{error}</span
       >
     </div>{/if}
+  {#if actionError}<div class="notice error" role="alert">
+      <Icon name="alert" size={18} /><span>Task action failed. {actionError}</span>
+      <button
+        class="icon-button"
+        aria-label="Dismiss task action error"
+        onclick={() => {
+          actionError = '';
+          document.getElementById('task-title')?.focus();
+        }}><Icon name="close" size={16} /></button
+      >
+    </div>{/if}
   {#if task}
     <div class="task-title">
       <div class="badge-row"><span class={'badge ' + task.status}>{task.status}</span></div>
-      <h2 id="task-title">{task.proposal.title}</h2>
+      <h2 id="task-title" tabindex="-1">{task.proposal.title}</h2>
       <p>
         <span class="tier">{task.proposal.tier}</span><span>{task.proposal.category}</span><span
           class="dot-separator">·</span
