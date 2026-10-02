@@ -3,7 +3,6 @@
   import {
     baselineStep,
     chooseStep,
-    parseCommands,
     preflightStep,
     repositoryStep,
     routesStep,
@@ -30,7 +29,7 @@
     draft: Config;
     saved: Config | null;
     revision: string;
-    commands: string;
+    commands: string[];
     dirty: boolean;
     catalogs: Partial<Record<Backend, ModelCatalog>>;
     preflight: Preflight | null;
@@ -39,7 +38,6 @@
     onchoose: (action: 'audit' | 'cycle') => void;
   } = $props();
   let open = $state(true);
-  const draftCommands = $derived(parseCommands(commands));
   type Link = { label: string; target?: string; choose?: 'audit' | 'cycle' };
   const steps = $derived<{ id: string; title: string; step: SetupStep; links: Link[] }[]>([
     {
@@ -66,7 +64,7 @@
     {
       id: 'verification',
       title: 'Verification policy',
-      step: verificationStep(draftCommands, saved?.verification_commands ?? []),
+      step: verificationStep(commands, saved?.verification_commands ?? []),
       links: [{ label: 'Edit verification commands', target: 'verification-commands' }]
     },
     {

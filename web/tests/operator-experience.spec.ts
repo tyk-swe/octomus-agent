@@ -1002,12 +1002,17 @@ test('unrelated saves preserve exact command boundaries through discard and relo
   const save = page.getByRole('button', { name: 'Save configuration' });
   const discard = page.getByRole('button', { name: 'Discard changes' });
   const unsaved = page.getByText('Unsaved changes', { exact: true });
+  const policy = page.locator('[data-step="verification"]');
   await expect(commands).toHaveValue(original.join('\n'));
+  await expect(policy.locator('.badge')).toHaveText('Saved');
+  await expect(policy).toContainText('2 saved commands');
   await expect(save).toBeDisabled();
   await commands.fill('draft');
   await expect(unsaved).toBeVisible();
+  await expect(policy.locator('.badge')).toHaveText('Entered, not saved');
   await commands.fill(original.join('\n'));
   await expect(unsaved).toHaveCount(0);
+  await expect(policy.locator('.badge')).toHaveText('Saved');
   await expect(save).toBeDisabled();
 
   await branch.fill('command-main');
@@ -1016,6 +1021,7 @@ test('unrelated saves preserve exact command boundaries through discard and relo
   expect(state.writes.at(-1)!.config).toEqual({ default_branch: 'command-main' });
   expect(state.saved!.verification_commands).toEqual(original);
   await expect(commands).toHaveValue(original.join('\n'));
+  await expect(policy.locator('.badge')).toHaveText('Saved');
 
   await commands.fill('discard this command');
   await discard.click();
@@ -1024,6 +1030,7 @@ test('unrelated saves preserve exact command boundaries through discard and relo
   await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
   expect(state.writes.at(-1)!.config).toEqual({ default_branch: 'after-discard' });
   expect(state.saved!.verification_commands).toEqual(original);
+  await expect(policy.locator('.badge')).toHaveText('Saved');
 
   const reloaded = ['cd another\n./check.sh', '  true  '];
   state.saved!.verification_commands = reloaded;
@@ -1032,6 +1039,7 @@ test('unrelated saves preserve exact command boundaries through discard and relo
   await expect(page.getByRole('alert')).toContainText('Synthetic save conflict');
   await page.getByRole('button', { name: 'Discard edits and reload' }).click();
   await expect(commands).toHaveValue(reloaded.join('\n'));
+  await expect(policy.locator('.badge')).toHaveText('Saved');
   await expect(unsaved).toHaveCount(0);
   await expect(save).toBeDisabled();
   await branch.fill('after-reload');
@@ -1039,8 +1047,10 @@ test('unrelated saves preserve exact command boundaries through discard and relo
   await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
   expect(state.writes.at(-1)!.config).toEqual({ default_branch: 'after-reload' });
   expect(state.saved!.verification_commands).toEqual(reloaded);
+  await expect(policy.locator('.badge')).toHaveText('Saved');
 
   await commands.fill('  fixture new test  \n\nfixture new build\n');
+  await expect(policy.locator('.badge')).toHaveText('Entered, not saved');
   await save.click();
   await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
   expect(state.writes.at(-1)!.config).toEqual({
@@ -1050,6 +1060,7 @@ test('unrelated saves preserve exact command boundaries through discard and relo
   await commands.fill('another draft');
   await discard.click();
   await expect(commands).toHaveValue('fixture new test\nfixture new build');
+  await expect(policy.locator('.badge')).toHaveText('Saved');
 });
 
 test('a successful save clears an earlier failed configuration refresh', async ({
@@ -1204,6 +1215,7 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
   const commands = page.getByRole('textbox', { name: /^Verification commands/ });
 
   await expect(commands).toHaveValue(preview.join('\n'));
+  await expect(page.locator('[data-step="verification"] .badge')).toHaveText('Saved');
   const loaded = state.revision();
   await expect(commands).toHaveJSProperty('readOnly', true);
   await expect(page.locator('#preview-verification_commands')).toContainText('hidden value');
@@ -1216,6 +1228,7 @@ test('display-transformed fields stay canonical: previews lock, unrelated saves 
   expect(state.writes[0].config).toEqual({ default_branch: 'preview-main' });
   expect(state.saved!.verification_commands).toEqual(original);
   await expect(commands).toHaveValue(preview.join('\n'));
+  await expect(page.locator('[data-step="verification"] .badge')).toHaveText('Saved');
 
   state.saved!.default_branch = 'external-main';
   await page.getByLabel('Default branch', { exact: true }).fill('stale-main');
