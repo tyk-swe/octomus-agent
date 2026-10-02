@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import { api, relative } from './api';
   import { baselineStatusLabel, type Tone } from './evidence';
   import type { BaselineCheck, BaselineView } from './types';
@@ -22,13 +22,29 @@
   let view = $state<BaselineView | null>(null),
     error = $state(''),
     actionError = $state(''),
+    actionRecovery = $state(''),
+    cancellingId = $state(''),
+    acknowledgedCheck = $state<BaselineCheck | null>(null),
+    loading = $state(false),
     pending = $state(''),
     confirming = $state(false);
+  let recoveryButton = $state<HTMLButtonElement>();
+  let disposed = false;
   let generation = 0;
   let lastSaved = untrack(() => savedRevision);
   let request: AbortController | null = null;
-  const check = $derived(view?.check ?? null);
+  const check = $derived(view?.check ?? acknowledgedCheck);
   const running = $derived(check?.status === 'running');
+  const canStart = $derived(
+    active &&
+      !!savedRevision &&
+      editable &&
+      !dirty &&
+      !pending &&
+      !actionRecovery &&
+      !running &&
+      view?.eligible === true
+  );
   const configMatches = $derived(
     view?.config_matches === false ||
       (check && savedRevision && check.config_fingerprint !== savedRevision)
@@ -37,12 +53,19 @@
   );
   const statusTone = (status: BaselineCheck['status']): Tone =>
     status === 'passed' ? 'clean' : status === 'running' ? 'running' : 'failed';
+  function stopRead() {
+    generation += 1;
+    request?.abort();
+    request = null;
+    loading = false;
+  }
   async function load(force = false) {
-    if (request && !force) return;
+    if (disposed || !active || pending || (request && !force)) return;
     request?.abort();
     const controller = new AbortController();
     const gen = ++generation;
     request = controller;
+    loading = true;
     try {
       const next = await api<BaselineView>(
         '/baseline-checks/latest',
@@ -53,27 +76,38 @@
       if (gen === generation && !controller.signal.aborted) {
         view = next;
         error = '';
+        if (recoveryButton && document.activeElement === recoveryButton)
+          document.getElementById('baseline-heading')?.focus();
+        // Cancellation is acknowledged before the worker has necessarily stopped.
+        const awaitingCancellation =
+          cancellingId !== '' && next.check?.id === cancellingId && next.check.status === 'running';
+        acknowledgedCheck = awaitingCancellation ? next.check : null;
+        if (!awaitingCancellation) {
+          actionRecovery = '';
+          cancellingId = '';
+        }
       }
     } catch (e) {
       if (gen === generation && !controller.signal.aborted) error = (e as Error).message;
     } finally {
-      if (gen === generation) request = null;
+      if (gen === generation) {
+        request = null;
+        loading = false;
+      }
     }
   }
   $effect(() => {
-    generation += 1;
+    stopRead();
     confirming = false;
     if (!active) {
       view = null;
       error = '';
       return;
     }
-    void load();
+    untrack(() => void load());
     const timer = setInterval(() => void load(), 4000);
     return () => {
-      generation += 1;
-      request?.abort();
-      request = null;
+      stopRead();
       clearInterval(timer);
     };
   });
@@ -81,16 +115,19 @@
     if (savedRevision === lastSaved) return;
     lastSaved = savedRevision;
     confirming = false;
-    if (active) void load(true);
+    untrack(() => {
+      if (active) void load(true);
+    });
   });
   $effect(() => {
-    if (
-      confirming &&
-      (!savedRevision || !editable || dirty || pending !== '' || view?.eligible !== true)
-    )
-      confirming = false;
+    if (confirming && !canStart) confirming = false;
+  });
+  onDestroy(() => {
+    disposed = true;
+    stopRead();
   });
   async function openConfirm() {
+    if (disposed || !canStart) return;
     confirming = true;
     await tick();
     document.getElementById('run-baseline-check')?.focus();
@@ -101,33 +138,57 @@
     document.getElementById('check-baseline')?.focus();
   }
   async function start() {
-    if (!savedRevision || !editable || dirty || pending || view?.eligible !== true) return;
+    if (disposed || !canStart) return;
     confirming = false;
     pending = 'start';
     actionError = '';
+    stopRead();
+    let accepted = false;
     try {
-      await api<BaselineCheck>('/baseline-checks', 'POST', { expected_revision: savedRevision });
-      await load(true);
-      onchanged();
+      const next = await api<BaselineCheck>('/baseline-checks', 'POST', {
+        expected_revision: savedRevision
+      });
+      if (disposed) return;
+      // Keep the returned resource available, including its cancel action, if the read fails.
+      acknowledgedCheck = next;
+      view = null;
+      error = '';
+      actionRecovery = 'Baseline check started.';
+      accepted = true;
     } catch (e) {
-      actionError = (e as Error).message;
+      if (!disposed) actionError = (e as Error).message;
     } finally {
       pending = '';
     }
+    if (accepted && active) {
+      await load(true);
+      if (!disposed && active) onchanged();
+    }
   }
   async function cancel() {
-    const id = check?.id;
-    if (!id || pending) return;
+    const current = check;
+    const id = current?.id;
+    if (disposed || !active || !id || !running || pending || cancellingId === id) return;
     pending = 'cancel';
     actionError = '';
+    stopRead();
+    let accepted = false;
     try {
       await api(`/baseline-checks/${encodeURIComponent(id)}/cancel`, 'POST');
-      await load(true);
-      onchanged();
+      if (disposed) return;
+      acknowledgedCheck = current;
+      cancellingId = id;
+      error = '';
+      actionRecovery = 'Baseline cancellation requested.';
+      accepted = true;
     } catch (e) {
-      actionError = (e as Error).message;
+      if (!disposed) actionError = (e as Error).message;
     } finally {
       pending = '';
+    }
+    if (accepted && active) {
+      await load(true);
+      if (!disposed && active) onchanged();
     }
   }
 </script>
@@ -144,7 +205,23 @@
     </div>
     <Icon name="shield" />
   </div>
-  {#if error}<div class="notice error" role="alert">{error}</div>{/if}
+  {#if actionRecovery}<div class="notice" class:error role={error ? 'alert' : 'status'}>
+      <span>
+        {actionRecovery}
+        {error
+          ? `Baseline status could not be refreshed. ${error}`
+          : cancellingId
+            ? 'Waiting for the check to finish. Status refreshes automatically.'
+            : 'Refreshing baseline status…'}
+      </span>
+      {#if error}<button
+          bind:this={recoveryButton}
+          class="button small"
+          aria-disabled={loading || pending !== ''}
+          onclick={() => load()}
+          >{loading ? 'Retrying baseline status…' : 'Retry baseline status'}</button
+        >{/if}
+    </div>{:else if error}<div class="notice error" role="alert">{error}</div>{/if}
   {#if actionError}<div class="notice error" role="alert">
       <span>Baseline action failed. {actionError}</span>
       <button
@@ -271,15 +348,18 @@
     </div>
   {:else}
     <div class="actions baseline-actions">
-      <button
-        id="check-baseline"
-        class="button"
-        onclick={openConfirm}
-        disabled={!savedRevision || !editable || dirty || pending !== '' || view?.eligible !== true}
+      <button id="check-baseline" class="button" onclick={openConfirm} disabled={!canStart}
         ><Icon name="shield" size={16} />Check clean baseline</button
       >
-      {#if running}<button class="button" onclick={cancel} disabled={pending !== ''}
-          >{pending === 'cancel' ? 'Cancelling…' : 'Cancel baseline check'}</button
+      {#if running}<button
+          class="button"
+          onclick={cancel}
+          disabled={pending !== '' || cancellingId === check?.id}
+          >{pending === 'cancel'
+            ? 'Cancelling…'
+            : cancellingId === check?.id
+              ? 'Cancellation requested'
+              : 'Cancel baseline check'}</button
         >{/if}
     </div>
   {/if}
