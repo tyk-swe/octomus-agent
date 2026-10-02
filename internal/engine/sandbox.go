@@ -132,7 +132,14 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 	stop := context.AfterFunc(a.ctx, cancel)
 	defer stop()
 	defer cancel()
-	if err := ctx.Err(); err != nil {
+	cancellation := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// AfterFunc propagates service cancellation asynchronously.
+		return a.ctx.Err()
+	}
+	if err := cancellation(); err != nil {
 		return record, err
 	}
 	if a.sandbox.Mode() != sandbox.ModeDocker {
@@ -144,9 +151,9 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 		}
 	}
 	report, err := sandbox.Probe(ctx, a.sandbox)
-	if err != nil && ctx.Err() != nil {
+	if cancelErr := cancellation(); cancelErr != nil {
 		// A probe canceled by its caller or shutdown observed nothing about containment; the last result stands.
-		return record, err
+		return record, cancelErr
 	}
 	if err != nil {
 		message := redact.Error(err)
@@ -158,6 +165,9 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 			// was read: the proof belongs to the image it ran on.
 			record.ImageID, record.Runtime = report.Sandbox.ImageID, report.Sandbox.Runtime
 		}
+	}
+	if err := cancellation(); err != nil {
+		return record, err
 	}
 	if err := a.Store.Put("settings", selfTestRecord, record); err != nil {
 		return record, err

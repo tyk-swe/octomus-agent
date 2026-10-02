@@ -15,6 +15,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -23,6 +24,123 @@ import (
 type selfTestBackend struct {
 	sandbox.Backend
 	start func(context.Context) (sandbox.Child, error)
+}
+
+// AfterFunc may run later than the parent's cancellation. Hold that documented
+// callback boundary so the regression does not depend on goroutine scheduling.
+type delayedSelfTestContext struct {
+	context.Context
+	release <-chan struct{}
+}
+
+func (delayedSelfTestContext) Value(any) any { return nil }
+func (c delayedSelfTestContext) AfterFunc(f func()) func() bool {
+	return context.AfterFunc(c.Context, func() { <-c.release; f() })
+}
+
+func TestSelfTestPreservesProofBeforeShutdownCallbackRuns(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	release := make(chan struct{})
+	defer close(release)
+	var app *App
+	backend := selfTestBackend{start: func(ctx context.Context) (sandbox.Child, error) {
+		app.cancel()
+		if ctx.Err() != nil {
+			t.Fatal("fixture did not delay the service cancellation callback")
+		}
+		return nil, errors.New("synthetic startup failure during shutdown")
+	}}
+	app = New(state, t.TempDir(), WithSandbox(backend))
+	t.Cleanup(app.Shutdown)
+	app.ctx = delayedSelfTestContext{app.ctx, release}
+	proof := SandboxSelfTest{At: "previous proof", Passed: true, Checks: []sandbox.ProbeCheck{}}
+	if err := state.Put("settings", selfTestRecord, proof); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SelfTest(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Errorf("shutdown during startup = %v; want cancellation", err)
+	}
+	saved, err := store.Get[SandboxSelfTest](state, "settings", selfTestRecord)
+	if err != nil || !reflect.DeepEqual(saved, &proof) {
+		t.Fatalf("delayed cancellation replaced completed proof: %+v, %v", saved, err)
+	}
+}
+
+type completedSelfTestChild struct{}
+
+func (completedSelfTestChild) Stdin() sandbox.DeadlineWriter { return nil }
+func (completedSelfTestChild) Stdout() io.ReadCloser {
+	return io.NopCloser(strings.NewReader(`{"checks":[{"id":"resource_limits","passed":true}],"kernel":"fixture","limits":{"memory_max":"67108864","pids_max":"64"}}`))
+}
+func (completedSelfTestChild) Stderr() io.ReadCloser { return io.NopCloser(strings.NewReader("")) }
+func (completedSelfTestChild) Kill()                 {}
+func (completedSelfTestChild) Terminate()            {}
+func (completedSelfTestChild) Wait() (process.Status, error) {
+	return process.ExitStatus(process.Exit{}), nil
+}
+
+type finishingSelfTestBackend struct {
+	selfTestBackend
+	info func(context.Context) (wire.BrokerInfo, error)
+}
+
+func (b finishingSelfTestBackend) Info(ctx context.Context) (wire.BrokerInfo, error) {
+	return b.info(ctx)
+}
+
+func TestSelfTestPreservesProofWhenFinalInfoIsCancelled(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []string{"caller cancellation", "service cancellation", "unavailable", "complete"} {
+		t.Run(outcome, func(t *testing.T) {
+			state := testStore(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var app *App
+			backend := finishingSelfTestBackend{
+				selfTestBackend: selfTestBackend{start: func(context.Context) (sandbox.Child, error) {
+					return completedSelfTestChild{}, nil
+				}},
+				info: func(ctx context.Context) (wire.BrokerInfo, error) {
+					switch outcome {
+					case "caller cancellation":
+						cancel()
+						return wire.BrokerInfo{}, ctx.Err()
+					case "service cancellation":
+						app.cancel()
+						<-ctx.Done()
+						return wire.BrokerInfo{}, ctx.Err()
+					case "unavailable":
+						return wire.BrokerInfo{}, errors.New("synthetic unavailable limits")
+					default:
+						return wire.BrokerInfo{Limits: wire.BrokerLimits{Memory: 67108864, Pids: 64}}, nil
+					}
+				},
+			}
+			app = New(state, t.TempDir(), WithSandbox(backend))
+			t.Cleanup(app.Shutdown)
+			proof := SandboxSelfTest{At: "previous proof", Passed: true, Checks: []sandbox.ProbeCheck{}}
+			if err := state.Put("settings", selfTestRecord, proof); err != nil {
+				t.Fatal(err)
+			}
+			result, err := app.SelfTest(ctx)
+			cancelled := strings.HasSuffix(outcome, "cancellation")
+			if cancelled && !errors.Is(err, context.Canceled) || !cancelled && err != nil {
+				t.Errorf("self-test result error = %v; cancellation=%t", err, cancelled)
+			}
+			saved, readErr := store.Get[SandboxSelfTest](state, "settings", selfTestRecord)
+			if readErr != nil || saved == nil {
+				t.Fatalf("saved result: %+v, %v", saved, readErr)
+			}
+			if cancelled {
+				if !reflect.DeepEqual(saved, &proof) {
+					t.Fatalf("cancelled final metadata replaced proof: %+v", saved)
+				}
+			} else if saved.At == proof.At || saved.Passed != (outcome == "complete") || !reflect.DeepEqual(saved, &result) {
+				t.Fatalf("uncancelled result was not persisted accurately: %+v / %+v", saved, result)
+			}
+		})
+	}
 }
 
 func (selfTestBackend) Mode() sandbox.Mode { return sandbox.ModeDocker }
