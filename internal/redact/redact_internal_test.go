@@ -1,10 +1,43 @@
 package redact
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestStreamsUnionsAdjacentAndSeparatedMatches(t *testing.T) {
+	values := []string{"s3cr3tValue-0123456789", "ghp_abcdefghijklmnop\nsensitive-suffix", "sk-proj-ABCDEFGHIJ"}
+	parts := func(texts []string) []Part {
+		out := make([]Part, len(texts))
+		for i, text := range texts {
+			out[i].Text = text
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name          string
+		first, second []string
+		want          []string
+	}{
+		{"empty", nil, nil, []string{"\n"}},
+		{"unchanged", []string{"first", ""}, []string{"second"}, []string{"first", "", "\n", "second"}},
+		{"secret before boundary", []string{"s3cr3tValue-0123456789"}, nil, []string{"[redacted]", "\n"}},
+		{"secret after boundary", nil, []string{"s3cr3tValue-0123456789"}, []string{"\n", "[redacted]"}},
+		{"adjacent environment value", []string{"界 s3cr3tValue-", ""}, []string{"0123456789 fin"}, []string{"界 [redacted]", "", "", " fin"}},
+		{"stderr token boundary", []string{"progress"}, []string{"sk-abcdefghijklmnop fin"}, []string{"progress", "\n", "[redacted] fin"}},
+		{"adjacent token prefix", []string{"key sk-proj-"}, []string{"ABCDEFGHIJKLMN fin"}, []string{"key [redacted]", "", " fin"}},
+		{"whitespace bearer", []string{"Authorization: Bearer "}, []string{"opaque-token fin"}, []string{"Authorization: [redacted]", "", " fin"}},
+		{"overlapping views", []string{"ghp_abcdefghijklmnop"}, []string{"sensitive-suffix fin"}, []string{"[redacted]", "", " fin"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := streams(parts(tc.first), parts(tc.second), values); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Streams = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestScrubRedactsOverlappingSecretsWhole(t *testing.T) {
 	values := []string{

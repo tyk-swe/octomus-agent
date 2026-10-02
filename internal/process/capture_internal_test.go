@@ -36,6 +36,12 @@ func TestSafeCapturesScrubsAcrossStreamsAndKeepsFragments(t *testing.T) {
 			stdout: SafeCapture{Head: "[redacted]"},
 			stderr: SafeCapture{Head: "\nSTDERR-END"},
 		},
+		{
+			name:   "token starts stderr after ordinary stdout",
+			output: ProcessOutput{Stdout: Captured{Bytes: []byte("progress")}, Stderr: Captured{Bytes: []byte("sk-abcdefghijklmnop\nSTDERR-END")}},
+			stdout: SafeCapture{Head: "progress"},
+			stderr: SafeCapture{Head: "[redacted]\nSTDERR-END"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			beforeOut := bytes.Clone(tc.output.Stdout.Bytes)
@@ -46,6 +52,87 @@ func TestSafeCapturesScrubsAcrossStreamsAndKeepsFragments(t *testing.T) {
 			}
 			if !bytes.Equal(beforeOut, tc.output.Stdout.Bytes) || !bytes.Equal(beforeErr, tc.output.Stderr.Bytes) {
 				t.Fatal("redaction modified the original capture")
+			}
+		})
+	}
+}
+
+func TestSafeCapturesRedactsAdjacentEnvironmentSecretAcrossStreams(t *testing.T) {
+	t.Parallel()
+	// TestMain already installs this synthetic, newline-free environment secret.
+	const secret = "s3cr3tValue-0123456789"
+	for split := 1; split < len(secret); split++ {
+		for _, truncated := range []bool{false, true} {
+			stdout := Captured{Bytes: []byte("STDOUT-HEAD\n" + secret[:split])}
+			if truncated {
+				stdout = Captured{Bytes: []byte("STDOUT-HEAD\ncut"), Truncated: true, tail: []byte("cut\n" + secret[:split])}
+			}
+			output := ProcessOutput{Status: ExitStatus(Exit{Code: 3}), Stdout: stdout,
+				Stderr: Captured{Bytes: []byte(secret[split:] + "\nSTDERR-END")}}
+			out, stderr := output.SafeCaptures()
+			want := SafeCapture{Head: "STDOUT-HEAD\n[redacted]"}
+			if truncated {
+				want = SafeCapture{Head: "STDOUT-HEAD", Tail: "[redacted]", Truncated: true}
+			}
+			if out != want || stderr != (SafeCapture{Head: "\nSTDERR-END"}) {
+				t.Fatalf("split %d, truncated %t: adjacent secret survived: %+v, %+v", split, truncated, out, stderr)
+			}
+			failure := failureText("fixture", &output)
+			wantFailure := "fixture exited with exit status: 3: " + joinPreview(want.Head, want.Tail, want.Truncated) + "\nSTDERR-END"
+			if failure != wantFailure {
+				t.Fatalf("split %d, truncated %t: command failure = %q; want %q", split, truncated, failure, wantFailure)
+			}
+		}
+	}
+}
+
+func TestFailureTextRedactsAdjacentSecretBeforeElidingCapturedParts(t *testing.T) {
+	t.Parallel()
+	output := ProcessOutput{Status: ExitStatus(Exit{Code: 3}),
+		Stdout: Captured{Bytes: []byte(strings.Repeat("progress\n", 3000) + "cut"), Truncated: true,
+			tail: []byte("cut\nSTDOUT-END\ns3cr3tValue-")},
+		Stderr: Captured{Bytes: []byte("0123456789\nSTDERR-END")}}
+	text := failureText("fixture", &output)
+	if len(text) > failureTextLimit || strings.Contains(text, "s3cr3tValue-") || strings.Contains(text, "0123456789") {
+		t.Fatal("bounded command failure retained an adjacent secret fragment or exceeded its limit")
+	}
+	for _, want := range []string{"progress", diagnosticTruncatedMarker, "STDOUT-END", "[redacted]", "[stderr]", "STDERR-END"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("bounded command failure lost %q", want)
+		}
+	}
+}
+
+func TestSafeCapturesKeepsSecretContextFromDiscardedCutLines(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		output         ProcessOutput
+		stdout, stderr SafeCapture
+	}{
+		{
+			name: "stderr head discarded",
+			output: ProcessOutput{Stdout: Captured{Bytes: []byte("STDOUT-HEAD\ns3cr3tValue-")},
+				Stderr: Captured{Bytes: []byte("0123456789" + strings.Repeat("x", DiagnosticLimit)), Truncated: true, tail: []byte("cut\nSTDERR-END")}},
+			stdout: SafeCapture{Head: "STDOUT-HEAD\n[redacted]"},
+			stderr: SafeCapture{Tail: "STDERR-END", Truncated: true},
+		},
+		{
+			name: "stdout tail discarded",
+			output: ProcessOutput{Stdout: Captured{Bytes: []byte("STDOUT-HEAD\ncut"), Truncated: true, tail: []byte("cut-s3cr3tValue-")},
+				Stderr: Captured{Bytes: []byte("0123456789\nSTDERR-END")}},
+			stdout: SafeCapture{Head: "STDOUT-HEAD", Truncated: true},
+			stderr: SafeCapture{Head: "[redacted]\nSTDERR-END"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr := tc.output.SafeCaptures()
+			if stdout != tc.stdout || stderr != tc.stderr {
+				t.Fatalf("safe captures = %+v, %+v; want %+v, %+v", stdout, stderr, tc.stdout, tc.stderr)
+			}
+			failure := failureText("fixture", &tc.output)
+			if strings.Contains(failure, "s3cr3tValue-") || strings.Contains(failure, "0123456789") {
+				t.Fatal("command failure lost secret context at a capture cut")
 			}
 		})
 	}

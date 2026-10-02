@@ -58,20 +58,107 @@ type Part struct {
 // boundaries. A secret spanning parts is replaced once, in the part where it starts.
 func Parts(parts ...Part) []string {
 	values := environmentSecrets()
+	return scrubParts(partTexts(parts, values), values)
+}
+
+// Streams returns first's parts, a separating newline, and second's parts after
+// capture-cut normalization and joint redaction. Both adjacent and separated
+// views are matched before replacement. Discarded capture fragments still inform
+// redaction of retained bytes, without changing which cut lines are displayed.
+func Streams(first, second []Part) []string {
+	return streams(first, second, environmentSecrets())
+}
+
+func partTexts(parts []Part, values []string) []string {
 	texts := make([]string, len(parts))
 	for i, part := range parts {
-		text := part.Text
-		if part.CutStart {
-			text = cutFragment(text, TailLineCut, values)
-		}
-		if part.CutEnd {
-			text = cutFragment(text, HeadLineCut, values)
-		}
+		text, _ := partSlice(part, values)
 		if text != "" {
 			texts[i] = part.Prefix + text
 		}
 	}
-	return scrubParts(texts, values)
+	return texts
+}
+
+func partSlice(part Part, values []string) (text string, start int) {
+	text = part.Text
+	if part.CutStart {
+		text = cutFragment(text, TailLineCut, values)
+		start = len(part.Text) - len(text)
+	}
+	if part.CutEnd {
+		text = cutFragment(text, HeadLineCut, values)
+	}
+	return text, start
+}
+
+func streams(first, second []Part, values []string) []string {
+	parts := append(slices.Clone(first), Part{Text: "\n"})
+	parts = append(parts, second...)
+	texts, raw := make([]string, len(parts)), make([]string, len(parts))
+	// Each retained slice maps original capture bytes to their display offsets.
+	type keptSlice struct{ rawStart, rawEnd, textStart int }
+	var kept []keptSlice
+	var rawOffset, textOffset, rawBoundary, textBoundary int
+	for i, part := range parts {
+		if i == len(first) {
+			rawBoundary, textBoundary = rawOffset, textOffset
+		}
+		if part.Text != "" {
+			raw[i] = part.Prefix + part.Text
+		}
+		text, start := partSlice(part, values)
+		if text != "" {
+			texts[i] = part.Prefix + text
+			// Anchor projected replacements in retained capture bytes, never in
+			// display-only prefixes or the separator that callers may omit.
+			if i != len(first) {
+				from := rawOffset + len(part.Prefix) + start
+				kept = append(kept, keptSlice{from, from + len(text), textOffset + len(part.Prefix)})
+			}
+		}
+		rawOffset += len(raw[i])
+		textOffset += len(texts[i])
+	}
+	input := strings.Join(texts, "")
+	spans := streamSpans(input, textBoundary, values)
+	original := strings.Join(raw, "")
+	if original == input {
+		return replaceParts(texts, input, spans)
+	}
+	for _, span := range streamSpans(original, rawBoundary, values) {
+		from, to := -1, 0
+		for _, slice := range kept {
+			start, end := max(span[0], slice.rawStart), min(span[1], slice.rawEnd)
+			if start < end {
+				if from < 0 {
+					from = slice.textStart + start - slice.rawStart
+				}
+				to = slice.textStart + end - slice.rawStart
+			}
+		}
+		if from >= 0 {
+			spans = append(spans, [2]int{from, to})
+		}
+	}
+	return replaceParts(texts, input, mergeSpans(spans))
+}
+
+func streamSpans(input string, boundary int, values []string) [][2]int {
+	spans := secretSpans(input, values)
+	adjacent := input[:boundary] + input[boundary+1:]
+	for _, span := range secretSpans(adjacent, values) {
+		// Map back across the display-only newline. A spanning match includes
+		// that newline; a match starting in the second stream leaves it alone.
+		if span[0] >= boundary {
+			span[0]++
+		}
+		if span[1] > boundary {
+			span[1]++
+		}
+		spans = append(spans, span)
+	}
+	return mergeSpans(spans)
 }
 
 type FragmentKind uint8
@@ -233,6 +320,10 @@ func secretSpans(input string, values []string) [][2]int {
 			from = start + 1
 		}
 	}
+	return mergeSpans(spans)
+}
+
+func mergeSpans(spans [][2]int) [][2]int {
 	slices.SortFunc(spans, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
 	merged := spans[:0]
 	for i := 0; i < len(spans); {
@@ -251,7 +342,10 @@ func scrub(input string, values []string) string {
 
 func scrubParts(parts []string, values []string) []string {
 	input := strings.Join(parts, "")
-	spans := secretSpans(input, values)
+	return replaceParts(parts, input, secretSpans(input, values))
+}
+
+func replaceParts(parts []string, input string, spans [][2]int) []string {
 	if len(spans) == 0 {
 		return parts
 	}

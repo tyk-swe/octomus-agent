@@ -247,9 +247,7 @@ func (o ProcessOutput) SafeCaptures() (stdout, stderr SafeCapture) {
 
 func (o ProcessOutput) safeParts() ([]string, int) {
 	stdoutParts := o.Stdout.previewParts()
-	parts := append(stdoutParts, redact.Part{Text: "\n"})
-	parts = append(parts, o.Stderr.previewParts()...)
-	return redact.Parts(parts...), len(stdoutParts)
+	return redact.Streams(stdoutParts, o.Stderr.previewParts()), len(stdoutParts)
 }
 
 type OutputTooLarge struct {

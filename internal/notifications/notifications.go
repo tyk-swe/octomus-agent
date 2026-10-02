@@ -173,31 +173,37 @@ func (w *Worker) run() {
 			return
 		case <-timer.C:
 		}
+		if w.ctx.Err() != nil {
+			return
+		}
+		w.deliverNext()
+		// A slow claim, delivery or write must not leave an expired timer that
+		// permits the next request immediately after this attempt finishes.
 		timer.Reset(time.Second)
-		if w.ctx.Err() != nil {
-			return
-		}
-		delivery, err := w.store.ClaimNotification(w.destID, time.Now().UTC())
-		if err != nil {
-			w.warn(err)
-			continue
-		}
-		w.lastWarning = ""
-		if delivery == nil {
-			continue
-		}
-		status, category := w.deliver(delivery)
-		if w.ctx.Err() != nil {
-			return
-		}
-		switch {
-		case category != "":
-			w.warn(w.store.FinishNotificationFailure(delivery.Seq, category, nil, category != invalidPayload))
-		case status >= 200 && status < 300:
-			w.warn(w.store.FinishNotificationDelivered(delivery.Seq, time.Now().UTC()))
-		default:
-			w.warn(w.store.FinishNotificationFailure(delivery.Seq, httpStatusCategory, &status, retryable(status)))
-		}
+	}
+}
+
+func (w *Worker) deliverNext() {
+	delivery, err := w.store.ClaimNotification(w.destID, time.Now().UTC())
+	if err != nil {
+		w.warn(err)
+		return
+	}
+	w.lastWarning = ""
+	if delivery == nil {
+		return
+	}
+	status, category := w.deliver(delivery)
+	if w.ctx.Err() != nil {
+		return
+	}
+	switch {
+	case category != "":
+		w.warn(w.store.FinishNotificationFailure(delivery.Seq, category, nil, category != invalidPayload))
+	case status >= 200 && status < 300:
+		w.warn(w.store.FinishNotificationDelivered(delivery.Seq, time.Now().UTC()))
+	default:
+		w.warn(w.store.FinishNotificationFailure(delivery.Seq, httpStatusCategory, &status, retryable(status)))
 	}
 }
 

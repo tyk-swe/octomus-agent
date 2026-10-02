@@ -74,11 +74,11 @@
   {#if sandbox.mode === 'docker' && sandbox.self_test}
     {@const test = sandbox.self_test}
     <div class="sandbox-proof">
-      <span class="eyebrow"
-        >LAST PROVEN FROM INSIDE A SANDBOX · {relative(test.at).toUpperCase()}</span
-      >
-      {#if test.error}<div class="notice error">
-          <Icon name="alert" size={18} /><span>{test.error}</span>
+      <span class="eyebrow">LAST SELF-TEST · {relative(test.at).toUpperCase()}</span>
+      {#if test.error !== null}<div class="notice error">
+          <Icon name="alert" size={18} /><span
+            >{test.error || 'The containment self-test did not complete.'}</span
+          >
         </div>{:else}<ul aria-label="Containment checks">
           {#each test.checks as check (check.id)}<li class:failed={!check.passed}>
               <Icon name={check.passed ? 'check' : 'alert'} size={16} />

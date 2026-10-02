@@ -58,9 +58,14 @@ func putTask(t *testing.T, state *store.Store, id, status string, reason *model.
 	}
 }
 
+type receivedRequest struct {
+	body []byte
+	at   time.Time
+}
+
 type receiver struct {
 	url      string
-	requests chan []byte
+	requests chan receivedRequest
 	server   *httptest.Server
 	mu       sync.Mutex
 	delay    time.Duration
@@ -76,13 +81,13 @@ func (r *receiver) takeDelay() time.Duration {
 
 func newReceiver(t *testing.T, status int, firstDelay time.Duration) *receiver {
 	t.Helper()
-	r := &receiver{requests: make(chan []byte, 32), delay: firstDelay}
+	r := &receiver{requests: make(chan receivedRequest, 32), delay: firstDelay}
 	closed := make(chan struct{})
 	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, err := io.ReadAll(req.Body)
 		if err == nil {
 			select {
-			case r.requests <- body:
+			case r.requests <- receivedRequest{body: body, at: time.Now()}:
 			case <-closed:
 				return
 			}
@@ -106,12 +111,17 @@ func newReceiver(t *testing.T, status int, firstDelay time.Duration) *receiver {
 
 func (r *receiver) next(t *testing.T) []byte {
 	t.Helper()
+	return r.nextRequest(t).body
+}
+
+func (r *receiver) nextRequest(t *testing.T) receivedRequest {
+	t.Helper()
 	select {
-	case body := <-r.requests:
-		return body
+	case request := <-r.requests:
+		return request
 	case <-time.After(15 * time.Second):
 		t.Fatal("no request received")
-		return nil
+		return receivedRequest{}
 	}
 }
 
@@ -312,15 +322,53 @@ func TestSlowDeliveryDoesNotCauseACatchUpBurst(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		putTask(t, state, "task-"+string(rune('0'+i)), "blocked", &reason)
 	}
-	server.next(t)
-	server.next(t)
-	previous := time.Now()
-	for i := 0; i < 2; i++ {
-		server.next(t)
-		if elapsed := time.Since(previous); elapsed < 850*time.Millisecond {
-			t.Fatalf("catch-up burst: %v between deliveries", elapsed)
+	previous := server.nextRequest(t)
+	for i := 0; i < 3; i++ {
+		current := server.nextRequest(t)
+		if elapsed := current.at.Sub(previous.at); elapsed < time.Second {
+			t.Fatalf("catch-up burst: %v between HTTP arrivals", elapsed)
 		}
-		previous = time.Now()
+		previous = current
+	}
+}
+
+func TestSlowClaimDoesNotCauseACatchUpBurst(t *testing.T) {
+	t.Parallel()
+	state, path := testStore(t)
+	enabled(t, state)
+	reason := model.BlockedReasonTimeout
+	for i := 0; i < 3; i++ {
+		putTask(t, state, fmt.Sprintf("task-%d", i), "blocked", &reason)
+	}
+	server := newReceiver(t, http.StatusOK, 0)
+	// Queue the first claim behind a real SQLite writer. Start normally also
+	// writes the notification policy, so start the worker after that setup.
+	lock, err := rawDB(t, path).Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback()
+	if _, err := lock.Exec("UPDATE notification_policy SET enabled=enabled WHERE id=1"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := &Worker{store: state, url: server.url, destID: dest, client: webhookClient(),
+		ctx: ctx, cancel: cancel, done: make(chan struct{}), warnings: io.Discard}
+	go worker.run()
+	defer worker.Stop()
+	// A timer started before the claim will already have expired when the
+	// writer releases it. That used to send the next notification immediately.
+	time.Sleep(1500 * time.Millisecond)
+	if err := lock.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	previous := server.nextRequest(t)
+	for i := 0; i < 2; i++ {
+		current := server.nextRequest(t)
+		if elapsed := current.at.Sub(previous.at); elapsed < time.Second {
+			t.Fatalf("catch-up burst after a slow claim: %v between HTTP arrivals", elapsed)
+		}
+		previous = current
 	}
 }
 
@@ -409,7 +457,7 @@ func TestWorkerFailsOversizedEventsTerminally(t *testing.T) {
 	}, "the oversized event to fail as invalid_payload")
 	select {
 	case body := <-server.requests:
-		t.Fatalf("an invalid payload was sent: %s", body)
+		t.Fatalf("an invalid payload was sent: %s", body.body)
 	case <-time.After(200 * time.Millisecond):
 	}
 	if health, err := state.NotificationHealth(); err != nil || health.Pending != 0 || health.LastHTTPStatus != nil {
