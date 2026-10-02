@@ -926,6 +926,12 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		if err := ValidatePublication(task, *existing, marker, true); err == nil {
 			return *existing, nil
 		}
+		// A delivery marker records a completed write. Even a reset to the
+		// original source must not authorize replaying that task's push.
+		if marker && existing.Head != commit {
+			return fail(blocked(model.BlockedReasonRemoteConflict,
+				"Delivered PR head changed; reconcile before retrying"))
+		}
 		if !existing.OwnedOpen() || existing.Branch != task.Branch || existing.Base != c.DefaultBranch {
 			return fail(blocked(model.BlockedReasonRemoteConflict,
 				"PR ownership, base, or open state changed; reconcile before retrying"))
