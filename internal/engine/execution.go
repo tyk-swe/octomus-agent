@@ -359,7 +359,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 	if _, err := uuid.Parse(task.ID); err != nil {
 		return fmt.Errorf("Invalid task workspace identity: %w", err)
 	}
-	if err := a.admit(task.CycleID, task, "executor", task.Route); err != nil {
+	if err := a.admit(ctx, task.CycleID, task, "executor", task.Route); err != nil {
 		return err
 	}
 	if task.Workspace == "" {

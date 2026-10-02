@@ -53,7 +53,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		}
 	}
 	if !inv.reserved {
-		if err := a.admit(inv.cycleID, inv.task, inv.role, inv.route); err != nil {
+		if err := a.admit(ctx, inv.cycleID, inv.task, inv.role, inv.route); err != nil {
 			return "", err
 		}
 	}
@@ -61,6 +61,9 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		if err := inv.prepare(); err != nil {
 			return "", err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("Operation cancelled: %w", err)
 	}
 	session, err := clients.Start(inv.route, inv.workspace, resume)
 	if err != nil {
@@ -152,18 +155,32 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 	return answer, summary, nil
 }
 
-func (a *App) admit(cycleID string, task *model.Task, role string, route config.Route) error {
+func (a *App) admit(ctx context.Context, cycleID string, task *model.Task, role string, route config.Route) error {
 	owner := filepath.Join("cycles", cycleID)
 	var taskID *string
 	if task != nil {
 		taskID = &task.ID
 		owner = filepath.Join("tasks", task.ID)
 	}
-	size, err := a.measureFor(owner)
+	size, err := a.measureForAdmission(ctx, owner)
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("Operation cancelled: %w", err)
+	}
 	return a.Store.ReserveSession(size, store.NewAdmission(cycleID, taskID, role, route))
+}
+
+func (a *App) measureForAdmission(ctx context.Context, owner string) (uint64, error) {
+	a.planningStorage.Lock()
+	defer a.planningStorage.Unlock()
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("Operation cancelled: %w", err)
+	}
+	// Storage is a pre-turn snapshot, not a disk reservation. Exclude trusted filesystem changes only for the scan;
+	// the store independently serializes budget reservations and must not stall unrelated setup/status/cleanup.
+	return a.measureFor(owner)
 }
 
 // ownedRoots are the data directory's parents of owned roots, each <parent>/<id>, where sandboxes write.

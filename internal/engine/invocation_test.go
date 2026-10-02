@@ -138,7 +138,7 @@ func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
-	if err := app.admit("cycle-1", nil, "discovery", cfg.Roles["discovery"]); err != nil {
+	if err := app.admit(context.Background(), "cycle-1", nil, "discovery", cfg.Roles["discovery"]); err != nil {
 		t.Fatalf("admission with an unreadable workspace directory = %v; want a reserved session", err)
 	}
 	assertAdmissions(t, state, 1, "admission beside an unreadable workspace directory")
@@ -153,7 +153,7 @@ func TestAdmissionMeasuresPastUnreadableWorkspaceDirectories(t *testing.T) {
 	}
 	// The hidden bytes belong to t1, so t1 itself is over the limit until its retained work is resolved.
 	owner := &model.Task{ID: "t1", CycleID: "cycle-1"}
-	if err := app.admit("cycle-1", owner, "executor", cfg.Roles["discovery"]); model.BlockedReasonFromError(err) != model.BlockedReasonStorageLimit {
+	if err := app.admit(context.Background(), "cycle-1", owner, "executor", cfg.Roles["discovery"]); model.BlockedReasonFromError(err) != model.BlockedReasonStorageLimit {
 		t.Fatalf("admission for the task owning the unreadable directory = %v; want a storage limit", err)
 	}
 }
@@ -202,13 +202,13 @@ func TestTooDeepWorkspaceBlocksOnlyItsOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.admit("cycle-1", nil, "discovery", cfg.Roles["discovery"]); err != nil {
+	if err := app.admit(context.Background(), "cycle-1", nil, "discovery", cfg.Roles["discovery"]); err != nil {
 		t.Fatalf("planning admission beside a too-deep task tree = %v; want a reserved session", err)
 	}
-	if err := app.admit("cycle-1", &model.Task{ID: "t2", CycleID: "cycle-1"}, "executor", cfg.Roles["discovery"]); err != nil {
+	if err := app.admit(context.Background(), "cycle-1", &model.Task{ID: "t2", CycleID: "cycle-1"}, "executor", cfg.Roles["discovery"]); err != nil {
 		t.Fatalf("another task's admission beside a too-deep task tree = %v; want a reserved session", err)
 	}
-	err := app.admit("cycle-1", &model.Task{ID: "t1", CycleID: "cycle-1"}, "executor", cfg.Roles["discovery"])
+	err := app.admit(context.Background(), "cycle-1", &model.Task{ID: "t1", CycleID: "cycle-1"}, "executor", cfg.Roles["discovery"])
 	if model.BlockedReasonFromError(err) != model.BlockedReasonStorageLimit || !strings.Contains(err.Error(), filepath.Join("tasks", "t1")) {
 		t.Fatalf("admission for the task owning the too-deep tree = %v; want a storage limit naming it", err)
 	}
@@ -238,7 +238,7 @@ func TestDeeplyNestedRepositoryContentIsMeasured(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := app.admit("cycle-1", &model.Task{ID: "t1", CycleID: "cycle-1"}, "executor", cfg.Roles["discovery"]); err != nil {
+	if err := app.admit(context.Background(), "cycle-1", &model.Task{ID: "t1", CycleID: "cycle-1"}, "executor", cfg.Roles["discovery"]); err != nil {
 		t.Fatalf("admission beside a repository tracking a 300-level path = %v; want a reserved session", err)
 	}
 	if size, err := app.measureFor(filepath.Join("tasks", "t1")); err != nil || size < 2*uint64(len("tracked")) {
@@ -266,7 +266,7 @@ func TestUnreadableDataDirectoryEntryRefusesEveryAdmission(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(lost, 0o755) })
 
 	for _, task := range []*model.Task{nil, {ID: "t1", CycleID: "cycle-1"}} {
-		err := app.admit("cycle-1", task, "executor", cfg.Roles["discovery"])
+		err := app.admit(context.Background(), "cycle-1", task, "executor", cfg.Roles["discovery"])
 		if model.BlockedReasonFromError(err) != model.BlockedReasonStorageLimit ||
 			!strings.Contains(err.Error(), "lost+found in the data directory") || !strings.Contains(err.Error(), "move it out of the data directory") {
 			t.Fatalf("admission beside an unreadable lost+found = %v; want a storage limit that names it and says how to fix it", err)
