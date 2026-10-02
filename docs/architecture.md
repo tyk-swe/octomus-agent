@@ -151,6 +151,9 @@ exited, including after storage recovers from refused terminal writes, so its
 retained evidence can be inspected and archived without restarting the service.
 Continuous operation keeps its saved schedule and starts a fresh cycle when due,
 with new grounding and sessions rather than resuming the interrupted plan.
+While a background recovery write is refused, the scheduler records a recovery
+error and starts no work in that pass. It keeps the saved mode and schedule for
+the next recovery attempt.
 
 ## Bounded observation and storage
 

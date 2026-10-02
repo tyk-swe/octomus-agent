@@ -253,6 +253,13 @@ func (a *App) Drained() bool {
 	return len(r.tasks) == 0 && !r.planning() && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
 }
 
+// recoveryError blocks the current scheduling pass without changing saved
+// operating policy while a background recovery write is being retried.
+type recoveryError struct{ err error }
+
+func (e *recoveryError) Error() string { return e.err.Error() }
+func (e *recoveryError) Unwrap() error { return e.err }
+
 func (a *App) fail(err error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -260,6 +267,11 @@ func (a *App) fail(err error) {
 		return
 	}
 	message := redact.Error(err)
+	var recovery *recoveryError
+	if errors.As(err, &recovery) {
+		_ = a.Store.Event("system", "recovery_error", message)
+		return
+	}
 	if control, loadErr := a.Control(); loadErr == nil {
 		redacted := redact.Text(message)
 		_ = a.pauseLocked(&control, &redacted)
