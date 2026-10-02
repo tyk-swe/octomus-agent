@@ -594,6 +594,9 @@ func updateLineageTask(c *sql.Conn, id string, check func(*model.Task) error) er
 	if !found {
 		return fmt.Errorf("Missing lineage task %s", id)
 	}
+	if task.Lifecycle.ArchivedAt != nil {
+		return fmt.Errorf("Rediscovery request %s was archived before the plan committed", id)
+	}
 	if err := check(&task); err != nil {
 		return err
 	}
