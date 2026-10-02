@@ -20,7 +20,7 @@
   import ProposalCard from '$lib/ProposalCard.svelte';
   import SearchBox from '$lib/SearchBox.svelte';
   import Settings from '$lib/Settings.svelte';
-  import type { SetupStatus } from '$lib/setup';
+  import { planningBlocker, type SetupStatus } from '$lib/setup';
   import TaskDetail from '$lib/TaskDetail.svelte';
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
@@ -206,10 +206,7 @@
   } as Record<string, number | undefined>);
   let latestCycle = $derived(data?.cycles[0]);
   type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
-  const planningBlocked = $derived(
-    data?.planning_capacity?.status === 'daily_exhausted' ||
-      data?.planning_capacity?.status === 'limit_too_low'
-  );
+  const planningBlocked = $derived(!!planningBlocker(data?.planning_capacity));
   const canControl = $derived({
     resume: !!data?.configured && data.active_cycle_mode !== 'audit' && !data.baseline_active,
     pause: !!data?.configured && data.active_cycle_mode !== 'audit',
@@ -243,6 +240,7 @@
           active_cycle_mode: data.active_cycle_mode,
           queued: data.counts.queued ?? 0,
           latest: data.cycles[0] ?? null,
+          planning_capacity: data.planning_capacity,
           sandbox: data.sandbox
         }
       : null
