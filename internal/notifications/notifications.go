@@ -118,7 +118,15 @@ func Start(parent context.Context, db *store.Store, configuredURL string) (*Work
 	return start(parent, db, configuredURL, os.Stderr)
 }
 
-func start(parent context.Context, db *store.Store, configuredURL string, warnings io.Writer) (*Worker, error) {
+// Configure applies the current destination before recovery can create new
+// attention episodes. It does not start delivery; Start can safely reapply the
+// same policy after recovery succeeds.
+func Configure(db *store.Store, configuredURL string) error {
+	_, _, err := configure(db, configuredURL)
+	return err
+}
+
+func configure(db *store.Store, configuredURL string) (string, string, error) {
 	raw := strings.TrimSpace(configuredURL)
 	var normalized, destinationID string
 	state := "disabled"
@@ -136,9 +144,17 @@ func start(parent context.Context, db *store.Store, configuredURL string, warnin
 		}
 	}
 	if err := db.ConfigureNotifications(destination, state, errorText); err != nil {
+		return "", "", err
+	}
+	return normalized, destinationID, nil
+}
+
+func start(parent context.Context, db *store.Store, configuredURL string, warnings io.Writer) (*Worker, error) {
+	normalized, destinationID, err := configure(db, configuredURL)
+	if err != nil {
 		return nil, err
 	}
-	if state != "enabled" {
+	if normalized == "" {
 		return nil, nil
 	}
 	ctx, cancel := context.WithCancel(parent)

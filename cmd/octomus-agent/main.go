@@ -218,6 +218,9 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	components := serviceComponents{
 		scheduler: app,
 		http:      server,
+		prepareWorker: func() error {
+			return notifications.Configure(state, webhook)
+		},
 		startWorker: func() (func(), error) {
 			worker, err := notifications.Start(app.Context(), state, webhook)
 			if err != nil || worker == nil {
