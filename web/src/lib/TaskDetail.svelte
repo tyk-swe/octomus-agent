@@ -33,6 +33,7 @@
   let task = $state<Task | null>(null),
     error = $state(''),
     actionError = $state(''),
+    actionRecovery = $state(''),
     tab = $state('Overview'),
     busy = $state(false),
     events = $state<Event[]>([]);
@@ -41,7 +42,9 @@
     evidenceStale = $state(false),
     evidenceLoading = $state(false),
     taskStale = $state(false);
-  let loading = false;
+  let loading = $state(false);
+  let recoveryButton = $state<HTMLButtonElement>();
+  let disposed = false;
   let generation = 0;
   let request: AbortController | null = null;
   let evidenceKey = '';
@@ -58,6 +61,14 @@
     discard: 'Discard workspace'
   };
   const DESTRUCTIVE_ACTIONS = new Set(['discard', 'cancel']);
+  const ACTION_RESULTS: Record<string, string> = {
+    retry: 'Task retry requested.',
+    cancel: 'Task cancellation requested.',
+    supersede: 'Rediscovery requested.',
+    reconcile: 'Publication reconciliation completed.',
+    archive: 'Task archived.',
+    discard: 'Workspace discarded.'
+  };
   function moveTab(event: KeyboardEvent, from: string) {
     const index = TABS.indexOf(from);
     const next =
@@ -106,7 +117,7 @@
     }
   }
   async function load(force = false) {
-    if (loading && !force) return;
+    if (disposed || (loading && !force)) return;
     request?.abort();
     const current = ++generation;
     const controller = new AbortController();
@@ -127,6 +138,9 @@
         events = nextEvents;
         error = '';
         taskStale = false;
+        if (recoveryButton && document.activeElement === recoveryButton)
+          document.getElementById('task-title')?.focus();
+        actionRecovery = '';
         await loadEvidence(
           nextTask.cycle_id,
           `${nextTask.cycle_id}:${id}:${nextTask.updated_at}:${nextTask.status}`
@@ -145,6 +159,7 @@
     load();
     const timer = setInterval(() => load(), 4000);
     return () => {
+      disposed = true;
       clearInterval(timer);
       feedback.dispose();
       generation++;
@@ -159,15 +174,20 @@
   let delivery = $derived(prVerdict(evidence));
   let outputSha = $derived(evidence?.revisions.output ?? null);
   async function action(value: string) {
-    if (busy) return;
+    if (disposed || busy || actionRecovery) return;
     busy = true;
     actionError = '';
     try {
       await api(`/tasks/${encodeURIComponent(id)}/${encodeURIComponent(value)}`, 'POST');
+      if (disposed) return;
+      // The mutation is confirmed, but its old allowed_actions no longer describe the task.
+      actionRecovery = ACTION_RESULTS[value];
+      error = '';
+      taskStale = task !== null;
       await load(true);
-      onaction();
+      if (!disposed) onaction();
     } catch (e) {
-      actionError = (e as Error).message;
+      if (!disposed) actionError = (e as Error).message;
     } finally {
       busy = false;
     }
@@ -180,7 +200,18 @@
   labelledby="task-title"
   {onclose}
 >
-  {#if error}<div class="notice error" role="alert">
+  {#if actionRecovery}<div class="notice" class:error role={error ? 'alert' : 'status'}>
+      <Icon name={error ? 'alert' : 'refresh'} size={18} /><span>
+        {actionRecovery}
+        {error ? `Task details could not be refreshed. ${error}` : 'Refreshing task details…'}
+      </span>
+      {#if error}<button
+          bind:this={recoveryButton}
+          class="button small"
+          aria-disabled={loading}
+          onclick={() => load()}>{loading ? 'Retrying task details…' : 'Retry task details'}</button
+        >{/if}
+    </div>{:else if error}<div class="notice error" role="alert">
       <Icon name="alert" size={18} /><span
         >{taskStale ? 'Retained task details · stale. ' : ''}{error}</span
       >
@@ -484,7 +515,7 @@
           >{/if}
         {#each task.allowed_actions as value (value)}<button
             class={'button ' + (DESTRUCTIVE_ACTIONS.has(value) ? 'danger' : '')}
-            disabled={busy}
+            disabled={busy || !!actionRecovery}
             onclick={() => action(value)}
           >
             {ACTION_LABELS[value]}
