@@ -148,6 +148,7 @@ export type ProposalRow = ProposalDetail & {
   detail?: ProposalDetail;
   detailRequested?: boolean;
   detailLoading?: number;
+  detailError?: string;
 };
 export type PrObservation = {
   repository: string;

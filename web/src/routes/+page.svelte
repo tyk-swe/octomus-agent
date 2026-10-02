@@ -179,6 +179,10 @@
   let lastPage = '';
   let sessionGeneration = 0;
   let navigationGeneration = 0;
+  // Operator interactions invalidate the redirect; background data loads must not.
+  function noteNavigationIntent() {
+    navigationGeneration++;
+  }
   let refreshing = false;
   let refreshQueued = false;
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
@@ -312,6 +316,7 @@
           Object.assign(previous, summary);
           if (detailChanged) {
             previous.detail = undefined;
+            previous.detailError = undefined;
             if (previous.detailRequested) void loadProposal(previous);
           }
           return previous;
@@ -351,6 +356,7 @@
     return request;
   }
   async function loadOlderCycles() {
+    noteNavigationIntent();
     const currentSession = sessionGeneration;
     cyclesLoading = true;
     error = '';
@@ -379,10 +385,11 @@
         detail.content_revision === revision
       ) {
         p.detail = detail;
+        p.detailError = undefined;
       }
     } catch (e) {
       if (currentSession === sessionGeneration && p.content_revision === revision)
-        error = (e as Error).message;
+        p.detailError = (e as Error).message;
     } finally {
       if (p.detailLoading === revision) p.detailLoading = undefined;
     }
@@ -485,6 +492,7 @@
   async function onWindowKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && mobileOpen) {
       event.preventDefault();
+      noteNavigationIntent();
       mobileOpen = false;
       await tick();
       document.getElementById('navigation-toggle')?.focus();
@@ -499,6 +507,7 @@
     box.focus();
   }
   async function toggleNavigation() {
+    noteNavigationIntent();
     mobileOpen = !mobileOpen;
     if (mobileOpen) {
       await tick();
@@ -794,12 +803,15 @@
           />
         {:else if view === 'queue'}
           <section class="panel">
-            <div class="list-toolbar">
+            <div class="list-toolbar" onfocusin={noteNavigationIntent}>
               <FilterTabs
                 labels={QUEUE_FILTERS}
                 current={filter}
                 aria="Task filters"
-                onselect={(state) => (filter = state)}
+                onselect={(state) => {
+                  noteNavigationIntent();
+                  filter = state;
+                }}
                 counts={queueTabCounts}
               />
               <SearchBox bind:value={search} />
@@ -851,7 +863,7 @@
           <div class="proposal-controls">
             <div class="cycle-picker">
               <label for="proposal-cycle">Cycle</label>
-              <select id="proposal-cycle" bind:value={proposalCycle}>
+              <select id="proposal-cycle" bind:value={proposalCycle} onfocus={noteNavigationIntent}>
                 <option value="all">All cycles</option>
                 {#each cycleRows as cycle}<option value={cycle.id}
                     >{cycleLabel(cycle)} · {cycle.status}{cycle.lifecycle.discarded_at
@@ -872,12 +884,15 @@
             </div>
           </div>
           <section class="panel">
-            <div class="list-toolbar">
+            <div class="list-toolbar" onfocusin={noteNavigationIntent}>
               <FilterTabs
                 labels={PROPOSAL_FILTERS}
                 current={proposalFilter}
                 aria="Proposal filters"
-                onselect={(state) => (proposalFilter = state)}
+                onselect={(state) => {
+                  noteNavigationIntent();
+                  proposalFilter = state;
+                }}
                 counts={proposalTabCounts}
               />
               <SearchBox bind:value={search} />
@@ -913,12 +928,15 @@
               >Octomus publishes reviewed pull requests. Merge decisions stay with you.</span
             >
           </div>
-          <div class="list-toolbar">
+          <div class="list-toolbar" onfocusin={noteNavigationIntent}>
             <FilterTabs
               labels={PR_FILTERS}
               current={filter}
               aria="PR filters"
-              onselect={(state) => (filter = state)}
+              onselect={(state) => {
+                noteNavigationIntent();
+                filter = state;
+              }}
             />
             <SearchBox bind:value={search} />
           </div>
@@ -1000,7 +1018,7 @@
   </div>
   {#if selected}{#key selected}<TaskDetail
         id={selected}
-        onselect={(id) => (selected = id)}
+        onselect={inspectTask}
         onclose={closePanels}
         onaction={refresh}
       />{/key}{/if}
@@ -1019,7 +1037,14 @@
           : `Could not load ${noun}.`}
         {listError}</span
       >
-      <button class="button" disabled={listLoading} onclick={() => listRefresh++}>Retry</button>
+      <button
+        class="button"
+        disabled={listLoading}
+        onclick={() => {
+          noteNavigationIntent();
+          listRefresh++;
+        }}>Retry</button
+      >
     </div>{/if}
   {#if listLoading || listLoaded}<div
       class:empty={!listLoaded && !count}

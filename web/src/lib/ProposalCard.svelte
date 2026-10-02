@@ -11,10 +11,27 @@
     oncollapse
   }: {
     proposal: ProposalRow;
-    onexpand: () => void;
+    onexpand: () => Promise<void>;
     oninspect: () => void;
     oncollapse?: () => void;
   } = $props();
+  let summary = $state<HTMLElement>();
+  let retryButton = $state<HTMLButtonElement>();
+
+  $effect.pre(() => {
+    if (
+      proposal.detailError === undefined &&
+      retryButton &&
+      document.activeElement === retryButton &&
+      summary?.isConnected
+    )
+      summary.focus();
+  });
+
+  function retry() {
+    if (proposal.detailLoading !== undefined) return;
+    void onexpand();
+  }
 </script>
 
 <article class="proposal-card">
@@ -38,7 +55,22 @@
       else oncollapse?.();
     }}
   >
-    <summary>Scope, evidence & execution prompt</summary>
+    <summary bind:this={summary}>Scope, evidence & execution prompt</summary>
+    {#if proposal.detailLoading !== undefined}<p class="muted" role="status">
+        Loading full proposal details…
+      </p>{/if}
+    {#if proposal.detailError !== undefined}<div class="notice error" role="alert">
+        <span
+          >Could not load full proposal details. Showing the summary. {proposal.detailError}</span
+        >
+      </div>
+      <button
+        bind:this={retryButton}
+        class="button small"
+        aria-disabled={proposal.detailLoading !== undefined}
+        onclick={retry}
+        >{proposal.detailLoading !== undefined ? 'Retrying details…' : 'Retry details'}</button
+      >{/if}
     <p>{proposal.detail?.benefit ?? proposal.benefit}</p>
     <p>{proposal.detail?.scope ?? proposal.scope}</p>
     {#each proposal.detail?.evidence ?? proposal.evidence as item}<p class="evidence">

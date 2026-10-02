@@ -1,4 +1,5 @@
 import { relative } from './api';
+import { sandboxVerdict } from './sandbox';
 import { baselineStatusLabel, plural } from './evidence';
 import type {
   Backend,
@@ -183,15 +184,18 @@ export function sandboxStep(status: SetupStatus | null): SetupStep {
       detail:
         'Check connection runs the containment self-test inside a real sandbox; you can also run it from the Overview.'
     };
-  const failed = test.checks.filter((check) => !check.passed);
-  if (test.error || failed.length)
+  const verdict = sandboxVerdict(sandbox);
+  if (verdict.tone !== 'clean') {
+    const failed = test.checks.filter((check) => !check.passed);
     return {
       tone: 'failed',
       label: 'Self-test failed',
       detail:
-        test.error ??
-        `Failed from inside a sandbox: ${failed.map((check) => `${check.label} (${check.detail})`).join('; ')}.`
+        test.error === null && failed.length
+          ? `Failed from inside a sandbox: ${failed.map((check) => `${check.label} (${check.detail})`).join('; ')}.`
+          : verdict.detail
     };
+  }
   return {
     tone: 'checked',
     label: `Proven · ${relative(test.at)}`,

@@ -17,12 +17,12 @@ const heldToken = "operator-fixture-token-with-at-least-32-characters"
 
 func heldReceiver(t *testing.T) *receiver {
 	t.Helper()
-	r := &receiver{requests: make(chan []byte, 32)}
+	r := &receiver{requests: make(chan receivedRequest, 32)}
 	release := make(chan struct{})
 	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, err := io.ReadAll(req.Body)
 		if err == nil {
-			r.requests <- body
+			r.requests <- receivedRequest{body: body, at: time.Now()}
 		}
 		select {
 		case <-release:

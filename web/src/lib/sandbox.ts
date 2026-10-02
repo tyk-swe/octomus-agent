@@ -28,8 +28,12 @@ export function sandboxVerdict(sandbox: SandboxPosture): SandboxVerdict {
       detail: 'Run the self-test or Check connection to prove containment from inside a sandbox.'
     };
   }
-  if (test.error) {
-    return { label: 'Self-test error', tone: 'failed', detail: test.error };
+  if (test.error !== null) {
+    return {
+      label: 'Self-test error',
+      tone: 'failed',
+      detail: test.error || 'The containment self-test did not complete.'
+    };
   }
   const failed = test.checks.filter((check) => !check.passed);
   if (failed.length) {
@@ -37,6 +41,20 @@ export function sandboxVerdict(sandbox: SandboxPosture): SandboxVerdict {
       label: `${failed.length} check${failed.length === 1 ? '' : 's'} failed`,
       tone: 'failed',
       detail: failed.map((check) => check.label).join(' · ')
+    };
+  }
+  if (!test.checks.length) {
+    return {
+      label: 'Self-test failed',
+      tone: 'failed',
+      detail: 'No containment checks were recorded. Run the self-test again to prove containment.'
+    };
+  }
+  if (!test.passed) {
+    return {
+      label: 'Self-test failed',
+      tone: 'failed',
+      detail: 'The recorded self-test did not pass. Run it again to verify containment.'
     };
   }
   return {

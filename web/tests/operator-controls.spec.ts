@@ -283,3 +283,154 @@ test('passive expanded proposal reloads do not cancel the audit redirect', async
     gate.resolve();
   }
 });
+
+async function pendingAudit(page: Page, delay: string) {
+  const gate = deferred();
+  let actionFinished = false;
+  let waiting = false;
+  await auditSnapshot(page, async (snapshot) => {
+    if (actionFinished) snapshot.status = 'synthetic-intent-audit-started';
+    if (delay === 'refresh' && actionFinished) {
+      waiting = true;
+      await gate.promise;
+    }
+  });
+  await page.route('**/api/control/audit', async (route) => {
+    if (delay === 'action') {
+      waiting = true;
+      await gate.promise;
+    }
+    actionFinished = true;
+    await route.fulfill({ json: { paused: true } });
+  });
+  return {
+    release: gate.resolve,
+    async start() {
+      await page.getByRole('button', { name: 'Run an audit', exact: true }).click();
+      await expect.poll(() => waiting).toBe(true);
+    },
+    async finish() {
+      const refreshed = page.waitForResponse(
+        async (response) =>
+          new URL(response.url()).pathname === '/api/state' &&
+          (await response.json()).status === 'synthetic-intent-audit-started'
+      );
+      gate.resolve();
+      await (await refreshed).finished();
+      await page.clock.runFor(100);
+    }
+  };
+}
+
+for (const delay of ['action', 'refresh']) {
+  for (const intent of [
+    { action: 'older cycles', view: 'Proposals', heading: 'Worth doing. Before doing.' },
+    { action: 'task filter', view: 'Task queue', heading: 'From idea to improvement.' },
+    { action: 'proposal filter', view: 'Proposals', heading: 'Worth doing. Before doing.' },
+    { action: 'PR filter', view: 'Pull requests', heading: 'Progress, ready for review.' },
+    { action: 'history retry', view: 'Task queue', heading: 'From idea to improvement.' },
+    { action: 'search focus', view: 'Task queue', heading: 'From idea to improvement.' },
+    { action: 'search shortcut', view: 'Task queue', heading: 'From idea to improvement.' },
+    { action: 'cycle picker focus', view: 'Proposals', heading: 'Worth doing. Before doing.' }
+  ]) {
+    test(`an audit waiting for ${delay} preserves explicit ${intent.action} intent`, async ({
+      page,
+      isMobile
+    }) => {
+      const audit = await pendingAudit(page, delay);
+      if (intent.action === 'older cycles') {
+        await page.route('**/api/cycles?*', async (route) => {
+          const response = await route.fetch();
+          const result = await response.json();
+          if (new URL(route.request().url()).searchParams.has('before')) {
+            // Fetch the first page only to seed the synthetic older cycle consistently.
+            const url = new URL(route.request().url());
+            url.searchParams.delete('before');
+            const first = await (await route.fetch({ url: url.toString() })).json();
+            result.items = [{ ...first.items[0], id: 'older-cycle', number: 0 }];
+            result.next_cursor = null;
+          } else result.next_cursor = 42;
+          await route.fulfill({ response, json: result });
+        });
+      }
+      let failList = intent.action === 'history retry';
+      if (failList)
+        await page.route('**/api/tasks?*', async (route) => {
+          if (failList)
+            await route.fulfill({ status: 503, json: { error: 'Synthetic history failure' } });
+          else await route.continue();
+        });
+      await page.clock.install();
+      await login(page);
+      await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+      await openNavigation(page, intent.view, !!isMobile);
+      await page.clock.runFor(100);
+      const cycle = page.getByLabel('Cycle', { exact: true });
+      const search = page.getByLabel('Search work');
+      const filter = page.getByRole('button', { name: 'all', exact: true });
+      if (intent.action === 'older cycles' || intent.action === 'cycle picker focus')
+        await cycle.selectOption('cycle-1');
+      if (intent.action === 'history retry')
+        await expect(page.getByRole('alert')).toContainText('Synthetic history failure');
+      try {
+        await audit.start();
+        if (intent.action === 'older cycles') {
+          await page.getByRole('button', { name: 'Load older cycles', exact: true }).click();
+          await expect(cycle.locator('option[value="older-cycle"]')).toHaveCount(1);
+        } else if (intent.action.endsWith('filter')) await filter.click();
+        else if (intent.action === 'history retry') {
+          failList = false;
+          await page.getByRole('button', { name: 'Retry', exact: true }).click();
+          await page.clock.runFor(100);
+          await expect(page.getByRole('alert')).toHaveCount(0);
+        } else if (intent.action === 'search focus') await search.focus();
+        else if (intent.action === 'search shortcut') await page.keyboard.press('/');
+        else await cycle.focus();
+        await audit.finish();
+        await expect(page.getByRole('heading', { name: intent.heading })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Run an audit', exact: true })).toBeEnabled();
+        if (intent.action.endsWith('filter')) await expect(filter).toBeFocused();
+        if (intent.action.startsWith('search')) {
+          await expect(search).toBeFocused();
+          await expect(search).toHaveValue('');
+        }
+        if (intent.action === 'older cycles' || intent.action === 'cycle picker focus')
+          await expect(cycle).toHaveValue('cycle-1');
+        if (intent.action === 'cycle picker focus') await expect(cycle).toBeFocused();
+      } finally {
+        audit.release();
+      }
+    });
+  }
+
+  for (const menu of ['open', 'toggle closed', 'Escape closed']) {
+    test(`an audit waiting for ${delay} preserves a mobile menu ${menu}`, async ({
+      page,
+      isMobile
+    }) => {
+      test.skip(!isMobile, 'The menu toggle is a mobile navigation control.');
+      const audit = await pendingAudit(page, delay);
+      await page.clock.install();
+      await login(page);
+      await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+      const toggle = page.getByRole('button', { name: 'Toggle navigation' });
+      try {
+        await audit.start();
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        if (menu === 'toggle closed') await toggle.click();
+        if (menu === 'Escape closed') await page.keyboard.press('Escape');
+        await audit.finish();
+        await expect(toggle).toHaveAttribute('aria-expanded', menu === 'open' ? 'true' : 'false');
+        await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+        if (menu === 'open')
+          await expect(
+            page.getByRole('navigation').getByRole('button', { name: 'Overview', exact: true })
+          ).toBeFocused();
+        else await expect(toggle).toBeFocused();
+      } finally {
+        audit.release();
+      }
+    });
+  }
+}
