@@ -126,7 +126,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		return err
 	}
 	if task.OutputCommit != nil {
-		return a.publishReviewed(ctx, task)
+		return a.publishReviewed(ctx, task, *task.OutputCommit)
 	}
 	if err := a.retryPreflight(ctx, task); err != nil {
 		return err
@@ -190,8 +190,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 				if def == nil || *def != task.DefaultRevision {
 					return model.BlockedReasonStaleBase
 				}
-				task.OutputCommit = &revision
-				return a.publishReviewed(ctx, task)
+				return a.publishReviewed(ctx, task, revision)
 			}
 		}
 		if task.AttemptReviews() > cfg.MaxRepairRounds {
@@ -212,8 +211,29 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	}
 }
 
-func (a *App) publishReviewed(ctx context.Context, task *model.Task) error {
-	if err := a.transition(task, model.StatusPublishing); err != nil {
+func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision string) error {
+	// The checkpoint and operator eligibility share the gate. A successful
+	// cancellation must win before a fresh output commit authorizes publication;
+	// after the checkpoint, a refused cancellation must not stop the worker.
+	err := func() error {
+		a.gate.Lock()
+		defer a.gate.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		previousStatus, previousOutput, previousUpdated := task.Status, task.OutputCommit, task.UpdatedAt
+		task.OutputCommit = &revision
+		task.Status = model.StatusPublishing
+		if err := a.saveTask(task); err != nil {
+			// A failed write cannot authorize later publication or override a
+			// cancellation accepted after this gate is released.
+			task.Status, task.OutputCommit, task.UpdatedAt = previousStatus, previousOutput, previousUpdated
+			return err
+		}
+		// The checkpoint is durable even if its separate status event fails.
+		return a.Store.Event(task.ID, "status", statusEventName(model.StatusPublishing))
+	}()
+	if err != nil {
 		return err
 	}
 	p, err := gitops.Publish(ctx, *task)
