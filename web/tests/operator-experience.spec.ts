@@ -382,6 +382,77 @@ test('the baseline confirmation takes focus, and Back returns it to the button t
   expect(state.writes).toHaveLength(0);
 });
 
+for (const action of ['start', 'cancel']) {
+  test(`failed baseline ${action} feedback survives status polling until dismissed or retried`, async ({
+    page,
+    isMobile
+  }) => {
+    await page.clock.install();
+    const state = await configurationFixture(page);
+    await login(page);
+    await openNavigation(page, 'Configuration', !!isMobile);
+    const panel = page.getByRole('region', { name: 'Clean baseline', exact: true });
+    const begin = async () => {
+      await panel.getByRole('button', { name: 'Check clean baseline', exact: true }).click();
+      await panel.getByRole('button', { name: 'Run baseline check', exact: true }).click();
+    };
+    await expect(panel.getByRole('button', { name: 'Check clean baseline' })).toBeEnabled();
+    if (action === 'cancel') {
+      await begin();
+      await expect(panel.getByText('Running', { exact: true })).toBeVisible();
+    }
+    const act =
+      action === 'start'
+        ? begin
+        : () => panel.getByRole('button', { name: 'Cancel baseline check', exact: true }).click();
+    let rejected = 0;
+    await page.route(
+      action === 'start' ? '**/api/baseline-checks' : '**/api/baseline-checks/*/cancel',
+      async (route) => {
+        if (++rejected <= 2) {
+          await route.fulfill({ status: 409, json: { error: `Synthetic ${action} rejection` } });
+        } else await route.fallback();
+      }
+    );
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await act();
+    const failure = panel.getByRole('alert').filter({ hasText: `Synthetic ${action} rejection` });
+    await expect(failure).toBeVisible();
+
+    let failRead = true;
+    await page.route('**/api/baseline-checks/latest', async (route) => {
+      if (failRead)
+        await route.fulfill({ status: 503, json: { error: 'Synthetic baseline status outage' } });
+      else await route.fallback();
+    });
+    await page.clock.runFor(4000);
+    await expect(
+      panel.getByText('Synthetic baseline status outage', { exact: true })
+    ).toBeVisible();
+    await expect(failure).toBeVisible();
+    failRead = false;
+    await page.clock.runFor(4000);
+    await expect(panel.getByText('Synthetic baseline status outage', { exact: true })).toHaveCount(
+      0
+    );
+    await expect(failure).toBeVisible();
+    expect(rejected).toBe(1);
+
+    await failure.getByRole('button', { name: 'Dismiss baseline action error' }).click();
+    await expect(failure).toHaveCount(0);
+    await expect(panel.getByRole('heading', { name: 'Clean baseline', exact: true })).toBeFocused();
+    await act();
+    await expect(failure).toBeVisible();
+    await act();
+    await expect(failure).toHaveCount(0);
+    await expect(
+      panel.getByText(action === 'start' ? 'Running' : 'Cancelled', { exact: true })
+    ).toBeVisible();
+    expect(rejected).toBe(3);
+    expect(state.baselines).toHaveLength(action === 'start' ? 1 : 2);
+  });
+}
+
 test('the baseline panel never denies a recorded check while its status loads or is unavailable', async ({
   page,
   isMobile

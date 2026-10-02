@@ -21,6 +21,7 @@
   } = $props();
   let view = $state<BaselineView | null>(null),
     error = $state(''),
+    actionError = $state(''),
     pending = $state(''),
     confirming = $state(false);
   let generation = 0;
@@ -103,13 +104,13 @@
     if (!savedRevision || !editable || dirty || pending || view?.eligible !== true) return;
     confirming = false;
     pending = 'start';
-    error = '';
+    actionError = '';
     try {
       await api<BaselineCheck>('/baseline-checks', 'POST', { expected_revision: savedRevision });
       await load(true);
       onchanged();
     } catch (e) {
-      error = (e as Error).message;
+      actionError = (e as Error).message;
     } finally {
       pending = '';
     }
@@ -118,13 +119,13 @@
     const id = check?.id;
     if (!id || pending) return;
     pending = 'cancel';
-    error = '';
+    actionError = '';
     try {
       await api(`/baseline-checks/${encodeURIComponent(id)}/cancel`, 'POST');
       await load(true);
       onchanged();
     } catch (e) {
-      error = (e as Error).message;
+      actionError = (e as Error).message;
     } finally {
       pending = '';
     }
@@ -134,7 +135,7 @@
 <section class="panel settings-section" aria-labelledby="baseline-heading">
   <div class="section-heading">
     <div>
-      <h2 id="baseline-heading">Clean baseline</h2>
+      <h2 id="baseline-heading" tabindex="-1">Clean baseline</h2>
       <p>
         Optionally verify the saved commands on a disposable clone of the remote default branch. A
         pass reflects the moment the check ran; it is not publication evidence and does not prove
@@ -144,6 +145,17 @@
     <Icon name="shield" />
   </div>
   {#if error}<div class="notice error" role="alert">{error}</div>{/if}
+  {#if actionError}<div class="notice error" role="alert">
+      <span>Baseline action failed. {actionError}</span>
+      <button
+        class="icon-button"
+        aria-label="Dismiss baseline action error"
+        onclick={() => {
+          actionError = '';
+          document.getElementById('baseline-heading')?.focus();
+        }}><Icon name="close" size={16} /></button
+      >
+    </div>{/if}
   {#if check}
     <dl class="facts">
       <div>
