@@ -238,6 +238,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	if err := a.deployment.check(c); err != nil {
 		return nil, err
 	}
+	c = a.deployment.pin(c)
 	if err := c.Validate(false); err != nil {
 		return nil, err
 	}
