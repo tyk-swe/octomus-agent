@@ -378,8 +378,10 @@ octomus-agent --version
 ```
 
 `--data-dir` defaults to `.octomus` in the working directory and `--listen` to
-`127.0.0.1:4200`. Environment equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`,
-`OCTOMUS_ASSETS`; the service also requires `OCTOMUS_TOKEN` (or `OCTOMUS_TOKEN_FILE`).
+`127.0.0.1:4200`. Service startup and read-only exports resolve `--data-dir`
+symlinks before parent (`..`) segments, so the same path selects the same state.
+Read-only exports require that directory to exist and never create it. Environment
+equivalents: `OCTOMUS_DATA_DIR`, `OCTOMUS_LISTEN`, `OCTOMUS_ASSETS`; the service also requires `OCTOMUS_TOKEN` (or `OCTOMUS_TOKEN_FILE`).
 `--sandbox` (`OCTOMUS_SANDBOX`) defaults to `docker`, which runs every runner and
 verification command through the broker at `OCTOMUS_SANDBOXD_SOCKET`; `off` runs them on
 this host. An explicit `--sandbox` overrides the environment default, including a
