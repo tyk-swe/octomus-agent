@@ -223,7 +223,10 @@ func checkRediscoveryDecisions(requests []rediscoveryRequest, proposals []model.
 func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task) error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
-	return a.Store.CommitPlan(cycle, tasks)
+	if err := a.ctx.Err(); err != nil {
+		return err
+	}
+	return a.Store.CommitPlanContext(a.ctx, cycle, tasks)
 }
 
 func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle) (model.OpenPrInventory, error) {
