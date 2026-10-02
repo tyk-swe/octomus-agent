@@ -199,7 +199,12 @@ jobs:
         env:
           OCTOMUS_GITHUB_REPO: owner/repository
           DOCKER_GID: '999'
-      - run: make test-sandbox
+      - id: sandbox_tests
+        run: make test-sandbox
+      - name: Sandbox runtime diagnostics
+        if: failure() && steps.sandbox_tests.outcome == 'failure'
+        run: |
+          docker info --format 'ServerVersion={{.ServerVersion}} CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}} KernelVersion={{.KernelVersion}}'
 
   verify:
     name: verify
