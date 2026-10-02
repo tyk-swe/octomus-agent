@@ -20,6 +20,7 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- valueResult) {
 	}
 	var buffer []byte
 	var data []byte
+	var readErr error
 	frameBytes := 0
 	chunk := make([]byte, 32768)
 	for {
@@ -65,18 +66,17 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- valueResult) {
 			emit(valueResult{err: fmt.Errorf("OpenCode event backlog exceeds 16 MB")})
 			return
 		}
-		n, err := body.Read(chunk)
-		if n > 0 {
-			buffer = append(buffer, chunk[:n]...)
-			continue
-		}
-		if err != nil {
-			if err == io.EOF {
+		if readErr != nil {
+			if readErr == io.EOF {
 				emit(valueResult{err: fmt.Errorf("OpenCode event stream disconnected")})
 			} else {
-				emit(valueResult{err: err})
+				emit(valueResult{err: readErr})
 			}
 			return
 		}
+		// Dispatch complete frames before the error accompanying their bytes.
+		var n int
+		n, readErr = body.Read(chunk)
+		buffer = append(buffer, chunk[:n]...)
 	}
 }

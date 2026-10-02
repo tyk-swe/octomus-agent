@@ -25,6 +25,7 @@ func lineReader(r io.Reader, limit int, done <-chan struct{}) chan lineResult {
 		}
 		over := lineResult{err: fmt.Errorf("line exceeds the %d byte protocol limit", limit)}
 		var backlog []byte
+		var readErr error
 		buf := make([]byte, 32768)
 		for {
 			if end := bytes.IndexByte(backlog, '\n'); end >= 0 {
@@ -44,23 +45,22 @@ func lineReader(r io.Reader, limit int, done <-chan struct{}) chan lineResult {
 				send(over)
 				return
 			}
-			n, err := r.Read(buf)
-			if n > 0 {
-				backlog = append(backlog, buf[:n]...)
-				continue
-			}
-			if err != nil {
-				if err == io.EOF && len(backlog) > 0 {
+			if readErr != nil {
+				if readErr == io.EOF && len(backlog) > 0 {
 					if len(backlog) > limit {
 						send(over)
 						return
 					}
 					send(lineResult{line: backlog})
-				} else if err != io.EOF {
-					send(lineResult{err: err})
+				} else if readErr != io.EOF {
+					send(lineResult{err: readErr})
 				}
 				return
 			}
+			// Process returned bytes before their error, without reading past it.
+			var n int
+			n, readErr = r.Read(buf)
+			backlog = append(backlog, buf[:n]...)
 		}
 	}()
 	return ch
