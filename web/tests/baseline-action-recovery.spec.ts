@@ -39,6 +39,8 @@ async function fixture(page: Page) {
     state.stateReads++;
     const response = await route.fetch();
     const snapshot: Snapshot = await response.json();
+    snapshot.configured = true;
+    snapshot.audit_configured = true;
     snapshot.control.paused = true;
     snapshot.control.mode = 'paused';
     snapshot.active_tasks = 0;
@@ -348,6 +350,10 @@ for (const action of ['start', 'cancel'] as const) {
       const writes = trackWrites(page);
       await open(page, !!isMobile);
       const panel = panelFor(page);
+      await openNavigation(page, 'Overview', !!isMobile);
+      for (const name of ['Start continuous', 'Run once', 'Run an audit'])
+        await expect(page.getByRole('button', { name, exact: true })).toBeEnabled();
+      await openNavigation(page, 'Configuration', !!isMobile);
       if (action === 'cancel') {
         state.baselineActive = true;
         const stateReads = state.stateReads;
