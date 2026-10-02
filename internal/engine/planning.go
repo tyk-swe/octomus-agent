@@ -87,9 +87,7 @@ func (a *App) interruptOrphanedCycles() error {
 	}
 	if control.Mode == model.OperatingModeRunOnce && control.Batch != nil && control.Batch.Phase == model.BatchPhasePlanning {
 		message := "Run once was interrupted before its planning transaction committed"
-		control.SetMode(model.OperatingModePaused)
-		control.Error = &message
-		return a.Store.SaveControl(control)
+		return a.pauseLocked(&control, &message)
 	}
 	return nil
 }
