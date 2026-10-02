@@ -126,7 +126,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		return err
 	}
 	if task.OutputCommit != nil {
-		return a.publishReviewed(ctx, task)
+		return a.publishReviewed(ctx, task, *task.OutputCommit)
 	}
 	if err := a.retryPreflight(ctx, task); err != nil {
 		return err
@@ -190,8 +190,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 				if def == nil || *def != task.DefaultRevision {
 					return model.BlockedReasonStaleBase
 				}
-				task.OutputCommit = &revision
-				return a.publishReviewed(ctx, task)
+				return a.publishReviewed(ctx, task, revision)
 			}
 		}
 		if task.AttemptReviews() > cfg.MaxRepairRounds {
@@ -212,8 +211,18 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	}
 }
 
-func (a *App) publishReviewed(ctx context.Context, task *model.Task) error {
-	if err := a.transition(task, model.StatusPublishing); err != nil {
+func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision string) error {
+	// The checkpoint and operator eligibility share the gate. A successful
+	// cancellation must win before a fresh output commit authorizes publication;
+	// after the checkpoint, a refused cancellation must not stop the worker.
+	a.gate.Lock()
+	err := ctx.Err()
+	if err == nil {
+		task.OutputCommit = &revision
+		err = a.transition(task, model.StatusPublishing)
+	}
+	a.gate.Unlock()
+	if err != nil {
 		return err
 	}
 	p, err := gitops.Publish(ctx, *task)
