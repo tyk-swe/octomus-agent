@@ -377,7 +377,10 @@ octomus-agent --version
 `OCTOMUS_ASSETS`; the service also requires `OCTOMUS_TOKEN` (or `OCTOMUS_TOKEN_FILE`).
 `--sandbox` (`OCTOMUS_SANDBOX`) defaults to `docker`, which runs every runner and
 verification command through the broker at `OCTOMUS_SANDBOXD_SOCKET`; `off` runs them on
-this host. `--sandboxd` serves the broker and `--egress` the egress gateway, each configured
+this host. An explicit `--sandbox` overrides the environment default, including a
+mistyped default. Without an override, an invalid default refuses the command;
+`--help` and `--version` remain available without starting the service or writing state.
+`--sandboxd` serves the broker and `--egress` the egress gateway, each configured
 from the environment in [compose.yaml](../deploy/docker/compose.yaml). `--sandboxd-check` asks
 the broker over its socket whether it serves sandboxes; the sandboxd container's HEALTHCHECK runs
 it, and the control plane waits for that health before starting. `--healthcheck` asks
