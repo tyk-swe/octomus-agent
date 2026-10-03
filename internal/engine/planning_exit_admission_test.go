@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
@@ -185,4 +186,99 @@ func TestPlanningWorkerExitBlocksResumeUntilBatchPauseSettles(t *testing.T) {
 	}
 	assertActiveRecoveryCause(t, app, "")
 	assertNoOpenClients(t, fixture.script)
+}
+
+func TestPlanningWorkerExitControlReadFailureBlocksAdmissionBeforeTick(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"audit", "run once", "continuous"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newScriptedPlanningFixture(t)
+			grounding := runnertest.NewGate()
+			fixture.script.Queue(fixture.routes.Orchestrator, runnertest.Reply{Gate: grounding, Err: errors.New("synthetic ordinary grounding failure")})
+			app := fixture.pausedApp(t)
+			t.Cleanup(grounding.Release)
+			// The terminal cycle write succeeds, but its trigger makes only the
+			// following control read fail typed decoding. Restoring the exact saved
+			// control below simulates reads healing before the first recovery Tick.
+			schedulerSQL(t, fixture.state, `CREATE TEMP TRIGGER refuse_exit_control_read AFTER UPDATE ON records
+				WHEN NEW.kind='cycle' AND json_extract(NEW.data,'$.status')='failed'
+				BEGIN UPDATE records SET data=json_set(data,'$.next_cycle_at','synthetic final-control-read refusal')
+				WHERE kind='settings' AND id='control'; END`)
+			switch mode {
+			case "audit":
+				if _, err := app.StartAudit(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			case "run once":
+				if err := app.RunOnce(); err != nil {
+					t.Fatal(err)
+				}
+			case "continuous":
+				if err := app.Resume(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode != "audit" {
+				if err := app.Tick(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			waitPlanningStorage(t, grounding.Entered())
+			before, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			before.NextCycleAt = time.Now().Add(time.Hour).Unix()
+			before.Error = stringPointer("earlier saved failure")
+			if err := fixture.state.SaveControl(before); err != nil {
+				t.Fatal(err)
+			}
+			grounding.Release()
+			app.wg.Wait()
+			_, loadErr := app.Control()
+			if loadErr == nil || !strings.Contains(loadErr.Error(), "next_cycle_at") || !app.runtimeIdle() {
+				t.Fatalf("fixture did not fail the released worker's final control read: %v, idle=%t", loadErr, app.runtimeIdle())
+			}
+			cycles, err := store.List[model.Cycle](fixture.state, "cycle")
+			if err != nil || len(cycles) != 1 || cycles[0].Status != model.CycleFailed {
+				t.Fatalf("terminal cycle write failed instead of the final control read: %+v, %v", cycles, err)
+			}
+			schedulerSQL(t, fixture.state, "DROP TRIGGER refuse_exit_control_read")
+			if err := fixture.state.SaveControl(before); err != nil {
+				t.Fatal(err)
+			}
+			for _, action := range []string{"audit", "cycle", "resume"} {
+				_, err := app.ControlAction(action)
+				requireRecoveryConflict(t, err)
+			}
+			if saved, err := app.Control(); err != nil || !wirejson.Equal(saved, before) {
+				t.Errorf("a control changed the unsettled policy before recovery: %+v, %v; want %+v", saved, err, before)
+			}
+			assertAdmissions(t, fixture.state, 1, "final control read failure cannot admit another planning pass")
+			if t.Failed() {
+				return
+			}
+			assertActiveRecoveryCause(t, app, loadErr.Error())
+			if err := app.Tick(); err != nil {
+				t.Fatal(err)
+			}
+			assertActiveRecoveryCause(t, app, "")
+			healed, err := app.Control()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "run once" {
+				if healed.Mode != model.OperatingModePaused || healed.Batch != nil || healed.NextCycleAt != before.NextCycleAt || healed.Error == nil || *healed.Error != "Run once was interrupted before its planning transaction committed" {
+					t.Fatalf("healing did not settle the workerless planning batch: %+v", healed)
+				}
+			} else if !wirejson.Equal(healed, before) {
+				t.Fatalf("recovery changed the saved ordinary mode, error, or schedule: %+v; want %+v", healed, before)
+			}
+			if _, err := app.ControlAction("resume"); err != nil {
+				t.Fatalf("healed final control read still blocked resume: %v", err)
+			}
+			assertAdmissions(t, fixture.state, 1, "control settlement must not replay planning")
+			assertNoOpenClients(t, fixture.script)
+		})
+	}
 }

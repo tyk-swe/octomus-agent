@@ -119,7 +119,11 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 	}
 	a.runtimeMu.Unlock()
 	control, loadErr := a.Control()
-	if loadErr == nil && !shuttingDown {
+	if loadErr != nil {
+		// The saved control may still require run-once settlement. Keep admission
+		// blocked until recovery can inspect it, even when the cycle write succeeded.
+		a.setActiveRecoveryError(loadErr)
+	} else if !shuttingDown {
 		var message string
 		if err != nil {
 			message = redact.Error(err)
