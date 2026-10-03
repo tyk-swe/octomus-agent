@@ -2,15 +2,18 @@ package engine
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
+	"modernc.org/sqlite"
 )
 
 func TestRecoveryVerifiesAfterFinalAllowedRepair(t *testing.T) {
@@ -160,6 +163,29 @@ func TestRecoveryReviewsDoNotSpendRepairRounds(t *testing.T) {
 }
 
 func TestCompletedRepairCounterSurvivesFinalWriteFailure(t *testing.T) {
+	for _, shutdown := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shutdown=%t", shutdown), func(t *testing.T) {
+			testCompletedRepairCounterFinalWriteFailure(t, shutdown)
+		})
+	}
+}
+
+func testCompletedRepairCounterFinalWriteFailure(t *testing.T, shutdown bool) {
+	t.Helper()
+	var app *App
+	var refused atomic.Bool
+	hook := "completed_repair_write_" + strings.ReplaceAll(model.ID(), "-", "")
+	if err := sqlite.RegisterScalarFunction(hook, 0, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		if refused.CompareAndSwap(false, true) {
+			if shutdown {
+				app.cancel()
+			}
+			return int64(1), nil
+		}
+		return int64(0), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	fixture := newScriptedFixture(t)
 	fixture.configure(t, func(cfg *config.Config) {
 		cfg.VerificationCommands = []string{"false"}
@@ -167,22 +193,45 @@ func TestCompletedRepairCounterSurvivesFinalWriteFailure(t *testing.T) {
 	})
 	routes, script := fixture.routes, fixture.script
 	script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature", Effect: writeFile("feature.txt", "draft\n")})
-	script.Answer(routes.Reviewer, cleanReview("Before repair"), cleanReview("Explicit retry"), cleanReview("After retried repair"))
+	script.Answer(routes.Reviewer, cleanReview("Before repair"))
+	if shutdown {
+		script.Answer(routes.Reviewer, cleanReview("Recovery after completed repair"))
+	}
+	script.Answer(routes.Reviewer, cleanReview("Explicit retry"), cleanReview("After retried repair"))
 	script.Queue(routes.Repair,
 		runnertest.Reply{Answer: "First repair", Effect: writeFile("feature.txt", "first repair\n")},
 		runnertest.Reply{Answer: "Retried repair", Effect: writeFile("feature.txt", "second repair\n")})
 	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
+	task.Status = model.StatusExecuting
 	saveExecutionTask(t, fixture.planningFixture, task)
 	schedulerSQL(t, fixture.state, fmt.Sprintf(`CREATE TEMP TRIGGER refuse_completed_repair BEFORE UPDATE ON records
 		WHEN NEW.kind='task' AND NEW.id='%s' AND json_extract(NEW.data,'$.status')='repairing'
-		AND json_extract(NEW.data,'$.repair_rounds')=1
-		BEGIN SELECT RAISE(ABORT, 'synthetic completed repair write refusal'); END`, task.ID))
-	app := fixture.newApp(t)
-	blocked := driveTask(t, fixture.planningFixture, app, task.ID)
-	if blocked.Status != model.StatusBlocked || blocked.RepairRounds == nil || *blocked.RepairRounds != 1 || blocked.RepairProgress == nil || !blocked.RepairProgress.AwaitingReview || len(script.Turns(routes.Repair)) != 1 {
+		AND json_extract(OLD.data,'$.repair_rounds')=0 AND json_extract(NEW.data,'$.repair_rounds')=1
+		AND %s()=1 BEGIN SELECT RAISE(ABORT, 'synthetic completed repair write refusal'); END`, task.ID, hook))
+	app = fixture.newApp(t)
+	app.runTask(task)
+	app.wg.Wait()
+	blocked := loadTask(t, fixture.state, task.ID)
+	if blocked.RepairRounds == nil || *blocked.RepairRounds != 1 || blocked.RepairProgress == nil || !blocked.RepairProgress.AwaitingReview || len(script.Turns(routes.Repair)) != 1 {
 		t.Fatalf("supervisor lost completed repair accounting: status=%s counter=%v progress=%+v", blocked.Status, blocked.RepairRounds, blocked.RepairProgress)
 	}
 	schedulerSQL(t, fixture.state, "DROP TRIGGER refuse_completed_repair")
+	if shutdown {
+		if blocked.Status != model.StatusRepairing {
+			t.Fatalf("shutdown finalized recoverable repair: status=%s", blocked.Status)
+		}
+		app.Shutdown()
+		app = fixture.newApp(t)
+		if err := app.Recover(); err != nil {
+			t.Fatal(err)
+		}
+		blocked = driveTask(t, fixture.planningFixture, app, task.ID)
+		if !blockedAs(blocked, model.BlockedReasonVerificationFailed) || blocked.RepairRounds == nil || *blocked.RepairRounds != 1 || len(script.Turns(routes.Repair)) != 1 || len(blocked.Reviews) != 2 {
+			t.Fatalf("recovery lost completed repair consumption: status=%s counter=%v reviews=%d", blocked.Status, blocked.RepairRounds, len(blocked.Reviews))
+		}
+	} else if blocked.Status != model.StatusBlocked || blocked.Error == nil || !strings.Contains(*blocked.Error, "synthetic completed repair write refusal") {
+		t.Fatalf("refused finalization did not block execution: status=%s error=%s", blocked.Status, optionalText(blocked.Error))
+	}
 	if err := app.TaskAction(context.Background(), task.ID, "retry"); err != nil {
 		t.Fatal(err)
 	}
