@@ -43,7 +43,7 @@ func (a *App) Tick() error {
 	}
 	// A failed terminal write can outlive its planning worker, including while paused.
 	if err := a.interruptOrphanedCycles(); err != nil {
-		return &recoveryError{err: err}
+		return a.blockRecovery(err)
 	}
 	// Reset only after every maintenance recovery step succeeds.
 	a.recordedRecoveryActivity = recoveryActivity{}
@@ -220,7 +220,7 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 			return
 		}
 		a.endPreflight()
-		if a.ctx.Err() != nil {
+		if a.ctx.Err() != nil || errors.Is(err, ErrRecoveryBlocked) {
 			return
 		}
 		live, loadErr := a.Control()

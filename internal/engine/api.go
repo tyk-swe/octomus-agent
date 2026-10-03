@@ -88,6 +88,11 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 }
 
 func (a *App) controlConflict(action string, control model.Control) error {
+	if action == "audit" || action == "cycle" || action == "resume" {
+		if err := a.recoveryConflict(); err != nil {
+			return err
+		}
+	}
 	a.runtimeMu.Lock()
 	baselineActive := a.runtime.baseline != nil
 	idle := a.runtime.idle()

@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	ErrNotPaused = conflictError("Octomus must be paused for this operation")
-	ErrBusy      = conflictError("Octomus has active work")
+	ErrNotPaused       = conflictError("Octomus must be paused for this operation")
+	ErrBusy            = conflictError("Octomus has active work")
+	ErrRecoveryBlocked = conflictError("Wait for saved-state recovery to finish before starting new work.")
 )
 
 type planningCapacityError struct {
@@ -28,6 +29,15 @@ func (a *App) runtimeIdle() bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	return a.runtime.idle()
+}
+
+func (a *App) recoveryConflict() error {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	if a.runtime.activeRecoveryError != nil {
+		return ErrRecoveryBlocked
+	}
+	return nil
 }
 
 func (a *App) enterContinuous(control *model.Control) error {
@@ -101,6 +111,9 @@ func (a *App) admitAuditPreflight() (config.Config, model.Control, error) {
 	if err := a.ctx.Err(); err != nil {
 		return config.Config{}, model.Control{}, err
 	}
+	if err := a.recoveryConflict(); err != nil {
+		return config.Config{}, model.Control{}, err
+	}
 	if !a.runtimeIdle() {
 		return config.Config{}, model.Control{}, ErrBusy
 	}
@@ -156,6 +169,9 @@ func (a *App) endPreflight() {
 
 func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.CycleMode) (string, error) {
 	if err := a.ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := a.recoveryConflict(); err != nil {
 		return "", err
 	}
 	a.runtimeMu.Lock()
