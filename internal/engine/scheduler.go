@@ -45,6 +45,9 @@ func (a *App) Tick() error {
 	if err := a.interruptOrphanedCycles(); err != nil {
 		return a.blockRecovery(err)
 	}
+	if err := a.blockOrphanedPublications(); err != nil {
+		return a.blockRecovery(err)
+	}
 	// Reset only after every maintenance recovery step succeeds.
 	a.recordedRecoveryActivity = recoveryActivity{}
 	a.runtimeMu.Lock()

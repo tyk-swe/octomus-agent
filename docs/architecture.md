@@ -159,6 +159,9 @@ notice that further causes are suppressed. This bounds recovery activity even
 when causes alternate or keep changing. Refused activity writes remain retryable;
 the current redacted cause remains visible until all maintenance recovery succeeds,
 even if its activity entry cannot be saved or further entries are suppressed.
+Likewise, a saved publication checkpoint whose worker has exited becomes blocked
+as `publication_uncertain` once storage accepts the update. This preserves its
+evidence and PR reservation for explicit reconciliation without replaying delivery.
 
 ## Bounded observation and storage
 

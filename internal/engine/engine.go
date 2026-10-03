@@ -409,6 +409,15 @@ func (a *App) setTaskError(task *model.Task, err error) error {
 	return a.transition(task, model.StatusBlocked)
 }
 
+// Caller holds the gate until the exited worker releases its runtime claim.
+// Keep new work blocked when a publication checkpoint cannot be settled yet.
+func (a *App) settleExitedTask(task *model.Task, cause error) {
+	publishing := task.Status == model.StatusPublishing && task.OutputCommit != nil
+	if err := a.setTaskError(task, cause); err != nil && publishing {
+		a.setActiveRecoveryError(err)
+	}
+}
+
 func (a *App) runTask(task model.Task) {
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.runtimeMu.Lock()
@@ -434,7 +443,11 @@ func (a *App) runTask(task model.Task) {
 			if runErr == nil || errors.Is(runErr, context.Canceled) {
 				runErr = errors.New("Task worker exited unexpectedly; inspect the preserved workspace")
 			}
-			_ = a.setTaskError(current, runErr)
+			a.settleExitedTask(current, runErr)
+		} else if loadErr != nil {
+			// The final read could not establish whether a checkpoint remains.
+			// A successful recovery pass can safely clear this barrier.
+			a.setActiveRecoveryError(loadErr)
 		}
 		a.runtimeMu.Lock()
 		delete(a.runtime.tasks, task.ID)

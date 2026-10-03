@@ -281,7 +281,9 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	_ = a.Store.Event(id, "operator", "reconcile")
 	current, loadErr := store.Get[model.Task](a.Store, "task", id)
 	if loadErr == nil && current != nil && current.Status.Active() {
-		_ = a.setTaskError(current, errors.New("Task worker exited unexpectedly; inspect the preserved workspace"))
+		a.settleExitedTask(current, errors.New("Task worker exited unexpectedly; inspect the preserved workspace"))
+	} else if loadErr != nil {
+		a.setActiveRecoveryError(loadErr)
 	}
 	return actionErr
 }
