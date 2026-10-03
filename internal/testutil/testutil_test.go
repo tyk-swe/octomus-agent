@@ -1,15 +1,19 @@
 package testutil_test
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
+	"golang.org/x/sys/unix"
 )
 
 func TestWaitUntilReportsWhetherTheConditionHeld(t *testing.T) {
@@ -30,8 +34,33 @@ func TestWaitUntilReportsWhetherTheConditionHeld(t *testing.T) {
 	}
 }
 
+// Rename the initial thread before testing starts: /proc/PID/stat uses the
+// thread-group leader's name, and test goroutines may run on other threads.
+// PR_SET_NAME works even when procfs is mounted read-only.
+func init() {
+	if os.Getenv("OCTOMUS_TEST_PROCESS_GONE_HELPER") != "1" {
+		return
+	}
+	runtime.LockOSThread()
+	name := []byte("x) Z 0\x00")
+	if err := unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(&name[0])), 0, 0, 0); err != nil {
+		fmt.Fprintln(os.Stderr, "rename process:", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stdout, "ready")
+	_, _ = io.Copy(io.Discard, os.Stdin)
+	os.Exit(0)
+}
+
 func TestProcessGoneReadsTheStateAfterTheCommandName(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-c", `printf 'x) Z 0' > /proc/self/comm && echo ready && read line`)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^$")
+	cmd.Env = append(os.Environ(), "OCTOMUS_TEST_PROCESS_GONE_HELPER=1")
+	var stderr testutil.SyncBuffer
+	cmd.Stderr = &stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -53,12 +82,12 @@ func TestProcessGoneReadsTheStateAfterTheCommandName(t *testing.T) {
 	})
 	ready := make([]byte, len("ready\n"))
 	if _, err := io.ReadFull(stdout, ready); err != nil || string(ready) != "ready\n" {
-		t.Fatalf("the shell never renamed itself: %q, %v", ready, err)
+		t.Fatalf("the helper never renamed itself: %q, %v; stderr: %s", ready, err, stderr.String())
 	}
 	pid := strconv.Itoa(cmd.Process.Pid)
 	stat, err := os.ReadFile("/proc/" + pid + "/stat")
 	if err != nil || !strings.Contains(string(stat), "(x) Z 0) ") {
-		t.Fatalf("stat = %q, %v; want the shell's zombie-like command name", stat, err)
+		t.Fatalf("stat = %q, %v; want the helper's zombie-like command name", stat, err)
 	}
 	if testutil.ProcessGone(pid) {
 		t.Fatal("a running process named like a zombie was reported gone")
