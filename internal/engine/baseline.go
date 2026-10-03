@@ -184,10 +184,7 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 		StartedAt:         model.Now(),
 		Commands:          []model.BaselineCommand{},
 	}
-	if err := a.Store.Put("baseline", check.ID, check); err != nil {
-		return nil, err
-	}
-	if err := a.Store.Put("settings", "baseline_latest", check.ID); err != nil {
+	if err := a.Store.BeginBaseline(check); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
