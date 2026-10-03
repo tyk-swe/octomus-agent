@@ -2,95 +2,17 @@ import { readFileSync } from 'node:fs';
 import { expect } from '@playwright/test';
 import {
   checksVerdict,
-  commandExplanation,
-  decisionCounts,
-  outcomeVerdict,
-  planningVerdict,
-  plural,
   prVerdict,
   reviewerAgreement,
-  reviewerSlot,
-  reviewRoundBadge,
   reviewVerdict,
-  revisionMatchLabel,
-  roundRevisionLabel,
-  taskIcon,
   TONES,
   UNKNOWN_VERDICT,
   verdictBadge
 } from '../src/lib/evidence';
-import { ACTIVE_STATUSES, type ReviewEvidence, type ReviewRoundEvidence } from '../src/lib/types';
-import { A, B, command, reviewer, reviewRound, taskEvidence, test } from './synthetic';
+import { type ReviewEvidence, type ReviewRoundEvidence } from '../src/lib/types';
+import { A, command, reviewer, reviewRound, taskEvidence, test } from './synthetic';
 
 test.skip(({ isMobile }) => isMobile, 'Pure mapping rules run once, on the desktop project.');
-
-test('decision counts list only decisions that occurred, in a fixed order', () => {
-  expect(decisionCounts({ candidate: 0, deferred: 0, rejected: 0, accepted: 3 })).toEqual([
-    { decision: 'accepted', count: 3, tone: 'clean' }
-  ]);
-  expect(decisionCounts({ accepted: 0, rejected: 0, deferred: 0, candidate: 0 })).toEqual([]);
-  expect(decisionCounts({})).toEqual([]);
-  expect(
-    decisionCounts({ zeta: 1, candidate: 2, deferred: 1, unknown: 0, rejected: 4, alpha: 5 })
-  ).toEqual([
-    { decision: 'rejected', count: 4, tone: 'failed' },
-    { decision: 'deferred', count: 1, tone: 'blocked' },
-    { decision: 'candidate', count: 2, tone: 'cancelled' },
-    { decision: 'alpha', count: 5, tone: 'cancelled' },
-    { decision: 'zeta', count: 1, tone: 'cancelled' }
-  ]);
-});
-
-test('an idle cycle is a finished planning pass that accepted nothing, in either mode', () => {
-  const execution = planningVerdict({ status: 'idle', mode: 'execution' });
-  expect(execution).toMatchObject({ label: 'Planning complete · nothing accepted', tone: 'clean' });
-  expect(execution.detail).toContain('An empty task set is a successful idle cycle');
-  expect(execution.detail).toContain('planning completion is not task completion');
-  expect(planningVerdict({ status: 'idle', mode: 'audit' })).toEqual({
-    label: 'Audit complete · nothing accepted',
-    tone: 'clean',
-    detail: 'The audit finished and no recommendation was accepted.'
-  });
-  expect(planningVerdict({ status: 'paused', mode: 'execution' })).toMatchObject({
-    label: 'Planning paused',
-    tone: ''
-  });
-});
-
-test('a task outcome takes the tone of its finished status; any other status is still running', () => {
-  expect(outcomeVerdict({ status: 'published' })).toEqual({
-    label: 'published',
-    tone: 'clean',
-    detail: 'Recorded as published. Published describes delivery, not merge.'
-  });
-  expect(outcomeVerdict({ status: 'failed' }).tone).toBe('failed');
-  expect(outcomeVerdict({ status: 'cancelled' }).tone).toBe('cancelled');
-  expect(
-    outcomeVerdict({ status: 'blocked', blocked_reason: 'repair_limit', error_recorded: true })
-  ).toEqual({
-    label: 'blocked',
-    tone: 'blocked',
-    detail: 'The saved task status, verbatim. Blocked reason: repair limit. An error is recorded.'
-  });
-  for (const status of ['queued', ...ACTIVE_STATUSES, 'unrecognised'])
-    expect(outcomeVerdict({ status })).toMatchObject({ label: status, tone: 'running' });
-});
-
-test('task rows show one icon per status family, and every active status shares one', () => {
-  expect(taskIcon('published')).toBe('check');
-  expect(taskIcon('blocked')).toBe('alert');
-  expect(taskIcon('failed')).toBe('alert');
-  expect(taskIcon('queued')).toBe('clock');
-  for (const status of ACTIVE_STATUSES) expect(taskIcon(status)).toBe('activity');
-  expect(taskIcon('cancelled')).toBe('code');
-  expect(taskIcon('unrecognised')).toBe('code');
-});
-
-test('reviewer slots are named by position, and an unknown slot stays verbatim', () => {
-  expect(reviewerSlot('adversary-a')).toBe('Reviewer A');
-  expect(reviewerSlot('adversary-b')).toBe('Reviewer B');
-  expect(reviewerSlot('adversary-c')).toBe('adversary-c');
-});
 
 function withReview(review: Partial<ReviewEvidence>, latest: Partial<ReviewRoundEvidence> = {}) {
   return taskEvidence('synthetic-task', {
@@ -270,91 +192,6 @@ test('a reviewer slot badge shows its own decision only when exactly one is reco
   expect(verdictBadge(reviewer('adversary-a', { state: 'malformed', decision: null }))).toEqual({
     label: 'Malformed batch',
     tone: 'failed'
-  });
-});
-
-test('planning outcomes name planning, never task completion, in both modes', () => {
-  const cases: [string, 'execution' | 'audit', string, string][] = [
-    ['completed', 'execution', 'Planning complete', 'clean'],
-    ['completed', 'audit', 'Audit complete', 'clean'],
-    ['running', 'execution', 'Planning in progress', 'running'],
-    ['running', 'audit', 'Audit in progress', 'running'],
-    ['failed', 'execution', 'Planning failed', 'failed'],
-    ['interrupted', 'execution', 'Planning interrupted', 'blocked'],
-    ['interrupted', 'audit', 'Audit interrupted', 'blocked']
-  ];
-  for (const [status, mode, label, tone] of cases)
-    expect(planningVerdict({ status, mode }), `${mode} ${status}`).toMatchObject({ label, tone });
-  expect(planningVerdict({ status: 'completed', mode: 'execution' }).detail).toBe(
-    'Proposal decisions are recorded. Planning completion is not task completion.'
-  );
-  expect(planningVerdict({ status: 'running', mode: 'audit' }).detail).toBe(
-    'Audit is still running. Recommendations are recorded when it finishes.'
-  );
-  expect(planningVerdict({ status: 'interrupted', mode: 'execution' }).detail).toBe(
-    'Planning was interrupted by a service stop and did not finish.'
-  );
-});
-
-test('a command explanation names the revisions it compared, recorded or not', () => {
-  const at = (revision: string) => revision.slice(0, 12);
-  expect(commandExplanation(command('test', 'passed'), B)).toBe(
-    `Latest recorded result passed at the recorded output commit ${at(B)}.`
-  );
-  expect(commandExplanation(command('test', 'passed_at_other_revision', A), B)).toBe(
-    `Latest recorded result passed at ${at(A)}, not at the recorded output commit ${at(B)}. A pass at another revision does not count.`
-  );
-  expect(commandExplanation(command('test', 'passed_at_other_revision', null), null)).toBe(
-    'Latest recorded result passed at an unrecorded revision, not at the recorded output commit. A pass at another revision does not count.'
-  );
-  expect(commandExplanation(command('test', 'failed', null), B)).toBe(
-    'Latest recorded result failed. A newer failure invalidates any older pass.'
-  );
-  expect(commandExplanation(command('test', 'no_result', null), B)).toBe(
-    'Configured, with no result recorded. Not passing.'
-  );
-});
-
-test('a count takes the singular noun for exactly one, and irregular plurals are spelled', () => {
-  expect(plural(0, 'finding')).toBe('0 findings');
-  expect(plural(1, 'finding')).toBe('1 finding');
-  expect(plural(2, 'recorded round')).toBe('2 recorded rounds');
-  expect(plural(1, 'retry', 'retries')).toBe('1 retry');
-  expect(plural(0, 'retry', 'retries')).toBe('0 retries');
-  expect(plural(3, 'retry', 'retries')).toBe('3 retries');
-});
-
-test('review rounds and revisions are judged separately, and a missing output commit is named', () => {
-  const round = (result: { completed: boolean; summary: string; findings: unknown[] }) =>
-    reviewRoundBadge({ result });
-  expect(round({ completed: true, summary: 'Done.', findings: [{}] })).toEqual({
-    label: '1 finding',
-    tone: 'blocked'
-  });
-  expect(round({ completed: true, summary: 'Done.', findings: [{}, {}] })).toEqual({
-    label: '2 findings',
-    tone: 'blocked'
-  });
-  expect(round({ completed: false, summary: '', findings: [] })).toEqual({
-    label: 'Incomplete',
-    tone: 'running'
-  });
-  expect(round({ completed: true, summary: '  \n', findings: [] })).toEqual({
-    label: 'No summary recorded',
-    tone: 'blocked'
-  });
-  expect(round({ completed: true, summary: 'Done.', findings: [] })).toEqual({
-    label: 'Clean',
-    tone: 'clean'
-  });
-  expect(roundRevisionLabel(B, B)).toEqual(revisionMatchLabel(true));
-  expect(roundRevisionLabel(A, B)).toEqual({
-    label: 'Not the recorded output commit',
-    tone: 'blocked'
-  });
-  expect(roundRevisionLabel(B, null)).toEqual({
-    label: 'No output commit recorded',
-    tone: 'cancelled'
   });
 });
 

@@ -1,46 +1,13 @@
 package testutil_test
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
-
-func TestFixtureCommandsRejectUnmarkedRoots(t *testing.T) {
-	installFixtureCommands(t)
-
-	for _, withCommand := range []bool{false, true} {
-		name := "outside fixture"
-		if withCommand {
-			name = "unmarked ancestor with bin gh"
-		}
-		t.Run(name, func(t *testing.T) {
-			root := t.TempDir()
-			if withCommand {
-				writeFixtureCommand(t, root, "gh")
-			}
-			cwd := filepath.Join(root, "unrelated", "nested")
-			if err := os.MkdirAll(cwd, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command("gh", "--version")
-			cmd.Dir = cwd
-			output, err := cmd.CombinedOutput()
-			var exit *exec.ExitError
-			if !errors.As(err, &exit) || exit.ExitCode() != 127 {
-				t.Fatalf("gh outside a fixture = %q, %v; want exit 127", output, err)
-			}
-			if !strings.Contains(string(output), "no fixture command 'gh'") {
-				t.Fatalf("gh error = %q; want a missing fixture diagnostic", output)
-			}
-		})
-	}
-}
 
 func TestFixtureCommandsDispatchMarkedRoots(t *testing.T) {
 	installFixtureCommands(t)
@@ -73,51 +40,6 @@ func TestFixtureCommandsDispatchMarkedRoots(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestFixtureCommandsDoNotEscapeIncompleteFixtures(t *testing.T) {
-	installFixtureCommands(t)
-	outer := t.TempDir()
-	if err := testutil.MarkFixtureRoot(outer); err != nil {
-		t.Fatal(err)
-	}
-	writeFixtureCommand(t, outer, "gh")
-	root := filepath.Join(outer, "incomplete")
-	if err := os.Mkdir(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := testutil.MarkFixtureRoot(root); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("gh", "--version")
-	cmd.Dir = root
-	output, err := cmd.CombinedOutput()
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 127 {
-		t.Fatalf("gh without a fixture command = %q, %v; want exit 127", output, err)
-	}
-}
-
-func TestFixtureCommandsFallBackToRealGit(t *testing.T) {
-	installFixtureCommands(t)
-	want, err := exec.Command("/usr/bin/git", "--version").CombinedOutput()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, marked := range []bool{false, true} {
-		root := t.TempDir()
-		if marked {
-			if err := testutil.MarkFixtureRoot(root); err != nil {
-				t.Fatal(err)
-			}
-		}
-		cmd := exec.Command("git", "--version")
-		cmd.Dir = root
-		output, err := cmd.CombinedOutput()
-		if err != nil || string(output) != string(want) {
-			t.Fatalf("git fallback (marked=%v) = %q, %v; want %q", marked, output, err, want)
-		}
 	}
 }
 

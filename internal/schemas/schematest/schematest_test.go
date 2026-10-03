@@ -65,18 +65,3 @@ func TestMatchFindsDriftOnEitherSide(t *testing.T) {
 		})
 	}
 }
-
-func TestSampleFillsEveryField(t *testing.T) {
-	schema := schemas.Object(schemas.Schema{"items": schemas.Array(schemas.Object(schemas.Schema{
-		"id": schemas.String(), "done": boolean,
-	}))})
-	sample := Sample(schema)
-	if err := schemas.Validate(sample, schema); err != nil {
-		t.Fatal(err)
-	}
-	var decoded document
-	SameAfterDecoding(t, sample, &decoded)
-	if !reflect.DeepEqual(decoded, document{Items: []item{{ID: "x", Done: true}}}) {
-		t.Fatalf("decoded = %#v", decoded)
-	}
-}

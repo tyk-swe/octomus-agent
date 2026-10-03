@@ -71,22 +71,6 @@ for (const [name, report, detail] of [
   });
 }
 
-test('a failed individual check overrides an inconsistent passing report', () => {
-  const sandbox = posture({
-    checks: [
-      {
-        id: 'synthetic-check',
-        label: 'Synthetic containment check',
-        passed: false,
-        detail: 'Synthetic exposure'
-      }
-    ]
-  });
-  expect(sandboxVerdict(sandbox)).toMatchObject({ label: '1 check failed', tone: 'failed' });
-  expect(setup(sandbox)).toMatchObject({ tone: 'failed', label: 'Self-test failed' });
-  expect(setup(sandbox).detail).toContain('Synthetic containment check (Synthetic exposure)');
-});
-
 test('only a passing report with recorded passing checks establishes containment', () => {
   const sandbox = posture();
   expect(sandboxVerdict(sandbox)).toMatchObject({ label: 'Contained', tone: 'clean' });

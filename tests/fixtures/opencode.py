@@ -6,12 +6,9 @@ import json
 import os
 from pathlib import Path
 import queue
-import signal
 import socket
-import subprocess
 import sys
 import threading
-import time
 from urllib.parse import parse_qs, unquote, urlparse
 import uuid
 
@@ -22,13 +19,6 @@ mode = lambda: worker_mode('opencode')
 if sys.argv[1:] == ['--version']:
     print('1.18.30')
     sys.exit(0)
-if mode() == 'startup-failure':
-    sys.exit(1)
-if mode() == 'startup-stderr':
-    print('fixture startup failure token=ghp_fixtureStartupSecret0001', file=sys.stderr, flush=True)
-    sys.exit(1)
-if mode() == 'startup-hang':
-    time.sleep(120)
 assert sys.argv[1] == 'serve'
 assert 'OCTOMUS_TOKEN' not in os.environ
 assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
@@ -54,7 +44,6 @@ sessions.mkdir(exist_ok=True)
 subscribers = []
 lock = threading.Lock()
 aborts = {}
-children = {}
 
 
 def log(name, value):
@@ -80,8 +69,6 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def setup_request(self):
-        if mode() == 'overlong-stdout':
-            print('x' * 8191, flush=True)
         expected = 'Basic ' + base64.b64encode(f"{os.environ['OPENCODE_SERVER_USERNAME']}:{os.environ['OPENCODE_SERVER_PASSWORD']}".encode()).decode()
         if self.headers.get('Authorization') != expected:
             self.send_json({'error': 'unauthorized'}, 401)
@@ -105,24 +92,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.setup_request():
             return
-        if self.parts == ['global', 'health'] and mode() == 'unhealthy-stderr':
-            print('fixture health failure token=ghp_fixtureStartupSecret0001', file=sys.stderr, flush=True)
-            self.send_json({'healthy': False, 'version': '1.18.30'})
-        elif self.parts == ['global', 'health']:
-            self.send_json({'healthy': True, 'version': '0.0.0-fixture' if mode() == 'version-mismatch' else '1.18.30'})
+        if self.parts == ['global', 'health']:
+            self.send_json({'healthy': True, 'version': '1.18.30'})
         elif self.parts == ['config']:
-            self.send_json({**policy, 'share': 'auto'} if mode() == 'wrong-policy' else policy)
+            self.send_json(policy)
         elif self.parts == ['provider']:
-            if mode() == 'redirect':
-                self.send_response(302)
-                self.send_header('Location', 'http://127.0.0.1:1/')
-                self.send_header('Content-Length', '0')
-                self.end_headers()
-                return
             providers = []
             for identity in ['fixture', 'alternate', 'offline']:
                 providers.append({'id': identity, 'name': identity.title(), 'key': 'fixture-credential-do-not-expose', 'options': {'apiKey': 'another-fixture-secret'}, 'env': ['PRIVATE_API_KEY'], 'models': {'fixture-model': model('fixture-model'), 'plain-model': model('plain-model', variants=False), 'no-tools': model('no-tools', toolcall=False)}})
-            self.send_json({'all': providers, 'default': {'fixture': 'fixture-model'}, 'connected': [] if mode() == 'no-provider' else ['fixture', 'alternate']})
+            self.send_json({'all': providers, 'default': {'fixture': 'fixture-model'}, 'connected': ['fixture', 'alternate']})
         elif len(self.parts) == 2 and self.parts[0] == 'session':
             file = sessions / f'{self.parts[1]}.json'
             if file.exists():
@@ -177,14 +155,6 @@ class Handler(BaseHTTPRequestHandler):
         elif len(self.parts) == 3 and self.parts[0] == 'session' and self.parts[2] == 'abort':
             aborts.setdefault(self.parts[1], threading.Event()).set()
             log('opencode-aborts.jsonl', {'session': self.parts[1]})
-            child = children.pop(self.parts[1], None)
-            if child is not None and child.poll() is None:
-                os.killpg(child.pid, signal.SIGTERM)
-                try:
-                    child.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    os.killpg(child.pid, signal.SIGKILL)
-                    child.wait(timeout=1)
             self.send_json(True)
         elif self.parts[0] in ['permission', 'question'] or self.parts[:2] == ['api', 'session']:
             assert self.parts[-1] == 'reject' or body['reply'] == 'reject'
@@ -216,8 +186,7 @@ class Handler(BaseHTTPRequestHandler):
         info = {'id': 'msg_' + uuid.uuid4().hex, 'sessionID': identity, 'parentID': body['messageID'], 'role': 'assistant', 'modelID': body['model']['modelID'], 'providerID': body['model']['providerID'], 'time': {'created': 1, 'completed': 2}, 'finish': 'stop'}
         if 'variant' in body:
             info['variant'] = body['variant']
-        if behavior in ['interactive', 'question', 'interactive-v2', 'question-v2', 'timeout', 'events-disconnect', 'invalid-event', 'hold', 'detached-hold']:
-            (root / 'opencode-entered').touch()
+        if behavior in ['interactive', 'question', 'interactive-v2', 'question-v2', 'events-disconnect', 'invalid-event']:
             if behavior in ['interactive', 'question', 'interactive-v2', 'question-v2']:
                 kind = 'permission' if behavior.startswith('interactive') else 'question'
                 emit(self.directory, {'type': kind + ('.v2.asked' if behavior.endswith('-v2') else '.asked'), 'properties': {'sessionID': identity, 'id': 'request-1'}})
@@ -225,23 +194,9 @@ class Handler(BaseHTTPRequestHandler):
                 emit(self.directory, None)
             elif behavior == 'invalid-event':
                 emit(self.directory, 'malformed')
-            elif behavior == 'hold':
-                child = subprocess.Popen(['sleep', '120'])
-                (root / 'opencode-child-pid').write_text(str(child.pid))
-            elif behavior == 'detached-hold':
-                ready = root / 'opencode-child-ready'
-                script = 'import signal,time,sys;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);Path(sys.argv[1]).touch();time.sleep(120)'
-                child = subprocess.Popen([sys.executable, '-c', script, str(ready)], start_new_session=True)
-                children[identity] = child
-                while not ready.exists():
-                    time.sleep(0.005)
-                (root / 'opencode-child-pid').write_text(str(child.pid))
-            while not aborts.setdefault(identity, threading.Event()).wait(0.05):
-                if behavior == 'hold' and not (root / 'opencode-mode').exists():
-                    break
-            if aborts[identity].is_set():
-                self.send_json({'info': {**info, 'error': {'name': 'MessageAbortedError'}}, 'parts': []})
-                return
+            aborts.setdefault(identity, threading.Event()).wait()
+            self.send_json({'info': {**info, 'error': {'name': 'MessageAbortedError'}}, 'parts': []})
+            return
         if behavior == 'disconnect':
             self.connection.shutdown(socket.SHUT_RDWR)
             self.connection.close()
@@ -275,8 +230,6 @@ class Handler(BaseHTTPRequestHandler):
                 del info['structured']
             elif behavior == 'malformed-structured':
                 info['structured'] = 'not a review object'
-        if behavior == 'empty':
-            parts = []
         emit(self.directory, {'type': 'message.updated', 'properties': {'info': {'sessionID': 'ses_unrelated', 'role': 'assistant', 'parentID': body['messageID'], 'modelID': 'ignored'}}})
         emit(self.directory, {'type': 'message.part.updated', 'properties': {'sessionID': identity, 'part': {'type': 'tool', 'state': {'status': 'completed', 'output': 'private fixture ✓'}}}})
         emit(self.directory, {'type': 'message.updated', 'properties': {'info': info}})
@@ -294,6 +247,4 @@ port = int(sys.argv[sys.argv.index('--port') + 1])
 server = Server(('127.0.0.1', port), Handler)
 log('opencode-pids.jsonl', {'pid': os.getpid()})
 print(f'opencode server listening on http://127.0.0.1:{server.server_port}', flush=True)
-if mode() == 'overlong-stdout':
-    print('z' * 20000, flush=True)
 server.serve_forever()

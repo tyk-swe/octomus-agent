@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub fixture backed by a real local Git remote, with publication fault injection."""
+"""GitHub fixture backed by a real local Git remote."""
 import json
 import os
 from pathlib import Path
@@ -32,22 +32,10 @@ def refresh(pr):
         pr['head']['sha'] = subprocess.check_output(['/usr/bin/git', '--git-dir', str(root / 'remote.git'), 'rev-parse', pr['head']['ref']], text=True).strip()
     return pr
 
-if (root / 'reconcile-delay').exists():
-    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    with (root / 'reconcile-processes.jsonl').open('a') as log:
-        log.write(json.dumps({'args': args, 'pid': os.getpid(), 'child_pid': child.pid}) + '\n')
-    time.sleep(float((root / 'reconcile-delay').read_text()))
-
 if args[:2] == ['auth', 'status']:
-    if (root / 'reconcile-hold').exists():
-        (root / 'reconcile-entered').touch()
-        while (root / 'reconcile-hold').exists():
-            time.sleep(0.02)
     print('Authenticated fixture operator')
 elif args[0] == 'api':
     route = args[-1]
-    with (root / 'gh-api.jsonl').open('a') as log:
-        log.write(json.dumps({'route': route}) + '\n')
     if '/comments' in route:
         number = int(route.split('/')[-2])
         print(json.dumps(next(p for p in prs if p['number'] == number).get('comments', [])))
@@ -68,21 +56,6 @@ elif args[:2] == ['pr', 'create']:
     if (root / 'interrupt-publication').exists():
         (root / 'publication-created').touch()
         time.sleep(3)
-    if (root / 'publication-race').exists():
-        remote = str(root / 'remote.git')
-        parent = pr['head']['sha']
-        tree = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, 'rev-parse', f'{parent}^{{tree}}'], text=True).strip()
-        advanced = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, '-c', 'user.name=External', '-c', 'user.email=external@example.com', 'commit-tree', tree, '-p', parent, '-m', 'Publication race'], text=True).strip()
-        subprocess.check_call(['/usr/bin/git', '--git-dir', remote, 'update-ref', 'refs/heads/' + branch, advanced])
-    for field in ['body', 'base', 'owner']:
-        if (root / ('publication-' + field)).exists():
-            if field == 'body':
-                pr['body'] = 'External replacement body'
-            elif field == 'base':
-                pr['base']['ref'] = 'other'
-            else:
-                pr['head']['repo']['full_name'] = 'external/project'
-            save()
     print(pr['html_url'])
 elif args[:2] == ['pr', 'comment']:
     number = int(args[2])
@@ -90,10 +63,6 @@ elif args[:2] == ['pr', 'comment']:
     pr.setdefault('comments', []).append({'body': Path(arg('--body-file')).read_text()})
     with (root / 'publications.jsonl').open('a') as log:
         log.write(json.dumps({'action': 'comment', 'number': number}) + '\n')
-    if (root / 'publication-body-edit').exists():
-        pr['body'] = 'Maintainer edit during follow-up.\n\n' + pr['body']
-    if (root / 'dependency-rollback').exists():
-        (root / 'first-comment-done').touch()
     save()
     print(pr['html_url'])
 else:

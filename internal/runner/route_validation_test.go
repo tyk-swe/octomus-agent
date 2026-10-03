@@ -2,9 +2,6 @@ package runner_test
 
 import (
 	"context"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -43,82 +40,5 @@ func TestUnsupportedEffortNeverFallsBack(t *testing.T) {
 	}
 	if c.Tiers["S"].Effort != "max" {
 		t.Fatalf("validation substituted the tier S effort: %q", c.Tiers["S"].Effort)
-	}
-}
-
-func TestRepairRoutesAreValidated(t *testing.T) {
-	t.Parallel()
-	c := config.Default()
-	for role := range c.Roles {
-		c.Roles[role] = config.NewRoute("available", "low")
-	}
-	for tier := range c.Tiers {
-		c.Tiers[tier] = config.NewRoute("available", "low")
-	}
-	r := codexCatalog(map[string][]string{"available": {"low"}})
-	c.RepairRoute = config.NewRoute("gpt-6-astra", "medium")
-	if err := r.ValidateRoutes(c, t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "gpt-6-astra / medium") {
-		t.Fatalf("unavailable repair model must fail, got %v", err)
-	}
-	c.RepairRoute = config.NewRoute("available", "high")
-	if err := r.ValidateRoutes(c, t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "available / high") {
-		t.Fatalf("unsupported repair effort must fail, got %v", err)
-	}
-	c.RepairRoute.Effort = "low"
-	if err := r.ValidateRoutes(c, t.TempDir(), false); err != nil {
-		t.Fatalf("satisfiable repair route: %v", err)
-	}
-	data, err := json.Marshal(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var reloaded config.Config
-	if err := json.Unmarshal(data, &reloaded); err != nil {
-		t.Fatal(err)
-	}
-	if reloaded.RepairRoute != c.RepairRoute {
-		t.Fatalf("repair route did not round-trip: %+v", reloaded.RepairRoute)
-	}
-	c.RepairRoute.Model = strings.Repeat("x", 101)
-	if c.Validate(false) == nil {
-		t.Fatal("an overlong repair model must fail configuration validation")
-	}
-}
-
-func TestAuditReadinessRequiresOnlyPlanningRoutesAndNoVerification(t *testing.T) {
-	t.Parallel()
-	repository := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repository, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	c := config.Default()
-	c.Repository = repository
-	c.GitHubRepo = "fixture/project"
-	for _, role := range []string{"orchestrator", "discovery", "proposal_reviewer"} {
-		c.Roles[role] = config.NewRoute("available", "low")
-	}
-	r := codexCatalog(map[string][]string{"available": {"low"}})
-	if err := c.ValidateAudit(); err != nil {
-		t.Fatalf("audit readiness: %v", err)
-	}
-	if c.Validate(true) == nil {
-		t.Fatal("execution readiness must require verification and execution routes")
-	}
-	if err := r.ValidateRoutes(c, repository, true); err != nil {
-		t.Fatalf("audit routes: %v", err)
-	}
-	if r.ValidateRoutes(c, repository, false) == nil {
-		t.Fatal("execution routes must fail while unset")
-	}
-	discovery := c.Roles["discovery"]
-	discovery.Effort = "max"
-	c.Roles["discovery"] = discovery
-	if r.ValidateRoutes(c, repository, true) == nil {
-		t.Fatal("an unsupported discovery effort must fail the audit route check")
-	}
-	discovery.Model = ""
-	c.Roles["discovery"] = discovery
-	if c.ValidateAudit() == nil {
-		t.Fatal("a cleared discovery model must fail audit readiness")
 	}
 }

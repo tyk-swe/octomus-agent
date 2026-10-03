@@ -25,7 +25,7 @@ the dashboard and binary so browser tests exercise current assets.
 
 `make build` creates the production executable at `bin/octomus-agent`, and
 `make build-race` produces a race-instrumented variant. The opt-in
-`make test-race-e2e` (about two minutes; needs a C compiler) runs `tests/e2e.py`
+`make test-race-e2e` (about a minute; needs a C compiler) runs `tests/e2e.py`
 against that variant so the race detector sees real HTTP, scheduler and runner
 interleavings; it is not part of `make test`. `--assets web/build`
 explicitly serves a development dashboard instead of the embedded copy. The
@@ -40,16 +40,8 @@ SQLite and local Git with deterministic Codex, OpenCode and GitHub peers
 (`tests/fixtures`) in temporary directories, without live model calls or network
 writes:
 
-- `tests/workflows.py`: immutable event-commit checkouts across CI jobs, moving
-  branch/PR refs, and explicit reusable-workflow release overrides.
-- `tests/harness_environment.py`: fixture setup and child Git operations under
-  hostile inherited configuration and repository-location variables, plus direct
-  loopback HTTP access under inherited proxy settings.
 - `tests/binary_contract.py`: startup order, signal shutdown and lock release, and the
   embedded dashboard.
-- `tests/evidence_snapshot.py`: the documented SQLite backup and `--export-run`
-  examples on a synthetic database, and `docs/configuration.example.json` against
-  `--print-config`.
 - `tests/helpers/public_payload.test.mjs` (`node --test`): the private-payload gate the
   run-evidence example imports.
 - `tests/integration.py`: one runner over every service suite, which is what
@@ -59,7 +51,7 @@ writes:
   `python3 tests/integration.py hardening/chain`; an unknown name lists the
   suites and qualified scenarios.
 - `tests/e2e.py`: discovery, reviews, repairs, publication recovery and audits.
-- `tests/e2e_baseline.py`: clean-baseline checks, cancellation, restart and cleanup.
+- `tests/e2e_baseline.py`: clean-baseline checks, their admission gates and cancellation.
 - `tests/e2e_notifications.py`: attention webhook delivery and URL non-leakage.
 - `tests/e2e_runners.py`: both runner protocols and mixed routes.
 - `tests/e2e_hardening.py`: operational regressions against a real temporary remote.
@@ -76,10 +68,9 @@ suite aliases or qualified names) and `make test-browser` (with
 `PLAYWRIGHT_ARGS` such as `--project=desktop`).
 
 The e2e suites share `tests/harness.py` and accept scenario names, for example
-`python3 tests/e2e_hardening.py chain fork`; an unknown name lists the available ones.
+`python3 tests/e2e_hardening.py chain pr-outcome`; an unknown name lists the available ones.
 Scenarios run with up to four workers; `OCTOMUS_TEST_JOBS` sets the limit
-(1 runs serially; lower it on a loaded machine if a scenario's own timing
-assertion, such as the harness suite's signal-shutdown check, gets crowded out).
+(1 runs serially).
 Set `OCTOMUS_TEST_BINARY` to test another executable. The Python fixture harness
 and the Go engine, Git and HTTP fixture suites isolate inherited Git configuration
 and repository-location environment variables, so personal signing settings,
@@ -93,52 +84,44 @@ in place of runner processes; `internal/schemas/schematest` holds each structure
 schema to the Go type that decodes its answers. `web/types_contract_test.go` and
 `internal/config/dashboard_test.go` hold the dashboard's TypeScript types, limits and
 vocabularies to the Go records and validation. Browser tests use clearly synthetic
-data; their screenshots are not live operating evidence. `tests/systemd.py` requires
-root on a disposable systemd VM and exercises the unit's write restrictions and child
-cleanup.
+data; their screenshots are not live operating evidence.
 
 Go tests dispatch `git`/`gh` through a small POSIX shell relay
 (`internal/testutil.InstallFixtureCommands`) that walks up from the working
 directory to the nearest fixture root and execs that fixture's `bin/git` or
 `bin/gh`, so fixture setup costs a shell fork instead of a Python interpreter
 start. Both the Go and Python suites redirect the fixture's GitHub identity
-through the same `tests/fixtures/git.sh`; `tests/fixtures/git_rollback.py`
-holds only the dependency-rollback fault it execs into. Fixture lookup also supports
+through the same `tests/fixtures/git.sh`. Fixture lookup also supports
 `go test -trimpath` and `GOFLAGS=-trimpath`: the source checkout is resolved before
 tests run, so later working-directory changes do not redirect fixtures. Standalone
 trimmed test binaries that use these fixtures must be launched from inside the
 source checkout; the scripts are not embedded in the test executable.
 `make test-go` and
 `make test-go-race` run with `-shuffle=on`; a failure prints its seed
-(`-test.shuffle N`) so any hidden test-order coupling reproduces. Under
-`-race`, single-goroutine data-volume checks (thousands of rows written by one
-goroutine, where the race detector has nothing to find) skip via
-`testutil.SkipVolumeUnderRace`; the regular suite still runs them.
+(`-test.shuffle N`) so any hidden test-order coupling reproduces.
 
 Some checks run only in CI, because each needs something a working copy does not have:
 `make package` followed by `tests/distribution.py --package`, which needs a real
-release build; `tests/systemd.py`, which needs root; `shellcheck`; and the
+release build; `shellcheck`; and the
 `client-contracts` job, which runs the runner adapters against the real Codex and
 OpenCode CLIs at the versions pinned in `.github/workflows/ci.yml`. Run any of them
-locally before changing packaging, the installer, the unit file or a runner adapter.
+locally before changing packaging, the installer or a runner adapter.
 
 Tests that need something external skip unless an environment variable provides it:
 
 - `OCTOMUS_CONTRACT_CODEX_BINARY` and `OCTOMUS_CONTRACT_OPENCODE_BINARY`: a pinned CLI for
   `TestPinnedCodexContract` and `TestPinnedOpenCodeContract`, which drive real turns
   against a synthetic provider.
-- `OCTOMUS_OPENCODE_SMOKE_BINARY`: a pinned OpenCode for
-  `TestPinnedOpenCodeProtocolSmokeWithoutModelCalls`.
-- `OCTOMUS_SCALE_TEST=1`: the store's scale and latency checks.
+- `OCTOMUS_SCALE_TEST=1`: the store's history scale check, `TestBoundedHistoryScale`.
 
 Install the CLI version the `client-contracts` job pins into a scratch prefix, as the
-job does; for example, for Codex and the store checks:
+job does; for example, for Codex and the store check:
 
 ```bash
 npm install --prefix /tmp/octomus-contract --no-audit --no-fund @openai/codex@0.153.4
 OCTOMUS_CONTRACT_CODEX_BINARY=/tmp/octomus-contract/node_modules/.bin/codex \
   go test ./internal/runner -run '^TestPinnedCodexContract$' -count=1 -v
-OCTOMUS_SCALE_TEST=1 go test ./internal/store -run 'Scale|Bounded|Duplicate' -v -count=1
+OCTOMUS_SCALE_TEST=1 go test ./internal/store -run TestBoundedHistoryScale -v -count=1
 ```
 
 Dashboard regressions cover configuration drafts in tab memory, saved-configuration

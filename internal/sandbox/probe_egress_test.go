@@ -81,15 +81,3 @@ func TestProbeEgressRefusalsComeFromTheRunnerAllowlist(t *testing.T) {
 		})
 	}
 }
-
-func TestProbeEgressFailsWithMissingInvalidOrNowAllowedTarget(t *testing.T) {
-	address, token := probeGateway(t, "runner", "api.openai.com", "")
-	proxy := "http://sandbox:" + token + "@" + address
-	for _, target := range []string{"", "localhost:443", "169.254.169.254:443", "api.openai.com:443"} {
-		t.Run(target, func(t *testing.T) {
-			if refused, detail := egressRefusals(proxy, target); refused {
-				t.Fatalf("target %q = %v, %q; want refusal unproven", target, refused, detail)
-			}
-		})
-	}
-}

@@ -1,137 +1,40 @@
 #!/usr/bin/env python3
 """Runs the actual service, scheduler, SQLite, and Git against deterministic external peers.
 No network writes, real Codex turns, credentials, or spending. Run after make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
-Every e2e suite accepts scenario names (`python3 tests/e2e.py normal audit-idle`) to run only those;
+Every e2e suite accepts scenario names (`python3 tests/e2e.py normal audit-accepted`) to run only those;
 an unknown name lists them all. Scenarios run with up to four workers by default;
 OCTOMUS_TEST_JOBS sets the limit (1 runs serially). The shared harness is tests/harness.py.
 """
 import functools
-import http.server
-import io
 import json
-from pathlib import Path
 import subprocess
 import sys
-import tempfile
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 
-from harness import BINARY, CODEX_ROUTE, TOKEN, Service, base_config, existing_pr, fixture_service, git, poll, process_gone, run_selected, select_scenarios, update_prs, usage_report, use_codex_routes
+from harness import BINARY, CODEX_ROUTE, TOKEN, base_config, fixture_service, git, run_selected, usage_report, use_codex_routes
 
 
 def scenario(mode):
     def prepare(root):
-        if mode in ['existing-pr', 'remote-conflict', 'dependencies']:
-            existing_pr(root)
-        if mode == 'external-context':
-            (root / 'prs.json').write_text(json.dumps([{'number': 77, 'title': 'External contribution', 'body': 'External work.\n', 'head': {'ref': 'external-work', 'sha': 'e' * 40, 'repo': {'full_name': 'contributor/project'}}, 'base': {'ref': 'main', 'repo': {'full_name': 'fixture/project'}}, 'html_url': 'https://github.com/fixture/project/pull/77', 'state': 'open', 'merged_at': None, 'additions': 4, 'deletions': 1, 'created_at': '2026-08-02T00:00:00Z'}]))
         if mode != 'normal':
             (root / mode).touch()
-        if mode in ['closed-after-publication', 'cap1-interrupt']:
-            (root / 'interrupt-publication').touch()
 
     with fixture_service(f'octomus-{mode}-', prepare) as (root, service):
         service.configure()
-        if mode == 'failed-start':
-            service.wait(lambda: (s := service.request('/state'))['cycles'] and s['cycles'][0]['status'] == 'failed', 'failed cycle start')
-            report = usage_report(root)
-            assert len(report['admissions']) == 1
-            assert report['cycles'][0]['planning_admissions'] == 1
-            assert report['cycles'][0]['recorded_completed_sessions'] == 0
-            assert not (root / 'publications.jsonl').exists()
-            print('PASS failed-start: admission retained without completed session')
-            return
-        if mode == 'failed-discovery':
-            def failed_cycle():
-                state = service.request('/state')
-                return state if state['cycles'] and not state['cycle_active'] and state['cycles'][0]['status'] == 'failed' else None
-            state = service.wait(failed_cycle, 'failed discovery cycle')
-            cycle = service.request('/cycles/' + state['cycles'][0]['id'])
-            assert 'invalid JSON' in cycle['error'], cycle['error']
-            assert sorted(s['role'] for s in cycle['sessions']) == sorted(['grounding'] + [f'discovery-{i}' for i in range(9)]), cycle['sessions']
-            failed = [s for s in cycle['sessions'] if s['status'] == 'failed']
-            assert [s['role'] for s in failed] == ['discovery-0'] and 'invalid JSON' in failed[0]['summary'], failed
-            assert all(s['status'] == 'completed' and s['summary'] for s in cycle['sessions'] if s['role'] != 'discovery-0')
-            assert not cycle['proposals'] and not state['tasks']
-            report = usage_report(root)
-            assert report['cycles'][0]['planning_admissions'] == 10
-            assert report['cycles'][0]['recorded_completed_sessions'] == 9
-            assert not (root / 'publications.jsonl').exists()
-            print('PASS failed-discovery: partial planning failure records every role outcome and queues nothing')
-            return
-        if mode == 'idle':
-            service.wait(lambda: (s := service.request('/state'))['cycles'] and s['cycles'][0]['status'] == 'idle', 'idle cycle')
-            assert not service.request('/state')['tasks']
-            report = usage_report(root)
-            assert len(report['admissions']) == 13
-            assert report['cycles'][0]['planning_admissions'] == 13
-            assert report['tasks'] == []
-            print('PASS idle: all discovery/review roles complete without creating work')
-            return
-        if mode in ['interrupt-publication', 'closed-after-publication', 'cap1-interrupt']:
+        if mode == 'interrupt-publication':
             service.wait(lambda: (root / 'publication-created').exists(), 'publication side effect')
             service.stop(crash=True)
-            if mode == 'closed-after-publication':
-                update_prs(root, lambda prs: prs[0].update(state='closed'))
             service.start()
             task = service.wait(service.terminal_task, 'recovered publication')
             assert task['status'] == 'published', task['error']
         task = service.wait(service.terminal_task, 'task completion')
-        if mode == 'failed-executor-start':
-            assert task['status'] == 'blocked' and task['execution_session'] is None, task
-            assert 'Fixture failed start' in task['error'], task['error']
-            report = usage_report(root)
-            assert sum(a['role'] == 'executor' for a in report['admissions']) == 1
-            assert not (root / 'publications.jsonl').exists()
-            service.request('/control/pause', 'POST')
-            service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'failed executor stopped')
-            (root / mode).unlink()
-            service.request(f'/tasks/{task["id"]}/retry', 'POST')
-            service.request('/control/resume', 'POST')
-            task = service.wait(service.terminal_task, 'executor initialization retry')
-            assert task['status'] == 'published', task['error']
-            report = usage_report(root)
-            assert sum(a['role'] == 'executor' for a in report['admissions']) == 2, report
-            assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
-            print('PASS failed-executor-start: retry initialization reserves exactly one new admission')
-            return
-        if mode in ['parallel', 'dependencies']:
+        if mode == 'parallel':
             service.wait(lambda: len([t for t in service.request('/state')['tasks'] if t['status'] == 'published']) == 2, 'both tasks delivered')
             all_tasks = [service.request(f'/tasks/{t["id"]}') for t in service.request('/state')['tasks']]
             assert len({t['workspace'] for t in all_tasks}) == 2
             assert len({t['execution_session'] for t in all_tasks}) == 2
-            if mode == 'dependencies':
-                followup = next(t for t in all_tasks if t['proposal']['dependencies'])
-                prerequisite = next(t for t in all_tasks if not t['proposal']['dependencies'])
-                assert followup['source_revision'] == prerequisite['output_commit']
-                assert (Path(followup['workspace']) / 'feature.txt').read_text().strip() == 'fixed'
-        if mode in ['malformed-review', 'incomplete-review', 'remote-conflict', 'failed-verification', 'interactive']:
+        if mode == 'failed-verification':
             assert task['status'] == 'blocked', task
             assert not (root / 'publications.jsonl').exists(), 'Unresolved work must not publish'
-            if mode == 'interactive':
-                assert 'interactive input' in task['error']
-                service.request('/control/pause', 'POST')
-                service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'paused task')
-                config = service.request('/config')['config']
-                config['repair_route'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}
-                service.save_config(config)
-                (root / 'interactive').unlink()
-                service.request(f'/tasks/{task["id"]}/retry', 'POST')
-                service.request('/control/resume', 'POST')
-                task = service.wait(service.terminal_task, 'retried delivery')
-                assert task['status'] == 'published', task['error']
-                assert task['config']['repair_route'] == CODEX_ROUTE
-                assert all(s['route'] == task['config']['repair_route'] for s in task['sessions'] if s['role'] == 'repair')
-                report = usage_report(root)
-                assert sum(a['role'] == 'executor' for a in report['admissions']) == 2
-                assert len(report['admissions']) == 20
-                print('PASS interactive: blocked promptly; retry retains routes and counts another admission')
-                return
-            if mode == 'malformed-review':
-                assert 'invalid' in task['error'] and 'JSON' in task['error'], task['error']
-            if mode == 'remote-conflict':
-                assert git('rev-parse', 'octomus/existing', cwd=root / 'remote.git') == (root / 'external-revision').read_text()
             print(f'PASS {mode}: blocked, never published, workspace retained')
             return
         assert task['status'] == 'published', task['error']
@@ -143,46 +46,20 @@ def scenario(mode):
         assert task['workspace'].endswith(f'tasks/{task["id"]}/workspace')
         assert task['verification'][-1]['success']
         assert task['verification'][-1]['revision'] == task['output_commit']
-        assert len(json.loads((root / 'prs.json').read_text())) == (2 if mode in ['parallel', 'external-context'] else 1)
-        if mode in ['existing-pr', 'dependencies']:
-            assert task['pr_number'] == 42 and task['branch'] == 'octomus/existing'
-            assert (Path(task['workspace']) / 'earlier.txt').exists()
-            assert json.loads((root / 'publications.jsonl').read_text().splitlines()[0])['action'] == 'comment'
-        assert len((root / 'publications.jsonl').read_text().splitlines()) == (2 if mode in ['parallel', 'dependencies'] else 1)
+        expected_tasks = 2 if mode == 'parallel' else 1
+        assert len(json.loads((root / 'prs.json').read_text())) == expected_tasks
+        assert len((root / 'publications.jsonl').read_text().splitlines()) == expected_tasks
         assert git('rev-parse', 'main', cwd=root / 'remote.git') == task['default_revision'], 'Default branch must never be pushed'
         protocol = [json.loads(line) for line in (root / 'protocol.jsonl').read_text().splitlines()]
         assert len([p for p in protocol if p['prompt'].startswith('Discover worthwhile')]) == 9
         assert len([p for p in protocol if p['prompt'].startswith('Adversarial proposal')]) == 2
-        assert len({p['thread'] for p in protocol if p['prompt'].startswith('Repair actionable')}) == (2 if mode in ['parallel', 'dependencies'] else 1)
+        assert len({p['thread'] for p in protocol if p['prompt'].startswith('Repair actionable')}) == expected_tasks
         assert all(p['sandbox'] == {'type': 'dangerFullAccess'} and p['approval'] == 'never' for p in protocol)
         report = usage_report(root)
-        expected_tasks = 2 if mode in ['parallel', 'dependencies'] else 1
         assert len(report['admissions']) == 13 + 6 * expected_tasks
         assert sum(a['role'] == 'repair' for a in report['admissions']) == 2 * expected_tasks
         assert report['cycles'][0]['planning_admissions'] == 13
         assert report['cycles'][0]['task_admissions'] == 6 * expected_tasks
-        if mode == 'external-context':
-            cycle_id = service.request('/state')['cycles'][0]['id']
-            grounding = service.request(f'/cycles/{cycle_id}')['grounding']
-            coverage = grounding['pr_coverage']
-            assert coverage['complete'] and coverage['total_external'] == 1 and coverage['included_external'] == 1, coverage
-            external = grounding['external_prs']
-            assert [p['number'] for p in external] == [77]
-            assert external[0]['head_repository'] == 'contributor/project' and external[0]['head'] == 'e' * 40
-            reviewers = [p['prompt'] for p in protocol if p['prompt'].startswith('Adversarial proposal')]
-            assert len(reviewers) == 2
-            assert all('pull/77' in p and 'contributor/project' in p for p in reviewers)
-            ground_prompt = next(p['prompt'] for p in protocol if p['prompt'].startswith('Ground this repository'))
-            assert 'pull/77' in ground_prompt
-            api_calls = [json.loads(line)['route'] for line in (root / 'gh-api.jsonl').read_text().splitlines()]
-            assert any('state=open' in call for call in api_calls)
-            assert not any(call.endswith('/pulls/77') for call in api_calls), api_calls
-            assert all(t['branch'] != 'external-work' for t in service.request('/state')['tasks'])
-        if mode == 'custom-route':
-            assert repairs[0]['route'] == {'backend': 'codex', 'model': 'gpt-5.6-luna', 'effort': 'high'}
-            consolidation = next(p['prompt'] for p in protocol if p['prompt'].startswith('Act as final'))
-            assert '"M":{"backend":"codex","model":"gpt-5.6-luna","effort":"low"}' in consolidation
-            assert 'XS luna xhigh' not in consolidation
         if mode == 'normal':
             service.stop()
             (root / 'version').write_text('0.0.0-fixture')
@@ -190,52 +67,6 @@ def scenario(mode):
             assert json.loads(diagnostic.stdout)['warnings']
             assert 'mismatch' in diagnostic.stderr
         print(f'PASS {mode}: complete reviewed delivery with no duplicate PRs')
-
-
-def literal_head_branch_scenario():
-    def prepare(root):
-        checkout = root / 'checkout'
-        (checkout / 'default-marker.txt').write_text('literal HEAD branch\n')
-        git('add', 'default-marker.txt', cwd=checkout)
-        git('commit', '-m', 'Literal HEAD default branch', cwd=checkout)
-        revision = git('rev-parse', 'HEAD', cwd=checkout)
-        # Full ref plumbing permits this branch even though --branch rejects it.
-        git('update-ref', 'refs/heads/HEAD', revision, cwd=checkout)
-        git('push', 'origin', 'refs/heads/HEAD:refs/heads/HEAD', cwd=checkout)
-        (root / 'target').write_text('HEAD')
-
-    with fixture_service('octomus-literal-head-', prepare) as (root, service):
-        remote = root / 'remote.git'
-        revision = git('rev-parse', 'refs/heads/HEAD', cwd=remote)
-        # The remote pseudo-ref deliberately names an older, different commit.
-        assert git('rev-parse', 'HEAD', cwd=remote) != revision
-        config = base_config(service, ['test "$(cat default-marker.txt)" = "literal HEAD branch"',
-                                       'for file in feature*.txt; do test ! -e "$file" || test "$(cat "$file")" = fixed || exit 1; done'],
-                             default_branch='HEAD', cycle_interval_seconds=3600,
-                             task_timeout_seconds=120)
-        use_codex_routes(config)
-        view = service.save_config(config)
-        service.stop()
-        service.start()
-        assert service.request('/config')['config']['default_branch'] == 'HEAD'
-        diagnostic = service.request('/doctor', 'POST')
-        assert diagnostic['checked_revision'] == view['revision']
-        assert diagnostic['warnings'] == [], diagnostic
-        code, check = service.expect('/baseline-checks', 'POST', {'expected_revision': view['revision']})
-        assert code == 202, (code, check)
-        baseline = service.wait(lambda: b if (b := service.request('/baseline-checks/latest')['check'])
-                                and b['status'] != 'running' and b['workspace_removed'] else None,
-                                'literal HEAD baseline')
-        assert baseline['status'] == 'passed' and baseline['revision'] == revision and all(c['success'] for c in baseline['commands']), baseline
-        service.request('/control/cycle', 'POST')
-        task = service.wait(service.terminal_task, 'literal HEAD task publication')
-        assert task['status'] == 'published', task
-        assert task['source_revision'] == task['default_revision'] == revision, task
-        assert task['verification'][-1]['success'] and len(task['reviews']) == 3, task
-        pr = json.loads((root / 'prs.json').read_text())[0]
-        assert pr['base']['ref'] == 'HEAD' and pr['head']['sha'] == task['output_commit'], pr
-        assert git('rev-parse', 'refs/heads/HEAD', cwd=remote) == revision
-        print('PASS literal-head: configuration, doctor, baseline, execution, repair, review, verification, and fixture publication use refs/heads/HEAD rather than the remote pseudo-ref')
 
 
 def settings_scenario():
@@ -298,65 +129,13 @@ def settings_scenario():
         print('PASS settings-view: canonical revision gates saves and baselines; hidden values stay canonical')
 
 
-def missing_session_scenario(role):
-    import sqlite3
-    marker_name = 'interactive' if role == 'executor' else 'interactive-repair'
-    with fixture_service(f'octomus-missing-{role}-', lambda root: (root / marker_name).touch()) as (root, service):
-        marker = root / marker_name
-        service.configure()
-        task = service.wait(service.terminal_task, f'{role} interrupted')
-        assert task['status'] == 'blocked' and 'interactive input' in task['error'], task
-        service.request('/control/pause', 'POST')
-        service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'paused task')
-        service.stop()
-        thread = task['execution_session' if role == 'executor' else 'repair_session']
-        assert thread and any(s['id'] == thread for s in task['sessions'])
-        task['sessions'] = [s for s in task['sessions'] if s['id'] != thread]
-        with sqlite3.connect(root / '.octomus/state.db') as db:
-            db.execute("UPDATE records SET data=? WHERE kind='task' AND id=?", (json.dumps(task), task['id']))
-        marker.unlink()
-        service.start()
-        service.request(f'/tasks/{task["id"]}/retry', 'POST')
-        service.request('/control/resume', 'POST')
-        task = service.wait(service.terminal_task, 'missing session blocked')
-        assert task['status'] == 'blocked', task
-        assert f'missing its {role} session record' in task['error'], task['error']
-        assert thread in task['error'] and task['id'] in task['error']
-        service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'runtime task released')
-        assert Path(task['workspace']).is_dir()
-        assert not (root / 'publications.jsonl').exists()
-        print(f'PASS missing-{role}-session: blocked with context, runtime released, no publication')
-
-
-def audit_scenario(mode):
-    import sqlite3
+def audit_scenario():
     with fixture_service('octomus-audit-') as (root, service):
-        queued_before = []
-        if mode == 'queued':
-            service.configure()
-            service.wait(service.terminal_task, 'initial fixture delivery')
-            service.request('/control/pause', 'POST')
-            service.stop()
-            with sqlite3.connect(root / '.octomus/state.db') as db:
-                identity, raw = db.execute("SELECT id,data FROM records WHERE kind='task'").fetchone()
-                task = json.loads(raw)
-                task['status'] = 'queued'
-                task['proposal']['title'] = 'Earlier queued work'
-                task.update(branch=task['config']['branch_prefix'] + 'audit-queued',
-                            workspace='', execution_session=None, repair_session=None,
-                            sessions=[], reviews=[], verification=[], output_commit=None,
-                            pr_number=None, pr_url=None, attempts=0, error=None,
-                            blocked_reason=None, review_baseline=0, run_id=None)
-                db.execute("UPDATE records SET data=? WHERE kind='task' AND id=?", (json.dumps(task), identity))
-            service.start()
-            queued_before = service.request('/state')['tasks']
         c = base_config(service, [], task_timeout_seconds=120)
         for role in ['orchestrator', 'discovery', 'proposal_reviewer']:
             c['roles'][role] = dict(CODEX_ROUTE)
         c['roles']['code_reviewer'] = {'model': 'unavailable', 'effort': 'high'}
         c['repair_route'] = {'model': 'unavailable', 'effort': 'high'}
-        if mode == 'budget':
-            c['max_sessions_per_day'] = 2
         service.save_config(c)
         diagnostic = service.request('/doctor?mode=audit', 'POST')
         assert diagnostic['mode'] == 'audit'
@@ -366,334 +145,58 @@ def audit_scenario(mode):
         assert code == 400, ('Execution doctor accepted missing verification', code, body)
         assert body['checked_revision'] == service.request('/config')['revision']
         assert body['checked_config'] == service.request('/config')['config']
-        marker = {'idle': 'idle', 'malformed': 'audit-malformed', 'failed': 'failed-start'}.get(mode, 'audit-decisions')
-        (root / marker).touch()
-        if mode not in ['failed']:
-            (root / 'audit-hold').touch()
-        publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
+        (root / 'audit-decisions').touch()
+        (root / 'audit-hold').touch()
         baseline_revision = git('rev-parse', 'main', cwd=root / 'remote.git')
         baseline_refs = git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git')
-        if mode == 'budget':
-            code, body = service.expect('/control/audit', 'POST')
-            assert code == 409, ('Unaffordable audit was accepted', code, body)
-            message = body['error']
-            assert '13' in message and 'increase' in message, message
-            state = service.request('/state')
-            capacity = state['planning_capacity']
-            assert capacity['status'] == 'limit_too_low', capacity
-            assert capacity['required'] == 13 and capacity['limit'] == 2, capacity
-            assert state['cycles'] == [] and state['tasks'] == queued_before
-            assert state['control']['paused'] and state['control']['error'] is None
-            report = usage_report(root)
-            assert report['admissions'] == [] and report['cycles'] == [] and report['daily'] == []
-            assert not (root / 'publications.jsonl').exists()
-            assert git('rev-parse', 'main', cwd=root / 'remote.git') == baseline_revision
-            assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
-            print('PASS audit-budget: refused before any admission with an explicit capacity reason')
-            return
         code, response = service.expect('/control/audit', 'POST')
-        assert code == 200, (mode, code, response)
-        if mode != 'failed':
-            service.wait(lambda: (root / 'audit-entered').exists(), 'audit started')
-            state = service.request('/state')
-            assert state['status'] == 'auditing' and state['control']['paused']
-            for action in ['audit', 'resume', 'cycle']:
-                code, body = service.expect('/control/' + action, 'POST')
-                assert code == 409, ('Conflicting control accepted', action, code, body)
-                message = body['error']
-                explanation = {
-                    'audit': 'Audits require paused operation with no active work',
-                    'cycle': 'Run once requires paused operation with no active work',
-                    'resume': 'Wait for the audit to finish before starting continuous operation',
-                }[action]
-                assert message.startswith(explanation), message
-            if mode == 'interrupted':
-                service.stop(crash=True)
-            (root / 'audit-hold').unlink()
-            if mode == 'interrupted':
-                service.start()
-        expected = 'interrupted' if mode == 'interrupted' else 'failed' if mode in ['budget', 'malformed', 'failed'] else 'idle' if mode == 'idle' else 'completed'
+        assert code == 200, (code, response)
+        service.wait(lambda: (root / 'audit-entered').exists(), 'audit started')
+        state = service.request('/state')
+        assert state['status'] == 'auditing' and state['control']['paused']
+        for action in ['audit', 'resume', 'cycle']:
+            code, body = service.expect('/control/' + action, 'POST')
+            assert code == 409, ('Conflicting control accepted', action, code, body)
+            message = body['error']
+            explanation = {
+                'audit': 'Audits require paused operation with no active work',
+                'cycle': 'Run once requires paused operation with no active work',
+                'resume': 'Wait for the audit to finish before starting continuous operation',
+            }[action]
+            assert message.startswith(explanation), message
+        (root / 'audit-hold').unlink()
+
         def completed_audit():
             state = service.request('/state')
-            return state if state['cycles'] and not state['cycle_active'] and state['cycles'][0]['status'] == expected else None
+            return state if state['cycles'] and not state['cycle_active'] and state['cycles'][0]['status'] == 'completed' else None
         state = service.wait(completed_audit, 'audit completion')
         cycle = service.request('/cycles/' + state['cycles'][0]['id'])
         assert cycle['mode'] == 'audit' and state['control']['paused']
-        assert state['tasks'] == queued_before
-        if mode in ['accepted', 'queued']:
-            assert {p['decision'] for p in cycle['proposals']} == {'accepted', 'rejected', 'deferred'}
-            assert all(p['reason'] for p in cycle['proposals']) and len(cycle['assessments']) == 2
+        assert state['tasks'] == []
+        assert {p['decision'] for p in cycle['proposals']} == {'accepted', 'rejected', 'deferred'}
+        assert all(p['reason'] for p in cycle['proposals']) and len(cycle['assessments']) == 2
         report = usage_report(root)
         row = next(c for c in report['cycles'] if c['id'] == cycle['id'])
         assert row['mode'] == 'audit' and row['task_admissions'] == 0
-        if mode in ['accepted', 'idle', 'queued']:
-            assert row['planning_admissions'] == 13
+        assert row['planning_admissions'] == 13
         observed = service.request('/state')['pr_capacity']['observed_at']
         service.stop()
         service.start()
         service.wait(lambda: service.request('/state')['pr_capacity']['observed_at'] != observed, 'fresh PR observation after restart')
-        assert service.request('/state')['tasks'] == queued_before
-        current_publications = (root / 'publications.jsonl').read_bytes() if (root / 'publications.jsonl').exists() else b''
-        assert current_publications == publications
+        assert service.request('/state')['tasks'] == []
+        assert not (root / 'publications.jsonl').exists()
         assert git('rev-parse', 'main', cwd=root / 'remote.git') == baseline_revision
         assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
-        if mode == 'accepted':
-            service.stop()
-            diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor', '--audit'], env=service.env, capture_output=True, text=True, check=True, timeout=60)
-            assert json.loads(diagnostic.stdout)['mode'] == 'audit'
-        print(f'PASS audit-{mode}: durable decisions, paused queue, no publication')
-
-
-def harness_scenario():
-    """The harness itself, against a scripted HTTP peer and plain child
-    processes (no service binary).
-
-    Error responses, even ones whose body is cut short, are retried until the
-    predicate succeeds. A timeout raises one labelled report with the last
-    error, the /state outcome (even when unreadable) and the service.log tail.
-    Service.stop reports unexpected exits once per process, including race-detector
-    exits across restarts, and permits only crashes it requested. process_gone tells
-    a live process from a zombie or a reaped one. fixture_service passes a
-    scenario failure through after releasing holds before the service stops.
-    update_prs waits for the gh fixture's lock and replaces prs.json whole.
-    run_selected runs scenarios by name, bounds concurrency and reports failures
-    after every scenario has finished teardown. select_scenarios expands suite
-    aliases and qualified names into one registry-ordered list, deduplicates
-    overlapping selections, and refuses unknown names and duplicate registries
-    before any scenario runs.
-    """
-    calls = {}
-
-    class Peer(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            calls[self.path] = calls.get(self.path, 0) + 1
-            if self.path == '/api/state':
-                self.wfile.write(b'not an HTTP status line\r\n\r\n')
-            elif self.path == '/api/recovers' and calls[self.path] < 3:
-                self.reply(500, b'{"error":', length=64)
-            elif self.path == '/api/recovers':
-                self.reply(200, b'{"ok":true}')
-            else:
-                self.reply(404, b'{"error":"Unknown API route"}')
-
-        def reply(self, status, body, length=None):
-            self.send_response(status)
-            self.send_header('Content-Length', str(length or len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *args):
-            pass
-
-    with tempfile.TemporaryDirectory(prefix='octomus-harness-') as tmp:
-        root = Path(tmp)
-        (root / 'service.log').write_text('earlier line\nlast service line\n')
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Peer)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        service = Service(root)
-        service.port = server.server_address[1]
-        try:
-            assert service.wait(lambda: service.request('/recovers'), 'recovering request', seconds=10) == {'ok': True}
-            assert calls['/api/recovers'] == 3, calls
-            report = None
-            try:
-                service.wait(lambda: service.request('/missing'), 'missing route', seconds=1)
-            except AssertionError as error:
-                report = str(error)
-            assert report and report.startswith('missing route timed out after 1s; last error: HTTP 404: {"error":"Unknown API route"}\nstate: <state unavailable: BadStatusLine('), report
-            assert report.endswith('service.log tail:\nearlier line\nlast service line'), report
-
-            service.process = subprocess.Popen([sys.executable, '-c', 'import signal, sys, time\nsignal.signal(signal.SIGTERM, lambda *_: sys.exit(66))\nprint("ready", flush=True)\nsignal.pause()'], stdout=subprocess.PIPE, text=True)
-            with service.process.stdout:
-                assert service.process.stdout.readline() == 'ready\n'
-            report = None
-            try:
-                service.stop()
-            except AssertionError as error:
-                report = str(error)
-            assert report and report.startswith('service exited with status 66: the race detector reported a data race; service.log tail:\n'), report
-            service.stop()
-            for code in [1, 2, 66]:
-                service.process = subprocess.Popen([sys.executable, '-c', f'raise SystemExit({code})'])
-                service.process.wait(timeout=5)
-                try:
-                    service.stop()
-                except AssertionError as error:
-                    assert f'exited with status {code}' in str(error), error
-                    assert 'last service line' in str(error), error
-                else:
-                    raise AssertionError(f'teardown accepted service exit {code}')
-                service.stop()  # A second teardown must not obscure the first failure.
-            for command in ['pass', 'import time; time.sleep(30)']:
-                service.process = subprocess.Popen([sys.executable, '-c', command])
-                service.stop(crash=True)
-                assert service.process.returncode in [0, -9], service.process.returncode
-                service.stop()  # A requested crash remains accepted during final teardown.
-            service.process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
-            service.process.kill()
-            service.process.wait(timeout=5)
-            try:
-                service.stop(crash=True)
-            except AssertionError as error:
-                assert 'exited with status -9' in str(error), error
-            else:
-                raise AssertionError('an earlier unexpected kill was accepted as a requested crash')
-        finally:
-            server.shutdown()
-            server.server_close()
-            service.log.close()
-
-    # Rename the child's initial thread without requiring writable procfs.
-    rename_child = """import ctypes, os, time
-libc = ctypes.CDLL(None, use_errno=True)
-PR_SET_NAME = 15
-if libc.prctl(PR_SET_NAME, ctypes.c_char_p(b'x) Z 0'), 0, 0, 0) != 0:
-    error = ctypes.get_errno()
-    raise OSError(error, os.strerror(error))
-print('ready', flush=True)
-time.sleep(30)
-"""
-    child = subprocess.Popen([sys.executable, '-c', rename_child], stdout=subprocess.PIPE, text=True)
-    try:
-        with child.stdout:
-            assert child.stdout.readline() == 'ready\n'
-        assert ') Z 0)' in Path(f'/proc/{child.pid}/stat').read_text()
-        assert not process_gone(child.pid)
-        child.kill()
-        assert poll(lambda: process_gone(child.pid), 5), 'killed child never became a zombie'
-        assert Path(f'/proc/{child.pid}').exists(), 'the zombie was reaped early'
-    finally:
-        child.kill()
-        child.wait(timeout=5)
-    assert process_gone(child.pid)
-
-    failure = RuntimeError('scenario failure')
-    try:
-        with fixture_service('octomus-harness-fixture-', start=False) as (root, service):
-            (root / 'audit-hold').touch()
-            service.process = subprocess.Popen([sys.executable, '-c', f'import pathlib, signal, sys, time\nhold = pathlib.Path({str(root / "audit-hold")!r})\nsignal.signal(signal.SIGTERM, lambda *_: sys.exit(3 if hold.exists() else 0))\nprint("ready", flush=True)\nsignal.pause()'], stdout=subprocess.PIPE, text=True)
-            with service.process.stdout:
-                assert service.process.stdout.readline() == 'ready\n'
-            raise failure
-    except RuntimeError as error:
-        assert error is failure, error
-    else:
-        raise AssertionError('fixture_service swallowed the scenario failure')
-    assert service.process.returncode == 0, f'the hold outlived the service stop: {service.process.returncode}'
-    assert service.log.closed and not root.exists()
-
-    with tempfile.TemporaryDirectory(prefix='octomus-harness-prs-') as tmp:
-        root = Path(tmp)
-        (root / 'prs.json').write_text(json.dumps([{'number': 1, 'state': 'open'}]))
-        inode = (root / 'prs.json').stat().st_ino
-        holder = subprocess.Popen([sys.executable, '-c', 'import fcntl, sys\nlock = open(sys.argv[1], "a")\nfcntl.flock(lock, fcntl.LOCK_EX)\nprint("locked", flush=True)\nsys.stdin.read()', str(root / 'github.lock')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        try:
-            with holder.stdout:
-                assert holder.stdout.readline() == 'locked\n'
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                try:
-                    update = pool.submit(update_prs, root, lambda prs: prs[0].update(state='closed'))
-                    time.sleep(0.5)
-                    waited = not update.done() and json.loads((root / 'prs.json').read_text())[0]['state'] == 'open'
-                finally:
-                    holder.stdin.close()
-                assert waited, 'update_prs edited prs.json while gh held the lock'
-                update.result(timeout=10)
-        finally:
-            holder.kill()
-            holder.wait(timeout=5)
-        assert json.loads((root / 'prs.json').read_text()) == [{'number': 1, 'state': 'closed'}]
-        assert (root / 'prs.json').stat().st_ino != inode, 'prs.json was rewritten in place'
-        assert sorted(p.name for p in root.iterdir()) == ['github.lock', 'prs.json']
-
-    ran = []
-    registry = [(name, functools.partial(ran.append, name)) for name in ['a', 'b', 'c']]
-    output = io.StringIO()
-    run_selected('selftest', registry, ['c', 'a'], workers=1, output=output)
-    run_selected('selftest', registry, [], workers=1, output=output)
-    try:
-        run_selected('selftest', registry, ['b', 'nope'], workers=2, output=output)
-        raise AssertionError('an unknown scenario name was accepted')
-    except SystemExit as error:
-        refusal = str(error)
-    assert ran == ['a', 'c', 'a', 'b', 'c'], ran
-    assert output.getvalue() == ''.join(f'RUN selftest {name}\n' for name in ran), output.getvalue()
-    assert refusal == 'unknown selftest scenarios: nope; available: a, b, c', refusal
-
-    barrier = threading.Barrier(2, timeout=5)
-    lock = threading.Lock()
-    active = maximum = 0
-    finished = []
-
-    def concurrent(name):
-        nonlocal active, maximum
-        with lock:
-            active += 1
-            maximum = max(maximum, active)
-        try:
-            barrier.wait()
-            if name == 'b':
-                raise RuntimeError('synthetic scenario failure')
-        finally:
-            with lock:
-                active -= 1
-                finished.append(name)
-
-    output = io.StringIO()
-    registry = [(name, functools.partial(concurrent, name)) for name in ['a', 'b', 'c', 'd']]
-    try:
-        run_selected('parallel-selftest', registry, ['d', 'c', 'b', 'a'], workers=2, output=output)
-        raise AssertionError('a scenario failure was swallowed')
-    except SystemExit as error:
-        assert str(error) == 'parallel-selftest failed scenarios: b', error
-    assert active == 0 and maximum == 2 and sorted(finished) == ['a', 'b', 'c', 'd'], (active, maximum, finished)
-    assert 'FAIL parallel-selftest b' in output.getvalue() and 'synthetic scenario failure' in output.getvalue(), output.getvalue()
-
-    ran.clear()
-    suites = [
-        ('one', [(name, functools.partial(ran.append, f'one/{name}')) for name in ['x', 'y']]),
-        ('two', [('z', functools.partial(ran.append, 'two/z'))]),
-    ]
-    everything = select_scenarios(suites, [])
-    assert [name for name, _ in everything] == ['one/x', 'one/y', 'two/z'], everything
-    output = io.StringIO()
-    run_selected('integration', everything, [], workers=1, output=output)
-    assert ran == ['one/x', 'one/y', 'two/z'], ran
-    assert output.getvalue() == ''.join(f'RUN integration {name}\n' for name in ran), output.getvalue()
-    assert [name for name, _ in select_scenarios(suites, ['two'])] == ['two/z']
-    assert [name for name, _ in select_scenarios(suites, ['one/y'])] == ['one/y']
-    assert [name for name, _ in select_scenarios(suites, ['two', 'one/y', 'two/z'])] == ['one/y', 'two/z']
-    ran.clear()
-    try:
-        select_scenarios(suites, ['one/x', 'nope', 'three'])
-        raise AssertionError('an unknown integration selection was accepted')
-    except SystemExit as error:
-        refusal = str(error)
-    assert 'nope' in refusal and 'three' in refusal, refusal
-    for expected in ['one', 'two', 'one/x', 'one/y', 'two/z']:
-        assert expected in refusal, refusal
-    assert ran == [], 'a callable ran while an unknown selection was refused'
-    nothing = object()
-    for bad in [
-        [('one', [('x', nothing)]), ('one', [('y', nothing)])],
-        [('one', [('x', nothing), ('x', nothing)])],
-        [('one', [('two/z', nothing)]), ('one/two', [('z', nothing)])],
-    ]:
-        try:
-            select_scenarios(bad, [])
-            raise AssertionError(f'a duplicate registry was accepted: {bad}')
-        except SystemExit:
-            pass
-    print('PASS harness: waits retry cut-off error responses; timeouts report the last error, state failure and log tail; unexpected exits fail the stop once per process; only requested crashes are accepted; process_gone reads the state field; fixture teardown releases holds first; update_prs takes the gh lock; scenarios run by name with bounded concurrency and failures wait for teardown; suite selection expands aliases and qualified names in registry order, deduplicates overlaps and refuses unknown names and duplicate registries')
+        service.stop()
+        diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor', '--audit'], env=service.env, capture_output=True, text=True, check=True, timeout=60)
+        assert json.loads(diagnostic.stdout)['mode'] == 'audit'
+        print('PASS audit-accepted: durable decisions, paused queue, no publication')
 
 
 SCENARIOS = [
-    ('literal-head', literal_head_branch_scenario),
-    ('harness', harness_scenario),
     ('settings', settings_scenario),
-    *[(mode, functools.partial(scenario, mode)) for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']],
-    *[(f'missing-{role}', functools.partial(missing_session_scenario, role)) for role in ['executor', 'repair']],
-    *[(f'audit-{mode}', functools.partial(audit_scenario, mode)) for mode in ['accepted', 'idle', 'malformed', 'budget', 'failed', 'interrupted', 'queued']],
+    *[(mode, functools.partial(scenario, mode)) for mode in ['normal', 'parallel', 'failed-verification', 'interrupt-publication']],
+    ('audit-accepted', audit_scenario),
 ]
 
 

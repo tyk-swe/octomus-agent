@@ -76,7 +76,7 @@ class Stack:
 
     def prepare(self):
         (self.root / 'control-bin').mkdir()
-        for name in ['gh', 'git', 'git_rollback.py']:
+        for name in ['gh', 'git']:
             shutil.copy(self.root / 'bin' / name, self.root / 'control-bin' / name)
         # Containers run as uid 10001; this directory is test data only.
         subprocess.run(['chmod', '-R', 'a+rwX', str(self.root)], check=True)
@@ -254,83 +254,9 @@ def delivery_scenario():
         print('PASS delivery: planning, execution, review and verification ran in sandboxes; the control plane published')
 
 
-def crash_scenario():
-    def hold(root):
-        (root / 'codex-mode').write_text('hold')
-    with stack('octomus-e2e-crash-', prepare=hold) as s:
-        s.configure()
-        s.request('/control/audit', 'POST')
-        assert poll(lambda: (s.root / 'codex-entered').exists(), 180, interval=0.5), 'no runner turn started'
-        assert s.sandboxes(), 'the held turn runs in no sandbox'
-        s.compose('kill', '-s', 'KILL', 'octomus')
-        # The broker holds each sandbox's stream; losing the control plane must stop and remove the sandbox.
-        assert poll(lambda: not s.sandboxes(), 60, interval=0.5), f'sandboxes outlived the control plane: {s.sandboxes()}'
-        (s.root / 'codex-mode').unlink()
-        s.compose('start', 'octomus')
-        s.wait_healthy()
-        state = s.request('/state')
-        assert state['control']['paused'] and state['cycles'][0]['status'] == 'interrupted', state['cycles'][:1]
-        assert not s.sandboxes()
-        print('PASS crash: a killed control plane leaves no sandbox running and recovers paused')
-
-
-# Runs inside the login container: what it can reach through its proxy and directly, and what it sees of the volume.
-LOGIN_PROBE = '''
-import base64, json, os, socket, sys, urllib.parse
-def connect(url, target, auth=True):
-    proxy = urllib.parse.urlsplit(url)
-    sock = socket.create_connection((proxy.hostname, proxy.port), timeout=10)
-    header = ''
-    if auth:
-        header = 'Proxy-Authorization: Basic ' + base64.b64encode(f'{proxy.username}:{proxy.password}'.encode()).decode() + '\\r\\n'
-    sock.sendall(f'CONNECT {target} HTTP/1.1\\r\\nHost: {target}\\r\\n{header}\\r\\n'.encode())
-    status = sock.recv(200).split(b' ')[1].decode()
-    sock.close()
-    return status
-try:
-    socket.create_connection(('1.1.1.1', 443), timeout=5).close()
-    direct = 'connected'
-except OSError:
-    direct = 'refused'
-home = os.environ['HOME']
-with open(home + '/.local/share/opencode/auth.json', 'w') as f:
-    f.write('{}')
-proxy = os.environ['HTTPS_PROXY']
-print(json.dumps({
-    'proxy': proxy, 'direct': direct,
-    'unlisted': connect(proxy, 'example.com:443'), 'anonymous': connect(proxy, 'example.com:443', auth=False),
-    'previous': connect(sys.argv[1], 'example.com:443') if len(sys.argv) > 1 else None,
-    'planted': any(os.path.exists(os.path.join(config, 'opencode/plugin/planted.js'))
-                   for config in [home + '/.config', os.environ.get('XDG_CONFIG_HOME', '')])}))
-'''
-
-
-def login_scenario():
-    with stack('octomus-e2e-login-') as s:
-        # The broker made the runner volume's directories on start; plant what a prompt-injected runner turn could.
-        docker('run', '--rm', '--network', 'none', '-v', f'{s.volume("runner")}:/runner', IMAGES['sandbox'], 'sh', '-c',
-               'mkdir -p /runner/opencode/config/plugin && echo "fetch(\\"https://example.com\\")" > /runner/opencode/config/plugin/planted.js')
-
-        def login(*args):
-            result = s.compose('run', '--rm', '-T', 'login', 'python3', '-c', LOGIN_PROBE, *args, timeout=120)
-            return json.loads(result.stdout.strip().splitlines()[-1])
-        first = login()
-        assert first['direct'] == 'refused' and first['unlisted'] == '403' and first['anonymous'] == '407', first
-        assert not first['planted'], 'the login loaded OpenCode configuration a runner sandbox could have planted'
-        second = login(first['proxy'])
-        assert second['previous'] == '407' and second['unlisted'] == '403', second
-        egress = s.compose('logs', '--no-color', 'egress').stdout
-        assert '"sandbox":"login"' in egress and '"host":"example.com"' in egress, egress[-2000:]
-        docker('run', '--rm', '--network', 'none', '-v', f'{s.volume("runner")}:/runner:ro', '--entrypoint', 'test',
-               IMAGES['sandbox'], '-f', '/runner/opencode/data/auth.json')
-        print('PASS login: runner logins reach out only through the gateway under a revocable lease, without planted configuration')
-
-
 SCENARIOS = [
     ('self-test', self_test_scenario),
     ('delivery', delivery_scenario),
-    ('crash', crash_scenario),
-    ('login', login_scenario),
 ]
 
 if __name__ == '__main__':

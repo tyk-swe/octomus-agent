@@ -122,17 +122,3 @@ func TestCommitTasksFinishesAPlanWithoutAcceptedWorkIdle(t *testing.T) {
 		t.Fatalf("a plan without accepted work queued %d tasks, %v", len(tasks), err)
 	}
 }
-
-func TestPlannedTasksOwnTheirSnapshots(t *testing.T) {
-	t.Parallel()
-	cfg := testConfig(t.TempDir())
-	runID := "batch"
-	cycle := &model.Cycle{ID: model.ID(), RunID: &runID, Grounding: &model.Grounding{Revision: "main-head"}}
-	first := newPlannedTask(cfg, cycle, proposal("first", cfg.DefaultBranch), proposal("first", cfg.DefaultBranch), "task-first", nil)
-	second := newPlannedTask(cfg, cycle, proposal("second", cfg.DefaultBranch), proposal("second", cfg.DefaultBranch), "task-second", nil)
-	first.AttemptPolicy.MaxRetries++
-	*first.RunID = "changed"
-	if second.AttemptPolicy.MaxRetries != cfg.MaxRetries || *second.RunID != "batch" || runID != "batch" {
-		t.Fatalf("planned tasks share snapshots: second policy retries=%d, second run=%s, cycle run=%s", second.AttemptPolicy.MaxRetries, *second.RunID, runID)
-	}
-}

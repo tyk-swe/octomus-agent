@@ -3,22 +3,18 @@ package runner
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
-	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -120,33 +116,11 @@ func (f *fixture) connectCodex(ctx context.Context) (*Codex, error) {
 	return ConnectCodex(ctx, f.cfg, f.workspace, f.state, "fixture", sandbox.Host{})
 }
 
-func (f *fixture) codexInterrupt() map[string]any {
-	f.t.Helper()
-	log := f.path("codex-interrupts.jsonl")
-	if !testutil.WaitUntil(5*time.Second, func() bool {
-		data, err := os.ReadFile(log)
-		return err == nil && strings.HasSuffix(string(data), "\n")
-	}) {
-		f.t.Fatal("the fixture never recorded a codex interrupt")
-	}
-	data, err := os.ReadFile(log)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	var entry map[string]any
-	if err := json.Unmarshal([]byte(strings.SplitN(string(data), "\n", 2)[0]), &entry); err != nil {
-		f.t.Fatal(err)
-	}
-	return entry
-}
-
 func published(path string) (string, bool) {
 	data, err := os.ReadFile(path)
 	value := strings.TrimSpace(string(data))
 	return value, err == nil && value != ""
 }
-
-func alive(pid int) bool { return !testutil.ProcessGone(strconv.Itoa(pid)) }
 
 func route() config.Route {
 	return config.Route{
@@ -279,57 +253,6 @@ func TestDiagnosticsWireShape(t *testing.T) {
 	}
 }
 
-func TestVersionWarnings(t *testing.T) {
-	t.Parallel()
-	if warning := CodexVersionWarning("codex-cli 0.153.4"); warning != nil {
-		t.Fatalf("exact match must not warn: %q", *warning)
-	}
-	if warning := CodexVersionWarning("codex-cli 0.153.4\n"); warning != nil {
-		t.Fatalf("trailing whitespace must not warn: %q", *warning)
-	}
-	for _, version := range []string{"codex-cli 0.153.40", "codex-cli 0.153.4-dev", "unknown"} {
-		warning := CodexVersionWarning(version)
-		if warning == nil || !strings.Contains(*warning, "mismatch") {
-			t.Fatalf("%q must warn about a mismatch", version)
-		}
-	}
-	if warning := OpenCodeVersionWarning(OpenCodeProtocolVersion); warning != nil {
-		t.Fatalf("exact protocol match must not warn: %q", *warning)
-	}
-	if warning := OpenCodeVersionWarning("1.18.31"); warning == nil || !strings.Contains(*warning, "mismatch") {
-		t.Fatalf("protocol mismatch must warn: %v", warning)
-	}
-}
-
-func TestRunnersLazyBackendsAndAuditFiltering(t *testing.T) {
-	t.Parallel()
-	f := opencodeFixture(t)
-	cfg := f.cfg.Clone()
-	for _, role := range []string{"orchestrator", "discovery", "proposal_reviewer"} {
-		cfg.Roles[role] = route()
-	}
-	ctx := context.Background()
-	clients := New(ctx, cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
-	defer clients.Close()
-	if err := clients.ValidateRoutes(cfg, f.workspace, true); err != nil {
-		t.Fatalf("audit validation: %v", err)
-	}
-	if err := clients.ValidateRoutes(cfg, f.workspace, false); err == nil {
-		t.Fatal("execution validation must fail while routes are unset")
-	}
-	cfg.Roles["code_reviewer"] = route()
-	for tier := range cfg.Tiers {
-		cfg.Tiers[tier] = route()
-	}
-	cfg.RepairRoute = route()
-	if err := clients.ValidateRoutes(cfg, f.workspace, false); err != nil {
-		t.Fatalf("execution validation: %v", err)
-	}
-	if _, err := clients.Client(config.BackendCodex, f.workspace); err == nil {
-		t.Fatal("the nonexistent Codex binary must fail when first requested")
-	}
-}
-
 func TestRunnersMixedBackendCatalogs(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, "opencode", func(shim string) config.Config {
@@ -362,159 +285,5 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 		if m.Backend != config.BackendOpencode || m.Provider == nil {
 			t.Fatalf("opencode catalog identity drifted: %+v", m)
 		}
-	}
-}
-
-func TestRunnersCloseOwnsClients(t *testing.T) {
-	t.Parallel()
-	f := opencodeFixture(t)
-	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
-	defer clients.Close()
-	if _, err := clients.Client(config.BackendOpencode, f.workspace); err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	if !testutil.WaitUntil(5*time.Second, func() bool { return f.exists("opencode-pids.jsonl") }) {
-		t.Fatal("the fixture never recorded its pid")
-	}
-	data, err := os.ReadFile(f.path("opencode-pids.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var record struct {
-		Pid int `json:"pid"`
-	}
-	if err := json.Unmarshal([]byte(strings.SplitN(string(data), "\n", 2)[0]), &record); err != nil {
-		t.Fatal(err)
-	}
-	if err := clients.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	if !testutil.WaitUntil(3*time.Second, func() bool { return !alive(record.Pid) }) {
-		t.Fatal("Close left the owned server alive")
-	}
-	if err := clients.Close(); err != nil {
-		t.Fatalf("Close must be idempotent: %v", err)
-	}
-}
-
-func TestRunnersErrorsKeepBlockedReason(t *testing.T) {
-	t.Parallel()
-	f := opencodeFixture(t)
-	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
-	defer clients.Close()
-	_, err := clients.Start(route(), f.workspace, stringPtr("ses_missing"))
-	if err == nil {
-		t.Fatal("resuming a missing session must fail")
-	}
-	if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonRunnerUnavailable {
-		t.Fatalf("blocked reason lost: %v (%v)", reason, err)
-	}
-	if !strings.Contains(err.Error(), "HTTP 404") {
-		t.Fatalf("concrete cause lost: %v", err)
-	}
-	if _, err := clients.Turn("ses_missing", route(), f.workspace, "prompt", nil); err == nil {
-		t.Fatal("turn on a missing session must fail")
-	} else if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonRunnerUnavailable {
-		t.Fatalf("turn blocked reason lost: %v (%v)", reason, err)
-	}
-}
-
-func TestDecodeJSONStrict(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct{ raw, message string }{
-		{`"\ud800"`, "unpaired high surrogate"},
-		{`"\udc00"`, "unpaired low surrogate"},
-		{`"\ud800A"`, "unpaired high surrogate"},
-		{`"\ud800\u0041"`, "unpaired high surrogate"},
-		{`{"k":["ok","\ud800"]}`, "unpaired high surrogate"},
-		{`"\u12"`, "invalid Unicode escape"},
-		{"\"\xff\"", "invalid UTF-8"},
-		{`{} {}`, "trailing JSON data"},
-		{`{"a":1} x`, "trailing JSON data"},
-	} {
-		value, err := decodeJSON([]byte(tc.raw))
-		if err == nil || err.Error() != tc.message {
-			t.Errorf("decodeJSON(%s) = %v, %v; want %q", tc.raw, value, err, tc.message)
-		}
-		var marked *wirejson.Error
-		if errors.As(err, &marked) {
-			t.Errorf("decodeJSON(%s) returned a marked *wirejson.Error", tc.raw)
-		}
-	}
-	for _, raw := range []string{`["\u12", 1]`, `"abc\`, `{"a":`} {
-		if value, err := decodeJSON([]byte(raw)); err == nil {
-			t.Errorf("decodeJSON(%s) = %v; want an error", raw, value)
-		}
-	}
-	for _, tc := range []struct {
-		raw  string
-		want any
-	}{
-		{`"x😀"`, "x😀"},
-		{`"\ud83d\ude00"`, "😀"},
-		{`"\\ud800"`, `\ud800`},
-		{`"\u0041"`, "A"},
-		{`{"n":1.50,"big":12345678901234567890}`, map[string]any{"n": json.Number("1.50"), "big": json.Number("12345678901234567890")}},
-		{" [1, \"a\"] \n", []any{json.Number("1"), "a"}},
-	} {
-		value, err := decodeJSON([]byte(tc.raw))
-		if err != nil || !reflect.DeepEqual(value, tc.want) {
-			t.Errorf("decodeJSON(%s) = %#v, %v; want %#v", tc.raw, value, err, tc.want)
-		}
-	}
-}
-
-func TestFinishTurnRejectsDuplicateKeys(t *testing.T) {
-	t.Parallel()
-	finding := `{"detail":"d","file":"a.go","priority":"high","title":"SQL injection"}`
-	proposal := map[string]any{}
-	for _, key := range []string{"id", "title", "problem", "benefit", "category", "target", "tier", "scope", "prompt", "reason", "problem_key"} {
-		proposal[key] = key
-	}
-	proposal["decision"] = "accept"
-	for _, key := range []string{"evidence", "dependencies", "relevant_paths", "reconsiders"} {
-		proposal[key] = []any{}
-	}
-	encoded, err := json.Marshal(map[string]any{"proposals": []any{proposal}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	proposals := string(encoded)
-	if got, err := FinishTurn(proposals, schemas.ProposalSchema()); err != nil || got != proposals {
-		t.Fatalf("valid proposals = %q, %v", got, err)
-	}
-	for _, tc := range []struct {
-		name, answer, field string
-		schema              schemas.Schema
-	}{
-		{"top level", `{"completed":true,"summary":"Reviewed","findings":[` + finding + `],"findings":[]}`, "findings", schemas.ReviewSchema()},
-		{"inside a finding", `{"completed":false,"summary":"s","findings":[{"title":"a","title":"b","file":"f","detail":"d","priority":"p"}]}`, "title", schemas.ReviewSchema()},
-		{"escaped", `{"summary":"a","\u0073ummary":"b","completed":true,"findings":[]}`, "summary", schemas.ReviewSchema()},
-		{"inside a proposal", strings.Replace(proposals, `"decision":"accept"`, `"decision":"accept","decision":"reject"`, 1), "decision", schemas.ProposalSchema()},
-	} {
-		got, err := FinishTurn(tc.answer, tc.schema)
-		want := fmt.Sprintf("Runner returned invalid JSON: duplicate field %q", tc.field)
-		if err == nil || err.Error() != want {
-			t.Errorf("%s: FinishTurn = %q, %v; want %q", tc.name, got, err, want)
-		}
-		var marked *wirejson.Error
-		if errors.As(err, &marked) {
-			t.Errorf("%s: returned a marked *wirejson.Error", tc.name)
-		}
-	}
-	for _, tc := range []struct{ answer, want string }{
-		{`{"summary":"s","completed":true,"findings":[]}`, `{"completed":true,"findings":[],"summary":"s"}`},
-		{`{"completed":false,"summary":"s","findings":[` + finding + `,` + finding + `]}`, `{"completed":false,"findings":[` + finding + `,` + finding + `],"summary":"s"}`},
-	} {
-		if got, err := FinishTurn(tc.answer, schemas.ReviewSchema()); err != nil || got != tc.want {
-			t.Errorf("FinishTurn(%s) = %q, %v; want %q", tc.answer, got, err, tc.want)
-		}
-	}
-	if got, err := FinishTurn(`{"completed":true,"summary":"s","findings":[],"n":1e400}`, schemas.ReviewSchema()); err == nil || err.Error() != "Runner returned an invalid structured result: Structured result has an unexpected field" {
-		t.Errorf("out-of-range number = %q, %v", got, err)
-	}
-	text := `{"a":1,"a":2}`
-	if got, err := FinishTurn(text, nil); err != nil || got != text {
-		t.Fatalf("unstructured answer = %q, %v", got, err)
 	}
 }

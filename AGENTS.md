@@ -75,11 +75,9 @@ owns strict typed JSON boundaries for saved records and API requests.
 - Go behavior tests sit beside each package (`*_test.go`); `internal/testutil`
   holds their shared polling and process helpers, a POSIX-shell `git`/`gh`
   dispatcher (`InstallFixtureCommands`) that relays into a fixture's `bin/`
-  without a Python interpreter start, `SkipVolumeUnderRace` for
-  single-goroutine data-volume checks the race detector gains nothing from,
-  and the sandbox tests' unix-socket servers, protocol upgrades and
-  `SyncBuffer` (`sockets.go`).
-  Pinned real-client contracts (`internal/runner`) and the scale checks
+  without a Python interpreter start, and the sandbox tests' unix-socket
+  servers, protocol upgrades and `SyncBuffer` (`sockets.go`).
+  Pinned real-client contracts (`internal/runner`) and the scale check
   (`internal/store`, `OCTOMUS_SCALE_TEST=1`) skip unless their environment is
   provided.
 - `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py`, `e2e_baseline.py`, and
@@ -89,10 +87,10 @@ owns strict typed JSON boundaries for saved records and API requests.
   whole suites by alias or single scenarios by `suite/scenario` name, and the
   direct suite files remain focused entry points.
   `binary_contract.py` checks executable startup and embedded assets.
-  `distribution.py`, `package_guards.py` and `systemd.py` cover packaging and
-  deployment; `evidence_snapshot.py` runs the documented backup and export examples
-  on synthetic data, against the private-payload gate in `tests/helpers`.
-  `tests/fixturedb` creates a fresh state database for the Python tests.
+  `distribution.py` and `package_guards.py` cover packaging; `tests/helpers`
+  holds the private-payload gate the documented export example imports, with its
+  own `node --test` file. `tests/fixturedb` creates a fresh state database for
+  `tests/serve_ui.py`.
 - Release and deployment inputs: `VERSION` (the one version, read by `version.go`,
   the dashboard build and release tooling), `scripts/package.sh`, `install.sh`,
   `deploy/docker` (images, compose file, `setup.sh`, `env.example`) and the
@@ -123,7 +121,7 @@ race detector. Install dashboard dependencies with
   `make test-browser`: one stage each. `test-integration` accepts
   `INTEGRATION_SCENARIOS` suite aliases or `suite/scenario` names;
   `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests run four workers.
-- `make test-race-e2e` (opt-in, about seven minutes): `tests/e2e.py` against the
+- `make test-race-e2e` (opt-in, about a minute): `tests/e2e.py` against the
   race-instrumented build.
 - `make test-sandbox` (opt-in, needs Docker Engine 28+): the broker against the real
   daemon (`OCTOMUS_DOCKER_TEST=1`) and `tests/e2e_sandbox.py` against the compose stack.

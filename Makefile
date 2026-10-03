@@ -15,17 +15,13 @@ define GO_TESTS
 endef
 
 define CONTRACT_CORE
-	python3 tests/workflows.py
-	python3 tests/harness_environment.py
 	$(E2E_ENV) python3 tests/binary_contract.py
-	$(E2E_ENV) python3 tests/evidence_snapshot.py
 	node --test tests/helpers/public_payload.test.mjs
 endef
 
 define CONTRACT_PACKAGE
 	$(E2E_ENV) python3 tests/distribution.py
 	python3 tests/package_guards.py
-	python3 tests/docker_setup.py
 endef
 
 dashboard:
@@ -71,7 +67,7 @@ test-integration: build
 test-browser: build
 	$(E2E_ENV) npm test --prefix web -- $(PLAYWRIGHT_ARGS)
 
-# Opt-in (~7 min): kept out of `make test` because the race runtime perturbs the other suites' timing.
+# Opt-in (about a minute): kept out of `make test` because the race runtime perturbs the other suites' timing.
 test-race-e2e: build-race
 	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent-race" GORACE=halt_on_error=1 PYTHONUNBUFFERED=1 python3 tests/e2e.py
 

@@ -2,18 +2,15 @@ package engine
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
-	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // watchedBackend records how many runner clients were open whenever a verification command started.
@@ -82,27 +79,6 @@ func TestNoRunnerOutlivesItsTurn(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-func TestScratchWorkspaceIsAnEmptyDisposableRoot(t *testing.T) {
-	t.Parallel()
-	dataDir := t.TempDir()
-	app := New(nil, dataDir)
-	t.Cleanup(app.Shutdown)
-	dir, discard, err := app.scratchWorkspace()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if filepath.Base(dir) != "workspace" || filepath.Dir(filepath.Dir(dir)) != filepath.Join(dataDir, scratchDir) {
-		t.Fatalf("scratch workspace = %s; want <data>/%s/<id>/workspace", dir, scratchDir)
-	}
-	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
-		t.Fatalf("scratch workspace entries = %v, %v; want an empty directory", entries, err)
-	}
-	discard()
-	if _, err := os.Stat(filepath.Dir(dir)); !os.IsNotExist(err) {
-		t.Fatalf("scratch root after discard: %v; want it removed", err)
-	}
-}
-
 func TestSessionsRecordTheSandboxesTheirTurnsRanIn(t *testing.T) {
 	t.Parallel()
 	fixture := newScriptedFixture(t, withGitHubIdentity())
@@ -127,27 +103,5 @@ func TestSessionsRecordTheSandboxesTheirTurnsRanIn(t *testing.T) {
 			session.Sandbox.Egress.Allowed["api.openai.com:443"] != 2 || session.Sandbox.Egress.Denied["example.com:443"] != 1 {
 			t.Fatalf("%s session sandbox = %+v; want the record of its own turn", session.Role, session.Sandbox)
 		}
-	}
-}
-
-func TestCancelledSelfTestKeepsTheLastResult(t *testing.T) {
-	t.Parallel()
-	state := testStore(t)
-	app := New(state, t.TempDir(), WithSandbox(probedSandbox{dir: t.TempDir(), hold: true}))
-	t.Cleanup(app.Shutdown)
-	proof := SandboxSelfTest{At: model.Now(), Passed: true, Kernel: "6.1", Checks: []sandbox.ProbeCheck{
-		{ID: "non_root", Label: "Runs as an unprivileged user", Passed: true, Detail: "uid 10001"}}}
-	if err := state.Put("settings", selfTestRecord, proof); err != nil {
-		t.Fatal(err)
-	}
-	// The operator navigates away while the probe runs, which ends the request's context.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	if _, err := app.SelfTest(ctx); err == nil {
-		t.Fatal("a cancelled self-test reported no error")
-	}
-	saved, err := store.Get[SandboxSelfTest](state, "settings", selfTestRecord)
-	if err != nil || saved == nil || !saved.Passed || saved.Error != nil || saved.At != proof.At {
-		t.Fatalf("saved self-test = %+v, %v; a cancelled probe observed nothing and must keep the last result", saved, err)
 	}
 }

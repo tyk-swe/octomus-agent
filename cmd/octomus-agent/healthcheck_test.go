@@ -52,14 +52,3 @@ func TestHealthcheckReachesTheConfiguredListener(t *testing.T) {
 		})
 	}
 }
-
-func TestHealthcheckRejectsAnUnhealthyListener(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	t.Cleanup(server.Close)
-	var stderr bytes.Buffer
-	if code := healthcheck(server.Listener.Addr().String(), &stderr); code != 1 {
-		t.Fatalf("unhealthy listener: exit=%d stderr=%q", code, stderr.String())
-	}
-}

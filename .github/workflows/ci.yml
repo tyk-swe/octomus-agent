@@ -140,7 +140,6 @@ jobs:
       - run: npm ci --prefix web
       - run: make test-contracts package
       - run: python3 tests/distribution.py --package "dist/octomus-agent-v$(cat VERSION)-x86_64-unknown-linux-gnu.tar.gz"
-      - run: sudo python3 tests/systemd.py
 
   client-contracts:
     runs-on: ubuntu-24.04

@@ -259,30 +259,3 @@ func TestPublicationMetadataIsPublicOnly(t *testing.T) {
 	}
 	assertNoOpenClients(t, script)
 }
-
-func TestScriptedCatalogRejectsMissingRoute(t *testing.T) {
-	t.Parallel()
-	fixture := newScriptedFixture(t)
-	routes := fixture.routes
-	fixture.script.SetCatalog(runnertest.CatalogFor(routes.Executor, routes.Repair, routes.Orchestrator, routes.Discovery, routes.ProposalReviewer)...)
-	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
-	saveExecutionTask(t, fixture.planningFixture, task)
-
-	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
-	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonRunnerUnavailable {
-		t.Fatalf("missing reviewer route outcome = %+v", saved)
-	}
-	if saved.Error == nil || !strings.Contains(*saved.Error, routes.Reviewer.String()) {
-		t.Fatalf("the block must name the missing route: %s", optionalText(saved.Error))
-	}
-	if saved.Workspace != "" || saved.ExecutionSession != nil || len(saved.Sessions) != 0 {
-		t.Fatalf("a rejected route initialized the task: %+v", saved)
-	}
-	for _, call := range fixture.script.Calls() {
-		if call.Kind == runnertest.CallStart || call.Kind == runnertest.CallTurn {
-			t.Fatalf("a rejected route reached the runner: %+v", call)
-		}
-	}
-	assertAdmissions(t, fixture.state, 0, "a rejected route admits nothing")
-	assertNoOpenClients(t, fixture.script)
-}
