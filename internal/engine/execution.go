@@ -279,6 +279,47 @@ func (a *App) blockOrphanedPublications() error {
 	return nil
 }
 
+// Cancellation commits its terminal status before the worker joins and saves its
+// final session evidence. A refused final write must not leave a running session
+// permanently attached to a cancelled task, including after archive or restart.
+// Caller holds the gate while checking ownership and updating the saved evidence.
+func (a *App) interruptCancelledTaskSessions() error {
+	a.runtimeMu.Lock()
+	if a.runtime.cancelledSessionsChecked {
+		a.runtimeMu.Unlock()
+		return nil
+	}
+	excluded := make([]string, 0, len(a.runtime.tasks)+len(a.runtime.cleanups))
+	for id := range a.runtime.tasks {
+		excluded = append(excluded, id)
+	}
+	for key := range a.runtime.cleanups {
+		if key.kind == cleanupTask {
+			excluded = append(excluded, key.id)
+		}
+	}
+	a.runtimeMu.Unlock()
+	tasks, err := a.Store.CancelledTasksWithRunningSessionsExcept(excluded)
+	if err != nil {
+		return err
+	}
+	for i := range tasks {
+		model.InterruptRunning(tasks[i].Sessions)
+		if err := a.saveTask(&tasks[i]); err != nil {
+			return err
+		}
+	}
+	// A new service scans durable history once. Worker exit and cleanup release
+	// invalidate this check after an excluded owner finishes; failed writes and
+	// full pages stay retryable without scanning finalized history every tick.
+	if len(tasks) < 500 {
+		a.runtimeMu.Lock()
+		a.runtime.cancelledSessionsChecked = true
+		a.runtimeMu.Unlock()
+	}
+	return nil
+}
+
 func (a *App) publishedDependency(id string) (model.Task, error) {
 	dependency, err := store.Get[model.Task](a.Store, "task", id)
 	if err != nil {
