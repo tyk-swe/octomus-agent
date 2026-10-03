@@ -192,6 +192,52 @@ def scenario(mode):
         print(f'PASS {mode}: complete reviewed delivery with no duplicate PRs')
 
 
+def literal_head_branch_scenario():
+    def prepare(root):
+        checkout = root / 'checkout'
+        (checkout / 'default-marker.txt').write_text('literal HEAD branch\n')
+        git('add', 'default-marker.txt', cwd=checkout)
+        git('commit', '-m', 'Literal HEAD default branch', cwd=checkout)
+        revision = git('rev-parse', 'HEAD', cwd=checkout)
+        # Full ref plumbing permits this branch even though --branch rejects it.
+        git('update-ref', 'refs/heads/HEAD', revision, cwd=checkout)
+        git('push', 'origin', 'refs/heads/HEAD:refs/heads/HEAD', cwd=checkout)
+        (root / 'target').write_text('HEAD')
+
+    with fixture_service('octomus-literal-head-', prepare) as (root, service):
+        remote = root / 'remote.git'
+        revision = git('rev-parse', 'refs/heads/HEAD', cwd=remote)
+        # The remote pseudo-ref deliberately names an older, different commit.
+        assert git('rev-parse', 'HEAD', cwd=remote) != revision
+        config = base_config(service, ['test "$(cat default-marker.txt)" = "literal HEAD branch"',
+                                       'for file in feature*.txt; do test ! -e "$file" || test "$(cat "$file")" = fixed || exit 1; done'],
+                             default_branch='HEAD', cycle_interval_seconds=3600,
+                             task_timeout_seconds=120)
+        use_codex_routes(config)
+        view = service.save_config(config)
+        service.stop()
+        service.start()
+        assert service.request('/config')['config']['default_branch'] == 'HEAD'
+        diagnostic = service.request('/doctor', 'POST')
+        assert diagnostic['checked_revision'] == view['revision']
+        assert diagnostic['warnings'] == [], diagnostic
+        code, check = service.expect('/baseline-checks', 'POST', {'expected_revision': view['revision']})
+        assert code == 202, (code, check)
+        baseline = service.wait(lambda: b if (b := service.request('/baseline-checks/latest')['check'])
+                                and b['status'] != 'running' and b['workspace_removed'] else None,
+                                'literal HEAD baseline')
+        assert baseline['status'] == 'passed' and baseline['revision'] == revision and all(c['success'] for c in baseline['commands']), baseline
+        service.request('/control/cycle', 'POST')
+        task = service.wait(service.terminal_task, 'literal HEAD task publication')
+        assert task['status'] == 'published', task
+        assert task['source_revision'] == task['default_revision'] == revision, task
+        assert task['verification'][-1]['success'] and len(task['reviews']) == 3, task
+        pr = json.loads((root / 'prs.json').read_text())[0]
+        assert pr['base']['ref'] == 'HEAD' and pr['head']['sha'] == task['output_commit'], pr
+        assert git('rev-parse', 'refs/heads/HEAD', cwd=remote) == revision
+        print('PASS literal-head: configuration, doctor, baseline, execution, repair, review, verification, and fixture publication use refs/heads/HEAD rather than the remote pseudo-ref')
+
+
 def settings_scenario():
     """The settings contract keeps canonical state distinct from the display view.
 
@@ -213,6 +259,11 @@ def settings_scenario():
         displayed = f'echo [redacted] > {proof}'
         config['verification_commands'] = [secret_command]
         saved = service.save_config(config)
+        for patch, message in [({'default_branch': 'refs/heads/main'}, 'Default branch'),
+                               ({'branch_prefix': 'refs/tasks/'}, 'Owned branch prefix')]:
+            code, refusal = service.expect('/config', 'PUT', {'expected_revision': saved['revision'], 'config': patch})
+            assert code == 400 and message in refusal['error'], (code, refusal)
+            assert service.request('/config') == saved
         entry = next(t for t in saved['transformed_fields'] if t['field'] == 'verification_commands')
         assert entry['kinds'] == ['redacted'] and entry['paths'] == [['verification_commands', 0]], saved['transformed_fields']
         assert saved['config']['verification_commands'] == [displayed]
@@ -636,6 +687,7 @@ time.sleep(30)
 
 
 SCENARIOS = [
+    ('literal-head', literal_head_branch_scenario),
     ('harness', harness_scenario),
     ('settings', settings_scenario),
     *[(mode, functools.partial(scenario, mode)) for mode in ['normal', 'custom-route', 'interactive', 'failed-start', 'failed-discovery', 'failed-executor-start', 'parallel', 'existing-pr', 'external-context', 'dependencies', 'malformed-review', 'incomplete-review', 'failed-verification', 'remote-conflict', 'idle', 'interrupt-publication', 'closed-after-publication', 'cap1-interrupt']],
