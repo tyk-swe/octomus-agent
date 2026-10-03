@@ -217,12 +217,14 @@
   const canControl = $derived({
     resume:
       !!data?.configured &&
+      !data.recovery_error &&
       !controlStatePending &&
       data.active_cycle_mode !== 'audit' &&
       !data.baseline_active,
-    pause: !!data?.configured && data.active_cycle_mode !== 'audit',
+    pause: !!data?.configured && (!!data.recovery_error || data.active_cycle_mode !== 'audit'),
     cycle:
       !!data?.configured &&
+      !data.recovery_error &&
       !controlStatePending &&
       !planningBlocked &&
       data.control.paused &&
@@ -231,6 +233,7 @@
       !data.baseline_active,
     audit:
       !!data?.audit_configured &&
+      !data.recovery_error &&
       !controlStatePending &&
       !planningBlocked &&
       data.control.paused &&

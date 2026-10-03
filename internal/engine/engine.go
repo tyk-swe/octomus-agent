@@ -274,6 +274,23 @@ type recoveryActivity struct {
 func (e *recoveryError) Error() string { return e.err.Error() }
 func (e *recoveryError) Unwrap() error { return e.err }
 
+// blockRecovery establishes the admission barrier before Tick releases the gate.
+// Run may report the failure later; operator controls and preflight completions
+// must already be blocked during that gap.
+func (a *App) blockRecovery(err error) error {
+	a.setActiveRecoveryError(err)
+	return &recoveryError{err: err}
+}
+
+func (a *App) setActiveRecoveryError(err error) string {
+	// The redactor may return a substring; retain only its bounded display text.
+	message := strings.Clone(redact.Error(err))
+	a.runtimeMu.Lock()
+	a.runtime.activeRecoveryError = &message
+	a.runtimeMu.Unlock()
+	return message
+}
+
 func (a *App) fail(err error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -283,11 +300,7 @@ func (a *App) fail(err error) {
 	message := redact.Error(err)
 	var recovery *recoveryError
 	if errors.As(err, &recovery) {
-		// The redactor may return a substring; retain only its bounded display text.
-		message = strings.Clone(message)
-		a.runtimeMu.Lock()
-		a.runtime.activeRecoveryError = &message
-		a.runtimeMu.Unlock()
+		message = a.setActiveRecoveryError(err)
 		activity := &a.recordedRecoveryActivity
 		if activity.overflowRecorded {
 			return
