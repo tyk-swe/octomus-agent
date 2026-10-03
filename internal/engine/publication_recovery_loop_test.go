@@ -16,7 +16,8 @@ import (
 )
 
 func TestRunPublicationRecoveryFailureKeepsContinuousMode(t *testing.T) {
-	t.Parallel()
+	// Register SQLite functions before parallel package tests open databases.
+	// The driver's global function registry is not synchronized with connection setup.
 	for _, activityOnly := range []bool{false, true} {
 		t.Run(fmt.Sprintf("activity_only=%t", activityOnly), func(t *testing.T) {
 			var attempts atomic.Uint32
