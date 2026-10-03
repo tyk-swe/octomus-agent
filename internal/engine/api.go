@@ -88,6 +88,11 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 }
 
 func (a *App) controlConflict(action string, control model.Control) error {
+	if action == "audit" || action == "cycle" || action == "resume" {
+		if err := a.recoveryConflict(); err != nil {
+			return err
+		}
+	}
 	a.runtimeMu.Lock()
 	baselineActive := a.runtime.baseline != nil
 	idle := a.runtime.idle()
@@ -469,6 +474,7 @@ func (a *App) StateView() (map[string]any, error) {
 	activeTasks := len(a.runtime.tasks)
 	cycleActive := a.runtime.cycle != nil
 	baselineActive := a.runtime.baseline != nil
+	recoveryError := a.runtime.activeRecoveryError
 	a.runtimeMu.Unlock()
 	if !cycleActive {
 		for _, raw := range snapshot.Cycles {
@@ -492,6 +498,8 @@ func (a *App) StateView() (map[string]any, error) {
 	}
 	status := "idle"
 	switch {
+	case recoveryError != nil:
+		status = "unhealthy"
 	case cycleMode != nil && *cycleMode == model.CycleModeAudit:
 		status = "auditing"
 	case control.Paused:
@@ -528,6 +536,7 @@ func (a *App) StateView() (map[string]any, error) {
 	}
 	maps.Copy(view, map[string]any{
 		"status":            status,
+		"recovery_error":    recoveryError,
 		"control":           controlJSON,
 		"repository":        cfg.GitHubRepo,
 		"configured":        cfg.Validate(true) == nil,

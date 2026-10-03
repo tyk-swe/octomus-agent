@@ -16,6 +16,7 @@ func TestSchedulerPausesInvalidatePrObservations(t *testing.T) {
 		failure string
 		event   string
 	}{
+		{name: "orphaned run once planning", phase: model.BatchPhasePlanning},
 		{name: "run once completes", phase: model.BatchPhaseExecuting, event: "run_complete"},
 		{name: "run once preflight fails", phase: model.BatchPhaseDraining, event: "planning_error"},
 		{name: "scheduling pass fails", failure: "Run once is missing its durable batch", event: "error"},
@@ -85,8 +86,12 @@ func TestSchedulerPausesInvalidatePrObservations(t *testing.T) {
 					count++
 				}
 			}
-			if count != 1 {
-				t.Fatalf("recorded %d %s events; want one: %+v", count, tc.event, events)
+			wantEvents := 1
+			if tc.event == "" {
+				wantEvents = 0
+			}
+			if count != wantEvents {
+				t.Fatalf("recorded %d %s events; want %d: %+v", count, tc.event, wantEvents, events)
 			}
 		})
 	}

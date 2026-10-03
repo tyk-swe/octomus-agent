@@ -55,9 +55,47 @@ func groundingSchema() schemas.Schema {
 
 const interruptedPlanningMessage = "Discovery interrupted; incomplete proposals were not dispatched"
 
+// Caller holds the gate so worker ownership cannot change during recovery.
+func (a *App) interruptOrphanedCycles() error {
+	a.runtimeMu.Lock()
+	activeID := ""
+	if a.runtime.cycle != nil {
+		activeID = a.runtime.cycle.id
+	}
+	a.runtimeMu.Unlock()
+	cycles, err := a.Store.RunningCyclesExcept(activeID)
+	if err != nil {
+		return err
+	}
+	for _, cycle := range cycles {
+		model.InterruptRunning(cycle.Sessions)
+		cycle.Status = model.CycleInterrupted
+		cycle.CompletedAt = stringPointer(model.Now())
+		cycle.Error = stringPointer(interruptedPlanningMessage)
+		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
+			return err
+		}
+	}
+	if activeID != "" {
+		return nil
+	}
+	// Retry control settlement even if an earlier pass interrupted the cycle
+	// successfully but could not pause its now-workerless planning batch.
+	control, err := a.Control()
+	if err != nil {
+		return err
+	}
+	if control.Mode == model.OperatingModeRunOnce && control.Batch != nil && control.Batch.Phase == model.BatchPhasePlanning {
+		message := "Run once was interrupted before its planning transaction committed"
+		return a.pauseLocked(&control, &message)
+	}
+	return nil
+}
+
 func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycle) {
 	err := a.plan(ctx, cfg, &cycle)
 	shuttingDown := err != nil && a.ctx.Err() != nil
+	var terminalErr error
 	if err != nil {
 		cycle.Status = model.CycleFailed
 		cycle.Error = stringPointer(redact.Error(err))
@@ -66,17 +104,26 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 			cycle.Error = stringPointer(interruptedPlanningMessage)
 		}
 		cycle.CompletedAt = stringPointer(model.Now())
-		_ = a.saveCycleMergedSessions(&cycle)
+		terminalErr = a.saveCycleMergedSessions(&cycle)
 	}
 
 	a.gate.Lock()
+	// A refused terminal checkpoint leaves recovery work behind. Establish its
+	// admission barrier before releasing worker ownership, without waiting for Tick.
+	if terminalErr != nil {
+		a.setActiveRecoveryError(terminalErr)
+	}
 	a.runtimeMu.Lock()
 	if a.runtime.cycle != nil && a.runtime.cycle.id == cycle.ID {
 		a.runtime.cycle = nil
 	}
 	a.runtimeMu.Unlock()
 	control, loadErr := a.Control()
-	if loadErr == nil && !shuttingDown {
+	if loadErr != nil {
+		// The saved control may still require run-once settlement. Keep admission
+		// blocked until recovery can inspect it, even when the cycle write succeeded.
+		a.setActiveRecoveryError(loadErr)
+	} else if !shuttingDown {
 		var message string
 		if err != nil {
 			message = redact.Error(err)
@@ -90,7 +137,9 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 		}
 		failedRunOnce := err != nil && cycle.Mode == model.CycleModeExecution && control.Mode == model.OperatingModeRunOnce
 		if failedRunOnce {
-			_ = a.pauseLocked(&control, &message)
+			if pauseErr := a.pauseLocked(&control, &message); pauseErr != nil {
+				a.setActiveRecoveryError(pauseErr)
+			}
 		} else {
 			_ = a.Store.SaveControl(control)
 		}

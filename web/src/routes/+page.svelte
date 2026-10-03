@@ -217,12 +217,14 @@
   const canControl = $derived({
     resume:
       !!data?.configured &&
+      !data.recovery_error &&
       !controlStatePending &&
       data.active_cycle_mode !== 'audit' &&
       !data.baseline_active,
-    pause: !!data?.configured && data.active_cycle_mode !== 'audit',
+    pause: !!data?.configured && (!!data.recovery_error || data.active_cycle_mode !== 'audit'),
     cycle:
       !!data?.configured &&
+      !data.recovery_error &&
       !controlStatePending &&
       !planningBlocked &&
       data.control.paused &&
@@ -231,6 +233,7 @@
       !data.baseline_active,
     audit:
       !!data?.audit_configured &&
+      !data.recovery_error &&
       !controlStatePending &&
       !planningBlocked &&
       data.control.paused &&
@@ -821,13 +824,23 @@
               {sandboxVerdict(data.sandbox).detail}</span
             >
           </div>{/if}
+        {#if data.recovery_error}<div
+            class="notice error"
+            role="alert"
+            aria-label="Recovery status"
+          >
+            <Icon name="alert" /><span
+              ><strong>Recovery is retrying.</strong> New work waits while saved state is recovered.
+              {data.recovery_error}</span
+            >
+          </div>{/if}
         {#if data.control.error}<div class="notice error">
             <Icon name="alert" /><span>{data.control.error}</span><button
               class="text-button"
               onclick={() => navigate('settings')}>Inspect configuration</button
             >
           </div>{/if}
-        {#if data.active_cycle_mode === 'audit'}
+        {#if data.active_cycle_mode === 'audit' && !data.recovery_error}
           <div class="notice" role="status">
             <Icon name="proposals" />Audit in progress. Execution stays paused; recommendations will
             not be queued.

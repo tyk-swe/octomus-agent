@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,6 +89,7 @@ type runtimeState struct {
 	cleanups               map[cleanupKey]struct{}
 	cleanupReports         map[cleanupKey]cleanupReport
 	retentionCursors       map[cleanupKind]string
+	activeRecoveryError    *string
 }
 
 func (r *runtimeState) idle() bool {
@@ -118,6 +120,9 @@ type App struct {
 	deployment Deployment
 	removeDir  func(root, path string) error
 	wg         sync.WaitGroup
+
+	// Guarded by gate; remember only successfully recorded recovery activity.
+	recordedRecoveryActivity recoveryActivity
 
 	// planningStorage excludes admission scans from trusted planning filesystem changes. Hold it only during
 	// filesystem work, never across store calls, gate acquisition, runner work, or another acquisition of this lock.
@@ -253,6 +258,39 @@ func (a *App) Drained() bool {
 	return len(r.tasks) == 0 && !r.planning() && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
 }
 
+// recoveryError blocks the current scheduling pass without changing saved
+// operating policy while a background recovery write is being retried.
+type recoveryError struct{ err error }
+
+// Keep the first eight recorded causes for the whole episode, without eviction.
+// After saturation, a single overflow notice bounds activity even if causes keep
+// changing. Only successful event writes consume a cause slot or the notice.
+type recoveryActivity struct {
+	causes           [8]string
+	count            int
+	overflowRecorded bool
+}
+
+func (e *recoveryError) Error() string { return e.err.Error() }
+func (e *recoveryError) Unwrap() error { return e.err }
+
+// blockRecovery establishes the admission barrier before Tick releases the gate.
+// Run may report the failure later; operator controls and preflight completions
+// must already be blocked during that gap.
+func (a *App) blockRecovery(err error) error {
+	a.setActiveRecoveryError(err)
+	return &recoveryError{err: err}
+}
+
+func (a *App) setActiveRecoveryError(err error) string {
+	// The redactor may return a substring; retain only its bounded display text.
+	message := strings.Clone(redact.Error(err))
+	a.runtimeMu.Lock()
+	a.runtime.activeRecoveryError = &message
+	a.runtimeMu.Unlock()
+	return message
+}
+
 func (a *App) fail(err error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -260,6 +298,30 @@ func (a *App) fail(err error) {
 		return
 	}
 	message := redact.Error(err)
+	var recovery *recoveryError
+	if errors.As(err, &recovery) {
+		message = a.setActiveRecoveryError(err)
+		activity := &a.recordedRecoveryActivity
+		if activity.overflowRecorded {
+			return
+		}
+		for _, recorded := range activity.causes[:activity.count] {
+			if recorded == message {
+				return
+			}
+		}
+		if activity.count == len(activity.causes) {
+			if err := a.Store.Event("system", "recovery_error", "Additional recovery causes are suppressed until recovery succeeds; the latest cause remains available in service health."); err == nil {
+				activity.overflowRecorded = true
+			}
+			return
+		}
+		if err := a.Store.Event("system", "recovery_error", message); err == nil {
+			activity.causes[activity.count] = message
+			activity.count++
+		}
+		return
+	}
 	if control, loadErr := a.Control(); loadErr == nil {
 		redacted := redact.Text(message)
 		_ = a.pauseLocked(&control, &redacted)
@@ -337,33 +399,7 @@ func (a *App) Recover() error {
 		}
 	}
 
-	cycles, err := a.Store.RunningCycles()
-	if err != nil {
-		return err
-	}
-	for _, cycle := range cycles {
-		model.InterruptRunning(cycle.Sessions)
-		cycle.Status = model.CycleInterrupted
-		cycle.CompletedAt = stringPointer(model.Now())
-		cycle.Error = stringPointer(interruptedPlanningMessage)
-		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
-			return err
-		}
-	}
-
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	if control.Mode == model.OperatingModeRunOnce && control.Batch != nil && control.Batch.Phase == model.BatchPhasePlanning {
-		message := "Run once was interrupted before its planning transaction committed"
-		control.SetMode(model.OperatingModePaused)
-		control.Error = &message
-		if err := a.Store.SaveControl(control); err != nil {
-			return err
-		}
-	}
-	return nil
+	return a.interruptOrphanedCycles()
 }
 
 func stringPointer(value string) *string { return &value }
