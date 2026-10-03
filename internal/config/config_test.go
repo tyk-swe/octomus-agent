@@ -140,12 +140,12 @@ func TestRepositoryValidationPreservesSymlinkParent(t *testing.T) {
 }
 
 func TestBranchValidation(t *testing.T) {
-	for _, s := range []string{"", "-x", "a..b", "main:evil", "a.lock", "a/../b", "a//b", ".hidden", "a/.hidden", "a/lock.lock", "main.", "main/", "a@{x}", "é"} {
+	for _, s := range []string{"", "HEAD", "-x", "a..b", "main:evil", "a.lock", "a/../b", "a//b", ".hidden", "a/.hidden", "a/lock.lock", "main.", "main/", "a@{x}", "é"} {
 		if ValidBranch(s) {
 			t.Errorf("valid: %q", s)
 		}
 	}
-	for _, s := range []string{"octomus/task-123", "tyk/task-123", "main", "feature/a_b.c"} {
+	for _, s := range []string{"octomus/task-123", "tyk/task-123", "main", "feature/a_b.c", "head", "HEAD/foo", "HEAD/task", "FETCH_HEAD", "ORIG_HEAD", "refs/heads/main"} {
 		if !ValidBranch(s) {
 			t.Errorf("invalid: %q", s)
 		}
@@ -267,6 +267,7 @@ func TestValidationNamesTheFailingSetting(t *testing.T) {
 		{"task below session", func(c *Config) { c.SessionTimeoutSeconds, c.TaskTimeoutSeconds = 1800, 900 }, "Task timeout must be at least the session timeout and at most 604800 seconds"},
 		{"task above range", func(c *Config) { c.TaskTimeoutSeconds = 604801 }, "Task timeout must be at least the session timeout and at most 604800 seconds"},
 		{"default branch", func(c *Config) { c.DefaultBranch = "main." }, "Default branch must be a valid branch name"},
+		{"reserved default branch", func(c *Config) { c.DefaultBranch = "HEAD" }, "Default branch must be a valid branch name"},
 		{"prefix without slash", func(c *Config) { c.BranchPrefix = "octomus" }, `Owned branch prefix must be a valid branch path ending in "/"`},
 		{"invalid prefix", func(c *Config) { c.BranchPrefix = "bad..x/" }, `Owned branch prefix must be a valid branch path ending in "/"`},
 		{"prefix covers default", func(c *Config) { c.DefaultBranch = "octomus/main" }, "Owned branch prefix must exclude the default branch"},
