@@ -46,7 +46,7 @@ func (a *App) Tick() error {
 		return &recoveryError{err: err}
 	}
 	// Reset only after every maintenance recovery step succeeds.
-	a.recordedRecoveryError = nil
+	a.recordedRecoveryActivity = recoveryActivity{}
 	a.runtimeMu.Lock()
 	a.runtime.activeRecoveryError = nil
 	a.runtimeMu.Unlock()

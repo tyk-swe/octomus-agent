@@ -153,9 +153,12 @@ Continuous operation keeps its saved schedule and starts a fresh cycle when due,
 with new grounding and sessions rather than resuming the interrupted plan.
 While a background recovery write is refused, the scheduler records a recovery
 error and starts no work in that pass. It keeps the saved mode and schedule for
-the next recovery attempt. Identical recovery activity is recorded once per
-failure episode; the current redacted cause remains visible until recovery
-succeeds, even if its activity entry cannot be saved.
+the next recovery attempt. During an unresolved episode, each of the first eight
+successfully recorded redacted causes appears once, followed by at most one
+notice that further causes are suppressed. This bounds recovery activity even
+when causes alternate or keep changing. Refused activity writes remain retryable;
+the current redacted cause remains visible until all maintenance recovery succeeds,
+even if its activity entry cannot be saved or further entries are suppressed.
 
 ## Bounded observation and storage
 
