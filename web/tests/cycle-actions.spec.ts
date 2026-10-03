@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test';
-import type { CycleSummary } from '../src/lib/types';
+import type { CycleSummary, Snapshot } from '../src/lib/types';
 import { login, openNavigation, test, token } from './synthetic';
 
 function deferred() {
@@ -11,6 +11,7 @@ function deferred() {
 async function cycleFixture(page: Page, action: 'archive' | 'discard') {
   const state = {
     outage: false,
+    outageAfterAction: true,
     refusal: false,
     writes: 0,
     reads: 0,
@@ -51,8 +52,44 @@ async function cycleFixture(page: Page, action: 'archive' | 'discard') {
     }
     if (action === 'archive') cycles[1].lifecycle.archived_at = '2026-09-10T00:02:00Z';
     else cycles[1].lifecycle.discarded_at = '2026-09-10T00:03:00Z';
-    state.outage = true;
+    state.outage = state.outageAfterAction;
     await route.fulfill({ json: { ok: true } });
+  });
+  return state;
+}
+
+async function runningControls(page: Page) {
+  const state = {
+    mode: 'continuous' as Snapshot['control']['mode'],
+    writes: [] as string[],
+    holdPause: null as ReturnType<typeof deferred> | null
+  };
+  let control: Snapshot['control'];
+  await page.route('**/api/state', async (route) => {
+    const snapshot: Snapshot = await (await route.fetch()).json();
+    snapshot.configured = true;
+    snapshot.audit_configured = true;
+    snapshot.control.mode = state.mode;
+    snapshot.control.paused = state.mode === 'paused';
+    snapshot.active_tasks = 1;
+    snapshot.cycle_active = false;
+    snapshot.active_cycle_mode = null;
+    snapshot.baseline_active = false;
+    control = snapshot.control;
+    await route.fulfill({ json: snapshot });
+  });
+  await page.route('**/api/control/*', async (route) => {
+    const action = new URL(route.request().url()).pathname.split('/').at(-1)!;
+    state.writes.push(action);
+    if (action === 'pause') {
+      const gate = state.holdPause;
+      state.holdPause = null;
+      if (gate) await gate.promise;
+      state.mode = 'paused';
+    }
+    await route.fulfill({
+      json: { ...control, mode: state.mode, paused: state.mode === 'paused' }
+    });
   });
   return state;
 }
@@ -70,6 +107,116 @@ test.afterEach(async ({ page }) => {
 });
 
 for (const action of ['archive', 'discard'] as const) {
+  test(`an accepted cycle ${action} leaves Pause usable during history refresh and preserves a newer control's ownership`, async ({
+    page,
+    isMobile
+  }) => {
+    const state = await cycleFixture(page, action);
+    state.outageAfterAction = false;
+    const controls = await runningControls(page);
+    await openCycle(page, !!isMobile);
+    const history = (state.holdNext = deferred());
+    const pauseWrite = (controls.holdPause = deferred());
+    try {
+      const actionButton = page.getByRole('button', {
+        name: action === 'archive' ? 'Archive cycle' : 'Discard cycle workspaces',
+        exact: true
+      });
+      await actionButton.click();
+      await expect.poll(() => state.held).toBe(1);
+      await expect(
+        page.getByRole('status').filter({ hasText: 'Refreshing cycle history…' })
+      ).toBeVisible();
+      const pause = page.getByRole('button', { name: 'Pause', exact: true });
+      await expect(pause).toBeEnabled();
+      const pendingCycleAction = page.getByRole('button', {
+        name:
+          action === 'archive'
+            ? /^(Archive cycle|Archiving cycle…)$/
+            : /^(Discard cycle workspaces|Discarding workspaces…)$/
+      });
+      await expect(pendingCycleAction).toBeDisabled();
+      await pendingCycleAction.dispatchEvent('click');
+      expect(state.writes).toBe(1);
+      await pause.click();
+      await expect.poll(() => controls.writes).toEqual(['pause']);
+      const pausing = page.getByRole('button', { name: 'Pausing…', exact: true });
+      await expect(pausing).toBeDisabled();
+      const historyReads = state.reads;
+      const refreshed = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === '/api/cycles' && state.reads > historyReads
+      );
+      history.resolve();
+      await (await refreshed).finished();
+      await page.clock.runFor(100);
+      await expect(
+        page.getByRole('status').filter({ hasText: 'Refreshing cycle history…' })
+      ).toHaveCount(0);
+      await expect(
+        page.getByLabel('Cycle', { exact: true }).locator('option[value="history-1"]')
+      ).toContainText(action === 'archive' ? 'archived' : 'workspaces discarded');
+      // The older action has finished its history and state reads. It must not
+      // release the busy flag now owned by the still-unacknowledged Pause.
+      await expect(pausing).toBeDisabled();
+      await pausing.dispatchEvent('click');
+      expect(controls.writes).toEqual(['pause']);
+      pauseWrite.resolve();
+      await expect(
+        page.getByRole('button', { name: 'Start continuous', exact: true })
+      ).toBeEnabled();
+      expect(controls.writes).toEqual(['pause']);
+      expect(state.writes).toBe(1);
+    } finally {
+      history.resolve();
+      pauseWrite.resolve();
+    }
+  });
+
+  test(`disconnect during cycle ${action} history refresh cannot release a new session's Pause`, async ({
+    page,
+    isMobile
+  }) => {
+    const state = await cycleFixture(page, action);
+    state.outageAfterAction = false;
+    const controls = await runningControls(page);
+    await openCycle(page, !!isMobile);
+    const history = (state.holdNext = deferred());
+    const pauseWrite = deferred();
+    try {
+      await page
+        .getByRole('button', {
+          name: action === 'archive' ? 'Archive cycle' : 'Discard cycle workspaces',
+          exact: true
+        })
+        .click();
+      await expect.poll(() => state.held).toBe(1);
+      if (isMobile) await page.getByRole('button', { name: 'Toggle navigation' }).click();
+      await page.getByRole('button', { name: /Disconnect/ }).click();
+      await page.getByLabel('Operator access token').fill(token);
+      await page.getByRole('button', { name: 'Open dashboard' }).click();
+      await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+      controls.holdPause = pauseWrite;
+      await page.getByRole('button', { name: 'Pause', exact: true }).click();
+      await expect.poll(() => controls.writes).toEqual(['pause']);
+      history.resolve();
+      await expect(page.getByRole('button', { name: 'Pausing…', exact: true })).toBeDisabled();
+      await page.getByRole('button', { name: 'Pausing…', exact: true }).dispatchEvent('click');
+      expect(controls.writes).toEqual(['pause']);
+      pauseWrite.resolve();
+      await expect(
+        page.getByRole('button', { name: 'Start continuous', exact: true })
+      ).toBeEnabled();
+      await openNavigation(page, 'Proposals', !!isMobile);
+      await expect(page.getByText('Refreshing cycle history…', { exact: false })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Retry cycle history' })).toHaveCount(0);
+      expect(state.writes).toBe(1);
+    } finally {
+      history.resolve();
+      pauseWrite.resolve();
+    }
+  });
+
   for (const recovery of ['retry', 'poll'] as const) {
     test(`a successful cycle ${action} with failed history refresh recovers through ${recovery} without another mutation`, async ({
       page,

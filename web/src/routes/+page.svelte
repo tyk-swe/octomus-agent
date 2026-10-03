@@ -436,6 +436,7 @@
     if (busy || cycleRefreshMessage) return;
     const currentSession = sessionGeneration;
     let applied = false;
+    let ownsBusy = true;
     busy = true;
     pendingAction = value;
     error = '';
@@ -445,6 +446,11 @@
       applied = true;
       cycleRefreshMessage = value === 'archive' ? 'Cycle archived.' : 'Cycle workspaces discarded.';
       cycleRefreshError = '';
+      // History recovery guards duplicate cycle actions independently. The
+      // accepted mutation must leave running work pausable during its reads.
+      busy = false;
+      pendingAction = '';
+      ownsBusy = false;
       await loadCycles();
       if (currentSession !== sessionGeneration) return;
       await refresh();
@@ -454,7 +460,7 @@
         else error = `Cycle action failed. ${(e as Error).message}`;
       }
     } finally {
-      if (currentSession === sessionGeneration) {
+      if (ownsBusy && currentSession === sessionGeneration) {
         busy = false;
         pendingAction = '';
       }
