@@ -95,6 +95,7 @@ func (a *App) interruptOrphanedCycles() error {
 func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycle) {
 	err := a.plan(ctx, cfg, &cycle)
 	shuttingDown := err != nil && a.ctx.Err() != nil
+	var terminalErr error
 	if err != nil {
 		cycle.Status = model.CycleFailed
 		cycle.Error = stringPointer(redact.Error(err))
@@ -103,10 +104,15 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 			cycle.Error = stringPointer(interruptedPlanningMessage)
 		}
 		cycle.CompletedAt = stringPointer(model.Now())
-		_ = a.saveCycleMergedSessions(&cycle)
+		terminalErr = a.saveCycleMergedSessions(&cycle)
 	}
 
 	a.gate.Lock()
+	// A refused terminal checkpoint leaves recovery work behind. Establish its
+	// admission barrier before releasing worker ownership, without waiting for Tick.
+	if terminalErr != nil {
+		a.setActiveRecoveryError(terminalErr)
+	}
 	a.runtimeMu.Lock()
 	if a.runtime.cycle != nil && a.runtime.cycle.id == cycle.ID {
 		a.runtime.cycle = nil
@@ -127,7 +133,9 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 		}
 		failedRunOnce := err != nil && cycle.Mode == model.CycleModeExecution && control.Mode == model.OperatingModeRunOnce
 		if failedRunOnce {
-			_ = a.pauseLocked(&control, &message)
+			if pauseErr := a.pauseLocked(&control, &message); pauseErr != nil {
+				a.setActiveRecoveryError(pauseErr)
+			}
 		} else {
 			_ = a.Store.SaveControl(control)
 		}
