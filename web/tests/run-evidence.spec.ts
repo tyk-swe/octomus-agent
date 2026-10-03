@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page, type Route } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import type { RunEvidenceV1 } from '../src/lib/types';
 import {
   A,
   B,
@@ -1007,18 +1008,20 @@ test('refresh never substitutes another task when a selected match disappears', 
   await expect(page.getByText('No pull request recorded', { exact: true })).toBeVisible();
 });
 
-test('slow task evidence finishes before another task revision triggers a refresh', async ({
+test('slow task evidence allows detail polling and coalesces newer task revisions', async ({
   page
 }, testInfo) => {
   await page.clock.install();
-  const requests: Route[] = [];
+  const requests: { route: Route; body: RunEvidenceV1 }[] = [];
   let taskReads = 0;
-  await page.route('**/api/cycles/cycle-1/evidence', (route) => {
-    requests.push(route);
+  let revision = 0;
+  await page.route('**/api/cycles/cycle-1/evidence', async (route) => {
+    requests.push({ route, body: await (await route.fetch()).json() });
   });
   await page.route('**/api/tasks/task-reviewed', async (route) => {
     const body = await (await route.fetch()).json();
-    await route.fulfill({ json: { ...body, updated_at: `synthetic-revision-${++taskReads}` } });
+    taskReads++;
+    await route.fulfill({ json: { ...body, updated_at: `synthetic-revision-${revision}` } });
   });
   await login(page);
   if (testInfo.project.name === 'mobile')
@@ -1029,16 +1032,24 @@ test('slow task evidence finishes before another task revision triggers a refres
     .click();
   await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
   await expect.poll(() => requests.length).toBe(1);
-  await page.clock.runFor(12000);
-  expect(requests).toHaveLength(1);
-  expect(taskReads).toBe(1);
-  await requests[0].fulfill({ json: await (await requests[0].fetch()).json() });
-  await expect(page.getByText('Clean at the output commit', { exact: true })).toBeVisible();
-  await page.clock.runFor(4000);
+  for (let change = 0; change < 3; change++) {
+    const reads = taskReads;
+    revision++;
+    await page.clock.runFor(4000);
+    await expect.poll(() => taskReads).toBeGreaterThan(reads);
+    expect(requests).toHaveLength(1);
+  }
+  await requests[0].route.fulfill({ json: requests[0].body });
   await expect.poll(() => requests.length).toBe(2);
   await expect(page.getByText('Retained · stale')).toBeVisible();
+  await requests[1].route.fulfill({ json: requests[1].body });
+  await expect(page.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+  revision++;
+  await page.clock.runFor(4000);
+  await expect.poll(() => requests.length).toBe(3);
+  await expect(page.getByText('Retained · stale')).toBeVisible();
   await page.getByRole('button', { name: 'Close task details' }).click();
-  await requests[1].fulfill({ json: await (await requests[1].fetch()).json() });
+  await requests[2].route.fulfill({ json: requests[2].body });
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 

@@ -50,6 +50,7 @@
   let evidenceKey = '';
   let evidenceGeneration = 0;
   let evidenceRequest: AbortController | null = null;
+  let pendingEvidence: { cycleId: string; key: string } | null = null;
   const feedback = createCopyFeedback();
   const TABS = ['Overview', 'Sessions', 'Reviews', 'Verification', 'Activity'];
   const ACTION_LABELS: Record<string, string> = {
@@ -86,8 +87,21 @@
     tab = TABS[next];
     document.getElementById('task-tab-' + tab)?.focus();
   }
+  function loadPendingEvidence() {
+    const pending = pendingEvidence;
+    pendingEvidence = null;
+    if (pending && !disposed) void loadEvidence(pending.cycleId, pending.key);
+  }
   async function loadEvidence(cycleId: string, key: string, force = false) {
+    if (disposed) return;
     if (evidenceKey === key && !force) return;
+    if (evidenceLoading && !force) {
+      // Let slow evidence make progress while coalescing changes to the latest task revision.
+      pendingEvidence = { cycleId, key };
+      evidenceStale = evidence !== null;
+      return;
+    }
+    pendingEvidence = null;
     evidenceLoading = true;
     evidenceStale = evidence !== null;
     evidenceKey = key;
@@ -106,14 +120,18 @@
       if (current !== evidenceGeneration || controller.signal.aborted || task !== id) return;
       evidence = findTaskEvidence(run, task);
       evidenceError = evidence ? '' : 'This task has no recorded evidence in its planning cycle.';
-      evidenceStale = false;
+      evidenceStale = pendingEvidence !== null;
     } catch (e) {
       if (current !== evidenceGeneration || controller.signal.aborted || task !== id) return;
       evidenceError = (e as Error).message;
       if (e instanceof ApiError && e.status === 401) evidence = null;
       evidenceStale = evidence !== null;
     } finally {
-      if (current === evidenceGeneration) evidenceLoading = false;
+      if (current === evidenceGeneration) {
+        evidenceLoading = false;
+        evidenceRequest = null;
+        loadPendingEvidence();
+      }
     }
   }
   async function load(force = false) {
@@ -141,7 +159,8 @@
         if (recoveryButton && document.activeElement === recoveryButton)
           document.getElementById('task-title')?.focus();
         actionRecovery = '';
-        await loadEvidence(
+        // Evidence has its own request identity and must not hold current task controls or polling.
+        void loadEvidence(
           nextTask.cycle_id,
           `${nextTask.cycle_id}:${id}:${nextTask.updated_at}:${nextTask.status}`
         );
@@ -270,8 +289,13 @@
           <button
             class="button small"
             disabled={evidenceLoading}
-            onclick={() => task && loadEvidence(task.cycle_id, evidenceKey, true)}
-            >{evidenceLoading ? 'Retrying evidence…' : 'Retry evidence'}</button
+            onclick={() =>
+              task &&
+              loadEvidence(
+                task.cycle_id,
+                `${task.cycle_id}:${id}:${task.updated_at}:${task.status}`,
+                true
+              )}>{evidenceLoading ? 'Retrying evidence…' : 'Retry evidence'}</button
           >{/if}
         <dl class="detail-grid">
           <EvidenceFact label="Recorded outcome" verdict={outcome ?? UNKNOWN_VERDICT} />
