@@ -261,6 +261,9 @@ func (a *App) cleanupClaimed(kind cleanupKind, id string) bool {
 func (a *App) releaseCleanup(kind cleanupKind, id string) {
 	a.runtimeMu.Lock()
 	delete(a.runtime.cleanups, cleanupKey{kind: kind, id: id})
+	if kind == cleanupTask {
+		a.runtime.cancelledSessionsChecked = false
+	}
 	a.runtimeMu.Unlock()
 }
 
