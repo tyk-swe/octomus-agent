@@ -199,6 +199,7 @@ func (c Config) validateMode(ready, audit bool) error {
 		{ValidBranch(c.DefaultBranch), "Default branch must be a valid branch name"},
 		{ValidBranch(c.BranchPrefix+"task") && strings.HasSuffix(c.BranchPrefix, "/"), `Owned branch prefix must be a valid branch path ending in "/"`},
 		{!strings.HasPrefix(c.DefaultBranch, c.BranchPrefix), "Owned branch prefix must exclude the default branch"},
+		{!strings.HasPrefix(c.BranchPrefix, c.DefaultBranch+"/"), "Owned branch prefix cannot be nested under the default branch"},
 	}
 	for _, check := range checks {
 		if !check.ok {
@@ -313,6 +314,12 @@ func asciiAlphanumeric(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 func ValidBranch(s string) bool {
+	// GitHub rejects refs/ prefixes and names that look like full Git object IDs.
+	if strings.HasPrefix(s, "refs/") || len(s) == 40 && strings.Trim(s, "0123456789abcdefABCDEF") == "" {
+		return false
+	}
+	// Literal HEAD is usable: remote lookup uses refs/heads/HEAD and owned clones
+	// check out commit IDs.
 	if s == "" || strings.ContainsRune("-/.", rune(s[0])) || strings.ContainsRune("/.", rune(s[len(s)-1])) || strings.Contains(s, "..") || strings.Contains(s, "@{") || strings.Contains(s, "//") {
 		return false
 	}

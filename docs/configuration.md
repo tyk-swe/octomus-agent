@@ -106,7 +106,7 @@ when a check or run needs them, so an incomplete draft can still be saved.
 | `repository` | empty | Absolute path of a Git checkout | The persistent target checkout. |
 | `github_repo` | empty | `OWNER/NAME` of letters, digits, `-`, `_` and `.` | The GitHub repository that receives PRs. |
 | `default_branch` | `main` | A valid branch name outside the owned prefix | The branch new work starts from and targets. |
-| `branch_prefix` | `octomus/` | A valid branch path ending in `/` | Branches Octomus owns and may publish. |
+| `branch_prefix` | `octomus/` | A valid branch path ending in `/`; must neither include the default branch nor be nested beneath it | Branches Octomus owns and may publish. |
 
 ### Runners and routes
 
