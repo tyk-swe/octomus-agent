@@ -791,14 +791,13 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 		cycleID: task.CycleID, task: task, role: "repair", route: cfg.RepairRoute, workspace: task.Workspace,
 		resume: task.RepairSession, keep: func(session string) { task.RepairSession = &session },
 		prompt: prompt,
-		judge: func(_, answer string) (string, error) {
+		completed: func() {
 			*task.RepairRounds++
 			if task.RepairProgress == nil {
 				task.RepairProgress = &model.RepairProgress{}
 			}
 			task.RepairProgress.Revision = task.Reviews[len(task.Reviews)-1].Revision
 			task.RepairProgress.AwaitingReview = true
-			return answer, nil
 		},
 	})
 	return err

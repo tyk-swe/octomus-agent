@@ -58,6 +58,9 @@ A task snapshots its configuration, route, source revision, default-branch conte
 Completed repairs keep a durable progress checkpoint. Recovery cannot reset the consecutive no-progress limit or charge the same completed repair twice. An explicit retry clears this checkpoint along with its repair-round budget. Existing version-7 records without a checkpoint start tracking progress at their next completed repair.
 
 The repair-round budget counts completed repair turns separately from review rounds.
+The completed repair session, its counter, and its progress are saved together.
+If that save fails, the supervisor retains this accounting in its subsequent
+failure or interruption checkpoint when storage accepts the write.
 Recovery resumes unfinished review or verification with a fresh full-diff review
 and, if clean, verification, including after the final allowed repair; interrupted
 verification does not spend a repair round.
