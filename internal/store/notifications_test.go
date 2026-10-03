@@ -401,3 +401,51 @@ func TestEveryBlockedReasonKeepsItsNotificationCategory(t *testing.T) {
 		t.Fatalf("update trigger categories:\n got %v\nwant %v", got, want)
 	}
 }
+
+func TestNotificationHealthDoesNotAttributeHTTPStatusToLocalErrors(t *testing.T) {
+	for _, scenario := range []string{"invalid_policy", "destination_changed", "expired", "delivery_uncertain"} {
+		t.Run(scenario, func(t *testing.T) {
+			path := statePath(t)
+			s := open(t, path)
+			must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
+			putNotificationTask(t, s, "task-1", "blocked", "timeout")
+			now := time.Now().UTC()
+			delivery, err := s.ClaimNotification(notifyDest, now)
+			must(t, err)
+			if delivery == nil {
+				t.Fatal("no notification claimed")
+			}
+			status := uint16(503)
+			must(t, s.FinishNotificationFailure(delivery.Seq, "http_status", &status, scenario != "invalid_policy"))
+			health, err := s.NotificationHealth()
+			must(t, err)
+			if health.LastError == nil || *health.LastError != "http_status" || health.LastHTTPStatus == nil || *health.LastHTTPStatus != 503 {
+				t.Fatalf("HTTP failure lost its status: %+v", health)
+			}
+			want := scenario
+			switch scenario {
+			case "invalid_policy":
+				must(t, s.ConfigureNotifications(nil, "invalid", str("invalid destination")))
+				want = "invalid destination"
+			case "destination_changed":
+				must(t, s.ConfigureNotifications(str("destination-b"), "enabled", nil))
+			case "expired":
+				_, err = s.ClaimNotification(notifyDest, now.Add(25*time.Hour))
+				must(t, err)
+			case "delivery_uncertain":
+				for attempt := int64(2); attempt <= store.NotificationMaxAttempts; attempt++ {
+					now = now.Add(30 * time.Minute)
+					_, err = s.ClaimNotification(notifyDest, now)
+					must(t, err)
+				}
+				_, err = s.ClaimNotification(notifyDest, now.Add(30*time.Minute))
+				must(t, err)
+			}
+			health, err = s.NotificationHealth()
+			must(t, err)
+			if health.LastError == nil || *health.LastError != want || health.LastHTTPStatus != nil {
+				t.Fatalf("local error must not inherit a prior response status: %+v", health)
+			}
+		})
+	}
+}
