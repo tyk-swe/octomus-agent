@@ -260,9 +260,8 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	a.invalidatePrObservation()
-	if err := a.Store.Event("system", "configuration", "Operator saved configuration"); err != nil {
-		return nil, err
-	}
+	// Activity is best-effort after the configuration change has committed.
+	_ = a.Store.Event("system", "configuration", "Operator saved configuration")
 	return NewSettingsView(c)
 }
 
