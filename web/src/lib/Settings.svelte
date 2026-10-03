@@ -24,12 +24,14 @@
     editable,
     status,
     onsaved,
+    onbaselinechanged,
     onchoose
   }: {
     active: boolean;
     editable: boolean;
     status: SetupStatus | null;
     onsaved: () => void;
+    onbaselinechanged: () => void;
     onchoose: (action: 'audit' | 'cycle') => void;
   } = $props();
   let config = $state<Config | null>(null),
@@ -581,7 +583,13 @@
       {#if message}<div class="notice success settings-feedback" role="status">{message}</div>{/if}
     </div>
   </form>
-  <BaselineCheck {active} {editable} savedRevision={revision} {dirty} onchanged={onsaved} />
+  <BaselineCheck
+    {active}
+    {editable}
+    savedRevision={revision}
+    {dirty}
+    onchanged={onbaselinechanged}
+  />
   <section class="panel settings-section" aria-labelledby="notifications-heading">
     <div class="section-heading">
       <div>

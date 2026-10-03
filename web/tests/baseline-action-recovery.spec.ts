@@ -28,6 +28,8 @@ async function fixture(page: Page) {
     reads: 0,
     stateReads: 0,
     baselineActive: false,
+    failStateRead: false,
+    stateGates: [] as ReturnType<typeof deferred>[],
     starts: 0,
     cancels: 0,
     failRead: false,
@@ -36,6 +38,9 @@ async function fixture(page: Page) {
     readGate: null as ReturnType<typeof deferred> | null
   };
   await page.route('**/api/state', async (route) => {
+    const baselineActive = state.baselineActive;
+    const fail = state.failStateRead;
+    const gate = state.stateGates.shift();
     state.stateReads++;
     const response = await route.fetch();
     const snapshot: Snapshot = await response.json();
@@ -45,8 +50,13 @@ async function fixture(page: Page) {
     snapshot.control.mode = 'paused';
     snapshot.active_tasks = 0;
     snapshot.cycle_active = false;
-    snapshot.baseline_active = state.baselineActive;
-    await route.fulfill({ json: snapshot });
+    snapshot.baseline_active = baselineActive;
+    await gate?.promise;
+    await route.fulfill(
+      fail
+        ? { status: 503, json: { error: 'Synthetic dashboard read outage' } }
+        : { json: snapshot }
+    );
   });
   await page.route('**/api/config', async (route) => {
     if (!state.settings) {
@@ -109,6 +119,81 @@ async function fixture(page: Page) {
     );
   });
   return state;
+}
+
+for (const leaveBeforeResponse of [false, true]) {
+  test(`baseline admission gates global work through obsolete and failed dashboard reads ${leaveBeforeResponse ? 'while inactive' : 'in Configuration'}`, async ({
+    page,
+    isMobile
+  }) => {
+    const state = await fixture(page);
+    const writes = trackWrites(page);
+    await open(page, !!isMobile);
+    const oldRead = deferred();
+    state.stateGates.push(oldRead);
+    const stateReads = state.stateReads;
+    await page.clock.runFor(4000);
+    await expect.poll(() => state.stateReads).toBe(stateReads + 1);
+    const admission = (state.postGate = deferred());
+    await begin(page);
+    await expect.poll(() => state.starts).toBe(1);
+    if (leaveBeforeResponse) await openNavigation(page, 'Overview', !!isMobile);
+    state.baselineActive = true;
+    state.failStateRead = true;
+    admission.resolve();
+    try {
+      if (leaveBeforeResponse) {
+        for (const name of ['Start continuous', 'Run once', 'Run an audit'])
+          await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+      } else {
+        await expect(
+          panelFor(page).getByRole('button', { name: 'Cancel baseline check' })
+        ).toBeEnabled();
+        await expect(page.getByLabel('Default branch', { exact: true })).toBeDisabled();
+      }
+      oldRead.resolve();
+      await expect.poll(() => state.stateReads).toBe(stateReads + 2);
+      await expect(
+        page.getByRole('alert').filter({ hasText: 'Synthetic dashboard read outage' })
+      ).toBeVisible();
+      await openNavigation(page, 'Overview', !!isMobile);
+      for (const name of ['Start continuous', 'Run once', 'Run an audit']) {
+        const control = page.getByRole('button', { name, exact: true });
+        await expect(control).toBeDisabled();
+        await control.dispatchEvent('click');
+      }
+      await page.clock.runFor(4000);
+      await expect.poll(() => state.stateReads).toBe(stateReads + 3);
+      await expect(page.getByRole('button', { name: 'Run once', exact: true })).toBeDisabled();
+      await openNavigation(page, 'Configuration', !!isMobile);
+      await expect(page.getByLabel('Default branch', { exact: true })).toBeDisabled();
+      const panel = panelFor(page);
+      await expect(panel.getByRole('button', { name: 'Cancel baseline check' })).toBeEnabled();
+      // Cancellation acknowledgment must retain the gate until a fresh read sees completion.
+      const cancellationState = page.waitForResponse('**/api/state');
+      await panel.getByRole('button', { name: 'Cancel baseline check' }).click();
+      await expect.poll(() => state.cancels).toBe(1);
+      await (await cancellationState).finished();
+      await expect(panel.getByRole('button', { name: 'Cancellation requested' })).toBeDisabled();
+      await expect(page.getByLabel('Default branch', { exact: true })).toBeDisabled();
+      finish(state, 'cancelled');
+      state.baselineActive = false;
+      state.failStateRead = false;
+      await page.clock.runFor(4000);
+      await expect(page.getByLabel('Default branch', { exact: true })).toBeEnabled();
+      await expect(panel.getByText('Cancelled', { exact: true })).toBeVisible();
+      await openNavigation(page, 'Overview', !!isMobile);
+      for (const name of ['Start continuous', 'Run once', 'Run an audit'])
+        await expect(page.getByRole('button', { name, exact: true })).toBeEnabled();
+      expect(writes.map((write) => write.path)).toEqual([
+        '/api/baseline-checks',
+        '/api/baseline-checks/accepted-baseline/cancel'
+      ]);
+    } finally {
+      admission.resolve();
+      oldRead.resolve();
+    }
+  });
 }
 
 const panelFor = (page: Page) => page.getByRole('region', { name: 'Clean baseline', exact: true });
