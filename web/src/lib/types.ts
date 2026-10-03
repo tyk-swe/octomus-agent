@@ -193,6 +193,7 @@ export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   reviews: ReviewRound[];
   attempts: number;
   review_baseline: number;
+  repair_rounds: number | null;
   repair_progress: RepairProgress | null;
   verification: {
     command: string;
