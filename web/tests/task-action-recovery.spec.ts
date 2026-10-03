@@ -105,7 +105,7 @@ async function openTask(page: Page, mobile: boolean, action: Action = 'archive')
   await expect(
     page.getByRole('dialog').getByRole('button', { name: labels[action], exact: true })
   ).toBeEnabled();
-  // Polling skips overlapping detail loads, including their evidence request.
+  // Wait for the initial task evidence before controlling polling.
   await expect(
     page.getByRole('dialog').getByText('No review recorded', { exact: true })
   ).toBeVisible();
@@ -232,6 +232,102 @@ test('an evidence-only outage does not retain obsolete task actions after a succ
   await expect(dialog.getByRole('button', { name: 'Retry evidence' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Retry task details' })).toHaveCount(0);
   expect(state.writes).toBe(1);
+});
+
+test('retry releases current controls and task polling while superseded evidence is delayed', async ({
+  page,
+  isMobile
+}) => {
+  const state = await taskFixture(page, 'retry');
+  await openTask(page, !!isMobile, 'retry');
+  const dialog = page.getByRole('dialog');
+  const evidenceGate = deferred();
+  const latestEvidenceGate = deferred();
+  const cancelGate = deferred();
+  let evidenceReads = 0;
+  let cancelWrites = 0;
+  let task: Task | null = null;
+  const readTask = '**/api/tasks/task-blocked';
+  page.on('response', async (response) => {
+    if (new URL(response.url()).pathname === '/api/tasks/task-blocked' && response.ok())
+      task = (await response.json()) as Task;
+  });
+  await page.route('**/api/cycles/cycle-1/evidence', async (route) => {
+    const snapshot = await (await route.fetch()).json();
+    const current = ++evidenceReads;
+    for (const proposal of snapshot.proposals)
+      for (const evidence of proposal.linked_tasks)
+        if (evidence.id === 'task-blocked') {
+          evidence.status = current === 1 ? 'queued' : 'cancelled';
+          evidence.attempts = 1;
+          evidence.error_recorded = false;
+          evidence.blocked_reason = null;
+        }
+    if (current === 1) await evidenceGate.promise;
+    if (current === 2) await latestEvidenceGate.promise;
+    await route.fulfill({ json: snapshot });
+  });
+  await page.route('**/api/tasks/task-blocked/cancel', async (route) => {
+    cancelWrites++;
+    await cancelGate.promise;
+    await route.fulfill({ json: { ok: true } });
+  });
+  try {
+    state.evidenceOutage = true;
+    await dialog.getByRole('button', { name: 'Retry task', exact: true }).click();
+    await expect.poll(() => evidenceReads).toBe(1);
+    await expect(dialog.getByRole('button', { name: 'Retry task', exact: true })).toHaveCount(0);
+    const cancel = dialog.getByRole('button', { name: 'Cancel task', exact: true });
+    await expect(cancel).toBeEnabled();
+    await expect(dialog.getByText('Retained · stale')).toBeVisible();
+
+    const reads = state.reads;
+    await page.clock.runFor(4000);
+    await expect.poll(() => state.reads).toBeGreaterThan(reads);
+    expect(evidenceReads).toBe(1);
+    await cancel.click();
+    await expect.poll(() => cancelWrites).toBe(1);
+    await expect(cancel).toBeDisabled();
+    // Cancellation has new authoritative details while the earlier retry evidence is held.
+    await expect.poll(() => task?.status).toBe('queued');
+    await page.route(readTask, async (route) => {
+      await route.fulfill({
+        json: {
+          ...task!,
+          status: 'cancelled',
+          allowed_actions: ['archive'],
+          updated_at: '2026-09-10T00:03:00Z'
+        }
+      });
+    });
+    cancelGate.resolve();
+    await expect(dialog.getByRole('button', { name: 'Archive task', exact: true })).toBeEnabled();
+    expect(evidenceReads).toBe(1);
+    evidenceGate.resolve();
+    await expect.poll(() => evidenceReads).toBe(2);
+    await expect(
+      dialog.locator('.result-summary').getByText('queued', { exact: true })
+    ).toBeVisible();
+    await expect(dialog.getByText('Retained · stale')).toBeVisible();
+    latestEvidenceGate.resolve();
+    await expect(
+      dialog.locator('.result-summary').getByText('cancelled', { exact: true })
+    ).toBeVisible();
+    await page.clock.runFor(4000);
+    await expect(
+      dialog.locator('.result-summary').getByText('cancelled', { exact: true })
+    ).toBeVisible();
+    await expect(
+      dialog.locator('.result-summary').getByText('queued', { exact: true })
+    ).toHaveCount(0);
+    await expect(dialog.getByText('Retained · stale')).toHaveCount(0);
+    expect(state.writes).toBe(1);
+    expect(cancelWrites).toBe(1);
+  } finally {
+    evidenceGate.resolve();
+    latestEvidenceGate.resolve();
+    cancelGate.resolve();
+  }
 });
 
 for (const recovery of ['retry', 'poll'] as const) {
