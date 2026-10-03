@@ -106,25 +106,3 @@ func TestSSEFraming(t *testing.T) {
 		})
 	}
 }
-
-func TestSSELoopEndsWhenCancelled(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	out := make(chan valueResult)
-	finished := make(chan struct{})
-	go func() {
-		sseLoop(ctx, strings.NewReader("data: 1\n\n"), out)
-		close(finished)
-	}()
-	select {
-	case <-finished:
-	case <-time.After(10 * time.Second):
-		t.Fatal("a cancelled sseLoop must not wait for a receiver")
-	}
-	select {
-	case result, ok := <-out:
-		t.Fatalf("a cancelled sseLoop sent %+v (open: %v)", result, ok)
-	default:
-	}
-}

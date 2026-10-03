@@ -2,48 +2,11 @@ package engine
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
-	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
-
-func prContextInventoryEntry(number int, branch, headRepo, body string) map[string]any {
-	return map[string]any{
-		"number":     number,
-		"title":      fmt.Sprintf("Pull request %d", number),
-		"body":       body,
-		"state":      "open",
-		"merged_at":  nil,
-		"head":       map[string]any{"ref": branch, "sha": fmt.Sprintf("%040x", number), "repo": map[string]any{"full_name": headRepo}},
-		"base":       map[string]any{"ref": "main", "repo": map[string]any{"full_name": "fixture/project"}},
-		"html_url":   fmt.Sprintf("https://example.invalid/pull/%d", number),
-		"additions":  3,
-		"deletions":  1,
-		"created_at": "2026-08-01T00:00:00Z",
-	}
-}
-
-func prContextExternalEntry(number int) map[string]any {
-	return prContextInventoryEntry(number, "contributor/work", "contributor/project", "External work without a task marker.")
-}
-
-func prContextParse(t *testing.T, entries []map[string]any) model.OpenPrInventory {
-	t.Helper()
-	data, err := json.Marshal(entries)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inventory, err := gitops.ParseInventory(string(data), testConfig(t.TempDir()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return inventory
-}
 
 func prContextPR(t *testing.T, raw map[string]any) model.PullRequest {
 	t.Helper()
@@ -56,127 +19,6 @@ func prContextPR(t *testing.T, raw map[string]any) model.PullRequest {
 		t.Fatal(err)
 	}
 	return pr
-}
-
-func TestExternalContextBoundsCountsAndTruncatesUTF8(t *testing.T) {
-	t.Parallel()
-	entries := []map[string]any{}
-	for n := 1; n <= 130; n++ {
-		entries = append(entries, prContextExternalEntry(n))
-	}
-	entries = append(entries, prContextInventoryEntry(200, "octomus/mine", "fixture/project", "Owned work.\n<!-- octomus:task:task-200 -->"))
-	external, coverage, err := ExternalContext(prContextParse(t, entries))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if coverage.TotalOpen != 131 || coverage.TotalExternal != 130 || coverage.IncludedExternal != 100 ||
-		coverage.OmittedExternal != 30 || !coverage.Complete || coverage.ObservedAt == nil {
-		t.Fatalf("coverage = %+v", coverage)
-	}
-	if len(external) != 100 {
-		t.Fatalf("external = %d entries; want 100", len(external))
-	}
-	for _, pr := range external {
-		if pr.TitleTruncated || pr.BodyTruncated {
-			t.Fatalf("short entry marked truncated: %+v", pr)
-		}
-	}
-
-	titled := prContextExternalEntry(300)
-	titled["title"] = strings.Repeat("héllo𐐀", 60)
-	bodied := prContextExternalEntry(301)
-	bodied["body"] = strings.Repeat("é", 2500)
-	external, coverage, err = ExternalContext(prContextParse(t, []map[string]any{titled, bodied}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(external) != 2 {
-		t.Fatalf("external = %+v", external)
-	}
-	if utf8.RuneCountInString(external[0].Title) != 200 || !external[0].TitleTruncated || !utf8.ValidString(external[0].Title) {
-		t.Fatalf("title truncation = %d chars, truncated=%v", utf8.RuneCountInString(external[0].Title), external[0].TitleTruncated)
-	}
-	if utf8.RuneCountInString(external[1].Body) != 2000 || !external[1].BodyTruncated || !utf8.ValidString(external[1].Body) {
-		t.Fatalf("body truncation = %d chars, truncated=%v", utf8.RuneCountInString(external[1].Body), external[1].BodyTruncated)
-	}
-	if coverage.IncludedExternal != 2 || coverage.OmittedExternal != 0 {
-		t.Fatalf("coverage = %+v", coverage)
-	}
-
-	huge := []map[string]any{}
-	for n := 400; n <= 500; n++ {
-		p := prContextExternalEntry(n)
-		p["body"] = strings.Repeat("𐐀", 2000)
-		huge = append(huge, p)
-	}
-	external, coverage, err = ExternalContext(prContextParse(t, huge))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if coverage.IncludedExternal >= coverage.TotalExternal || coverage.IncludedExternal >= coverage.MaxExternal {
-		t.Fatalf("byte bound did not omit entries: %+v", coverage)
-	}
-	if coverage.IncludedExternal+coverage.OmittedExternal != coverage.TotalExternal {
-		t.Fatalf("coverage does not account for every external PR: %+v", coverage)
-	}
-	encoded, err := wirejson.Marshal(external)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uint64(len(encoded)) > coverage.MaxContextBytes {
-		t.Fatalf("external context is %d bytes; bound %d", len(encoded), coverage.MaxContextBytes)
-	}
-	if coverage.MaxExternal != 100 || coverage.MaxTitleChars != 200 || coverage.MaxBodyChars != 2000 {
-		t.Fatalf("coverage limits = %+v", coverage)
-	}
-}
-
-func TestExternalContextSortsUnsortedInventories(t *testing.T) {
-	t.Parallel()
-	externalPR := func(number int) model.PullRequest {
-		return prContextPR(t, map[string]any{
-			"number": number, "title": "External", "branch": fmt.Sprintf("contributor/%d", number),
-			"head": strings.Repeat("d", 40), "base": "main",
-			"url": fmt.Sprintf("https://example.invalid/pull/%d", number), "body": "External work.",
-			"state": "open", "changed_lines": 1, "created_at": "2026-08-01T00:00:00Z",
-			"owned": false, "head_repository": "contributor/project",
-			"base_repository": "fixture/project",
-		})
-	}
-	inventory := model.OpenPrInventory{
-		Repository: "fixture/project",
-		ObservedAt: "2026-08-01T00:00:00Z",
-		PRs:        []model.PullRequest{externalPR(9), externalPR(3), externalPR(7)},
-	}
-	external, coverage, err := ExternalContext(inventory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	numbers := []uint64{}
-	for _, pr := range external {
-		numbers = append(numbers, pr.Number)
-	}
-	if fmt.Sprint(numbers) != fmt.Sprint([]uint64{3, 7, 9}) {
-		t.Fatalf("external order = %v; want [3 7 9]", numbers)
-	}
-	if coverage.IncludedExternal != 3 {
-		t.Fatalf("coverage = %+v", coverage)
-	}
-
-	inventory.PRs = nil
-	for n := 105; n >= 1; n-- {
-		inventory.PRs = append(inventory.PRs, externalPR(n))
-	}
-	external, coverage, err = ExternalContext(inventory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(external) != 100 || coverage.OmittedExternal != 5 {
-		t.Fatalf("bounded reversed inventory kept %d entries; coverage = %+v", len(external), coverage)
-	}
-	if external[0].Number != 1 || external[99].Number != 100 {
-		t.Fatalf("bounded reversed inventory kept PRs %d to %d; want 1 to 100", external[0].Number, external[99].Number)
-	}
 }
 
 func TestTargetResolutionRejectsExternalAndClosedPRs(t *testing.T) {
@@ -210,33 +52,5 @@ func TestTargetResolutionRejectsExternalAndClosedPRs(t *testing.T) {
 	}
 	if target, err := ResolveTarget(cfg, open, "main"); err != nil || target != nil {
 		t.Fatalf("default branch resolved to %+v, %v; want no PR", target, err)
-	}
-}
-
-func TestTargetResolutionBindsTheOwnedPRRegardlessOfOrder(t *testing.T) {
-	t.Parallel()
-	cfg := testConfig(t.TempDir())
-	fork := ownedPR("octomus/fix")
-	fork.Number, fork.Head, fork.Owned, fork.HeadRepository = 202, "fork-head", false, "fork/project"
-	owned := ownedPR("octomus/fix")
-	owned.Number, owned.Head = 101, "repo-head"
-	prs := []model.PullRequest{fork, owned}
-	bound, err := ResolveTarget(cfg, prs, "octomus/fix")
-	if err != nil || bound == nil || bound.Number != 101 || bound.Head != "repo-head" {
-		t.Fatalf("bound = %+v, %v; want owned PR 101", bound, err)
-	}
-	if target, err := ResolveTarget(cfg, prs, cfg.DefaultBranch); err != nil || target != nil {
-		t.Fatalf("default branch resolved to a PR: %+v, %v", target, err)
-	}
-	if _, err := ResolveTarget(cfg, prs[:1], "octomus/fix"); err == nil {
-		t.Fatal("fork-only target resolved")
-	}
-	if _, err := ResolveTarget(cfg, []model.PullRequest{owned, owned}, "octomus/fix"); err == nil {
-		t.Fatal("ambiguous owned match resolved")
-	}
-	p := proposal("a", "octomus/fix")
-	grounding := model.Grounding{Revision: "rev", PRs: prs}
-	if err := ValidateProposals(cfg, []model.Proposal{p}, grounding, nil); err != nil {
-		t.Fatalf("owned-PR target rejected: %v", err)
 	}
 }

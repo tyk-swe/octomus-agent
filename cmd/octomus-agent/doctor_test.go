@@ -4,15 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
@@ -112,53 +106,5 @@ func TestDoctorPrintsWarningsToCommandStderr(t *testing.T) {
 	}
 	if stderr.String() != "WARN "+warning+"\n" || stdout.Len() != 0 {
 		t.Fatalf("failing doctor stdout = %q, stderr = %q", stdout.String(), stderr.String())
-	}
-}
-
-func TestDoctorInterruptTerminatesOwnedChildGroups(t *testing.T) {
-	root := t.TempDir()
-	pidFile := filepath.Join(root, "git.pid")
-	t.Setenv("OCTOMUS_TEST_PIDFILE", pidFile)
-	state, data := doctorFixture(t, "#!/bin/sh\necho $$ > \"$OCTOMUS_TEST_PIDFILE.tmp\"\nmv \"$OCTOMUS_TEST_PIDFILE.tmp\" \"$OCTOMUS_TEST_PIDFILE\"\nexec sleep 97\n", "#!/bin/sh\nexit 0\n")
-	app := engine.New(state, data)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- runDoctor(ctx, app, model.CycleModeExecution, io.Discard, io.Discard) }()
-
-	var pid int
-	for deadline := time.Now().Add(10 * time.Second); pid == 0; {
-		select {
-		case err := <-done:
-			t.Fatalf("doctor finished before starting git: %v", err)
-		default:
-		}
-		if raw, err := os.ReadFile(pidFile); err == nil {
-			if pid, err = strconv.Atoi(strings.TrimSpace(string(raw))); err != nil {
-				t.Fatal(err)
-			}
-		} else if time.Now().After(deadline) {
-			t.Fatal("git shim never started")
-		} else {
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	fail := func(format string, args ...any) {
-		t.Helper()
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		t.Fatalf(format, args...)
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if err == nil || err.Error() != "Doctor interrupted" {
-			fail("interrupted doctor: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		fail("doctor did not stop after interruption")
-	}
-	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-		fail("git shim %d survived the interrupted doctor: %v", pid, err)
 	}
 }

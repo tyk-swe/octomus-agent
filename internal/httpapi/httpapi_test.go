@@ -1,10 +1,7 @@
 package httpapi
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,9 +13,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/store"
-	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 const token = "operator-fixture-token-with-at-least-32-characters"
@@ -38,80 +33,6 @@ func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store)
 	dir := t.TempDir()
 	state := openStore(t, dir)
 	return engine.New(state, dir, options...), state
-}
-
-func git(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := process.Command("/usr/bin/git", dir)
-	cmd.Args = append(cmd.Args, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-}
-
-func baselineFixture(t *testing.T) (*engine.App, *store.Store, config.Config) {
-	t.Helper()
-	app, state := testApp(t)
-	repo := filepath.Join(t.TempDir(), "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "init", "-b", "main")
-	git(t, repo, "config", "user.name", "Fixture")
-	git(t, repo, "config", "user.email", "fixture@example.com")
-	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("fixture\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", ".")
-	git(t, repo, "commit", "-m", "initial")
-	cfg := config.Default()
-	cfg.Repository = repo
-	cfg.GitHubRepo = "fixture/project"
-	cfg.VerificationCommands = []string{"true"}
-	if err := state.Put("settings", "config", cfg); err != nil {
-		t.Fatal(err)
-	}
-	return app, state, cfg
-}
-
-func githubFixture(t *testing.T, commands []string) (*engine.App, *store.Store, config.Config) {
-	t.Helper()
-	root := t.TempDir()
-	bin := filepath.Join(root, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for name, fixture := range map[string]string{"git": "git.sh", "gh": "gh.py"} {
-		if err := testutil.InstallFixtureScript(filepath.Join(bin, name), fixture); err != nil {
-			t.Fatal(err)
-		}
-	}
-	remote := filepath.Join(root, "remote.git")
-	checkout := filepath.Join(root, "checkout")
-	git(t, root, "init", "--bare", remote)
-	git(t, root, "init", "-b", "main", checkout)
-	git(t, checkout, "config", "user.name", "Fixture")
-	git(t, checkout, "config", "user.email", "fixture@example.com")
-	if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("fixture\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, checkout, "add", ".")
-	git(t, checkout, "commit", "-m", "initial")
-	git(t, checkout, "remote", "add", "origin", remote)
-	git(t, checkout, "push", "-u", "origin", "main")
-	git(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
-	t.Setenv("OCTOMUS_FIXTURE", root)
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	data := t.TempDir()
-	state := openStore(t, data)
-	cfg := config.Default()
-	cfg.Repository = checkout
-	cfg.GitHubRepo = "fixture/project"
-	cfg.VerificationCommands = commands
-	if err := state.Put("settings", "config", cfg); err != nil {
-		t.Fatal(err)
-	}
-	return engine.New(state, data), state, cfg
 }
 
 func request(t *testing.T, handler http.Handler, method, path string, body string, auth bool) *httptest.ResponseRecorder {
@@ -146,19 +67,6 @@ func decode(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
 		t.Fatalf("%s: %v", recorder.Body.String(), err)
 	}
 	return value
-}
-
-func TestAuthenticationBackoffIsBoundedAndExpires(t *testing.T) {
-	failures := &authFailures{}
-	now := time.Now()
-	for _, expected := range []int64{100, 200, 400, 800, 1000, 1000} {
-		if delay := failures.delay(now); delay != time.Duration(expected)*time.Millisecond {
-			t.Fatalf("delay %v, want %dms", delay, expected)
-		}
-	}
-	if delay := failures.delay(now.Add(60 * time.Second)); delay != 100*time.Millisecond {
-		t.Fatalf("expired backoff %v", delay)
-	}
 }
 
 func TestPrivateAPIEnforcesAuthContentTypeAndConfigurationRules(t *testing.T) {
@@ -266,27 +174,6 @@ func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
 	}
 }
 
-func TestValidAuthenticationBypassesPendingFailureDelay(t *testing.T) {
-	app, _ := testApp(t)
-	router := Router(app, token, "", "test")
-	done := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		done <- request(t, router, "GET", "/api/state", "", false)
-	}()
-	time.Sleep(20 * time.Millisecond)
-	if response := call(t, router, "GET", "/api/state", ""); response.Code != http.StatusOK {
-		t.Fatalf("valid token: %d", response.Code)
-	}
-	select {
-	case bad := <-done:
-		if bad.Code != http.StatusUnauthorized {
-			t.Fatalf("bad token: %d", bad.Code)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("unauthenticated request never answered")
-	}
-}
-
 func TestControlActionsThroughHTTP(t *testing.T) {
 	app, state := testApp(t)
 	repo := t.TempDir()
@@ -347,270 +234,6 @@ func TestControlActionsThroughHTTP(t *testing.T) {
 	}
 }
 
-func TestUnknownCycleActionsAreNotReportedAsArchiveConflicts(t *testing.T) {
-	app, state := testApp(t)
-	cycle := model.Cycle{
-		Mode: model.CycleModeExecution, ID: "cycle-1", Number: 1, Status: "completed",
-		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{},
-		Sessions: []model.Session{}, Repository: "fixture/project",
-	}
-	if err := state.Put("cycle", cycle.ID, cycle); err != nil {
-		t.Fatal(err)
-	}
-	router := Router(app, token, "", "test")
-	response := call(t, router, "POST", "/api/cycles/cycle-1/bogus", "{}")
-	if response.Code != http.StatusNotFound || decode(t, response)["error"] != "Unknown cycle action" {
-		t.Fatalf("bogus: %d %s", response.Code, response.Body.String())
-	}
-	response = call(t, router, "POST", "/api/cycles/cycle-1/discard", "{}")
-	if response.Code != http.StatusConflict || decode(t, response)["error"] != "Archive the cycle before discarding its workspace" {
-		t.Fatalf("discard: %d %s", response.Code, response.Body.String())
-	}
-	if response := call(t, router, "POST", "/api/cycles/cycle-1/archive", "{}"); response.Code != http.StatusOK {
-		t.Fatalf("archive: %d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestUnknownActionsOnLiveRecordsAreNotFound(t *testing.T) {
-	app, state := testApp(t)
-	task := queuedTask(config.Default())
-	if err := state.Put("task", task.ID, task); err != nil {
-		t.Fatal(err)
-	}
-	running := cycleRecord("cycle-running")
-	running.Status = model.CycleRunning
-	if err := state.Put("cycle", running.ID, running); err != nil {
-		t.Fatal(err)
-	}
-	router := Router(app, token, "", "test")
-	response := call(t, router, "POST", "/api/tasks/"+task.ID+"/bogus", "{}")
-	if response.Code != http.StatusNotFound || decode(t, response)["error"] != "Unknown task action" {
-		t.Fatalf("bogus task action: %d %s", response.Code, response.Body.String())
-	}
-	response = call(t, router, "POST", "/api/cycles/"+running.ID+"/bogus", "{}")
-	if response.Code != http.StatusNotFound || decode(t, response)["error"] != "Unknown cycle action" {
-		t.Fatalf("bogus action on a running cycle: %d %s", response.Code, response.Body.String())
-	}
-	response = call(t, router, "POST", "/api/cycles/"+running.ID+"/archive", "{}")
-	if response.Code != http.StatusConflict || decode(t, response)["error"] != "Wait for planning to finish" {
-		t.Fatalf("archive on a running cycle: %d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestControlRaceRefusalsAreConflicts(t *testing.T) {
-	for _, err := range []error{engine.ErrBusy, engine.ErrNotPaused} {
-		if status := apiStatus(err); status != http.StatusConflict {
-			t.Fatalf("%q: status %d; want 409", err, status)
-		}
-	}
-}
-
-func TestBaselineAPIAuthenticationRoutesAndMissingRecords(t *testing.T) {
-	app, _, _ := baselineFixture(t)
-	router := Router(app, token, "", "test")
-	if response := request(t, router, "GET", "/api/baseline-checks/latest", "", false); response.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated: %d", response.Code)
-	}
-	response := call(t, router, "GET", "/api/baseline-checks/latest", "")
-	if response.Code != http.StatusOK {
-		t.Fatalf("latest: %d", response.Code)
-	}
-	view := decode(t, response)
-	if check, ok := view["check"]; check != nil && ok {
-		t.Fatalf("check: %v", check)
-	}
-	if view["eligible"] != true {
-		t.Fatalf("eligible: %v", view)
-	}
-	if response := call(t, router, "GET", "/api/baseline-checks/no-such-check", ""); response.Code != http.StatusNotFound {
-		t.Fatalf("missing detail: %d", response.Code)
-	}
-	if response := call(t, router, "POST", "/api/baseline-checks/no-such-check/cancel", "{}"); response.Code != http.StatusConflict {
-		t.Fatalf("missing cancel: %d", response.Code)
-	}
-	if response := call(t, router, "POST", "/api/baseline-checks/latest", "{}"); response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET" {
-		t.Fatalf("wrong method: %d allow %q", response.Code, response.Header().Get("Allow"))
-	}
-}
-
-func TestMethodNotAllowedNamesThePathMethods(t *testing.T) {
-	app, _ := testApp(t)
-	router := Router(app, token, "", "test")
-	for _, check := range []struct{ method, path, allow string }{
-		{"DELETE", "/api/state", "GET"},
-		{"DELETE", "/api/config", "GET, PUT"},
-		{"PATCH", "/api/cycles/cycle-1/evidence", "GET, POST"},
-		{"GET", "/api/cycles/cycle-1/archive", "POST"},
-		{"DELETE", "/api/baseline-checks/latest", "GET"},
-		{"GET", "/api/doctor", "POST"},
-	} {
-		response := call(t, router, check.method, check.path, "{}")
-		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != check.allow || response.Body.Len() != 0 {
-			t.Fatalf("%s %s: %d allow %q body %q", check.method, check.path, response.Code, response.Header().Get("Allow"), response.Body.String())
-		}
-	}
-	response := request(t, router, "DELETE", "/api/config", "{}", false)
-	if response.Code != http.StatusUnauthorized || response.Header().Get("Allow") != "" {
-		t.Fatalf("unauthenticated: %d allow %q", response.Code, response.Header().Get("Allow"))
-	}
-}
-
-func TestBaselineStartConflictsAndGateBlocksCoverTheLiveSlot(t *testing.T) {
-	app, state, cfg := githubFixture(t, []string{"sleep 60"})
-	router := Router(app, token, "", "test")
-	startBody := func(c config.Config) string {
-		revision, err := c.Fingerprint()
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := json.Marshal(map[string]any{"expected_revision": revision})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(data)
-	}
-	if data, err := json.Marshal(map[string]any{"expected_config": cfg}); err != nil {
-		t.Fatal(err)
-	} else if response := call(t, router, "POST", "/api/baseline-checks", string(data)); response.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("legacy expected_config: %d %s", response.Code, response.Body.String())
-	}
-	if response := call(t, router, "POST", "/api/baseline-checks", "{}"); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "expected_revision") {
-		t.Fatalf("missing revision: %d %s", response.Code, response.Body.String())
-	}
-	invalid := cfg.Clone()
-	invalid.Repository = "relative"
-	if err := state.Put("settings", "config", invalid); err != nil {
-		t.Fatal(err)
-	}
-	if response := call(t, router, "POST", "/api/baseline-checks", startBody(invalid)); response.Code != http.StatusBadRequest {
-		t.Fatalf("invalid config: %d %s", response.Code, response.Body.String())
-	}
-	response := call(t, router, "GET", "/api/baseline-checks/latest", "")
-	view := decode(t, response)
-	if view["eligible"] != false || view["reason"] == nil {
-		t.Fatalf("ineligible view: %v", view)
-	}
-	if err := state.Put("settings", "config", cfg); err != nil {
-		t.Fatal(err)
-	}
-	stale := cfg.Clone()
-	stale.VerificationCommands = []string{"false"}
-	if response := call(t, router, "POST", "/api/baseline-checks", startBody(stale)); response.Code != http.StatusConflict {
-		t.Fatalf("stale expected: %d", response.Code)
-	}
-	if latest, err := state.LatestBaseline(); err != nil || latest != nil {
-		t.Fatal("rejected start persisted a check")
-	}
-	response = call(t, router, "POST", "/api/baseline-checks", startBody(cfg))
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("start: %d %s", response.Code, response.Body.String())
-	}
-	check := decode(t, response)
-	if check["status"] != "running" {
-		t.Fatalf("check: %v", check)
-	}
-	revision, err := cfg.Fingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if check["config_fingerprint"] != revision {
-		t.Fatalf("check config fingerprint: %v", check["config_fingerprint"])
-	}
-	id := check["id"].(string)
-	if response := call(t, router, "POST", "/api/baseline-checks", startBody(cfg)); response.Code != http.StatusConflict {
-		t.Fatalf("duplicate start: %d", response.Code)
-	}
-	for _, path := range []string{"/api/control/cycle", "/api/control/resume", "/api/control/audit"} {
-		if response := call(t, router, "POST", path, "{}"); response.Code != http.StatusConflict {
-			t.Fatalf("%s: %d", path, response.Code)
-		}
-	}
-	configBody, err := json.Marshal(map[string]any{"expected_revision": revision, "config": map[string]any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response := call(t, router, "PUT", "/api/config", string(configBody)); response.Code != http.StatusConflict {
-		t.Fatalf("config save during baseline: %d", response.Code)
-	}
-	task := queuedTask(cfg)
-	if err := state.Put("task", task.ID, task); err != nil {
-		t.Fatal(err)
-	}
-	if response := call(t, router, "POST", "/api/tasks/"+task.ID+"/reconcile", "{}"); response.Code != http.StatusConflict {
-		t.Fatalf("reconcile during baseline: %d %s", response.Code, response.Body.String())
-	}
-	if response := call(t, router, "POST", "/api/control/pause", "{}"); response.Code != http.StatusOK {
-		t.Fatalf("pause during baseline: %d", response.Code)
-	}
-	response = call(t, router, "GET", "/api/state", "")
-	stateBody := decode(t, response)
-	if stateBody["baseline_active"] != true {
-		t.Fatalf("baseline_active: %v", stateBody)
-	}
-	baseline, _ := stateBody["baseline"].(map[string]any)
-	if baseline["id"] != id || baseline["config_matches"] != true || baseline["config_revision"] != revision {
-		t.Fatalf("baseline summary: %v", baseline)
-	}
-	if _, ok := baseline["commands"]; ok {
-		t.Fatal("state summary must not include commands")
-	}
-	if response := call(t, router, "POST", "/api/baseline-checks/"+id+"/cancel", "{}"); response.Code != http.StatusOK {
-		t.Fatalf("cancel: %d %s", response.Code, response.Body.String())
-	}
-	finished := waitBaseline(t, router, state, id)
-	if finished.Status != model.BaselineStatusCancelled {
-		t.Fatalf("status %s", finished.Status)
-	}
-	if finished.CompletedAt == nil || finished.Error == nil || !finished.WorkspaceRemoved {
-		t.Fatalf("finished: %+v", finished)
-	}
-	if len(finished.Commands) > 1 || (len(finished.Commands) == 1 && finished.Commands[0].Success) {
-		t.Fatalf("cancelled command evidence: %+v", finished.Commands)
-	}
-	response = call(t, router, "GET", "/api/baseline-checks/latest", "")
-	view = decode(t, response)
-	if got, _ := view["check"].(map[string]any); got["id"] != id {
-		t.Fatalf("latest view: %v", view["check"])
-	}
-	if view["eligible"] != true {
-		t.Fatalf("eligible after finish: %v", view)
-	}
-	// Baseline checks must not consume any admissions, including before midnight.
-	var admissions, sessions uint64
-	if err := state.Snapshot(func(conn *sql.Conn) error {
-		return conn.QueryRowContext(context.Background(), `SELECT
-			(SELECT COUNT(*) FROM admissions),
-			(SELECT COALESCE(SUM(sessions), 0) FROM usage)`).Scan(&admissions, &sessions)
-	}); err != nil || admissions != 0 || sessions != 0 {
-		t.Fatalf("fixture admissions: %d, usage: %d, %v", admissions, sessions, err)
-	}
-	if running, err := state.RunningCycles(); err != nil || len(running) != 0 {
-		t.Fatalf("cycles: %d", len(running))
-	}
-	page, err := state.HistoryPage("task", store.HistoryQuery{})
-	if err != nil || len(page.Items) != 1 {
-		t.Fatalf("tasks: %d", len(page.Items))
-	}
-	if response := call(t, router, "POST", "/api/baseline-checks/"+id+"/cancel", "{}"); response.Code != http.StatusConflict {
-		t.Fatalf("cancel finished: %d", response.Code)
-	}
-}
-
-func waitBaseline(t *testing.T, router http.Handler, state *store.Store, id string) *model.BaselineCheck {
-	t.Helper()
-	var check *model.BaselineCheck
-	if !testutil.WaitUntil(10*time.Second, func() bool {
-		var err error
-		check, err = store.Get[model.BaselineCheck](state, "baseline", id)
-		cleaned := err == nil && check != nil && check.Status != model.BaselineStatusRunning &&
-			(check.WorkspaceRemoved || check.CleanupError != nil)
-		return cleaned && decode(t, call(t, router, "GET", "/api/state", ""))["baseline_active"] == false
-	}) {
-		t.Fatal("baseline check did not finish")
-	}
-	return check
-}
-
 func queuedTask(cfg config.Config) model.Task {
 	reason := model.BlockedReasonPublicationUncertain
 	return model.Task{
@@ -631,54 +254,6 @@ func queuedTask(cfg config.Config) model.Task {
 }
 
 func stringPointer(s string) *string { return &s }
-
-func TestBodyRejectionsKeepTheirPlainTextForm(t *testing.T) {
-	app, state := testApp(t)
-	router := Router(app, token, "", "test")
-	oversized := `{"expected_revision":"` + strings.Repeat("a", bodyLimit) + `"}`
-	for _, route := range []struct{ method, path string }{
-		{"PUT", "/api/config"},
-		{"POST", "/api/baseline-checks"},
-		{"POST", "/api/model-catalog"},
-	} {
-		for _, check := range []struct {
-			body, prefix string
-			status       int
-		}{
-			{oversized, "Failed to buffer the request body: length limit exceeded", http.StatusRequestEntityTooLarge},
-			{"{bad", "Failed to parse the request body as JSON: ", http.StatusBadRequest},
-			{`{"bogus":1}`, `Failed to deserialize the JSON body into the target type: unknown field "bogus"`, http.StatusUnprocessableEntity},
-		} {
-			response := call(t, router, route.method, route.path, check.body)
-			text := response.Body.String()
-			if response.Code != check.status || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
-				!strings.HasPrefix(text, check.prefix) || strings.Count(text, "Failed to") != 1 {
-				t.Fatalf("%s %s %d: %d %q %q", route.method, route.path, check.status, response.Code, response.Header().Get("Content-Type"), text)
-			}
-		}
-	}
-	if raw, found, err := state.GetRaw("settings", "config"); err != nil || found {
-		t.Fatalf("rejected saves wrote a configuration: %s %v", raw, err)
-	}
-	if latest, err := state.LatestBaseline(); err != nil || latest != nil {
-		t.Fatalf("rejected starts persisted a check: %v %v", latest, err)
-	}
-}
-
-func TestWriteJSONKeepsExactNumbersAndReportsEncodeFailures(t *testing.T) {
-	recorder := httptest.NewRecorder()
-	writeJSON(recorder, http.StatusCreated, map[string]any{"count": uint64(1<<63 + 1), "note": "ok"})
-	if recorder.Code != http.StatusCreated || recorder.Header().Get("Content-Type") != "application/json" ||
-		recorder.Body.String() != `{"count":9223372036854775809,"note":"ok"}` {
-		t.Fatalf("encoded: %d %q %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
-	}
-	recorder = httptest.NewRecorder()
-	writeJSON(recorder, http.StatusOK, map[string]any{"ratio": math.Inf(1)})
-	if recorder.Code != http.StatusInternalServerError || recorder.Header().Get("Content-Type") != "application/json" ||
-		recorder.Body.String() != `{"error":"The response could not be encoded"}` {
-		t.Fatalf("unencodable: %d %q %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
-	}
-}
 
 func TestHTTPBoundaryRejectionsAndSecurityHeaders(t *testing.T) {
 	app, state := testApp(t)

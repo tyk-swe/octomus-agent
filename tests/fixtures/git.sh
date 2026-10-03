@@ -16,7 +16,4 @@ for arg; do
     fi
     set -- "$@" "$arg"
 done
-if [ -e "$OCTOMUS_FIXTURE/dependency-rollback" ]; then
-    exec python3 "$OCTOMUS_FIXTURE/bin/git_rollback.py" "$@"
-fi
 exec /usr/bin/git "$@"

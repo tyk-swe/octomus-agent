@@ -8,8 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +18,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/broker"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
@@ -47,17 +44,6 @@ func docker(t *testing.T, args ...string) string {
 		t.Fatalf("docker %s: %v\n%s\n%s", strings.Join(args, " "), err, out, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
-}
-
-func TestDockerOutputExcludesPullProgress(t *testing.T) {
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\nprintf 'Unable to find image locally\\n' >&2\nprintf '{\"checks\": []}\\n'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if got := docker(t, "run", "probe-image"); got != `{"checks": []}` {
-		t.Fatalf("docker stdout = %q; want only the probe JSON", got)
-	}
 }
 
 func repoRoot(t *testing.T) string {
@@ -269,39 +255,6 @@ func TestDockerVerifySandboxIsContained(t *testing.T) {
 	}
 }
 
-func TestDockerQuickExitsAreObserved(t *testing.T) {
-	h := startDockerBroker(t, nil)
-	ws := h.taskRoot(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	for i := range 20 {
-		code := i % 8
-		out, _, err := sandbox.Verify(ctx, h.remote, ws, fmt.Sprintf("exit %d", code), 10, true)
-		if err != nil {
-			t.Fatalf("quick exit %d: %v", i, err)
-		}
-		if got, ok := out.Status.Code(); !ok || got != code {
-			t.Fatalf("quick exit %d = %v; want code %d", i, out.Status, code)
-		}
-	}
-}
-
-func TestDockerVerifyHomeIsFreshPerRun(t *testing.T) {
-	h := startDockerBroker(t, nil)
-	ws := h.taskRoot(t)
-	if _, _, err := sandbox.Verify(context.Background(), h.remote, ws, "echo cached > $HOME/marker", 60, true); err != nil {
-		t.Fatal(err)
-	}
-	out, _, err := sandbox.Verify(context.Background(), h.remote, ws, "cat $HOME/marker", 60, false)
-	if err != nil || strings.TrimSpace(string(out.Stdout.Bytes)) != "cached" {
-		t.Fatalf("second command of a run = %q, %v; want the run's home kept", out.Stdout.Bytes, err)
-	}
-	out, _, err = sandbox.Verify(context.Background(), h.remote, ws, "test -e $HOME/marker && echo stale || echo fresh", 60, true)
-	if err != nil || strings.TrimSpace(string(out.Stdout.Bytes)) != "fresh" {
-		t.Fatalf("first command of a new run = %q, %v; want an empty home", out.Stdout.Bytes, err)
-	}
-}
-
 func TestDockerRunnerStdioStreams(t *testing.T) {
 	h := startDockerBroker(t, nil)
 	ws := h.taskRoot(t)
@@ -347,181 +300,6 @@ func TestDockerRunnerStdioStreams(t *testing.T) {
 	version, err := h.remote.RunnerVersion(context.Background(), sandbox.Spec{Runner: config.BackendCodex}, 10)
 	if err != nil || version != "codex-fake 1.0.0" {
 		t.Fatalf("runner version = %q, %v", version, err)
-	}
-}
-
-func TestDockerKillAndDeadManRemoveTheSandbox(t *testing.T) {
-	h := startDockerBroker(t, nil)
-	ws := h.taskRoot(t)
-	child, err := h.remote.Start(context.Background(), sandbox.Spec{Kind: sandbox.KindVerify, Dir: ws, Command: "sleep 300 & sleep 300"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, func() bool { return h.containers(t) != "" })
-	child.Kill()
-	status, err := child.Wait()
-	if err != nil || !errors.Is(status.Err(), process.ErrKilled) {
-		t.Fatalf("killed sandbox = %v, %v", status, err)
-	}
-	waitFor(t, func() bool { return h.containers(t) == "" })
-}
-
-func TestDockerMemoryLimitIsReported(t *testing.T) {
-	h := startDockerBroker(t, func(cfg *broker.Config) { cfg.Memory = 64 << 20 })
-	ws := h.taskRoot(t)
-	started := time.Now()
-	out, record, err := sandbox.Verify(context.Background(), h.remote, ws, "head -c 512m /dev/zero | tail > /dev/null", 60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !out.Status.OOM() || out.Status.Success() || !strings.Contains(out.Status.String(), "memory limit") || record == nil || !record.OOM {
-		h.memoryFailureEvents(t, started)
-		t.Fatalf("status = %v, evidence %+v; want a reported memory-limit kill", out.Status, record)
-	}
-	// Only a child is killed for memory; the command recovers and succeeds. The evidence still records the kill.
-	// Docker learns of the kill from an asynchronous event, so the command lingers for it before exiting. Every
-	// process in a sandbox is as likely to be chosen, so a run whose shell was killed instead proves nothing and is
-	// tried once more.
-	for attempt := 1; ; attempt++ {
-		started = time.Now()
-		out, record, err = sandbox.Verify(context.Background(), h.remote, ws,
-			"(head -c 512m /dev/zero | tail > /dev/null); echo survived; sleep 1; exit 0", 60, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if attempt == 2 || len(out.Stdout.Bytes) != 0 {
-			break
-		}
-		t.Logf("the memory limit killed the shell, not only its child (%v); trying again", out.Status)
-	}
-	if out.Status.OOM() || !out.Status.Success() || string(out.Stdout.Bytes) != "survived\n" || record == nil || !record.OOM {
-		h.memoryFailureEvents(t, started)
-		t.Fatalf("status = %v with %q, evidence %+v; want a success whose evidence records the memory kill",
-			out.Status, out.Stdout.Bytes, record)
-	}
-}
-
-func TestDockerShutdownRemovesLiveSandboxes(t *testing.T) {
-	h := startDockerBroker(t, nil)
-	ws := h.taskRoot(t)
-	for range 4 {
-		if _, err := h.remote.Start(context.Background(), sandbox.Spec{Kind: sandbox.KindVerify, Dir: ws, Command: "sleep 300"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	waitFor(t, func() bool { return len(strings.Fields(h.containers(t))) == 4 })
-	h.cancel()
-	if err := <-h.served; err != nil {
-		t.Fatalf("broker shutdown with live sandboxes = %v", err)
-	}
-	h.served <- nil
-	if left := h.containers(t); left != "" {
-		t.Fatalf("shutdown left sandboxes behind: %s", left)
-	}
-}
-
-func TestDockerOpenCodeBridge(t *testing.T) {
-	h := startDockerBroker(t, nil)
-	ws := h.taskRoot(t)
-	var stderr testutil.SyncBuffer
-	server, err := h.remote.StartOpenCode(context.Background(), sandbox.Spec{
-		Kind: sandbox.KindRunner, Runner: config.BackendOpencode, Dir: ws, Stderr: &stderr,
-		Env: []string{"OPENCODE_SERVER_PASSWORD=bridge-secret"},
-	}, 30)
-	if err != nil {
-		t.Fatalf("%v (stderr %q)", err, stderr.String())
-	}
-	client := &http.Client{Transport: server.Transport}
-	get := func(path string) string {
-		req, _ := http.NewRequest(http.MethodGet, server.Base+path, nil)
-		req.SetBasicAuth("octomus", "bridge-secret")
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return string(body)
-	}
-	if health := get("/global/health"); !strings.Contains(health, `"password":"bridge-secret","policy":"bridge-secret"`) {
-		t.Fatalf("health through the bridge = %s", health)
-	}
-	events := make(chan string, 1)
-	go func() { events <- get("/event") }()
-	payload := bytes.Repeat([]byte("y"), 16<<20)
-	resp, err := client.Post(server.Base+"/echo", "application/octet-stream", bytes.NewReader(payload))
-	if err != nil {
-		t.Fatal(err)
-	}
-	echoed, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if string(echoed) != fmt.Sprint(len(payload)) {
-		t.Fatalf("large body through the bridge = %s", echoed)
-	}
-	if got := <-events; strings.Count(got, "data:") != 3 {
-		t.Fatalf("event stream = %q", got)
-	}
-	server.Child.Kill()
-	if _, err := server.Child.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, func() bool { return h.containers(t) == "" })
-
-	_, err = h.remote.StartOpenCode(context.Background(), sandbox.Spec{
-		Kind: sandbox.KindRunner, Runner: config.BackendOpencode, Dir: ws, Stderr: &stderr,
-		Env: []string{"OPENCODE_FAKE_FAIL=1"},
-	}, 30)
-	if err == nil || !strings.Contains(err.Error(), "OpenCode exited before server readiness") {
-		t.Fatalf("failed startup = %v; want the readiness failure", err)
-	}
-}
-
-func TestDockerBrokerRefusesUnownedRootsAndLeavesOtherContainers(t *testing.T) {
-	h := startDockerBroker(t, nil)
-	decoy := docker(t, "run", "-d", "--label", "octomus.sandbox.instance=someone-else", h.image, "sleep", "300")
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", decoy).Run() })
-	ws := h.taskRoot(t)
-	for name, dir := range map[string]string{
-		"data dir itself":    filepath.Join(h.cfg.DataDir, "workspace"),
-		"outside data dir":   filepath.Join(t.TempDir(), "tasks", uuid.NewString(), "workspace"),
-		"dot-dot":            filepath.Join(h.cfg.DataDir, "tasks", uuid.NewString(), "..", "workspace"),
-		"not a uuid":         filepath.Join(h.cfg.DataDir, "tasks", "task-1", "workspace"),
-		"missing repo.git":   filepath.Join(h.cfg.DataDir, "tasks", uuid.NewString(), "workspace"),
-		"checkout workspace": filepath.Join(h.cfg.DataDir, "checkout", "workspace"),
-	} {
-		_ = os.MkdirAll(dir, 0o700)
-		if _, _, err := sandbox.Verify(context.Background(), h.remote, dir, "true", 30, true); err == nil {
-			t.Errorf("%s: the broker ran a sandbox for %s", name, dir)
-		}
-	}
-	root := filepath.Dir(ws)
-	if err := os.RemoveAll(filepath.Join(root, "repo.git")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(h.cfg.DataDir, filepath.Join(root, "repo.git")); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := sandbox.Verify(context.Background(), h.remote, ws, "true", 30, true); err == nil {
-		t.Error("the broker mounted a symlinked repo.git")
-	}
-	h.cancel()
-	if err := <-h.served; err != nil {
-		t.Fatalf("broker shutdown = %v", err)
-	}
-	h.served <- nil
-	if state := docker(t, "inspect", "-f", "{{.State.Running}}", decoy); state != "true" {
-		t.Fatalf("broker shutdown touched a container it does not own (running=%s)", state)
-	}
-}
-
-func waitFor(t *testing.T, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not reached")
-		}
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 

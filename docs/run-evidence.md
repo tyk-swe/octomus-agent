@@ -59,10 +59,8 @@ a disposable copy in a private directory outside Git and any served root, and re
 capture time, source identity and snapshot checksum privately.
 
 A plain file copy of a live SQLite database can lose recent writes still in the
-write-ahead log. The example below is owner-operated; `tests/evidence_snapshot.py` runs
-it against synthetic sources only.
+write-ahead log. The example below is owner-operated.
 
-<!-- owner-sqlite-backup -->
 ```sh
 (
 set -eu
@@ -218,10 +216,8 @@ objects — it never silently strips a field, filters a record or repairs eviden
 Validate and hash a candidate without writing anything. The example reads one explicit
 local file, rejects duplicate object keys at every depth (so no overwritten member can
 disappear from validation while surviving in the bytes), checks the shape and recorded
-facts, and prints the SHA-256 of the exact bytes it read. `tests/evidence_snapshot.py`
-exercises it with synthetic bytes only.
+facts, and prints the SHA-256 of the exact bytes it read.
 
-<!-- private-payload-check -->
 ```sh
 node --input-type=module - /absolute/private/candidate.public.json <<'JS'
 import { readFileSync, statSync } from 'node:fs';

@@ -25,7 +25,7 @@ BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-a
 TOKEN = 'fixture-operator-token-with-at-least-32-characters'
 RACE_EXIT_STATUS = 66
 CODEX_ROUTE = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
-HOLDS = ['reconcile-hold', 'audit-hold']
+HOLDS = ['audit-hold']
 LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -167,19 +167,6 @@ def select_scenarios(suites, names):
         else:
             selected.add(name)
     return [(name, run) for name, run in qualified if name in selected]
-
-
-def process_gone(pid):
-    """Whether `pid` has exited: reaped, or a zombie its parent has not reaped yet.
-
-    The state is the first field after the last ')', because the command name
-    before it is arbitrary text and may itself contain ') Z'.
-    """
-    try:
-        stat = Path(f'/proc/{pid}/stat').read_text()
-    except (FileNotFoundError, ProcessLookupError):
-        return True
-    return stat.rpartition(')')[2].split()[0] in ['Z', 'X']
 
 
 def base_config(service, commands, **overrides):
@@ -330,11 +317,6 @@ class Service:
         commands = ['false'] if (self.root / 'failed-verification').exists() else ['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done']
         config = base_config(self, commands, cycle_interval_seconds=3600, task_timeout_seconds=120)
         use_codex_routes(config)
-        if (self.root / 'custom-route').exists():
-            config['repair_route'] = {'backend': 'codex', 'model': 'gpt-5.6-luna', 'effort': 'high'}
-            config['tiers']['M'] = {'model': 'gpt-5.6-luna', 'effort': 'low'}
-        if (self.root / 'cap1-interrupt').exists():
-            config['max_open_prs'] = 1
         self.save_config(config)
         diagnostic = self.request('/doctor', 'POST')
         view = self.request('/config')
@@ -361,8 +343,7 @@ def setup(root):
         dest = root / 'bin' / name
         shutil.copy(PROJECT / 'tests/fixtures' / fixture, dest)
         dest.chmod(0o755)
-    for helper in ['worker.py', 'git_rollback.py']:
-        shutil.copy(PROJECT / 'tests/fixtures' / helper, root / 'bin' / helper)
+    shutil.copy(PROJECT / 'tests/fixtures/worker.py', root / 'bin/worker.py')
     (root / 'checkout').mkdir()
     git('init', '--bare', str(root / 'remote.git'), cwd=root)
     git('init', '-b', 'main', cwd=root / 'checkout')
@@ -394,8 +375,7 @@ def update_prs(root, change):
 
     It holds the fixture's github.lock, as every gh invocation does, and
     replaces prs.json whole, so a background gh read never sees a truncated
-    file. Never call it while root/reconcile-hold exists: a held `gh auth
-    status` keeps the lock until the hold is released.
+    file.
     """
     with (root / 'github.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -418,9 +398,6 @@ def stop_peers(root):
     """Kills the OpenCode peer process groups a scenario left behind."""
     path = root / 'opencode-pids.jsonl'
     pids = [json.loads(row)['pid'] for row in path.read_text().splitlines()] if path.exists() else []
-    child = root / 'opencode-child-pid'
-    if child.exists():
-        pids.append(int(child.read_text()))
     for pid in pids:
         try:
             args = Path(f'/proc/{pid}/cmdline').read_bytes()

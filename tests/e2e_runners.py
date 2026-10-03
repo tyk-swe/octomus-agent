@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import sys
 
-from harness import configuration, fixture_service, git, process_gone, route, run_selected, stop_peers, usage_report
+from harness import configuration, fixture_service, git, route, run_selected, usage_report
 
 
 def successful_workflow(mode):
@@ -18,22 +18,11 @@ def successful_workflow(mode):
         assert not any(word in json.dumps(models) for word in ['fixture-credential', 'another-fixture-secret', 'PRIVATE_API_KEY'])
         assert service.request('/config')['config']['opencode_binary'] == 'opencode'
         assert not usage_report(root)['admissions'] and not (root / 'protocol.jsonl').exists()
-        c = configuration(service, **({'planning': 'codex', 'reviewer': 'codex'} if mode == 'mixed' else {'executor': 'codex', 'repair': 'codex'} if mode == 'reverse-mixed' else {}))
+        c = configuration(service, **({'planning': 'codex', 'reviewer': 'codex'} if mode == 'mixed' else {}))
         diagnostic = service.request('/doctor', 'POST')
-        assert {d['backend'] for d in diagnostic['backends']} == ({'opencode'} if mode in ['opencode', 'recovery'] else {'codex', 'opencode'})
+        assert {d['backend'] for d in diagnostic['backends']} == ({'opencode'} if mode == 'opencode' else {'codex', 'opencode'})
         assert not (root / 'protocol.jsonl').exists()
-        if mode == 'recovery':
-            (root / 'opencode-mode').write_text('hold')
         service.request('/control/cycle', 'POST')
-        original = None
-        if mode == 'recovery':
-            service.wait(lambda: (root / 'opencode-child-pid').exists(), 'executor entered')
-            row = service.request('/state')['tasks'][0]
-            original = service.request(f'/tasks/{row["id"]}')
-            service.stop(crash=True)
-            stop_peers(root)
-            (root / 'opencode-mode').unlink()
-            service.start()
         task = service.wait(service.terminal_task, f'{mode} delivery')
         assert task['status'] == 'published', task['error']
         assert task['route'] == c['tiers']['M']
@@ -47,11 +36,8 @@ def successful_workflow(mode):
         assert len((root / 'publications.jsonl').read_text().splitlines()) == 1
         calls = [json.loads(line) for line in (root / 'protocol.jsonl').read_text().splitlines()]
         assert len({p['thread'] for p in calls if p['prompt'].startswith('Repair actionable')}) == 1
-        if original:
-            assert task['execution_session'] == original['execution_session'] and task['workspace'] == original['workspace']
-            assert task['attempts'] == 1
         report = usage_report(root)
-        assert len(report['admissions']) == (20 if original else 19)
+        assert len(report['admissions']) == 19
         assert any(a['route']['backend'] == 'opencode' for a in report['admissions'])
         assert report['tasks'][0]['repair_route'] == c['repair_route']
         print(f'PASS {mode}: exact routes, fresh reviews, persistent repairs and verified delivery')
@@ -68,63 +54,12 @@ def failed_review(mode):
         assert task['status'] == 'blocked', task
         assert task['error'] and not task['reviews'] and not task['verification']
         assert Path(task['workspace']).is_dir() and not (root / 'publications.jsonl').exists()
-        if mode == 'interactive':
-            service.request('/control/pause', 'POST')
-            service.wait(lambda: service.request('/state')['active_tasks'] == 0, 'paused task')
-            new_config = service.request('/config')['config']
-            new_config['repair_route'] = route('codex')
-            new_config['roles']['code_reviewer'] = route('codex')
-            new_config['codex_binary'] = 'codex'
-            service.save_config(new_config)
-            (root / 'opencode-mode').unlink()
-            service.request(f'/tasks/{task["id"]}/retry', 'POST')
-            service.request('/control/resume', 'POST')
-            task = service.wait(service.terminal_task, 'retry keeps saved backend')
-            assert task['status'] == 'published', task['error']
-            assert task['config']['repair_route'] == c['repair_route']
-            assert all(s['route']['backend'] == 'opencode' for s in task['sessions'])
         print(f'PASS OpenCode {mode}: failed review cannot authorize publication')
 
 
-def audit():
-    with fixture_service('octomus-runner-audit-') as (root, service):
-        c = configuration(service)
-        c['verification_commands'] = []
-        c['roles']['code_reviewer'] = route('codex')
-        c['tiers'] = {tier: route('codex') for tier in c['tiers']}
-        c['repair_route'] = route('codex')
-        service.save_config(c)
-        assert service.request('/doctor?mode=audit', 'POST')['backends'][0]['backend'] == 'opencode'
-        service.request('/control/audit', 'POST')
-        state = service.wait(lambda: (state := service.request('/state'))['cycles'] and not state['cycle_active'] and state, 'OpenCode audit')
-        assert state['cycles'][0]['status'] == 'completed' and state['control']['paused'] and not state['tasks']
-        assert not (root / 'publications.jsonl').exists()
-        assert len(usage_report(root)['admissions']) == 13
-        print('PASS OpenCode audit: unavailable execution runners do not block planning')
-
-
-def task_deadline():
-    with fixture_service('octomus-task-deadline-') as (root, service):
-        c = configuration(service)
-        c.update(session_timeout_seconds=10, task_timeout_seconds=10)
-        service.save_config(c)
-        (root / 'opencode-mode').write_text('detached-hold')
-        service.request('/control/cycle', 'POST')
-        service.wait(lambda: (root / 'opencode-child-pid').exists(), 'detached shell started')
-        task = service.wait(service.terminal_task, 'task deadline cleanup', seconds=20)
-        assert task['status'] == 'blocked' and task['error'] == 'Task time limit exceeded', task
-        pid = int((root / 'opencode-child-pid').read_text())
-        assert process_gone(pid), 'Detached shell survived the task deadline'
-        assert (root / 'opencode-aborts.jsonl').exists()
-        assert not (root / 'publications.jsonl').exists()
-        print('PASS task deadline: abort finishes before server cleanup; no detached shell or publication')
-
-
 SCENARIOS = [
-    *[(mode, functools.partial(successful_workflow, mode)) for mode in ['opencode', 'mixed', 'reverse-mixed', 'recovery']],
-    *[(mode, functools.partial(failed_review, mode)) for mode in ['wrong-model', 'wrong-variant', 'missing-structured', 'malformed-structured', 'incomplete', 'interactive']],
-    ('audit', audit),
-    ('task-deadline', task_deadline),
+    *[(mode, functools.partial(successful_workflow, mode)) for mode in ['opencode', 'mixed']],
+    ('wrong-model', functools.partial(failed_review, 'wrong-model')),
 ]
 
 

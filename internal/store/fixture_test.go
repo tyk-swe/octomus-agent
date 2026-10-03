@@ -116,15 +116,6 @@ func exec(t *testing.T, db *sql.DB, query string, args ...any) {
 	}
 }
 
-func queryString(t *testing.T, db *sql.DB, query string, args ...any) string {
-	t.Helper()
-	var value string
-	if err := db.QueryRow(query, args...).Scan(&value); err != nil {
-		t.Fatalf("%s: %v", query, err)
-	}
-	return value
-}
-
 func queryInt(t *testing.T, db *sql.DB, query string, args ...any) int64 {
 	t.Helper()
 	var value int64
@@ -156,19 +147,6 @@ func canonical(t *testing.T, value any) string {
 func equalJSON(t *testing.T, a, b any) bool {
 	t.Helper()
 	return canonical(t, a) == canonical(t, b)
-}
-
-func generic(t *testing.T, value any) map[string]any {
-	t.Helper()
-	data, err := wirejson.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
-	return out
 }
 
 func decodeMap(t *testing.T, data []byte) map[string]any {

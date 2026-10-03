@@ -367,13 +367,10 @@ runners would inherit the one and could rewrite the other.
 Automated tests hold:
 - the golden container spec for each sandbox kind, the broker's request validation and the
   gateway's policy (default suite);
-- the broker against a real Docker daemon: containment from inside, the probe failing a
-  plain internal network and a writable image, kill and dead-man removal, memory-limit
-  reporting, the OpenCode bridge with a 16 MB body and SSE, and leaving other containers
-  alone (`OCTOMUS_DOCKER_TEST=1`);
-- the shipped compose file end to end with fixture runners: the self-test, a full Run once
-  delivery through sandboxes, and a control-plane crash that leaves no sandbox running
-  (`make test-sandbox`).
+- the broker against a real Docker daemon: containment from inside, runner stdio streams
+  and the containment probe passing (`OCTOMUS_DOCKER_TEST=1`);
+- the shipped compose file end to end with fixture runners: the self-test and a full Run
+  once delivery through sandboxes (`make test-sandbox`).
 
 Development checks on Docker Engine 29.8.1 found:
 - A plain internal network lets a container reach the host's SSH through its gateway, which

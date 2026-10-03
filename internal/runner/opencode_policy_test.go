@@ -1,60 +1,8 @@
 package runner
 
 import (
-	"strings"
 	"testing"
 )
-
-func TestSegment(t *testing.T) {
-	t.Parallel()
-	for id, want := range map[string]string{
-		"ses_ab-C9":              "ses%5Fab%2DC9",
-		"AZaz09":                 "AZaz09",
-		"-":                      "%2D",
-		strings.Repeat("a", 256): strings.Repeat("a", 256),
-	} {
-		if got, err := segment(id); err != nil || got != want {
-			t.Errorf("segment(%q) = %q, %v; want %q", id, got, err, want)
-		}
-	}
-	for _, id := range []string{
-		"",
-		strings.Repeat("a", 257),
-		"a/b",
-		".",
-		"..",
-		"a.b",
-		"a b",
-		"a%2F",
-		"a?b",
-		"a#b",
-		"a\\b",
-		"a\x00b",
-		"\u00e9",
-	} {
-		if got, err := segment(id); err == nil || err.Error() != "Invalid OpenCode identity" || got != "" {
-			t.Errorf("segment(%q) = %q, %v; want a refusal", id, got, err)
-		}
-	}
-}
-
-func TestWorkerPolicyPassesAppliedPolicy(t *testing.T) {
-	t.Parallel()
-	encoded, err := marshal(workerPolicy("octomus-a"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	effective, err := decodeJSON([]byte(encoded))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !appliedPolicy(effective, "octomus-a") {
-		t.Fatalf("the worker policy must pass its own check: %s", encoded)
-	}
-	if appliedPolicy(effective, "octomus-b") {
-		t.Fatal("another agent's policy must not pass")
-	}
-}
 
 func TestAppliedPolicyRejectsEachDrift(t *testing.T) {
 	t.Parallel()

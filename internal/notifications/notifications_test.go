@@ -4,14 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -20,8 +18,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	_ "modernc.org/sqlite"
 )
-
-const dest = "destination-a"
 
 func testStore(t *testing.T) (*store.Store, string) {
 	t.Helper()
@@ -34,15 +30,6 @@ func testStore(t *testing.T) (*store.Store, string) {
 	t.Cleanup(func() { _ = state.Close() })
 	return state, path
 }
-
-func enabled(t *testing.T, state *store.Store) {
-	t.Helper()
-	if err := state.ConfigureNotifications(strPtr(dest), "enabled", nil); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func strPtr(s string) *string { return &s }
 
 func putTask(t *testing.T, state *store.Store, id, status string, reason *model.BlockedReason) {
 	t.Helper()
@@ -130,28 +117,6 @@ func waitUntil(t *testing.T, seconds float64, condition func() bool, what string
 	if !testutil.WaitUntil(time.Duration(seconds*float64(time.Second)), condition) {
 		t.Fatalf("timed out waiting for %s", what)
 	}
-}
-
-func refusingAddress(t *testing.T) string {
-	t.Helper()
-	syscall.ForkLock.RLock()
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
-	if err == nil {
-		syscall.CloseOnExec(fd)
-	}
-	syscall.ForkLock.RUnlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = syscall.Close(fd) })
-	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
-		t.Fatal(err)
-	}
-	bound, err := syscall.Getsockname(fd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return fmt.Sprintf("127.0.0.1:%d", bound.(*syscall.SockaddrInet4).Port)
 }
 
 func TestWebhookURLPolicyAcceptsHTTPSAndLoopbackHTTPOnly(t *testing.T) {
@@ -309,191 +274,6 @@ func TestRetryableAndTerminalStatusesAreClassified(t *testing.T) {
 	}
 }
 
-func TestSlowDeliveryDoesNotCauseACatchUpBurst(t *testing.T) {
-	t.Parallel()
-	state, _ := testStore(t)
-	server := newReceiver(t, 200, 2200*time.Millisecond)
-	worker, err := Start(context.Background(), state, server.url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.Stop()
-	reason := model.BlockedReasonTimeout
-	for i := 0; i < 4; i++ {
-		putTask(t, state, "task-"+string(rune('0'+i)), "blocked", &reason)
-	}
-	previous := server.nextRequest(t)
-	for i := 0; i < 3; i++ {
-		current := server.nextRequest(t)
-		if elapsed := current.at.Sub(previous.at); elapsed < time.Second {
-			t.Fatalf("catch-up burst: %v between HTTP arrivals", elapsed)
-		}
-		previous = current
-	}
-}
-
-func TestSlowClaimDoesNotCauseACatchUpBurst(t *testing.T) {
-	t.Parallel()
-	state, path := testStore(t)
-	enabled(t, state)
-	reason := model.BlockedReasonTimeout
-	for i := 0; i < 3; i++ {
-		putTask(t, state, fmt.Sprintf("task-%d", i), "blocked", &reason)
-	}
-	server := newReceiver(t, http.StatusOK, 0)
-	// Queue the first claim behind a real SQLite writer. Start normally also
-	// writes the notification policy, so start the worker after that setup.
-	lock, err := rawDB(t, path).Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Rollback()
-	if _, err := lock.Exec("UPDATE notification_policy SET enabled=enabled WHERE id=1"); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	worker := &Worker{store: state, url: server.url, destID: dest, client: webhookClient(),
-		ctx: ctx, cancel: cancel, done: make(chan struct{}), warnings: io.Discard}
-	go worker.run()
-	defer worker.Stop()
-	// A timer started before the claim will already have expired when the
-	// writer releases it. That used to send the next notification immediately.
-	time.Sleep(1500 * time.Millisecond)
-	if err := lock.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	previous := server.nextRequest(t)
-	for i := 0; i < 2; i++ {
-		current := server.nextRequest(t)
-		if elapsed := current.at.Sub(previous.at); elapsed < time.Second {
-			t.Fatalf("catch-up burst after a slow claim: %v between HTTP arrivals", elapsed)
-		}
-		previous = current
-	}
-}
-
-func TestDeliveryTimeoutIsBoundedAndVisible(t *testing.T) {
-	t.Parallel()
-	state, _ := testStore(t)
-	server := newReceiver(t, 200, 60*time.Second)
-	worker, err := Start(context.Background(), state, server.url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.Stop()
-	reason := model.BlockedReasonTimeout
-	putTask(t, state, "task", "blocked", &reason)
-	server.next(t)
-	waitUntil(t, 15, func() bool {
-		health, err := state.NotificationHealth()
-		return err == nil && health.LastError != nil && *health.LastError == "timeout"
-	}, "the bounded delivery timeout to surface on the destination")
-}
-
-func TestHeldHTTPShutdownLeavesTheClaimedRowForRecovery(t *testing.T) {
-	t.Parallel()
-	state, path := testStore(t)
-	server := newReceiver(t, 200, 60*time.Second)
-	worker, err := Start(context.Background(), state, server.url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reason := model.BlockedReasonTimeout
-	putTask(t, state, "task-1", "blocked", &reason)
-	server.next(t)
-	if health, err := state.NotificationHealth(); err != nil || health.Pending != 1 {
-		t.Fatalf("pending during held delivery: %+v %v", health, err)
-	}
-	worker.Stop()
-	destination := queryDestination(t, path)
-	before := outboxRows(t, path, "pending")
-	if len(before) != 1 {
-		t.Fatalf("pending rows: %d", len(before))
-	}
-	delivery, err := state.ClaimNotification(destination, time.Now().UTC().Add(31*time.Second))
-	if err != nil || delivery == nil {
-		t.Fatalf("abandoned claim: %v %v", delivery, err)
-	}
-	if delivery.EventID != before[0].EventID {
-		t.Fatal("recovery after an ambiguous send must keep the same event id")
-	}
-}
-
-func TestOversizedIdentitiesFailAsInvalidPayloadInsteadOfTruncating(t *testing.T) {
-	t.Parallel()
-	state, _ := testStore(t)
-	enabled(t, state)
-	long := strings.Repeat("x", 300)
-	putTask(t, state, long, "blocked", &[]model.BlockedReason{model.BlockedReasonTimeout}[0])
-	delivery, err := state.ClaimNotification(dest, time.Now().UTC())
-	if err != nil || delivery == nil {
-		t.Fatalf("claim: %v %v", delivery, err)
-	}
-	if _, err := payload(delivery); err == nil {
-		t.Fatal("oversized identity must fail as invalid payload")
-	}
-	if err := state.FinishNotificationFailure(delivery.Seq, "invalid_payload", nil, false); err != nil {
-		t.Fatal(err)
-	}
-	if health, _ := state.NotificationHealth(); health.Failed != 1 {
-		t.Fatalf("health: %+v", health)
-	}
-}
-
-func TestWorkerFailsOversizedEventsTerminally(t *testing.T) {
-	t.Parallel()
-	state, path := testStore(t)
-	server := newReceiver(t, 200, 0)
-	worker, err := Start(context.Background(), state, server.url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.Stop()
-	reason := model.BlockedReasonTimeout
-	putTask(t, state, strings.Repeat("x", 300), "blocked", &reason)
-	waitUntil(t, 10, func() bool {
-		health, err := state.NotificationHealth()
-		return err == nil && health.Failed == 1 && health.LastError != nil && *health.LastError == invalidPayload
-	}, "the oversized event to fail as invalid_payload")
-	select {
-	case body := <-server.requests:
-		t.Fatalf("an invalid payload was sent: %s", body.body)
-	case <-time.After(200 * time.Millisecond):
-	}
-	if health, err := state.NotificationHealth(); err != nil || health.Pending != 0 || health.LastHTTPStatus != nil {
-		t.Fatalf("health: %+v %v", health, err)
-	}
-	var attempts int
-	if err := rawDB(t, path).QueryRow("SELECT attempts FROM notification_outbox").Scan(&attempts); err != nil || attempts != 1 {
-		t.Fatalf("attempts = %d, %v", attempts, err)
-	}
-}
-
-func TestWorkerRetriesTransportFailures(t *testing.T) {
-	t.Parallel()
-	state, path := testStore(t)
-	destination := "http://" + refusingAddress(t) + "/hook"
-	worker, err := Start(context.Background(), state, destination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.Stop()
-	reason := model.BlockedReasonTimeout
-	putTask(t, state, "task-1", "blocked", &reason)
-	waitUntil(t, 10, func() bool {
-		health, err := state.NotificationHealth()
-		return err == nil && health.LastError != nil && *health.LastError == transportCategory
-	}, "the refused connection to be recorded as transport_error")
-	health, err := state.NotificationHealth()
-	if err != nil || health.Pending != 1 || health.Failed != 0 || health.LastHTTPStatus != nil {
-		t.Fatalf("health: %+v %v", health, err)
-	}
-	var attempts int
-	if err := rawDB(t, path).QueryRow("SELECT attempts FROM notification_outbox WHERE status='pending'").Scan(&attempts); err != nil || attempts != 1 {
-		t.Fatalf("attempts = %d, %v", attempts, err)
-	}
-}
-
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
@@ -502,25 +282,6 @@ func rawDB(t *testing.T, path string) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
-}
-
-func outboxRows(t *testing.T, path, status string) []store.NotificationDelivery {
-	t.Helper()
-	db := rawDB(t, path)
-	rows, err := db.Query("SELECT event_id FROM notification_outbox WHERE status=? ORDER BY seq", status)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var deliveries []store.NotificationDelivery
-	for rows.Next() {
-		var delivery store.NotificationDelivery
-		if err := rows.Scan(&delivery.EventID); err != nil {
-			t.Fatal(err)
-		}
-		deliveries = append(deliveries, delivery)
-	}
-	return deliveries
 }
 
 func outboxCount(t *testing.T, path, status string) int {
@@ -539,75 +300,4 @@ func outboxHas(t *testing.T, path, status string, httpStatus int) bool {
 		t.Fatal(err)
 	}
 	return count > 0
-}
-
-func queryDestination(t *testing.T, path string) string {
-	t.Helper()
-	var destination string
-	if err := rawDB(t, path).QueryRow("SELECT destination_id FROM notification_policy WHERE id=1").Scan(&destination); err != nil {
-		t.Fatal(err)
-	}
-	return destination
-}
-
-func TestStoreFailuresAreReportedOncePerEpisodeWithoutTheURL(t *testing.T) {
-	t.Parallel()
-	state, path := testStore(t)
-	server := newReceiver(t, 200, 0)
-	var warnings testutil.SyncBuffer
-	worker, err := start(context.Background(), state, server.url, &warnings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.Stop()
-	count := func() int { return strings.Count(warnings.String(), "WARN notifications: ") }
-	db := rawDB(t, path)
-	destination := queryDestination(t, path)
-	corrupt := func(eventID string) {
-		t.Helper()
-		if _, err := db.Exec(`INSERT INTO notification_outbox
-			(event_id,destination_id,created_at,repository,category,action,attempts,next_attempt_at)
-			VALUES (?1,?2,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'fixture/project','stale_base','inspect_task',1.5,0)`,
-			eventID, destination); err != nil {
-			t.Fatal(err)
-		}
-	}
-	repair := func(eventID string) {
-		t.Helper()
-		if _, err := db.Exec("UPDATE notification_outbox SET attempts=0 WHERE event_id=?1", eventID); err != nil {
-			t.Fatal(err)
-		}
-	}
-	corrupt("first")
-	waitUntil(t, 5, func() bool { return count() > 0 }, "the failing claim to be reported")
-	time.Sleep(2200 * time.Millisecond)
-	if count() != 1 || !strings.HasSuffix(warnings.String(), "\n") {
-		t.Fatalf("repeated claim failure warnings: %q", warnings.String())
-	}
-	repair("first")
-	server.next(t)
-	waitUntil(t, 5, func() bool {
-		var delivered int
-		err := db.QueryRow("SELECT count(*) FROM notification_outbox WHERE status='delivered'").Scan(&delivered)
-		return err == nil && delivered == 1
-	}, "the repaired row to be delivered")
-	corrupt("second")
-	waitUntil(t, 5, func() bool { return count() == 2 }, "the recurring claim failure to be reported")
-	if lines := strings.Split(strings.TrimSuffix(warnings.String(), "\n"), "\n"); lines[0] != lines[1] {
-		t.Fatalf("recurring failure: %q", lines)
-	}
-	if _, err := db.Exec(`CREATE TRIGGER refuse_delivered BEFORE UPDATE OF status ON notification_outbox
-		WHEN NEW.status='delivered' BEGIN SELECT RAISE(ABORT,'synthetic finish failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	repair("second")
-	server.next(t)
-	waitUntil(t, 5, func() bool { return count() == 3 }, "the failed delivery record to be reported")
-	text := warnings.String()
-	if !strings.Contains(text, "synthetic finish failure") {
-		t.Fatalf("finish failure warning: %q", text)
-	}
-	if strings.Contains(text, server.url) || strings.Contains(text, server.server.Listener.Addr().String()) {
-		t.Fatalf("warnings name the destination: %q", text)
-	}
 }

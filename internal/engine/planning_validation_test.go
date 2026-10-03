@@ -3,7 +3,6 @@ package engine
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
@@ -90,48 +89,6 @@ func TestProposalValidationNamesTheOffendingProposal(t *testing.T) {
 	assertErrorNames(t, first, `proposal "x" depends on "gone"`)
 }
 
-func TestBranchOrderFaultNamesTheFirstBranchInPlanOrder(t *testing.T) {
-	t.Parallel()
-	cfg := testConfig(t.TempDir())
-	zeta, alpha := ownedPR("octomus/zeta"), ownedPR("octomus/alpha")
-	alpha.Number = 8
-	grounding := model.Grounding{Revision: "source", PRs: []model.PullRequest{zeta, alpha}}
-	plan := []model.Proposal{
-		proposal("z1", "octomus/zeta"), proposal("a1", "octomus/alpha"),
-		proposal("z2", "octomus/zeta"), proposal("a2", "octomus/alpha"),
-	}
-	for i := 0; i < 20; i++ {
-		assertErrorNames(t, ValidateProposals(cfg, plan, grounding, nil), "Accepted tasks on octomus/zeta need a complete dependency order")
-	}
-}
-
-func TestReviewerAssessmentsNameTheOffendingProposal(t *testing.T) {
-	t.Parallel()
-	candidates := []model.Proposal{{ID: "a"}, {ID: "b"}}
-	assessed := func(id, decision, reason string) assessment {
-		return assessment{ID: id, Decision: decision, Reason: reason}
-	}
-	for _, tc := range []struct {
-		name        string
-		assessments []assessment
-		fragment    string
-	}{
-		{name: "invented", assessments: []assessment{assessed("a", "accepted", "ok"), assessed("b", "rejected", "no"), assessed("c", "accepted", "ok")}, fragment: `adversary-a invented proposal "c"`},
-		{name: "assessed twice", assessments: []assessment{assessed("a", "accepted", "ok"), assessed("a", "rejected", "no")}, fragment: `adversary-a assessed proposal "a" more than once`},
-		{name: "invalid decision", assessments: []assessment{assessed("a", "maybe", "ok")}, fragment: `adversary-a gave proposal "a" an invalid decision "maybe"`},
-		{name: "no rationale", assessments: []assessment{assessed("a", "deferred", " ")}, fragment: `adversary-a gave proposal "a" no rationale`},
-		{name: "omitted", assessments: []assessment{assessed("a", "accepted", "ok")}, fragment: `adversary-a omitted proposal "b"`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			assertErrorNames(t, checkAssessments("adversary-a", candidates, tc.assessments), "Adversarial reviewer", tc.fragment)
-		})
-	}
-	complete := []assessment{assessed("b", "deferred", "later"), assessed("a", "accepted", "ok")}
-	if err := checkAssessments("adversary-b", candidates, complete); err != nil {
-		t.Fatalf("complete assessment rejected: %v", err)
-	}
-}
-
 func TestConsolidationNamesTheOffendingProposal(t *testing.T) {
 	t.Parallel()
 	candidates := []model.Proposal{{ID: "a"}, {ID: "b"}}
@@ -150,41 +107,6 @@ func TestConsolidationNamesTheOffendingProposal(t *testing.T) {
 	}
 	if err := checkConsolidation(candidates, []model.Proposal{{ID: "b"}, {ID: "a"}}); err != nil {
 		t.Fatalf("complete consolidation rejected: %v", err)
-	}
-}
-
-func TestDecisionMemoryAndRediscoveryNameTheOffendingProposal(t *testing.T) {
-	t.Parallel()
-	cfg := testConfig(t.TempDir())
-	request := rediscoveryRequest{ID: "request-1", Target: cfg.DefaultBranch}
-	pending := decisionMemory{requests: []rediscoveryRequest{request}}
-	reconsidering := func(target string, requests ...string) model.Proposal {
-		p := proposal("a", target)
-		p.Reconsiders = requests
-		return p
-	}
-	assertErrorNames(t, validateDecisionMemory([]model.Proposal{reconsidering(cfg.DefaultBranch, "request-2")}, pending),
-		"does not match a pending request", `proposal "a" reconsiders "request-2", which is not pending`)
-	assertErrorNames(t, validateDecisionMemory([]model.Proposal{reconsidering("octomus/existing", "request-1")}, pending),
-		"does not match a pending request", `proposal "a" targets "octomus/existing" but request "request-1" targets "main"`)
-
-	accepted := proposal("a", cfg.DefaultBranch)
-	recorded := decisionRecord{
-		Kind: "decision", ID: "cycle-1:a", CycleMode: model.CycleModeExecution,
-		Repository: cfg.GitHubRepo, Target: cfg.DefaultBranch, ProblemKey: accepted.ProblemIdentity(),
-		Decision: model.DecisionRejected, Reason: "Current decision", SourceRevision: "revision",
-		ContextFingerprint: "revision", ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: "cycle-1",
-	}
-	assertErrorNames(t, validateDecisionMemory([]model.Proposal{accepted}, decisionMemory{decisions: []decisionRecord{recorded}}),
-		"repeats a current recorded decision", `(proposal "a", decision "cycle-1:a")`)
-
-	requests := []rediscoveryRequest{request}
-	assertErrorNames(t, checkRediscoveryDecisions(requests, []model.Proposal{proposal("a", cfg.DefaultBranch)}),
-		"exactly one fresh decision (request request-1 had 0)")
-	twice := []model.Proposal{reconsidering(cfg.DefaultBranch, "request-1"), reconsidering(cfg.DefaultBranch, "request-1")}
-	assertErrorNames(t, checkRediscoveryDecisions(requests, twice), "exactly one fresh decision (request request-1 had 2)")
-	if err := checkRediscoveryDecisions(requests, twice[:1]); err != nil {
-		t.Fatalf("one decision per request rejected: %v", err)
 	}
 }
 

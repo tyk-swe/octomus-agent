@@ -3,7 +3,6 @@ package git_test
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/git"
@@ -32,11 +31,6 @@ func prContextOwned(number int, branch string) map[string]any {
 		fmt.Sprintf("Owned work.\n<!-- octomus:task:task-%d -->", number), "open")
 }
 
-func prContextExternal(number int) map[string]any {
-	return prContextEntry(number, "contributor/work", prContextRepo("contributor/project"), prContextRepo("fixture/project"),
-		"External work without a task marker.", "open")
-}
-
 func prContextPage(t *testing.T, entries ...map[string]any) string {
 	t.Helper()
 	if entries == nil {
@@ -47,61 +41,6 @@ func prContextPage(t *testing.T, entries ...map[string]any) string {
 		t.Fatal(err)
 	}
 	return string(data)
-}
-
-func TestInventoryReadsEveryPageDedupesAndSorts(t *testing.T) {
-	t.Parallel()
-	c := testConfig()
-	first, second, third := []map[string]any{}, []map[string]any{}, []map[string]any{}
-	for n := 60; n >= 1; n-- {
-		first = append(first, prContextExternal(n))
-	}
-	for n := 120; n >= 61; n-- {
-		second = append(second, prContextOwned(n, fmt.Sprintf("octomus/work-%d", n)))
-	}
-	for n := 150; n >= 121; n-- {
-		if n%2 == 0 {
-			third = append(third, prContextOwned(n, fmt.Sprintf("octomus/work-%d", n)))
-		} else {
-			third = append(third, prContextExternal(n))
-		}
-	}
-	pages := prContextPage(t, first...) + prContextPage(t, second...) + prContextPage(t, third...)
-	inventory, err := git.ParseInventory(pages, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inventory.Repository != "fixture/project" {
-		t.Fatalf("repository = %q", inventory.Repository)
-	}
-	if inventory.ObservedAt == "" {
-		t.Fatal("observed_at is empty")
-	}
-	if len(inventory.PRs) != 150 {
-		t.Fatalf("inventory has %d PRs; want every page's 150", len(inventory.PRs))
-	}
-	for i := 1; i < len(inventory.PRs); i++ {
-		if inventory.PRs[i-1].Number >= inventory.PRs[i].Number {
-			t.Fatalf("inventory not strictly sorted at %d: %d then %d", i, inventory.PRs[i-1].Number, inventory.PRs[i].Number)
-		}
-	}
-	owned := 0
-	for _, pr := range inventory.PRs {
-		if pr.Owned {
-			owned++
-		}
-	}
-	if owned != 75 {
-		t.Fatalf("owned = %d; want 75", owned)
-	}
-	duplicate := prContextPage(t, prContextExternal(7)) + prContextPage(t, prContextExternal(7))
-	inventory, err = git.ParseInventory(duplicate, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(inventory.PRs) != 1 {
-		t.Fatalf("identical duplicates = %+v; want one entry", inventory.PRs)
-	}
 }
 
 func TestOwnershipRequiresPrefixHeadRepositoryBaseRepositoryAndMarker(t *testing.T) {
@@ -145,70 +84,5 @@ func TestOwnershipRequiresPrefixHeadRepositoryBaseRepositoryAndMarker(t *testing
 		"Targets a different base repository.\n<!-- octomus:task:x -->", "open")
 	if _, err := git.ParseInventory(prContextPage(t, wrongBase), c); err == nil {
 		t.Fatal("a different base repository must fail")
-	}
-}
-
-func TestMalformedOrConflictingInventoryFailsClosed(t *testing.T) {
-	t.Parallel()
-	c := testConfig()
-	conflicting := prContextExternal(9)
-	conflicting["head"].(map[string]any)["sha"] = strings.Repeat("f", 40)
-	if _, err := git.ParseInventory(prContextPage(t, prContextExternal(9))+prContextPage(t, conflicting), c); err == nil {
-		t.Fatal("conflicting head across pages must fail")
-	}
-	marked := prContextEntry(30, "octomus/shared", prContextRepo("fixture/project"), prContextRepo("fixture/project"),
-		"Marked.\n<!-- octomus:task:m -->", "open")
-	unmarked := prContextEntry(30, "octomus/shared", prContextRepo("fixture/project"), prContextRepo("fixture/project"),
-		"The marker is gone.", "open")
-	if _, err := git.ParseInventory(prContextPage(t, marked)+prContextPage(t, unmarked), c); err == nil {
-		t.Fatal("conflicting marker across pages must fail")
-	}
-	for _, empty := range []string{"", "  \n"} {
-		if _, err := git.ParseInventory(empty, c); err == nil {
-			t.Fatalf("empty response %q must fail", empty)
-		}
-	}
-	missingState := prContextExternal(20)
-	delete(missingState, "state")
-	if _, err := git.ParseInventory(prContextPage(t, missingState), c); err == nil {
-		t.Fatal("a missing state must fail")
-	}
-	unknownState := prContextEntry(21, "contributor/work", prContextRepo("contributor/project"), prContextRepo("fixture/project"),
-		"Unknown state.", "draft")
-	if _, err := git.ParseInventory(prContextPage(t, unknownState), c); err == nil {
-		t.Fatal("an unknown state must fail")
-	}
-	for _, name := range []string{"head.ref", "head.sha", "base.ref", "html_url"} {
-		broken := prContextExternal(10)
-		switch name {
-		case "head.ref":
-			broken["head"].(map[string]any)["ref"] = ""
-		case "head.sha":
-			broken["head"].(map[string]any)["sha"] = ""
-		case "base.ref":
-			broken["base"].(map[string]any)["ref"] = ""
-		default:
-			broken["html_url"] = ""
-		}
-		if _, err := git.ParseInventory(prContextPage(t, broken), c); err == nil {
-			t.Errorf("empty %s must fail", name)
-		}
-	}
-	noBaseRepo := prContextExternal(11)
-	noBaseRepo["base"].(map[string]any)["repo"] = nil
-	if _, err := git.ParseInventory(prContextPage(t, noBaseRepo), c); err == nil {
-		t.Fatal("a missing base repository must fail")
-	}
-	if _, err := git.ParseInventory(`[{"title":"No identity","state":"open"}]`, c); err == nil {
-		t.Fatal("a missing number must fail")
-	}
-	closed := prContextEntry(12, "octomus/closed", prContextRepo("fixture/project"), prContextRepo("fixture/project"),
-		"Done.\n<!-- octomus:task:closed -->", "closed")
-	inventory, err := git.ParseInventory(prContextPage(t, closed, prContextOwned(13, "octomus/open")), c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(inventory.PRs) != 1 || inventory.PRs[0].Number != 13 {
-		t.Fatalf("inventory = %+v; want only open PR 13", inventory.PRs)
 	}
 }

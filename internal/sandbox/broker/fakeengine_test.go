@@ -2,7 +2,6 @@ package broker
 
 import (
 	"bufio"
-	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
@@ -162,13 +160,6 @@ func (e *fakeEngine) Remaining() []string {
 	return names
 }
 
-// Deletes lists the query of every removal request.
-func (e *fakeEngine) Deletes() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return slices.Clone(e.deletes)
-}
-
 // WaitCreated waits for the nth container (from 1) to be attached and started.
 func (e *fakeEngine) WaitCreated(t *testing.T, n int) *fakeContainer {
 	t.Helper()
@@ -189,9 +180,6 @@ func (e *fakeEngine) WaitCreated(t *testing.T, n int) *fakeContainer {
 
 // Stdout writes one multiplexed stdout frame to the container's attach stream.
 func (c *fakeContainer) Stdout(data string) { c.frame(1, data) }
-
-// Stderr writes one multiplexed stderr frame to the container's attach stream.
-func (c *fakeContainer) Stderr(data string) { c.frame(2, data) }
 
 func (c *fakeContainer) frame(stream byte, data string) {
 	<-c.attached
@@ -458,29 +446,4 @@ func defaultRun(c *fakeContainer) {
 		c.Stdout(`{"codex":"codex-fake ` + c.Spec.Image + `","opencode":"opencode-fake"}`)
 	}
 	c.End(0)
-}
-
-// serve runs b on a unix socket until the test ends and returns a client for it.
-func serve(t *testing.T, b *Broker) *sandbox.Remote {
-	t.Helper()
-	return sandbox.NewRemote(serveSocket(t, b))
-}
-
-// serveSocket runs b on a unix socket until the test ends and returns the socket, for tests that need more than one
-// client.
-func serveSocket(t *testing.T, b *Broker) string {
-	t.Helper()
-	listener, socket := testutil.ListenUnix(t, "sandboxd.sock")
-	ctx, cancel := context.WithCancel(context.Background())
-	served := make(chan error, 1)
-	go func() { served <- b.Serve(ctx, listener) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-served:
-		case <-time.After(30 * time.Second):
-			t.Error("broker did not shut down")
-		}
-	})
-	return socket
 }

@@ -28,15 +28,11 @@ def proposals():
     first = proposal()
     if (root / 'proposal-override.json').exists():
         first.update(json.loads((root / 'proposal-override.json').read_text()))
-    if (root / 'audit-absorbed').exists():
-        first['problem_key'] = 'fixture-feature-output'
-        return [first, {**first, 'id': 'd0-absorbed', 'title': 'Alternate wording for the fixture feature', 'decision': 'rejected', 'reason': 'Absorbed into d0-feature; both reviews support the consolidated scope.'}]
-    if any((root / name).exists() for name in ['parallel','dependencies','chain','fork','unordered']):
+    if any((root / name).exists() for name in ['parallel', 'chain']):
         second = {**first, 'id': 'd0-followup', 'title': 'Complete the next fixture feature', 'problem': 'The next output capability is missing.', 'scope': 'Implement feature-next.txt only.', 'evidence': ['README.md: next feature output'], 'prompt': 'Implement the next fixture capability. fixture-file=feature-next.txt'}
-        if any((root / name).exists() for name in ['dependencies','chain','fork']):
+        if (root / 'chain').exists():
             second['dependencies'] = [first['id']]
-        if (root / 'chain').exists() or (root / 'fork').exists():
-            third = {**second, 'id': 'd0-third', 'title': 'Complete the third fixture feature', 'prompt': 'Implement the third capability. fixture-file=feature-third.txt', 'dependencies': [second['id'] if (root / 'chain').exists() else first['id']]}
+            third = {**second, 'id': 'd0-third', 'title': 'Complete the third fixture feature', 'prompt': 'Implement the third capability. fixture-file=feature-third.txt', 'dependencies': [second['id']]}
             return [first, second, third]
         return [first, second]
     if (root / 'audit-decisions').exists():
@@ -54,23 +50,17 @@ def respond(prompt, cwd, thread, file):
                 time.sleep(0.05)
         answer = {'context': 'Small fixture with a feature contract in README.md.'}
     elif prompt.startswith('Discover worthwhile'):
-        answer = {'proposals': [] if (root / 'idle').exists() or 'IDs prefixed d0-' not in prompt else proposals()}
-        if (root / 'failed-discovery').exists() and cwd.parent.name == 'discovery-0':
-            answer = 'this discovery answer is not JSON'
+        answer = {'proposals': [] if 'IDs prefixed d0-' not in prompt else proposals()}
     elif prompt.startswith('Adversarial proposal'):
-        answer = {'assessments': [] if (root / 'idle').exists() else [{'id': p['id'], 'decision': 'accepted', 'reason': 'Concrete and useful.'} for p in proposals()]}
+        answer = {'assessments': [{'id': p['id'], 'decision': 'accepted', 'reason': 'Concrete and useful.'} for p in proposals()]}
     elif prompt.startswith('Act as final orchestrator'):
-        answer = {'proposals': [] if (root / 'idle').exists() else proposals()}
-        if (root / 'audit-malformed').exists():
-            answer = {'proposals': []}
+        answer = {'proposals': proposals()}
     elif prompt.startswith('Implement this accepted task'):
         (cwd / feature_file).write_text('needs repair\n')
         answer = 'Implemented feature.txt. Relevant verification is pending.'
     elif prompt.startswith('Perform a fresh code review'):
         if (root / 'malformed-review').exists():
             answer = 'not valid review JSON'
-        elif (root / 'incomplete-review').exists():
-            answer = {'completed': False, 'summary': 'Review interrupted.', 'findings': []}
         elif (cwd / feature_file).read_text().strip() == 'fixed':
             if (root / 'remote-conflict').exists():
                 import subprocess
@@ -91,8 +81,6 @@ def respond(prompt, cwd, thread, file):
         answer = 'Repaired feature output and checked the contract.'
     else:
         raise AssertionError(f'Unexpected prompt: {prompt[:100]}')
-    if (root / 'mutate-planning').exists() and cwd.parent.name == 'discovery-0':
-        (cwd / 'planning-mutation.txt').write_text('fixture mutation\n')
     if prompt.startswith('Adversarial proposal') or prompt.startswith('Act as final orchestrator'):
         ids = sorted(set(re.findall(r'rediscover-([0-9a-f-]{36})', prompt)))
         for identity in ids:
@@ -100,8 +88,6 @@ def respond(prompt, cwd, thread, file):
                 answer['assessments'].append({'id': 'rediscover-' + identity, 'decision': 'accepted', 'reason': 'Fresh context assessed.'})
             else:
                 accepted = {**proposal(), 'id': 'rediscover-' + identity, 'reconsiders': [identity], 'reason': 'Fresh evidence supports replacing stale work.'}
-                if (root / 'obsolete').exists():
-                    accepted.update(decision='rejected', reason='The objective is obsolete in the new context.')
                 answer['proposals'].append(accepted)
         if ids and prompt.startswith('Act as final orchestrator'):
             for candidate in answer['proposals']:

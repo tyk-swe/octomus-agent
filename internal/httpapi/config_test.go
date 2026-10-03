@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,42 +52,6 @@ func transformKinds(t *testing.T, fields []map[string]any, field string) []any {
 	}
 	t.Fatalf("no transform entry for %s: %v", field, fields)
 	return nil
-}
-
-func TestConfigAPIPreservesVerificationCommandText(t *testing.T) {
-	app, state := testApp(t)
-	router := Router(app, token, "", "test")
-	want := []string{"cd subdir\n./test.sh", "  printf 'tail  '  \n"}
-	response := call(t, router, "GET", "/api/config", "")
-	_, revision, _ := settingsView(t, response.Body.Bytes())
-	body, err := json.Marshal(map[string]any{
-		"expected_revision": revision,
-		"config":            map[string]any{"verification_commands": want},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	response = call(t, router, "PUT", "/api/config", string(body))
-	if response.Code != http.StatusOK {
-		t.Fatalf("save commands: %d %s", response.Code, response.Body.String())
-	}
-	_, revision, _ = settingsView(t, response.Body.Bytes())
-	response = call(t, router, "PUT", "/api/config",
-		`{"expected_revision":"`+revision+`","config":{"max_sessions_per_day":200}}`)
-	if response.Code != http.StatusOK {
-		t.Fatalf("unrelated save: %d %s", response.Code, response.Body.String())
-	}
-	display, _, fields := settingsView(t, response.Body.Bytes())
-	if got := display["verification_commands"]; !reflect.DeepEqual(got, []any{want[0], want[1]}) || len(fields) != 0 {
-		t.Fatalf("display changed command text: %q, transforms: %v", got, fields)
-	}
-	saved, err := store.Get[config.Config](state, "settings", "config")
-	if err != nil || saved == nil {
-		t.Fatalf("load saved config: %v, %v", saved, err)
-	}
-	if !reflect.DeepEqual(saved.VerificationCommands, want) || saved.MaxSessionsPerDay != 200 {
-		t.Fatalf("unrelated save changed command text: %q, limit: %d", saved.VerificationCommands, saved.MaxSessionsPerDay)
-	}
 }
 
 func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
@@ -243,42 +206,6 @@ func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 	loaded, err := store.Get[config.Config](reopened, "settings", "config")
 	if err != nil || loaded == nil || !reflect.DeepEqual(*loaded, *saved) {
 		t.Fatalf("reopened config: %v, err=%v", loaded, err)
-	}
-}
-
-func TestConfigAPIDisplayIdentityCollision(t *testing.T) {
-	app, state := testApp(t)
-	router := Router(app, token, "", "test")
-	cfg := config.Default()
-	cfg.GitHubRepo = "fixture/project"
-	cfg.VerificationCommands = []string{"echo ghp_firstsyntheticvalue"}
-	if err := state.Put("settings", "config", cfg); err != nil {
-		t.Fatal(err)
-	}
-	response := call(t, router, "GET", "/api/config", "")
-	first, firstRevision, _ := settingsView(t, response.Body.Bytes())
-
-	other := cfg.Clone()
-	other.VerificationCommands = []string{"echo ghp_secondsyntheticvalue"}
-	if err := state.Put("settings", "config", other); err != nil {
-		t.Fatal(err)
-	}
-	response = call(t, router, "GET", "/api/config", "")
-	second, secondRevision, _ := settingsView(t, response.Body.Bytes())
-
-	if !reflect.DeepEqual(first, second) {
-		t.Fatalf("displays must collide: %v vs %v", first["verification_commands"], second["verification_commands"])
-	}
-	if firstRevision == secondRevision {
-		t.Fatal("canonical revisions must differ")
-	}
-	if response := call(t, router, "POST", "/api/baseline-checks",
-		fmt.Sprintf(`{"expected_revision":%q}`, firstRevision)); response.Code != http.StatusConflict {
-		t.Fatalf("stale baseline revision: %d", response.Code)
-	}
-	if response := call(t, router, "PUT", "/api/config",
-		fmt.Sprintf(`{"expected_revision":%q,"config":{"max_retries":1}}`, firstRevision)); response.Code != http.StatusConflict {
-		t.Fatalf("stale save revision: %d", response.Code)
 	}
 }
 

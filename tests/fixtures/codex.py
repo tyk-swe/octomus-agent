@@ -2,8 +2,6 @@
 """Deterministic app-server peer. No model calls or credentials required."""
 import json
 import os
-import select
-import subprocess
 from pathlib import Path
 import sys
 import uuid
@@ -20,11 +18,6 @@ threads = root / 'threads'
 threads.mkdir(exist_ok=True)
 def mode():
     return worker_mode('codex')
-
-if mode() == 'init-failure':
-    sys.stdin.readline()
-    print('fixture init failure token=ghp_fixtureStartupSecret0001', file=sys.stderr, flush=True)
-    sys.exit(2)
 
 def emit(value):
     print(json.dumps(value), flush=True)
@@ -53,26 +46,12 @@ for line in sys.stdin:
         continue
     if method == 'account/read':
         result = {'account': None, 'requiresOpenaiAuth': True} if mode() == 'no-auth' else {'account': {'type': 'apiKey'}, 'requiresOpenaiAuth': True}
-    elif method == 'model/list' and mode() == 'paged':
-        pages = {None: (['gpt-6-astra'], '1'), '1': (['gpt-5.6-luna'], '2'), '2': ([], None)}
-        names, following = pages[params.get('cursor')]
-        result = {'data': [{'model': m, 'displayName': m, 'supportedReasoningEfforts': [{'reasoningEffort': 'medium'}]} for m in names], 'nextCursor': following}
-    elif method == 'model/list' and mode() == 'empty-pages':
-        result = {'data': [], 'nextCursor': 'x'}
     elif method == 'model/list':
         result = {'data': [{'model': m, 'displayName': m, 'supportedReasoningEfforts': [{'reasoningEffort': e} for e in ['low', 'medium', 'high', 'xhigh', 'max']]} for m in ['gpt-6-astra', 'gpt-5.6-luna']], 'nextCursor': None}
     elif method in ['thread/start', 'thread/resume']:
-        if mode() == 'exit-on-start':
-            os._exit(37)
-        executor_start_failed = (root / 'failed-executor-start').exists() and method == 'thread/start' and Path(params['cwd']).parent.parent == root / '.octomus/tasks'
-        if (root / 'failed-start').exists() or executor_start_failed:
-            emit({'id': request['id'], 'error': {'code': -32000, 'message': 'Fixture failed start'}})
-            continue
         identity = params.get('threadId') or str(uuid.uuid4())
-        if mode() == 'wrong-thread' and method == 'thread/resume':
-            identity = str(uuid.uuid4())
         file = threads / f'{identity}.json'
-        thread = json.loads(file.read_text()) if file.exists() else {'repairs': 0, 'turn_started': mode() == 'wrong-thread'}
+        thread = json.loads(file.read_text()) if file.exists() else {'repairs': 0, 'turn_started': False}
         if method == 'thread/resume' and not thread.get('turn_started'):
             emit({'id': request['id'], 'error': {'code': -32600, 'message': f'no rollout found for thread id {identity}'}})
             continue
@@ -87,7 +66,7 @@ for line in sys.stdin:
         thread['turn_started'] = True
         file.write_text(json.dumps(thread))
         prompt = params['input'][0]['text']
-        if ((root / 'interactive').exists() and prompt.startswith('Implement this accepted')) or ((root / 'interactive-repair').exists() and prompt.startswith('Repair actionable')):
+        if (root / 'interactive').exists() and prompt.startswith('Implement this accepted'):
             emit({'id': 'interactive-1', 'method': 'item/tool/requestUserInput', 'params': {'threadId': identity}})
             reply = json.loads(next(sys.stdin))
             assert reply['id'] == 'interactive-1' and 'error' in reply
@@ -96,37 +75,6 @@ for line in sys.stdin:
         turn = str(uuid.uuid4())
         with (root / 'protocol.jsonl').open('a') as log:
             log.write(json.dumps({'thread': identity, 'prompt': prompt, 'cwd': str(cwd), 'model': params['model'], 'effort': params['effort'], 'sandbox': params['sandboxPolicy'], 'approval': params['approvalPolicy']}) + '\n')
-        if mode() == 'hold-start':
-            child = subprocess.Popen(['sleep', '120'])
-            (root / 'codex-held-pids.json').write_text(json.dumps([os.getpid(), child.pid]))
-            (root / 'codex-entered').touch()
-            while True:
-                emit({'method': 'thread/status/changed', 'params': {'threadId': identity}})
-                ready, _, _ = select.select([sys.stdin], [], [], 0.1)
-                if ready and not sys.stdin.readline():
-                    sys.exit(0)
-        if mode() == 'hold':
-            emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
-            emit({'method': 'item/completed', 'params': {'threadId': identity, 'turnId': turn, 'item': {'type': 'agentMessage', 'phase': 'commentary', 'text': 'Fixture holding turn.'}}})
-            (root / 'codex-entered').touch()
-            stopped = False
-            while mode() == 'hold':
-                ready, _, _ = select.select([sys.stdin], [], [], 0.05)
-                if not ready:
-                    continue
-                line = sys.stdin.readline()
-                if not line:
-                    sys.exit(0)
-                held = json.loads(line)
-                if held.get('method') == 'turn/interrupt':
-                    interrupted(held)
-                    stopped = True
-                    break
-            if stopped:
-                continue
-            emit({'method': 'item/completed', 'params': {'threadId': identity, 'turnId': turn, 'item': {'type': 'agentMessage', 'phase': 'final_answer', 'text': 'Fixture completed. ✓'}}})
-            emit({'method': 'turn/completed', 'params': {'threadId': identity, 'turn': {'id': turn, 'status': 'completed', 'error': None}}})
-            continue
         if mode() == 'bad-structured' and 'outputSchema' in params:
             text = 'not json at all'
         else:
@@ -134,30 +82,6 @@ for line in sys.stdin:
             text = answer if isinstance(answer, str) else json.dumps(answer)
         completed_item = {'method': 'item/completed', 'params': {'threadId': identity, 'turnId': turn, 'item': {'type': 'agentMessage', 'phase': 'final_answer', 'text': text}}}
         completed_turn = {'method': 'turn/completed', 'params': {'threadId': identity, 'turn': {'id': turn, 'status': 'completed', 'error': None}}}
-        if mode() == 'disconnect':
-            emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
-            sys.exit(0)
-        if mode() == 'missing-completion':
-            emit(completed_item)
-            emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
-            continue
-        if mode() == 'duplicate':
-            emit(completed_item)
-            emit(completed_item)
-            emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
-            emit(completed_turn)
-            emit(completed_turn)
-            continue
-        if mode() == 'stale':
-            emit({'method': 'item/completed', 'params': {'threadId': identity, 'turnId': 'stale-turn', 'item': {'type': 'agentMessage', 'phase': 'final_answer', 'text': 'stale answer'}}})
-            emit({'method': 'turn/completed', 'params': {'threadId': identity, 'turn': {'id': str(uuid.uuid4()), 'status': 'completed', 'error': None}}})
-        if mode() == 'interleaved':
-            emit({'method': 'item/completed', 'params': {'threadId': str(uuid.uuid4()), 'turnId': 'unrelated', 'item': {'type': 'agentMessage', 'phase': 'final_answer', 'text': 'unrelated'}}})
-            emit(completed_item)
-            emit({'method': 'turn/completed', 'params': {'threadId': str(uuid.uuid4()), 'turn': {'id': turn, 'status': 'completed', 'error': None}}})
-            emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
-            emit(completed_turn)
-            continue
         emit(completed_item)
         emit({'id': request['id'], 'result': {'turn': {'id': turn}}})
         emit(completed_turn)

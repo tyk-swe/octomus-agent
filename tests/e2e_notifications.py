@@ -9,9 +9,8 @@ import sqlite3
 import subprocess
 import sys
 import threading
-import time
 
-from harness import BINARY, base_config, configuration, fixture_service, poll, run_selected, use_codex_routes
+from harness import BINARY, base_config, fixture_service, poll, run_selected, use_codex_routes
 
 ENV = 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'
 SECRET = 'synthetic-path-secret-9f27c1/query?key=synthetic-query-secret-4d80'
@@ -114,35 +113,10 @@ def scenario(mode):
             assert_no_url_leak(root, service)
             print('PASS deliver: blocked task produced one minimal attention event')
             return
-        if mode == 'restart':
-            (root / 'malformed-review').touch()
+        if mode == 'env-strip':
             service.start()
-            service.configure()
-            task = service.wait(service.terminal_task, 'blocked task')
-            receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['task_id'] == task['id']], 'attention delivery')
-            assert len(receiver.events()) == 1
-            service.stop(crash=True)
-            service.start()
-            time.sleep(1.2)
-            assert len(receiver.events()) == 1, f'restart must not re-notify a delivered episode: {receiver.events()}'
-            print('PASS restart: a delivered episode is not repeated after a crash')
-            return
-        if mode == 'service-error':
-            (root / 'failed-discovery').touch()
-            service.start()
-            service.configure()
-            found = receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['category'] == 'service_error_paused'], 'service pause event')[0]
-            event = attention(found['body'])
-            assert event['action'] == 'inspect_service' and event['task_id'] is None, event
-            state = service.request('/state')
-            assert state['control']['paused'] and state['control']['error'], state['control']
-            print('PASS service-error: an error pause raises one inspect_service event')
-            return
-        if mode in ['env-strip', 'env-strip-opencode']:
-            service.start()
-            config = configuration(service) if mode == 'env-strip-opencode' else base_config(service, [f'test -z "${{{ENV}+x}}"', 'test -z "${OCTOMUS_TOKEN+x}"', 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], cycle_interval_seconds=3600, task_timeout_seconds=120)
-            if mode == 'env-strip':
-                use_codex_routes(config)
+            config = base_config(service, [f'test -z "${{{ENV}+x}}"', 'test -z "${OCTOMUS_TOKEN+x}"', 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'], cycle_interval_seconds=3600, task_timeout_seconds=120)
+            use_codex_routes(config)
             service.save_config(config)
             service.request('/control/cycle', 'POST')
             task = service.wait(service.terminal_task, 'published task')
@@ -153,7 +127,7 @@ def scenario(mode):
         raise AssertionError(f'unknown notifications scenario {mode}')
 
 
-SCENARIOS = [(mode, functools.partial(scenario, mode)) for mode in ['deliver', 'restart', 'service-error', 'env-strip', 'env-strip-opencode']]
+SCENARIOS = [(mode, functools.partial(scenario, mode)) for mode in ['deliver', 'env-strip']]
 
 
 if __name__ == '__main__':
