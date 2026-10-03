@@ -65,6 +65,9 @@ async function configurationFixture(
     overrides: {} as Record<string, unknown>,
     transformed: [] as TransformedField[],
     reads: 0,
+    stateReads: 0,
+    failStateRead: false,
+    stateGates: [] as ReturnType<typeof deferred>[],
     writes: [] as { expected_revision: string; config: Record<string, unknown> }[],
     catalogs: [] as { backend: string; binary: string }[],
     checks: [] as string[],
@@ -95,6 +98,8 @@ async function configurationFixture(
     transformed_fields: structuredClone(state.transformed)
   });
   await page.route('**/api/state', async (route) => {
+    const gate = state.stateGates.shift();
+    const fail = state.failStateRead;
     const response = await route.fetch();
     const snapshot: Snapshot = await response.json();
     snapshot.control.paused = true;
@@ -103,7 +108,13 @@ async function configurationFixture(
     snapshot.cycle_active = false;
     snapshot.active_cycle_mode = null;
     options.snapshot?.(snapshot);
-    await route.fulfill({ json: snapshot });
+    state.stateReads++;
+    await gate?.promise;
+    await route.fulfill(
+      fail
+        ? { status: 503, json: { error: 'Synthetic dashboard read outage' } }
+        : { json: snapshot }
+    );
   });
   await page.route('**/api/config', async (route) => {
     if (route.request().method() === 'PUT') {
@@ -663,6 +674,232 @@ test('a blank runner executable is flagged on its own field before any save is s
     { opencode_binary: '/fixture/opencode-next' }
   ]);
 });
+
+for (const leaveBeforeResponse of [false, true]) {
+  test(`accepted configuration save invalidates obsolete dashboard readiness ${leaveBeforeResponse ? 'while inactive' : 'in Configuration'}`, async ({
+    page,
+    isMobile
+  }) => {
+    let configured = true;
+    const state = await configurationFixture(page, {
+      snapshot: (snapshot) => {
+        snapshot.configured = configured;
+        snapshot.audit_configured = true;
+        snapshot.baseline_active = false;
+        snapshot.planning_capacity.status = 'ready';
+      }
+    });
+    const writes = trackWrites(page);
+    const navigate = navigatorFor(page, !!isMobile);
+    await page.clock.install();
+    await login(page);
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await navigate('Configuration');
+    const commands = page.locator('#verification-commands');
+    await expect(commands).toHaveValue('fixture saved test');
+    const oldRead = deferred();
+    state.stateGates.push(oldRead);
+    const stateReads = state.stateReads;
+    await page.clock.runFor(4000);
+    await expect.poll(() => state.stateReads).toBe(stateReads + 1);
+    const saveGate = (state.saveGate = deferred());
+    const previousRevision = state.revision();
+    await commands.fill('');
+    await page.getByRole('button', { name: 'Save configuration', exact: true }).click();
+    await expect.poll(() => state.writes.length).toBe(1);
+    if (leaveBeforeResponse) await navigate('Overview');
+    configured = false;
+    state.failStateRead = true;
+    const saved = page.waitForResponse(
+      (response) => response.url().endsWith('/api/config') && response.request().method() === 'PUT'
+    );
+    saveGate.resolve();
+    await (await saved).finished();
+    try {
+      await expect(page.getByText('Configuration saved.', { exact: true })).toHaveCount(1);
+      const acceptedRevision = state.revision();
+      expect(acceptedRevision).not.toBe(previousRevision);
+      expect(state.saved!.verification_commands).toEqual([]);
+      await navigate('Overview');
+      for (const name of ['Start continuous', 'Run once', 'Run an audit'])
+        await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+      const failedRead = page.waitForResponse(
+        (response) => response.url().endsWith('/api/state') && response.status() === 503
+      );
+      oldRead.resolve();
+      await (await failedRead).finished();
+      await expect(page.getByRole('alert')).toContainText('Synthetic dashboard read outage');
+      const repeatedFailure = page.waitForResponse(
+        (response) => response.url().endsWith('/api/state') && response.status() === 503
+      );
+      await page.clock.runFor(4000);
+      await (await repeatedFailure).finished();
+      for (const name of ['Start continuous', 'Run once', 'Run an audit']) {
+        const control = page.getByRole('button', { name, exact: true });
+        await expect(control).toBeDisabled();
+        await control.dispatchEvent('click');
+      }
+      await navigate('Configuration');
+      await expect(commands).toHaveValue('');
+      await expect(commands).toBeEnabled();
+      await commands.fill('restored verification');
+      const save = page.getByRole('button', { name: 'Save configuration', exact: true });
+      await expect(save).toBeDisabled();
+      await save.dispatchEvent('click');
+      expect(state.writes).toHaveLength(1);
+      state.failStateRead = false;
+      const freshRead = page.waitForResponse(
+        (response) => response.url().endsWith('/api/state') && response.status() === 200
+      );
+      await page.clock.runFor(4000);
+      await (await freshRead).finished();
+      await expect(save).toBeEnabled();
+      await navigate('Overview');
+      await expect(
+        page.getByRole('button', { name: 'Start continuous', exact: true })
+      ).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Run once', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Run an audit', exact: true })).toBeEnabled();
+      await navigate('Configuration');
+      configured = true;
+      await save.click();
+      await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+      expect(state.writes).toEqual([
+        { expected_revision: previousRevision, config: { verification_commands: [] } },
+        {
+          expected_revision: acceptedRevision,
+          config: { verification_commands: ['restored verification'] }
+        }
+      ]);
+      await navigate('Overview');
+      for (const name of ['Start continuous', 'Run once', 'Run an audit'])
+        await expect(page.getByRole('button', { name, exact: true })).toBeEnabled();
+      expect(writes.map((write) => write.path)).toEqual(['/api/config', '/api/config']);
+    } finally {
+      saveGate.resolve();
+      oldRead.resolve();
+    }
+  });
+}
+
+for (const stateRead of ['held', 'failed'] as const) {
+  for (const baselineRead of ['held', 'failed'] as const) {
+    test(`accepted configuration save gates baseline admission with ${stateRead} state and ${baselineRead} baseline reads`, async ({
+      page,
+      isMobile
+    }) => {
+      const state = await configurationFixture(page);
+      const navigate = navigatorFor(page, !!isMobile);
+      await page.clock.install();
+      await login(page);
+      await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+      await navigate('Configuration');
+      const baseline = page.locator('#check-baseline');
+      await expect(baseline).toBeEnabled();
+      const stateGate = deferred();
+      const baselineGate = deferred();
+      let baselineReads = 0;
+      let failBaselineRead = baselineRead === 'failed';
+      let holdBaseline = true;
+      await page.route('**/api/baseline-checks/latest', async (route) => {
+        baselineReads++;
+        const fail = failBaselineRead;
+        if (holdBaseline) await baselineGate.promise;
+        await route.fulfill(
+          fail
+            ? { status: 503, json: { error: 'Synthetic baseline status outage' } }
+            : { json: state.baselineView }
+        );
+      });
+      const reads = state.stateReads;
+      state.stateGates.push(stateGate);
+      state.failStateRead = stateRead === 'failed';
+      const branch = page.getByLabel('Default branch', { exact: true });
+      const commands = page.locator('#verification-commands');
+      await branch.fill('accepted-baseline-main');
+      await page.getByRole('button', { name: 'Save configuration', exact: true }).click();
+      await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+      await expect.poll(() => state.stateReads).toBe(reads + 1);
+      await expect.poll(() => baselineReads).toBe(1);
+      const acceptedRevision = state.revision();
+      try {
+        if (stateRead === 'failed') {
+          stateGate.resolve();
+          await expect(page.getByRole('alert')).toContainText('Synthetic dashboard read outage');
+        }
+        if (baselineRead === 'failed') {
+          baselineGate.resolve();
+          await expect(
+            page.getByText('Synthetic baseline status outage', { exact: true })
+          ).toBeVisible();
+        }
+        const waiting = page.getByText(
+          'Waiting for current service activity before checking the baseline.',
+          { exact: true }
+        );
+        await expect(waiting).toBeVisible();
+        await expect(baseline).toBeDisabled();
+        await baseline.dispatchEvent('click');
+        await expect(page.getByRole('alertdialog', { name: 'Confirm baseline check' })).toHaveCount(
+          0
+        );
+        expect(state.baselines).toHaveLength(0);
+        await expect(commands).toBeEnabled();
+        await commands.fill('draft while service state is pending');
+        await expect(
+          page.getByRole('button', { name: 'Save configuration', exact: true })
+        ).toBeDisabled();
+        await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
+        await expect(branch).toHaveValue('accepted-baseline-main');
+        await navigate('Overview');
+        await navigate('Configuration');
+        await expect(baseline).toBeDisabled();
+
+        // Even a fresh eligible baseline read cannot clear root-owned pending activity.
+        failBaselineRead = false;
+        holdBaseline = false;
+        baselineGate.resolve();
+        state.baselineView.config_revision = acceptedRevision;
+        const baselineRefresh = page.waitForResponse(
+          (response) =>
+            response.url().endsWith('/api/baseline-checks/latest') && response.status() === 200
+        );
+        const failedStateRefresh =
+          stateRead === 'failed'
+            ? page.waitForResponse(
+                (response) => response.url().endsWith('/api/state') && response.status() === 503
+              )
+            : null;
+        await page.clock.runFor(4000);
+        await (await baselineRefresh).finished();
+        if (failedStateRefresh) await (await failedStateRefresh).finished();
+        await expect(baseline).toBeDisabled();
+        await expect(waiting).toBeVisible();
+        expect(state.baselines).toHaveLength(0);
+
+        state.failStateRead = false;
+        const refreshed = page.waitForResponse(
+          (response) => response.url().endsWith('/api/state') && response.status() === 200
+        );
+        if (stateRead === 'held') stateGate.resolve();
+        else await page.clock.runFor(4000);
+        await (await refreshed).finished();
+        await expect(baseline).toBeEnabled();
+        await expect(waiting).toHaveCount(0);
+        await baseline.click();
+        await page.getByRole('button', { name: 'Run baseline check', exact: true }).click();
+        await expect.poll(() => state.baselines.length).toBe(1);
+        expect(state.baselines[0]).toEqual({ expected_revision: acceptedRevision });
+        await expect(
+          page.getByRole('button', { name: 'Cancel baseline check', exact: true })
+        ).toBeEnabled();
+      } finally {
+        stateGate.resolve();
+        baselineGate.resolve();
+      }
+    });
+  }
+}
 
 test('a revision conflict offers to discard the draft and reload the saved configuration in place', async ({
   page,

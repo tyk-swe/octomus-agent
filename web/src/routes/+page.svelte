@@ -513,6 +513,21 @@
     })();
     return refreshRequest;
   }
+  function baselineChanged() {
+    controlGeneration++;
+    controlStatePending = true;
+    // Accepted start/cancel owns baseline activity until a fresh state read
+    // confirms the worker has finished, even when its panel is hidden.
+    if (data) data.baseline_active = true;
+    void refresh();
+  }
+  function configSaved() {
+    // Readiness belongs to the newly saved configuration; an earlier poll
+    // cannot confirm which work can start with it.
+    controlGeneration++;
+    controlStatePending = true;
+    void refresh();
+  }
   async function login() {
     busy = true;
     error = '';
@@ -1108,7 +1123,8 @@
                 !data.cycle_active &&
                 !data.baseline_active}
               status={setupStatus}
-              onsaved={refresh}
+              onsaved={configSaved}
+              onbaselinechanged={baselineChanged}
               onchoose={chooseOnOverview}
             />
           </div>{/if}
