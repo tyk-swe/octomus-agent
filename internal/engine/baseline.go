@@ -104,6 +104,8 @@ func (a *App) mergeDefaultObservationLocked(cfg config.Config, revision, observe
 	a.runtime.defaultObservation = &model.DefaultBranchObservation{
 		Repository: cfg.GitHubRepo, DefaultBranch: cfg.DefaultBranch, Revision: revision, ObservedAt: observedAt,
 	}
+	// An empty revision records a successful read of a missing branch. Keep its
+	// timestamp so an older in-flight read cannot restore the previous revision.
 	return nil
 }
 
@@ -253,7 +255,7 @@ func (a *App) baselineRevisionStatus(check *model.BaselineCheck, live config.Con
 	a.runtimeMu.Lock()
 	observation := a.runtime.defaultObservation
 	a.runtimeMu.Unlock()
-	if observation == nil {
+	if observation == nil || observation.Revision == "" {
 		return "unknown"
 	}
 	fresh := false
@@ -304,7 +306,7 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 	a.runtimeMu.Lock()
 	observation := a.runtime.defaultObservation
 	a.runtimeMu.Unlock()
-	if observation != nil && !observation.Describes(live) {
+	if observation != nil && (observation.Revision == "" || !observation.Describes(live)) {
 		observation = nil
 	}
 	var reasonValue any
@@ -492,6 +494,9 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		return model.BaselineStatusRunning, err
 	}
 	if revision == nil {
+		if err := a.observeDefaultBranch(c, "", observedAt); err != nil {
+			return model.BaselineStatusRunning, err
+		}
 		return model.BaselineStatusRunning, errors.New("Default branch missing on remote")
 	}
 	check.Revision = revision

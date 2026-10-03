@@ -485,10 +485,8 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if !live.SameRemoteIdentity(cfg) {
 		return nil
 	}
-	if revisionValue != "" {
-		if err := a.mergeDefaultObservationLocked(cfg, revisionValue, observedAt); err != nil {
-			return err
-		}
+	if err := a.mergeDefaultObservationLocked(cfg, revisionValue, observedAt); err != nil {
+		return err
 	}
 	for _, pr := range closed {
 		if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
