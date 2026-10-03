@@ -19,7 +19,18 @@ printf '%s\\n' "$*" >> "$FIXTURE_DOCKER_LOG"
 case "$*" in
   'compose version') exit 0 ;;
   'version --format {{.Server.Version}}') printf '28.0.0\\n' ;;
-  'compose build octomus sandbox-image'|run*) exit 0 ;;
+  'compose build octomus sandbox-image') exit 0 ;;
+  'compose config --images octomus')
+    image=${FIXTURE_BUILT_IMAGE:-octomus-agent:local}
+    printf '%s\\n' "$image" "$image" "$image" ;;
+  run*)
+    if [ -n "${FIXTURE_BUILT_IMAGE:-}" ]; then
+      case " $* " in
+        *" $FIXTURE_BUILT_IMAGE 10001:10001 "*) ;;
+        *) echo 'requested image was not built' >&2; exit 125 ;;
+      esac
+    fi
+    exit 0 ;;
   'compose up -d') exit "${FIXTURE_UP_STATUS:-0}" ;;
   *) exit 1 ;;
 esac
@@ -137,6 +148,30 @@ def setup_tunnel_uses_the_published_port():
         assert 'ssh -N -L 4200:127.0.0.1:4400 ' in result.stdout, result.stdout
 
 
+SETUP_IMAGE_CASES = [
+    ('', {}, 'octomus-agent:local'),
+    ('OCTOMUS_IMAGE=fixture/from-file:tag\n', {}, 'fixture/from-file:tag'),
+    ('OCTOMUS_IMAGE="fixture/quoted:tag"\n', {}, 'fixture/quoted:tag'),
+    ('OCTOMUS_IMAGE=fixture/from-file:tag\n', {'OCTOMUS_IMAGE': 'fixture/from-shell:tag'}, 'fixture/from-shell:tag'),
+    ('OCTOMUS_IMAGE=fixture/from-file:tag\n', {'OCTOMUS_IMAGE': ''}, 'octomus-agent:local'),
+]
+
+
+def setup_uses_the_built_control_plane_image():
+    failures = []
+    for image_setting, environment, expected in SETUP_IMAGE_CASES:
+        with tempfile.TemporaryDirectory(prefix='octomus-setup-image-') as directory:
+            s = Setup(Path(directory), env_file='OCTOMUS_GITHUB_REPO=fixture/repo\n' + image_setting)
+            s.secret('operator_token', 'fixture-operator-token')
+            s.secret('github_token', 'fixture-github-token')
+            result = s.run(FIXTURE_OPERATOR_UID='1000', FIXTURE_BUILT_IMAGE=expected, **environment)
+            if result.returncode != 0:
+                failures.append((image_setting, environment, result.stderr, s.calls()))
+            else:
+                assert 'compose up -d' in s.calls(), s.calls()
+    assert not failures, failures
+
+
 def render(env_file):
     """The compose file as Compose resolves it with this .env, every profile enabled."""
     with tempfile.TemporaryDirectory(prefix='octomus-compose-') as directory:
@@ -178,6 +213,18 @@ def compose_contract():
     if not available:
         print('SKIP compose contract: docker compose is not installed')
         return False
+    # The image query includes dependencies; every returned name must be the
+    # same resolved control-plane image used by the setup helper.
+    for image_setting, environment, expected in SETUP_IMAGE_CASES:
+        with tempfile.TemporaryDirectory(prefix='octomus-compose-image-') as directory:
+            path = Path(directory) / '.env'
+            path.write_text('OCTOMUS_GITHUB_REPO=fixture/repo\nDOCKER_GID=1000\n' + image_setting)
+            env = {key: value for key, value in os.environ.items() if not key.startswith(('OCTOMUS_', 'DOCKER_GID'))}
+            env.update(environment)
+            result = subprocess.run(['docker', 'compose', '-f', str(COMPOSE), '--env-file', str(path),
+                                     'config', '--images', 'octomus'], env=env, capture_output=True, text=True, timeout=60)
+            assert result.returncode == 0, result.stderr
+            assert set(result.stdout.splitlines()) == {expected}, (expected, result.stdout)
     example = (PROJECT / 'deploy/docker/env.example').read_text()
     required = 'OCTOMUS_GITHUB_REPO=owner/repository\nDOCKER_GID=999\n'
     config = render(example + required)
@@ -242,7 +289,8 @@ def main():
     setup_keeps_a_new_token_when_startup_fails()
     setup_asks_for_github_first_and_restores_echo()
     setup_tunnel_uses_the_published_port()
-    checked = 'secret ownership, token display, terminal echo, tunnel port'
+    setup_uses_the_built_control_plane_image()
+    checked = 'secret ownership, token display, terminal echo, tunnel port, resolved control-plane image'
     if compose_contract():
         checked += ' and the compose contract'
     print(f'PASS Docker setup: {checked}')

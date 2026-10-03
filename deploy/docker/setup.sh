@@ -72,8 +72,15 @@ fi
 docker compose build octomus sandbox-image
 # The control plane runs as uid 10001 and reads its secrets as files; hand them over without widening their mode.
 if [ "$(stat -c %u secrets/operator_token)" != 10001 ] || [ "$(stat -c %u secrets/github_token)" != 10001 ]; then
-  image=$(sed -n 's/^OCTOMUS_IMAGE=//p' .env)
-  docker run --rm --network none --user 0 --entrypoint chown -v "$PWD/secrets:/secrets" "${image:-octomus-agent:local}" \
+  # Compose applies shell overrides and .env quoting. The selected service and
+  # its dependencies all use the control-plane image, so remove duplicate names.
+  images=$(docker compose config --images octomus)
+  image=$(printf '%s\n' "$images" | sort -u)
+  case "$image" in
+    ''|*'
+'*) fail 'Expected one control-plane image from Docker Compose';;
+  esac
+  docker run --rm --network none --user 0 --entrypoint chown -v "$PWD/secrets:/secrets" "$image" \
     10001:10001 /secrets/operator_token /secrets/github_token
 fi
 docker compose up -d
