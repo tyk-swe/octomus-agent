@@ -145,6 +145,11 @@ func (s *Store) NotificationHealth() (NotificationHealth, error) {
 	if health.LastError == nil {
 		health.LastError = lastError
 	}
+	// Local failures can replace an earlier delivery error without another HTTP
+	// response. Only display a response status alongside its own HTTP error.
+	if policyError != nil || lastError == nil || *lastError != "http_status" {
+		health.LastHTTPStatus = nil
+	}
 	return health, nil
 }
 
