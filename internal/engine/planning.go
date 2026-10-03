@@ -576,8 +576,13 @@ func checkConsolidation(candidates, returned []model.Proposal) error {
 	return nil
 }
 
-func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, label, role, prompt string, schema schemas.Schema) roleOutcome {
-	outcome := roleOutcome{}
+func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, label, role, prompt string, schema schemas.Schema) (outcome roleOutcome) {
+	defer func() {
+		if panicked := recover(); panicked != nil {
+			outcome.answer = ""
+			outcome.err = fmt.Errorf("Planning role %s panicked: %v", label, panicked)
+		}
+	}()
 	route, ok := cfg.Roles[role]
 	if !ok {
 		outcome.err = fmt.Errorf("Missing %s route", role)
