@@ -33,13 +33,15 @@ func testCancelledTaskFinalizationRecovery(t *testing.T, restart bool) {
 	saveExecutionTask(t, fixture.planningFixture, task)
 	app := fixture.newApp(t)
 	tickUntil(t, app, gate.Entered(), "held executor turn")
-	// Accept the operator's terminal status write, then refuse the worker's
-	// session finalization after the recorded task becomes cancelled.
+	// CancelTask changes only status and updated_at. Refuse session finalization
+	// regardless of whether the operator or worker writes the cancelled status
+	// first; the worker can finish before CancelTask acquires the store lock.
 	schedulerSQL(t, fixture.state, fmt.Sprintf(`CREATE TEMP TRIGGER refuse_cancel_finalization BEFORE UPDATE ON records
-		WHEN NEW.kind='task' AND NEW.id='%s' AND json_extract(OLD.data,'$.status')='cancelled'
+		WHEN NEW.kind='task' AND NEW.id='%s' AND json_extract(NEW.data,'$.status')='cancelled'
+			AND json_extract(NEW.data,'$.sessions') IS NOT json_extract(OLD.data,'$.sessions')
 		BEGIN SELECT RAISE(ABORT, 'synthetic cancellation finalization refusal'); END`, task.ID))
 	if err := app.TaskAction(context.Background(), task.ID, "cancel"); err != nil {
-		t.Fatal(err)
+		t.Fatalf("operator cancel: %v", err)
 	}
 	app.wg.Wait()
 	if err := app.Pause(); err != nil {
