@@ -30,6 +30,7 @@ type invocation struct {
 	reserved    bool
 	prepare     func() error
 	judge       func(session, answer string) (string, error)
+	completed   func()
 	ownsClients bool
 }
 
@@ -129,6 +130,11 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	record, err := sessionMut(task, session, inv.role)
 	if err != nil {
 		return "", err
+	}
+	if inv.completed != nil {
+		// Keep successful-turn accounting in the first completed-session
+		// checkpoint, including the supervisor's retry if this save fails.
+		inv.completed()
 	}
 	record.MarkCompleted(redact.Text(summary))
 	return answer, a.saveTask(task)
