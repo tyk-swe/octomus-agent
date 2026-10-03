@@ -9,12 +9,14 @@
   let {
     active,
     editable,
+    controlStatePending = false,
     savedRevision,
     dirty,
     onchanged
   }: {
     active: boolean;
     editable: boolean;
+    controlStatePending?: boolean;
     savedRevision: string;
     dirty: boolean;
     onchanged: () => void;
@@ -39,6 +41,7 @@
     active &&
       !!savedRevision &&
       editable &&
+      !controlStatePending &&
       !dirty &&
       !pending &&
       !actionRecovery &&
@@ -325,6 +328,9 @@
   {#if view && !view.eligible && !running && view.reason}<p class="muted">{view.reason}</p>{/if}
   {#if dirty && !running}<p class="muted">
       Save or discard edits before checking the baseline.
+    </p>{/if}
+  {#if controlStatePending && !running}<p class="muted" role="status">
+      Waiting for current service activity before checking the baseline.
     </p>{/if}
   {#if confirming}
     <div
