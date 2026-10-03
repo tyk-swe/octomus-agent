@@ -97,6 +97,20 @@ func TestTickRecoversPublicationWorkerTerminalWriteRefusal(t *testing.T) {
 					if !app.Drained() {
 						t.Fatal("worker retained a runtime slot")
 					}
+					// No scheduler pass has run since the worker released its claim.
+					// A waiting operator must already see recovery admission blocked.
+					controlBefore, err := app.Control()
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, action := range []string{"cycle", "resume", "audit"} {
+						if _, err := app.ControlAction(action); !IsActionConflict(err) || !strings.Contains(err.Error(), "recovery") {
+							t.Fatalf("worker-exit window allowed %s before Tick: %v", action, err)
+						}
+					}
+					if saved, err := app.Control(); err != nil || !wirejson.Equal(saved, controlBefore) {
+						t.Fatalf("worker-exit recovery changed saved control: %+v, %v", saved, err)
+					}
 					entries := publications(t, fixture.planningFixture)
 					if len(entries) != 1 || entries[0]["action"] != wantAction {
 						t.Fatalf("accepted publications = %+v; want one %s", entries, wantAction)
