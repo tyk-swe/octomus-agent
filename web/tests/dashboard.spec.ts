@@ -36,6 +36,10 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
 test('the dashboard names the build version the service reports', async ({ page }) => {
   const { version } = (await (await page.request.get('/healthz')).json()) as { version: string };
   expect(version).toBe(readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim());
