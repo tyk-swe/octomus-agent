@@ -72,6 +72,11 @@ func (a *App) TaskAction(_ context.Context, id, action string) error {
 		actionErr = a.discardTask(task)
 	}
 	if actionErr == nil {
+		if action == "cancel" || task.Status == model.StatusCancelled {
+			a.runtimeMu.Lock()
+			a.runtime.cancelledSessionsChecked = false
+			a.runtimeMu.Unlock()
+		}
 		_ = a.Store.Event(id, "operator", action)
 	}
 	a.notify()

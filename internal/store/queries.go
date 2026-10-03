@@ -264,6 +264,21 @@ func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
 }
 
+// CancelledTasksWithRunningSessionsExcept returns unfinished cancellation evidence
+// after its worker exits. Exclude ownership claims before decoding records, and
+// filter completed evidence before the page limit so old tasks cannot hide it.
+func (s *Store) CancelledTasksWithRunningSessionsExcept(excludedIDs []string) ([]model.Task, error) {
+	ids, err := json.Marshal(excludedIDs)
+	if err != nil {
+		return nil, err
+	}
+	return listRecords[model.Task](s, `SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id
+        WHERE m.kind='task' AND m.status='cancelled'
+            AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id)
+            AND EXISTS (SELECT 1 FROM json_each(r.data,'$.sessions') WHERE json_extract(value,'$.status')='running')
+        ORDER BY m.seq ASC LIMIT 500`, string(ids))
+}
+
 // PublishingTasksExcept excludes live workers and cleanup claims before decoding their evidence.
 func (s *Store) PublishingTasksExcept(excludedIDs []string) ([]model.Task, error) {
 	ids, err := json.Marshal(excludedIDs)

@@ -90,6 +90,8 @@ type runtimeState struct {
 	cleanupReports         map[cleanupKey]cleanupReport
 	retentionCursors       map[cleanupKind]string
 	activeRecoveryError    *string
+
+	cancelledSessionsChecked bool
 }
 
 func (r *runtimeState) idle() bool {
@@ -332,6 +334,9 @@ func (a *App) fail(err error) {
 func (a *App) Recover() error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
+	a.runtimeMu.Lock()
+	a.runtime.cancelledSessionsChecked = false
+	a.runtimeMu.Unlock()
 
 	// Scratch roots only ever hold a check that died with the previous process.
 	if err := workspace.RemoveOwnedDir(a.DataDir, filepath.Join(a.DataDir, scratchDir)); err != nil {
@@ -399,6 +404,9 @@ func (a *App) Recover() error {
 		}
 	}
 
+	if err := a.interruptCancelledTaskSessions(); err != nil {
+		return err
+	}
 	return a.interruptOrphanedCycles()
 }
 
@@ -413,6 +421,7 @@ func (a *App) setTaskError(task *model.Task, err error) error {
 // Keep new work blocked when a publication checkpoint cannot be settled yet.
 func (a *App) settleExitedTask(task *model.Task, cause error) {
 	publishing := task.Status == model.StatusPublishing && task.OutputCommit != nil
+	model.FailRunning(task.Sessions, redact.Error(cause))
 	if err := a.setTaskError(task, cause); err != nil && publishing {
 		a.setActiveRecoveryError(err)
 	}
@@ -451,6 +460,9 @@ func (a *App) runTask(task model.Task) {
 		}
 		a.runtimeMu.Lock()
 		delete(a.runtime.tasks, task.ID)
+		if loadErr != nil || (current != nil && current.Status == model.StatusCancelled) {
+			a.runtime.cancelledSessionsChecked = false
+		}
 		a.runtimeMu.Unlock()
 		a.gate.Unlock()
 		a.notify()
