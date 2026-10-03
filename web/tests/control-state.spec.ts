@@ -88,3 +88,21 @@ for (const status of ['daily_exhausted', 'limit_too_low'] as const) {
     expect(detail).not.toContain('queued tasks would be drained first');
   });
 }
+
+for (const active_cycle_mode of [null, 'audit'] as const) {
+  test(`saved-state recovery blocks checklist starts with cycle mode ${active_cycle_mode}`, () => {
+    const detail = chooseStep({
+      ...pending,
+      control_state_pending: false,
+      recovery_error: 'Synthetic recovery refusal',
+      active_cycle_mode
+    }).detail;
+    expect(detail).toContain(
+      'Unavailable now: Saved-state recovery is retrying. New work waits until recovery completes.'
+    );
+    expect(detail).not.toContain('Audit: available');
+    expect(detail).not.toContain('Run once: available');
+    expect(detail).not.toContain('queued tasks would be drained first');
+    expect(detail).not.toContain('An audit is in progress.');
+  });
+}

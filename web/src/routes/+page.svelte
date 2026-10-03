@@ -258,6 +258,7 @@
           latest: data.cycles[0] ?? null,
           planning_capacity: data.planning_capacity,
           control_state_pending: controlStatePending,
+          recovery_error: data.recovery_error,
           sandbox: data.sandbox
         }
       : null

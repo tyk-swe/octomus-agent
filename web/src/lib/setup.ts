@@ -40,6 +40,7 @@ export type SetupStatus = {
   sandbox: SandboxPosture;
   planning_capacity?: PlanningCapacity | null;
   control_state_pending?: boolean;
+  recovery_error?: string | null;
 };
 
 const REPOSITORY_FIELDS = ['repository', 'github_repo', 'default_branch', 'branch_prefix'] as const;
@@ -320,8 +321,9 @@ export function chooseStep(status: SetupStatus | null): SetupStep {
       label: 'Not run',
       detail: `Connect to the service first. ${contract}`
     };
-  const blocker =
-    status.active_cycle_mode === 'audit'
+  const blocker = status.recovery_error
+    ? 'Saved-state recovery is retrying. New work waits until recovery completes.'
+    : status.active_cycle_mode === 'audit'
       ? 'An audit is in progress.'
       : status.baseline_active
         ? 'A baseline check is running.'

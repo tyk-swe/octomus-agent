@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { login, test, trackWrites } from './synthetic';
+import { login, openNavigation, test, trackWrites } from './synthetic';
 import type { Snapshot } from '../src/lib/types';
 
 // Polling and acknowledged controls can leave a state fetch in flight after the
@@ -134,3 +134,35 @@ for (const mode of ['continuous', 'audit'] as const) {
     expect(writes).toEqual([]);
   });
 }
+
+test('setup checklist reflects recovery and heals without reopening Configuration', async ({
+  page,
+  isMobile
+}) => {
+  let recovering = true;
+  await page.route('**/api/state', async (route) => {
+    const snapshot = (await (await route.fetch()).json()) as Snapshot;
+    snapshot.recovery_error = recovering ? 'Synthetic recovery refusal' : null;
+    snapshot.configured = true;
+    snapshot.audit_configured = true;
+    snapshot.control.paused = true;
+    snapshot.control.mode = 'paused';
+    snapshot.active_cycle_mode = null;
+    snapshot.cycle_active = false;
+    snapshot.active_tasks = 0;
+    snapshot.baseline_active = false;
+    snapshot.planning_capacity.status = 'ready';
+    await route.fulfill({ json: snapshot });
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const step = page.locator('[data-step="choose"]');
+  await expect(step).toContainText(
+    'Unavailable now: Saved-state recovery is retrying. New work waits until recovery completes.'
+  );
+  await expect(step).not.toContainText('Audit: available');
+  await expect(step).not.toContainText('queued tasks would be drained first');
+  recovering = false;
+  await expect(step).toContainText('Audit: available. Run once: available', { timeout: 10000 });
+  await expect(step).not.toContainText('Saved-state recovery is retrying');
+});
