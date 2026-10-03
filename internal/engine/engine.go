@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,7 +122,7 @@ type App struct {
 	wg         sync.WaitGroup
 
 	// Guarded by gate; remember only successfully recorded recovery activity.
-	recordedRecoveryError *string
+	recordedRecoveryActivity recoveryActivity
 
 	// planningStorage excludes admission scans from trusted planning filesystem changes. Hold it only during
 	// filesystem work, never across store calls, gate acquisition, runner work, or another acquisition of this lock.
@@ -261,6 +262,15 @@ func (a *App) Drained() bool {
 // operating policy while a background recovery write is being retried.
 type recoveryError struct{ err error }
 
+// Keep the first eight recorded causes for the whole episode, without eviction.
+// After saturation, a single overflow notice bounds activity even if causes keep
+// changing. Only successful event writes consume a cause slot or the notice.
+type recoveryActivity struct {
+	causes           [8]string
+	count            int
+	overflowRecorded bool
+}
+
 func (e *recoveryError) Error() string { return e.err.Error() }
 func (e *recoveryError) Unwrap() error { return e.err }
 
@@ -273,13 +283,29 @@ func (a *App) fail(err error) {
 	message := redact.Error(err)
 	var recovery *recoveryError
 	if errors.As(err, &recovery) {
+		// The redactor may return a substring; retain only its bounded display text.
+		message = strings.Clone(message)
 		a.runtimeMu.Lock()
 		a.runtime.activeRecoveryError = &message
 		a.runtimeMu.Unlock()
-		if a.recordedRecoveryError == nil || *a.recordedRecoveryError != message {
-			if err := a.Store.Event("system", "recovery_error", message); err == nil {
-				a.recordedRecoveryError = &message
+		activity := &a.recordedRecoveryActivity
+		if activity.overflowRecorded {
+			return
+		}
+		for _, recorded := range activity.causes[:activity.count] {
+			if recorded == message {
+				return
 			}
+		}
+		if activity.count == len(activity.causes) {
+			if err := a.Store.Event("system", "recovery_error", "Additional recovery causes are suppressed until recovery succeeds; the latest cause remains available in service health."); err == nil {
+				activity.overflowRecorded = true
+			}
+			return
+		}
+		if err := a.Store.Event("system", "recovery_error", message); err == nil {
+			activity.causes[activity.count] = message
+			activity.count++
 		}
 		return
 	}
