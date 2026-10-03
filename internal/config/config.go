@@ -199,6 +199,7 @@ func (c Config) validateMode(ready, audit bool) error {
 		{ValidBranch(c.DefaultBranch), "Default branch must be a valid branch name"},
 		{ValidBranch(c.BranchPrefix+"task") && strings.HasSuffix(c.BranchPrefix, "/"), `Owned branch prefix must be a valid branch path ending in "/"`},
 		{!strings.HasPrefix(c.DefaultBranch, c.BranchPrefix), "Owned branch prefix must exclude the default branch"},
+		{!strings.HasPrefix(c.BranchPrefix, c.DefaultBranch+"/"), "Owned branch prefix cannot be nested under the default branch"},
 	}
 	for _, check := range checks {
 		if !check.ok {
