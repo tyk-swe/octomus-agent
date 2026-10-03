@@ -782,6 +782,125 @@ for (const leaveBeforeResponse of [false, true]) {
   });
 }
 
+for (const stateRead of ['held', 'failed'] as const) {
+  for (const baselineRead of ['held', 'failed'] as const) {
+    test(`accepted configuration save gates baseline admission with ${stateRead} state and ${baselineRead} baseline reads`, async ({
+      page,
+      isMobile
+    }) => {
+      const state = await configurationFixture(page);
+      const navigate = navigatorFor(page, !!isMobile);
+      await page.clock.install();
+      await login(page);
+      await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+      await navigate('Configuration');
+      const baseline = page.locator('#check-baseline');
+      await expect(baseline).toBeEnabled();
+      const stateGate = deferred();
+      const baselineGate = deferred();
+      let baselineReads = 0;
+      let failBaselineRead = baselineRead === 'failed';
+      let holdBaseline = true;
+      await page.route('**/api/baseline-checks/latest', async (route) => {
+        baselineReads++;
+        const fail = failBaselineRead;
+        if (holdBaseline) await baselineGate.promise;
+        await route.fulfill(
+          fail
+            ? { status: 503, json: { error: 'Synthetic baseline status outage' } }
+            : { json: state.baselineView }
+        );
+      });
+      const reads = state.stateReads;
+      state.stateGates.push(stateGate);
+      state.failStateRead = stateRead === 'failed';
+      const branch = page.getByLabel('Default branch', { exact: true });
+      const commands = page.locator('#verification-commands');
+      await branch.fill('accepted-baseline-main');
+      await page.getByRole('button', { name: 'Save configuration', exact: true }).click();
+      await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+      await expect.poll(() => state.stateReads).toBe(reads + 1);
+      await expect.poll(() => baselineReads).toBe(1);
+      const acceptedRevision = state.revision();
+      try {
+        if (stateRead === 'failed') {
+          stateGate.resolve();
+          await expect(page.getByRole('alert')).toContainText('Synthetic dashboard read outage');
+        }
+        if (baselineRead === 'failed') {
+          baselineGate.resolve();
+          await expect(
+            page.getByText('Synthetic baseline status outage', { exact: true })
+          ).toBeVisible();
+        }
+        const waiting = page.getByText(
+          'Waiting for current service activity before checking the baseline.',
+          { exact: true }
+        );
+        await expect(waiting).toBeVisible();
+        await expect(baseline).toBeDisabled();
+        await baseline.dispatchEvent('click');
+        await expect(page.getByRole('alertdialog', { name: 'Confirm baseline check' })).toHaveCount(
+          0
+        );
+        expect(state.baselines).toHaveLength(0);
+        await expect(commands).toBeEnabled();
+        await commands.fill('draft while service state is pending');
+        await expect(
+          page.getByRole('button', { name: 'Save configuration', exact: true })
+        ).toBeDisabled();
+        await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
+        await expect(branch).toHaveValue('accepted-baseline-main');
+        await navigate('Overview');
+        await navigate('Configuration');
+        await expect(baseline).toBeDisabled();
+
+        // Even a fresh eligible baseline read cannot clear root-owned pending activity.
+        failBaselineRead = false;
+        holdBaseline = false;
+        baselineGate.resolve();
+        state.baselineView.config_revision = acceptedRevision;
+        const baselineRefresh = page.waitForResponse(
+          (response) =>
+            response.url().endsWith('/api/baseline-checks/latest') && response.status() === 200
+        );
+        const failedStateRefresh =
+          stateRead === 'failed'
+            ? page.waitForResponse(
+                (response) => response.url().endsWith('/api/state') && response.status() === 503
+              )
+            : null;
+        await page.clock.runFor(4000);
+        await (await baselineRefresh).finished();
+        if (failedStateRefresh) await (await failedStateRefresh).finished();
+        await expect(baseline).toBeDisabled();
+        await expect(waiting).toBeVisible();
+        expect(state.baselines).toHaveLength(0);
+
+        state.failStateRead = false;
+        const refreshed = page.waitForResponse(
+          (response) => response.url().endsWith('/api/state') && response.status() === 200
+        );
+        if (stateRead === 'held') stateGate.resolve();
+        else await page.clock.runFor(4000);
+        await (await refreshed).finished();
+        await expect(baseline).toBeEnabled();
+        await expect(waiting).toHaveCount(0);
+        await baseline.click();
+        await page.getByRole('button', { name: 'Run baseline check', exact: true }).click();
+        await expect.poll(() => state.baselines.length).toBe(1);
+        expect(state.baselines[0]).toEqual({ expected_revision: acceptedRevision });
+        await expect(
+          page.getByRole('button', { name: 'Cancel baseline check', exact: true })
+        ).toBeEnabled();
+      } finally {
+        stateGate.resolve();
+        baselineGate.resolve();
+      }
+    });
+  }
+}
+
 test('a revision conflict offers to discard the draft and reload the saved configuration in place', async ({
   page,
   isMobile

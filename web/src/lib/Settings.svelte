@@ -586,6 +586,7 @@
   <BaselineCheck
     {active}
     {editable}
+    controlStatePending={status?.control_state_pending ?? false}
     savedRevision={revision}
     {dirty}
     onchanged={onbaselinechanged}
