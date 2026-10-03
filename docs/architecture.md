@@ -57,6 +57,14 @@ A task snapshots its configuration, route, source revision, default-branch conte
 
 Completed repairs keep a durable progress checkpoint. Recovery cannot reset the consecutive no-progress limit or charge the same completed repair twice. An explicit retry clears this checkpoint along with its repair-round budget. Existing version-7 records without a checkpoint start tracking progress at their next completed repair.
 
+The repair-round budget counts completed repair turns separately from review rounds.
+Recovery resumes unfinished review or verification with a fresh full-diff review
+and, if clean, verification, including after the final allowed repair; interrupted
+verification does not spend a repair round.
+Older version-7 tasks without the repair counter initialize it from their
+conservative review-based budget estimate, then count completed repairs directly.
+An explicit retry starts the counter at zero for the fresh attempt.
+
 Independent tasks can run concurrently. Existing PR branch writers are serialized. Dependent tasks on the same existing PR wait for their prerequisites to publish; the source revision is advanced only to a recorded prerequisite output and its ancestry is checked. External branch movement blocks stale work.
 
 Code-dependent default-branch proposals must be consolidated into a cohesive task or deferred until the prerequisite PR has merged. Merely publishing a separate PR does not make its code available on the default branch. Octomus does not auto-merge or implicitly create stacked PRs.

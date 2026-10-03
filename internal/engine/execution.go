@@ -122,6 +122,12 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	cfg := task.ExecutionConfig()
 	task.Error = nil
 	task.BlockedReason = nil
+	if task.RepairRounds == nil {
+		// Older records have only the review-based budget estimate. Retain
+		// that conservative allowance, then count completed repairs directly.
+		rounds := task.AttemptReviews()
+		task.RepairRounds = &rounds
+	}
 	if err := a.saveTask(task); err != nil {
 		return err
 	}
@@ -167,9 +173,6 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		if names == "" {
 			return fmt.Errorf("The change set is empty against the source revision: %w", model.BlockedReasonVerificationFailed)
 		}
-		if task.AttemptReviews() >= cfg.MaxRepairRounds+1 {
-			return model.BlockedReasonRetryLimit
-		}
 		review, err := a.reviewRevision(ctx, task, client, revision)
 		if err != nil {
 			return err
@@ -191,7 +194,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 				return a.publishReviewed(ctx, task, revision)
 			}
 		}
-		if task.AttemptReviews() > cfg.MaxRepairRounds {
+		if *task.RepairRounds >= cfg.MaxRepairRounds {
 			return fmt.Errorf("Repair budget exhausted (max_repair_rounds %d): %w", cfg.MaxRepairRounds, model.BlockedReasonVerificationFailed)
 		}
 		if progress := task.RepairProgress; progress != nil {
@@ -789,6 +792,7 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 		resume: task.RepairSession, keep: func(session string) { task.RepairSession = &session },
 		prompt: prompt,
 		judge: func(_, answer string) (string, error) {
+			*task.RepairRounds++
 			if task.RepairProgress == nil {
 				task.RepairProgress = &model.RepairProgress{}
 			}
