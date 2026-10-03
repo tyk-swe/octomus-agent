@@ -491,7 +491,17 @@ def harness_scenario():
             server.server_close()
             service.log.close()
 
-    child = subprocess.Popen([sys.executable, '-c', "from pathlib import Path; import time; Path('/proc/self/comm').write_text('x) Z 0'); print('ready', flush=True); time.sleep(30)"], stdout=subprocess.PIPE, text=True)
+    # Rename the child's initial thread without requiring writable procfs.
+    rename_child = """import ctypes, os, time
+libc = ctypes.CDLL(None, use_errno=True)
+PR_SET_NAME = 15
+if libc.prctl(PR_SET_NAME, ctypes.c_char_p(b'x) Z 0'), 0, 0, 0) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+print('ready', flush=True)
+time.sleep(30)
+"""
+    child = subprocess.Popen([sys.executable, '-c', rename_child], stdout=subprocess.PIPE, text=True)
     try:
         with child.stdout:
             assert child.stdout.readline() == 'ready\n'
