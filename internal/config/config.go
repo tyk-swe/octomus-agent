@@ -314,7 +314,7 @@ func asciiAlphanumeric(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 func ValidBranch(s string) bool {
-	if s == "" || strings.ContainsRune("-/.", rune(s[0])) || strings.ContainsRune("/.", rune(s[len(s)-1])) || strings.Contains(s, "..") || strings.Contains(s, "@{") || strings.Contains(s, "//") {
+	if s == "" || s == "HEAD" || strings.ContainsRune("-/.", rune(s[0])) || strings.ContainsRune("/.", rune(s[len(s)-1])) || strings.Contains(s, "..") || strings.Contains(s, "@{") || strings.Contains(s, "//") {
 		return false
 	}
 	for _, p := range strings.Split(s, "/") {
