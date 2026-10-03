@@ -391,6 +391,9 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	if a.audit && !a.doctor {
 		return a, "", fmt.Errorf("--audit requires --doctor")
 	}
+	if a.doctor && a.printConfig {
+		return a, "", fmt.Errorf("--doctor cannot be used with --print-config")
+	}
 	if a.usageReport && (a.doctor || a.printConfig) {
 		return a, "", fmt.Errorf("--usage-report cannot be used with --doctor or --print-config")
 	}
