@@ -100,6 +100,8 @@ timeout, output and worktree-integrity primitives. It creates no task, cycle, PR
 admission. Results are separate baseline records, never task publication evidence.
 Output is capped at 16 KiB per command and 1 MiB per check with explicit truncation;
 configuration and observed revision freshness remain distinct from a recorded pass.
+A successful remote read that finds the default branch missing clears revision
+freshness; an older read cannot restore it, and the recorded pass is preserved.
 Cancellation, deadlines and restart interruption are terminal, never automatically
 replayed. Owned clones are cleaned up safely. A failed cleanup is retried on later
 housekeeping passes; the service records a new or changed failure at once and an
