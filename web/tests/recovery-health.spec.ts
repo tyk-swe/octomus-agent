@@ -2,6 +2,12 @@ import { expect } from '@playwright/test';
 import { login, test, trackWrites } from './synthetic';
 import type { Snapshot } from '../src/lib/types';
 
+// Polling and acknowledged controls can leave a state fetch in flight after the
+// final assertion. Join those handlers while the page is still available.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'wait' });
+});
+
 for (const { mode, orphanedAudit } of [
   { mode: 'paused', orphanedAudit: false },
   { mode: 'continuous', orphanedAudit: false },
