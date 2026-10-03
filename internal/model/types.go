@@ -231,6 +231,7 @@ type Task struct {
 	UpdatedAt            string             `json:"updated_at"`
 	AttemptPolicy        *AttemptPolicy     `json:"attempt_policy"`
 	ReviewBaseline       uint64             `json:"review_baseline"`
+	RepairRounds         *uint64            `json:"repair_rounds"` // Completed repairs this attempt; nil retains the legacy estimate.
 	RepairProgress       *RepairProgress    `json:"repair_progress"`
 	BlockedReason        *BlockedReason     `json:"blocked_reason"`
 	RunID                *string            `json:"run_id"`
