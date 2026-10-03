@@ -260,6 +260,7 @@ def settings_scenario():
         config['verification_commands'] = [secret_command]
         saved = service.save_config(config)
         for patch, message in [({'default_branch': 'refs/heads/main'}, 'Default branch'),
+                               ({'default_branch': 'aB09' * 10}, 'Default branch'),
                                ({'branch_prefix': 'refs/tasks/'}, 'Owned branch prefix')]:
             code, refusal = service.expect('/config', 'PUT', {'expected_revision': saved['revision'], 'config': patch})
             assert code == 400 and message in refusal['error'], (code, refusal)
