@@ -288,6 +288,9 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		return model.OpenPrInventory{}, err
 	}
 	if revision == nil || *revision == "" {
+		if err := a.observeDefaultBranch(cfg, "", observedAt); err != nil {
+			return model.OpenPrInventory{}, err
+		}
 		return model.OpenPrInventory{}, errors.New("Default branch missing on remote")
 	}
 	if err := a.observeDefaultBranch(cfg, *revision, observedAt); err != nil {
