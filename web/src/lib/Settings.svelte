@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, ApiError, clockTime, relative } from './api';
+  import { api, ApiError } from './api';
+  import { clockTime, plural, relative } from './format';
   import type {
     Backend,
     Config,
@@ -12,13 +13,12 @@
     TransformedField
   } from './types';
   import RouteEditor from './RouteEditor.svelte';
-  import { BACKENDS, backendLabel } from './routes';
+  import { BACKENDS, backendLabel } from './modelRoutes';
   import SetupChecklist from './SetupChecklist.svelte';
   import BaselineCheck from './BaselineCheck.svelte';
   import { parseCommands, type Preflight, type SetupStatus } from './setup';
   import Icon from './Icon.svelte';
   import { LIMITS, limitHelp } from './limits';
-  import { plural } from './evidence';
   let {
     active,
     editable,

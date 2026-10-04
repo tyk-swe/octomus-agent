@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Backend, ModelCatalog, Route } from './types';
-  import { backendLabel } from './routes';
+  import { backendLabel } from './modelRoutes';
 
   let {
     name,

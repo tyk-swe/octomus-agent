@@ -1,3 +1,5 @@
+import type { RunEvidenceV1 } from './types';
+
 let token = '';
 let session = new AbortController();
 let unauthorized: (() => void) | null = null;
@@ -72,28 +74,11 @@ function plainText(response: Response, text: string): string {
   const message = text.trim();
   return message.length > 500 ? `${message.slice(0, 500)}…` : message;
 }
-export function relative(value: string) {
-  const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000);
-  if (!Number.isFinite(seconds)) return '';
-  return seconds < 60
-    ? 'just now'
-    : seconds < 3600
-      ? `${Math.floor(seconds / 60)}m ago`
-      : seconds < 86400
-        ? `${Math.floor(seconds / 3600)}h ago`
-        : `${Math.floor(seconds / 86400)}d ago`;
-}
-export function gb(bytes: number): string {
-  return (bytes / 1e9).toFixed(2);
-}
-export function clockTime(date = new Date()): string {
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-export function safeUrl(value: string | null): string {
-  try {
-    const url = new URL(value ?? '');
-    return url.protocol === 'https:' && url.hostname === 'github.com' ? url.href : '#';
-  } catch {
-    return '#';
-  }
+export function fetchEvidence(cycle: string, signal?: AbortSignal) {
+  return api<RunEvidenceV1>(
+    `/cycles/${encodeURIComponent(cycle)}/evidence`,
+    'GET',
+    undefined,
+    signal
+  );
 }

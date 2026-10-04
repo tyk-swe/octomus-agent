@@ -1,6 +1,6 @@
-import { relative } from './api';
+import { baselineStatusLabel } from './evidence';
+import { plural, relative } from './format';
 import { sandboxVerdict } from './sandbox';
-import { baselineStatusLabel, plural } from './evidence';
 import type {
   Backend,
   BaselineSummary,
@@ -15,7 +15,7 @@ import type {
   SandboxPosture
 } from './types';
 
-export type SetupTone = 'missing' | 'draft' | 'saved' | 'checked' | 'failed' | 'ran';
+type SetupTone = 'missing' | 'draft' | 'saved' | 'checked' | 'failed' | 'ran';
 export type SetupStep = { tone: SetupTone; label: string; detail: string };
 export type Preflight = {
   mode: CycleMode;
@@ -73,14 +73,14 @@ export function repositoryStep(draft: Config, saved: Config | null): SetupStep {
   };
 }
 
-export function routeComplete(route: Route | undefined): boolean {
+function routeComplete(route: Route | undefined): boolean {
   if (!route) return false;
   return (route.backend ?? 'codex') === 'opencode'
     ? filled(route.provider) && filled(route.model)
     : filled(route.model) && filled(route.effort);
 }
 
-export function routeValidated(
+function routeValidated(
   route: Route,
   config: Config,
   catalogs: Partial<Record<Backend, ModelCatalog>>
@@ -97,7 +97,7 @@ export function routeValidated(
     : !route.variant || model.variants.includes(route.variant);
 }
 
-export function requiredRoutes(config: Config, audit: boolean): [string, Route][] {
+function requiredRoutes(config: Config, audit: boolean): [string, Route][] {
   const roles = Object.entries(config.roles).filter(([role]) => !audit || role !== 'code_reviewer');
   return audit
     ? roles

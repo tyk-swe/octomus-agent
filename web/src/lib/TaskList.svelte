@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { relative } from './api';
+  import Badge from './Badge.svelte';
   import { taskIcon } from './evidence';
+  import { relative } from './format';
   import Icon from './Icon.svelte';
   import type { TaskRow } from './types';
 
@@ -19,10 +20,7 @@
             >updated {relative(task.updated_at)}</span
           ></span
         ></span
-      ><span class={'badge ' + task.status}>{task.status}</span><Icon
-        name="chevron"
-        size={16}
-      /></button
+      ><Badge label={task.status} tone={task.status} /><Icon name="chevron" size={16} /></button
     >{:else}<div class="empty">
       <Icon name="check" size={30} />
       <h3>All caught up.</h3>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { relative } from './api';
+  import { relative } from './format';
   import Sha from './Sha.svelte';
   let {
     comparisonBase,

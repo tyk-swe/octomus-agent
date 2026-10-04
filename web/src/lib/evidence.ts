@@ -1,4 +1,5 @@
 import type { IconName } from './Icon.svelte';
+import { plural, shortHash } from './format';
 import { ACTIVE_STATUSES } from './types';
 import type {
   BaselineStatus,
@@ -15,11 +16,8 @@ import type {
 
 export const TONES = ['clean', 'blocked', 'failed', 'running', 'cancelled'] as const;
 export type Tone = (typeof TONES)[number] | '';
-export type Verdict = { label: string; tone: Tone; detail: string };
-
-export function plural(count: number, noun: string, pluralNoun = `${noun}s`): string {
-  return `${count} ${count === 1 ? noun : pluralNoun}`;
-}
+export type Marker = { label: string; tone: Tone };
+export type Verdict = Marker & { detail: string };
 
 const REVIEWER_ROLES: Record<string, string> = {
   'adversary-a': 'Problem and value',
@@ -68,14 +66,14 @@ export function baselineStatusLabel(status: BaselineStatus): string {
   return labels[status];
 }
 
-const VERDICT_STATES: Record<VerdictState, { label: string; tone: Tone }> = {
+const VERDICT_STATES: Record<VerdictState, Marker> = {
   recorded: { label: 'Recorded', tone: '' },
   missing: { label: 'No verdict recorded', tone: 'cancelled' },
   duplicate: { label: 'Duplicate verdicts', tone: 'blocked' },
   malformed: { label: 'Malformed batch', tone: 'failed' }
 };
 
-export function verdictBadge(verdict: ReviewerVerdict): { label: string; tone: Tone } {
+export function verdictBadge(verdict: ReviewerVerdict): Marker {
   if (verdict.state === 'recorded' && verdict.decision)
     return { label: verdict.decision, tone: decisionTone(verdict.decision) };
   if (verdict.state === 'duplicate' && verdict.decision)
@@ -117,7 +115,7 @@ export function reviewerAgreement(verdicts: ReviewerVerdict[]): Verdict {
 
 export function reviewRoundBadge(round: {
   result: { completed: boolean; summary: string; findings: unknown[] };
-}): { label: string; tone: Tone } {
+}): Marker {
   const findings = round.result.findings.length;
   if (findings) return { label: plural(findings, 'finding'), tone: 'blocked' };
   if (!round.result.completed) return { label: 'Incomplete', tone: 'running' };
@@ -125,14 +123,7 @@ export function reviewRoundBadge(round: {
   return { label: 'Clean', tone: 'clean' };
 }
 
-export function roundRevisionLabel(
-  revision: string,
-  outputCommit: string | null
-): { label: string; tone: Tone } {
-  return revisionMatchLabel(outputCommit ? revision === outputCommit : null);
-}
-
-export function revisionMatchLabel(matches: boolean | null): { label: string; tone: Tone } {
+export function revisionMatchLabel(matches: boolean | null): Marker {
   if (matches === null) return { label: 'No output commit recorded', tone: 'cancelled' };
   return matches
     ? { label: 'At the recorded output commit', tone: 'clean' }
@@ -231,13 +222,13 @@ function latestRoundVerdict(latest: ReviewRoundEvidence): Verdict {
   };
 }
 
-const COMMAND_STATES: Record<CommandState, { label: string; tone: Tone }> = {
+const COMMAND_STATES: Record<CommandState, Marker> = {
   passed: { label: 'Passed at the output commit', tone: 'clean' },
   passed_at_other_revision: { label: 'Passed at another revision', tone: 'blocked' },
   failed: { label: 'Failed', tone: 'failed' },
   no_result: { label: 'No result recorded', tone: 'cancelled' }
 };
-export function commandBadge(state: CommandState): { label: string; tone: Tone } {
+export function commandBadge(state: CommandState): Marker {
   return COMMAND_STATES[state];
 }
 
@@ -293,10 +284,6 @@ export function findTaskEvidence(run: RunEvidenceV1, taskId: string): TaskEviden
   for (const proposal of run.proposals)
     for (const task of proposal.linked_tasks) if (task.id === taskId) return task;
   return null;
-}
-
-export function shortCommit(value: string | null): string {
-  return value ? value.slice(0, 12) : 'None recorded';
 }
 
 export function planningVerdict(cycle: { status: string; mode: CycleMode }): Verdict {
@@ -400,12 +387,12 @@ export function taskIcon(status: string): IconName {
 }
 
 export function commandExplanation(command: CommandResult, output: string | null): string {
-  const at = command.latest_revision ? shortCommit(command.latest_revision) : null;
+  const at = command.latest_revision ? shortHash(command.latest_revision) : null;
   switch (command.state) {
     case 'passed':
       return `Latest recorded result passed at the recorded output commit${at ? ` ${at}` : ''}.`;
     case 'passed_at_other_revision':
-      return `Latest recorded result passed at ${at ?? 'an unrecorded revision'}, not at the recorded output commit${output ? ` ${shortCommit(output)}` : ''}. A pass at another revision does not count.`;
+      return `Latest recorded result passed at ${at ?? 'an unrecorded revision'}, not at the recorded output commit${output ? ` ${shortHash(output)}` : ''}. A pass at another revision does not count.`;
     case 'failed':
       return `Latest recorded result failed${at ? ` at ${at}` : ''}. A newer failure invalidates any older pass.`;
     case 'no_result':

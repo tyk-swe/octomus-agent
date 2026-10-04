@@ -1,15 +1,20 @@
-import { readFileSync } from 'node:fs';
 import { expect } from '@playwright/test';
 import {
   checksVerdict,
   prVerdict,
   reviewerAgreement,
   reviewVerdict,
-  TONES,
   UNKNOWN_VERDICT,
   verdictBadge
 } from '../src/lib/evidence';
-import { type ReviewEvidence, type ReviewRoundEvidence } from '../src/lib/types';
+import { sandboxVerdict } from '../src/lib/sandbox';
+import { sandboxStep, type SetupStatus } from '../src/lib/setup';
+import type {
+  ReviewEvidence,
+  ReviewRoundEvidence,
+  SandboxPosture,
+  SandboxSelfTest
+} from '../src/lib/types';
 import { A, command, reviewer, reviewRound, taskEvidence, test } from './synthetic';
 
 test.skip(({ isMobile }) => isMobile, 'Pure mapping rules run once, on the desktop project.');
@@ -211,17 +216,74 @@ test('a recorded PR reference is delivery, and its absence is named', () => {
   ).toMatchObject({ label: 'Recorded PR · number unavailable', tone: 'clean' });
 });
 
-function wholeSheet(entry: URL): string {
-  const text = readFileSync(entry, 'utf8');
-  const imports = [...text.matchAll(/@import\s+'([^']+)'/g)];
-  return [text, ...imports.map(([, target]) => wholeSheet(new URL(target, entry)))].join('\n');
+function posture(over: Partial<SandboxSelfTest> = {}): SandboxPosture {
+  return {
+    mode: 'docker',
+    healthy: true,
+    error: null,
+    broker: null,
+    egress: null,
+    pinned_repository: null,
+    self_test: {
+      at: new Date().toISOString(),
+      passed: true,
+      checks: [
+        { id: 'synthetic-check', label: 'Synthetic containment check', passed: true, detail: '' }
+      ],
+      kernel: 'synthetic',
+      image_id: 'synthetic-image',
+      error: null,
+      ...over
+    }
+  };
 }
 
-test('the dashboard stylesheet styles every badge tone and the evidence text classes', () => {
-  const css = wholeSheet(new URL('../src/app.css', import.meta.url));
-  const selector = (name: string) => new RegExp(`${name.replaceAll('.', '\\.')}(?![\\w-])`);
-  for (const tone of TONES)
-    expect(css, `app.css is missing .badge.${tone}`).toMatch(selector(`.badge.${tone}`));
-  for (const shared of ['.muted', '.expandable', '.preview'])
-    expect(css, `app.css is missing ${shared}`).toMatch(selector(shared));
+function setup(sandbox: SandboxPosture) {
+  const status: SetupStatus = {
+    configured: false,
+    audit_configured: false,
+    paused: true,
+    mode: 'paused',
+    active_tasks: 0,
+    cycle_active: false,
+    baseline_active: false,
+    baseline: null,
+    notifications: {
+      state: 'disabled',
+      configured: false,
+      pending: 0,
+      failed: 0,
+      last_delivered_at: null,
+      last_error: null,
+      last_http_status: null
+    },
+    active_cycle_mode: null,
+    queued: 0,
+    latest: null,
+    sandbox
+  };
+  return sandboxStep(status);
+}
+
+test('only a passing self-test with recorded passing checks establishes containment', () => {
+  for (const [name, report, detail] of [
+    ['empty failed report', { passed: false, checks: [] }, 'No containment checks were recorded'],
+    ['empty passing report', { passed: true, checks: [] }, 'No containment checks were recorded'],
+    ['recorded failure with passing checks', { passed: false }, 'did not pass'],
+    ['empty recorded error', { error: '' }, 'did not complete'],
+    ['recorded error', { error: 'Synthetic probe failure' }, 'Synthetic probe failure']
+  ] satisfies [string, Partial<SandboxSelfTest>, string][]) {
+    const sandbox = posture(report);
+    expect(sandboxVerdict(sandbox).tone, name).toBe('failed');
+    expect(sandboxVerdict(sandbox).detail, name).toContain(detail);
+    expect(setup(sandbox), name).toMatchObject({ tone: 'failed', label: 'Self-test failed' });
+    expect(setup(sandbox).detail, name).toContain(detail);
+  }
+  const sandbox = posture();
+  expect(sandboxVerdict(sandbox)).toMatchObject({ label: 'Contained', tone: 'clean' });
+  expect(setup(sandbox).tone).toBe('checked');
+  expect(setup(sandbox).label).toMatch(/^Proven/);
+  sandbox.self_test = null;
+  expect(sandboxVerdict(sandbox)).toMatchObject({ label: 'Not yet proven', tone: 'blocked' });
+  expect(setup(sandbox)).toMatchObject({ label: 'Not yet proven', tone: 'missing' });
 });

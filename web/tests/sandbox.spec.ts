@@ -1,17 +1,7 @@
-import { expect, type Page } from '@playwright/test';
-import type { Snapshot } from '../src/lib/types';
-import { hostMode, login, openNavigation, test } from './synthetic';
+import { expect } from '@playwright/test';
+import { login, openNavigation, patchState, test, unsandboxed } from './synthetic';
 
-async function patchState(page: Page, patch: (snapshot: Snapshot) => void) {
-  await page.route('**/api/state', async (route) => {
-    const response = await route.fetch();
-    const snapshot: Snapshot = await response.json();
-    patch(snapshot);
-    await route.fulfill({ json: snapshot });
-  });
-}
-
-test('the overview proves containment from inside a sandbox and names the deployment limits', async ({
+test('the overview proves containment from inside a sandbox, names the deployment limits, then names a failed check', async ({
   page
 }) => {
   await login(page);
@@ -28,13 +18,24 @@ test('the overview proves containment from inside a sandbox and names the deploy
   await expect(checks).toHaveCount(11);
   await expect(checks.first()).toContainText('Runs as an unprivileged user');
   await expect(page.getByRole('status', { name: 'Sandbox status' })).toHaveCount(0);
+
+  // The next poll reports what the probe observed.
+  await patchState(page, (snapshot) => {
+    const test = snapshot.sandbox.self_test!;
+    test.passed = false;
+    test.checks[6] = { ...test.checks[6], passed: false, detail: 'reached 1.1.1.1:443' };
+  });
+  await expect(panel.locator('.badge')).toHaveText('1 check failed', { timeout: 10000 });
+  await expect(panel.locator('li.failed')).toContainText(
+    'Has no direct route to the internet reached 1.1.1.1:443'
+  );
 });
 
 test('an unsandboxed service carries a permanent warning and a failed setup step', async ({
   page,
   isMobile
 }) => {
-  await hostMode(page);
+  await patchState(page, unsandboxed);
   await login(page);
   await expect(page.getByRole('status', { name: 'Sandbox status' })).toContainText(
     'Unsandboxed. Agents and verification commands run with this service user’s permissions.'
@@ -46,18 +47,4 @@ test('an unsandboxed service carries a permanent warning and a failed setup step
   await expect(page.locator('[data-step="sandbox"] .badge')).toHaveText('Off');
   await expect(page.locator('[data-step="sandbox"]')).toContainText('--sandbox off');
   await expect(page.getByLabel('Codex executable')).toBeEditable();
-});
-
-test('a failed containment check is named with what the probe observed', async ({ page }) => {
-  await patchState(page, (snapshot) => {
-    const test = snapshot.sandbox.self_test!;
-    test.passed = false;
-    test.checks[6] = { ...test.checks[6], passed: false, detail: 'reached 1.1.1.1:443' };
-  });
-  await login(page);
-  const panel = page.getByRole('region', { name: 'Sandbox' });
-  await expect(panel.locator('.badge')).toHaveText('1 check failed');
-  await expect(panel.locator('li.failed')).toContainText(
-    'Has no direct route to the internet reached 1.1.1.1:443'
-  );
 });

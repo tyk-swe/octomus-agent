@@ -1,30 +1,21 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { api, clockTime, setToken, onUnauthorized, relative } from '$lib/api';
-  import type {
-    Snapshot,
-    TaskRow,
-    Page,
-    ProposalRow,
-    PrObservation,
-    CycleSummary,
-    ProposalDetail
-  } from '$lib/types';
+  import { api, setToken, onUnauthorized } from '$lib/api';
+  import type { Snapshot, TaskRow, Page, ProposalRow, PRObservation } from '$lib/types';
   import Badge from '$lib/Badge.svelte';
   import FilterTabs from '$lib/FilterTabs.svelte';
+  import { clockTime, relative, safeUrl } from '$lib/format';
   import Icon, { type IconName } from '$lib/Icon.svelte';
   import LoginScreen from '$lib/LoginScreen.svelte';
+  import Notices from '$lib/Notices.svelte';
   import Overview from '$lib/Overview.svelte';
-  import PrRow from '$lib/PrRow.svelte';
-  import ProposalCard from '$lib/ProposalCard.svelte';
+  import Proposals from '$lib/Proposals.svelte';
   import SearchBox from '$lib/SearchBox.svelte';
   import Settings from '$lib/Settings.svelte';
   import { planningBlocker, type SetupStatus } from '$lib/setup';
   import TaskDetail from '$lib/TaskDetail.svelte';
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
-  import { sandboxVerdict } from '$lib/sandbox';
-  import { DECISIONS, cycleLabel, decisionTone } from '$lib/evidence';
   const version = __APP_VERSION__;
   const shortVersion = version.split('.').slice(0, 2).join('.');
   let connected = $state(false),
@@ -126,17 +117,6 @@
     }
   ];
   const current = $derived(navigation.find((item) => item.id === view));
-  const OPERATING_MODE_LABELS: Record<string, string> = {
-    run_once: 'Run once',
-    continuous: 'Continuous operation',
-    paused: 'New work paused'
-  };
-  function operatingStatus(snapshot: Snapshot): string {
-    const mode = OPERATING_MODE_LABELS[snapshot.control.mode] ?? 'New work paused';
-    const publishing =
-      snapshot.control.paused && snapshot.active_tasks > 0 ? ' · active workflows may publish' : '';
-    return `${mode} · ${snapshot.active_tasks} active tasks${publishing}`;
-  }
   const TOGGLE_PENDING_LABELS: Record<string, string> = {
     resume: 'Starting continuous…',
     pause: 'Pausing…'
@@ -150,25 +130,14 @@
     'blocked',
     'cancelled'
   ];
-  const PROPOSAL_FILTERS = ['all', ...DECISIONS];
   const PR_FILTERS = ['all', 'open', 'merged', 'closed'];
   let filtered = $state<TaskRow[]>([]);
   let proposals = $state<ProposalRow[]>([]);
-  let prRows = $state<PrObservation[]>([]);
-  const prKey = (observed: PrObservation) =>
+  let proposalCounts = $state<Record<string, number>>({});
+  let proposalsView = $state<ReturnType<typeof Proposals>>();
+  let prRows = $state<PRObservation[]>([]);
+  const prKey = (observed: PRObservation) =>
     `${observed.repository.toLowerCase()}#${observed.pr.number}`;
-  let cycleRows = $state<CycleSummary[]>([]);
-  let selectedCycle = $derived(
-    proposalCycle === 'all' ? undefined : cycleRows.find((c) => c.id === proposalCycle)
-  );
-  let cycleCursor = $state<number | null>(null);
-  let cyclesLoading = $state(false);
-  let cycleRefreshMessage = $state('');
-  let cycleRefreshError = $state('');
-  let cycleRetryButton = $state<HTMLButtonElement>();
-  let cyclePicker = $state<HTMLSelectElement>();
-  let cycleRetryNavigation = -1;
-  let decisionCounts = $state<Record<string, number>>({});
   let queueTabCounts = $state<Record<string, number>>({});
   let listBefore = $state<number | null>(null);
   let listNext = $state<number | null>(null);
@@ -177,25 +146,12 @@
   let listLoading = $state(false);
   let listLoaded = $state(false);
   let listError = $state('');
-  let cycleRequest = Promise.resolve();
   let listGeneration = 0;
   let listRequest: AbortController | null = null;
   let lastScope = '';
   let lastPage = '';
   let sessionGeneration = 0;
   let navigationGeneration = 0;
-  $effect.pre(() => {
-    if (
-      !cycleRefreshMessage &&
-      connected &&
-      view === 'proposals' &&
-      cycleRetryNavigation === navigationGeneration &&
-      cycleRetryButton &&
-      document.activeElement === cycleRetryButton &&
-      cyclePicker?.isConnected
-    )
-      cyclePicker.focus();
-  });
   // Operator interactions invalidate the redirect; background data loads must not.
   function noteNavigationIntent() {
     navigationGeneration++;
@@ -207,10 +163,6 @@
   let controlStatePending = $state(false);
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
-  let proposalTabCounts = $derived({
-    all: Object.values(decisionCounts).reduce((n, v) => n + v, 0),
-    ...decisionCounts
-  } as Record<string, number | undefined>);
   let latestCycle = $derived(data?.cycles[0]);
   type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
   const planningBlocked = $derived(!!planningBlocker(data?.planning_capacity));
@@ -286,7 +238,7 @@
       filtered = [];
       proposals = [];
       prRows = [];
-      decisionCounts = {};
+      proposalCounts = {};
       queueTabCounts = {};
       listNext = null;
       listLoaded = false;
@@ -321,7 +273,7 @@
         endpoint = 'prs';
         params.set('status', filter);
       }
-      const page = await api<Page<TaskRow | ProposalRow | PrObservation>>(
+      const page = await api<Page<TaskRow | ProposalRow | PRObservation>>(
         `/${endpoint}?${params}`,
         'GET',
         undefined,
@@ -333,23 +285,10 @@
         queueTabCounts = page.counts;
       }
       if (view === 'proposals') {
-        proposals = (page.items as ProposalRow[]).map((summary) => {
-          const previous = proposals.find(
-            (p) => p.cycle_id === summary.cycle_id && p.id === summary.id
-          );
-          if (!previous) return summary;
-          const detailChanged = previous.content_revision !== summary.content_revision;
-          Object.assign(previous, summary);
-          if (detailChanged) {
-            previous.detail = undefined;
-            previous.detailError = undefined;
-            if (previous.detailRequested) void loadProposal(previous);
-          }
-          return previous;
-        });
-        decisionCounts = page.counts;
+        proposals = page.items as ProposalRow[];
+        proposalCounts = page.counts;
       }
-      if (view === 'prs') prRows = page.items as PrObservation[];
+      if (view === 'prs') prRows = page.items as PRObservation[];
       listNext = page.next_cursor;
       listLoaded = true;
       listError = '';
@@ -358,126 +297,6 @@
         listError = (e as Error).message;
     } finally {
       if (current === listGeneration) listLoading = false;
-    }
-  }
-  function loadCycles(more = false) {
-    const currentSession = sessionGeneration;
-    const request = cycleRequest.then(async () => {
-      if (!connected || currentSession !== sessionGeneration) return;
-      if (more && cycleCursor === null) return;
-      const completedAction = cycleRefreshMessage;
-      let before = more ? cycleCursor : null;
-      const oldest = more ? undefined : cycleRows.at(-1)?.id;
-      const rows: CycleSummary[] = [];
-      do {
-        const params = new URLSearchParams({ limit: '100' });
-        if (before !== null) params.set('before', String(before));
-        const page = await api<Page<CycleSummary>>(`/cycles?${params}`);
-        const boundary = oldest ? page.items.findIndex((c) => c.id === oldest) : -1;
-        rows.push(...(boundary < 0 ? page.items : page.items.slice(0, boundary + 1)));
-        if (boundary >= 0) {
-          // The page may extend past the loaded history. Keep its existing opaque
-          // cursor so Load older resumes at the first row we have not retained.
-          before = cycleCursor;
-          break;
-        }
-        before = page.next_cursor;
-      } while (!more && before !== null && oldest);
-      cycleRows = more ? [...cycleRows, ...rows] : rows;
-      cycleCursor = before;
-      if (!more && completedAction && completedAction === cycleRefreshMessage) {
-        cycleRefreshMessage = '';
-        cycleRefreshError = '';
-      }
-    });
-    cycleRequest = request.catch(() => {});
-    return request;
-  }
-  async function loadOlderCycles() {
-    noteNavigationIntent();
-    const currentSession = sessionGeneration;
-    cyclesLoading = true;
-    error = '';
-    try {
-      await loadCycles(true);
-    } catch (e) {
-      if (currentSession === sessionGeneration)
-        error = `Could not load older cycles. ${(e as Error).message}`;
-    } finally {
-      if (currentSession === sessionGeneration) cyclesLoading = false;
-    }
-  }
-  async function loadProposal(p: ProposalRow) {
-    const currentSession = sessionGeneration;
-    p.detailRequested = true;
-    const revision = p.content_revision;
-    if (p.detail || p.detailLoading === revision) return;
-    p.detailLoading = revision;
-    try {
-      const detail = await api<ProposalDetail>(
-        `/proposals/${encodeURIComponent(p.cycle_id)}/${encodeURIComponent(p.id)}`
-      );
-      if (
-        currentSession === sessionGeneration &&
-        p.content_revision === revision &&
-        detail.content_revision === revision
-      ) {
-        p.detail = detail;
-        p.detailError = undefined;
-      }
-    } catch (e) {
-      if (currentSession === sessionGeneration && p.content_revision === revision)
-        p.detailError = (e as Error).message;
-    } finally {
-      if (p.detailLoading === revision) p.detailLoading = undefined;
-    }
-  }
-  async function cycleAction(value: 'archive' | 'discard') {
-    if (busy || cycleRefreshMessage) return;
-    const currentSession = sessionGeneration;
-    let applied = false;
-    let ownsBusy = true;
-    busy = true;
-    pendingAction = value;
-    error = '';
-    try {
-      await api(`/cycles/${encodeURIComponent(proposalCycle)}/${value}`, 'POST');
-      if (currentSession !== sessionGeneration) return;
-      applied = true;
-      cycleRefreshMessage = value === 'archive' ? 'Cycle archived.' : 'Cycle workspaces discarded.';
-      cycleRefreshError = '';
-      // History recovery guards duplicate cycle actions independently. The
-      // accepted mutation must leave running work pausable during its reads.
-      busy = false;
-      pendingAction = '';
-      ownsBusy = false;
-      await loadCycles();
-      if (currentSession !== sessionGeneration) return;
-      await refresh();
-    } catch (e) {
-      if (currentSession === sessionGeneration) {
-        if (applied) cycleRefreshError = (e as Error).message;
-        else error = `Cycle action failed. ${(e as Error).message}`;
-      }
-    } finally {
-      if (ownsBusy && currentSession === sessionGeneration) {
-        busy = false;
-        pendingAction = '';
-      }
-    }
-  }
-  async function retryCycleHistory() {
-    if (cyclesLoading) return;
-    const currentSession = sessionGeneration;
-    cyclesLoading = true;
-    try {
-      await loadCycles();
-      if (currentSession !== sessionGeneration) return;
-      await refresh();
-    } catch (e) {
-      if (currentSession === sessionGeneration) cycleRefreshError = (e as Error).message;
-    } finally {
-      if (currentSession === sessionGeneration) cyclesLoading = false;
     }
   }
   function refresh() {
@@ -501,7 +320,7 @@
             data = snapshot;
             controlStatePending = false;
             if (!listLoading) listRefresh++;
-            if (view === 'proposals') await loadCycles();
+            if (view === 'proposals') await proposalsView?.loadCycles();
             connectionError = '';
             lastUpdated = clockTime();
           } catch (e) {
@@ -580,7 +399,7 @@
     window.scrollTo(0, 0);
     if (id === 'proposals') {
       try {
-        await loadCycles();
+        await proposalsView?.loadCycles();
       } catch (e) {
         if (currentSession === sessionGeneration) connectionError = (e as Error).message;
       }
@@ -690,13 +509,7 @@
     filtered = [];
     proposals = [];
     prRows = [];
-    cycleRows = [];
-    cycleCursor = null;
-    cycleRequest = Promise.resolve();
-    cyclesLoading = false;
-    cycleRefreshMessage = '';
-    cycleRefreshError = '';
-    decisionCounts = {};
+    proposalCounts = {};
     queueTabCounts = {};
     listBefore = null;
     listNext = null;
@@ -824,90 +637,7 @@
               >
             </div>{/if}
         </div>
-        {#if error}<div class="notice error" role="alert">
-            <Icon name="alert" size={18} /><span>{error}</span><button
-              class="icon-button"
-              aria-label="Dismiss error"
-              onclick={() => (error = '')}><Icon name="close" size={16} /></button
-            >
-          </div>{/if}
-        {#if connectionError}<div class="notice error" role="alert">
-            <Icon name="alert" size={18} /><span
-              >Connection interrupted. Displaying the last received state. {connectionError}</span
-            >
-          </div>{/if}
-        {#if data.sandbox.mode === 'off' || !data.sandbox.healthy}<div
-            class="notice error sandbox-banner"
-            role="status"
-            aria-label="Sandbox status"
-          >
-            <Icon name="shield" size={18} /><span
-              ><strong>{sandboxVerdict(data.sandbox).label}.</strong>
-              {sandboxVerdict(data.sandbox).detail}</span
-            >
-          </div>{/if}
-        {#if data.recovery_error}<div
-            class="notice error"
-            role="alert"
-            aria-label="Recovery status"
-          >
-            <Icon name="alert" /><span
-              ><strong>Recovery is retrying.</strong> New work waits while saved state is recovered.
-              {data.recovery_error}</span
-            >
-          </div>{/if}
-        {#if data.control.error}<div class="notice error">
-            <Icon name="alert" /><span>{data.control.error}</span><button
-              class="text-button"
-              onclick={() => navigate('settings')}>Inspect configuration</button
-            >
-          </div>{/if}
-        {#if data.active_cycle_mode === 'audit' && !data.recovery_error}
-          <div class="notice" role="status">
-            <Icon name="proposals" />Audit in progress. Execution stays paused; recommendations will
-            not be queued.
-          </div>
-        {/if}
-        {#if data.planning_capacity.status !== 'ready'}
-          <div class="notice" role="status" aria-live="polite">
-            <Icon name="alert" /><span
-              >A complete planning pass requires {data.planning_capacity.required} daily admissions; {data
-                .planning_capacity.remaining} remain today.
-              {data.planning_capacity.status === 'limit_too_low'
-                ? 'The configured daily limit cannot fund a complete planning pass; increase it in Configuration.'
-                : 'The daily allowance resets at midnight UTC.'}
-              {data.control.mode === 'continuous' && !data.control.paused
-                ? 'Continuous operation keeps waiting and plans again when the allowance returns.'
-                : 'Audit and Run once are refused until planning can be funded.'}</span
-            >
-          </div>
-        {/if}
-        {#if data.pr_capacity.status !== 'ready'}
-          <div class="notice">
-            <Icon name="alert" /><span
-              ><span role="status" aria-live="polite"
-                >{#if data.pr_capacity.status === 'full'}Open-PR capacity is full: {data.pr_capacity
-                    .owned_open} owned open PRs of {data.pr_capacity.limit}
-                  allowed{data.pr_capacity.reserved > 0
-                    ? `, plus ${data.pr_capacity.reserved} reserved deliveries`
-                    : ''}. New-PR work waits for an observed closure or merge; maintenance on
-                  eligible owned PRs continues.
-                {:else if data.pr_capacity.status === 'refreshing'}{data.pr_capacity.reason ??
-                    'Refreshing the open-PR inventory'}. New-PR work waits until the refresh
-                  completes.
-                {:else}Open-PR capacity is unavailable: {data.pr_capacity.reason ??
-                    'no complete inventory observed'}. New-PR work waits; unknown capacity is never
-                  treated as zero.{/if}</span
-              >
-              {#if data.pr_capacity.observed_at}Observed {relative(
-                  data.pr_capacity.observed_at
-                )}.{/if}</span
-            >
-          </div>
-        {/if}
-        <div class="notice" role="status" aria-label="Operating mode" aria-live="polite">
-          <span>{operatingStatus(data)}</span>
-        </div>
+        <Notices {data} bind:error {connectionError} onnavigate={navigate} />
         {#if view === 'overview'}
           <Overview
             {data}
@@ -955,120 +685,6 @@
                 </p>
               </div>{/if}
           </section>
-        {:else if view === 'proposals'}
-          <p class="muted">
-            Audits record recommendations without queuing work. A later execution cycle plans
-            afresh.
-          </p>
-          {#if cycleRefreshMessage}<div
-              class="notice"
-              class:error={!!cycleRefreshError}
-              role={cycleRefreshError ? 'alert' : 'status'}
-            >
-              <Icon name={cycleRefreshError ? 'alert' : 'refresh'} size={18} /><span
-                >{cycleRefreshMessage}
-                {cycleRefreshError
-                  ? `Cycle history could not be refreshed. ${cycleRefreshError}`
-                  : 'Refreshing cycle history…'}</span
-              >
-              {#if cycleRefreshError}<button
-                  bind:this={cycleRetryButton}
-                  class="button small"
-                  aria-disabled={cyclesLoading}
-                  onfocus={() => (cycleRetryNavigation = navigationGeneration)}
-                  onclick={retryCycleHistory}
-                  >{cyclesLoading ? 'Retrying cycle history…' : 'Retry cycle history'}</button
-                >{/if}
-            </div>{/if}
-          <div class="actions">
-            {#if cycleCursor !== null}<button
-                class="button"
-                disabled={cyclesLoading}
-                onclick={loadOlderCycles}>Load older cycles</button
-              >{/if}
-            {#if selectedCycle && selectedCycle.status !== 'running' && !selectedCycle.lifecycle.discarded_at}
-              {#if !selectedCycle.lifecycle.archived_at}<button
-                  class="button"
-                  disabled={busy || !!cycleRefreshMessage}
-                  onclick={() => cycleAction('archive')}
-                  >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
-                >{:else if !selectedCycle.lifecycle.discarded_at}<button
-                  class="button danger"
-                  disabled={busy || !!cycleRefreshMessage}
-                  onclick={() => cycleAction('discard')}
-                  >{pendingAction === 'discard'
-                    ? 'Discarding workspaces…'
-                    : 'Discard cycle workspaces'}</button
-                >{/if}
-            {/if}
-          </div>
-          <div class="proposal-controls">
-            <div class="cycle-picker">
-              <label for="proposal-cycle">Cycle</label>
-              <select
-                id="proposal-cycle"
-                bind:this={cyclePicker}
-                bind:value={proposalCycle}
-                onfocus={noteNavigationIntent}
-              >
-                <option value="all">All cycles</option>
-                {#each cycleRows as cycle}<option value={cycle.id}
-                    >{cycleLabel(cycle)} · {cycle.status}{cycle.lifecycle.discarded_at
-                      ? ' · workspaces discarded'
-                      : cycle.lifecycle.archived_at
-                        ? ' · archived'
-                        : ''}</option
-                  >{/each}
-              </select>
-            </div>
-            <div class="decision-counts" role="group" aria-label="Decision counts">
-              {#each DECISIONS as decision}
-                <Badge
-                  label={`${decision}: ${decisionCounts[decision] ?? 0}`}
-                  tone={decisionTone(decision)}
-                />
-              {/each}
-            </div>
-          </div>
-          <section class="panel">
-            <div class="list-toolbar" onfocusin={noteNavigationIntent}>
-              <FilterTabs
-                labels={PROPOSAL_FILTERS}
-                current={proposalFilter}
-                aria="Proposal filters"
-                onselect={(state) => {
-                  noteNavigationIntent();
-                  proposalFilter = state;
-                }}
-                counts={proposalTabCounts}
-              />
-              <SearchBox bind:value={search} />
-            </div>
-            <div class="proposal-list">
-              {#each proposals as p (JSON.stringify([p.cycle_id, p.id]))}<ProposalCard
-                  proposal={p}
-                  onexpand={() => {
-                    navigationGeneration++;
-                    return loadProposal(p);
-                  }}
-                  oninspect={() => inspectRun(p.cycle_id, p.id)}
-                  oncollapse={() => navigationGeneration++}
-                />{/each}
-              {#if !proposals.length && listLoaded}<div class="empty">
-                  <Icon name="proposals" size={34} />
-                  <h3>
-                    {search || proposalFilter !== 'all' || proposalCycle !== 'all'
-                      ? 'No matching proposals'
-                      : 'Better ideas start with questions.'}
-                  </h3>
-                  <p>
-                    {search || proposalFilter !== 'all' || proposalCycle !== 'all'
-                      ? 'Try another cycle, filter or search term.'
-                      : 'Discovery explores your project. Two adversarial reviewers challenge each proposal before the orchestrator decides.'}
-                  </p>
-                </div>{/if}
-            </div>
-          </section>
         {:else if view === 'prs'}
           <div class="notice">
             <Icon name="shield" size={18} /><span
@@ -1098,7 +714,28 @@
               </div>
               <span class="count">{prRows.length}</span>
             </div>
-            {#each prRows as observed (prKey(observed))}<PrRow {observed} />{/each}
+            {#each prRows as observed (prKey(observed))}
+              {@const pr = observed.pr}
+              <a class="pr-row" href={safeUrl(pr.url)} target="_blank" rel="noreferrer"
+                ><span class={'pr-icon ' + pr.state}><Icon name="prs" /></span>
+                <div>
+                  <h3>{pr.title}<span class="pr-number">#{pr.number}</span></h3>
+                  <p>
+                    <code>{pr.branch}</code><span>→</span><code>{pr.base}</code><span
+                      class="pr-observed"
+                      >· {pr.owned ? 'owned by Octomus' : 'not owned by Octomus'}</span
+                    >{#if observed.observed_at}<span class="pr-observed"
+                        >· observed {relative(observed.observed_at)}</span
+                      >{/if}
+                  </p>
+                </div>
+                <Badge
+                  label={pr.state +
+                    (observed.external_head_movement ? ' · external head change' : '')}
+                  tone={pr.owned ? 'published' : 'queued'}
+                /><Icon name="external" size={16} /></a
+              >
+            {/each}
             {#if !prRows.length && listLoaded}<div class="empty">
                 <Icon name="prs" size={34} />
                 <h3>
@@ -1121,6 +758,23 @@
               <TaskList tasks={published} onselect={inspectTask} />
             </section>{/if}
         {/if}
+        <Proposals
+          active={view === 'proposals'}
+          rows={proposals}
+          counts={proposalCounts}
+          loaded={listLoaded}
+          bind:search
+          bind:filter={proposalFilter}
+          bind:cycle={proposalCycle}
+          bind:busy
+          bind:pendingAction
+          bind:error
+          bind:this={proposalsView}
+          onrefresh={refresh}
+          oninspect={inspectRun}
+          onintent={noteNavigationIntent}
+          navigationGeneration={() => navigationGeneration}
+        />
         {#if settingsVisited}<div hidden={view !== 'settings'}>
             <Settings
               active={view === 'settings'}

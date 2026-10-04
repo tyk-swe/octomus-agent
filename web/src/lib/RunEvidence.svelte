@@ -1,18 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, ApiError, relative, safeUrl } from './api';
-  import { routeLabel } from './routes';
-  import { createCopyFeedback } from './copyFeedback.svelte';
-  import Icon from './Icon.svelte';
-  import PanelDialog from './PanelDialog.svelte';
-  import Sha from './Sha.svelte';
+  import { api, ApiError, fetchEvidence } from './api';
   import Badge from './Badge.svelte';
-  import EvidenceText from './EvidenceText.svelte';
-  import EvidenceFact from './EvidenceFact.svelte';
-  import FindingCard from './FindingCard.svelte';
-  import PrContext from './PrContext.svelte';
-  import ReviewChangeSet from './ReviewChangeSet.svelte';
-  import type { Cycle, ProposalEvidence, RunEvidenceV1, TaskEvidence } from './types';
+  import { createCopyFeedback } from './copyFeedback.svelte';
   import {
     checksVerdict,
     commandBadge,
@@ -22,16 +12,24 @@
     decisionTone,
     outcomeVerdict,
     planningVerdict,
-    plural,
     prVerdict,
     reviewVerdict,
     reviewerAgreement,
     reviewerLabel,
     reviewerSlot,
     revisionMatchLabel,
-    shortCommit,
     verdictBadge
   } from './evidence';
+  import EvidenceFact from './EvidenceFact.svelte';
+  import EvidenceText from './EvidenceText.svelte';
+  import FindingCard from './FindingCard.svelte';
+  import { plural, relative, safeUrl, shortHash } from './format';
+  import Icon from './Icon.svelte';
+  import { routeLabel } from './modelRoutes';
+  import PanelDialog from './PanelDialog.svelte';
+  import ReviewChangeSet from './ReviewChangeSet.svelte';
+  import Sha from './Sha.svelte';
+  import type { Cycle, ProposalEvidence, RunEvidenceV1, TaskEvidence } from './types';
   let {
     cycleId,
     proposalId = null,
@@ -69,6 +67,9 @@
         : null
   );
   let audit = $derived(run?.cycle.mode === 'audit');
+  let grounding = $derived(cycleDetail?.grounding ?? null);
+  let external = $derived(grounding?.external_prs ?? []);
+  let coverage = $derived(grounding?.pr_coverage);
   let planning = $derived(run ? planningVerdict(run.cycle) : null);
   async function load(cycle: string) {
     const current = ++generation;
@@ -77,12 +78,7 @@
     request = controller;
     try {
       const [next, detail] = await Promise.all([
-        api<RunEvidenceV1>(
-          `/cycles/${encodeURIComponent(cycle)}/evidence`,
-          'GET',
-          undefined,
-          controller.signal
-        ),
+        fetchEvidence(cycle, controller.signal),
         api<Cycle>(`/cycles/${encodeURIComponent(cycle)}`, 'GET', undefined, controller.signal)
           .then((c) => ({ cycle: c, error: '' }))
           .catch((e: unknown) => ({
@@ -175,7 +171,7 @@
     <div class="task-title">
       <div class="badge-row">
         <Badge label={planning.label} tone={planning.tone} />
-        {#if stale}<span class="badge blocked">Retained · stale</span>{/if}
+        {#if stale}<Badge label="Retained · stale" tone="blocked" />{/if}
       </div>
       <h2 id="run-evidence-title">
         {cycleLabel(run.cycle)}
@@ -263,8 +259,41 @@
             automatically.
           </p>
         </section>
-      {:else}
-        <PrContext grounding={cycleDetail?.grounding ?? null} />
+      {:else if grounding}
+        <section class="evidence-section" aria-labelledby="external-prs-heading">
+          <div class="row-between">
+            <h3 id="external-prs-heading">External pull requests observed</h3>
+          </div>
+          <p class="muted">
+            Read-only context for overlap review — never execution or maintenance targets.
+            {#if coverage?.complete}
+              {coverage.total_external} external of {coverage.total_open} open ·
+              {coverage.included_external} included{coverage.omitted_external > 0
+                ? ` · ${coverage.omitted_external} omitted by context limits`
+                : ''}{#if coverage.observed_at}
+                · observed {relative(coverage.observed_at)}{/if}
+            {:else}
+              Coverage was not recorded for this run.
+            {/if}
+          </p>
+          {#if external.length > 0}
+            <ul>
+              {#each external as pr (pr.number)}
+                <li>
+                  <a href={safeUrl(pr.url)} target="_blank" rel="noreferrer"
+                    >#{pr.number} {pr.title}{pr.title_truncated ? '…' : ''}</a
+                  >
+                  <span class="muted">
+                    <code>{pr.head_repository || 'deleted repository'}:{pr.branch}</code>
+                    <Sha value={pr.head} label="Head revision" /> → {pr.base}{pr.body_truncated
+                      ? ' · body truncated in context'
+                      : ''}
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
       {/if}
       {#if proposals.length}
         <div class="evidence-picker">
@@ -487,7 +516,7 @@
                 {#each task.sessions as session}<article class="history-card">
                     <div class="row-between">
                       <h4>{session.role}</h4>
-                      <span class={'badge ' + session.status}>{session.status}</span>
+                      <Badge label={session.status} tone={session.status} />
                     </div>
                     <p>Requested route: {routeLabel(session.requested_route)}</p>
                     <code>{session.id}</code><small>{relative(session.started_at)}</small>
@@ -550,8 +579,8 @@
                   />
                   {#if review.matches_output_revision === false && task.revisions.output}
                     <p class="muted">
-                      This round reviewed {shortCommit(review.revision)}, but the recorded output
-                      commit is {shortCommit(task.revisions.output)}. A review of another revision
+                      This round reviewed {shortHash(review.revision)}, but the recorded output
+                      commit is {shortHash(task.revisions.output)}. A review of another revision
                       does not cover the output.
                     </p>
                   {/if}

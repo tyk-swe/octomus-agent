@@ -2,7 +2,7 @@
   import Badge from './Badge.svelte';
   import { cycleLabel, decisionTone } from './evidence';
   import Icon from './Icon.svelte';
-  import type { ProposalRow } from './types';
+  import type { ProposalEntry } from './Proposals.svelte';
 
   let {
     proposal,
@@ -10,7 +10,7 @@
     oninspect,
     oncollapse
   }: {
-    proposal: ProposalRow;
+    proposal: ProposalEntry;
     onexpand: () => Promise<void>;
     oninspect: () => void;
     oncollapse?: () => void;

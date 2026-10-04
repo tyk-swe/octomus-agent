@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { plural } from './evidence';
-  import { shortImage } from './sandbox';
+  import Badge from './Badge.svelte';
+  import { plural, shortHash } from './format';
   import type { SandboxRecord } from './types';
 
   let { record }: { record: SandboxRecord | null } = $props();
@@ -15,7 +15,7 @@
   <div class="sandbox-run" aria-label="Sandbox record">
     <p class="command-meta">
       Sandboxed · {plural(record.runs, 'container')} · image
-      <code>{shortImage(record.image_id)}</code>{record.runtime
+      <code>{shortHash(record.image_id)}</code>{record.runtime
         ? ` · ${record.runtime}`
         : ''}{#if record.oom}
         · <strong class="sandbox-oom">memory limit killed a process</strong
@@ -28,17 +28,21 @@
     </p>
     {#if denied.length}<p class="sandbox-hosts">
         <span>Blocked egress</span>
-        {#each denied as [host, count] (host)}<span class="badge failed">{host} ×{count}</span
-          >{/each}
+        {#each denied as [host, count] (host)}<Badge
+            label={`${host} ×${count}`}
+            tone="failed"
+          />{/each}
       </p>{/if}
     {#if failed.length}<p class="sandbox-hosts">
         <span>Unreachable egress</span>
-        {#each failed as [host, count] (host)}<span class="badge blocked">{host} ×{count}</span
-          >{/each}
+        {#each failed as [host, count] (host)}<Badge
+            label={`${host} ×${count}`}
+            tone="blocked"
+          />{/each}
       </p>{/if}
     {#if allowed.length}<p class="sandbox-hosts">
         <span>Reached</span>
-        {#each allowed as [host, count] (host)}<span class="badge">{host} ×{count}</span>{/each}
+        {#each allowed as [host, count] (host)}<Badge label={`${host} ×${count}`} />{/each}
       </p>{/if}
   </div>
 {/if}

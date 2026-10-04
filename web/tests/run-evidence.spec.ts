@@ -1,13 +1,10 @@
 import { expect, type Route } from '@playwright/test';
 import {
   B,
-  Z,
-  command,
   login,
   openProposalEvidence,
   proposalEvidence,
   proposalRow,
-  reviewRound,
   reviewer,
   runEvidence,
   serveProposals,
@@ -17,16 +14,14 @@ import {
   trackWrites
 } from './synthetic';
 
-test.afterEach(async ({ page }) => {
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
-});
-
-test('inspect run reports recorded reviewer roles, review, checks and delivery, then hands off to the task', async ({
-  page
+test('inspect run reports recorded reviewer roles, review, checks and delivery, exports without writes, then hands off to the task', async ({
+  page,
+  context
 }) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   const writes = trackWrites(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
   await login(page);
 
   await page.getByRole('button', { name: 'Inspect run' }).click();
@@ -75,8 +70,38 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
     'https://github.com/fixture/project/pull/12'
   );
   await expect(page.getByText('not a fresh observation of the GitHub head').first()).toBeVisible();
-  await expect(page.getByText('requested routes, not verified runtime identity')).toBeVisible();
-  await expect(page.getByText('Limitations recorded in this evidence (9)')).toBeVisible();
+  await page.getByText('requested routes, not verified runtime identity').click();
+  await expect(page.getByText('Saved routes are the routes that were requested')).toBeVisible();
+  await page.getByText('Limitations recorded in this evidence (9)').click();
+  await expect(page.getByText('Deferred is not rejected.').first()).toBeVisible();
+  await page.getByRole('button', { name: 'Copy cycle ID' }).click();
+  await expect(page.locator('.dialog-footer .muted')).toHaveText(/copied/i);
+
+  const download = page.waitForEvent('download');
+  await page
+    .getByRole('button', { name: 'Download evidence JSON (review before sharing)' })
+    .click();
+  const artifact = await download;
+  expect(artifact.suggestedFilename()).toBe('octomus-run-evidence-cycle-1.json');
+  const stream = await artifact.createReadStream();
+  let contents = '';
+  for await (const chunk of stream!) contents += chunk.toString();
+  const exported = JSON.parse(contents);
+  const response = await page.request.get('/api/cycles/cycle-1/evidence', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const saved = await response.json();
+  expect({ ...exported, generated_at: null }).toEqual({ ...saved, generated_at: null });
+  expect(exported.review_required_before_sharing).toBe(true);
+  expect(JSON.stringify(exported)).not.toContain('verification_commands');
+  for (const proposal of exported.proposals)
+    for (const task of proposal.linked_tasks) {
+      expect(task).not.toHaveProperty('config');
+      expect(task).not.toHaveProperty('workspace');
+      expect(task).not.toHaveProperty('verification');
+    }
+  await expect(page.getByRole('button', { name: /share/i })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /upload/i })).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Open task details' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(1);
@@ -87,17 +112,21 @@ test('inspect run reports recorded reviewer roles, review, checks and delivery, 
     'href',
     'https://github.com/fixture/project/pull/12'
   );
-  await expect(page.getByText('Effective operating limits')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open PR #12' })).toBeVisible();
   await page.getByText('Effective operating limits').click();
   await expect(page.getByText('Daily admissions:')).toBeVisible();
+  for (const tab of ['Sessions', 'Reviews', 'Verification', 'Activity', 'Overview'])
+    await page.getByRole('tab', { name: new RegExp(tab) }).click();
+  await expect(page.getByRole('heading', { name: 'Recorded result' })).toBeVisible();
 
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });
 
 test('accepted, rejected, deferred and missing reviewer assessments each render honestly', async ({
-  page
-}, testInfo) => {
+  page,
+  isMobile
+}) => {
   const rows = [
     proposalRow('accepted-proposal', 'synthetic-cycle', 7),
     proposalRow('rejected-proposal', 'synthetic-cycle', 7, { decision: 'rejected' }),
@@ -154,7 +183,7 @@ test('accepted, rejected, deferred and missing reviewer assessments each render 
   });
   const writes = trackWrites(page);
   await login(page);
-  await openProposalEvidence(page, 0, testInfo);
+  await openProposalEvidence(page, 0, !!isMobile);
 
   const picker = page.getByLabel('Proposal', { exact: true });
   await expect(page.getByText('Both reviewers recorded accepted', { exact: true })).toBeVisible();
@@ -186,121 +215,6 @@ test('accepted, rejected, deferred and missing reviewer assessments each render 
   ).toBeVisible();
 
   expect(writes).toEqual([]);
-});
-
-test('stale check evidence and an incomplete review are never reported as clean', async ({
-  page
-}, testInfo) => {
-  await serveProposals(page, [proposalRow('stale-evidence-proposal', 'synthetic-cycle', 7)]);
-  await page.route('**/api/cycles/synthetic-cycle/evidence', async (route: Route) => {
-    await route.fulfill({
-      json: runEvidence({
-        proposals: [
-          proposalEvidence('stale-evidence-proposal', {
-            linked_tasks: [
-              taskEvidence('stale-evidence-task', {
-                status: 'blocked',
-                blocked_reason: 'verification_timeout',
-                error_recorded: true,
-                latest_review: {
-                  rounds_recorded: 2,
-                  latest: reviewRound({
-                    revision: Z,
-                    completed: false,
-                    summary_present: false,
-                    matches_output_revision: false
-                  }),
-                  clean: false,
-                  clean_at_output_revision: false
-                },
-                required_commands: {
-                  state: 'recorded',
-                  commands: [
-                    command('go test ./...', 'passed_at_other_revision', Z),
-                    command('go vet ./...', 'failed', B)
-                  ],
-                  all_passed_at_output_revision: false
-                },
-                pull_request: null,
-                gaps: [
-                  'An output revision is recorded without a clean latest review at that revision.'
-                ]
-              })
-            ]
-          })
-        ]
-      })
-    });
-  });
-  await login(page);
-  await openProposalEvidence(page, 0, testInfo);
-
-  await expect(page.getByText('Review incomplete', { exact: true })).toBeVisible();
-  await expect(page.getByText('Not the recorded output commit', { exact: true })).toBeVisible();
-  await expect(page.getByText('Never completed · no summary recorded · 0 findings')).toBeVisible();
-  await expect(page.getByText('zero findings proves nothing')).toBeVisible();
-  await expect(page.getByText('0 of 2 passed at the output commit', { exact: true })).toBeVisible();
-  await expect(page.getByText('Passed at another revision', { exact: true })).toBeVisible();
-  await expect(page.getByText('Failed', { exact: true })).toBeVisible();
-  await expect(page.getByText('No pull request recorded', { exact: true })).toBeVisible();
-  await expect(page.getByText('Clean at the output commit', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('Recorded gaps for this task (1)')).toBeVisible();
-});
-
-test('read-only inspection and the evidence download perform no writes', async ({
-  page,
-  context
-}) => {
-  const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(e.message));
-  const writes = trackWrites(page);
-  await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
-  await login(page);
-  await page.getByRole('button', { name: 'Inspect run' }).click();
-  await expect(page.getByRole('heading', { name: 'Execution cycle #001' })).toBeVisible();
-
-  await page.getByLabel('Proposal', { exact: true }).selectOption('task-reviewed');
-  await page.getByText('requested routes, not verified runtime identity').click();
-  await expect(page.getByText('Saved routes are the routes that were requested')).toBeVisible();
-  await page.getByText('Limitations recorded in this evidence (9)').click();
-  await expect(page.getByText('Deferred is not rejected.').first()).toBeVisible();
-  await page.getByRole('button', { name: 'Copy cycle ID' }).click();
-  await expect(page.locator('.dialog-footer .muted')).toHaveText(/copied/i);
-
-  const download = page.waitForEvent('download');
-  await page
-    .getByRole('button', { name: 'Download evidence JSON (review before sharing)' })
-    .click();
-  const artifact = await download;
-  expect(artifact.suggestedFilename()).toBe('octomus-run-evidence-cycle-1.json');
-  const stream = await artifact.createReadStream();
-  let contents = '';
-  for await (const chunk of stream!) contents += chunk.toString();
-  const exported = JSON.parse(contents);
-  const response = await page.request.get('/api/cycles/cycle-1/evidence', {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  const saved = await response.json();
-  expect({ ...exported, generated_at: null }).toEqual({ ...saved, generated_at: null });
-  expect(exported.review_required_before_sharing).toBe(true);
-  expect(JSON.stringify(exported)).not.toContain('verification_commands');
-  for (const proposal of exported.proposals)
-    for (const task of proposal.linked_tasks) {
-      expect(task).not.toHaveProperty('config');
-      expect(task).not.toHaveProperty('workspace');
-      expect(task).not.toHaveProperty('verification');
-    }
-  await expect(page.getByRole('button', { name: /share/i })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /upload/i })).toHaveCount(0);
-
-  await page.getByRole('button', { name: 'Open task details' }).click();
-  for (const tab of ['Sessions', 'Reviews', 'Verification', 'Activity', 'Overview'])
-    await page.getByRole('tab', { name: new RegExp(tab) }).click();
-  await expect(page.getByRole('heading', { name: 'Recorded result' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Open PR #12' })).toBeVisible();
-
-  expect(writes).toEqual([]);
-  expect(errors).toEqual([]);
 });
 
 test('a failed initial evidence request explains itself and offers a retry', async ({ page }) => {

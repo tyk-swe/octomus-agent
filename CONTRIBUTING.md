@@ -48,8 +48,8 @@ checks against the freshly built binary:
   repairs, verification, redacted publication and the doctor), `interrupt-publication`,
   `audit`, `chain` (dependent tasks on one PR, then a duplicate plan refused),
   `pr-outcome`, `baseline` and `notify`.
-- `npm test --prefix web`: the dashboard browser tests, including the evidence display
-  rules `web/tests/evidence.spec.ts` checks without a page.
+- `npm test --prefix web`: the dashboard browser tests, including the evidence and
+  sandbox verdict rules `web/tests/evidence.spec.ts` checks without a page.
 
 Focused targets run one stage each against the built binary: `make test-go`
 (regular Go suite), `make test-go-race` (race suite explicitly),

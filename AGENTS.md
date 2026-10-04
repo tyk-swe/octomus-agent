@@ -96,8 +96,15 @@ owns strict typed JSON boundaries for saved records and API requests.
   `capture.go` (bounded capture, redacted failure text and `RunMachine`, `RunText`
   and `RunPredicate`), `status.go` (how a child ended) and `deadline.go` (`Bounded`
   and `WithDeadline`). `internal/workspace`: managed-directory safety.
-- `web/src`: dashboard, shared TypeScript types, settings, setup checklist and
-  run/task evidence.
+- `web/src`: the dashboard. `routes/+page.svelte` is the shell: login, navigation,
+  list paging, the refresh coordinator and the operator controls. `lib/` holds the
+  views (`Overview`, `Proposals`, `Notices`, `Settings` with `RouteEditor`,
+  `SetupChecklist` and `BaselineCheck`, the `TaskDetail` and `RunEvidence` dialogs)
+  and the pieces they share (`Badge`, `RecoveryNotice`, `Sha`, `SandboxRun`),
+  `types.ts` (the TypeScript mirror of the Go records), `api.ts` (the authenticated
+  client), `format.ts` (relative times, sizes and short hashes), `evidence.ts`
+  (verdict rules), `sandbox.ts` (the sandbox verdict), `setup.ts` (checklist steps),
+  `modelRoutes.ts` (route labels) and `limits.ts` (numeric bounds).
 - Go behavior tests sit beside each package (`*_test.go`); `internal/testutil`
   holds their shared polling and process helpers, a POSIX-shell `git`/`gh`
   dispatcher (`InstallFixtureCommands`) that relays into a fixture's `bin/`
@@ -121,9 +128,15 @@ owns strict typed JSON boundaries for saved records and API requests.
   stack with test images from `tests/docker`. `web/scripts/render-launch-assets.mjs` captures
   `docs/dashboard.png`.
 - `web/tests`: dashboard browser tests against the synthetic service
-  `tests/serve_ui.py` starts, with shared synthetic fixtures in `synthetic.ts`;
-  `evidence.spec.ts` checks the evidence display rules and badge styles without a page.
-  `docs/architecture.md` describes the operating contract.
+  `tests/serve_ui.py` starts, with the shared fixtures in `synthetic.ts` (login,
+  navigation, the configuration mock, `patchState` and recorded-evidence builders):
+  `dashboard.spec.ts` (the tour, task tabs, model routing, mobile navigation),
+  `configuration.spec.ts` (revision conflicts, drafts, the setup checklist),
+  `controls.spec.ts` (planning capacity, queued state refreshes, control eligibility
+  and an audit), `recovery.spec.ts` (list retries and refused actions),
+  `run-evidence.spec.ts`, `sandbox.spec.ts`, and `evidence.spec.ts`, which checks
+  the evidence and sandbox verdict rules without a page.
+- `docs/architecture.md` describes the operating contract.
 
 ## Build and verify
 

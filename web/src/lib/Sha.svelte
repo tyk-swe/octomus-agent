@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
-  import { shortCommit } from './evidence';
+  import { shortHash } from './format';
   let {
     value,
     label,
@@ -14,7 +14,7 @@
 
 {#if value}
   <span class="sha"
-    ><code title={value}>{shortCommit(value)}</code><span class="visually-hidden"
+    ><code title={value}>{shortHash(value)}</code><span class="visually-hidden"
       >, full {label.toLowerCase()} {value}</span
     >{#if oncopy}<button
         type="button"

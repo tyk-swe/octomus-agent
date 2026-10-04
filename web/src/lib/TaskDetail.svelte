@@ -1,18 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, ApiError, gb, relative, safeUrl } from './api';
-  import { routeLabel } from './routes';
-  import { createCopyFeedback } from './copyFeedback.svelte';
-  import type { Task, Event, RunEvidenceV1, TaskEvidence } from './types';
-  import Icon from './Icon.svelte';
-  import PanelDialog from './PanelDialog.svelte';
-  import Sha from './Sha.svelte';
+  import { api, ApiError, fetchEvidence } from './api';
   import Badge from './Badge.svelte';
-  import EvidenceText from './EvidenceText.svelte';
-  import EvidenceFact from './EvidenceFact.svelte';
-  import FindingCard from './FindingCard.svelte';
-  import ReviewChangeSet from './ReviewChangeSet.svelte';
-  import SandboxRun from './SandboxRun.svelte';
+  import { createCopyFeedback } from './copyFeedback.svelte';
   import {
     UNKNOWN_VERDICT,
     checksVerdict,
@@ -21,8 +11,20 @@
     prVerdict,
     reviewRoundBadge,
     reviewVerdict,
-    roundRevisionLabel
+    revisionMatchLabel
   } from './evidence';
+  import EvidenceFact from './EvidenceFact.svelte';
+  import EvidenceText from './EvidenceText.svelte';
+  import FindingCard from './FindingCard.svelte';
+  import { gb, relative, safeUrl } from './format';
+  import Icon from './Icon.svelte';
+  import { routeLabel } from './modelRoutes';
+  import PanelDialog from './PanelDialog.svelte';
+  import RecoveryNotice from './RecoveryNotice.svelte';
+  import ReviewChangeSet from './ReviewChangeSet.svelte';
+  import SandboxRun from './SandboxRun.svelte';
+  import Sha from './Sha.svelte';
+  import type { Task, Event, TaskEvidence } from './types';
   let {
     id,
     onclose,
@@ -111,12 +113,7 @@
     evidenceRequest = controller;
     const task = id;
     try {
-      const run = await api<RunEvidenceV1>(
-        `/cycles/${encodeURIComponent(cycleId)}/evidence`,
-        'GET',
-        undefined,
-        controller.signal
-      );
+      const run = await fetchEvidence(cycleId, controller.signal);
       if (current !== evidenceGeneration || controller.signal.aborted || task !== id) return;
       evidence = findTaskEvidence(run, task);
       evidenceError = evidence ? '' : 'This task has no recorded evidence in its planning cycle.';
@@ -219,18 +216,14 @@
   labelledby="task-title"
   {onclose}
 >
-  {#if actionRecovery}<div class="notice" class:error role={error ? 'alert' : 'status'}>
-      <Icon name={error ? 'alert' : 'refresh'} size={18} /><span>
-        {actionRecovery}
-        {error ? `Task details could not be refreshed. ${error}` : 'Refreshing task details…'}
-      </span>
-      {#if error}<button
-          bind:this={recoveryButton}
-          class="button small"
-          aria-disabled={loading}
-          onclick={() => load()}>{loading ? 'Retrying task details…' : 'Retry task details'}</button
-        >{/if}
-    </div>{:else if error}<div class="notice error" role="alert">
+  {#if actionRecovery}<RecoveryNotice
+      message={actionRecovery}
+      {error}
+      {loading}
+      label="task details"
+      onretry={() => load()}
+      bind:button={recoveryButton}
+    />{:else if error}<div class="notice error" role="alert">
       <Icon name="alert" size={18} /><span
         >{taskStale ? 'Retained task details · stale. ' : ''}{error}</span
       >
@@ -248,7 +241,7 @@
     </div>{/if}
   {#if task}
     <div class="task-title">
-      <div class="badge-row"><span class={'badge ' + task.status}>{task.status}</span></div>
+      <div class="badge-row"><Badge label={task.status} tone={task.status} /></div>
       <h2 id="task-title" tabindex="-1">{task.proposal.title}</h2>
       <p>
         <span class="tier">{task.proposal.tier}</span><span>{task.proposal.category}</span><span
@@ -279,7 +272,7 @@
       <section class="result-summary" aria-labelledby="result-heading">
         <div class="row-between">
           <h3 id="result-heading">Recorded result</h3>
-          {#if evidenceStale || taskStale}<span class="badge blocked">Retained · stale</span>{/if}
+          {#if evidenceStale || taskStale}<Badge label="Retained · stale" tone="blocked" />{/if}
         </div>
         {#if evidenceError}<p class="muted">
             {evidenceStale
@@ -306,7 +299,7 @@
                   value={outputSha}
                   label="Output commit"
                   oncopy={feedback.copy}
-                />{:else}<span class="badge cancelled">Unknown</span>{/if}<small
+                />{:else}<Badge label="Unknown" tone="cancelled" />{/if}<small
                 >{evidence
                   ? outputSha
                     ? 'The commit this task recorded as its output.'
@@ -428,7 +421,7 @@
         {#each task.sessions as session}<article class="history-card">
             <div class="row-between">
               <h3>{session.role}</h3>
-              <span class={'badge ' + session.status}>{session.status}</span>
+              <Badge label={session.status} tone={session.status} />
             </div>
             <p>Requested route: {routeLabel(session.route)}</p>
             <SandboxRun record={session.sandbox} />
@@ -448,7 +441,9 @@
         </p>
         {#each task.reviews as round, index}
           {@const badge = reviewRoundBadge(round)}
-          {@const marker = roundRevisionLabel(round.revision, task.output_commit)}
+          {@const marker = revisionMatchLabel(
+            task.output_commit ? round.revision === task.output_commit : null
+          )}
           <article class="history-card">
             <div class="row-between">
               <h3>Review {index + 1}</h3>
@@ -483,13 +478,16 @@
           </p>
           <ul class="command-list">
             {#each task.verification as verification}
-              {@const marker = roundRevisionLabel(verification.revision, task.output_commit)}
+              {@const marker = revisionMatchLabel(
+                task.output_commit ? verification.revision === task.output_commit : null
+              )}
               <li class="command-row">
                 <code class="command">{verification.command}</code>
                 <span class="review-badges"
-                  ><span class={'badge ' + (verification.success ? 'clean' : 'failed')}
-                    >{verification.success ? 'Passed' : 'Failed'}</span
-                  ><Badge label={marker.label} tone={marker.tone} /></span
+                  ><Badge
+                    label={verification.success ? 'Passed' : 'Failed'}
+                    tone={verification.success ? 'clean' : 'failed'}
+                  /><Badge label={marker.label} tone={marker.tone} /></span
                 >
                 <p class="command-meta">
                   Ran at <Sha

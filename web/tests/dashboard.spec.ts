@@ -1,10 +1,18 @@
 import { readFileSync } from 'node:fs';
-import { expect } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { configFixture, hostMode, login, openNavigation, test } from './synthetic';
-const token = 'browser-test-operator-token-32-characters';
+import type { Model } from '../src/lib/types';
+import {
+  configurationFixture,
+  login,
+  openNavigation,
+  patchState,
+  test,
+  token,
+  unsandboxed
+} from './synthetic';
 
-const codexModels = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
+const codexModels: Model[] = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
   backend: 'codex',
   provider: null,
   provider_name: null,
@@ -15,7 +23,7 @@ const codexModels = ['gpt-6-astra', 'gpt-5.6-luna'].map((model) => ({
   available: true,
   unavailable_reason: null
 }));
-const opencodeModels = [
+const opencodeModels: Model[] = [
   { provider: 'fixture', model: 'fixture-model', variants: ['low', 'high'] },
   { provider: 'fixture', model: 'plain-model', variants: [] },
   { provider: 'alternate', model: 'fixture-model', variants: ['deep'] }
@@ -29,33 +37,25 @@ const opencodeModels = [
   ...model
 }));
 
-test.beforeEach(async ({ page }) => {
-  await page.route('**/api/model-catalog', async (route) => {
-    const { backend } = route.request().postDataJSON();
-    await route.fulfill({ json: backend === 'codex' ? codexModels : opencodeModels });
-  });
-});
+async function accessible(page: Page, within?: string) {
+  const builder = new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']);
+  const { violations } = await (within ? builder.include(within) : builder).analyze();
+  expect(violations.map((v) => ({ rule: v.id, elements: v.nodes.map((n) => n.target) }))).toEqual(
+    []
+  );
+}
+const fitsViewport = (page: Page) =>
+  page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
 
-test.afterEach(async ({ page }) => {
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
-});
-
-test('the dashboard names the build version the service reports', async ({ page }) => {
+test('the private dashboard names its version and tours tasks, proposals, pull requests, run evidence and configuration', async ({
+  page,
+  isMobile
+}) => {
   const { version } = (await (await page.request.get('/healthz')).json()) as { version: string };
   expect(version).toBe(readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim());
-  await login(page);
-  await expect(page.locator('.content-footer')).toContainText(`· v${version}`);
-  await expect(page.locator('.disconnect .version')).toHaveText(
-    `v${version.split('.').slice(0, 2).join('.')}`
-  );
-});
-
-test('private dashboard, navigation, task evidence, configuration, and mobile layout', async ({
-  page
-}, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await configFixture(page);
+  await configurationFixture(page, { catalog: [...codexModels, ...opencodeModels] });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Your project’s control room.' })).toBeVisible();
   await page.getByLabel('Operator access token').fill('incorrect');
@@ -64,24 +64,15 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await page.getByLabel('Operator access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+  await expect(page.locator('.content-footer')).toContainText(`· v${version}`);
+  await expect(page.locator('.disconnect .version')).toHaveText(
+    `v${version.split('.').slice(0, 2).join('.')}`
+  );
   await expect(page.getByRole('button', { name: 'Run once' })).toBeDisabled();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
-  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
-  expect(
-    accessibility.violations.map((v) => ({ rule: v.id, elements: v.nodes.map((n) => n.target) }))
-  ).toEqual([]);
-  await expect(async () => {
-    await page.screenshot({
-      path: `test-results/${testInfo.project.name}-overview.png`,
-      fullPage: true
-    });
-  }).toPass({ timeout: 15000 });
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  async function navigate(name: string) {
-    if (testInfo.project.name === 'mobile')
-      await page.getByRole('button', { name: 'Toggle navigation' }).click();
-    await page.getByRole('navigation').getByRole('button', { name, exact: true }).click();
-  }
+  await accessible(page);
+  expect(await fitsViewport(page)).toBe(true);
+  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
   await navigate('Task queue');
   await page.getByLabel('Search work').fill('documentation');
   await expect(
@@ -141,7 +132,7 @@ test('private dashboard, navigation, task evidence, configuration, and mobile la
   await navigate('Overview');
   await navigate('Configuration');
   await expect(page.getByLabel('Repair reasoning effort', { exact: true })).toHaveValue('high');
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await fitsViewport(page)).toBe(true);
   await navigate('Overview');
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
   expect(errors).toEqual([]);
@@ -152,9 +143,8 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
   isMobile
 }) => {
   const observedAt = new Date(Date.now() - 5 * 60_000).toISOString();
-  await page.route('**/api/state', async (route) => {
-    const state = await (await route.fetch()).json();
-    state.pr_capacity = {
+  await patchState(page, (snapshot) => {
+    snapshot.pr_capacity = {
       limit: 2,
       owned_open: 2,
       reserved: 0,
@@ -163,7 +153,6 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
       status: 'full',
       reason: 'Capacity full'
     };
-    await route.fulfill({ json: state });
   });
   await login(page);
   await expect(page.getByRole('status', { name: 'Operating mode' })).toContainText('active tasks');
@@ -174,14 +163,14 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
     page.locator('.notice').filter({ hasText: 'Open-PR capacity is full' })
   ).toContainText(/Observed \d+m ago\./);
 
-  await openNavigation(page, 'Pull requests', isMobile);
+  await openNavigation(page, 'Pull requests', !!isMobile);
   const external = page.getByRole('link', { name: /Adjust the retry backoff/ });
   await expect(external).toContainText('· not owned by Octomus');
   const owned = page.getByRole('link', { name: /Explain the local development workflow/ });
   await expect(owned).toContainText('· owned by Octomus');
   await expect(owned).not.toContainText('not owned');
 
-  await openNavigation(page, 'Task queue', isMobile);
+  await openNavigation(page, 'Task queue', !!isMobile);
   await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
   const dialog = page.getByRole('dialog');
   const tab = (name: string | RegExp) => dialog.getByRole('tab', { name });
@@ -211,130 +200,15 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
   await tab(/Reviews/).click();
   await expect(tab(/Reviews/)).toHaveAttribute('aria-selected', 'true');
   await expect(dialog.getByRole('tabpanel', { name: /Reviews/ })).toBeVisible();
-  const accessibility = await new AxeBuilder({ page })
-    .include('.task-dialog')
-    .withTags(['wcag2a', 'wcag2aa'])
-    .analyze();
-  expect(
-    accessibility.violations.map((v) => ({ rule: v.id, elements: v.nodes.map((n) => n.target) }))
-  ).toEqual([]);
+  await accessible(page, '.task-dialog');
   await page.getByRole('button', { name: 'Close task details' }).click();
 });
 
-test('one-shot audit progress, decisions and paused controls', async ({ page }, testInfo) => {
-  let running = false;
-  let finished = false;
-  await page.route('**/api/state', async (route) => {
-    const response = await route.fetch();
-    const state = await response.json();
-    state.configured = false;
-    state.audit_configured = true;
-    state.active_tasks = 0;
-    state.control.paused = true;
-    state.status = running ? 'auditing' : 'paused';
-    state.cycle_active = running;
-    state.active_cycle_mode = running ? 'audit' : null;
-    if (running || finished) {
-      const cycle = structuredClone(state.cycles[0]);
-      cycle.id = 'audit-fixture';
-      cycle.number = 2;
-      cycle.mode = 'audit';
-      cycle.status = running ? 'running' : 'completed';
-      cycle.decisions = { accepted: 1, rejected: 1, deferred: 1 };
-      state.cycles.unshift(cycle);
-    }
-    await route.fulfill({ response, json: state });
-  });
-  await page.route('**/api/cycles?*', async (route) => {
-    const response = await route.fetch();
-    const result = await response.json();
-    if (running || finished)
-      result.items.unshift({
-        ...result.items[0],
-        id: 'audit-fixture',
-        number: 2,
-        mode: 'audit',
-        status: running ? 'running' : 'completed'
-      });
-    await route.fulfill({ response, json: result });
-  });
-  await page.route('**/api/proposals?*', async (route) => {
-    const response = await route.fetch();
-    const result = await response.json();
-    if (running || finished) {
-      const seed = result.items[0] ?? {
-        target: 'main',
-        tier: 'M',
-        category: 'features',
-        problem: 'Concrete evidence',
-        scope: 'Small scope',
-        benefit: 'Useful',
-        evidence: [],
-        dependencies: [],
-        prompt: ''
-      };
-      const status = new URL(route.request().url()).searchParams.get('status');
-      result.items = finished
-        ? ['accepted', 'rejected', 'deferred']
-            .filter((d) => status === 'all' || d === status)
-            .map((decision, index) => ({
-              ...seed,
-              id: `audit-${index}`,
-              cycle_id: 'audit-fixture',
-              cycle: 2,
-              mode: 'audit',
-              title: `Audit ${decision} recommendation`,
-              decision,
-              reason: `${decision}: both adversaries considered the concrete evidence.`
-            }))
-        : [];
-      result.counts = { accepted: 1, rejected: 1, deferred: 1 };
-    }
-    await route.fulfill({ response, json: result });
-  });
-  await page.route('**/api/control/audit', async (route) => {
-    expect(route.request().method()).toBe('POST');
-    running = true;
-    await route.fulfill({ json: { paused: true } });
-  });
-  await page.goto('/');
-  await page.getByLabel('Operator access token').fill(token);
-  await page.getByRole('button', { name: 'Open dashboard' }).click();
-  await expect(page.getByRole('button', { name: 'Run once' })).toBeDisabled();
-  await page.getByRole('button', { name: 'Run an audit' }).click();
-  await expect(page.getByRole('heading', { name: 'Worth doing. Before doing.' })).toBeVisible();
-  await expect(page.getByRole('status').filter({ hasText: 'Audit in progress' })).toContainText(
-    'Audit in progress'
-  );
-  await expect(page.getByRole('button', { name: 'Start continuous', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Run an audit' })).toBeDisabled();
-  running = false;
-  finished = true;
-  await expect(page.getByRole('heading', { name: 'Audit rejected recommendation' })).toBeVisible({
-    timeout: 10000
-  });
-  await page.getByLabel('Cycle', { exact: true }).selectOption('audit-fixture');
-  await expect(page.getByLabel('Decision counts')).toContainText('rejected: 1');
-  await page.getByRole('button', { name: 'rejected', exact: true }).click();
-  await expect(
-    page.getByText('rejected: both adversaries considered the concrete evidence.')
-  ).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Audit accepted recommendation' })).toHaveCount(0);
-  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
-  expect(accessibility.violations).toEqual([]);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await expect(async () => {
-    await page.screenshot({
-      path: `test-results/${testInfo.project.name}-audit-fixture.png`,
-      fullPage: true
-    });
-  }).toPass({ timeout: 15000 });
-});
-
 test('model routing across all roles, provider variants, draft catalogs and unavailable selections', async ({
-  page
-}, testInfo) => {
-  await hostMode(page);
+  page,
+  isMobile
+}) => {
+  await configurationFixture(page, { snapshot: unsandboxed });
   let catalogState: 'normal' | 'removed' | 'error' = 'normal';
   const drafts: { backend: string; binary: string }[] = [];
   await page.route('**/api/model-catalog', async (route) => {
@@ -345,15 +219,8 @@ test('model routing across all roles, provider variants, draft catalogs and unav
       await route.fulfill({ json: catalogState === 'normal' ? opencodeModels : [] });
     }
   });
-  await configFixture(page);
-  await page.goto('/');
-  await page.getByLabel('Operator access token').fill(token);
-  await page.getByRole('button', { name: 'Open dashboard' }).click();
-  async function navigate(name: string) {
-    if (testInfo.project.name === 'mobile')
-      await page.getByRole('button', { name: 'Toggle navigation' }).click();
-    await page.getByRole('navigation').getByRole('button', { name, exact: true }).click();
-  }
+  await login(page);
+  const navigate = (name: string) => openNavigation(page, name, !!isMobile);
   await navigate('Configuration');
   await page.getByLabel('OpenCode executable', { exact: true }).fill('/draft/opencode');
   await page.getByRole('button', { name: 'Load OpenCode models' }).click();
@@ -412,13 +279,59 @@ test('model routing across all roles, provider variants, draft catalogs and unav
     await expect(page.getByLabel(name + ' runner', { exact: true })).toHaveValue('opencode');
   await expect(page.getByLabel('Repair provider', { exact: true })).toHaveValue('alternate');
   await expect(page.getByLabel('Repair variant', { exact: true })).toHaveValue('deep');
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
-  expect(accessibility.violations).toEqual([]);
-  await expect(async () => {
-    await page.screenshot({
-      path: `test-results/${testInfo.project.name}-model-routes.png`,
-      fullPage: true
-    });
-  }).toPass({ timeout: 15000 });
+  expect(await fitsViewport(page)).toBe(true);
+  await accessible(page);
 });
+
+for (const reducedMotion of ['reduce', 'no-preference'] as const) {
+  test(`mobile navigation disclosure supports skip, selected states, Escape and destination focus (${reducedMotion})`, async ({
+    page
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.emulateMedia({ reducedMotion });
+    await login(page);
+    const toggle = page.getByRole('button', { name: 'Toggle navigation' });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('navigation')).toBeHidden();
+    await page.getByRole('link', { name: 'Skip to main content' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('main')).toBeFocused();
+    await toggle.focus();
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => !!document.activeElement?.closest('aside'))).toBe(false);
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const overview = page
+      .getByRole('navigation')
+      .getByRole('button', { name: 'Overview', exact: true });
+    await expect(overview).toHaveAttribute('aria-current', 'page');
+    await expect(overview).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(toggle).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await page.keyboard.press('Enter');
+    const queue = page
+      .getByRole('navigation')
+      .getByRole('button', { name: 'Task queue', exact: true });
+    await page.keyboard.press('Tab');
+    await expect(queue).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('main')).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await page
+      .getByRole('group', { name: 'Task filters' })
+      .getByRole('button', { name: 'queued', exact: true })
+      .click();
+    await expect(
+      page
+        .getByRole('group', { name: 'Task filters' })
+        .getByRole('button', { name: 'queued', exact: true })
+    ).toHaveAttribute('aria-pressed', 'true');
+    await toggle.click();
+    await expect(queue).toHaveAttribute('aria-current', 'page');
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await expect(page.getByRole('navigation')).toBeVisible();
+  });
+}

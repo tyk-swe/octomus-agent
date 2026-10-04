@@ -14,7 +14,7 @@ export type TaskStatus =
   | 'cancelled';
 export type WorkspaceLifecycle = { archived_at?: string | null; discarded_at?: string | null };
 export type RevisionStatus = 'matches_last_observation' | 'stale' | 'unknown';
-export type PrCapacityStatus = 'ready' | 'full' | 'refreshing' | 'unavailable';
+export type PRCapacityStatus = 'ready' | 'full' | 'refreshing' | 'unavailable';
 export type Route = {
   backend: Backend;
   model: string;
@@ -141,16 +141,8 @@ export type AttemptPolicy = Pick<
 >;
 export type Page<T> = { items: T[]; next_cursor: number | null; counts: Record<string, number> };
 export type ProposalDetail = Proposal & { content_revision: number };
-export type ProposalRow = ProposalDetail & {
-  cycle: number;
-  cycle_id: string;
-  mode: CycleMode;
-  detail?: ProposalDetail;
-  detailRequested?: boolean;
-  detailLoading?: number;
-  detailError?: string;
-};
-export type PrObservation = {
+export type ProposalRow = ProposalDetail & { cycle: number; cycle_id: string; mode: CycleMode };
+export type PRObservation = {
   repository: string;
   pr: Omit<PR, 'body'>;
   observed_at: string;
@@ -219,7 +211,7 @@ export type PR = {
   head_repository: string;
   base_repository: string;
 };
-export type ExternalPrContext = {
+export type ExternalPRContext = {
   number: number;
   url: string;
   title: string;
@@ -232,7 +224,7 @@ export type ExternalPrContext = {
   title_truncated: boolean;
   body_truncated: boolean;
 };
-export type PrCoverage = {
+export type PRCoverage = {
   observed_at: string | null;
   complete: boolean;
   total_open: number;
@@ -258,8 +250,8 @@ export type Cycle = {
   grounding: {
     revision: string;
     prs: PR[];
-    external_prs?: ExternalPrContext[];
-    pr_coverage?: PrCoverage;
+    external_prs?: ExternalPRContext[];
+    pr_coverage?: PRCoverage;
     history: unknown;
     maintenance_due: boolean;
     maintenance_targets: string[];
@@ -322,7 +314,7 @@ export type CommandEvidence = {
   commands: CommandResult[];
   all_passed_at_output_revision: boolean;
 };
-export type PrReference = { number: number | null; url: string | null; source: string };
+export type PRReference = { number: number | null; url: string | null; source: string };
 export type TaskEvidence = {
   id: string;
   cycle_id: string;
@@ -338,7 +330,7 @@ export type TaskEvidence = {
   sessions: SessionRoute[];
   latest_review: ReviewEvidence;
   required_commands: CommandEvidence;
-  pull_request: PrReference | null;
+  pull_request: PRReference | null;
   gaps: string[];
 };
 export type ProposalEvidence = {
@@ -389,13 +381,13 @@ export type RunEvidenceV1 = {
   gaps: string[];
 };
 export type Event = { id: number; at: string; entity_id: string; kind: string; message: string };
-export type PrCapacity = {
+export type PRCapacity = {
   limit: number;
   owned_open: number | null;
   reserved: number;
   remaining: number | null;
   observed_at: string | null;
-  status: PrCapacityStatus;
+  status: PRCapacityStatus;
   reason: string | null;
 };
 export type PlanningCapacity = {
@@ -555,7 +547,7 @@ export type Snapshot = {
   sessions_today: number;
   session_limit: number;
   planning_capacity: PlanningCapacity;
-  pr_capacity: PrCapacity;
+  pr_capacity: PRCapacity;
   sandbox: SandboxPosture;
   tasks: TaskRow[];
   counts: Record<string, number>;
@@ -575,7 +567,7 @@ export type Snapshot = {
     };
   } | null;
   cycles: CycleSummary[];
-  prs: PrObservation[];
+  prs: PRObservation[];
   events: Event[];
 };
 export type Model = {

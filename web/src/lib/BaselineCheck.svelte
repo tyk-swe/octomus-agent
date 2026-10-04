@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte';
-  import { api, relative } from './api';
+  import { api } from './api';
+  import Badge from './Badge.svelte';
   import { baselineStatusLabel, type Tone } from './evidence';
-  import type { BaselineCheck, BaselineView } from './types';
-  import Sha from './Sha.svelte';
+  import { relative } from './format';
   import Icon from './Icon.svelte';
+  import RecoveryNotice from './RecoveryNotice.svelte';
   import SandboxRun from './SandboxRun.svelte';
+  import Sha from './Sha.svelte';
+  import type { BaselineCheck, BaselineView } from './types';
   let {
     active,
     editable,
@@ -211,23 +214,18 @@
     </div>
     <Icon name="shield" />
   </div>
-  {#if actionRecovery}<div class="notice" class:error role={error ? 'alert' : 'status'}>
-      <span>
-        {actionRecovery}
-        {error
-          ? `Baseline status could not be refreshed. ${error}`
-          : cancellingId
-            ? 'Waiting for the check to finish. Status refreshes automatically.'
-            : 'Refreshing baseline status…'}
-      </span>
-      {#if error}<button
-          bind:this={recoveryButton}
-          class="button small"
-          aria-disabled={loading || pending !== ''}
-          onclick={() => load()}
-          >{loading ? 'Retrying baseline status…' : 'Retry baseline status'}</button
-        >{/if}
-    </div>{:else if error}<div class="notice error" role="alert">{error}</div>{/if}
+  {#if actionRecovery}<RecoveryNotice
+      message={actionRecovery}
+      {error}
+      loading={loading || pending !== ''}
+      label="baseline status"
+      waiting={cancellingId
+        ? 'Waiting for the check to finish. Status refreshes automatically.'
+        : undefined}
+      icon={false}
+      onretry={() => load()}
+      bind:button={recoveryButton}
+    />{:else if error}<div class="notice error" role="alert">{error}</div>{/if}
   {#if actionError}<div class="notice error" role="alert">
       <span>Baseline action failed. {actionError}</span>
       <button
@@ -244,9 +242,7 @@
       <div>
         <dt>Status</dt>
         <dd>
-          <span class={'badge ' + statusTone(check.status)}
-            >{baselineStatusLabel(check.status)}</span
-          >
+          <Badge label={baselineStatusLabel(check.status)} tone={statusTone(check.status)} />
         </dd>
       </div>
       <div>
@@ -305,9 +301,10 @@
       <ul class="baseline-commands">
         {#each check.commands as result (result.created_at + result.command)}
           <li>
-            <span class={'badge ' + (result.success ? 'accepted' : 'rejected')}
-              >{result.success ? 'Passed' : 'Failed'}</span
-            >
+            <Badge
+              label={result.success ? 'Passed' : 'Failed'}
+              tone={result.success ? 'accepted' : 'rejected'}
+            />
             <code>{result.command}</code>
             <SandboxRun record={result.sandbox} />
             {#if result.output}<details>
