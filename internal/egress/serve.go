@@ -11,10 +11,10 @@ import (
 
 const (
 	// maxConnections bounds the gateway's open client connections, tunnels included, so the sandboxes together
-	// cannot exhaust its descriptors or memory; maxConnectionsPerSource leaves one sandbox its tunnels and some
+	// cannot exhaust its descriptors or memory; perSourceLimit leaves one sandbox its tunnels and some
 	// headroom without letting it take the rest.
-	maxConnections          = 4096
-	maxConnectionsPerSource = 256
+	maxConnections = 4096
+	perSourceLimit = 256
 	// stopWait is how long a stopping gateway waits for cut tunnels to log their closing lines.
 	stopWait = 5 * time.Second
 )
@@ -46,7 +46,7 @@ func (g *Gateway) Serve(ctx context.Context, listener net.Listener) error {
 			}
 		}
 	}()
-	err := serveUntil(ctx, server, limitConnections(listener, maxConnections, maxConnectionsPerSource))
+	err := serveUntil(ctx, server, limitConnections(listener, maxConnections, perSourceLimit))
 	cancel()
 	g.stop()
 	return err

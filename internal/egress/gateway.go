@@ -50,8 +50,8 @@ type Gateway struct {
 }
 
 const (
-	// maxTunnelsPerSandbox bounds how many tunnels one sandbox may hold open, so it cannot exhaust the gateway.
-	maxTunnelsPerSandbox = 64
+	// tunnelLimit bounds how many tunnels one sandbox may hold open, so it cannot exhaust the gateway.
+	tunnelLimit = 64
 	// halfCloseIdle is how long a tunnel whose one direction has ended may go without a byte in the other.
 	halfCloseIdle = 2 * time.Minute
 	// maxTunnelLifetime matches the longest time limit the broker can give a sandbox; a revoked lease ends a tunnel
@@ -247,9 +247,9 @@ func summaryKey(host string, port uint16) string {
 	return net.JoinHostPort(host, strconv.Itoa(int(port)))
 }
 
-// beginDecision registers a request before policy, DNS or dialing can leave its outcome pending. Collection and
+// begin registers a request before policy, DNS or dialing can leave its outcome pending. Collection and
 // admission share the lock: a request arriving after collection cannot open a tunnel absent from that evidence.
-func (g *Gateway) beginDecision(sandboxName, lease string) *usage {
+func (g *Gateway) begin(sandboxName, lease string) *usage {
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
 	if _, done := g.collected[sandboxName]; done {
@@ -264,20 +264,20 @@ func (g *Gateway) beginDecision(sandboxName, lease string) *usage {
 	return entry
 }
 
-// abandonDecision leaves evidence incomplete if the request ended without a decision, for example when its
+// abandon leaves evidence incomplete if the request ended without a decision, for example when its
 // client went away while the HTTP connection was being hijacked.
-func (g *Gateway) abandonDecision(entry *usage) {
+func (g *Gateway) abandon(entry *usage) {
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
 	entry.pending--
 	entry.summary.Incomplete = true
 }
 
-// countDecision adds a decision to its sandbox's summary and returns the entry and key it counted under. unnamed
+// count adds a decision to its sandbox's summary and returns the entry and key it counted under. unnamed
 // reports the first decision for a host the summary counts only under "other", up to foldedNameLimit such hosts, so
 // its log line names the host whatever the log budget. pending, when supplied, settles that request atomically with
 // recording its outcome, so collection cannot mistake a recorded decision for an unresolved one.
-func (g *Gateway) countDecision(d Decision, lease string, pending *usage) (entry *usage, key string, unnamed bool) {
+func (g *Gateway) count(d Decision, lease string, pending *usage) (entry *usage, key string, unnamed bool) {
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
 	if pending != nil {
@@ -381,7 +381,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Octomus egress: only sandboxes with a live lease may connect", http.StatusProxyAuthRequired)
 		return
 	}
-	pending := g.beginDecision(lease.Sandbox, leaseFile)
+	pending := g.begin(lease.Sandbox, leaseFile)
 	if pending == nil {
 		g.logRefusal(Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Decision: "denied", Reason: "sandbox evidence already collected"},
 			"sandbox "+lease.Sandbox, false)
@@ -391,12 +391,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	settled := false
 	defer func() {
 		if !settled {
-			g.abandonDecision(pending)
+			g.abandon(pending)
 		}
 	}()
 	count := func(d Decision) (*usage, string, bool) {
 		settled = true
-		return g.countDecision(d, leaseFile, pending)
+		return g.count(d, leaseFile, pending)
 	}
 	refuse := func(decision string, status int, host string, port uint16, reason string) {
 		d := Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: port, Decision: decision, Reason: reason}
@@ -449,7 +449,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusTooManyRequests, host, uint16(port), "too many open tunnels")
 		return
 	}
-	defer g.releaseTunnel(lease.Sandbox)
+	defer g.release(lease.Sandbox)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	// The rooted name is looked up as is: no resolver search domain is ever appended to an allowlisted name.
 	addresses, err := g.resolve.LookupNetIP(ctx, "ip", host+".")
@@ -533,14 +533,14 @@ func (g *Gateway) dialAddresses(ctx context.Context, addresses []netip.Addr, por
 func (g *Gateway) reserve(sandboxName string) bool {
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
-	if g.open[sandboxName] >= maxTunnelsPerSandbox {
+	if g.open[sandboxName] >= tunnelLimit {
 		return false
 	}
 	g.open[sandboxName]++
 	return true
 }
 
-func (g *Gateway) releaseTunnel(sandboxName string) {
+func (g *Gateway) release(sandboxName string) {
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
 	if g.open[sandboxName]--; g.open[sandboxName] <= 0 {
