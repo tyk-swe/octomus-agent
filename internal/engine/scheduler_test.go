@@ -22,7 +22,7 @@ func TestRunOnceAcceptsPublishedDependency(t *testing.T) {
 		runID *string
 	}{
 		{name: "published in Continuous"},
-		{name: "published in earlier RunOnce", runID: stringPointer("earlier-batch")},
+		{name: "published in earlier RunOnce", runID: new("earlier-batch")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := testStore(t)

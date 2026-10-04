@@ -25,7 +25,7 @@ const isolatedGatewayAPI = "1.48"
 
 // startupSweepWait bounds the removal of a previous broker's leftovers, so one the daemon cannot remove fails startup,
 // and the broker restarts, rather than leaving it waiting with nothing served.
-var startupSweepWait = 2 * time.Minute
+const startupSweepWait = 2 * time.Minute
 
 // New removes any sandbox a previous broker left behind, checks the daemon, image, networks and volumes and installs
 // the broker's executable for sandboxes. It refuses to serve a deployment that would weaken isolation.
@@ -67,7 +67,7 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		}
 	}
 	for _, name := range []string{cfg.DataVolume, cfg.RunnerVolume, cfg.ToolsVolume} {
-		if _, err := b.engine.VolumeInspect(ctx, name); err != nil {
+		if err := b.engine.VolumeInspect(ctx, name); err != nil {
 			return nil, fmt.Errorf("Sandbox volume %s: %w", name, err)
 		}
 	}

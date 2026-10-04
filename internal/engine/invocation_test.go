@@ -21,7 +21,7 @@ func admissionsByRole(t *testing.T, state *store.Store) map[string]int {
 	t.Helper()
 	counts := map[string]int{}
 	err := state.Snapshot(func(c *sql.Conn) error {
-		rows, err := c.QueryContext(store.Background(), "SELECT data FROM admissions ORDER BY at,id")
+		rows, err := c.QueryContext(context.Background(), "SELECT data FROM admissions ORDER BY at,id")
 		if err != nil {
 			return err
 		}

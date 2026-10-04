@@ -82,7 +82,7 @@ func TestStateViewStatus(t *testing.T) {
 				control.SetMode(model.OperatingModeContinuous)
 			}
 			if check.err {
-				control.Error = stringPointer("recorded planning failure")
+				control.Error = new("recorded planning failure")
 			}
 			if err := app.Store.SaveControl(control); err != nil {
 				t.Fatal(err)

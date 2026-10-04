@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -20,16 +21,16 @@ func TestConnectionSettings(t *testing.T) {
 	must(t, s.Snapshot(func(c *sql.Conn) error {
 		var mode string
 		var synchronous, busy, queryOnly int64
-		if err := c.QueryRowContext(store.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil {
+		if err := c.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil {
 			return err
 		}
-		if err := c.QueryRowContext(store.Background(), "PRAGMA synchronous").Scan(&synchronous); err != nil {
+		if err := c.QueryRowContext(context.Background(), "PRAGMA synchronous").Scan(&synchronous); err != nil {
 			return err
 		}
-		if err := c.QueryRowContext(store.Background(), "PRAGMA busy_timeout").Scan(&busy); err != nil {
+		if err := c.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy); err != nil {
 			return err
 		}
-		if err := c.QueryRowContext(store.Background(), "PRAGMA query_only").Scan(&queryOnly); err != nil {
+		if err := c.QueryRowContext(context.Background(), "PRAGMA query_only").Scan(&queryOnly); err != nil {
 			return err
 		}
 		if mode != "wal" || synchronous != 2 || busy != 5000 || queryOnly != 0 {
@@ -41,7 +42,7 @@ func TestConnectionSettings(t *testing.T) {
 	must(t, err)
 	defer r.Close()
 	var busy int64
-	must(t, r.Conn.QueryRowContext(store.Background(), "PRAGMA busy_timeout").Scan(&busy))
+	must(t, r.Conn.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy))
 	if busy != 5000 {
 		t.Fatalf("read-only busy_timeout %d", busy)
 	}
@@ -57,7 +58,7 @@ func TestPanicInsideTransactionRollsBack(t *testing.T) {
 			}
 		}()
 		_ = snapshot(func(c *sql.Conn) error {
-			if _, err := c.ExecContext(store.Background(), statement); err != nil {
+			if _, err := c.ExecContext(context.Background(), statement); err != nil {
 				t.Fatalf("%s: %v", statement, err)
 			}
 			panic("callback failure")
@@ -97,11 +98,11 @@ func TestReadOnlyConnectionRefusesWrites(t *testing.T) {
 	must(t, err)
 	defer r.Close()
 	var seen int64
-	must(t, r.Conn.QueryRowContext(store.Background(), "SELECT count(*) FROM records WHERE kind='x'").Scan(&seen))
+	must(t, r.Conn.QueryRowContext(context.Background(), "SELECT count(*) FROM records WHERE kind='x'").Scan(&seen))
 	if seen != 1 {
 		t.Fatalf("read-only handle sees %d records; it opened a different database", seen)
 	}
-	_, err = r.Conn.ExecContext(store.Background(), "INSERT INTO records VALUES ('x','ro','1')")
+	_, err = r.Conn.ExecContext(context.Background(), "INSERT INTO records VALUES ('x','ro','1')")
 	if err == nil || !strings.Contains(err.Error(), "readonly") {
 		t.Fatalf("read-only write error = %v", err)
 	}

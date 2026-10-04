@@ -18,8 +18,6 @@ import (
 
 const cleanupBudget = 30 * time.Second
 
-const stderrWaitDelay = 2 * time.Second
-
 const stderrTailLimit = 2048
 
 // stderrTail is reported only on connect failures and never persisted, so no raw transcript is kept.
@@ -55,16 +53,6 @@ func (t *stderrTail) explain(err error) error {
 		return err
 	}
 	return fmt.Errorf("%w; stderr: %s", err, text)
-}
-
-func drained(lines <-chan lineResult) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for range lines {
-		}
-	}()
-	return done
 }
 
 func discardStdout(lines <-chan lineResult, stdout io.Reader) <-chan struct{} {
@@ -122,7 +110,7 @@ func joinOwned(waitCh <-chan error, readerDone <-chan struct{}, stuck string) er
 	for waitCh != nil || readerDone != nil {
 		select {
 		case err := <-waitCh:
-			if err != nil && !killed(err) && !errors.Is(err, exec.ErrWaitDelay) {
+			if err != nil && !killed(err) {
 				errs = errors.Join(errs, err)
 			}
 			waitCh = nil

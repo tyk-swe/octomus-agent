@@ -171,7 +171,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 	}
 	defer client.Close()
 	if server, ok := client.(*OpenCode); ok {
-		spec, err := server.ProtocolSchema(workspace)
+		spec, err := server.protocolSchema(workspace)
 		if err != nil {
 			t.Fatalf("protocol schema: %v", err)
 		}

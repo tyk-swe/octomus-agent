@@ -145,11 +145,9 @@ func newClient(transport http.RoundTripper) *http.Client {
 	}
 }
 
-func (o *OpenCode) ProtocolSchema(cwd string) (any, error) {
+func (o *OpenCode) protocolSchema(cwd string) (any, error) {
 	return o.call("GET", "/doc", cwd, nil, 60)
 }
-
-func (o *OpenCode) Version() string { return o.version }
 
 func (o *OpenCode) Diagnose(cwd string) (Diagnostics, error) {
 	return Diagnostics{
@@ -471,7 +469,7 @@ func (o *OpenCode) handleEvent(event any, session, message string, route config.
 	}
 	if !found {
 		if part, ok := asObject(props["part"]); ok {
-			eventSession, found = strAt(part, "sessionID")
+			eventSession, _ = strAt(part, "sessionID")
 		}
 	}
 	if eventSession != session {

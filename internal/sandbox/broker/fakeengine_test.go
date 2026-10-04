@@ -53,6 +53,8 @@ type fakeEngine struct {
 	waitDelay time.Duration
 	// waitStatus, when set, is how the daemon answers every wait at once.
 	waitStatus int
+	// waitError, when set, is the error the daemon reports in every wait answer, with exit status 0.
+	waitError string
 	// inspectStatus, when set, is how the daemon answers every container inspection.
 	inspectStatus int
 	// removeDelay is how long a removal takes; Docker refuses a second removal meanwhile.
@@ -381,6 +383,10 @@ func (e *fakeEngine) mux() http.Handler {
 			c.mu.Lock()
 			code := c.code
 			c.mu.Unlock()
+			if e.waitError != "" {
+				reply(w, http.StatusOK, map[string]any{"StatusCode": 0, "Error": map[string]string{"Message": e.waitError}})
+				return
+			}
 			reply(w, http.StatusOK, map[string]int{"StatusCode": code})
 		case <-r.Context().Done():
 		}

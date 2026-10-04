@@ -19,6 +19,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 type roleOutcome struct {
@@ -69,8 +70,8 @@ func (a *App) interruptOrphanedCycles() error {
 	for _, cycle := range cycles {
 		model.InterruptRunning(cycle.Sessions)
 		cycle.Status = model.CycleInterrupted
-		cycle.CompletedAt = stringPointer(model.Now())
-		cycle.Error = stringPointer(interruptedPlanningMessage)
+		cycle.CompletedAt = new(model.Now())
+		cycle.Error = new(interruptedPlanningMessage)
 		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
 			return err
 		}
@@ -97,12 +98,12 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 	var terminalErr error
 	if err != nil {
 		cycle.Status = model.CycleFailed
-		cycle.Error = stringPointer(redact.Error(err))
+		cycle.Error = new(redact.Error(err))
 		if shuttingDown {
 			cycle.Status = model.CycleInterrupted
-			cycle.Error = stringPointer(interruptedPlanningMessage)
+			cycle.Error = new(interruptedPlanningMessage)
 		}
-		cycle.CompletedAt = stringPointer(model.Now())
+		cycle.CompletedAt = new(model.Now())
 		terminalErr = a.saveCycleMergedSessions(&cycle)
 	}
 
@@ -213,7 +214,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	}
 	if cycle.Mode == model.CycleModeAudit {
 		cycle.Status = plannedStatus(proposals)
-		cycle.CompletedAt = stringPointer(model.Now())
+		cycle.CompletedAt = new(model.Now())
 		return a.commitPlan(*cycle, nil)
 	}
 	return a.commitTasks(cfg, cycle)
@@ -622,7 +623,7 @@ func (a *App) removePlanningWorkspace(roleRoot string) error {
 	a.planningStorage.RLock()
 	defer a.planningStorage.RUnlock()
 	// Completed, already-owned cleanup must finish even if shutdown cancelled the role while this lock was queued.
-	return a.removeDir(filepath.Dir(roleRoot), roleRoot)
+	return workspace.RemoveOwnedDir(filepath.Dir(roleRoot), roleRoot)
 }
 
 func runRoles(n int, run func(i int) roleOutcome) []roleOutcome {
@@ -697,11 +698,15 @@ func (a *App) commitTasks(cfg config.Config, cycle *model.Cycle) error {
 		planned = append(planned, newPlannedTask(cfg, cycle, original, proposal, taskID, target))
 	}
 	cycle.Status = plannedStatus(cycle.Proposals)
-	cycle.CompletedAt = stringPointer(model.Now())
+	cycle.CompletedAt = new(model.Now())
 	return a.commitPlan(*cycle, planned)
 }
 
 func newPlannedTask(cfg config.Config, cycle *model.Cycle, original, proposal model.Proposal, taskID string, target *model.PullRequest) model.Task {
+	runID := cycle.RunID
+	if runID != nil {
+		runID = new(*runID)
+	}
 	source := cycle.Grounding.Revision
 	branch := cfg.BranchPrefix + taskID
 	var number *uint64
@@ -735,16 +740,8 @@ func newPlannedTask(cfg config.Config, cycle *model.Cycle, original, proposal mo
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		AttemptPolicy:   &policy,
-		RunID:           cloneStringPointer(cycle.RunID),
+		RunID:           runID,
 		SupersededBy:    []string{},
 		Supersedes:      append([]string(nil), original.Reconsiders...),
 	}
-}
-
-func cloneStringPointer(value *string) *string {
-	if value == nil {
-		return nil
-	}
-	copy := *value
-	return &copy
 }

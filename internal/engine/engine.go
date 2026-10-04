@@ -51,14 +51,6 @@ func WithSandbox(backend sandbox.Backend) Option {
 	}
 }
 
-func WithWorkspaceRemoval(remove func(root, path string) error) Option {
-	return func(a *App) {
-		if remove != nil {
-			a.removeDir = remove
-		}
-	}
-}
-
 type cycleJob struct {
 	id     string
 	mode   model.CycleMode
@@ -120,7 +112,6 @@ type App struct {
 	connector  runner.Connector
 	sandbox    sandbox.Backend
 	deployment Deployment
-	removeDir  func(root, path string) error
 	wg         sync.WaitGroup
 
 	// Guarded by gate; remember only successfully recorded recovery activity.
@@ -164,7 +155,6 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 	}
 	a.taskRunner = TaskRunnerFunc(a.superviseTask)
 	a.sandbox = sandbox.Host{}
-	a.removeDir = workspace.RemoveOwnedDir
 	for _, option := range options {
 		if option != nil {
 			option(a)
@@ -376,11 +366,11 @@ func (a *App) Recover() error {
 		switch {
 		case markedCancelled && task.OutputCommit == nil:
 			task.Status = model.StatusCancelled
-			task.Error = stringPointer("Operator cancellation preserved across restart")
+			task.Error = new("Operator cancellation preserved across restart")
 		case workspace.Initialized(task) && task.Attempts < task.ExecutionConfig().MaxRetries:
 			task.Status = model.StatusQueued
 			task.Attempts++
-			task.Error = stringPointer("Recovering an interrupted task: inspecting the recorded workspace and reconciling remote state before continuing.")
+			task.Error = new("Recovering an interrupted task: inspecting the recorded workspace and reconciling remote state before continuing.")
 		default:
 			task.Status = model.StatusBlocked
 			reason := model.BlockedReasonWorkspaceInvalid
@@ -393,7 +383,7 @@ func (a *App) Recover() error {
 				}
 			}
 			task.BlockedReason = &reason
-			task.Error = stringPointer(message)
+			task.Error = new(message)
 		}
 		task.UpdatedAt = model.Now()
 		if err := a.Store.Put("task", task.ID, task); err != nil {
@@ -409,8 +399,6 @@ func (a *App) Recover() error {
 	}
 	return a.interruptOrphanedCycles()
 }
-
-func stringPointer(value string) *string { return &value }
 
 func (a *App) setTaskError(task *model.Task, err error) error {
 	recordTaskError(task, err)

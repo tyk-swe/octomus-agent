@@ -191,7 +191,7 @@ func (c *Codex) sendUntil(value map[string]any, deadline time.Time, what string)
 		deadline, what = writeDeadline, "Codex write timed out"
 	}
 	if !time.Now().Before(deadline) {
-		return fmt.Errorf("%s: deadline has elapsed", what)
+		return fmt.Errorf("%s: %w", what, process.ErrDeadlineElapsed)
 	}
 	_, err = process.BoundedAt(c.ctx, deadline, what, func(wctx context.Context) (struct{}, error) {
 		return struct{}{}, writeAll(wctx, c.stdin, []byte(payload))
@@ -248,7 +248,7 @@ func (c *Codex) receive(deadline time.Time, what string) (map[string]any, error)
 		}
 		r = line
 	case <-timer.C:
-		return nil, fmt.Errorf("%s: deadline has elapsed", what)
+		return nil, fmt.Errorf("%s: %w", what, process.ErrDeadlineElapsed)
 	case <-c.ctx.Done():
 		return nil, process.ErrSessionCancelled
 	}
@@ -256,7 +256,7 @@ func (c *Codex) receive(deadline time.Time, what string) (map[string]any, error)
 		return nil, process.ErrSessionCancelled
 	}
 	if !time.Now().Before(deadline) {
-		return nil, fmt.Errorf("%s: deadline has elapsed", what)
+		return nil, fmt.Errorf("%s: %w", what, process.ErrDeadlineElapsed)
 	}
 	if r.err != nil {
 		return nil, r.err

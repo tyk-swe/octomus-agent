@@ -659,12 +659,6 @@ func (s *Store) LatestPrOutput(repository string, number uint64) (*string, error
 	return latestPrOutputAt(s.conn, repository, number)
 }
 
-func (s *Store) PrObservation(repository string, number uint64) (string, *model.PrObservation, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return prObservationAt(s.conn, repository, number)
-}
-
 func (s *Store) RecordPrObservation(repository string, p model.PullRequest, deliveredNow bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -729,9 +723,4 @@ func prObservationAt(c *sql.Conn, repository string, number uint64) (string, *mo
 		return "", nil, fmt.Errorf("Saved pr %s is unreadable: %w", id, err)
 	}
 	return id, &observation, nil
-}
-
-func (p Page) MarshalJSON() ([]byte, error) {
-	type plain Page
-	return wirejson.Marshal(plain(p))
 }

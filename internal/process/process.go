@@ -78,21 +78,6 @@ type Captured struct {
 	tail      []byte
 }
 
-func (c Captured) SafeText() string {
-	text := strings.ToValidUTF8(string(c.Bytes), "\uFFFD")
-	if !c.Truncated {
-		return redact.Secrets(text)
-	}
-	return redact.Fragment(text, redact.HeadLineCut)
-}
-
-func (c Captured) SafeTailText() string {
-	if !c.Truncated {
-		return ""
-	}
-	return redact.Fragment(strings.ToValidUTF8(string(c.tail), "\uFFFD"), redact.TailLineCut)
-}
-
 const diagnosticTruncatedMarker = "[diagnostic output truncated]"
 
 func (c Captured) SafePreview() string {
@@ -146,8 +131,6 @@ func (s Status) Success() bool {
 	}
 	return s.state != nil && s.state.Success()
 }
-
-func (s Status) OOM() bool { return s.exit != nil && s.exit.OOM }
 
 func (s Status) Code() (int, bool) {
 	if s.exit != nil {
@@ -266,9 +249,7 @@ func (e *OutputTooLarge) Error() string {
 	return fmt.Sprintf("Machine output exceeds %d bytes; complete output was not captured", e.Limit)
 }
 
-var errDeadlineElapsed = errors.New("deadline has elapsed")
-
-func IsDeadlineElapsed(err error) bool { return errors.Is(err, errDeadlineElapsed) }
+var ErrDeadlineElapsed = errors.New("deadline has elapsed")
 
 var ErrCancelled = errors.New("Operation cancelled")
 
@@ -412,14 +393,11 @@ func StartHost(binary string, args []string, cwd string, extra []string, stdin b
 	return child, nil
 }
 
-func (h *HostChild) Stdin() *os.File                { return h.stdin }
-func (h *HostChild) Stdout() io.ReadCloser          { return h.stdout }
-func (h *HostChild) Stderr() io.ReadCloser          { return h.stderr }
-func (h *HostChild) Pid() int                       { return h.cmd.Process.Pid }
-func (h *HostChild) Terminate()                     { _ = syscall.Kill(-h.group.pgid, syscall.SIGTERM) }
-func (h *HostChild) Kill()                          { h.group.Close() }
-func (h *HostChild) Group() *GroupChild             { return h.group }
-func (h *HostChild) ProcessState() *os.ProcessState { return h.cmd.ProcessState }
+func (h *HostChild) Stdin() *os.File       { return h.stdin }
+func (h *HostChild) Stdout() io.ReadCloser { return h.stdout }
+func (h *HostChild) Stderr() io.ReadCloser { return h.stderr }
+func (h *HostChild) Terminate()            { _ = syscall.Kill(-h.group.pgid, syscall.SIGTERM) }
+func (h *HostChild) Kill()                 { h.group.Close() }
 
 // Wait reaps the child once; later calls return the same result.
 func (h *HostChild) Wait() (Status, error) {
@@ -533,7 +511,7 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 			haveErr = true
 		case <-timer.C:
 			terminate()
-			return nil, stopped(fmt.Errorf("Command timed out: %w", errDeadlineElapsed), result.err)
+			return nil, stopped(fmt.Errorf("Command timed out: %w", ErrDeadlineElapsed), result.err)
 		case <-ctx.Done():
 			terminate()
 			return nil, stopped(ErrCancelled, result.err)
@@ -723,10 +701,6 @@ func visible(raw []byte, limit int) (text string, complete bool) {
 	return out.String(), true
 }
 
-func ShellCheck(ctx context.Context, command string, cwd string, seconds uint64) (*ProcessOutput, error) {
-	return Capture(ctx, "bash", []string{"-o", "pipefail", "-c", command}, cwd, seconds, CaptureDiagnostic)
-}
-
 func RunPredicate(ctx context.Context, binary string, args []string, cwd string, seconds uint64, falseCodes []int) (bool, error) {
 	return RunPredicateEnv(ctx, binary, args, cwd, seconds, falseCodes, nil)
 }
@@ -798,7 +772,7 @@ func BoundedAt[T any](ctx context.Context, deadline time.Time, what string, fn f
 	case r := <-done:
 		return r.v, r.err
 	case <-timer.C:
-		err = fmt.Errorf("%s: %w", what, errDeadlineElapsed)
+		err = fmt.Errorf("%s: %w", what, ErrDeadlineElapsed)
 	case <-ctx.Done():
 		err = ErrSessionCancelled
 	}

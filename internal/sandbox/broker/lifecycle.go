@@ -32,7 +32,7 @@ type prepared struct {
 	removed error
 }
 
-var (
+const (
 	// Each daemon preparation step is bounded separately; the control plane waits under its caller's context.
 	createTimeout = 2 * time.Minute
 	attachTimeout = time.Minute
@@ -101,7 +101,7 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 		return nil, fmt.Errorf("Creating the sandbox: %w", err)
 	}
 	b.mu.Lock()
-	b.live[id] = p.rel
+	b.live[id] = struct{}{}
 	b.mu.Unlock()
 	s := &prepared{b: b, id: id, name: name, image: spec.Image, lease: lease, granted: granted, release: release}
 	if len(warnings) > 0 {
@@ -299,6 +299,11 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			pendingInput[0] = control{}
 			pendingInput = pendingInput[1:]
 		case result := <-results:
+			if result.Error != nil {
+				// The daemon could not report the exit; an unknown exit is a failure, never success.
+				end.err = fmt.Errorf("Waiting for the sandbox: %s", result.Error.Message)
+				return end
+			}
 			end.result = &result
 			// Docker answers a SIGKILL only once the container has stopped, so a busy daemon can deliver one after the
 			// request gave up: a SIGKILL's exit status after it was sent is that kill's.

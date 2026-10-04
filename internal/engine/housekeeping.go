@@ -288,7 +288,7 @@ func (a *App) discardTask(task *model.Task) error {
 	defer a.releaseCleanup(cleanupTask, task.ID)
 	if owner != "" {
 		var removeErr error
-		a.withoutGate(func() { removeErr = a.removeDir(filepath.Join(a.DataDir, "tasks"), owner) })
+		a.withoutGate(func() { removeErr = workspace.RemoveOwnedDir(filepath.Join(a.DataDir, "tasks"), owner) })
 		if removeErr != nil {
 			return removeErr
 		}
@@ -329,7 +329,7 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 	defer a.releaseCleanup(cleanupCycle, cycle.ID)
 	root := filepath.Join(a.DataDir, "cycles")
 	var removeErr error
-	a.withoutGate(func() { removeErr = a.removeDir(root, filepath.Join(root, cycle.ID)) })
+	a.withoutGate(func() { removeErr = workspace.RemoveOwnedDir(root, filepath.Join(root, cycle.ID)) })
 	if removeErr != nil {
 		return removeErr
 	}

@@ -60,10 +60,10 @@ func TestDurableAndBudgetAtomic(t *testing.T) {
 	if value == nil || len(*value) != 2 || (*value)[0] != 1 || (*value)[1] != 2 {
 		t.Fatalf("durable record differs: %v", value)
 	}
-	today, err := s.SessionsToday()
+	capacity, err := s.PlanningCapacity()
 	must(t, err)
-	if today != 1 {
-		t.Fatalf("sessions today %d", today)
+	if capacity.Used != 1 {
+		t.Fatalf("sessions today %d", capacity.Used)
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 
 // Teardown bounds. Once a sandbox ends, or a kill is asked for, the broker drains its output, reads its state and
 // evidence, and confirms its removal within teardownBudget, so the control plane's wait for the report holds.
-var (
+const (
 	teardownBudget = 45 * time.Second
 	// removeReserve is the part of the budget kept for the removal.
 	removeReserve = 15 * time.Second

@@ -116,8 +116,6 @@ func readError(resp *http.Response) error {
 type Version struct {
 	Version    string `json:"Version"`
 	APIVersion string `json:"ApiVersion"`
-	Os         string `json:"Os"`
-	Arch       string `json:"Arch"`
 }
 
 func (c *Client) Version(ctx context.Context) (Version, error) {
@@ -128,7 +126,6 @@ func (c *Client) Version(ctx context.Context) (Version, error) {
 
 type Image struct {
 	ID          string   `json:"Id"`
-	RepoTags    []string `json:"RepoTags"`
 	RepoDigests []string `json:"RepoDigests"`
 }
 
@@ -139,9 +136,6 @@ func (c *Client) ImageInspect(ctx context.Context, ref string) (Image, error) {
 }
 
 type Network struct {
-	ID         string            `json:"Id"`
-	Name       string            `json:"Name"`
-	Driver     string            `json:"Driver"`
 	Internal   bool              `json:"Internal"`
 	EnableIPv6 bool              `json:"EnableIPv6"`
 	Options    map[string]string `json:"Options"`
@@ -153,15 +147,10 @@ func (c *Client) NetworkInspect(ctx context.Context, name string) (Network, erro
 	return network, err
 }
 
-type Volume struct {
-	Name   string `json:"Name"`
-	Driver string `json:"Driver"`
-}
-
-func (c *Client) VolumeInspect(ctx context.Context, name string) (Volume, error) {
-	var volume Volume
-	err := c.do(ctx, http.MethodGet, path("/volumes/%s", name), nil, &volume)
-	return volume, err
+// VolumeInspect reports whether the daemon has the named volume.
+func (c *Client) VolumeInspect(ctx context.Context, name string) error {
+	var volume struct{}
+	return c.do(ctx, http.MethodGet, path("/volumes/%s", name), nil, &volume)
 }
 
 // ContainerConfig is the container create body. Only fields the broker sets are modelled; everything else keeps the
@@ -279,23 +268,12 @@ func (c *Client) ContainerRemove(ctx context.Context, id string) error {
 }
 
 type ContainerState struct {
-	Status    string `json:"Status"`
-	Running   bool   `json:"Running"`
-	OOMKilled bool   `json:"OOMKilled"`
-	ExitCode  int    `json:"ExitCode"`
+	OOMKilled bool `json:"OOMKilled"`
 }
 
 type ContainerJSON struct {
-	ID     string         `json:"Id"`
-	State  ContainerState `json:"State"`
-	Config struct {
-		Labels map[string]string `json:"Labels"`
-	} `json:"Config"`
-	NetworkSettings struct {
-		Networks map[string]struct {
-			IPAddress string `json:"IPAddress"`
-		} `json:"Networks"`
-	} `json:"NetworkSettings"`
+	ID    string         `json:"Id"`
+	State ContainerState `json:"State"`
 }
 
 func (c *Client) ContainerInspect(ctx context.Context, id string) (ContainerJSON, error) {
@@ -306,9 +284,7 @@ func (c *Client) ContainerInspect(ctx context.Context, id string) (ContainerJSON
 
 type ContainerSummary struct {
 	ID     string            `json:"Id"`
-	Names  []string          `json:"Names"`
 	Labels map[string]string `json:"Labels"`
-	State  string            `json:"State"`
 }
 
 // ContainerList lists every container, running or not, that carries all the given labels.

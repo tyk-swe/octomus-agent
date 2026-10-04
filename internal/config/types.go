@@ -8,8 +8,8 @@ type Route struct {
 	Backend  Backend `json:"backend" wire:"default"`
 	Model    string  `json:"model"`
 	Effort   string  `json:"effort" wire:"default"`
-	Provider *string `json:"provider,omitempty" wire:"default"`
-	Variant  *string `json:"variant,omitempty" wire:"default"`
+	Provider *string `json:"provider,omitempty"`
+	Variant  *string `json:"variant,omitempty"`
 }
 
 func (v *Route) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }

@@ -17,8 +17,6 @@ import (
 // GitDirName is the trusted git metadata beside each owned work tree; sandboxes mount it read-only, so work-tree content can never rewrite it.
 const GitDirName = "repo.git"
 
-var ErrNoGitDir = errors.New("Workspace has no trusted git metadata")
-
 func Initialized(task model.Task) bool {
 	if task.ExecutionSession == nil || task.ComparisonBase == "" {
 		return false
@@ -44,7 +42,7 @@ func GitDir(workTree string) (string, error) {
 	if info, err := os.Lstat(filepath.Join(workTree, ".git")); err == nil && info.IsDir() {
 		return filepath.Join(workTree, ".git"), nil
 	}
-	return "", ErrNoGitDir
+	return "", errors.New("Workspace has no trusted git metadata")
 }
 
 // maxMeasuredDepth bounds how deep a storage walk descends: it opens no directory that sits this many levels or more
@@ -86,10 +84,6 @@ type Usage struct {
 // settled temporary-file removal does not block its owner. Any other error, and any failure to read path itself,
 // fails the measurement.
 func Measure(path string, group int) (Usage, error) {
-	return measure(path, group, func(w *walker) error { return w.walk(w.root, ".", nil, nil) })
-}
-
-func measure(path string, group int, walk func(*walker) error) (Usage, error) {
 	var usage Usage
 	for range maxMeasurementAttempts {
 		dir, err := os.Open(path)
@@ -100,7 +94,7 @@ func measure(path string, group int, walk func(*walker) error) (Usage, error) {
 			return Usage{}, err
 		}
 		w := walker{root: dir, group: group, unmeasured: map[string]struct{}{}}
-		err = walk(&w)
+		err = w.walk(w.root, ".", nil, nil)
 		dir.Close()
 		if err != nil {
 			return Usage{}, err
@@ -117,13 +111,12 @@ func measure(path string, group int, walk func(*walker) error) (Usage, error) {
 }
 
 type walker struct {
-	root        *os.File
-	group       int
-	bytes       uint64
-	unmeasured  map[string]struct{}
-	retry       bool           // An entry vanished before its first stat; only a fresh scan can establish its bytes.
-	reopenLimit int            // Zero uses maxReopenedComponents.
-	reopened    map[string]int // Component opens per owner; -1 means its budget was exhausted.
+	root       *os.File
+	group      int
+	bytes      uint64
+	unmeasured map[string]struct{}
+	retry      bool           // An entry vanished before its first stat; only a fresh scan can establish its bytes.
+	reopened   map[string]int // Component opens per owner; -1 means its budget was exhausted.
 }
 
 // measuredDir identifies one component below root. Closed ancestors are reopened through these components rather
@@ -269,10 +262,7 @@ func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []
 // As with a swap during the initial descent, an inaccessible or changed subtree is reported as unmeasured.
 func (w *walker) reopen(path []measuredDir, prefix string) (*os.File, error) {
 	dir := w.root
-	limit := w.reopenLimit
-	if limit <= 0 {
-		limit = maxReopenedComponents
-	}
+	limit := maxReopenedComponents
 	for _, component := range path {
 		// Ancestors above the grouping level are shared by several owners. Reopening those must not spend a
 		// shared budget and incorrectly make healthy siblings unmeasured after visiting an expensive owner.

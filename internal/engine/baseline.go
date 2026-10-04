@@ -17,6 +17,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 const (
@@ -133,7 +134,6 @@ func (a *App) baselineRuntimeIneligibility() (*string, error) {
 	baseline := a.runtime.baseline != nil
 	tasks := len(a.runtime.tasks)
 	planning := a.runtime.planning()
-	reconciling := a.runtime.reconcilingPublication
 	a.runtimeMu.Unlock()
 	var reason *string
 	switch {
@@ -147,8 +147,6 @@ func (a *App) baselineRuntimeIneligibility() (*string, error) {
 		reason = new("Wait for active tasks before running a baseline check")
 	case planning:
 		reason = new("Wait for planning to finish before running a baseline check")
-	case reconciling:
-		reason = new("Wait for publication reconciliation before running a baseline check")
 	}
 	return reason, nil
 }
@@ -363,7 +361,7 @@ func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted
 		check.Status = model.BaselineStatusCancelled
 		message = cancelled
 	}
-	check.CompletedAt = stringPointer(model.Now())
+	check.CompletedAt = new(model.Now())
 	check.Error = &message
 	return a.Store.Put("baseline", check.ID, *check)
 }
@@ -376,7 +374,7 @@ func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 		return nil
 	}
 	root := filepath.Join(a.DataDir, "baselines")
-	removeErr := a.removeDir(root, filepath.Join(root, check.ID))
+	removeErr := workspace.RemoveOwnedDir(root, filepath.Join(root, check.ID))
 	a.gate.Lock()
 	defer func() {
 		a.releaseCleanup(cleanupBaseline, check.ID)
@@ -438,12 +436,12 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 		defer close(executionDone)
 		status, err := a.executeBaseline(workCtx, check)
 		if err != nil {
-			check.Error = stringPointer(redact.Error(err))
+			check.Error = new(redact.Error(err))
 			switch {
 			// A sandbox that could not run a command says nothing about the repository's baseline.
 			case workCtx.Err() != nil, sandbox.Infrastructure(err):
 				return model.BaselineStatusInterrupted
-			case process.IsDeadlineElapsed(err):
+			case errors.Is(err, process.ErrDeadlineElapsed):
 				return model.BaselineStatusTimedOut
 			default:
 				return model.BaselineStatusFailed
@@ -458,7 +456,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 		if result.AlreadyCancelled {
 			status = model.BaselineStatusInterrupted
 		} else {
-			check.Error = stringPointer(fmt.Sprintf("Baseline check exceeded the %d second overall limit", c.TaskTimeoutSeconds))
+			check.Error = new(fmt.Sprintf("Baseline check exceeded the %d second overall limit", c.TaskTimeoutSeconds))
 			status = model.BaselineStatusTimedOut
 		}
 	} else {
@@ -468,15 +466,15 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	switch {
 	case markerErr != nil:
 		status = model.BaselineStatusInterrupted
-		check.Error = stringPointer(redact.Text("Cancel state unreadable, refusing a clean result: " + markerErr.Error()))
+		check.Error = new(redact.Text("Cancel state unreadable, refusing a clean result: " + markerErr.Error()))
 	case marked:
 		status = model.BaselineStatusCancelled
-		check.Error = stringPointer("Cancelled by the operator")
+		check.Error = new("Cancelled by the operator")
 	case a.ctx.Err() != nil && status != model.BaselineStatusPassed:
 		status = model.BaselineStatusInterrupted
 	}
 	check.Status = status
-	check.CompletedAt = stringPointer(model.Now())
+	check.CompletedAt = new(model.Now())
 	if err := a.Store.Put("baseline", id, *check); err != nil {
 		_ = a.Store.Event(id, "baseline_error", redact.Error(err))
 	} else {
@@ -536,7 +534,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 			a.keepSandboxEvidence(check.ID, command, outcome.sandbox)
 			return model.BaselineStatusRunning, sandboxFailure(command, outcome.capture)
 		}
-		timedOut := process.IsDeadlineElapsed(outcome.capture)
+		timedOut := errors.Is(outcome.capture, process.ErrDeadlineElapsed)
 		text, diagnosticTruncated, success := commandOutput(outcome.captured, outcome.capture)
 		var failure error
 		if ctx.Err() != nil {

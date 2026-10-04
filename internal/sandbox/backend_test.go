@@ -223,7 +223,7 @@ func TestRemoteTimeout(t *testing.T) {
 	f := startFakeBroker(t, 2)
 	start := time.Now()
 	_, _, err := Verify(context.Background(), NewRemote(f.socket), ownedWorkspace(t), "hang", 1, true)
-	if !process.IsDeadlineElapsed(err) {
+	if !errors.Is(err, process.ErrDeadlineElapsed) {
 		t.Fatalf("hanging command = %v; want a timeout", err)
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
@@ -233,7 +233,7 @@ func TestRemoteTimeout(t *testing.T) {
 
 func TestRemoteUnavailableBroker(t *testing.T) {
 	remote := NewRemote(filepath.Join(t.TempDir(), "missing.sock"))
-	if err := remote.Healthy(context.Background()); err == nil || !strings.Contains(err.Error(), "Sandbox broker is unavailable") {
+	if _, err := remote.Info(context.Background()); err == nil || !strings.Contains(err.Error(), "Sandbox broker is unavailable") {
 		t.Fatalf("health = %v", err)
 	}
 	if _, _, err := Verify(context.Background(), remote, ownedWorkspace(t), "true", 30, true); err == nil || !Infrastructure(err) {

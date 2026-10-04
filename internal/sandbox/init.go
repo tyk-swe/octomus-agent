@@ -166,7 +166,7 @@ func (l *singleListener) Addr() net.Addr { return &net.UnixAddr{Name: "stdio", N
 
 // versionTimeout bounds each runner's --version. Both runners together stay well inside the broker's 120 second limit
 // on the version probe.
-var versionTimeout = 30 * time.Second
+const versionTimeout = 30 * time.Second
 
 // printVersions reports each runner's --version output from inside the sandbox image. A runner that is not installed
 // is left out; one that is installed but fails is also left out, and the failure is written to stderr, one line per

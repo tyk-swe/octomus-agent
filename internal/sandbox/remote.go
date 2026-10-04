@@ -29,13 +29,11 @@ type Remote struct {
 	info   wire.BrokerInfo
 	infoAt time.Time
 	slots  chan struct{}
-	// killWait is how long a kill waits for the broker's exit report: killReportWait outside tests.
-	killWait time.Duration
 }
 
 const infoTTL = 5 * time.Second
 
-func NewRemote(socket string) *Remote { return &Remote{socket: socket, killWait: killReportWait} }
+func NewRemote(socket string) *Remote { return &Remote{socket: socket} }
 
 func (r *Remote) Mode() Mode { return ModeDocker }
 
@@ -82,12 +80,6 @@ func (r *Remote) Info(ctx context.Context) (wire.BrokerInfo, error) {
 		r.slots = make(chan struct{}, info.Limits.Max)
 	}
 	return info, nil
-}
-
-// Healthy reports whether the broker answers, so work is refused rather than started without isolation.
-func (r *Remote) Healthy(ctx context.Context) error {
-	_, err := r.Info(ctx)
-	return err
 }
 
 // unavailable names the broker socket and the root cause, without the request plumbing around it.
@@ -163,7 +155,7 @@ func (r *Remote) start(ctx context.Context, spec Spec, req wire.Request) (*remot
 	r.mu.Lock()
 	r.infoAt = time.Time{}
 	r.mu.Unlock()
-	return newRemoteChild(conn, reader, spec.Stderr, req.Stdin, r.killWait, release), nil
+	return newRemoteChild(conn, reader, spec.Stderr, req.Stdin, killReportWait, release), nil
 }
 
 // notStarted reports a sandbox the broker did not provide as the sandbox's failure, unless the caller cancelled.

@@ -294,12 +294,10 @@ func normalizeBatches(cycle model.Cycle) ([]batch, []string) {
 	return batches, gaps
 }
 
-func str(s string) *string { return &s }
-
 func verdict(batches []batch, slot int, proposalID string) ReviewerVerdict {
 	reviewer := model.ReviewerSlots()[slot]
 	missing := func(note string) ReviewerVerdict {
-		return ReviewerVerdict{Reviewer: reviewer, State: VerdictMissing, Note: str(note)}
+		return ReviewerVerdict{Reviewer: reviewer, State: VerdictMissing, Note: new(note)}
 	}
 	var found *batch
 	for i := range batches {
@@ -312,7 +310,7 @@ func verdict(batches []batch, slot int, proposalID string) ReviewerVerdict {
 		return missing(fmt.Sprintf("No saved assessment batch is attributed to %s.", reviewer))
 	}
 	if found.unusable != nil {
-		return ReviewerVerdict{Reviewer: reviewer, State: VerdictMalformed, Note: str(fmt.Sprintf("Batch %d is malformed: %s.", found.index, *found.unusable))}
+		return ReviewerVerdict{Reviewer: reviewer, State: VerdictMalformed, Note: new(fmt.Sprintf("Batch %d is malformed: %s.", found.index, *found.unusable))}
 	}
 	var matches []entry
 	for _, e := range found.entries {
@@ -322,13 +320,13 @@ func verdict(batches []batch, slot int, proposalID string) ReviewerVerdict {
 	}
 	var unconfirmed *string
 	if found.unconfirmed {
-		unconfirmed = str(fmt.Sprintf("Batch %d is attributed to %s positionally and is unconfirmed by a completed session.", found.index, reviewer))
+		unconfirmed = new(fmt.Sprintf("Batch %d is attributed to %s positionally and is unconfirmed by a completed session.", found.index, reviewer))
 	}
 	switch len(matches) {
 	case 0:
 		return missing(fmt.Sprintf("Batch %d records no verdict for this proposal.", found.index))
 	case 1:
-		return ReviewerVerdict{Reviewer: reviewer, State: VerdictRecorded, Decision: str(matches[0].decision), Reason: str(matches[0].reason), Note: unconfirmed}
+		return ReviewerVerdict{Reviewer: reviewer, State: VerdictRecorded, Decision: new(matches[0].decision), Reason: new(matches[0].reason), Note: unconfirmed}
 	default:
 		decisions := make([]string, 0, len(matches))
 		agreed := true
@@ -341,14 +339,14 @@ func verdict(batches []batch, slot int, proposalID string) ReviewerVerdict {
 		var decision *string
 		verdictText := "they are inconsistent and no verdict is selected"
 		if agreed {
-			decision = str(matches[0].decision)
+			decision = new(matches[0].decision)
 			verdictText = "they agree but remain duplicated"
 		}
 		suffix := "."
 		if unconfirmed != nil {
 			suffix = ". " + *unconfirmed
 		}
-		return ReviewerVerdict{Reviewer: reviewer, State: VerdictDuplicate, Decision: decision, Note: str(fmt.Sprintf("Batch %d records %d verdicts for this proposal (%s); %s%s", found.index, len(matches), strings.Join(decisions, ", "), verdictText, suffix))}
+		return ReviewerVerdict{Reviewer: reviewer, State: VerdictDuplicate, Decision: decision, Note: new(fmt.Sprintf("Batch %d records %d verdicts for this proposal (%s); %s%s", found.index, len(matches), strings.Join(decisions, ", "), verdictText, suffix))}
 	}
 }
 
@@ -414,8 +412,8 @@ func commandEvidence(task model.Task) CommandEvidence {
 			}
 			success := latest.Success
 			out.LatestSuccess = &success
-			out.LatestRevision = str(latest.Revision)
-			out.LatestCreatedAt = str(latest.CreatedAt)
+			out.LatestRevision = new(latest.Revision)
+			out.LatestCreatedAt = new(latest.CreatedAt)
 			out.MatchesOutputRevision = matches
 		}
 		commands = append(commands, out)
@@ -464,11 +462,11 @@ func taskEvidence(task model.Task) TaskEvidence {
 	}
 	var blocked *string
 	if task.BlockedReason != nil {
-		blocked = str(task.BlockedReason.String())
+		blocked = new(task.BlockedReason.String())
 	}
 	var comparison *string
 	if strings.TrimSpace(task.ComparisonBase) != "" {
-		comparison = str(task.ComparisonBase)
+		comparison = new(task.ComparisonBase)
 	}
 	sessions := make([]SessionRoute, 0, len(task.Sessions))
 	for _, s := range task.Sessions {
@@ -603,7 +601,7 @@ func Assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 	}
 	var groundingRevision *string
 	if cycle.Grounding != nil {
-		groundingRevision = str(cycle.Grounding.Revision)
+		groundingRevision = new(cycle.Grounding.Revision)
 	}
 	return RunEvidenceV1{
 		SchemaVersion:               SchemaVersion,

@@ -115,7 +115,7 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("patch save: %d %s", response.Code, response.Body.String())
 	}
-	display, revision, fields = settingsView(t, response.Body.Bytes())
+	display, revision, _ = settingsView(t, response.Body.Bytes())
 	if display["max_sessions_per_day"] != float64(200) {
 		t.Fatalf("saved view: %v", display["max_sessions_per_day"])
 	}

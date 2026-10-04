@@ -35,7 +35,7 @@ func (g *Gateway) Serve(ctx context.Context, listener net.Listener) error {
 		MaxHeaderBytes: 16 << 10,
 	}
 	go func() {
-		ticker := time.NewTicker(g.sweepEvery)
+		ticker := time.NewTicker(sweepEvery)
 		defer ticker.Stop()
 		for {
 			select {
@@ -47,7 +47,7 @@ func (g *Gateway) Serve(ctx context.Context, listener net.Listener) error {
 			}
 		}
 	}()
-	err := server.Serve(limitConnections(listener, g.maxConns, g.maxPerSource))
+	err := server.Serve(limitConnections(listener, maxConnections, maxConnectionsPerSource))
 	cancel()
 	g.stop()
 	if errors.Is(err, http.ErrServerClosed) {
@@ -74,7 +74,7 @@ func (g *Gateway) sweep() {
 			gone[lease] = true
 		}
 	}
-	now := g.now()
+	now := time.Now()
 	var revoked []*tunnel
 	g.statsMu.Lock()
 	for t := range g.tunnels {

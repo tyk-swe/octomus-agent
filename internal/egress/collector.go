@@ -24,8 +24,7 @@ type Summary struct {
 }
 
 type HostCount struct {
-	Count int   `json:"count"`
-	Bytes int64 `json:"bytes,omitempty"`
+	Count int `json:"count"`
 }
 
 func emptySummary() Summary {
@@ -45,7 +44,7 @@ func (g *Gateway) Collect(sandboxName string) Summary {
 		summary.Incomplete = summary.Incomplete || entry.pending > 0
 	}
 	summary.Incomplete = summary.Incomplete || g.collected[sandboxName].incomplete
-	g.collected[sandboxName] = collection{at: g.now(), incomplete: summary.Incomplete}
+	g.collected[sandboxName] = collection{at: time.Now(), incomplete: summary.Incomplete}
 	summary.GatewayStarted = g.started
 	return summary
 }

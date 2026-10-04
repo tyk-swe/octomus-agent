@@ -79,11 +79,11 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	}
 	if status == model.StatusCancelled {
 		task.BlockedReason = nil
-		task.Error = stringPointer("Cancelled by the operator")
+		task.Error = new("Cancelled by the operator")
 	} else {
 		recordTaskError(&task, taskErr)
 		if result.Expired {
-			task.BlockedReason = blockedReasonPtr(model.BlockedReasonTimeout)
+			task.BlockedReason = new(model.BlockedReasonTimeout)
 		}
 	}
 	model.FailRunning(task.Sessions, *task.Error)
@@ -581,8 +581,6 @@ func statusEventName(status model.Status) string {
 func (a *App) taskWorkspace(taskID string) string {
 	return filepath.Join(a.DataDir, "tasks", taskID, "workspace")
 }
-
-func blockedReasonPtr(reason model.BlockedReason) *model.BlockedReason { return &reason }
 
 func sourcePtrEqual(a, b *string) bool {
 	if a == nil || b == nil {

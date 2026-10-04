@@ -247,7 +247,7 @@ func ExternalContext(inventory model.OpenPrInventory) ([]model.ExternalPrContext
 		bytesUsed += extra
 		result = append(result, entry)
 	}
-	coverage := model.PrCoverage{ObservedAt: stringPointer(inventory.ObservedAt), Complete: true, TotalOpen: uint64(len(inventory.PRs)), TotalExternal: uint64(total), IncludedExternal: uint64(len(result)), OmittedExternal: uint64(total - len(result)), MaxExternal: MaxExternalPRs, MaxTitleChars: MaxPRTitleChars, MaxBodyChars: MaxPRBodyChars, MaxContextBytes: MaxPRContextBytes}
+	coverage := model.PrCoverage{ObservedAt: new(inventory.ObservedAt), Complete: true, TotalOpen: uint64(len(inventory.PRs)), TotalExternal: uint64(total), IncludedExternal: uint64(len(result)), OmittedExternal: uint64(total - len(result)), MaxExternal: MaxExternalPRs, MaxTitleChars: MaxPRTitleChars, MaxBodyChars: MaxPRBodyChars, MaxContextBytes: MaxPRContextBytes}
 	return result, coverage, nil
 }
 

@@ -1,6 +1,7 @@
 package report
 
 import (
+	"context"
 	"database/sql"
 	"time"
 
@@ -183,7 +184,7 @@ func assemble(c *sql.Conn) (Report, error) {
 }
 
 func dailyUsage(c *sql.Conn, attributed map[string]uint64) ([]Daily, error) {
-	rows, err := c.QueryContext(store.Background(), "SELECT day,sessions FROM usage ORDER BY day")
+	rows, err := c.QueryContext(context.Background(), "SELECT day,sessions FROM usage ORDER BY day")
 	if err != nil {
 		return nil, err
 	}

@@ -64,7 +64,6 @@ type Script struct {
 	replies     map[string][]Reply
 	startErrs   map[string][]error
 	connectErrs map[config.Backend][]error
-	closeErrs   map[config.Backend][]error
 	calls       []Call
 	sessions    map[string]struct{}
 	clients     int
@@ -78,7 +77,6 @@ func New(catalog ...runner.Model) *Script {
 		replies:     map[string][]Reply{},
 		startErrs:   map[string][]error{},
 		connectErrs: map[config.Backend][]error{},
-		closeErrs:   map[config.Backend][]error{},
 		sessions:    map[string]struct{}{},
 	}
 }
@@ -135,18 +133,6 @@ func (s *Script) FailStart(route config.Route, err error) {
 	defer s.mu.Unlock()
 	key := routeKey(route)
 	s.startErrs[key] = append(s.startErrs[key], err)
-}
-
-func (s *Script) FailClose(backend config.Backend, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.closeErrs[backend] = append(s.closeErrs[backend], err)
-}
-
-func (s *Script) Calls() []Call {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.calls)
 }
 
 func (s *Script) Starts(route config.Route) []Call { return s.routed(CallStart, route) }
@@ -359,7 +345,7 @@ func (c *client) Close() error {
 	}
 	c.closed = true
 	c.script.open--
-	return pop(c.script.closeErrs, c.backend)
+	return nil
 }
 
 func (c *client) SandboxEvidence() *model.SandboxRecord {

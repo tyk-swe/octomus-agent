@@ -75,12 +75,9 @@ func (s *Store) ClaimNotification(destination string, now time.Time) (*Notificat
 			return err
 		}
 		if err == nil {
+			// Rows at the attempt limit were just failed, so the delay index is always in range.
 			attempt := d.Attempts + 1
-			index := attempt - 1
-			if index > NotificationMaxAttempts-1 {
-				index = NotificationMaxAttempts - 1
-			}
-			delay := NotificationRetryDelays[index]
+			delay := NotificationRetryDelays[attempt-1]
 			if _, err := c.ExecContext(background, "UPDATE notification_outbox SET attempts=?1, last_attempt_at=?2, next_attempt_at=?3 WHERE seq=?4", attempt, rfc3339(now), epoch+delay, d.Seq); err != nil {
 				return err
 			}

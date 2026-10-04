@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
@@ -20,9 +19,8 @@ type Broker struct {
 	engine *engineapi.Client
 	info   wire.BrokerInfo
 	// slots admits sandboxes up to the limit. A sandbox gives its slot back only once its removal is confirmed.
-	slots   chan struct{}
-	leases  *egress.Leases
-	started time.Time
+	slots  chan struct{}
+	leases *egress.Leases
 	// closing closes when Serve begins to shut down.
 	closing chan struct{}
 	// refresh admits one request at a time to probe an image the configured tag newly resolves to. Its holder owns
@@ -30,9 +28,9 @@ type Broker struct {
 	refresh chan struct{}
 	// failed is the last rebuilt image whose probe failed, so requests soon after fail without probing it again.
 	failed imageFailure
-	// mu guards info and live.
+	// mu guards info and live, the sandboxes whose removal is not yet confirmed.
 	mu   sync.Mutex
-	live map[string]string
+	live map[string]struct{}
 }
 
 // newBroker is a broker for cfg that has checked nothing yet.
@@ -41,10 +39,9 @@ func newBroker(cfg Config) *Broker {
 		cfg:     cfg,
 		engine:  engineapi.New(cfg.DockerSocket),
 		slots:   make(chan struct{}, cfg.Max),
-		started: time.Now(),
 		closing: make(chan struct{}),
 		refresh: make(chan struct{}, 1),
-		live:    map[string]string{},
+		live:    map[string]struct{}{},
 	}
 	if cfg.LeaseDir != "" {
 		b.leases = &egress.Leases{Dir: cfg.LeaseDir}

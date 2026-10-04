@@ -45,8 +45,6 @@ func (v Admission) MarshalJSON() ([]byte, error) {
 
 var background = context.Background()
 
-func Background() context.Context { return background }
-
 type Store struct {
 	mu   sync.Mutex
 	db   *sql.DB
@@ -347,12 +345,6 @@ func Get[T any](s *Store, kind, id string) (*T, error) {
 	return &value, nil
 }
 
-func (s *Store) ListRaw(kind string) ([][]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return queryStrings(s.conn, "SELECT data FROM records WHERE kind=?1 ORDER BY rowid DESC", kind)
-}
-
 func List[T any](s *Store, kind string) ([]T, error) {
 	return listRecords[T](s, "SELECT data FROM records WHERE kind=?1 ORDER BY rowid DESC", kind)
 }
@@ -477,16 +469,6 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 		_, err = c.ExecContext(background, "INSERT INTO admissions(id,at,day,data) VALUES (?1,?2,?3,?4)", admission.ID, admission.At, day, string(data))
 		return err
 	})
-}
-
-func (s *Store) SessionsToday() (uint64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sessions, err := sessionsOn(s.conn, model.Today())
-	if err != nil {
-		return 0, err
-	}
-	return uint64(sessions), nil
 }
 
 func sessionsOn(c *sql.Conn, day string) (int64, error) {

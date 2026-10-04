@@ -3,7 +3,6 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -54,11 +53,8 @@ func (r ProbeReport) Passed() bool {
 }
 
 // Probe runs the containment probe in a fresh probe sandbox and returns its report.
-func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
-	if backend.Mode() != ModeDocker {
-		return ProbeReport{}, errors.New("The containment probe needs the Docker sandbox")
-	}
-	child, err := backend.Start(ctx, Spec{Kind: KindProbe, Probe: wire.ProbeContainment, Timeout: 120})
+func Probe(ctx context.Context, remote *Remote) (ProbeReport, error) {
+	child, err := remote.Start(ctx, Spec{Kind: KindProbe, Probe: wire.ProbeContainment, Timeout: 120})
 	if err != nil {
 		return ProbeReport{}, err
 	}
@@ -75,14 +71,9 @@ func Probe(ctx context.Context, backend Backend) (ProbeReport, error) {
 	}
 	report.Sandbox = EvidenceOf(child)
 	var limits *wire.BrokerLimits
-	var limitsErr error = errors.New("the sandbox backend reports no limits")
-	if informed, ok := backend.(interface {
-		Info(context.Context) (wire.BrokerInfo, error)
-	}); ok {
-		var info wire.BrokerInfo
-		if info, limitsErr = informed.Info(ctx); limitsErr == nil {
-			limits = &info.Limits
-		}
+	info, limitsErr := remote.Info(ctx)
+	if limitsErr == nil {
+		limits = &info.Limits
 	}
 	report.confirmLimits(limits, limitsErr)
 	for i := range report.Checks {

@@ -22,7 +22,7 @@ type imageFailure struct {
 
 // probeRetry is how long a rebuilt image whose runner versions could not be probed is refused without probing it
 // again.
-var probeRetry = 30 * time.Second
+const probeRetry = 30 * time.Second
 
 // inspectImage resolves the configured tag. Only an image the daemon does not have is reported as missing.
 func (b *Broker) inspectImage(ctx context.Context) (engineapi.Image, error) {

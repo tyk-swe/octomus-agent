@@ -53,12 +53,6 @@ func (d Deployment) check(cfg config.Config) error {
 	return nil
 }
 
-// Deployment reports the host deployment's fixed settings.
-func (a *App) Deployment() Deployment { return a.deployment }
-
-// Sandbox is the backend every untrusted child of this engine starts in.
-func (a *App) Sandbox() sandbox.Backend { return a.sandbox }
-
 // scratchWorkspace makes an empty owned root for route validation, doctor checks and model catalogs, so a sandboxed
 // runner started for them can see no repository, workspace or state. Discarding it removes the whole root.
 func (a *App) scratchWorkspace() (string, func(), error) {
@@ -71,21 +65,16 @@ func (a *App) scratchWorkspace() (string, func(), error) {
 	return dir, func() { _ = workspace.RemoveOwnedDir(parent, root) }, nil
 }
 
-// healthChecker is a sandbox backend that can be unavailable, as a broker can.
-type healthChecker interface {
-	Healthy(ctx context.Context) error
-}
-
-// sandboxReady refuses to schedule work while the sandbox backend cannot isolate it. The scheduler turns this into an
-// error pause with an attention notice; nothing ever falls back to running unsandboxed.
+// sandboxReady refuses to schedule work while the broker cannot isolate it. The scheduler turns this into an error
+// pause with an attention notice; nothing ever falls back to running unsandboxed.
 func (a *App) sandboxReady() error {
-	checker, ok := a.sandbox.(healthChecker)
+	remote, ok := a.sandbox.(*sandbox.Remote)
 	if !ok {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
 	defer cancel()
-	if err := checker.Healthy(ctx); err != nil {
+	if _, err := remote.Info(ctx); err != nil {
 		return fmt.Errorf("Sandbox unavailable; no work starts without it: %w", err)
 	}
 	return nil
@@ -112,7 +101,7 @@ type SandboxSelfTest struct {
 	Checks  []sandbox.ProbeCheck `json:"checks"`
 	Kernel  string               `json:"kernel"`
 	ImageID string               `json:"image_id"`
-	Runtime string               `json:"runtime,omitempty" wire:"default"`
+	Runtime string               `json:"runtime,omitempty"`
 	Error   *string              `json:"error"`
 }
 
@@ -142,15 +131,14 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 	if err := cancellation(); err != nil {
 		return record, err
 	}
-	if a.sandbox.Mode() != sandbox.ModeDocker {
+	remote, ok := a.sandbox.(*sandbox.Remote)
+	if !ok {
 		return record, conflictError("The sandbox is off; there is no containment to test")
 	}
-	if remote, ok := a.sandbox.(*sandbox.Remote); ok {
-		if info, err := remote.Info(ctx); err == nil {
-			record.ImageID, record.Runtime = info.ImageID, info.Runtime
-		}
+	if info, err := remote.Info(ctx); err == nil {
+		record.ImageID, record.Runtime = info.ImageID, info.Runtime
 	}
-	report, err := sandbox.Probe(ctx, a.sandbox)
+	report, err := sandbox.Probe(ctx, remote)
 	if cancelErr := cancellation(); cancelErr != nil {
 		// A probe canceled by its caller or shutdown observed nothing about containment; the last result stands.
 		return record, cancelErr

@@ -381,7 +381,7 @@ type Cycle struct {
 	Error          *string            `json:"error"`
 	Repository     string             `json:"repository,omitempty" wire:"default"`
 	DecisionMemory []any              `json:"decision_memory,omitempty" wire:"default"`
-	RunID          *string            `json:"run_id,omitempty" wire:"default"`
+	RunID          *string            `json:"run_id,omitempty"`
 	Lifecycle      WorkspaceLifecycle `json:"lifecycle,omitzero" wire:"default"`
 }
 

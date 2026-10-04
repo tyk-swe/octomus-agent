@@ -222,7 +222,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		if preflightErr == nil {
 			reason := model.BlockedReasonUnknown
 			task.BlockedReason = &reason
-			task.Error = stringPointer("Remote prerequisites are restored; task can be retried")
+			task.Error = new("Remote prerequisites are restored; task can be retried")
 		} else {
 			recordTaskError(task, preflightErr)
 		}

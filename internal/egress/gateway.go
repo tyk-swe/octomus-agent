@@ -42,20 +42,9 @@ type Gateway struct {
 	tunnels   map[*tunnel]struct{}
 	running   sync.WaitGroup
 	tunnelIDs atomic.Uint64
-	now       func() time.Time
 	// started is when the gateway began counting; summaries carry it so the broker can tell a sandbox that made no
 	// connection from one whose connections a restarted gateway never saw.
 	started time.Time
-
-	perBox        int
-	halfCloseIdle time.Duration
-	lifetime      time.Duration
-	sweepEvery    time.Duration
-	refusalBurst  int
-	tunnelBurst   int
-	logWindow     time.Duration
-	maxConns      int
-	maxPerSource  int
 }
 
 const (
@@ -89,23 +78,13 @@ func New(policy Policy, leaseDir string, log io.Writer) *Gateway {
 		dial: func(ctx context.Context, address netip.AddrPort) (net.Conn, error) {
 			return dialer.DialContext(ctx, "tcp", address.String())
 		},
-		log:           log,
-		budgets:       map[string]*logBudget{},
-		stats:         map[string]*usage{},
-		collected:     map[string]collection{},
-		open:          map[string]int{},
-		tunnels:       map[*tunnel]struct{}{},
-		now:           time.Now,
-		started:       time.Now(),
-		perBox:        maxTunnelsPerSandbox,
-		halfCloseIdle: halfCloseIdle,
-		lifetime:      maxTunnelLifetime,
-		sweepEvery:    sweepEvery,
-		refusalBurst:  refusalLogBurst,
-		tunnelBurst:   tunnelLogBurst,
-		logWindow:     logWindow,
-		maxConns:      maxConnections,
-		maxPerSource:  maxConnectionsPerSource,
+		log:       log,
+		budgets:   map[string]*logBudget{},
+		stats:     map[string]*usage{},
+		collected: map[string]collection{},
+		open:      map[string]int{},
+		tunnels:   map[*tunnel]struct{}{},
+		started:   time.Now(),
 	}
 }
 
@@ -178,7 +157,7 @@ func (g *Gateway) logDecision(d Decision) {
 }
 
 func (g *Gateway) writeLocked(d Decision) {
-	d.Time = g.now().UTC().Format(time.RFC3339Nano)
+	d.Time = time.Now().UTC().Format(time.RFC3339Nano)
 	if g.log != nil {
 		data, _ := json.Marshal(d)
 		_, _ = g.log.Write(append(data, '\n'))
@@ -190,7 +169,7 @@ func (g *Gateway) writeLocked(d Decision) {
 func (g *Gateway) logRefusal(d Decision, source string, unnamed bool) {
 	g.logMu.Lock()
 	defer g.logMu.Unlock()
-	if unnamed || g.spendLocked("refusals", source, g.refusalBurst, d) {
+	if unnamed || g.spendLocked("refusals", source, refusalLogBurst, d) {
 		g.writeLocked(d)
 	}
 }
@@ -201,7 +180,7 @@ func (g *Gateway) logRefusal(d Decision, source string, unnamed bool) {
 func (g *Gateway) logOpened(d Decision, unnamed bool) bool {
 	g.logMu.Lock()
 	defer g.logMu.Unlock()
-	if !unnamed && !g.spendLocked("tunnels", "sandbox "+d.Sandbox, g.tunnelBurst, d) {
+	if !unnamed && !g.spendLocked("tunnels", "sandbox "+d.Sandbox, tunnelLogBurst, d) {
 		return false
 	}
 	g.writeLocked(d)
@@ -211,7 +190,7 @@ func (g *Gateway) logOpened(d Decision, unnamed bool) bool {
 // spendLocked spends one line of a source's budget for a class of lines and reports whether it may be written. Past
 // the burst a line is only counted; the count is logged as one "suppressed" line when the window ends.
 func (g *Gateway) spendLocked(class, source string, burst int, d Decision) bool {
-	now := g.now()
+	now := time.Now()
 	key := class + " " + source
 	budget := g.budgets[key]
 	if budget == nil {
@@ -226,7 +205,7 @@ func (g *Gateway) spendLocked(class, source string, burst int, d Decision) bool 
 			g.budgets[key] = budget
 		}
 	}
-	if now.Sub(budget.start) >= g.logWindow {
+	if now.Sub(budget.start) >= logWindow {
 		g.flushLocked(budget)
 		budget.start, budget.logged = now, 0
 	}
@@ -250,9 +229,9 @@ func (g *Gateway) flushLocked(budget *logBudget) {
 func (g *Gateway) flushBudgets(all bool) {
 	g.logMu.Lock()
 	defer g.logMu.Unlock()
-	now := g.now()
+	now := time.Now()
 	for key, budget := range g.budgets {
-		if all || now.Sub(budget.start) >= g.logWindow {
+		if all || now.Sub(budget.start) >= logWindow {
 			g.flushLocked(budget)
 			delete(g.budgets, key)
 		}
@@ -334,20 +313,8 @@ func (g *Gateway) countDecision(d Decision, lease string, pending *usage) (entry
 		count = target[key]
 	}
 	count.Count++
-	count.Bytes += d.BytesUp + d.BytesDown
 	target[key] = count
 	return entry, key, unnamed
-}
-
-// addTunnelBytes updates an uncollected summary without recreating evidence the broker already collected.
-func (g *Gateway) addTunnelBytes(sandboxName string, entry *usage, key string, bytes int64) {
-	g.statsMu.Lock()
-	defer g.statsMu.Unlock()
-	if entry != nil && g.stats[sandboxName] == entry {
-		count := entry.summary.Allowed[key]
-		count.Bytes += bytes
-		entry.summary.Allowed[key] = count
-	}
 }
 
 // lease identifies the sandbox behind a proxy credential and names its lease file. The credential is only ever
@@ -504,20 +471,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer g.untrack(t)
 	decision := Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: uint16(port), Decision: "allowed",
 		Tunnel: g.tunnelIDs.Add(1)}
-	entry, key, unnamed := count(decision)
+	_, _, unnamed := count(decision)
 	logged := g.logOpened(decision, unnamed)
-	started := g.now()
+	started := time.Now()
 	var up, down int64
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		t.cut("client went away")
 	} else {
 		up, down = g.splice(t, buffered)
 	}
-	g.addTunnelBytes(lease.Sandbox, entry, key, up+down)
 	if logged {
 		closed := decision
 		closed.Decision, closed.Reason = "closed", t.reason()
-		closed.BytesUp, closed.BytesDown, closed.Millis = up, down, g.now().Sub(started).Milliseconds()
+		closed.BytesUp, closed.BytesDown, closed.Millis = up, down, time.Now().Sub(started).Milliseconds()
 		g.logDecision(closed)
 	}
 }
@@ -547,7 +513,7 @@ func (g *Gateway) dialAddresses(ctx context.Context, addresses []netip.Addr, por
 func (g *Gateway) reserve(sandboxName string) bool {
 	g.statsMu.Lock()
 	defer g.statsMu.Unlock()
-	if g.open[sandboxName] >= g.perBox {
+	if g.open[sandboxName] >= maxTunnelsPerSandbox {
 		return false
 	}
 	g.open[sandboxName]++
@@ -645,7 +611,7 @@ func (g *Gateway) splice(t *tunnel, buffered io.Reader) (int64, int64) {
 		closeWrite(t.client)
 		downCh <- n
 	}()
-	lifetime := time.NewTimer(g.lifetime)
+	lifetime := time.NewTimer(maxTunnelLifetime)
 	defer lifetime.Stop()
 	var idle *time.Ticker
 	var idleTick <-chan time.Time
@@ -659,13 +625,13 @@ func (g *Gateway) splice(t *tunnel, buffered io.Reader) (int64, int64) {
 		case <-lifetime.C:
 			t.cut("tunnel lifetime reached")
 		case <-idleTick:
-			if time.Since(start)-time.Duration(last.Load()) >= g.halfCloseIdle {
+			if time.Since(start)-time.Duration(last.Load()) >= halfCloseIdle {
 				t.cut("idle after one side closed")
 			}
 		}
 		if pending == 1 && idle == nil {
 			last.Store(int64(time.Since(start)))
-			idle = time.NewTicker(max(g.halfCloseIdle/4, time.Millisecond))
+			idle = time.NewTicker(max(halfCloseIdle/4, time.Millisecond))
 			idleTick = idle.C
 		}
 	}

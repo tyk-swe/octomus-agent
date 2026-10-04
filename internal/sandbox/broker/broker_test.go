@@ -117,6 +117,18 @@ func TestKillReport(t *testing.T) {
 	})
 }
 
+// A wait answer that carries a daemon error reports no exit: the sandbox failed, it did not succeed with status 0.
+func TestWaitErrorFailsSandbox(t *testing.T) {
+	e := newFakeEngine(t)
+	e.run = func(c *fakeContainer) { c.End(0) }
+	e.waitError = "daemon lost the container"
+	b := e.broker(t, testConfig(t))
+	report, err := b.runSandbox(context.Background(), probePlan(time.Minute), discard, discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "daemon lost the container") {
+		t.Fatalf("wait error = %v, report %+v; want the sandbox to fail with the daemon's message", err, report)
+	}
+}
+
 func TestServeShutdown(t *testing.T) {
 	creating, cancelled := make(chan struct{}), make(chan struct{})
 	var removed atomic.Bool
