@@ -14,7 +14,11 @@ owns strict typed JSON boundaries for saved records and API requests.
 
 ## Repository map
 
-- `cmd/octomus-agent`: CLI flags, read-only exports and service startup.
+- `cmd/octomus-agent`: `main.go` (CLI flags, the one mode that runs instead of the
+  service, read-only exports and service startup), `service.go` (scheduler and HTTP
+  server lifecycle), `deploy.go` (Docker deployment settings and the trusted
+  checkout), `secrets.go` (secret files and the git credential helper) and
+  `sandbox.go` (sandbox backend, egress gateway, login lease and broker entry points).
 - `internal/engine`: scheduler and cycle orchestration: `engine.go` (App
   construction, options, runtime state and restart recovery), `scheduler.go`
   (tick, dispatch, pauses and idle backoff), `planning.go` (grounding, discovery,
@@ -31,7 +35,9 @@ owns strict typed JSON boundaries for saved records and API requests.
   controls and views).
 - `internal/runner`: runner-neutral model discovery, exact routing and dispatch
   (`runner.go`); `codex.go` (app-server protocol) and `opencode.go` (HTTP/SSE, with
-  `opencode_policy.go`, `opencode_sse.go` and `opencode_catalog.go`) implement it.
+  `opencode_policy.go` for the worker policy and `opencode_catalog.go`) implement it
+  over `stream.go`, the bounded line splitter behind the NDJSON reader and the SSE
+  framer.
   `owned.go` joins and cleans up both owned runner children and explains a failed
   connect with a redacted stderr tail. `runnertest` is the scripted adapter tests
   inject as the runner connector (engine `WithRunnerConnector`) in place of a runner
@@ -64,16 +70,22 @@ owns strict typed JSON boundaries for saved records and API requests.
   `lease.go` (lease files and proxy credentials) and `collector.go` (the summary
   collector).
 - `internal/redact`: the one secret scrubber and display bound, shared by every
-  package that records or returns text, the token and webhook variable names, and
-  `Fragment` for text already cut by a capture or read limit.
+  package that records or returns text: `redact.go` (patterns, environment secrets,
+  `Text`, `JSON` and the token and webhook variable names) and `fragment.go`
+  (`Parts`, `Streams` and `Fragment` for text already cut by a capture or read limit).
 - `internal/notifications`: opt-in webhook delivery. `internal/export`: the
   read-only exports of saved records (`export.go` opens one snapshot and
   redacts, `usage.go` is the usage report, `evidence.go` the `RunEvidenceV1`
   export). `internal/httpapi`: authenticated controls and embedded dashboard
   serving. `internal/schemas`: structured-output schemas and validation; its
   tests hold each schema to the `internal/model` type that decodes its answers.
-- `internal/git`, `internal/process`, `internal/workspace`: Git/GitHub
-  publication, owned process groups and managed-directory safety.
+- `internal/git`: `git.go` (exec plumbing on the trusted `repo.git`), `clone.go`
+  (split clones and the deployment's remote clone), `remote.go` (origin validation,
+  fetches and snapshots), `github.go` (gh inventory and PR reads) and `publish.go`
+  (publication). `internal/process`: `command.go` (the process-group child),
+  `capture.go` (bounded capture, redacted failure text and `RunMachine`, `RunText`
+  and `RunPredicate`), `status.go` (how a child ended) and `deadline.go` (`Bounded`
+  and `WithDeadline`). `internal/workspace`: managed-directory safety.
 - `web/src`: dashboard, shared TypeScript types, settings, setup checklist and
   run/task evidence.
 - Go behavior tests sit beside each package (`*_test.go`); `internal/testutil`

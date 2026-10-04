@@ -89,7 +89,7 @@ type Codex struct {
 	commandTimeout uint64
 }
 
-func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (*Codex, error) {
+func connectCodex(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (*Codex, error) {
 	if ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
 	}
@@ -125,17 +125,17 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	if _, err := c.rpc("initialize", map[string]any{
 		"clientInfo":   map[string]any{"name": "octomus_agent", "title": "Octomus Agent", "version": octomus.Version},
 		"capabilities": map[string]any{"experimentalApi": false},
-	}); err != nil {
+	}, time.Time{}, ""); err != nil {
 		return fail(err)
 	}
-	if err := c.send(map[string]any{"method": "initialized", "params": map[string]any{}}); err != nil {
+	if err := c.send(map[string]any{"method": "initialized", "params": map[string]any{}}, time.Time{}, ""); err != nil {
 		return fail(err)
 	}
 	return c, nil
 }
 
 func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
-	account, err := c.rpc("account/read", map[string]any{"refreshToken": false})
+	account, err := c.rpc("account/read", map[string]any{"refreshToken": false}, time.Time{}, "")
 	if err != nil {
 		return Diagnostics{}, err
 	}
@@ -169,22 +169,24 @@ func framed(value map[string]any) (string, error) {
 	return payload + "\n", nil
 }
 
-func (c *Codex) send(value map[string]any) error {
-	return c.sendUntil(value, time.Now().Add(60*time.Second), "Codex write timed out")
-}
+// responseAllowance bounds each Codex write, and each RPC's wait for its response once written, when no turn deadline
+// comes first.
+const responseAllowance = 60 * time.Second
 
-func (c *Codex) sendUntil(value map[string]any, deadline time.Time, what string) error {
+// send writes value before deadline, which what names when it passes, or before the write allowance when that is
+// nearer; a zero deadline leaves only the allowance.
+func (c *Codex) send(value map[string]any, deadline time.Time, what string) error {
 	payload, err := framed(value)
 	if err != nil {
 		return err
 	}
-	if writeDeadline := time.Now().Add(time.Duration(min(c.timeout, 60)) * time.Second); writeDeadline.Before(deadline) {
+	if writeDeadline := time.Now().Add(min(time.Duration(c.timeout)*time.Second, responseAllowance)); deadline.IsZero() || writeDeadline.Before(deadline) {
 		deadline, what = writeDeadline, "Codex write timed out"
 	}
 	if !time.Now().Before(deadline) {
 		return fmt.Errorf("%s: %w", what, process.ErrDeadlineElapsed)
 	}
-	_, err = process.BoundedAt(c.ctx, deadline, what, func(wctx context.Context) (struct{}, error) {
+	_, err = process.Bounded(c.ctx, deadline, what, func(wctx context.Context) (struct{}, error) {
 		return struct{}{}, writeAll(wctx, c.stdin, []byte(payload))
 	})
 	return err
@@ -262,7 +264,7 @@ func (c *Codex) receive(deadline time.Time, what string) (map[string]any, error)
 	}
 	id, hasID := v["id"]
 	if _, hasMethod := v["method"]; hasMethod && hasID {
-		if err := c.sendUntil(map[string]any{
+		if err := c.send(map[string]any{
 			"id":    id,
 			"error": map[string]any{"code": -32000, "message": "Octomus unattended mode cannot answer interactive requests"},
 		}, deadline, what); err != nil {
@@ -274,29 +276,16 @@ func (c *Codex) receive(deadline time.Time, what string) (map[string]any, error)
 	return v, nil
 }
 
-func (c *Codex) rpc(method string, params map[string]any) (any, error) {
-	return c.rpcWithTimeout(method, params, 60*time.Second, time.Time{}, "Codex RPC timed out")
-}
-
-func (c *Codex) rpcUntil(method string, params map[string]any, deadline time.Time, what string) (any, error) {
-	return c.rpcWithTimeout(method, params, 60*time.Second, deadline, what)
-}
-
-func (c *Codex) rpcWithTimeout(method string, params map[string]any, responseTimeout time.Duration, deadline time.Time, what string) (any, error) {
+// rpc sends method and waits for its response, both before deadline, which what names when it passes; a zero deadline
+// leaves only the write and response allowances.
+func (c *Codex) rpc(method string, params map[string]any, deadline time.Time, what string) (any, error) {
 	c.serial++
 	id := c.serial
-	request := map[string]any{"id": id, "method": method, "params": params}
-	var err error
-	if deadline.IsZero() {
-		err = c.send(request)
-	} else {
-		err = c.sendUntil(request, deadline, what)
-	}
-	if err != nil {
+	if err := c.send(map[string]any{"id": id, "method": method, "params": params}, deadline, what); err != nil {
 		return nil, err
 	}
 	// Every RPC gets its response allowance after writing, capped by the original overall turn deadline if supplied.
-	if rpcDeadline := time.Now().Add(responseTimeout); deadline.IsZero() || rpcDeadline.Before(deadline) {
+	if rpcDeadline := time.Now().Add(responseAllowance); deadline.IsZero() || rpcDeadline.Before(deadline) {
 		deadline, what = rpcDeadline, "Codex RPC timed out"
 	}
 	for {
@@ -334,7 +323,7 @@ func (c *Codex) Models(cwd string) ([]Model, error) {
 	out := []Model{}
 	var cursor any
 	for {
-		v, err := c.rpc("model/list", map[string]any{"limit": 100, "cursor": cursor, "includeHidden": true})
+		v, err := c.rpc("model/list", map[string]any{"limit": 100, "cursor": cursor, "includeHidden": true}, time.Time{}, "")
 		if err != nil {
 			return nil, err
 		}
@@ -400,7 +389,7 @@ func (c *Codex) Start(route config.Route, cwd string, resume *string) (string, e
 		params["threadId"] = *resume
 		method = "thread/resume"
 	}
-	v, err := c.rpc(method, params)
+	v, err := c.rpc(method, params, time.Time{}, "")
 	if err != nil {
 		return "", err
 	}
@@ -469,7 +458,7 @@ func (c *Codex) startTurn(thread string, route config.Route, cwd, prompt string,
 	if schema != nil {
 		params["outputSchema"] = schema
 	}
-	v, err := c.rpcUntil("turn/start", params, deadline, "Codex session time limit exceeded")
+	v, err := c.rpc("turn/start", params, deadline, "Codex session time limit exceeded")
 	if err != nil {
 		return "", err
 	}
@@ -548,7 +537,7 @@ func (c *Codex) awaitTurn(thread, turn string, deadline time.Time) (string, erro
 func (c *Codex) interrupt(thread, turn string) {
 	c.serial++
 	id := c.serial
-	_, _ = process.Bounded(context.Background(), 5, "Codex interrupt timed out", func(wctx context.Context) (struct{}, error) {
+	_, _ = process.Bounded(context.Background(), time.Now().Add(5*time.Second), "Codex interrupt timed out", func(wctx context.Context) (struct{}, error) {
 		return struct{}{}, c.sendBestEffort(wctx, map[string]any{
 			"id":     id,
 			"method": "turn/interrupt",

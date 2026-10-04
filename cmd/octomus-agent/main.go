@@ -47,12 +47,13 @@ func printJSON(stdout io.Writer, value any) error {
 }
 
 type arguments struct {
-	dataDir, listen                                   string
-	listenAddr                                        netip.AddrPort
-	assets, exportRun                                 *string
-	printConfig, doctor, audit, usageReport, sandboxd bool
-	egress, healthcheck, sandboxdCheck                bool
-	sandbox                                           sandbox.Mode
+	dataDir, listen   string
+	listenAddr        netip.AddrPort
+	assets, exportRun *string
+	// mode is the one flag, such as --doctor, that runs instead of the service; --audit narrows --doctor.
+	mode    string
+	audit   bool
+	sandbox sandbox.Mode
 }
 
 func main() { os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr)) }
@@ -90,34 +91,30 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		fmt.Fprintln(stdout, "octomus-agent "+octomus.Version)
 		return 0
 	}
-	if parsed.printConfig {
+	switch parsed.mode {
+	case "--print-config":
 		if err := printJSON(stdout, config.Default()); err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 1
 		}
 		return 0
-	}
-	if parsed.healthcheck {
+	case "--healthcheck":
 		return healthcheck(parsed.listen, stderr)
-	}
-	if parsed.sandboxdCheck {
+	case "--sandboxd-check":
 		return sandboxdCheck(env, stderr)
-	}
-	if parsed.egress {
+	case "--egress":
 		if err := runEgress(env, stdout, stderr); err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 1
 		}
 		return 0
-	}
-	if parsed.sandboxd {
+	case "--sandboxd":
 		if err := runBroker(env, stderr); err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 1
 		}
 		return 0
-	}
-	if parsed.usageReport || parsed.exportRun != nil {
+	case "--usage-report", "--export-run":
 		data, err := canonicalDataDir(parsed.dataDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "Error: Cannot resolve existing state database directory: %v\n", err)
@@ -125,7 +122,7 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		}
 		stateDB := filepath.Join(data, stateDBName)
 		var value map[string]any
-		if parsed.usageReport {
+		if parsed.mode == "--usage-report" {
 			value, err = export.Usage(stateDB)
 		} else {
 			value, err = export.Run(stateDB, *parsed.exportRun)
@@ -187,9 +184,10 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	backend := sandboxBackend(parsed.sandbox, env, stderr)
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stopSignals()
+	doctor := parsed.mode == "--doctor"
 	deployment, err := prepareDeployment(sigCtx, parsed.sandbox, data, env, stderr)
 	if sigCtx.Err() != nil {
-		if parsed.doctor {
+		if doctor {
 			return errors.New("Doctor interrupted")
 		}
 		return nil
@@ -198,7 +196,7 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		return err
 	}
 	app := engine.New(state, data, engine.WithSandbox(backend), engine.WithDeployment(deployment))
-	if parsed.doctor {
+	if doctor {
 		mode := model.CycleModeExecution
 		if parsed.audit {
 			mode = model.CycleModeAudit
@@ -229,8 +227,8 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	webhook, _ := env(redact.WebhookEnv)
 	server := newHTTPServer(httpapi.Router(app, token, assetsOverride, octomus.Version))
 	components := serviceComponents{
-		scheduler: app,
-		http:      server,
+		app:  app,
+		http: server,
 		prepareWorker: func() error {
 			return notifications.Configure(state, webhook)
 		},
@@ -296,6 +294,22 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	if v, ok := env("OCTOMUS_ASSETS"); ok {
 		a.assets = &v
 	}
+	values := map[string]func(value string) error{
+		"--data-dir":   func(v string) error { a.dataDir = v; return nil },
+		"--assets":     func(v string) error { a.assets = &v; return nil },
+		"--export-run": func(v string) error { a.exportRun = &v; return nil },
+		"--listen":     func(v string) error { a.listen = v; _, err := parseListen(v); return err },
+		"--sandbox": func(v string) error {
+			mode, err := sandbox.ParseMode(v)
+			if err != nil {
+				return fmt.Errorf("invalid value %q for '--sandbox': %w", v, err)
+			}
+			a.sandbox = mode
+			return nil
+		},
+	}
+	modes := map[string]bool{"--print-config": true, "--doctor": true, "--usage-report": true, "--export-run": true,
+		"--sandboxd": true, "--sandboxd-check": true, "--egress": true, "--healthcheck": true}
 	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -310,60 +324,33 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 			return a, "", fmt.Errorf("the argument '%s' cannot be used multiple times", name)
 		}
 		seen[name] = true
-		switch name {
-		case "--data-dir", "--listen", "--assets", "--export-run", "--sandbox":
-			if !hasValue {
-				if i+1 == len(args) || strings.HasPrefix(args[i+1], "-") {
-					return a, "", fmt.Errorf("a value is required for '%s'", name)
-				}
-				i++
-				value = args[i]
+		// Every mode runs alone; the service runs when none is chosen.
+		if modes[name] {
+			if a.mode != "" {
+				return a, "", fmt.Errorf("%s cannot be used with %s", name, a.mode)
 			}
-			if value == "" && name != "--listen" {
+			a.mode = name
+		}
+		switch set := values[name]; {
+		case set != nil:
+			if !hasValue && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				value, hasValue = args[i], true
+			}
+			if !hasValue || value == "" && name != "--listen" {
 				return a, "", fmt.Errorf("a value is required for '%s'", name)
 			}
-			switch name {
-			case "--data-dir":
-				a.dataDir = value
-			case "--listen":
-				a.listen = value
-				if _, err := parseListen(value); err != nil {
-					return a, "", err
-				}
-			case "--assets":
-				a.assets = &value
-			case "--export-run":
-				a.exportRun = &value
-			case "--sandbox":
-				mode, err := sandbox.ParseMode(value)
-				if err != nil {
-					return a, "", fmt.Errorf("invalid value %q for '--sandbox': %w", value, err)
-				}
-				a.sandbox = mode
+			if err := set(value); err != nil {
+				return a, "", err
 			}
-		case "--print-config", "--doctor", "--audit", "--usage-report", "--sandboxd", "--sandboxd-check", "--egress", "--healthcheck":
+		case modes[name], name == "--audit":
 			if hasValue {
 				return a, "", fmt.Errorf("unexpected value for '%s'", name)
 			}
-			switch name {
-			case "--print-config":
-				a.printConfig = true
-			case "--doctor":
-				a.doctor = true
-			case "--audit":
+			if name == "--audit" {
 				a.audit = true
-			case "--usage-report":
-				a.usageReport = true
-			case "--sandboxd":
-				a.sandboxd = true
-			case "--sandboxd-check":
-				a.sandboxdCheck = true
-			case "--egress":
-				a.egress = true
-			case "--healthcheck":
-				a.healthcheck = true
 			}
-		case "--":
+		case name == "--":
 			if i != len(args)-1 {
 				return a, "", fmt.Errorf("unexpected argument '%s'", args[i+1])
 			}
@@ -388,26 +375,8 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 		return a, "", err
 	}
 	a.listenAddr = listenAddr
-	if a.audit && !a.doctor {
+	if a.audit && a.mode != "--doctor" {
 		return a, "", fmt.Errorf("--audit requires --doctor")
-	}
-	if a.doctor && a.printConfig {
-		return a, "", fmt.Errorf("--doctor cannot be used with --print-config")
-	}
-	if a.usageReport && (a.doctor || a.printConfig) {
-		return a, "", fmt.Errorf("--usage-report cannot be used with --doctor or --print-config")
-	}
-	if a.exportRun != nil && (a.doctor || a.printConfig || a.usageReport) {
-		return a, "", fmt.Errorf("--export-run cannot be used with --doctor, --print-config or --usage-report")
-	}
-	modes := 0
-	for _, mode := range []bool{a.sandboxd, a.sandboxdCheck, a.egress, a.healthcheck, a.doctor, a.printConfig, a.usageReport, a.exportRun != nil} {
-		if mode {
-			modes++
-		}
-	}
-	if (a.sandboxd || a.sandboxdCheck || a.egress || a.healthcheck) && modes > 1 {
-		return a, "", fmt.Errorf("--sandboxd, --sandboxd-check, --egress and --healthcheck cannot be combined with another mode")
 	}
 	return a, "", nil
 }

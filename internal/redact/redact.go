@@ -2,14 +2,12 @@ package redact
 
 import (
 	"cmp"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
-	"unicode"
-	"unicode/utf8"
 )
 
 const TokenEnv = "OCTOMUS_TOKEN"
@@ -45,251 +43,6 @@ func environmentSecrets() []string {
 }
 
 func Secrets(input string) string { return scrub(input, environmentSecrets()) }
-
-// Part is text from a capture, optionally cut inside its first or last line.
-// Prefix is included only when text remains after trimming the cut lines.
-type Part struct {
-	Text             string
-	Prefix           string
-	CutStart, CutEnd bool
-}
-
-// Parts scrubs the concatenation after trimming capture cuts, retaining the part
-// boundaries. A secret spanning parts is replaced once, in the part where it starts.
-func Parts(parts ...Part) []string {
-	values := environmentSecrets()
-	return scrubParts(partTexts(parts, values), values)
-}
-
-// Streams returns first's parts, a separating newline, and second's parts after
-// capture-cut normalization and joint redaction. Both adjacent and separated
-// views are matched before replacement. Discarded capture fragments still inform
-// redaction of retained bytes, without changing which cut lines are displayed.
-func Streams(first, second []Part) []string {
-	return streams(first, second, environmentSecrets())
-}
-
-func partTexts(parts []Part, values []string) []string {
-	texts := make([]string, len(parts))
-	for i, part := range parts {
-		text, _ := partSlice(part, values)
-		if text != "" {
-			texts[i] = part.Prefix + text
-		}
-	}
-	return texts
-}
-
-func partSlice(part Part, values []string) (text string, start int) {
-	text = part.Text
-	if part.CutStart {
-		text = cutFragment(text, TailLineCut, values)
-		start = len(part.Text) - len(text)
-	}
-	if part.CutEnd {
-		text = cutFragment(text, HeadLineCut, values)
-	}
-	return text, start
-}
-
-func streams(first, second []Part, values []string) []string {
-	parts := append(slices.Clone(first), Part{Text: "\n"})
-	parts = append(parts, second...)
-	texts, raw := make([]string, len(parts)), make([]string, len(parts))
-	// Each retained slice maps original capture bytes to their display offsets.
-	type keptSlice struct{ rawStart, rawEnd, textStart int }
-	var kept []keptSlice
-	var rawOffset, textOffset, rawBoundary, textBoundary int
-	for i, part := range parts {
-		if i == len(first) {
-			rawBoundary, textBoundary = rawOffset, textOffset
-		}
-		if part.Text != "" {
-			raw[i] = part.Prefix + part.Text
-		}
-		text, start := partSlice(part, values)
-		if text != "" {
-			texts[i] = part.Prefix + text
-			// Anchor projected replacements in retained capture bytes, never in
-			// display-only prefixes or the separator that callers may omit.
-			if i != len(first) {
-				from := rawOffset + len(part.Prefix) + start
-				kept = append(kept, keptSlice{from, from + len(text), textOffset + len(part.Prefix)})
-			}
-		}
-		rawOffset += len(raw[i])
-		textOffset += len(texts[i])
-	}
-	input := strings.Join(texts, "")
-	spans := streamSpans(input, textBoundary, values)
-	original := strings.Join(raw, "")
-	if original == input {
-		return replaceParts(texts, input, spans)
-	}
-	for _, span := range streamSpans(original, rawBoundary, values) {
-		from, to := -1, 0
-		for _, slice := range kept {
-			start, end := max(span[0], slice.rawStart), min(span[1], slice.rawEnd)
-			if start < end {
-				if from < 0 {
-					from = slice.textStart + start - slice.rawStart
-				}
-				to = slice.textStart + end - slice.rawStart
-			}
-		}
-		if from >= 0 {
-			spans = append(spans, [2]int{from, to})
-		}
-	}
-	return replaceParts(texts, input, mergeSpans(spans))
-}
-
-func streamSpans(input string, boundary int, values []string) [][2]int {
-	spans := secretSpans(input, values)
-	adjacent := input[:boundary] + input[boundary+1:]
-	for _, span := range secretSpans(adjacent, values) {
-		// Map back across the display-only newline. A spanning match includes
-		// that newline; a match starting in the second stream leaves it alone.
-		if span[0] >= boundary {
-			span[0]++
-		}
-		if span[1] > boundary {
-			span[1]++
-		}
-		spans = append(spans, span)
-	}
-	return mergeSpans(spans)
-}
-
-type FragmentKind uint8
-
-const (
-	HeadLineCut FragmentKind = iota
-	HeadWordCut
-	TailLineCut
-	TailTwoWordsCut
-)
-
-func Fragment(input string, kind FragmentKind) string {
-	values := environmentSecrets()
-	return scrub(cutFragment(input, kind, values), values)
-}
-
-func cutFragment(text string, kind FragmentKind, values []string) string {
-	switch kind {
-	case HeadLineCut:
-		if i := strings.LastIndexByte(text, '\n'); i >= 0 {
-			return trimCutSecretEnd(text[:i], values)
-		}
-		if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
-			return trimCutSecretEnd(text[:i], values)
-		}
-		return ""
-	case HeadWordCut:
-		return trimCutSecretEnd(beforeLastWord(scrub(text, values)), values)
-	case TailLineCut:
-		return tailLineStart(text, values)
-	case TailTwoWordsCut:
-		return tailTwoWordsStart(scrub(text, values), values)
-	}
-	return ""
-}
-
-func beforeLastWord(text string) string {
-	if i := strings.LastIndexFunc(text, unicode.IsSpace); i >= 0 {
-		return text[:i]
-	}
-	return ""
-}
-
-func afterWord(text string) string {
-	if i := strings.IndexFunc(text, unicode.IsSpace); i >= 0 {
-		return text[i:]
-	}
-	return ""
-}
-
-func tailTwoWordsStart(text string, values []string) string {
-	var rest string
-	if _, after, found := strings.Cut(text, "\n"); found {
-		rest = after
-	} else {
-		rest = afterWord(strings.TrimLeftFunc(afterWord(text), unicode.IsSpace))
-	}
-	return trimCutSecretStart(strings.TrimLeftFunc(rest, unicode.IsSpace), values)
-}
-
-const escapeIntermediates = " !\"#$%&'()*+,-./"
-
-var cutEscapeKey = regexp.MustCompile(`(?i)^[a-z]sk-[a-z0-9_-]{10}`)
-
-func mayEndBearerPrefix(text string) bool {
-	const prefix = "bearer"
-	n := min(len(text), len(prefix))
-	return (n == len(text) || n == len(prefix)) && strings.EqualFold(text[len(text)-n:], prefix[len(prefix)-n:])
-}
-
-func tailLineStart(text string, values []string) string {
-	dropped, rest, found := strings.Cut(text, "\n")
-	if !found {
-		i := strings.IndexFunc(text, unicode.IsSpace)
-		if i < 0 {
-			return ""
-		}
-		dropped, rest = text[:i], text[i:]
-	}
-	run := 0
-	for {
-		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
-		at := len(text) - len(rest)
-		if at >= run {
-			run = at + len(rest) - len(strings.TrimLeft(rest, escapeIntermediates))
-		}
-		from := -1
-		if key := cutEscapeKey.FindStringIndex(text[run:]); key != nil {
-			from = run - at + key[1]
-		} else if mayEndBearerPrefix(strings.TrimRightFunc(dropped, unicode.IsSpace)) {
-			from = 0
-		} else if trimmed := trimCutSecretStart(rest, values); len(trimmed) < len(rest) {
-			from = len(rest) - len(trimmed)
-		}
-		if from < 0 {
-			return rest
-		}
-		i := strings.IndexFunc(rest[from:], unicode.IsSpace)
-		if i < 0 {
-			return ""
-		}
-		dropped, rest = rest[:from+i], rest[from+i:]
-	}
-}
-
-func trimCutSecretEnd(text string, values []string) string {
-	cut := 0
-	for _, value := range values {
-		for i, r := range value {
-			if i > cut && unicode.IsSpace(r) && strings.HasSuffix(text, value[:i]) {
-				cut = i
-			}
-		}
-	}
-	return text[:len(text)-cut]
-}
-
-func trimCutSecretStart(text string, values []string) string {
-	cut := 0
-	for _, value := range values {
-		for i, r := range value {
-			if !unicode.IsSpace(r) {
-				continue
-			}
-			if rest := value[i+utf8.RuneLen(r):]; len(rest) > cut && strings.HasPrefix(text, rest) {
-				cut = len(rest)
-			}
-		}
-	}
-	return text[cut:]
-}
 
 // secretSpans finds all spans in the original text and merges overlaps, so
 // replacing one secret never splits another.
@@ -375,26 +128,20 @@ func replaceParts(parts []string, input string, spans [][2]int) []string {
 
 const displayTextLimit = 16384
 
-func boundDisplayText(s string) (string, bool) {
-	count := 0
-	for i := range s {
-		if count == displayTextLimit {
-			return s[:i], true
-		}
-		count++
-	}
-	return s, false
-}
-
+// displayString scrubs s and bounds it to displayTextLimit characters, naming each transform it applied.
 func displayString(s string) (string, []string) {
 	kinds := []string{}
-	redacted := Secrets(s)
-	if redacted != s {
+	display := Secrets(s)
+	if display != s {
 		kinds = append(kinds, "redacted")
 	}
-	display, shortened := boundDisplayText(redacted)
-	if shortened {
-		kinds = append(kinds, "shortened")
+	count := 0
+	for i := range display {
+		if count == displayTextLimit {
+			display, kinds = display[:i], append(kinds, "shortened")
+			break
+		}
+		count++
 	}
 	return display, kinds
 }
@@ -410,13 +157,33 @@ type DisplayTransform struct {
 	Paths [][]any  `json:"paths"`
 }
 
+// walk rewrites every string under value in place, in key order, through visit, which also sees the path from the
+// root to that string.
+func walk(value any, path []any, visit func(s string, path []any) string) any {
+	switch v := value.(type) {
+	case string:
+		return visit(v, path)
+	case []any:
+		for i := range v {
+			v[i] = walk(v[i], append(slices.Clone(path), i), visit)
+		}
+		return v
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(v)) {
+			v[key] = walk(v[key], append(slices.Clone(path), key), visit)
+		}
+		return v
+	default:
+		return value
+	}
+}
+
 func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
 	transforms := map[string]*DisplayTransform{}
-	var walk func(value any, path []any, field string) any
-	walk = func(value any, path []any, field string) any {
-		switch v := value.(type) {
-		case string:
-			display, kinds := displayString(v)
+	fields := slices.Sorted(maps.Keys(object))
+	for _, field := range fields {
+		object[field] = walk(object[field], []any{field}, func(s string, path []any) string {
+			display, kinds := displayString(s)
 			if len(kinds) == 0 {
 				return display
 			}
@@ -432,37 +199,12 @@ func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
 			}
 			entry.Paths = append(entry.Paths, path)
 			return display
-		case []any:
-			for i := range v {
-				v[i] = walk(v[i], append(slices.Clone(path), i), field)
-			}
-			return v
-		case map[string]any:
-			keys := make([]string, 0, len(v))
-			for key := range v {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				v[key] = walk(v[key], append(slices.Clone(path), key), field)
-			}
-			return v
-		default:
-			return value
-		}
-	}
-	fields := make([]string, 0, len(object))
-	for field := range object {
-		fields = append(fields, field)
-	}
-	sort.Strings(fields)
-	for _, field := range fields {
-		object[field] = walk(object[field], []any{field}, field)
+		})
 	}
 	result := []DisplayTransform{}
 	for _, field := range fields {
 		if entry := transforms[field]; entry != nil {
-			sort.Strings(entry.Kinds)
+			slices.Sort(entry.Kinds)
 			result = append(result, *entry)
 		}
 	}
@@ -470,20 +212,5 @@ func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
 }
 
 func JSON(value any) any {
-	switch v := value.(type) {
-	case string:
-		return Text(v)
-	case []any:
-		for i := range v {
-			v[i] = JSON(v[i])
-		}
-		return v
-	case map[string]any:
-		for k := range v {
-			v[k] = JSON(v[k])
-		}
-		return v
-	default:
-		return value
-	}
+	return walk(value, nil, func(s string, _ []any) string { return Text(s) })
 }

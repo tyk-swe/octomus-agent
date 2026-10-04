@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -33,11 +34,11 @@ func contract(t *testing.T, backend config.Backend, binary string) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("the synthetic provider did not start: %v", err)
 	}
-	owned := process.NewGroupChild(cmd)
 	providerWait := make(chan error, 1)
 	go func() { providerWait <- cmd.Wait() }()
 	t.Cleanup(func() {
-		owned.Close()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
 		select {
 		case err := <-providerWait:
 			if err != nil && !killed(err) {
@@ -110,7 +111,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	version, err := process.RunMachine(ctx, wrapper, []string{"--version"}, root, 60)
+	version, err := process.RunMachine(ctx, wrapper, []string{"--version"}, root, 60, nil)
 	if err != nil {
 		t.Fatalf("the pinned client did not report a version: %v", err)
 	}
@@ -124,7 +125,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 	if backend == config.BackendCodex {
 		generated := filepath.Join(root, "schemas")
 		if _, err := process.RunMachine(ctx, wrapper,
-			[]string{"app-server", "generate-json-schema", "--out", generated}, root, 60); err != nil {
+			[]string{"app-server", "generate-json-schema", "--out", generated}, root, 60, nil); err != nil {
 			t.Fatalf("generate-json-schema failed: %v", err)
 		}
 		for _, name := range []string{

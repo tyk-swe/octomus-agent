@@ -51,7 +51,7 @@ type Policy struct {
 	Build []Rule `json:"build"`
 }
 
-func (p Policy) Allows(kind, host string, port uint16) bool {
+func (p Policy) allows(kind, host string, port uint16) bool {
 	var rules []Rule
 	switch kind {
 	case wire.KindRunner:
@@ -72,12 +72,12 @@ func (p Policy) Allows(kind, host string, port uint16) bool {
 // at least two labels in its suffix, so it cannot cover these two-label candidates. There are more candidates than
 // rules, hence an exact allowlist cannot exhaust them. Still fail closed if an unvalidated policy covers them all.
 func (p Policy) probeTarget() (string, error) {
-	if !p.Allows(wire.KindRunner, "example.com", 443) {
+	if !p.allows(wire.KindRunner, "example.com", 443) {
 		return "example.com:443", nil
 	}
 	for i := 0; i <= len(p.Model)+len(p.Build); i++ {
 		host := fmt.Sprintf("octomus-probe-%d.invalid", i)
-		if !p.Allows(wire.KindRunner, host, 443) {
+		if !p.allows(wire.KindRunner, host, 443) {
 			return host + ":443", nil
 		}
 	}
@@ -182,11 +182,11 @@ var blockedPrefixes = func() []netip.Prefix {
 	return prefixes
 }()
 
-// PublicAddress reports whether a tunnel may reach addr. Loopback, private, link-local (including cloud metadata),
+// publicAddress reports whether a tunnel may reach addr. Loopback, private, link-local (including cloud metadata),
 // carrier-grade NAT, documentation, benchmark and reserved ranges are refused, as are IPv6 addresses outside global
 // unicast and IPv6 forms that embed an IPv4 address (IPv4-compatible, SIIT, NAT64, 6to4, Teredo), so no allowlisted
 // name can be pointed at the host, the VPS's neighbours or other containers.
-func PublicAddress(addr netip.Addr) bool {
+func publicAddress(addr netip.Addr) bool {
 	addr = addr.Unmap()
 	if !addr.IsValid() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() || addr.IsMulticast() ||
 		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsInterfaceLocalMulticast() || !addr.IsGlobalUnicast() ||

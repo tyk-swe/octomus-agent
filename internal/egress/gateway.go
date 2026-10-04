@@ -321,6 +321,24 @@ func (g *Gateway) countDecision(d Decision, lease string, pending *usage) (entry
 
 // lease identifies the sandbox behind a proxy credential and names its lease file. The credential is only ever
 // compared through the digest that names that file.
+// collect returns and forgets what a finished sandbox did. A sandbox it has no entry for made no connection since
+// the gateway started. Repeated collection keeps only a previous incompleteness mark until it expires.
+func (g *Gateway) collect(sandboxName string) Summary {
+	g.statsMu.Lock()
+	defer g.statsMu.Unlock()
+	entry := g.stats[sandboxName]
+	delete(g.stats, sandboxName)
+	summary := emptySummary()
+	if entry != nil {
+		summary = entry.summary
+		summary.Incomplete = summary.Incomplete || entry.pending > 0
+	}
+	summary.Incomplete = summary.Incomplete || g.collected[sandboxName].incomplete
+	g.collected[sandboxName] = collection{at: time.Now(), incomplete: summary.Incomplete}
+	summary.GatewayStarted = g.started
+	return summary
+}
+
 func (g *Gateway) lease(header string) (Lease, string, bool) {
 	encoded, ok := strings.CutPrefix(header, "Basic ")
 	if !ok {
@@ -331,7 +349,7 @@ func (g *Gateway) lease(header string) (Lease, string, bool) {
 		return Lease{}, "", false
 	}
 	user, token, ok := strings.Cut(string(decoded), ":")
-	if !ok || user != ProxyUser {
+	if !ok || user != proxyUser {
 		return Lease{}, "", false
 	}
 	return g.leases.lookup(token)
@@ -423,7 +441,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The allowlist is decided before any lookup, so a refused name never reaches DNS and cannot carry data out.
-	if !g.policy.Allows(lease.Kind, host, uint16(port)) {
+	if !g.policy.allows(lease.Kind, host, uint16(port)) {
 		deny(http.StatusForbidden, host, uint16(port), fmt.Sprintf(wire.RefusalNotAllowlisted, lease.Kind))
 		return
 	}
@@ -442,7 +460,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var targets []netip.Addr
 	for _, address := range addresses {
-		if PublicAddress(address) {
+		if publicAddress(address) {
 			targets = append(targets, address.Unmap())
 		}
 	}

@@ -122,9 +122,9 @@ func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd
 	}
 	switch backend {
 	case config.BackendCodex:
-		return ConnectCodex(ctx, cfg, cwd, state, entity, box)
+		return connectCodex(ctx, cfg, cwd, state, entity, box)
 	case config.BackendOpencode:
-		return ConnectOpenCode(ctx, cfg, cwd, state, entity, box)
+		return connectOpenCode(ctx, cfg, cwd, state, entity, box)
 	}
 	return nil, fmt.Errorf("Invalid backend")
 }
@@ -227,7 +227,7 @@ func (r *Runners) TakeEvidence() *model.SandboxRecord {
 	return evidence
 }
 
-func (r *Runners) CheckRoute(route config.Route, cwd string) error {
+func (r *Runners) checkRoute(route config.Route, cwd string) error {
 	if _, ok := r.catalogs[route.Backend]; !ok {
 		client, err := r.Client(route.Backend, cwd)
 		if err != nil {
@@ -255,7 +255,7 @@ func (r *Runners) ValidateRoutes(cfg config.Config, cwd string, audit bool) erro
 			}
 			checked[named.Route.Backend] = struct{}{}
 		}
-		if err := r.CheckRoute(named.Route, cwd); err != nil {
+		if err := r.checkRoute(named.Route, cwd); err != nil {
 			return fmt.Errorf("%s route: %w", named.Name, err)
 		}
 	}
@@ -263,7 +263,7 @@ func (r *Runners) ValidateRoutes(cfg config.Config, cwd string, audit bool) erro
 }
 
 func (r *Runners) Start(route config.Route, cwd string, resume *string) (string, error) {
-	if err := r.CheckRoute(route, cwd); err != nil {
+	if err := r.checkRoute(route, cwd); err != nil {
 		return "", unavailable(err)
 	}
 	client, err := r.Client(route.Backend, cwd)

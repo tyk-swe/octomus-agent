@@ -1,16 +1,7 @@
 package runner
 
-import (
-	"crypto/rand"
-	"fmt"
-	"io"
-	"strings"
-	"sync/atomic"
-	"time"
-
-	"github.com/tyk-swe/octomus-agent/internal/config"
-)
-
+// workerPolicy is the OpenCode configuration every Octomus server starts with: no sharing, updates, snapshots, helpers
+// or compaction, and one primary agent that may do anything but ask questions or delegate.
 func workerPolicy(agent string) map[string]any {
 	return map[string]any{
 		"share":         "disabled",
@@ -34,6 +25,7 @@ func workerPolicy(agent string) map[string]any {
 	}
 }
 
+// appliedPolicy checks that the server's effective configuration is the worker policy.
 func appliedPolicy(effective any, agent string) bool {
 	doc, ok := asObject(effective)
 	if !ok {
@@ -59,76 +51,4 @@ func appliedPolicy(effective any, agent string) bool {
 		}
 	}
 	return true
-}
-
-var messageClock atomic.Uint64
-
-func messageID() (string, error) {
-	var random [14]byte
-	if _, err := io.ReadFull(rand.Reader, random[:]); err != nil {
-		return "", err
-	}
-	now := uint64(time.Now().UnixMilli()) * 4096
-	for {
-		previous := messageClock.Load()
-		next := previous + 1
-		if next < now+1 {
-			next = now + 1
-		}
-		if messageClock.CompareAndSwap(previous, next) {
-			clock := next & 0xffff_ffff_ffff
-			const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-			suffix := make([]byte, 14)
-			for i := range suffix {
-				suffix[i] = alphabet[int(random[i])%len(alphabet)]
-			}
-			return fmt.Sprintf("msg_%012x%s", clock, suffix), nil
-		}
-	}
-}
-
-func variantMatches(reported string, ok bool, route config.Route) bool {
-	if route.Variant != nil {
-		return ok && reported == *route.Variant
-	}
-	return !ok || reported == "default"
-}
-
-func checkModel(info map[string]any, route config.Route) error {
-	modelID, _ := strAt(info, "modelID")
-	providerID, providerOK := strAt(info, "providerID")
-	if modelID != route.Model || providerOK != (route.Provider != nil) || (providerOK && providerID != *route.Provider) {
-		return fmt.Errorf("OpenCode substituted the requested model")
-	}
-	variant, variantOK := strAt(info, "variant")
-	if !variantMatches(variant, variantOK, route) {
-		return fmt.Errorf("OpenCode substituted the requested variant")
-	}
-	return nil
-}
-
-func segment(id string) (string, error) {
-	valid := id != "" && len(id) <= 256
-	if valid {
-		for i := 0; i < len(id); i++ {
-			b := id[i]
-			if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-') {
-				valid = false
-				break
-			}
-		}
-	}
-	if !valid {
-		return "", fmt.Errorf("Invalid OpenCode identity")
-	}
-	var encoded strings.Builder
-	for i := 0; i < len(id); i++ {
-		b := id[i]
-		if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' {
-			encoded.WriteByte(b)
-		} else {
-			fmt.Fprintf(&encoded, "%%%02X", b)
-		}
-	}
-	return encoded.String(), nil
 }

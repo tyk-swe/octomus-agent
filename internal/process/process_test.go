@@ -1,6 +1,6 @@
 // Owned process groups: capture, cancellation, deadlines, scrubbed environments and redacted failure text.
 
-package process_test
+package process
 
 import (
 	"context"
@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
@@ -107,14 +106,14 @@ sys.stderr.flush()
 sys.exit(int(sys.argv[2]))
 `
 	type result struct {
-		out *process.Output
+		out *Output
 		err error
 	}
 	done := make(chan result, 1)
 	go func() {
-		out, err := process.Capture(context.Background(), "python3",
+		out, err := CaptureHost(context.Background(), "python3",
 			[]string{"-c", script, pipe, strconv.Itoa(exitCode)},
-			temp, 10, process.CaptureDiagnostic)
+			temp, nil, 10, CaptureDiagnostic)
 		done <- result{out, err}
 	}()
 	var res result
@@ -167,8 +166,8 @@ func TestCancellationKillsGroup(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := process.RunMachine(ctx, "bash",
-			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, 10)
+		_, err := RunMachine(ctx, "bash",
+			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, 10, nil)
 		done <- err
 	}()
 	pid := waitForPid(t, filepath.Join(temp, "child.pid"))
@@ -186,8 +185,8 @@ func TestDeadlineKillsGroup(t *testing.T) {
 	temp := t.TempDir()
 	done := make(chan error, 1)
 	go func() {
-		_, err := process.Capture(context.Background(), "bash",
-			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, 1, process.CaptureDiagnostic)
+		_, err := CaptureHost(context.Background(), "bash",
+			[]string{"-c", "sleep 30 & echo $! > child.pid; wait"}, temp, nil, 1, CaptureDiagnostic)
 		done <- err
 	}()
 	pid := waitForPid(t, filepath.Join(temp, "child.pid"))
@@ -211,7 +210,7 @@ func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
 	script := fmt.Sprintf(`printf 't=%%s w=%%s g=%%s' "${%s-unset}" "${%s-unset}" "$GIT_TERMINAL_PROMPT"`,
 		redact.TokenEnv, redact.WebhookEnv)
-	out, err := process.RunMachine(context.Background(), "bash", []string{"-c", script}, temp, 10)
+	out, err := RunMachine(context.Background(), "bash", []string{"-c", script}, temp, 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,18 +223,18 @@ func TestRunMachineFailsClosed(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
-	if _, err := process.RunMachine(ctx, "python3",
-		[]string{"-c", "import sys; sys.exit(1)"}, tmp, 10); err == nil {
+	if _, err := RunMachine(ctx, "python3",
+		[]string{"-c", "import sys; sys.exit(1)"}, tmp, 10, nil); err == nil {
 		t.Fatal("exit 1 with empty stdout must fail")
 	}
-	if _, err := process.RunMachine(ctx, "python3",
+	if _, err := RunMachine(ctx, "python3",
 		[]string{"-c", "import json, sys; print(json.dumps({'ok': True})); sys.exit(7)"},
-		tmp, 10); err == nil {
+		tmp, 10, nil); err == nil {
 		t.Fatal("exit 7 after valid JSON must fail")
 	}
-	_, err := process.RunMachine(ctx, "python3",
+	_, err := RunMachine(ctx, "python3",
 		[]string{"-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"},
-		tmp, 10)
+		tmp, 10, nil)
 	if err == nil {
 		t.Fatal("SIGKILL termination must fail")
 	}
@@ -248,29 +247,29 @@ func TestRunPredicate(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
-	if ok, err := process.RunPredicate(ctx, "python3",
-		[]string{"-c", "print('true')"}, tmp, 10, []int{1}); err != nil || !ok {
+	if ok, err := RunPredicate(ctx, "python3",
+		[]string{"-c", "print('true')"}, tmp, 10, []int{1}, nil); err != nil || !ok {
 		t.Fatalf("exit 0 predicate = %v, %v; want true", ok, err)
 	}
-	if ok, err := process.RunPredicate(ctx, "python3",
-		[]string{"-c", "import sys; sys.exit(1)"}, tmp, 10, []int{1}); err != nil || ok {
+	if ok, err := RunPredicate(ctx, "python3",
+		[]string{"-c", "import sys; sys.exit(1)"}, tmp, 10, []int{1}, nil); err != nil || ok {
 		t.Fatalf("documented false status = %v, %v; want false", ok, err)
 	}
-	if _, err := process.RunPredicate(ctx, "python3",
-		[]string{"-c", "import sys; sys.exit(2)"}, tmp, 10, []int{1}); err == nil {
+	if _, err := RunPredicate(ctx, "python3",
+		[]string{"-c", "import sys; sys.exit(2)"}, tmp, 10, []int{1}, nil); err == nil {
 		t.Fatal("undocumented status must be an error")
 	}
-	if _, err := process.RunPredicate(ctx, "python3",
+	if _, err := RunPredicate(ctx, "python3",
 		[]string{"-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"},
-		tmp, 10, []int{1, 9}); err == nil {
+		tmp, 10, []int{1, 9}, nil); err == nil {
 		t.Fatal("signal termination must be an error, not a false predicate")
 	}
-	if _, err := process.RunPredicate(ctx, "octomus-no-such-binary",
-		nil, tmp, 10, []int{1}); err == nil {
+	if _, err := RunPredicate(ctx, "octomus-no-such-binary",
+		nil, tmp, 10, []int{1}, nil); err == nil {
 		t.Fatal("spawn failure must be an error, not a false predicate")
 	}
-	if _, err := process.RunPredicate(ctx, "sleep", []string{"30"},
-		tmp, 1, []int{1}); err == nil {
+	if _, err := RunPredicate(ctx, "sleep", []string{"30"},
+		tmp, 1, []int{1}, nil); err == nil {
 		t.Fatal("timeout must be an error, not a false predicate")
 	}
 }
@@ -288,17 +287,17 @@ func TestFailureTextRedaction(t *testing.T) {
 		{name: "URL credential", print: `'https://bot:s3cr3tpassword0123@github.com/x'`, cut: 22, leak: "s3cr3tpass"},
 	} {
 		lines := fmt.Sprintf(`echo KEPT-LINE; head -c %d /dev/zero | tr '\0' A; printf '%%s\n' %s`,
-			process.DiagnosticLimit-len(kept)-secret.cut, secret.print)
+			diagnosticLimit-len(kept)-secret.cut, secret.print)
 		for _, stream := range []struct {
 			name string
 			run  func(script string) error
 		}{
 			{name: "predicate stdout", run: func(script string) error {
-				_, err := process.RunPredicate(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10, []int{1})
+				_, err := RunPredicate(context.Background(), "bash", []string{"-c", script}, t.TempDir(), 10, []int{1}, nil)
 				return err
 			}},
 			{name: "machine stderr", run: func(script string) error {
-				_, err := process.RunMachine(context.Background(), "bash", []string{"-c", "{ " + script + "; } >&2"}, t.TempDir(), 10)
+				_, err := RunMachine(context.Background(), "bash", []string{"-c", "{ " + script + "; } >&2"}, t.TempDir(), 10, nil)
 				return err
 			}},
 		} {

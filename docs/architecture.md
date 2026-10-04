@@ -221,7 +221,7 @@ token after its prefix, an API key after a terminal escape sequence), and the
 last words or lines of a redacted environment value the window began inside,
 with the rest of the word they end in. Failure texts and verification evidence
 render from that text, with a truncation marker where output was dropped.
-Machine stdout is complete up to 16 MiB or returns `OutputTooLarge` (a failed
+Machine stdout is complete up to 16 MiB or fails as `outputTooLarge` (a failed
 command's error still keeps the real end past that, from the same 64 KiB
 window); invalid UTF-8 also fails explicitly. Git/GitHub machine consumers
 never parse a diagnostic truncation marker. All captures retain timeout,

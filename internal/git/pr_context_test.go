@@ -1,13 +1,13 @@
 // Ownership of pull requests in the external PR inventory.
 
-package git_test
+package git
 
 import (
 	"encoding/json"
 	"fmt"
 	"testing"
 
-	"github.com/tyk-swe/octomus-agent/internal/git"
+	"github.com/tyk-swe/octomus-agent/internal/config"
 )
 
 func prContextEntry(number int, branch string, headRepo, baseRepo any, body, state string) map[string]any {
@@ -47,7 +47,8 @@ func prContextPage(t *testing.T, entries ...map[string]any) string {
 
 func TestPROwnership(t *testing.T) {
 	t.Parallel()
-	c := testConfig()
+	c := config.Default()
+	c.GitHubRepo = "fixture/project"
 	cases := []struct {
 		entry map[string]any
 		owned bool
@@ -66,7 +67,7 @@ func TestPROwnership(t *testing.T) {
 	for _, tc := range cases {
 		entries = append(entries, tc.entry)
 	}
-	inventory, err := git.ParseInventory(prContextPage(t, entries...), c)
+	inventory, err := parseInventory(prContextPage(t, entries...), c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestPROwnership(t *testing.T) {
 	}
 	wrongBase := prContextEntry(6, "octomus/cross-repo", prContextRepo("fixture/project"), prContextRepo("upstream/project"),
 		"Targets a different base repository.\n<!-- octomus:task:x -->", "open")
-	if _, err := git.ParseInventory(prContextPage(t, wrongBase), c); err == nil {
+	if _, err := parseInventory(prContextPage(t, wrongBase), c); err == nil {
 		t.Fatal("a different base repository must fail")
 	}
 }

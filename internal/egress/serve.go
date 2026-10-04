@@ -40,16 +40,25 @@ func (g *Gateway) Serve(ctx context.Context, listener net.Listener) error {
 		for {
 			select {
 			case <-ctx.Done():
-				_ = server.Close()
 				return
 			case <-ticker.C:
 				g.sweep()
 			}
 		}
 	}()
-	err := server.Serve(limitConnections(listener, maxConnections, maxConnectionsPerSource))
+	err := serveUntil(ctx, server, limitConnections(listener, maxConnections, maxConnectionsPerSource))
 	cancel()
 	g.stop()
+	return err
+}
+
+// serveUntil serves listener until ctx ends, then closes server; that close is a clean end.
+func serveUntil(ctx context.Context, server *http.Server, listener net.Listener) error {
+	go func() {
+		<-ctx.Done()
+		_ = server.Close()
+	}()
+	err := server.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

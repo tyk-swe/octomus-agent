@@ -31,30 +31,12 @@ func emptySummary() Summary {
 	return Summary{Allowed: map[string]HostCount{}, Denied: map[string]HostCount{}, Failed: map[string]HostCount{}}
 }
 
-// Collect returns and forgets what a finished sandbox did. A sandbox it has no entry for made no connection since
-// the gateway started. Repeated collection keeps only a previous incompleteness mark until it expires.
-func (g *Gateway) Collect(sandboxName string) Summary {
-	g.statsMu.Lock()
-	defer g.statsMu.Unlock()
-	entry := g.stats[sandboxName]
-	delete(g.stats, sandboxName)
-	summary := emptySummary()
-	if entry != nil {
-		summary = entry.summary
-		summary.Incomplete = summary.Incomplete || entry.pending > 0
-	}
-	summary.Incomplete = summary.Incomplete || g.collected[sandboxName].incomplete
-	g.collected[sandboxName] = collection{at: time.Now(), incomplete: summary.Incomplete}
-	summary.GatewayStarted = g.started
-	return summary
-}
+// summaryPath is where the collector answers for one sandbox, named by its "sandbox" query parameter.
+const summaryPath = "/v1/summary"
 
-// SummaryPath is where the collector answers for one sandbox, named by its "sandbox" query parameter.
-const SummaryPath = "/v1/summary"
-
-// ProbeTargetPath answers with one DNS target outside the gateway's effective runner allowlist. It exposes no
+// probeTargetPath answers with one DNS target outside the gateway's effective runner allowlist. It exposes no
 // credentials or full policy, and is served only on the broker's local collector socket.
-const ProbeTargetPath = "/v1/probe-target"
+const probeTargetPath = "/v1/probe-target"
 
 // ProbeTargetEnv carries the gateway-selected refusal target into the containment helper.
 const ProbeTargetEnv = "OCTOMUS_EGRESS_PROBE_TARGET"
@@ -62,7 +44,7 @@ const ProbeTargetEnv = "OCTOMUS_EGRESS_PROBE_TARGET"
 // ServeCollector answers the broker's request for a finished sandbox's summary on a local socket.
 func (g *Gateway) ServeCollector(ctx context.Context, listener net.Listener) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+ProbeTargetPath, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET "+probeTargetPath, func(w http.ResponseWriter, r *http.Request) {
 		target, err := g.policy.probeTarget()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -71,48 +53,44 @@ func (g *Gateway) ServeCollector(ctx context.Context, listener net.Listener) err
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(target)
 	})
-	mux.HandleFunc("GET "+SummaryPath, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET "+summaryPath, func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("sandbox")
 		if name == "" || len(name) > 128 {
 			http.Error(w, "sandbox required", http.StatusBadRequest)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(g.Collect(name))
+		_ = json.NewEncoder(w).Encode(g.collect(name))
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
-		_ = server.Close()
-	}()
-	err := server.Serve(listener)
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+	return serveUntil(ctx, &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}, listener)
+}
+
+// fetch asks the collector on socket for path and decodes its JSON answer, of at most limit bytes, into out.
+func fetch(ctx context.Context, socket, path string, limit int64, out any) error {
+	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		}}}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://egress"+path, nil)
+	if err != nil {
+		return err
 	}
-	return err
+	resp, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return errors.New(resp.Status)
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, limit)).Decode(out)
 }
 
 // FetchProbeTarget reads the target from the running gateway, never from a copy of deployment configuration that
 // may differ from its policy. An unavailable or malformed answer cannot prove an allowlist refusal.
 func FetchProbeTarget(ctx context.Context, socket string) (string, error) {
-	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		}}}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://egress"+ProbeTargetPath, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := client.Do(request)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", errors.New(resp.Status)
-	}
 	var target string
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024)).Decode(&target); err != nil {
+	if err := fetch(ctx, socket, probeTargetPath, 1024, &target); err != nil {
 		return "", err
 	}
 	if !ValidProbeTarget(target) {
@@ -134,24 +112,8 @@ func ValidProbeTarget(target string) bool {
 
 // FetchSummary collects a finished sandbox's summary from the collector on socket.
 func FetchSummary(ctx context.Context, socket, sandboxName string) (Summary, error) {
-	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		}}}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://egress"+SummaryPath+"?sandbox="+url.QueryEscape(sandboxName), nil)
-	if err != nil {
-		return Summary{}, err
-	}
-	resp, err := client.Do(request)
-	if err != nil {
-		return Summary{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return Summary{}, errors.New(resp.Status)
-	}
 	var summary Summary
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&summary); err != nil {
+	if err := fetch(ctx, socket, summaryPath+"?sandbox="+url.QueryEscape(sandboxName), 1<<20, &summary); err != nil {
 		return Summary{}, err
 	}
 	return summary, nil

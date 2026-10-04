@@ -45,8 +45,8 @@ func TestPublicAddress(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, addr := range tc.addrs {
-				if PublicAddress(netip.MustParseAddr(addr)) != tc.public {
-					t.Errorf("PublicAddress(%s) = %v; want %v", addr, !tc.public, tc.public)
+				if publicAddress(netip.MustParseAddr(addr)) != tc.public {
+					t.Errorf("publicAddress(%s) = %v; want %v", addr, !tc.public, tc.public)
 				}
 			}
 		})
@@ -79,7 +79,7 @@ func TestParseRulesAndPolicyByKind(t *testing.T) {
 		{"probe", "proxy.golang.org", 443, false},
 		{"runner", "api.openai.com", 80, false},
 	} {
-		if got := policy.Allows(tc.kind, tc.host, tc.port); got != tc.want {
+		if got := policy.allows(tc.kind, tc.host, tc.port); got != tc.want {
 			t.Errorf("Allows(%s, %s:%d) = %v", tc.kind, tc.host, tc.port, got)
 		}
 	}
@@ -225,7 +225,7 @@ func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 func TestGatewayAllowlist(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
-	credential := ProxyUser + ":" + f.token
+	credential := proxyUser + ":" + f.token
 	status, tunnel := f.connect(t, "api.openai.com:443", credential)
 	if status != http.StatusOK {
 		t.Fatalf("allowlisted tunnel = %d", status)
@@ -259,12 +259,12 @@ func TestGatewayAllowlist(t *testing.T) {
 	if lookups != "api.openai.com.,internal.example.com." {
 		t.Fatalf("lookups = %s; a refused name must never reach DNS", lookups)
 	}
-	summary := f.gateway.Collect("octomus-test-runner")
+	summary := f.gateway.collect("octomus-test-runner")
 	if summary.Allowed["api.openai.com:443"].Count != 1 || summary.Denied["attacker.example.net:443"].Count != 1 ||
 		summary.Denied["internal.example.com:443"].Count != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
-	if again := f.gateway.Collect("octomus-test-runner"); len(again.Allowed)+len(again.Denied) != 0 {
+	if again := f.gateway.collect("octomus-test-runner"); len(again.Allowed)+len(again.Denied) != 0 {
 		t.Fatal("a collected summary must be forgotten")
 	}
 	if log := f.log.String(); !strings.Contains(log, `"decision":"denied"`) || !strings.Contains(log, `"host":"attacker.example.net"`) {
@@ -277,15 +277,15 @@ func TestGatewayLeases(t *testing.T) {
 	for name, credential := range map[string]string{
 		"missing":     "",
 		"wrong user":  "someone:" + f.token,
-		"short token": ProxyUser + ":abc",
-		"unknown":     ProxyUser + ":" + strings.Repeat("cd", 32),
-		"not hex":     ProxyUser + ":" + strings.Repeat("zz", 32),
+		"short token": proxyUser + ":abc",
+		"unknown":     proxyUser + ":" + strings.Repeat("cd", 32),
+		"not hex":     proxyUser + ":" + strings.Repeat("zz", 32),
 	} {
 		if status, _ := f.connect(t, "registry.npmjs.org:443", credential); status != http.StatusProxyAuthRequired {
 			t.Errorf("%s credential = %d; want 407", name, status)
 		}
 	}
-	credential := ProxyUser + ":" + f.token
+	credential := proxyUser + ":" + f.token
 	if status, _ := f.connect(t, "api.openai.com:443", credential); status != http.StatusForbidden {
 		t.Errorf("verification sandbox reached a model host: %d", status)
 	}
@@ -332,7 +332,7 @@ func (f *gatewayFixture) plainRequest(t *testing.T, request string) (*http.Respo
 
 func TestGatewayClosesDeniedConnections(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
-	credential := "Proxy-Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(ProxyUser+":"+f.token)) + "\r\n"
+	credential := "Proxy-Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(proxyUser+":"+f.token)) + "\r\n"
 	for name, request := range map[string]string{
 		"no credential": "CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\n\r\n",
 		"unlisted":      "CONNECT attacker.example.net:443 HTTP/1.1\r\nHost: attacker.example.net:443\r\n" + credential + "\r\n",
@@ -403,7 +403,7 @@ func TestProbeTarget(t *testing.T) {
 				t.Fatalf("target = %q, %v; want %q", target, err, c.want)
 			}
 			host, _, _ := net.SplitHostPort(target)
-			if c.policy.Allows(wire.KindRunner, host, 443) {
+			if c.policy.allows(wire.KindRunner, host, 443) {
 				t.Fatalf("selected target %q is allowed by runner policy", target)
 			}
 		})

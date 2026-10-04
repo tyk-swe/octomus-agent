@@ -44,6 +44,14 @@ func getenv(env func(string) (string, bool)) func(string) string {
 	}
 }
 
+// envOr reads key from env, or fallback when it is unset or empty.
+func envOr(env func(string) (string, bool), key, fallback string) string {
+	if v, ok := env(key); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
 // sandboxdCheck asks the broker over its own socket whether it serves sandboxes, for the sandboxd container's
 // HEALTHCHECK, so the control plane starts only once it can really isolate work.
 func sandboxdCheck(env func(string) (string, bool), stderr io.Writer) int {
@@ -58,13 +66,7 @@ func sandboxdCheck(env func(string) (string, bool), stderr io.Writer) int {
 
 // runEgress serves the egress gateway on the sandbox networks, logging tunnels and refusals as JSON lines.
 func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error {
-	value := func(key, fallback string) string {
-		if v, ok := env(key); ok && v != "" {
-			return v
-		}
-		return fallback
-	}
-	leases := value("OCTOMUS_EGRESS_LEASES", "")
+	leases := envOr(env, "OCTOMUS_EGRESS_LEASES", "")
 	if leases == "" {
 		return errors.New("OCTOMUS_EGRESS_LEASES is required")
 	}
@@ -75,12 +77,12 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 	gateway := egress.New(policy, leases, stdout)
-	listen := value("OCTOMUS_EGRESS_LISTEN", ":3128")
+	listen := envOr(env, "OCTOMUS_EGRESS_LISTEN", ":3128")
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
 	}
-	if collector := value("OCTOMUS_EGRESS_COLLECTOR", ""); collector != "" {
+	if collector := envOr(env, "OCTOMUS_EGRESS_COLLECTOR", ""); collector != "" {
 		if err := os.Remove(collector); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -105,14 +107,13 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 // the login reads. It first revokes the previous login's lease, whose credential is in the file it replaces, so only
 // the latest login can reach out.
 func loginLease(env func(string) (string, bool)) error {
-	value := getenv(env)
 	for _, key := range []string{"OCTOMUS_EGRESS_LEASES", "OCTOMUS_EGRESS_PROXY", "OCTOMUS_LOGIN_PROXY_FILE"} {
-		if value(key) == "" {
+		if envOr(env, key, "") == "" {
 			return fmt.Errorf("%s is required", key)
 		}
 	}
-	leases := egress.Leases{Dir: value("OCTOMUS_EGRESS_LEASES")}
-	file := value("OCTOMUS_LOGIN_PROXY_FILE")
+	leases := egress.Leases{Dir: envOr(env, "OCTOMUS_EGRESS_LEASES", "")}
+	file := envOr(env, "OCTOMUS_LOGIN_PROXY_FILE", "")
 	if previous, err := os.ReadFile(file); err == nil {
 		if address, err := url.Parse(strings.TrimSpace(string(previous))); err == nil {
 			if token, ok := address.User.Password(); ok {
@@ -124,7 +125,7 @@ func loginLease(env func(string) (string, bool)) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(file, []byte(egress.ProxyURL(value("OCTOMUS_EGRESS_PROXY"), token)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(egress.ProxyURL(envOr(env, "OCTOMUS_EGRESS_PROXY", ""), token)+"\n"), 0o600); err != nil {
 		leases.Revoke(token)
 		return err
 	}

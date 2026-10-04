@@ -120,11 +120,11 @@ func (f *fixture) exists(name string) bool {
 }
 
 func (f *fixture) connect(ctx context.Context) (*OpenCode, error) {
-	return ConnectOpenCode(ctx, f.cfg, f.workspace, f.state, "fixture", sandbox.Host{})
+	return connectOpenCode(ctx, f.cfg, f.workspace, f.state, "fixture", sandbox.Host{})
 }
 
 func (f *fixture) connectCodex(ctx context.Context) (*Codex, error) {
-	return ConnectCodex(ctx, f.cfg, f.workspace, f.state, "fixture", sandbox.Host{})
+	return connectCodex(ctx, f.cfg, f.workspace, f.state, "fixture", sandbox.Host{})
 }
 
 func published(path string) (string, bool) {
@@ -276,10 +276,10 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 	})
 	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
 	defer clients.Close()
-	if err := clients.CheckRoute(codexRoute(), f.workspace); err != nil {
+	if err := clients.checkRoute(codexRoute(), f.workspace); err != nil {
 		t.Fatalf("codex route: %v", err)
 	}
-	if err := clients.CheckRoute(route(), f.workspace); err != nil {
+	if err := clients.checkRoute(route(), f.workspace); err != nil {
 		t.Fatalf("opencode route: %v", err)
 	}
 	codexCatalog := clients.catalogs[config.BackendCodex]

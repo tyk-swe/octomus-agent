@@ -20,8 +20,8 @@ type Lease struct {
 	Kind    string `json:"kind"`
 }
 
-// ProxyUser is the fixed user name in every sandbox's proxy credential; the password identifies the sandbox.
-const ProxyUser = "sandbox"
+// proxyUser is the fixed user name in every sandbox's proxy credential; the password identifies the sandbox.
+const proxyUser = "sandbox"
 
 const (
 	// tokenBytes is the entropy of a proxy credential, which is hex-encoded.
@@ -122,7 +122,7 @@ func (l Leases) revoked(file string) bool {
 
 // ProxyURL is the gateway's address with a sandbox's proxy credential.
 func ProxyURL(proxy, token string) string {
-	return "http://" + ProxyUser + ":" + token + "@" + proxy
+	return "http://" + proxyUser + ":" + token + "@" + proxy
 }
 
 // ProxyEnv points every common proxy variable at the egress gateway with this sandbox's credential. Loopback stays

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -47,7 +49,7 @@ type OpenCode struct {
 	closeErr  error
 }
 
-func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (*OpenCode, error) {
+func connectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (*OpenCode, error) {
 	if ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
 	}
@@ -234,28 +236,18 @@ func (o *OpenCode) postBestEffort(timeout time.Duration, path, cwd string, body 
 }
 
 func (o *OpenCode) call(method, path, cwd string, body any, seconds uint64) (any, error) {
-	return process.Bounded(o.ctx, seconds, "OpenCode response timed out", func(wctx context.Context) (any, error) {
+	return process.Bounded(o.ctx, time.Now().Add(time.Duration(seconds)*time.Second), "OpenCode response timed out", func(wctx context.Context) (any, error) {
 		return o.roundTrip(wctx, method, path, cwd, body)
 	})
 }
 
 func readJSONBody(r io.Reader) (any, error) {
-	var data []byte
-	chunk := make([]byte, 32768)
-	for {
-		n, err := r.Read(chunk)
-		if n > 0 {
-			if len(data)+n > MaxMessage {
-				return nil, fmt.Errorf("OpenCode message exceeds 16 MB protocol limit")
-			}
-			data = append(data, chunk[:n]...)
-		}
-		if err != nil {
-			if err != io.EOF {
-				return nil, err
-			}
-			break
-		}
+	data, err := io.ReadAll(io.LimitReader(r, MaxMessage+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxMessage {
+		return nil, fmt.Errorf("OpenCode message exceeds 16 MB protocol limit")
 	}
 	v, err := decodeJSON(data)
 	if err != nil {
@@ -349,7 +341,7 @@ func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, 
 		return "", err
 	}
 	path := "/session/" + seg
-	answer, err := process.Bounded(o.ctx, o.timeout, "OpenCode session time limit exceeded", func(wctx context.Context) (string, error) {
+	answer, err := process.Bounded(o.ctx, time.Now().Add(time.Duration(o.timeout)*time.Second), "OpenCode session time limit exceeded", func(wctx context.Context) (string, error) {
 		answer, err := o.turnInner(wctx, session, path, route, cwd, prompt, schema)
 		if err != nil {
 			return "", err
@@ -605,4 +597,76 @@ func (o *OpenCode) Close() error {
 		o.closeErr = joinOwned(o.waitCh, o.drainDone, "OpenCode server did not exit during cleanup")
 	})
 	return o.closeErr
+}
+
+var messageClock atomic.Uint64
+
+func messageID() (string, error) {
+	var random [14]byte
+	if _, err := io.ReadFull(rand.Reader, random[:]); err != nil {
+		return "", err
+	}
+	now := uint64(time.Now().UnixMilli()) * 4096
+	for {
+		previous := messageClock.Load()
+		next := previous + 1
+		if next < now+1 {
+			next = now + 1
+		}
+		if messageClock.CompareAndSwap(previous, next) {
+			clock := next & 0xffff_ffff_ffff
+			const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+			suffix := make([]byte, 14)
+			for i := range suffix {
+				suffix[i] = alphabet[int(random[i])%len(alphabet)]
+			}
+			return fmt.Sprintf("msg_%012x%s", clock, suffix), nil
+		}
+	}
+}
+
+func variantMatches(reported string, ok bool, route config.Route) bool {
+	if route.Variant != nil {
+		return ok && reported == *route.Variant
+	}
+	return !ok || reported == "default"
+}
+
+func checkModel(info map[string]any, route config.Route) error {
+	modelID, _ := strAt(info, "modelID")
+	providerID, providerOK := strAt(info, "providerID")
+	if modelID != route.Model || providerOK != (route.Provider != nil) || (providerOK && providerID != *route.Provider) {
+		return fmt.Errorf("OpenCode substituted the requested model")
+	}
+	variant, variantOK := strAt(info, "variant")
+	if !variantMatches(variant, variantOK, route) {
+		return fmt.Errorf("OpenCode substituted the requested variant")
+	}
+	return nil
+}
+
+func segment(id string) (string, error) {
+	valid := id != "" && len(id) <= 256
+	if valid {
+		for i := 0; i < len(id); i++ {
+			b := id[i]
+			if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-') {
+				valid = false
+				break
+			}
+		}
+	}
+	if !valid {
+		return "", fmt.Errorf("Invalid OpenCode identity")
+	}
+	var encoded strings.Builder
+	for i := 0; i < len(id); i++ {
+		b := id[i]
+		if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' {
+			encoded.WriteByte(b)
+		} else {
+			fmt.Fprintf(&encoded, "%%%02X", b)
+		}
+	}
+	return encoded.String(), nil
 }

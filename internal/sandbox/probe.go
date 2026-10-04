@@ -58,7 +58,7 @@ func Probe(ctx context.Context, remote *Remote) (ProbeReport, error) {
 	if err != nil {
 		return ProbeReport{}, err
 	}
-	out, err := process.CaptureStarted(ctx, child, child.Stdout(), child.Stderr(), 90, process.CaptureMachine)
+	out, err := process.Capture(ctx, child, child.Stdout(), child.Stderr(), 90, process.CaptureMachine)
 	if err != nil {
 		return ProbeReport{}, err
 	}

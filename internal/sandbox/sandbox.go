@@ -159,6 +159,6 @@ func Verify(ctx context.Context, backend Backend, dir, command string, seconds u
 	if err != nil {
 		return nil, nil, err
 	}
-	out, err := process.CaptureStarted(ctx, child, child.Stdout(), child.Stderr(), seconds, process.CaptureDiagnostic)
+	out, err := process.Capture(ctx, child, child.Stdout(), child.Stderr(), seconds, process.CaptureDiagnostic)
 	return out, EvidenceOf(child), err
 }

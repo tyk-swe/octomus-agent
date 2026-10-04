@@ -8,58 +8,42 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/engine"
 )
 
-type serviceScheduler interface {
-	Recover() error
-	Run(context.Context) error
-	Shutdown()
-	Drained() bool
-}
-
-type serviceHTTPServer interface {
-	Serve(net.Listener) error
-	Shutdown(context.Context) error
-	Close() error
-}
-
 type serviceComponents struct {
-	scheduler     serviceScheduler
-	http          serviceHTTPServer
+	app           *engine.App
+	http          *http.Server
 	prepareWorker func() error
 	startWorker   func() (stop func(), err error)
-	listen        func(network, address string) (net.Listener, error)
 }
 
 func (c serviceComponents) run(ctx context.Context, address string, stderr io.Writer) error {
 	if c.prepareWorker != nil {
 		if err := c.prepareWorker(); err != nil {
-			c.scheduler.Shutdown()
+			c.app.Shutdown()
 			return err
 		}
 	}
-	if err := c.scheduler.Recover(); err != nil {
-		c.scheduler.Shutdown()
+	if err := c.app.Recover(); err != nil {
+		c.app.Shutdown()
 		return err
 	}
 	stopWorker := func() {}
 	if c.startWorker != nil {
 		stop, err := c.startWorker()
 		if err != nil {
-			c.scheduler.Shutdown()
+			c.app.Shutdown()
 			return err
 		}
 		if stop != nil {
 			stopWorker = stop
 		}
 	}
-	listen := c.listen
-	if listen == nil {
-		listen = net.Listen
-	}
-	listener, err := listen("tcp", address)
+	listener, err := net.Listen("tcp", address)
 	if err != nil {
-		c.scheduler.Shutdown()
+		c.app.Shutdown()
 		stopWorker()
 		return err
 	}
@@ -68,7 +52,7 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 	defer cancelService()
 	runDone := make(chan error, 1)
 	serveDone := make(chan error, 1)
-	go func() { runDone <- c.scheduler.Run(serviceCtx) }()
+	go func() { runDone <- c.app.Run(serviceCtx) }()
 	go func() { serveDone <- c.http.Serve(listener) }()
 
 	var cause error
@@ -98,7 +82,7 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 		}
 		close(httpStopped)
 	}()
-	c.scheduler.Shutdown()
+	c.app.Shutdown()
 	<-httpStopped
 	if !runFinished {
 		<-runDone
@@ -108,7 +92,7 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 	}
 	stopWorker()
 	for range 100 {
-		if c.scheduler.Drained() {
+		if c.app.Drained() {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -84,7 +84,7 @@ func (h Host) StartOpenCode(ctx context.Context, spec Spec, readinessSeconds uin
 	}
 	stdout := child.Stdout()
 	lines, ready := watchReadyLine(stdout)
-	base, err := process.Bounded(ctx, readinessSeconds, openCodeStartupTimeout, func(wctx context.Context) (string, error) {
+	base, err := process.Bounded(ctx, time.Now().Add(time.Duration(readinessSeconds)*time.Second), openCodeStartupTimeout, func(wctx context.Context) (string, error) {
 		select {
 		case result := <-ready:
 			return result.base, result.err
@@ -107,5 +107,5 @@ func (h Host) StartOpenCode(ctx context.Context, spec Spec, readinessSeconds uin
 }
 
 func (Host) RunnerVersion(ctx context.Context, spec Spec, seconds uint64) (string, error) {
-	return process.RunMachine(ctx, spec.Binary, []string{"--version"}, spec.Dir, seconds)
+	return process.RunMachine(ctx, spec.Binary, []string{"--version"}, spec.Dir, seconds, nil)
 }
