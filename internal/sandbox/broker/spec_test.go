@@ -1,3 +1,5 @@
+// The golden container specs, the hardening every sandbox shares, request validation and deployment configuration.
+
 package broker
 
 import (
@@ -131,7 +133,7 @@ func TestEverySandboxIsHardened(t *testing.T) {
 	}
 }
 
-func TestPlanRefusesAnythingButOwnedRootsAndNarrowRequests(t *testing.T) {
+func TestPlanValidation(t *testing.T) {
 	cfg := testConfig(t)
 	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	scratch := OwnedRoot(t, cfg, "system/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
@@ -193,7 +195,7 @@ func TestPlanRefusesAnythingButOwnedRootsAndNarrowRequests(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRequiresTheDeploymentAndBoundsLimits(t *testing.T) {
+func TestLoadConfig(t *testing.T) {
 	env := map[string]string{
 		"OCTOMUS_SANDBOX_IMAGE": "octomus-sandbox:1", "OCTOMUS_DATA_DIR": "/var/lib/octomus/data",
 		"OCTOMUS_SANDBOX_DATA_VOLUME": "d", "OCTOMUS_SANDBOX_RUNNER_VOLUME": "r", "OCTOMUS_SANDBOX_TOOLS_VOLUME": "t",

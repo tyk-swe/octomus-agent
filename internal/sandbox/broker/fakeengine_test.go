@@ -1,3 +1,5 @@
+// The scripted Docker Engine the broker tests run against, and the brokers built on it.
+
 package broker
 
 import (
@@ -113,6 +115,18 @@ func (e *fakeEngine) leftover(name, instance string) *fakeContainer {
 	close(c.Ready)
 	e.containers[c.ID] = c
 	return c
+}
+
+// brokerOn builds a broker against a test engine without New's deployment checks; limit, when set, caps its
+// sandboxes.
+func brokerOn(t *testing.T, socket string, limit int) *Broker {
+	t.Helper()
+	cfg := testConfig(t)
+	cfg.DockerSocket, cfg.Log = socket, io.Discard
+	if limit > 0 {
+		cfg.Max = limit
+	}
+	return newBroker(cfg)
 }
 
 // broker builds a broker against this engine without New's deployment checks.

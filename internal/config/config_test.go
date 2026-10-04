@@ -1,3 +1,5 @@
+// Policy defaults, exact routes, validation bounds and the strict JSON contract of saved configuration.
+
 package config
 
 import (
@@ -7,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestRoutesAreExactAndRolesExplicit(t *testing.T) {
+func TestDefaultRoutes(t *testing.T) {
 	c := Default()
 	if err := c.Validate(false); err != nil {
 		t.Fatal(err)
@@ -55,7 +57,7 @@ func TestRoutesAreExactAndRolesExplicit(t *testing.T) {
 	}
 }
 
-func TestValidationNumericBoundaries(t *testing.T) {
+func TestConfigValidation(t *testing.T) {
 	for _, test := range []struct {
 		field     string
 		low, high uint64
@@ -108,5 +110,45 @@ func TestValidationNumericBoundaries(t *testing.T) {
 	c.RepairRoute.Model = strings.Repeat("ü", 51)
 	if c.Validate(false) == nil {
 		t.Fatal("route length counted characters, not bytes")
+	}
+	for _, test := range []struct {
+		field, value, message string
+	}{
+		{"default_branch", "refs/heads/main", "Default branch"},
+		{"default_branch", strings.Repeat("aB09", 10), "Default branch"},
+		{"branch_prefix", "refs/tasks/", "Owned branch prefix"},
+	} {
+		data, _ := json.Marshal(map[string]string{test.field: test.value})
+		var c Config
+		if err := json.Unmarshal(data, &c); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Validate(false); err == nil || !strings.Contains(err.Error(), test.message) {
+			t.Errorf("%s=%q: %v; want %q", test.field, test.value, err, test.message)
+		}
+	}
+}
+
+func TestConfigJSONContract(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"github_repo":"fixture/project"}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GitHubRepo != "fixture/project" || cfg.DiscoveryAgents != Default().DiscoveryAgents {
+		t.Fatalf("defaults lost: %+v", cfg)
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"github_repo"`, `"roles"`, `"tiers"`, `"verification_commands"`} {
+		if !strings.Contains(string(data), field) {
+			t.Fatalf("missing %s in %s", field, data)
+		}
+	}
+	for _, raw := range []string{`{"unknown":1}`, `{"github_repo":"a","github_repo":"b"}`, `{"roles":null}`} {
+		if err := json.Unmarshal([]byte(raw), &cfg); err == nil {
+			t.Fatalf("accepted %s", raw)
+		}
 	}
 }

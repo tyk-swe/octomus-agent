@@ -1,3 +1,5 @@
+// Server-sent event framing for the OpenCode event stream.
+
 package runner
 
 import (

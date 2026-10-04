@@ -1,3 +1,5 @@
+// Owned process groups: capture, cancellation, deadlines, scrubbed environments and redacted failure text.
+
 package process_test
 
 import (
@@ -158,7 +160,7 @@ func TestInheritedStdoutZeroExit(t *testing.T) {
 	inheritedPipe(t, "stdout", 0)
 }
 
-func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
+func TestCancellationKillsGroup(t *testing.T) {
 	t.Parallel()
 	temp := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -179,7 +181,7 @@ func TestCancellationKillsTheCommandProcessGroup(t *testing.T) {
 	}
 }
 
-func TestDeadlineExpirationKillsTheProcessGroup(t *testing.T) {
+func TestDeadlineKillsGroup(t *testing.T) {
 	t.Parallel()
 	temp := t.TempDir()
 	done := make(chan error, 1)
@@ -218,7 +220,7 @@ func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	}
 }
 
-func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
+func TestRunMachineFailsClosed(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
@@ -242,7 +244,7 @@ func TestMachineCaptureFailsClosedOnAnyCommandFailure(t *testing.T) {
 	}
 }
 
-func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
+func TestRunPredicate(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	ctx := context.Background()
@@ -273,7 +275,7 @@ func TestPredicateCommandsInterpretOnlyDocumentedFalseStatuses(t *testing.T) {
 	}
 }
 
-func TestFailureTextNeverShowsASecretTheCaptureLimitCut(t *testing.T) {
+func TestFailureTextRedaction(t *testing.T) {
 	t.Parallel()
 	const kept = "KEPT-LINE\n"
 	for _, secret := range []struct {

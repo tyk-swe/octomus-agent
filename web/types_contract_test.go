@@ -1,10 +1,14 @@
 package dashboard_test
 
+// The dashboard's TypeScript types, vocabularies and numeric limits mirror the Go records and validation.
+
 import (
+	"math"
 	"os"
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -24,7 +28,8 @@ var (
 	objectLine  = regexp.MustCompile(`(?m)^export type (\w+) = \{ (.*) \};$`)
 	lineKey     = regexp.MustCompile(`(?:^|; )([a-z_]+)\??:`)
 	stringUnion = regexp.MustCompile(`(?m)^export type (\w+) =((?:\s*\|?\s*'[a-z_]+')+);$`)
-	quoted      = regexp.MustCompile(`'([a-z_]+)'`)
+	quoted      = regexp.MustCompile(`'([^']*)'`)
+	limitEntry  = regexp.MustCompile(`(?s)\{\s*key:\s*'([a-z_]+)'.*?min:\s*([\d_]+)(?:,\s*max:\s*([\d_]+))?\s*\}`)
 )
 
 func dashboardSource(t *testing.T, name string) string {
@@ -76,7 +81,8 @@ func jsonKeys(t *testing.T, value any) []string {
 	return keys
 }
 
-func quotedList(t *testing.T, source, marker string) []string {
+// quotedWords returns the quoted strings of the array that follows `marker` in source.
+func quotedWords(t *testing.T, source, marker string) []string {
 	t.Helper()
 	_, rest, found := strings.Cut(source, marker)
 	if found {
@@ -104,7 +110,7 @@ func enumNames[T interface {
 	return names
 }
 
-func TestDashboardTypesMirrorGoJSON(t *testing.T) {
+func TestTypesMirrorGoJSON(t *testing.T) {
 	declared := objectTypes(dashboardSource(t, "types.ts"))
 	for name, record := range map[string]any{
 		"Config":                   config.Config{},
@@ -161,7 +167,7 @@ func TestDashboardTypesMirrorGoJSON(t *testing.T) {
 	}
 }
 
-func TestDashboardVocabulariesMirrorGo(t *testing.T) {
+func TestVocabulariesMirrorGo(t *testing.T) {
 	types := dashboardSource(t, "types.ts")
 	unions := map[string][]string{}
 	for _, match := range stringUnion.FindAllStringSubmatch(types, -1) {
@@ -189,11 +195,117 @@ func TestDashboardVocabulariesMirrorGo(t *testing.T) {
 	for _, status := range model.ActiveStatuses() {
 		active = append(active, status.String())
 	}
-	if got := quotedList(t, types, "export const ACTIVE_STATUSES"); !slices.Equal(got, active) {
+	if got := quotedWords(t, types, "export const ACTIVE_STATUSES"); !slices.Equal(got, active) {
 		t.Errorf("types.ts ACTIVE_STATUSES = %q; want model.ActiveStatuses() %q", got, active)
 	}
-	decisions := quotedList(t, dashboardSource(t, "evidence.ts"), "export const DECISIONS")
+	decisions := quotedWords(t, dashboardSource(t, "evidence.ts"), "export const DECISIONS")
 	if !slices.Equal(slices.Sorted(slices.Values(decisions)), slices.Sorted(slices.Values(model.Decisions()))) {
 		t.Errorf("evidence.ts DECISIONS = %q; want the words of model.Decisions() %q", decisions, model.Decisions())
+	}
+	settings := dashboardSource(t, "Settings.svelte")
+	for _, list := range []struct {
+		name string
+		want []string
+	}{
+		{"categories", config.Categories()},
+		{"ROLES", config.Roles()},
+		{"TIERS", config.Tiers()},
+	} {
+		if got := quotedWords(t, settings, "const "+list.name); !slices.Equal(got, list.want) {
+			t.Errorf("Settings.svelte %s = %q; want %q", list.name, got, list.want)
+		}
+	}
+}
+
+type dashboardLimit struct {
+	key      string
+	min, max uint64
+	bounded  bool
+}
+
+func dashboardLimits(t *testing.T) []dashboardLimit {
+	t.Helper()
+	_, body, found := strings.Cut(dashboardSource(t, "limits.ts"), "export const LIMITS")
+	if found {
+		body, _, found = strings.Cut(body, "\n];")
+	}
+	if !found {
+		t.Fatal("limits.ts: no `export const LIMITS … ];` array")
+	}
+	matches := limitEntry.FindAllStringSubmatch(body, -1)
+	if entries := strings.Count(body, "key:"); len(matches) != entries || entries == 0 {
+		t.Fatalf("limits.ts: parsed %d of %d LIMITS entries; keep each as { key, label, help, min, max? }", len(matches), entries)
+	}
+	number := func(text string) uint64 {
+		value, err := strconv.ParseUint(strings.ReplaceAll(text, "_", ""), 10, 64)
+		if err != nil {
+			t.Fatalf("limits.ts: %v", err)
+		}
+		return value
+	}
+	limits := make([]dashboardLimit, 0, len(matches))
+	for _, match := range matches {
+		limit := dashboardLimit{key: match[1], min: number(match[2]), bounded: match[3] != ""}
+		if limit.bounded {
+			limit.max = number(match[3])
+		}
+		limits = append(limits, limit)
+	}
+	return limits
+}
+
+// Every numeric configuration field has a dashboard limit, and the service accepts exactly that range.
+func TestLimitsMatchValidation(t *testing.T) {
+	fields := map[string]int{}
+	configType := reflect.TypeFor[config.Config]()
+	for i := range configType.NumField() {
+		if field := configType.Field(i); field.Type.Kind() == reflect.Uint64 {
+			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+			fields[name] = i
+		}
+	}
+	seen := map[string]bool{}
+	for _, limit := range dashboardLimits(t) {
+		index, ok := fields[limit.key]
+		if !ok {
+			t.Errorf("LIMITS key %q is not a numeric Config field", limit.key)
+			continue
+		}
+		if seen[limit.key] {
+			t.Errorf("LIMITS repeats %q", limit.key)
+		}
+		seen[limit.key] = true
+		accepts := func(value uint64) bool {
+			cfg := config.Default()
+			reflect.ValueOf(&cfg).Elem().Field(index).SetUint(value)
+			switch limit.key {
+			case "session_timeout_seconds":
+				cfg.TaskTimeoutSeconds = max(cfg.TaskTimeoutSeconds, value)
+			case "task_timeout_seconds":
+				cfg.SessionTimeoutSeconds = min(cfg.SessionTimeoutSeconds, value)
+			}
+			return cfg.Validate(false) == nil
+		}
+		if !accepts(limit.min) {
+			t.Errorf("%s: the service rejects the dashboard minimum %d", limit.key, limit.min)
+		}
+		if limit.min > 0 && accepts(limit.min-1) {
+			t.Errorf("%s: the service accepts %d, below the dashboard minimum %d", limit.key, limit.min-1, limit.min)
+		}
+		switch {
+		case !limit.bounded:
+			if !accepts(math.MaxUint64) {
+				t.Errorf("%s: the service has a maximum the dashboard does not declare", limit.key)
+			}
+		case !accepts(limit.max):
+			t.Errorf("%s: the service rejects the dashboard maximum %d", limit.key, limit.max)
+		case limit.max < math.MaxUint64 && accepts(limit.max+1):
+			t.Errorf("%s: the service accepts %d, above the dashboard maximum %d", limit.key, limit.max+1, limit.max)
+		}
+	}
+	for name := range fields {
+		if !seen[name] {
+			t.Errorf("numeric Config field %q has no dashboard LIMITS entry", name)
+		}
 	}
 }

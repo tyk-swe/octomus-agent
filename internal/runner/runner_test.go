@@ -1,3 +1,5 @@
+// Shared runner fixtures, exact route validation and the wire shapes of models and diagnostics.
+
 package runner
 
 import (
@@ -15,26 +17,35 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
+// The environment carries secrets the redaction of runner output must scrub.
+const (
+	cutPhraseEnv = "RUNNER_TEST_PASSWORD"
+	cutPhrase    = "correct horse battery staple"
+	cutLinesEnv  = "RUNNER_TEST_SECRET"
+	cutLines     = "first-line-of-key\nsecond-line-of-key\nthird-line"
+)
+
+func TestMain(m *testing.M) {
+	for name, value := range map[string]string{cutPhraseEnv: cutPhrase, cutLinesEnv: cutLines} {
+		if err := os.Setenv(name, value); err != nil {
+			panic(err)
+		}
 	}
-	return root
+	os.Exit(m.Run())
 }
 
 func pyString(s string) string { return strconv.Quote(s) }
 
+// wrapper writes the one Python shim that starts a tests/fixtures runner peer as the named binary.
 func wrapper(t *testing.T, root, name, fixture string) string {
 	t.Helper()
 	path := filepath.Join(root, name)
-	fixtures := filepath.Join(repoRoot(t), "tests", "fixtures")
 	script := fmt.Sprintf("#!/usr/bin/env python3\nimport os, runpy, sys\nos.environ['OCTOMUS_FIXTURE'] = %s\nsys.path.insert(0, %s)\nrunpy.run_path(%s, run_name='__main__')\n",
-		pyString(root), pyString(fixtures), pyString(filepath.Join(fixtures, fixture)))
+		pyString(root), pyString(filepath.Dir(testutil.FixturePath(fixture))), pyString(testutil.FixturePath(fixture)))
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

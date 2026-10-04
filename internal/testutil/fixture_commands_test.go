@@ -1,3 +1,5 @@
+// The git/gh fixture dispatcher relays into the marked fixture root's bin directory.
+
 package testutil_test
 
 import (
@@ -9,7 +11,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-func TestFixtureCommandsDispatchMarkedRoots(t *testing.T) {
+func TestFixtureCommandsDispatch(t *testing.T) {
 	installFixtureCommands(t)
 
 	for _, fixture := range []string{"first", "second"} {

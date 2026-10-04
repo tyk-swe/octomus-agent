@@ -1,3 +1,5 @@
+// The read-only RunEvidenceV1 export: what a cycle reports and what never leaves the state.
+
 package evidence_test
 
 import (
@@ -219,7 +221,7 @@ func containsText(items []any, needle string) bool {
 	return false
 }
 
-func TestCompleteCycleReportsReviewersTasksRevisionsAndChecks(t *testing.T) {
+func TestCompleteCycleExport(t *testing.T) {
 	delivered := task("cycle-a", "p1")
 	delivered.Status = model.StatusPublished
 	output := "out00001"
@@ -299,7 +301,7 @@ func TestCompleteCycleReportsReviewersTasksRevisionsAndChecks(t *testing.T) {
 	}
 }
 
-func TestPrivateFieldsAreOmittedFromTheExport(t *testing.T) {
+func TestPrivateFieldsOmitted(t *testing.T) {
 	tk := task("cycle-a", "p1")
 	output := "out00001"
 	tk.OutputCommit = &output
@@ -336,7 +338,7 @@ func TestPrivateFieldsAreOmittedFromTheExport(t *testing.T) {
 	}
 }
 
-func TestLatestReviewGovernsAndIncompleteOrEmptySummariesAreNotClean(t *testing.T) {
+func TestLatestReviewGoverns(t *testing.T) {
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
 	output := "out00001"
 	regressed := task("cycle-a", "p1")
@@ -369,7 +371,7 @@ func TestLatestReviewGovernsAndIncompleteOrEmptySummariesAreNotClean(t *testing.
 	}
 }
 
-func TestNoConfiguredChecksIsNotConfiguredRatherThanPassing(t *testing.T) {
+func TestNoConfiguredChecks(t *testing.T) {
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
 	tk := task("cycle-a", "p1")
 	tk.Config.VerificationCommands = []string{}

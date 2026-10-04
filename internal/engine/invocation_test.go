@@ -1,5 +1,7 @@
 package engine
 
+// Role invocation: one admission per turn, the reviewer's diff, and redaction of every recorded summary.
+
 import (
 	"context"
 	"database/sql"
@@ -43,26 +45,24 @@ func admissionsByRole(t *testing.T, state *store.Store) map[string]int {
 	return counts
 }
 
-func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
+func TestInvocationAdmitsOncePerTurn(t *testing.T) {
 	t.Parallel()
-	fixture := newScriptedFixture(t, withGitHubIdentity())
-	fixture.configure(t, func(cfg *config.Config) {
-		cfg.VerificationCommands = []string{"grep -q fixed feature.txt"}
-	})
-	routes, script := fixture.routes, fixture.script
+	f := newFixture(t)
+	f.configure(t, func(cfg *config.Config) { cfg.VerificationCommands = []string{"grep -q fixed feature.txt"} })
+	routes, script := f.routes, f.script
 	script.FailStart(routes.Executor, errors.New("scripted executor start failure"))
-	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
-	saveExecutionTask(t, fixture.planningFixture, task)
-	app := fixture.newApp(t)
+	task := executionTask(t, f, f.cfg.DefaultBranch)
+	putTask(t, f, task)
+	app := f.newApp(t)
 
-	saved := driveTask(t, fixture.planningFixture, app, task.ID)
+	saved := driveTask(t, f, app, task.ID)
 	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonRunnerUnavailable {
 		t.Fatalf("failed start outcome = %+v", saved)
 	}
 	if saved.ExecutionSession != nil || len(saved.Sessions) != 0 {
 		t.Fatalf("a failed start recorded a session: %+v", saved)
 	}
-	if got := admissionsByRole(t, fixture.state); len(got) != 1 || got["executor"] != 1 {
+	if got := admissionsByRole(t, f.state); len(got) != 1 || got["executor"] != 1 {
 		t.Fatalf("admissions after failed start = %+v; want the one reserved executor admission", got)
 	}
 
@@ -74,16 +74,16 @@ func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 	if err := app.TaskAction(context.Background(), task.ID, "retry"); err != nil {
 		t.Fatal(err)
 	}
-	saved = driveTask(t, fixture.planningFixture, app, task.ID)
+	saved = driveTask(t, f, app, task.ID)
 	if saved.Status != model.StatusPublished {
 		t.Fatalf("retried delivery = %+v", saved)
 	}
 
 	want := map[string]int{"executor": 2, "reviewer": 3, "repair": 2}
-	if got := admissionsByRole(t, fixture.state); fmt.Sprint(got) != fmt.Sprint(want) {
+	if got := admissionsByRole(t, f.state); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("admissions by role = %+v; want %+v (the failed start plus one per turn)", got, want)
 	}
-	assertAdmissions(t, fixture.state, 7, "one per attempt and turn")
+	assertAdmissions(t, f.state, 7, "one per attempt and turn")
 	for route, turns := range map[config.Route]int{routes.Executor: 1, routes.Reviewer: 3, routes.Repair: 2} {
 		if n := len(script.Turns(route)); n != turns {
 			t.Fatalf("%s turns = %d, want %d", route, n, turns)
@@ -106,15 +106,15 @@ func TestInvocationAdmitsExactlyOncePerTurn(t *testing.T) {
 
 // The fresh reviewer shares the executor's home, which can change what git inside its sandbox shows, so it is given
 // the change set as the orchestrator's own git sees it.
-func TestReviewerIsGivenTheOrchestratorsDiff(t *testing.T) {
+func TestReviewerGetsOrchestratorDiff(t *testing.T) {
 	t.Parallel()
-	fixture := newScriptedFixture(t, withGitHubIdentity())
-	routes, script := fixture.routes, fixture.script
+	f := newFixture(t)
+	routes, script := f.routes, f.script
 	script.Queue(routes.Executor, runnertest.Reply{Answer: "Wrote feature.txt", Effect: writeFile("feature.txt", "fixed output\n")})
 	script.Answer(routes.Reviewer, cleanReview("Reviewed"))
-	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
-	saveExecutionTask(t, fixture.planningFixture, task)
-	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	task := executionTask(t, f, f.cfg.DefaultBranch)
+	putTask(t, f, task)
+	saved := driveTask(t, f, f.newApp(t), task.ID)
 	if saved.Status != model.StatusPublished {
 		t.Fatalf("task = %+v; want it published", saved)
 	}
@@ -153,21 +153,19 @@ func scriptedProposal(id, decision string) map[string]any {
 	return proposal
 }
 
-func TestInvocationRedactsEveryRoleSummary(t *testing.T) {
+func TestSummariesAreRedacted(t *testing.T) {
 	t.Parallel()
 	t.Run("task roles", func(t *testing.T) {
-		fixture := newScriptedFixture(t, withGitHubIdentity())
-		fixture.configure(t, func(cfg *config.Config) {
-			cfg.VerificationCommands = []string{"grep -q fixed feature.txt"}
-		})
-		routes, script := fixture.routes, fixture.script
+		f := newFixture(t)
+		f.configure(t, func(cfg *config.Config) { cfg.VerificationCommands = []string{"grep -q fixed feature.txt"} })
+		routes, script := f.routes, f.script
 		script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted with " + secretToken, Effect: writeFile("feature.txt", "draft\n")})
 		script.Answer(routes.Reviewer, cleanReview("Reviewed with "+secretToken), cleanReview("Re-reviewed with "+secretToken))
 		script.Queue(routes.Repair, runnertest.Reply{Answer: "Repaired with " + secretToken, Effect: writeFile("feature.txt", "fixed output\n")})
-		task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
-		saveExecutionTask(t, fixture.planningFixture, task)
+		task := executionTask(t, f, f.cfg.DefaultBranch)
+		putTask(t, f, task)
 
-		saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+		saved := driveTask(t, f, f.newApp(t), task.ID)
 		if saved.Status != model.StatusPublished {
 			t.Fatalf("scripted task did not publish: %+v", saved)
 		}
@@ -175,10 +173,10 @@ func TestInvocationRedactsEveryRoleSummary(t *testing.T) {
 	})
 
 	t.Run("planning roles", func(t *testing.T) {
-		fixture := newScriptedFixture(t, withGitHubIdentity())
-		routes, script := fixture.routes, fixture.script
+		f := newFixture(t)
+		routes, script := f.routes, f.script
 		ids := []string{}
-		for i := uint64(0); i < fixture.cfg.DiscoveryAgents; i++ {
+		for i := uint64(0); i < f.cfg.DiscoveryAgents; i++ {
 			id := fmt.Sprintf("d%d-scripted", i)
 			ids = append(ids, id)
 			script.Answer(routes.Discovery, mustJSON(t, map[string]any{"proposals": []any{scriptedProposal(id, "candidate")}}))
@@ -194,17 +192,17 @@ func TestInvocationRedactsEveryRoleSummary(t *testing.T) {
 		review := mustJSON(t, map[string]any{"assessments": assessments})
 		script.Answer(routes.ProposalReviewer, review, review)
 
-		app := fixture.pausedApp(t)
+		app := f.pausedApp(t)
 		cycleID, err := app.StartAudit(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
-		cycle := waitCycle(t, fixture.state, cycleID)
+		cycle := waitCycle(t, f.state, cycleID)
 		if cycle.Status == model.CycleFailed || cycle.Status == model.CycleRunning {
 			t.Fatalf("scripted audit did not finish cleanly: %+v", cycle)
 		}
 		roles := []string{"grounding", "adversary-a", "adversary-b", "consolidation"}
-		for i := uint64(0); i < fixture.cfg.DiscoveryAgents; i++ {
+		for i := uint64(0); i < f.cfg.DiscoveryAgents; i++ {
 			roles = append(roles, fmt.Sprintf("discovery-%d", i))
 		}
 		if len(cycle.Sessions) != len(roles) {

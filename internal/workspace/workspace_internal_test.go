@@ -1,3 +1,5 @@
+// Permission repair stays inside the tree and never follows symlinks.
+
 package workspace
 
 import (
@@ -8,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestMakeDirsWritableSkipsSymlinkTargets(t *testing.T) {
+func TestMakeDirsWritableSymlinks(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "tasks")
 	tree := filepath.Join(root, "task-1")

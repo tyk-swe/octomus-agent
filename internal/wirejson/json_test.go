@@ -1,3 +1,5 @@
+// Strict typed JSON decoding: absent fields, refusals and accepted documents.
+
 package wirejson
 
 import (
@@ -16,7 +18,7 @@ type decodeRecord struct {
 	A any            `json:"a" wire:"default"`
 }
 
-func TestDecodeKeepsAbsentFieldsAndChangesDstOnlyOnSuccess(t *testing.T) {
+func TestDecodeAbsentFields(t *testing.T) {
 	stale := "stale"
 	dst := decodeRecord{P: &stale, D: "kept"}
 	if err := Decode([]byte(`{"s":"x"}`), &dst, true, false); err != nil {
@@ -44,7 +46,7 @@ func TestDecodeKeepsAbsentFieldsAndChangesDstOnlyOnSuccess(t *testing.T) {
 	}
 }
 
-func TestDecodeRefusesAmbiguousOrMalformedObjects(t *testing.T) {
+func TestDecodeRefusals(t *testing.T) {
 	kept := "kept"
 	start := decodeRecord{S: "start", P: &kept, D: "default", L: []string{"l"}, M: map[string]int{"m": 1}, A: map[string]any{"a": []any{"b"}}}
 	for _, tc := range []struct {
@@ -100,7 +102,7 @@ func TestDecodeRefusesAmbiguousOrMalformedObjects(t *testing.T) {
 	}
 }
 
-func TestDecodeAcceptsWellFormedObjects(t *testing.T) {
+func TestDecodeWellFormed(t *testing.T) {
 	y := "y"
 	empty := func(r decodeRecord) decodeRecord {
 		if r.L == nil {

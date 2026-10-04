@@ -1,3 +1,5 @@
+// The configuration API: revision-gated saves, canonical values and conflict handling against the dashboard contract.
+
 package httpapi
 
 import (
@@ -54,7 +56,7 @@ func transformKinds(t *testing.T, fields []map[string]any, field string) []any {
 	return nil
 }
 
-func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
+func TestConfigAPIRevisionGate(t *testing.T) {
 	app, state := testApp(t)
 	router := Router(app, token, "", "test")
 	cfg := config.Default()
@@ -209,7 +211,7 @@ func TestConfigAPIRevisionGatePreservesCanonicalValues(t *testing.T) {
 	}
 }
 
-func TestConfigConflictsAskForReloadOnlyWhenStale(t *testing.T) {
+func TestConfigConflicts(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "Settings.svelte"))
 	if err != nil {
 		t.Fatal(err)

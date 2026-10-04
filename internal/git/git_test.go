@@ -1,3 +1,5 @@
+// Git and GitHub publication against real local Git and the gh fixture.
+
 package git_test
 
 import (
@@ -99,7 +101,7 @@ func TestMain(m *testing.M) {
 
 func strptr(s string) *string { return &s }
 
-func TestCloneAtCreatesAnIndependentCheckout(t *testing.T) {
+func TestCloneAt(t *testing.T) {
 	t.Parallel()
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
@@ -137,7 +139,7 @@ func TestCloneAtCreatesAnIndependentCheckout(t *testing.T) {
 	}
 }
 
-func TestRemoteValidationAndRevisionLookup(t *testing.T) {
+func TestRemoteValidation(t *testing.T) {
 	t.Parallel()
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
@@ -252,7 +254,7 @@ func publishableTask(t *testing.T, c config.Config, root, id string) (model.Task
 	return publicationTask(c, workspace, commit, source, id), commit
 }
 
-func TestFixturePublishCreatesPullRequest(t *testing.T) {
+func TestPublishCreatesPR(t *testing.T) {
 	t.Parallel()
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}
@@ -326,7 +328,7 @@ func TestFixturePublishCreatesPullRequest(t *testing.T) {
 	}
 }
 
-func TestFixturePublishScrubsSecretsForPublicDelivery(t *testing.T) {
+func TestPublishRedaction(t *testing.T) {
 	t.Parallel()
 	c, root := fixtureRoot(t)
 	ctx := context.Background()

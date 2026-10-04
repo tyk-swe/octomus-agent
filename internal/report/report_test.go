@@ -1,3 +1,5 @@
+// The read-only usage report: daily totals, per-cycle attribution and wall time, task rows and per-tier aggregation.
+
 package report
 
 import (
@@ -11,7 +13,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-func TestUsageReportAttributesAdmissionsWallTimeAndDecisionsPerCycle(t *testing.T) {
+func TestUsageReport(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	s, err := store.Open(path)
 	if err != nil {
@@ -65,7 +67,9 @@ func TestUsageReportAttributesAdmissionsWallTimeAndDecisionsPerCycle(t *testing.
 	}
 	configured := task("t1", "c1", "M")
 	unknown := task("t2", "c2", "ZZ")
-	for _, saved := range []model.Task{configured, unknown} {
+	published := task("t3", "c1", "S")
+	published.Status = model.StatusPublished
+	for _, saved := range []model.Task{configured, unknown, published} {
 		if err := s.Put("task", saved.ID, saved); err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +111,7 @@ func TestUsageReportAttributesAdmissionsWallTimeAndDecisionsPerCycle(t *testing.
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("%v: %s", err, data)
 	}
-	if !report.HasAdmissionLedger || len(report.Admissions) != 6 || len(report.Cycles) != 2 || len(report.Tasks) != 2 {
+	if !report.HasAdmissionLedger || len(report.Admissions) != 6 || len(report.Cycles) != 2 || len(report.Tasks) != 3 {
 		t.Fatalf("report inventory: %s", data)
 	}
 	if len(report.Daily) != 1 || report.Daily[0] != (Daily{Day: "2026-09-12", Admissions: 6, AttributedAdmissions: 6}) {
@@ -153,13 +157,20 @@ func TestUsageReportAttributesAdmissionsWallTimeAndDecisionsPerCycle(t *testing.
 	if row := byTask["t2"]; row.Tier != "ZZ" || row.Admissions != 1 {
 		t.Fatalf("unknown tier task row: %+v", row)
 	}
+	if row := byTask["t3"]; row.Tier != "S" || row.Status != model.StatusPublished || row.Admissions != 0 {
+		t.Fatalf("task row without ledger admissions: %+v", row)
+	}
 	if len(report.Tiers) != len(config.Tiers()) {
 		t.Fatalf("tier rows: %+v", report.Tiers)
 	}
 	for i, tier := range config.Tiers() {
 		want := TierRow{Tier: tier}
-		if tier == "M" {
+		switch tier {
+		case "M":
 			want = TierRow{Tier: "M", ObservedTasks: 1, Admissions: 3}
+		case "S":
+			// Every saved task counts whatever its status; admissions come only from the ledger.
+			want = TierRow{Tier: "S", ObservedTasks: 1}
 		}
 		if report.Tiers[i] != want {
 			t.Fatalf("tier rows: %+v", report.Tiers)

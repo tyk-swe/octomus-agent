@@ -1,3 +1,5 @@
+// The egress gateway: address vetting, allowlists by sandbox kind, CONNECT tunnelling, leases and the probe target.
+
 package egress
 
 import (
@@ -17,24 +19,37 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
-func TestPublicAddressRefusesEveryInternalRange(t *testing.T) {
-	for _, addr := range []string{
-		"127.0.0.1", "10.1.2.3", "172.17.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0",
-		"0.1.2.3", "198.18.0.1", "192.0.2.1", "203.0.113.9", "240.0.0.1", "255.255.255.255", "224.0.0.1",
-		"::1", "::", "fe80::1", "fd00:ec2::254", "fc00::1", "ff02::1", "::ffff:10.0.0.1", "::ffff:169.254.169.254",
-		"64:ff9b::a00:1", "2002:a00:1::1", "2001:0:4136:e378::1", "2001:db8::1",
+func TestPublicAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		public bool
+		addrs  []string
+	}{
+		{"internal IPv4 and IPv6 ranges", false, []string{
+			"127.0.0.1", "10.1.2.3", "172.17.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0",
+			"0.1.2.3", "198.18.0.1", "192.0.2.1", "203.0.113.9", "240.0.0.1", "255.255.255.255", "224.0.0.1",
+			"::1", "::", "fe80::1", "fd00:ec2::254", "fc00::1", "ff02::1", "::ffff:10.0.0.1", "::ffff:169.254.169.254",
+			"64:ff9b::a00:1", "2002:a00:1::1", "2001:0:4136:e378::1", "2001:db8::1",
+		}},
+		{"embedded and special IPv6", false, []string{
+			"::7f00:1", "::a9fe:a9fe", "::ffff:0:a9fe:a9fe", "::ffff:0:7f00:1", "fec0::1", "3fff::1", "2001:2::1",
+			"2001:10::1", "2001:20::1", "5f00::1",
+		}},
+		{"public addresses", true, []string{
+			"93.184.216.34", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8", "2a00:1450:4001:80b::200e", "2001:4860:4860::8888",
+		}},
 	} {
-		if PublicAddress(netip.MustParseAddr(addr)) {
-			t.Errorf("%s was treated as public", addr)
-		}
-	}
-	for _, addr := range []string{"93.184.216.34", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"} {
-		if !PublicAddress(netip.MustParseAddr(addr)) {
-			t.Errorf("%s was refused", addr)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			for _, addr := range tc.addrs {
+				if PublicAddress(netip.MustParseAddr(addr)) != tc.public {
+					t.Errorf("PublicAddress(%s) = %v; want %v", addr, !tc.public, tc.public)
+				}
+			}
+		})
 	}
 }
 
@@ -208,7 +223,7 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
-func TestGatewayTunnelsOnlyAllowlistedHostsToPublicAddresses(t *testing.T) {
+func TestGatewayAllowlist(t *testing.T) {
 	f := newGatewayFixture(t, "runner")
 	credential := ProxyUser + ":" + f.token
 	status, tunnel := f.connect(t, "api.openai.com:443", credential)
@@ -257,7 +272,7 @@ func TestGatewayTunnelsOnlyAllowlistedHostsToPublicAddresses(t *testing.T) {
 	}
 }
 
-func TestGatewayRequiresALiveLeaseAndAppliesItsKind(t *testing.T) {
+func TestGatewayLeases(t *testing.T) {
 	f := newGatewayFixture(t, "verify")
 	for name, credential := range map[string]string{
 		"missing":     "",
@@ -289,22 +304,6 @@ func TestGatewayRequiresALiveLeaseAndAppliesItsKind(t *testing.T) {
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("plain HTTP proxying = %v, %v; want it refused", resp, err)
-	}
-}
-
-func TestPublicAddressRefusesEmbeddedAndSpecialIPv6(t *testing.T) {
-	for _, addr := range []string{
-		"::7f00:1", "::a9fe:a9fe", "::ffff:0:a9fe:a9fe", "::ffff:0:7f00:1", "fec0::1", "3fff::1", "2001:2::1",
-		"2001:10::1", "2001:20::1", "5f00::1",
-	} {
-		if PublicAddress(netip.MustParseAddr(addr)) {
-			t.Errorf("%s was treated as public", addr)
-		}
-	}
-	for _, addr := range []string{"2a00:1450:4001:80b::200e", "2001:4860:4860::8888"} {
-		if !PublicAddress(netip.MustParseAddr(addr)) {
-			t.Errorf("%s was refused", addr)
-		}
 	}
 }
 
@@ -349,5 +348,69 @@ func TestGatewayClosesDeniedConnections(t *testing.T) {
 		strings.Repeat("a", 64<<10)+"\r\n"+credential+"\r\n")
 	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
 		t.Errorf("oversized request = %d; want 431", resp.StatusCode)
+	}
+}
+
+func TestLeases(t *testing.T) {
+	leases := Leases{Dir: t.TempDir()}
+	token, err := leases.Grant("octomus-test-runner", "runner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, file, ok := leases.lookup(token)
+	if !ok || lease != (Lease{Sandbox: "octomus-test-runner", Kind: "runner"}) || file != leaseFile(token) {
+		t.Fatalf("lookup = %+v, %q, %v", lease, file, ok)
+	}
+	info, err := os.Stat(filepath.Join(leases.Dir, file))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("lease file = %v, %v; want it private", info, err)
+	}
+	if other, _ := leases.Grant("octomus-test-verify", "verify"); other == token {
+		t.Fatal("two grants share a credential")
+	}
+	leases.Revoke(token)
+	if _, _, ok := leases.lookup(token); ok {
+		t.Fatal("a revoked lease is still live")
+	}
+	if want := "http://sandbox:" + token + "@egress:3128"; ProxyURL("egress:3128", token) != want {
+		t.Fatalf("proxy URL = %q; want %q", ProxyURL("egress:3128", token), want)
+	}
+}
+
+func TestProbeTarget(t *testing.T) {
+	rule := func(host string, wildcard bool) Rule { return Rule{Host: host, Wildcard: wildcard, Port: 443} }
+	cases := []struct {
+		name   string
+		policy Policy
+		want   string
+	}{
+		{"empty policy", Policy{}, "example.com:443"},
+		{"model allows old target", Policy{Model: []Rule{rule("example.com", false)}}, "octomus-probe-0.invalid:443"},
+		{"build allows old target", Policy{Build: []Rule{rule("example.com", false)}}, "octomus-probe-0.invalid:443"},
+		// A broad suffix is not accepted by ParseRules, but the selector still handles such a policy without relying
+		// on the old fixed name or changing what the policy permits.
+		{"wildcard covers old target", Policy{Model: []Rule{rule("com", true)}}, "octomus-probe-0.invalid:443"},
+		{"reserved candidates allowed in both lists", Policy{
+			Model: []Rule{rule("example.com", false), rule("octomus-probe-0.invalid", false)},
+			Build: []Rule{rule("octomus-probe-1.invalid", false), rule("probe.invalid", true)},
+		}, "octomus-probe-2.invalid:443"},
+		{"different port does not allow target", Policy{Build: []Rule{{Host: "example.com", Port: 8443}}}, "example.com:443"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			target, err := c.policy.probeTarget()
+			if err != nil || target != c.want || !ValidProbeTarget(target) {
+				t.Fatalf("target = %q, %v; want %q", target, err, c.want)
+			}
+			host, _, _ := net.SplitHostPort(target)
+			if c.policy.Allows(wire.KindRunner, host, 443) {
+				t.Fatalf("selected target %q is allowed by runner policy", target)
+			}
+		})
+	}
+	// An unvalidated policy can exhaust the reserved-name search; it must never yield an allowed target.
+	all := Policy{Model: []Rule{rule("example.com", false), rule("invalid", true)}}
+	if target, err := all.probeTarget(); err == nil || target != "" {
+		t.Fatalf("exhausted candidates = %q, %v; want failure", target, err)
 	}
 }

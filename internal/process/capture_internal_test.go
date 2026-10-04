@@ -1,3 +1,5 @@
+// Redaction of captured streams, including secrets cut across stdout, stderr and retained tails.
+
 package process
 
 import (
@@ -5,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestSafeCapturesScrubsAcrossStreamsAndKeepsFragments(t *testing.T) {
+func TestSafeCaptures(t *testing.T) {
 	t.Parallel()
 	const credential = "opaque-cross-stream-credential"
 	for _, tc := range []struct {

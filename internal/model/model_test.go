@@ -1,3 +1,5 @@
+// Durable record behaviour: review cleanliness, enum wire names, task actions and version-7 task compatibility.
+
 package model
 
 import (
@@ -5,9 +7,11 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
+
+	"github.com/tyk-swe/octomus-agent/internal/config"
 )
 
-func TestEmptyOrIncompleteReviewNeverClean(t *testing.T) {
+func TestReviewClean(t *testing.T) {
 	for _, r := range []Review{{Completed: true}, {Completed: true, Summary: "\u2003"}, {Summary: "interrupted"}, {Completed: true, Summary: "findings", Findings: []Finding{{Title: "issue"}}}} {
 		if r.Clean() {
 			t.Fatal("unclean review authorized")
@@ -50,7 +54,7 @@ func enumRoundTrip[T interface {
 	}
 }
 
-func TestEveryEnumRoundTripsItsWireNames(t *testing.T) {
+func TestEnumWireNames(t *testing.T) {
 	enumRoundTrip[Status](t, []string{"queued", "executing", "reviewing", "repairing", "verifying", "publishing", "published", "blocked", "failed", "cancelled"})
 	enumRoundTrip[BlockedReason](t, []string{"budget_exhausted", "storage_limit", "stale_base", "remote_conflict", "publication_uncertain", "runner_unavailable", "invalid_review", "verification_failed", "dependency_blocked", "invalid_plan", "workspace_invalid", "retry_limit", "timeout", "unknown"})
 	enumRoundTrip[PlanningCapacityStatus](t, []string{"ready", "daily_exhausted", "limit_too_low"})
@@ -120,5 +124,43 @@ func TestTaskAllowedActions(t *testing.T) {
 				t.Errorf("%s %s: AllowedActions() = %#v; want %#v", status, r.String(), got, want)
 			}
 		}
+	}
+}
+
+func TestRepairProgressCompat(t *testing.T) {
+	rounds := uint64(1)
+	task := Task{Config: config.Default(), Status: StatusBlocked, RepairRounds: &rounds, RepairProgress: &RepairProgress{Revision: "reviewed", NoProgressRounds: 1, AwaitingReview: true}}
+	data, err := json.Marshal(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	delete(fields, "repair_progress")
+	delete(fields, "repair_rounds")
+	legacy, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded Task
+	if err := json.Unmarshal(legacy, &loaded); err != nil || loaded.RepairProgress != nil || loaded.RepairRounds != nil {
+		t.Fatalf("pre-checkpoint version-7 task failed to load: progress=%+v error=%v", loaded.RepairProgress, err)
+	}
+	clone := task.Clone()
+	if clone.RepairRounds == nil || *clone.RepairRounds != rounds {
+		t.Fatalf("completed repair count did not survive serialization: %v", clone.RepairRounds)
+	}
+	*clone.RepairRounds++
+	if *task.RepairRounds != 1 {
+		t.Fatal("task clones share mutable repair counts")
+	}
+	if clone.RepairProgress == nil || *clone.RepairProgress != *task.RepairProgress {
+		t.Fatalf("progress did not survive task serialization: %+v", clone.RepairProgress)
+	}
+	clone.RepairProgress.NoProgressRounds++
+	if task.RepairProgress.NoProgressRounds != 1 {
+		t.Fatal("task clones share mutable repair progress")
 	}
 }

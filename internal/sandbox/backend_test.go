@@ -1,3 +1,5 @@
+// Both backends every untrusted child starts through: the host for --sandbox off and the broker-backed remote.
+
 package sandbox
 
 import (
@@ -5,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +23,25 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
+
+func TestHostVerify(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := Verify(context.Background(), Host{}, dir, "pwd; false | true", 30, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out.Stdout.Bytes)); got != dir {
+		t.Fatalf("verification cwd = %q; want %q", got, dir)
+	}
+	if out.Status.Success() {
+		t.Fatal("pipefail must fail a pipeline whose first command fails")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := Verify(ctx, Host{}, dir, "true", 30, true); !errors.Is(err, process.ErrCancelled) {
+		t.Fatalf("cancelled verification = %v; want ErrCancelled", err)
+	}
+}
 
 // fakeBroker speaks the broker protocol with scripted sandboxes chosen by the verification command.
 type fakeBroker struct {
@@ -197,7 +219,7 @@ func TestRemoteVerifyStreamsAndExit(t *testing.T) {
 	}
 }
 
-func TestRemoteTimeoutTerminatesThroughTheBroker(t *testing.T) {
+func TestRemoteTimeout(t *testing.T) {
 	f := startFakeBroker(t, 2)
 	start := time.Now()
 	_, _, err := Verify(context.Background(), NewRemote(f.socket), ownedWorkspace(t), "hang", 1, true)
@@ -209,7 +231,7 @@ func TestRemoteTimeoutTerminatesThroughTheBroker(t *testing.T) {
 	}
 }
 
-func TestRemoteUnavailableBrokerFailsClosed(t *testing.T) {
+func TestRemoteUnavailableBroker(t *testing.T) {
 	remote := NewRemote(filepath.Join(t.TempDir(), "missing.sock"))
 	if err := remote.Healthy(context.Background()); err == nil || !strings.Contains(err.Error(), "Sandbox broker is unavailable") {
 		t.Fatalf("health = %v", err)

@@ -1,3 +1,5 @@
+// Secret redaction from the environment, token patterns and cut fragments.
+
 package redact_test
 
 import (

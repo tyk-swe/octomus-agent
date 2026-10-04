@@ -1,3 +1,5 @@
+// The SQLite connection contract: pragmas, transactions, read-only connections and bounded events.
+
 package store_test
 
 import (
@@ -12,7 +14,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-func TestConnectionSettingsMatchTheStorageContract(t *testing.T) {
+func TestConnectionSettings(t *testing.T) {
 	t.Parallel()
 	s := open(t, statePath(t))
 	must(t, s.Snapshot(func(c *sql.Conn) error {
@@ -121,7 +123,7 @@ func inventory(prs ...model.PullRequest) model.OpenPrInventory {
 	return model.OpenPrInventory{Repository: "fixture/project", ObservedAt: "2026-01-01T00:00:00Z", PRs: prs}
 }
 
-func TestPrAdmissionAndReservationsShareOneTransaction(t *testing.T) {
+func TestPRAdmissionTransaction(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)

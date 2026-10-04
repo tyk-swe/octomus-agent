@@ -1,3 +1,5 @@
+// Opt-in (OCTOMUS_DOCKER_TEST=1) checks of the broker against the local Docker daemon.
+
 package broker_test
 
 import (
@@ -46,15 +48,6 @@ func docker(t *testing.T, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	out, err := exec.Command("go", "env", "GOMOD").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return filepath.Dir(strings.TrimSpace(string(out)))
-}
-
 var buildOnce sync.Once
 var buildDir string
 var buildErr error
@@ -75,7 +68,7 @@ func buildArtifacts(t *testing.T) string {
 		if buildErr != nil {
 			return
 		}
-		root := repoRoot(t)
+		root := testutil.RepoRoot()
 		for output, pkg := range map[string]string{"octomus-agent": "./cmd/octomus-agent", "fakerunner": "./internal/sandbox/broker/testdata/fakerunner"} {
 			cmd := exec.Command("go", "build", "-o", filepath.Join(buildDir, output), pkg)
 			cmd.Dir = root

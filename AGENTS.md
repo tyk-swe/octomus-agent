@@ -132,8 +132,8 @@ race detector. Install dashboard dependencies with
   accounts or model calls.
 
 Run relevant behavior tests while editing and the full checks before delivery.
-Keep Go and dashboard types aligned; `web/types_contract_test.go` and
-`internal/config/dashboard_test.go` compare them. Keep saved version-7 records
+Keep Go and dashboard types aligned; `web/types_contract_test.go` compares
+types, vocabularies and limits. Keep saved version-7 records
 loadable when adding fields.
 
 ## Conventions and boundaries

@@ -1,3 +1,5 @@
+// The scrubber on overlapping secrets and on text parts cut at capture boundaries.
+
 package redact
 
 import (
@@ -5,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestScrubRedactsOverlappingSecretsWhole(t *testing.T) {
+func TestScrubOverlappingSecrets(t *testing.T) {
 	values := []string{
 		"abcdefgh",
 		"abcdefgh-ZYXWVUTS",
@@ -34,7 +36,7 @@ func TestScrubRedactsOverlappingSecretsWhole(t *testing.T) {
 	}
 }
 
-func TestScrubPartsPreservesRedactionAcrossBoundaries(t *testing.T) {
+func TestScrubParts(t *testing.T) {
 	for input, want := range map[string]string{
 		"before ghp_abcdefghijklmnop\nsensitive-suffix after": "before [redacted] after",
 		"before sensitive-prefix\nghp_abcdefghijklmnop after": "before [redacted] after",

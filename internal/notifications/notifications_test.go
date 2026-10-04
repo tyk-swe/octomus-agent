@@ -1,3 +1,5 @@
+// Opt-in webhook delivery: URL policy, the minimal payload, delivery health and status classification.
+
 package notifications
 
 import (
@@ -119,7 +121,7 @@ func waitUntil(t *testing.T, seconds float64, condition func() bool, what string
 	}
 }
 
-func TestWebhookURLPolicyAcceptsHTTPSAndLoopbackHTTPOnly(t *testing.T) {
+func TestWebhookURLPolicy(t *testing.T) {
 	t.Parallel()
 	state, _ := testStore(t)
 	cases := []struct {
@@ -183,7 +185,7 @@ func TestWebhookURLPolicyAcceptsHTTPSAndLoopbackHTTPOnly(t *testing.T) {
 	}
 }
 
-func TestLocalReceiverVerifiesMinimalPayloadAndDelivery(t *testing.T) {
+func TestWebhookDelivery(t *testing.T) {
 	t.Parallel()
 	state, _ := testStore(t)
 	server := newReceiver(t, 200, 0)
@@ -194,7 +196,7 @@ func TestLocalReceiverVerifiesMinimalPayloadAndDelivery(t *testing.T) {
 	defer worker.Stop()
 	reason := model.BlockedReasonStaleBase
 	putTask(t, state, "task-1", "blocked", &reason)
-	body := r_body(t, server.next(t))
+	body := rBody(t, server.next(t))
 	for key, want := range map[string]any{
 		"schema_version": float64(1),
 		"category":       "stale_base",
@@ -227,7 +229,7 @@ func TestLocalReceiverVerifiesMinimalPayloadAndDelivery(t *testing.T) {
 	}
 }
 
-func r_body(t *testing.T, data []byte) map[string]any {
+func rBody(t *testing.T, data []byte) map[string]any {
 	t.Helper()
 	var value map[string]any
 	if err := json.Unmarshal(data, &value); err != nil {
@@ -236,7 +238,7 @@ func r_body(t *testing.T, data []byte) map[string]any {
 	return value
 }
 
-func TestRetryableAndTerminalStatusesAreClassified(t *testing.T) {
+func TestStatusClassification(t *testing.T) {
 	t.Parallel()
 	for _, check := range []struct {
 		status    int

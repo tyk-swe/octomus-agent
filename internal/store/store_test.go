@@ -1,8 +1,11 @@
+// Records, budget reservations, planning capacity, atomic plan commits and redacted exports.
+
 package store_test
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +67,7 @@ func TestDurableAndBudgetAtomic(t *testing.T) {
 	}
 }
 
-func TestPlanningCapacityReflectsPolicyUsageAndUTCDay(t *testing.T) {
+func TestPlanningCapacity(t *testing.T) {
 	t.Parallel()
 	s := open(t, statePath(t))
 	for agents, required := range map[uint64]uint64{8: 12, 9: 13, 10: 14} {
@@ -153,7 +156,7 @@ func number(value any) float64 {
 	return -1
 }
 
-func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
+func TestAdmissionLedger(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
@@ -191,7 +194,7 @@ func TestAdmissionAndCounterCommitTogetherAcrossDaysAndRestarts(t *testing.T) {
 	}
 }
 
-func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
+func TestCommitPlanAtomicity(t *testing.T) {
 	t.Parallel()
 	s := open(t, statePath(t))
 	control := map[string]any{
@@ -260,5 +263,20 @@ func TestCommitPlanIsAtomicOnLineageFailure(t *testing.T) {
 	must(t, err)
 	if saved.IdleStreak != 1 || saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting {
 		t.Fatalf("%+v", saved)
+	}
+}
+
+func TestRedactedValue(t *testing.T) {
+	t.Parallel()
+	whitespace := "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+	for _, separator := range whitespace {
+		t.Run(fmt.Sprintf("U+%04X", separator), func(t *testing.T) {
+			input := "before bEaReR" + string(separator) + "\t" + "synthetic-private-credential after"
+			value, err := store.RedactedValue(map[string]any{"nested": []any{input}, "count": 7})
+			must(t, err)
+			if got := canonical(t, value); got != `{"count":7,"nested":["before [redacted] after"]}` {
+				t.Fatalf("redacted export = %s", got)
+			}
+		})
 	}
 }

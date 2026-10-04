@@ -1,3 +1,5 @@
+// The fresh Go-owned schema and the refusal of databases from other versions.
+
 package store_test
 
 import (
@@ -30,7 +32,7 @@ func TestFreshGoSchemaAndReopen(t *testing.T) {
 	must(t, r.Close())
 }
 
-func TestUnsupportedStateIsRefusedWithoutChanges(t *testing.T) {
+func TestUnsupportedStateRefused(t *testing.T) {
 	t.Parallel()
 	for _, version := range []int{0, 6, 8} {
 		t.Run(strconv.Itoa(version), func(t *testing.T) {

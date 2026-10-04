@@ -1,3 +1,5 @@
+// The Codex app-server adapter against the scripted Codex fixture.
+
 package runner
 
 import (
@@ -9,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
@@ -48,7 +51,7 @@ func TestCodexModelsAndPreResponseEvents(t *testing.T) {
 	}
 }
 
-func TestCodexStructuredOutputIsValidated(t *testing.T) {
+func TestCodexStructuredOutput(t *testing.T) {
 	t.Parallel()
 	f := codexFixture(t)
 	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
@@ -79,7 +82,7 @@ func TestCodexStructuredOutputIsValidated(t *testing.T) {
 	}
 }
 
-func TestCodexInteractiveRequestIsRejected(t *testing.T) {
+func TestCodexInteractiveRequest(t *testing.T) {
 	t.Parallel()
 	f := codexFixture(t)
 	client, err := f.connectCodex(context.Background())
@@ -97,5 +100,33 @@ func TestCodexInteractiveRequestIsRejected(t *testing.T) {
 	_, err = client.Turn(session, codexRoute(), f.workspace, "Implement this accepted task.", nil)
 	if err == nil || !strings.Contains(err.Error(), "interactive input") {
 		t.Fatalf("interactive request must block the task: %v", err)
+	}
+}
+
+func TestCodexRequiresAuthentication(t *testing.T) {
+	t.Parallel()
+	f := codexFixture(t)
+	f.mode("codex", "no-auth")
+	cfg := f.cfg.Clone()
+	for _, role := range config.Roles() {
+		cfg.Roles[role] = codexRoute()
+	}
+	for _, tier := range config.Tiers() {
+		cfg.Tiers[tier] = codexRoute()
+	}
+	cfg.RepairRoute = codexRoute()
+	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
+	defer clients.Close()
+	err := clients.ValidateRoutes(cfg, f.workspace, false)
+	if err == nil || !strings.Contains(err.Error(), "authentication") {
+		t.Fatalf("unauthenticated Codex passed route validation: %v", err)
+	}
+	client, err := f.connectCodex(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Diagnose(f.workspace); err == nil || !strings.Contains(err.Error(), "authentication") {
+		t.Fatalf("unauthenticated Codex passed diagnostics: %v", err)
 	}
 }

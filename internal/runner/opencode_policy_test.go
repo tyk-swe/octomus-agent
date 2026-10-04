@@ -1,3 +1,5 @@
+// The applied-policy check that refuses an OpenCode server whose effective config drifted from the worker policy.
+
 package runner
 
 import (

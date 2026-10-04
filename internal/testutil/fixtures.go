@@ -68,6 +68,11 @@ func FixturePath(name string) string {
 	return filepath.Join(fixtureDirectory, name)
 }
 
+// RepoRoot is the source checkout tests/fixtures belongs to, for tests that build or read other parts of it.
+func RepoRoot() string {
+	return filepath.Dir(filepath.Dir(fixtureDirectory))
+}
+
 // InstallFixtureScript copies a tests/fixtures file to dst as an executable.
 func InstallFixtureScript(dst, name string) error {
 	path := FixturePath(name)

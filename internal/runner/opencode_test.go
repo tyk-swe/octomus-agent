@@ -1,3 +1,5 @@
+// The OpenCode HTTP/SSE adapter against the scripted OpenCode fixture: sessions, structured output and every failure mode.
+
 package runner
 
 import (
@@ -11,7 +13,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
 
-func TestOpenCodeSessionsResumeAndStructuredOutput(t *testing.T) {
+func TestOpenCodeSessions(t *testing.T) {
 	t.Parallel()
 	f := opencodeFixture(t)
 	client, err := f.connect(context.Background())
@@ -87,7 +89,7 @@ func TestOpenCodeSessionsResumeAndStructuredOutput(t *testing.T) {
 	}
 }
 
-func TestOpenCodeFailuresNeverReturnSuccessfulEvidence(t *testing.T) {
+func TestOpenCodeFailures(t *testing.T) {
 	for _, mode := range []string{
 		"wrong-model", "wrong-variant", "wrong-session", "wrong-message",
 		"incomplete", "truncated", "failed", "missing-structured",

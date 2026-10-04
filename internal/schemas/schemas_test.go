@@ -1,3 +1,5 @@
+// Structured-output schemas accept only complete, exact answers.
+
 package schemas
 
 import (

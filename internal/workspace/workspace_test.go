@@ -1,3 +1,5 @@
+// Managed-directory safety: owned removal, measurement and initialization.
+
 package workspace_test
 
 import (
@@ -82,7 +84,7 @@ func TestRemoveOwnedDir(t *testing.T) {
 	}
 }
 
-func TestRemoveOwnedDirRejectsNoncanonicalPaths(t *testing.T) {
+func TestRemoveOwnedDirNoncanonical(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	for _, dir := range []string{filepath.Join(outside, "child"), filepath.Join(outside, "victim"), filepath.Join(root, "victim")} {

@@ -1,5 +1,7 @@
 package engine
 
+// Where untrusted children run: no runner outlives its turn, and every session records its sandbox.
+
 import (
 	"context"
 	"path/filepath"
@@ -32,11 +34,9 @@ func (w *watchedBackend) Start(ctx context.Context, spec sandbox.Spec) (sandbox.
 
 func TestNoRunnerOutlivesItsTurn(t *testing.T) {
 	t.Parallel()
-	fixture := newScriptedFixture(t, withGitHubIdentity())
-	fixture.configure(t, func(cfg *config.Config) {
-		cfg.VerificationCommands = []string{"grep -q fixed feature.txt"}
-	})
-	routes, script := fixture.routes, fixture.script
+	f := newFixture(t)
+	f.configure(t, func(cfg *config.Config) { cfg.VerificationCommands = []string{"grep -q fixed feature.txt"} })
+	routes, script := f.routes, f.script
 	var connectMu sync.Mutex
 	openAtConnect := []int{}
 	connect := script.Connector()
@@ -49,11 +49,11 @@ func TestNoRunnerOutlivesItsTurn(t *testing.T) {
 	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "draft\n")})
 	script.Answer(routes.Reviewer, cleanReview("First pass looks complete"), cleanReview("Repair verified"))
 	script.Queue(routes.Repair, runnertest.Reply{Answer: "Wrote the fixed output", Effect: writeFile("feature.txt", "fixed output\n")})
-	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
-	saveExecutionTask(t, fixture.planningFixture, task)
+	task := executionTask(t, f, f.cfg.DefaultBranch)
+	putTask(t, f, task)
 	backend := &watchedBackend{script: script}
 
-	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t, WithRunnerConnector(watched), WithSandbox(backend)), task.ID)
+	saved := driveTask(t, f, f.newApp(t, WithRunnerConnector(watched), WithSandbox(backend)), task.ID)
 	if saved.Status != model.StatusPublished {
 		t.Fatalf("task = %+v; want it published", saved)
 	}
@@ -79,22 +79,20 @@ func TestNoRunnerOutlivesItsTurn(t *testing.T) {
 	assertNoOpenClients(t, script)
 }
 
-func TestSessionsRecordTheSandboxesTheirTurnsRanIn(t *testing.T) {
+func TestSessionsRecordSandboxes(t *testing.T) {
 	t.Parallel()
-	fixture := newScriptedFixture(t, withGitHubIdentity())
-	fixture.configure(t, func(cfg *config.Config) {
-		cfg.VerificationCommands = []string{"grep -q fixed feature.txt"}
-	})
-	routes, script := fixture.routes, fixture.script
+	f := newFixture(t)
+	f.configure(t, func(cfg *config.Config) { cfg.VerificationCommands = []string{"grep -q fixed feature.txt"} })
+	routes, script := f.routes, f.script
 	script.RecordSandbox(&model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1, Egress: model.SandboxEgress{
 		Allowed: map[string]uint64{"api.openai.com:443": 2}, Denied: map[string]uint64{"example.com:443": 1}}})
 	script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "draft\n")})
 	script.Answer(routes.Reviewer, cleanReview("First pass looks complete"), cleanReview("Repair verified"))
 	script.Queue(routes.Repair, runnertest.Reply{Answer: "Wrote the fixed output", Effect: writeFile("feature.txt", "fixed output\n")})
-	task := executionTask(t, fixture.planningFixture, fixture.cfg.DefaultBranch)
-	saveExecutionTask(t, fixture.planningFixture, task)
+	task := executionTask(t, f, f.cfg.DefaultBranch)
+	putTask(t, f, task)
 
-	saved := driveTask(t, fixture.planningFixture, fixture.newApp(t), task.ID)
+	saved := driveTask(t, f, f.newApp(t), task.ID)
 	if saved.Status != model.StatusPublished || len(saved.Sessions) != 4 {
 		t.Fatalf("task = %+v", saved)
 	}

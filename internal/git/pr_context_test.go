@@ -1,3 +1,5 @@
+// Ownership of pull requests in the external PR inventory.
+
 package git_test
 
 import (
@@ -43,7 +45,7 @@ func prContextPage(t *testing.T, entries ...map[string]any) string {
 	return string(data)
 }
 
-func TestOwnershipRequiresPrefixHeadRepositoryBaseRepositoryAndMarker(t *testing.T) {
+func TestPROwnership(t *testing.T) {
 	t.Parallel()
 	c := testConfig()
 	cases := []struct {

@@ -1,3 +1,5 @@
+// The authenticated control API and embedded dashboard: auth, HTTP boundaries, security headers and redacted request errors.
+
 package httpapi
 
 import (
@@ -69,7 +71,7 @@ func decode(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
 	return value
 }
 
-func TestPrivateAPIEnforcesAuthContentTypeAndConfigurationRules(t *testing.T) {
+func TestPrivateAPIGuards(t *testing.T) {
 	app, _ := testApp(t)
 	router := Router(app, token, t.TempDir(), "test")
 	if response := request(t, router, "GET", "/api/state", "", false); response.Code != http.StatusUnauthorized {
@@ -98,7 +100,7 @@ func TestPrivateAPIEnforcesAuthContentTypeAndConfigurationRules(t *testing.T) {
 	}
 }
 
-func TestEmbeddedDashboardAndOverridesPreserveHTTPBoundaries(t *testing.T) {
+func TestDashboardAssets(t *testing.T) {
 	app, _ := testApp(t)
 	router := Router(app, token, "", "test")
 	for _, check := range []struct {
@@ -255,7 +257,7 @@ func queuedTask(cfg config.Config) model.Task {
 
 func stringPointer(s string) *string { return &s }
 
-func TestHTTPBoundaryRejectionsAndSecurityHeaders(t *testing.T) {
+func TestHTTPBoundaries(t *testing.T) {
 	app, state := testApp(t)
 	router := Router(app, token, "", "test")
 	cfg := config.Default()
@@ -326,5 +328,50 @@ func TestHTTPBoundaryRejectionsAndSecurityHeaders(t *testing.T) {
 			!strings.Contains(csp, "form-action 'self'") {
 			t.Fatalf("%s: %d headers %v", check.name, check.response.Code, h)
 		}
+	}
+}
+
+func TestRequestErrorRedaction(t *testing.T) {
+	app, state := testApp(t)
+	cfg := config.Default()
+	if err := state.Put("settings", "config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := cfg.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _, err := state.GetRaw("settings", "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := Router(app, token, "", "test")
+	const secret = "ghp_requestSecret0123456789"
+	for _, tc := range []struct {
+		name, method, path, body string
+		status                   int
+	}{
+		{"unknown body field", "POST", "/api/baseline-checks", `{"` + secret + `":true}`, http.StatusUnprocessableEntity},
+		{"enum value", "POST", "/api/model-catalog", `{"backend":"` + secret + `","binary":"codex"}`, http.StatusUnprocessableEntity},
+		{"unknown patch field", "PUT", "/api/config", `{"expected_revision":"` + revision + `","config":{"` + secret + `":true}}`, http.StatusUnprocessableEntity},
+		{"history cursor", "GET", "/api/tasks?before=" + secret, "", http.StatusBadRequest},
+		{"history limit", "GET", "/api/cycles?limit=" + secret, "", http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := call(t, router, tc.method, tc.path, tc.body)
+			body := response.Body.String()
+			if response.Code != tc.status || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" {
+				t.Fatalf("response = %d %q %q", response.Code, response.Header().Get("Content-Type"), body)
+			}
+			if strings.Contains(body, secret) || !strings.Contains(body, "[redacted]") {
+				t.Fatalf("request error was not redacted: %q", body)
+			}
+		})
+	}
+	if after, _, err := state.GetRaw("settings", "config"); err != nil || string(after) != string(before) {
+		t.Fatalf("rejected requests changed saved settings: %v", err)
+	}
+	if latest, err := state.LatestBaseline(); err != nil || latest != nil {
+		t.Fatalf("rejected requests started a baseline check: %v, %v", latest, err)
 	}
 }

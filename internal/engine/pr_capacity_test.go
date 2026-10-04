@@ -1,5 +1,7 @@
 package engine
 
+// Open-PR capacity: only a fresh, complete inventory from this process authorizes new-PR admissions.
+
 import (
 	"context"
 	"fmt"
@@ -21,7 +23,7 @@ func refreshLive(app *App) error {
 	return app.refreshPRs(context.Background(), cfg)
 }
 
-func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
+func TestPRCapacityFreshness(t *testing.T) {
 	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
@@ -105,16 +107,14 @@ func TestCapacityReportsOnlyFreshCurrentProcessObservations(t *testing.T) {
 	}
 }
 
-func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
+func TestRefreshFailureRevokesCapacity(t *testing.T) {
 	t.Parallel()
-	fixture := newPlanningFixture(t)
-	queued := queuedTask(fixture.cfg, "waiting-for-capacity", fixture.cfg.DefaultBranch, fixture.cfg.BranchPrefix+"waiting")
-	if err := fixture.state.Put("task", queued.ID, queued); err != nil {
-		t.Fatal(err)
-	}
-	app := New(fixture.state, fixture.dataDir)
+	f := newFixture(t)
+	queued := queuedTask(f.cfg, "waiting-for-capacity", f.cfg.DefaultBranch, f.cfg.BranchPrefix+"waiting")
+	putTask(t, f, queued)
+	app := New(f.state, f.dataDir)
 	t.Cleanup(app.Shutdown)
-	if err := app.Resume(); err != nil {
+	if err := control(app, "resume"); err != nil {
 		t.Fatal(err)
 	}
 	if err := refreshLive(app); err != nil {
@@ -127,7 +127,7 @@ func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
 	if before.Status != "ready" {
 		t.Fatalf("capacity after complete refresh = %s: %v", before.Status, before.Reason)
 	}
-	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("not json"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "prs.json"), []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := refreshLive(app); err == nil {
@@ -144,11 +144,11 @@ func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
 	if err != nil || control.Mode != model.OperatingModeContinuous || control.Error != nil {
 		t.Fatalf("refresh failure failed Continuous operation: %+v, %v", control, err)
 	}
-	saved, err := store.Get[model.Task](fixture.state, "task", queued.ID)
+	saved, err := store.Get[model.Task](f.state, "task", queued.ID)
 	if err != nil || saved.Status != model.StatusQueued {
 		t.Fatalf("refresh failure changed queued work: %+v, %v", saved, err)
 	}
-	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte("[]"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "prs.json"), []byte("[]"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := refreshLive(app); err != nil {
@@ -158,34 +158,31 @@ func TestRefreshFailureImmediatelyRevokesPrCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.Status != "ready" || recovered.Reason != nil || recovered.Remaining == nil || *recovered.Remaining != fixture.cfg.MaxOpenPRs {
+	if recovered.Status != "ready" || recovered.Reason != nil || recovered.Remaining == nil || *recovered.Remaining != f.cfg.MaxOpenPRs {
 		t.Fatalf("successful refresh did not clear the failure: %+v", recovered)
 	}
 }
 
-func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
+func TestInventoryAdmitsOneBatch(t *testing.T) {
 	t.Parallel()
-	fixture := newPlanningFixture(t)
-	cfg := fixture.cfg.Clone()
+	f := newFixture(t)
+	cfg := f.cfg.Clone()
 	cfg.BranchPrefix = "tyk/"
 	cfg.MaxOpenPRs = 3
 	cfg.ExecutionConcurrency = 2
-	saveSettings(t, fixture.state, cfg, model.DefaultControl())
+	saveSettings(t, f.state, cfg, model.DefaultControl())
 	for _, id := range []string{"first", "second", "third"} {
-		task := queuedTask(cfg, id, cfg.DefaultBranch, cfg.BranchPrefix+id)
-		if err := fixture.state.Put("task", task.ID, task); err != nil {
-			t.Fatal(err)
-		}
+		putTask(t, f, queuedTask(cfg, id, cfg.DefaultBranch, cfg.BranchPrefix+id))
 	}
 	started := make(chan string, 3)
-	app := New(fixture.state, fixture.dataDir, WithTaskRunner(TaskRunnerFunc(func(_ context.Context, task model.Task) error {
+	app := New(f.state, f.dataDir, WithTaskRunner(TaskRunnerFunc(func(_ context.Context, task model.Task) error {
 		started <- task.ID
 		task.Status = model.StatusPublished
-		return fixture.state.Put("task", task.ID, task)
+		return f.state.Put("task", task.ID, task)
 	})))
 	t.Cleanup(app.Shutdown)
 	deferHousekeeping(app)
-	if err := app.Resume(); err != nil {
+	if err := control(app, "resume"); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Tick(); err != nil {
@@ -207,9 +204,9 @@ func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
 		t.Fatalf("consuming admission evidence lost dashboard capacity: %+v, %v", capacity, err)
 	}
 
-	git(t, fixture.root, "--git-dir", filepath.Join(fixture.root, "remote.git"), "branch", "tyk/another-session", "main")
+	git(t, f.root, "--git-dir", filepath.Join(f.root, "remote.git"), "branch", "tyk/another-session", "main")
 	pr := `[{"number":7,"title":"Other owned work","body":"<!-- octomus:task:other -->","head":{"ref":"tyk/another-session","sha":"","repo":{"full_name":"fixture/project"}},"base":{"ref":"main","repo":{"full_name":"fixture/project"}},"html_url":"https://github.com/fixture/project/pull/7","state":"open","merged_at":null,"additions":1,"deletions":0,"created_at":"2026-09-07T00:00:00Z"}]`
-	if err := os.WriteFile(filepath.Join(fixture.root, "prs.json"), []byte(pr), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "prs.json"), []byte(pr), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Tick(); err != nil {
@@ -227,7 +224,7 @@ func TestPrInventoryAuthorizesOnlyOneAdmissionBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.wg.Wait()
-	third, err := store.Get[model.Task](fixture.state, "task", "third")
+	third, err := store.Get[model.Task](f.state, "task", "third")
 	if err != nil || third == nil || third.Status != model.StatusQueued || len(started) != 2 {
 		t.Fatalf("full inventory admitted a new PR: %+v, %v; started=%d", third, err, len(started))
 	}

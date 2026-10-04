@@ -1,3 +1,5 @@
+// Orchestrator git never executes configuration a work tree controls.
+
 package git_test
 
 import (
@@ -60,7 +62,7 @@ func plantHostileGitDir(t *testing.T, path, trap string) {
 	}
 }
 
-func TestHostileWorkTreeGitEntryIsNeverTrusted(t *testing.T) {
+func TestHostileGitEntry(t *testing.T) {
 	t.Parallel()
 	c, root := fixtureRoot(t)
 	c.VerificationCommands = []string{"make test"}

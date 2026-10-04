@@ -1,3 +1,5 @@
+// The schema-to-decoder match reports drift on either side.
+
 package schematest
 
 import (

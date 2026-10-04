@@ -1,6 +1,9 @@
 package engine
 
+// Clean-baseline checks and the default-branch observation they are compared against.
+
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +15,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
+// baselineApp is an App over a plain local repository with no routes configured: a baseline needs none.
 func baselineApp(t *testing.T) (*App, config.Config) {
 	t.Helper()
 	root := t.TempDir()
@@ -49,7 +53,7 @@ func makeCheck(cfg config.Config, status model.BaselineStatus) model.BaselineChe
 	}
 }
 
-func TestBaselineValidationAcceptsUnroutedModelsButRequiresRepositoryAndCommands(t *testing.T) {
+func TestBaselineValidation(t *testing.T) {
 	t.Parallel()
 	_, cfg := baselineApp(t)
 	if err := cfg.Validate(true); err == nil {
@@ -78,7 +82,7 @@ func TestBaselineValidationAcceptsUnroutedModelsButRequiresRepositoryAndCommands
 	}
 }
 
-func TestStartBaselineRejectsStaleRevisionBeforeWork(t *testing.T) {
+func TestStartBaselineRefusesStale(t *testing.T) {
 	t.Parallel()
 	app, cfg := baselineApp(t)
 	fingerprint, err := cfg.Fingerprint()
@@ -108,7 +112,7 @@ func setObservation(app *App, observation *model.DefaultBranchObservation) {
 	app.runtimeMu.Unlock()
 }
 
-func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing.T) {
+func TestBaselineViewStaleness(t *testing.T) {
 	t.Parallel()
 	app, cfg := baselineApp(t)
 	fingerprint, err := cfg.Fingerprint()
@@ -145,51 +149,34 @@ func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing
 		Repository: cfg.GitHubRepo, DefaultBranch: cfg.DefaultBranch,
 		Revision: revision, ObservedAt: model.Now(),
 	}
-	setObservation(app, observation)
-	if status, _ := app.BaselineView(nil); status["revision_status"] != "matches_last_observation" {
-		t.Fatalf("fresh match: %v", status["revision_status"])
+	status := func(label string, want string) {
+		t.Helper()
+		setObservation(app, observation)
+		if view, _ := app.BaselineView(nil); view["revision_status"] != want {
+			t.Fatalf("%s: revision_status = %v; want %s", label, view["revision_status"], want)
+		}
 	}
+	status("fresh match", "matches_last_observation")
 	observation.Revision = strings.Repeat("b", 40)
-	setObservation(app, observation)
-	if status, _ := app.BaselineView(nil); status["revision_status"] != "stale" {
-		t.Fatalf("stale: %v", status["revision_status"])
-	}
+	status("stale", "stale")
 	observation.ObservedAt = time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	setObservation(app, observation)
-	if status, _ := app.BaselineView(nil); status["revision_status"] != "unknown" {
-		t.Fatalf("future observation: %v", status["revision_status"])
-	}
+	status("future observation", "unknown")
 	observation.ObservedAt = time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
-	setObservation(app, observation)
-	if status, _ := app.BaselineView(nil); status["revision_status"] != "unknown" {
-		t.Fatalf("expired observation: %v", status["revision_status"])
-	}
+	status("expired observation", "unknown")
 	observation.Revision = revision
 	observation.ObservedAt = time.Now().UTC().Add(-(observeInterval + time.Minute)).Format(time.RFC3339)
-	setObservation(app, observation)
-	if status, _ := app.BaselineView(nil); status["revision_status"] != "matches_last_observation" {
-		t.Fatalf("observation within its lifetime: %v", status["revision_status"])
-	}
+	status("observation within its lifetime", "matches_last_observation")
 	observation.ObservedAt = time.Now().UTC().Add(-(observationLifetime + time.Minute)).Format(time.RFC3339)
-	setObservation(app, observation)
-	if status, _ := app.BaselineView(nil); status["revision_status"] != "unknown" {
-		t.Fatalf("observation past its lifetime: %v", status["revision_status"])
-	}
+	status("observation past its lifetime", "unknown")
 	observation.Revision = strings.Repeat("b", 40)
 	observation.ObservedAt = model.Now()
 	observation.DefaultBranch = "other"
-	setObservation(app, observation)
-	if status, _ := app.BaselineView(nil); status["revision_status"] != "unknown" {
-		t.Fatalf("other branch: %v", status["revision_status"])
-	}
+	status("other branch", "unknown")
 	observation.DefaultBranch = cfg.DefaultBranch
-	setObservation(app, observation)
+	status("same target stale", "stale")
 	view, err = app.BaselineView(nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if view["revision_status"] != "stale" {
-		t.Fatalf("same target stale: %v", view["revision_status"])
 	}
 	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs == nil || obs.Revision != observation.Revision {
 		t.Fatalf("observation of the live target was not shown: %v", view["default_observation"])
@@ -227,5 +214,26 @@ func TestBaselineViewReportsConfigMatchAndRevisionStalenessSeparately(t *testing
 	reason, _ := view["reason"].(string)
 	if !strings.Contains(reason, "verification") {
 		t.Fatalf("reason %q must name the verification problem", reason)
+	}
+}
+
+func TestObserveDefaultBranch(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	app := New(f.state, f.dataDir)
+	t.Cleanup(app.Shutdown)
+	if err := app.observeRemote(context.Background(), f.cfg); err != nil {
+		t.Fatal(err)
+	}
+	head := remoteHead(t, f, "main")
+	app.runtimeMu.Lock()
+	observation := app.runtime.defaultObservation
+	app.runtimeMu.Unlock()
+	if observation == nil || observation.Revision != head || !observation.Describes(f.cfg) {
+		t.Fatalf("default-branch observation = %+v; want %s for the configured remote", observation, head)
+	}
+	control, err := app.Control()
+	if err != nil || control.ContextFingerprint == "" {
+		t.Fatalf("observation did not record the context fingerprint: %+v, %v", control, err)
 	}
 }

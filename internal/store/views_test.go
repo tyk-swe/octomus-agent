@@ -1,3 +1,5 @@
+// Operational views served from the indexed projections.
+
 package store_test
 
 import (
@@ -10,7 +12,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-func TestIndexedViewsAnswerFromOneSmallState(t *testing.T) {
+func TestIndexedViews(t *testing.T) {
 	t.Parallel()
 	s := open(t, statePath(t))
 

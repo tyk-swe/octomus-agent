@@ -1,3 +1,5 @@
+// Shared store fixtures: temporary databases, raw connections and record builders.
+
 package store_test
 
 import (

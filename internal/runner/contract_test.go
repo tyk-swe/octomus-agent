@@ -1,3 +1,5 @@
+// Pinned real-client contracts against a synthetic provider; they run only with the client binaries set.
+
 package runner
 
 import (
@@ -25,7 +27,7 @@ func contract(t *testing.T, backend config.Backend, binary string) {
 	if err := os.Mkdir(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	provider := filepath.Join(repoRoot(t), "tests", "fixtures", "provider.py")
+	provider := testutil.FixturePath("provider.py")
 	cmd := process.Command("python3", root)
 	cmd.Args = append(cmd.Args, provider, root)
 	if err := cmd.Start(); err != nil {

@@ -1,3 +1,5 @@
+// The attention outbox the schema triggers maintain.
+
 package store_test
 
 import (
@@ -56,7 +58,7 @@ func pendingRows(t *testing.T, path string) []map[string]any {
 	return outboxRows(t, path, "pending")
 }
 
-func TestAttentionCategoryCoversEveryBlockedReason(t *testing.T) {
+func TestAttentionCategories(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)

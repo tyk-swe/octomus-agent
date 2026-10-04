@@ -1,3 +1,5 @@
+// Opt-in (OCTOMUS_SCALE_TEST=1) allocation and latency check over 100,000 records.
+
 package store_test
 
 import (
