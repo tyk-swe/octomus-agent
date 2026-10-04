@@ -165,6 +165,9 @@ loadable when adding fields.
 - Make cohesive changes with meaningful verification. Preserve existing features,
   full-diff review, fresh reviewer threads and persistent per-task repair threads.
 - Never silently substitute model/effort routes or weaken verification to publish.
+- Error strings follow one convention: text an operator may read (API responses,
+  task and cycle errors, CLI diagnostics) is a capitalised sentence fragment;
+  errors that only wrap an internal mechanism stay lowercase Go style.
 - The service delivers PRs; it does not merge, deploy or migrate production systems.
   Workers must not push or publish; the orchestrator owns publication.
 - Every untrusted child (runner, verification command, probe) starts through
