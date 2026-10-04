@@ -23,10 +23,15 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     config['repair_route'] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
     task_config = {**config, 'verification_commands': ['go test ./...']}
     now = datetime.now(timezone.utc).isoformat()
-    subprocess.run(['go', 'run', './tests/fixturedb', str(data / 'state.db')], cwd=project, check=True)
+    env = {key: value for key, value in os.environ.items() if key != 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'}
+    env['OCTOMUS_TOKEN'] = 'browser-test-operator-token-32-characters'
+    env['OCTOMUS_SANDBOX'] = 'off'
+    # The doctor opens (and so creates) the state database before it fails on the unrouted default configuration.
+    subprocess.run([str(binary), '--data-dir', directory, '--doctor'], env=env, capture_output=True, timeout=60)
+    assert (data / 'state.db').exists(), 'the doctor run did not create the state database'
     db = sqlite3.connect(data / 'state.db')
     def put(kind, identity, value):
-        db.execute('INSERT INTO records VALUES (?,?,?)', (kind, identity, json.dumps(value)))
+        db.execute('INSERT OR REPLACE INTO records VALUES (?,?,?)', (kind, identity, json.dumps(value)))
     rows = [('task-active', 'Complete the repository setup flow', 'queued', 'features', 'M'), ('task-reviewed', 'Explain the local development workflow', 'published', 'documentation', 'S'), ('task-blocked', 'Handle interrupted verification commands', 'blocked', 'correctness', 'M')]
     proposals = []
     for identity, title, status, category, tier in rows:
@@ -69,8 +74,6 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
 
     broker = socketserver.ThreadingUnixStreamServer(str(data / 'sandboxd.sock'), Broker)
     threading.Thread(target=broker.serve_forever, daemon=True).start()
-    env = {key: value for key, value in os.environ.items() if key != 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'}
-    env['OCTOMUS_TOKEN'] = 'browser-test-operator-token-32-characters'
     env.update(OCTOMUS_SANDBOX='docker', OCTOMUS_SANDBOXD_SOCKET=str(data / 'sandboxd.sock'), OCTOMUS_EGRESS_MODEL_HOSTS='chatgpt.com,auth.openai.com,api.openai.com', OCTOMUS_EGRESS_BUILD_HOSTS='proxy.golang.org,registry.npmjs.org')
     process = subprocess.Popen([str(binary), '--listen', '127.0.0.1:4299', '--data-dir', directory, '--assets', str(project / 'web/build')], env=env)
     try:

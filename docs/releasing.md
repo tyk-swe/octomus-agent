@@ -34,8 +34,8 @@ the executable needs no build toolchain or minimum glibc at runtime.
 The archive contains `octomus-agent/octomus-agent`, license, policies and operator
 documentation. It never packages live state or separate runtime dashboard files.
 `scripts/release-files.txt` lists every public input besides the executable;
-update it and the exact archive contract in `tests/package_guards.py` when adding
-release documentation or deployment files. Packaging works without Git metadata
+`tests/distribution.py --package` checks that the archive holds exactly those
+files. Packaging works without Git metadata
 and rejects symlinked manifest files, listed inputs and their parent directories.
 The installer validates a single matching SHA-256 entry before extracting only
 the executable, then replaces the destination binary. Set an absolute writable
@@ -49,8 +49,8 @@ release archives do not include Sigstore signatures.
 
 After owner clearance, a pushed `v*` tag runs the reusable full checks and native
 Ubuntu 24.04 builds on x86_64 and aarch64. The tag must equal `v` plus the
-`VERSION` file contents. Both tarballs must pass embedded HTTP and installer
-smoke tests before the publishing job receives contents-write permission.
+`VERSION` file contents. Both tarballs must pass the archive-contents check and the
+embedded HTTP smoke test before the publishing job receives contents-write permission.
 Checksums cover both archives; generated release notes are the default.
 Prerelease tags are marked as prereleases and excluded from the installer's
 latest-stable lookup.

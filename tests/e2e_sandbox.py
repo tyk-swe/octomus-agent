@@ -20,7 +20,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from harness import CODEX_ROUTE, PROJECT, TOKEN, local_urlopen, poll, run_selected, setup
+from harness import FEATURE_CHECK, PROJECT, TOKEN, local_urlopen, poll, routes, run_selected, setup
 
 COMPOSE = PROJECT / 'deploy/docker/compose.yaml'
 IMAGES = {'base': 'octomus-agent:e2e-base', 'control': 'octomus-agent:e2e', 'sandbox': 'octomus-sandbox:e2e'}
@@ -154,14 +154,8 @@ class Stack:
         view = self.request('/config')
         config = view['config']
         assert config['repository'] == '/var/lib/octomus/data/checkout' and config['github_repo'] == 'fixture/project', config
-        for role in config['roles']:
-            config['roles'][role] = dict(CODEX_ROUTE)
-        for tier in config['tiers']:
-            config['tiers'][tier] = dict(CODEX_ROUTE)
-        config['repair_route'] = dict(CODEX_ROUTE)
-        config.update(verification_commands=commands or ['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'],
-                      session_timeout_seconds=60, command_timeout_seconds=60, task_timeout_seconds=600,
-                      cycle_interval_seconds=3600)
+        config.update(**routes(), verification_commands=commands or [FEATURE_CHECK], session_timeout_seconds=60,
+                      command_timeout_seconds=60, task_timeout_seconds=600, cycle_interval_seconds=3600)
         self.request('/config', 'PUT', {'expected_revision': view['revision'], 'config': config})
 
     def teardown(self):
@@ -219,7 +213,7 @@ UNLISTED = "python3 -c \"import urllib.request\ntry: urllib.request.urlopen('htt
 
 def delivery_scenario():
     with stack('octomus-e2e-delivery-') as s:
-        s.configure([UNLISTED, 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'])
+        s.configure([UNLISTED, FEATURE_CHECK])
         diagnostic = s.request('/doctor', 'POST')
         assert diagnostic['ok'] and diagnostic['sandbox']['mode'] == 'docker', diagnostic
         assert diagnostic['sandbox']['self_test']['passed'], diagnostic['sandbox']

@@ -1,12 +1,11 @@
 """The e2e harness: the real service against deterministic external peers.
 
-Every e2e suite and the distribution test import it; it runs no scenario itself.
-No network writes, real Codex turns, credentials, or spending. Run the suites after
-make build (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
+tests/e2e.py, tests/e2e_sandbox.py and tests/distribution.py import it; it runs no scenario
+itself. No network writes, real model turns, credentials or spending. Run the suites after
+`make build` (dashboard + Go binary) or set OCTOMUS_TEST_BINARY.
 """
 import contextlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -25,6 +24,7 @@ BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-a
 TOKEN = 'fixture-operator-token-with-at-least-32-characters'
 RACE_EXIT_STATUS = 66
 CODEX_ROUTE = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
+FEATURE_CHECK = 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'
 HOLDS = ['audit-hold']
 LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -106,6 +106,7 @@ def run_selected(suite, scenarios, names, *, workers=None, output=None):
     def execute(name, run):
         print(f'RUN {suite} {name}', flush=True, file=output)
         run()
+        print(f'PASS {suite} {name}', flush=True, file=output)
 
     if workers == 1 or len(selected) <= 1:
         for name, run in selected:
@@ -127,85 +128,27 @@ def run_selected(suite, scenarios, names, *, workers=None, output=None):
         raise SystemExit(f'{suite} failed scenarios: {", ".join(sorted(failed))}')
 
 
-def select_scenarios(suites, names):
-    """Returns qualified scenarios selected by suite or `suite/scenario` name.
+def routes(executor='codex', planning=None, reviewer=None, repair=None):
+    """The route fields of a configuration: `executor` backs the tiers and, unless given, every other role.
 
-    `suites` is an ordered list of (suite alias, scenarios) pairs whose
-    scenarios are (name, zero-argument callable) pairs; the result keeps that
-    order and qualifies every name as `suite/name`. With no `names` everything
-    is selected; otherwise each name is either an exact suite alias, which
-    expands the whole suite, or an exact qualified scenario. Every unknown name
-    is refused before anything runs, and overlapping selections still run a
-    scenario only once.
+    OpenCode planning roles use the variant-free `plain-model`; an OpenCode repair route uses
+    the `alternate` provider without a variant. An all-OpenCode selection also points the
+    Codex binary at a path that does not exist, so nothing can fall back to it.
     """
-    aliases = []
-    qualified = []
-    seen_suites = set()
-    seen_qualified = set()
-    for suite, scenarios in suites:
-        if suite in seen_suites:
-            raise SystemExit(f'duplicate suite name: {suite}')
-        seen_suites.add(suite)
-        aliases.append(suite)
-        registry = dict(scenarios)
-        if len(registry) != len(scenarios):
-            raise SystemExit(f'duplicate {suite} scenario names')
-        for name, run in scenarios:
-            qualified_name = f'{suite}/{name}'
-            if qualified_name in seen_qualified:
-                raise SystemExit(f'duplicate scenario name: {qualified_name}')
-            seen_qualified.add(qualified_name)
-            qualified.append((qualified_name, run))
-    available = [name for name, _ in qualified]
-    unknown = [name for name in names if name not in seen_suites and name not in seen_qualified]
-    if unknown:
-        raise SystemExit(f'unknown scenarios: {", ".join(unknown)}; available suites: {", ".join(aliases)}; scenarios: {", ".join(available)}')
-    selected = set(available) if not names else set()
-    for name in names:
-        if name in seen_suites:
-            selected.update(qualified_name for qualified_name in available if qualified_name.startswith(f'{name}/'))
-        else:
-            selected.add(name)
-    return [(name, run) for name, run in qualified if name in selected]
+    planning, reviewer, repair = planning or executor, reviewer or executor, repair or executor
 
+    def route(backend, planning=False, provider='fixture', variant='high'):
+        if backend == 'codex':
+            return dict(CODEX_ROUTE)
+        return {'backend': 'opencode', 'provider': provider, 'model': 'plain-model' if planning else 'fixture-model', 'effort': '', **({'variant': variant} if variant and not planning else {})}
 
-def base_config(service, commands, **overrides):
-    """Loads the saved display configuration every scenario starts from.
-
-    Callers add their own routes, flags and overrides, then PUT it themselves.
-    """
-    config = service.request('/config')['config']
-    config.update(repository=str(service.root / 'checkout'), github_repo='fixture/project', verification_commands=commands, session_timeout_seconds=30, command_timeout_seconds=10, **overrides)
-    return config
-
-
-def use_codex_routes(config):
-    """Routes every role, tier and the repair route to CODEX_ROUTE, each a copy."""
-    for role in config['roles']:
-        config['roles'][role] = dict(CODEX_ROUTE)
-    for tier in config['tiers']:
-        config['tiers'][tier] = dict(CODEX_ROUTE)
-    config['repair_route'] = dict(CODEX_ROUTE)
-
-
-def route(backend, planning=False, provider='fixture', variant='high'):
-    if backend == 'codex':
-        return dict(CODEX_ROUTE)
-    return {'backend': 'opencode', 'provider': provider, 'model': 'plain-model' if planning else 'fixture-model', 'effort': '', **({'variant': variant} if variant and not planning else {})}
-
-
-def configuration(service, planning='opencode', executor='opencode', reviewer='opencode', repair='opencode'):
-    """Saves a mixed-runner configuration, OpenCode everywhere by default, and returns it."""
-    c = base_config(service, ['test "$(cat feature.txt)" = fixed'], task_timeout_seconds=120)
-    for role in ['orchestrator', 'discovery', 'proposal_reviewer']:
-        c['roles'][role] = route(planning, planning=True)
-    c['roles']['code_reviewer'] = route(reviewer)
-    c['tiers'] = {tier: route(executor) for tier in c['tiers']}
-    c['repair_route'] = route(repair, provider='alternate', variant=None)
+    selected = {'roles': {role: route(planning, planning=True) for role in ['orchestrator', 'discovery', 'proposal_reviewer']},
+                'tiers': {tier: route(executor) for tier in ['XS', 'S', 'M', 'L', 'XL']},
+                'repair_route': route(repair, provider='alternate', variant=None)}
+    selected['roles']['code_reviewer'] = route(reviewer)
     if {planning, executor, reviewer, repair} == {'opencode'}:
-        c['codex_binary'] = '/codex-is-not-installed'
-    service.save_config(c)
-    return c
+        selected['codex_binary'] = '/codex-is-not-installed'
+    return selected
 
 
 class Service:
@@ -283,6 +226,17 @@ class Service:
         revision = self.request('/config')['revision']
         return self.request('/config', 'PUT', {'expected_revision': revision, 'config': config})
 
+    def configure(self, routes, commands=(FEATURE_CHECK,), start=True, **overrides):
+        """Saves the scenario configuration (`routes` from routes(), the verification
+        `commands`, fixture repository and timeouts) and returns the saved view.
+        Unless `start` is false, it then requests one cycle."""
+        config = self.request('/config')['config']
+        config.update({'repository': str(self.root / 'checkout'), 'github_repo': 'fixture/project', 'verification_commands': list(commands), 'session_timeout_seconds': 30, 'command_timeout_seconds': 10, 'cycle_interval_seconds': 3600, 'task_timeout_seconds': 120, **routes, **overrides})
+        view = self.save_config(config)
+        if start:
+            self.request('/control/cycle', 'POST')
+        return view
+
     def wait(self, predicate, label, seconds=45):
         last_error = None
 
@@ -313,23 +267,6 @@ class Service:
             state = f'<state unavailable: {error!r}>'
         raise AssertionError(f'{label} timed out after {seconds}s; last error: {last_error}\nstate: {state}\nservice.log tail:\n{service_log(self.root, tail=100)}')
 
-    def configure(self):
-        commands = ['false'] if (self.root / 'failed-verification').exists() else ['for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done']
-        config = base_config(self, commands, cycle_interval_seconds=3600, task_timeout_seconds=120)
-        use_codex_routes(config)
-        self.save_config(config)
-        diagnostic = self.request('/doctor', 'POST')
-        view = self.request('/config')
-        assert diagnostic['checked_revision'] == view['revision']
-        assert diagnostic['checked_config'] == view['config']
-        assert diagnostic['codex_version'] == 'codex-cli 0.153.4'
-        assert diagnostic['tested_codex_version'] == '0.153.4' and diagnostic['warnings'] == []
-        (self.root / 'version').write_text('0.0.0-fixture')
-        diagnostic = self.request('/doctor', 'POST')
-        assert 'mismatch' in diagnostic['message'] and len(diagnostic['warnings']) == 1
-        (self.root / 'version').unlink()
-        self.request('/control/cycle', 'POST')
-
     def terminal_task(self):
         state = self.request('/state')
         assert not state['control']['error'], state['control']['error']
@@ -355,43 +292,6 @@ def setup(root):
     git('remote', 'add', 'origin', str(root / 'remote.git'), cwd=root / 'checkout')
     git('push', '-u', 'origin', 'main', cwd=root / 'checkout')
     git('symbolic-ref', 'HEAD', 'refs/heads/main', cwd=root / 'remote.git')
-
-
-def existing_pr(root):
-    checkout = root / 'checkout'
-    git('checkout', '-b', 'octomus/existing', cwd=checkout)
-    (checkout / 'earlier.txt').write_text('Preserve the earlier improvement.\n')
-    git('add', '.', cwd=checkout)
-    git('commit', '-m', 'Earlier Octomus work', cwd=checkout)
-    git('push', 'origin', 'octomus/existing', cwd=checkout)
-    head = git('rev-parse', 'HEAD', cwd=checkout)
-    git('checkout', 'main', cwd=checkout)
-    (root / 'target').write_text('octomus/existing')
-    (root / 'prs.json').write_text(json.dumps([{'number': 42, 'title': 'An existing improvement', 'body': 'Existing context.\n<!-- octomus:task:earlier -->', 'head': {'ref': 'octomus/existing', 'sha': head, 'repo': {'full_name': 'fixture/project'}}, 'base': {'ref': 'main'}, 'html_url': 'https://github.com/fixture/project/pull/42', 'state': 'open', 'merged_at': None, 'additions': 2000, 'deletions': 0, 'created_at': '2026-08-01T00:00:00Z'}]))
-
-
-def update_prs(root, change):
-    """Lets `change(prs)` edit the gh fixture's saved PR list.
-
-    It holds the fixture's github.lock, as every gh invocation does, and
-    replaces prs.json whole, so a background gh read never sees a truncated
-    file.
-    """
-    with (root / 'github.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        path = root / 'prs.json'
-        prs = json.loads(path.read_text())
-        change(prs)
-        temporary = root / 'prs.json.tmp'
-        temporary.write_text(json.dumps(prs))
-        os.replace(temporary, path)
-
-
-def usage_report(root):
-    report = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--usage-report'], text=True, timeout=30))
-    assert sum(d['admissions'] for d in report['daily']) == len(report['admissions'])
-    assert all(d['unattributed_admissions'] == 0 for d in report['daily'])
-    return report
 
 
 def stop_peers(root):

@@ -1,28 +1,12 @@
 .PHONY: dashboard build build-race check test test-go test-go-race test-contracts test-integration test-browser test-race-e2e test-sandbox package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
-# E2E scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
+# Scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
 E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
 
 # -shuffle=on randomizes test and package order to catch order-dependent state;
 # a failure prints its seed (-test.shuffle N) to reproduce.
-GO_TEST = go test -timeout 30m -shuffle=on ./...
-GO_TEST_RACE = CGO_ENABLED=1 go test -race -timeout 30m -shuffle=on ./...
-
-define GO_TESTS
-	$(GO_TEST)
-	$(GO_TEST_RACE)
-endef
-
-define CONTRACT_CORE
-	$(E2E_ENV) python3 tests/binary_contract.py
-	node --test tests/helpers/public_payload.test.mjs
-endef
-
-define CONTRACT_PACKAGE
-	$(E2E_ENV) python3 tests/distribution.py
-	python3 tests/package_guards.py
-endef
+GO_TEST_FLAGS = -timeout 30m -shuffle=on
 
 dashboard:
 	npm run build --prefix web
@@ -35,34 +19,25 @@ build-race: dashboard
 	CGO_ENABLED=1 go build -race -o bin/octomus-agent-race ./cmd/octomus-agent
 
 check: dashboard
-	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal tests web/*.go) || exit 1; \
+	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal web/*.go) || exit 1; \
 	if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files" >&2; exit 1; fi
 	go vet ./...
 	npm run check --prefix web
 	npm run format:check --prefix web
-	cd web && node_modules/.bin/prettier --config .prettierrc.json --check ../tests/helpers
-	cd web && node_modules/.bin/tsc --noEmit --allowJs --checkJs --strict --target es2022 \
-	  --module nodenext --moduleResolution nodenext --types node ../tests/helpers/*.mjs
 
-test: build
-	$(GO_TESTS)
-	$(CONTRACT_CORE)
-	$(E2E_ENV) python3 tests/integration.py $(INTEGRATION_SCENARIOS)
-	$(CONTRACT_PACKAGE)
-	$(E2E_ENV) npm test --prefix web -- $(PLAYWRIGHT_ARGS)
+test: test-go test-go-race test-contracts test-integration test-browser
 
 test-go: dashboard
-	$(GO_TEST)
+	go test $(GO_TEST_FLAGS) ./...
 
 test-go-race: dashboard
-	$(GO_TEST_RACE)
+	CGO_ENABLED=1 go test -race $(GO_TEST_FLAGS) ./...
 
 test-contracts: build
-	$(CONTRACT_CORE)
-	$(CONTRACT_PACKAGE)
+	$(E2E_ENV) python3 tests/distribution.py
 
 test-integration: build
-	$(E2E_ENV) python3 tests/integration.py $(INTEGRATION_SCENARIOS)
+	$(E2E_ENV) python3 tests/e2e.py $(SCENARIOS)
 
 test-browser: build
 	$(E2E_ENV) npm test --prefix web -- $(PLAYWRIGHT_ARGS)

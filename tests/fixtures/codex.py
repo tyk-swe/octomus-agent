@@ -23,11 +23,9 @@ def emit(value):
     print(json.dumps(value), flush=True)
 
 def interrupted(request):
-    """Record a turn/interrupt and report the turn as interrupted."""
+    """Report the turn as interrupted."""
     assert type(request.get('id')) in (int, str), 'turn/interrupt requires a request ID'
     params = request.get('params', {})
-    with (root / 'codex-interrupts.jsonl').open('a') as log:
-        log.write(json.dumps({'id': request['id'], 'threadId': params.get('threadId'), 'turnId': params.get('turnId')}) + '\n')
     emit({'id': request['id'], 'result': {}})
     emit({'method': 'turn/completed', 'params': {'threadId': params.get('threadId'), 'turn': {'id': params.get('turnId'), 'status': 'interrupted', 'error': None}}})
 

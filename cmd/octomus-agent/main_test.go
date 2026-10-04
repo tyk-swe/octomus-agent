@@ -33,6 +33,57 @@ func TestCurrentCLIContract(t *testing.T) {
 	if code := run([]string{"--unknown"}, env, &out, &err); code == 0 || out.Len() != 0 || err.Len() == 0 {
 		t.Fatalf("unknown flag: code=%d stdout=%q stderr=%q", code, out.String(), err.String())
 	}
+
+	// Display commands need neither valid deployment defaults nor helper programs; flags override
+	// a mistyped environment; a mistyped flag wins over help; nothing writes state.
+	dataDir := filepath.Join(t.TempDir(), "state")
+	mistyped := func(listen bool) func(string) (string, bool) {
+		return func(key string) (string, bool) {
+			switch key {
+			case "OCTOMUS_SANDBOX":
+				return "mistyped", true
+			case "OCTOMUS_LISTEN":
+				return "mistyped", listen
+			case "OCTOMUS_DATA_DIR":
+				return dataDir, true
+			}
+			return "", false
+		}
+	}
+	for _, tc := range []struct {
+		args   []string
+		listen bool
+		want   string
+	}{
+		{[]string{"--help"}, true, "--sandbox"},
+		{[]string{"-h"}, true, "--sandbox"},
+		{[]string{"--version"}, true, "octomus-agent"},
+		{[]string{"-V"}, true, "octomus-agent"},
+		{[]string{"--sandbox", "docker", "--print-config"}, false, "\"verification_commands\""},
+		{[]string{"--sandbox=off", "--print-config"}, false, "\"verification_commands\""},
+	} {
+		var out, err bytes.Buffer
+		if code := run(tc.args, mistyped(tc.listen), &out, &err); code != 0 || err.Len() != 0 || !strings.Contains(out.String(), tc.want) {
+			t.Fatalf("%v with a mistyped environment: code=%d stdout=%q stderr=%q", tc.args, code, out.String(), err.String())
+		}
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "for OCTOMUS_SANDBOX"},
+		{[]string{"--print-config"}, "for OCTOMUS_SANDBOX"},
+		{[]string{"--sandbox=mistyped", "--help"}, "for '--sandbox'"},
+		{[]string{"--sandbox=mistyped", "--version"}, "for '--sandbox'"},
+	} {
+		var out, err bytes.Buffer
+		if code := run(tc.args, mistyped(false), &out, &err); code != 2 || out.Len() != 0 || !strings.Contains(err.String(), tc.want) {
+			t.Fatalf("%v with a mistyped environment: code=%d stdout=%q stderr=%q", tc.args, code, out.String(), err.String())
+		}
+	}
+	if _, statErr := os.Stat(dataDir); !os.IsNotExist(statErr) {
+		t.Fatal("CLI display or validation created state", statErr)
+	}
 }
 
 func TestServiceStartupRequiresOperatorToken(t *testing.T) {

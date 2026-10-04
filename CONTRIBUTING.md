@@ -35,40 +35,30 @@ See [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md) for the code
 ## Meaningful evidence
 
 `make test` runs the regular Go suite and then the race suite, then these
-suites against the freshly built binary. The service suites run the real service,
-SQLite and local Git with deterministic Codex, OpenCode and GitHub peers
-(`tests/fixtures`) in temporary directories, without live model calls or network
-writes:
+checks against the freshly built binary:
 
-- `tests/binary_contract.py`: startup order, signal shutdown and lock release, and the
-  embedded dashboard.
-- `tests/helpers/public_payload.test.mjs` (`node --test`): the private-payload gate the
-  run-evidence example imports.
-- `tests/integration.py`: one runner over every service suite, which is what
-  `make test` uses. Arguments select whole suites by alias (`e2e`, `baseline`,
-  `notifications`, `runners`, `hardening`) or single scenarios by qualified name,
-  for example `python3 tests/integration.py baseline notifications` or
-  `python3 tests/integration.py hardening/chain`; an unknown name lists the
-  suites and qualified scenarios.
-- `tests/e2e.py`: discovery, reviews, repairs, publication recovery and audits.
-- `tests/e2e_baseline.py`: clean-baseline checks, their admission gates and cancellation.
-- `tests/e2e_notifications.py`: attention webhook delivery and URL non-leakage.
-- `tests/e2e_runners.py`: both runner protocols and mixed routes.
-- `tests/e2e_hardening.py`: operational regressions against a real temporary remote.
-- `tests/distribution.py`: the executable and installer using local release fixtures.
-- `tests/package_guards.py`: `scripts/package.sh` rejection cases and the release
-  archive allowlist.
+- `tests/distribution.py`: the executable as shipped: embedded dashboard over HTTP,
+  state lock and its release on SIGTERM, listener warning. With `--package` (CI and
+  the release workflow) it also checks the release archive against
+  `scripts/release-files.txt`.
+- `tests/e2e.py`: the service scenarios. They run the real service, SQLite and local
+  Git with deterministic Codex, OpenCode and GitHub peers (`tests/fixtures`) in
+  temporary directories, without live model calls or network writes: `normal`,
+  `normal-opencode` and `normal-mixed` (planning, two deliveries with reviews,
+  repairs, verification, redacted publication and the doctor), `interrupt-publication`,
+  `audit`, `chain` (dependent tasks on one PR, then a duplicate plan refused),
+  `pr-outcome`, `baseline` and `notify`.
 - `npm test --prefix web`: the dashboard browser tests, including the evidence display
   rules `web/tests/evidence.spec.ts` checks without a page.
 
 Focused targets run one stage each against the built binary: `make test-go`
 (regular Go suite), `make test-go-race` (race suite explicitly),
-`make test-contracts`, `make test-integration` (with `INTEGRATION_SCENARIOS`
-suite aliases or qualified names) and `make test-browser` (with
+`make test-contracts`, `make test-integration` (with `SCENARIOS`, for example
+`make test-integration SCENARIOS="chain pr-outcome"`) and `make test-browser` (with
 `PLAYWRIGHT_ARGS` such as `--project=desktop`).
 
-The e2e suites share `tests/harness.py` and accept scenario names, for example
-`python3 tests/e2e_hardening.py chain pr-outcome`; an unknown name lists the available ones.
+`tests/e2e.py` accepts scenario names directly, for example
+`python3 tests/e2e.py chain pr-outcome`; an unknown name lists the available ones.
 Scenarios run with up to four workers; `OCTOMUS_TEST_JOBS` sets the limit
 (1 runs serially).
 Set `OCTOMUS_TEST_BINARY` to test another executable. The Python fixture harness

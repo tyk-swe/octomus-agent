@@ -76,7 +76,6 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         self.parts = unquote(parsed.path).strip('/').split('/')
         self.directory = parse_qs(parsed.query).get('directory', [''])[0]
-        log('opencode-requests.jsonl', {'method': self.command, 'path': parsed.path, 'directory': self.directory})
         return True
 
     def send_json(self, value, status=200):

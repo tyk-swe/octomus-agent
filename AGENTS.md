@@ -83,17 +83,14 @@ owns strict typed JSON boundaries for saved records and API requests.
   Pinned real-client contracts (`internal/runner`) and the scale check
   (`internal/store`, `OCTOMUS_SCALE_TEST=1`) skip unless their environment is
   provided.
-- `tests/e2e.py`, `e2e_runners.py`, `e2e_hardening.py`, `e2e_baseline.py`, and
-  `e2e_notifications.py` share `tests/harness.py` and `tests/fixtures`:
-  deterministic Codex/OpenCode/GitHub peers with real local Git.
-  `tests/integration.py` is the aggregate runner `make test` uses; it selects
-  whole suites by alias or single scenarios by `suite/scenario` name, and the
-  direct suite files remain focused entry points.
-  `binary_contract.py` checks executable startup and embedded assets.
-  `distribution.py` and `package_guards.py` cover packaging; `tests/helpers`
-  holds the private-payload gate the documented export example imports, with its
-  own `node --test` file. `tests/fixturedb` creates a fresh state database for
-  `tests/serve_ui.py`.
+- `tests/e2e.py` holds the service scenarios (`normal`, `normal-opencode`,
+  `normal-mixed`, `interrupt-publication`, `audit`, `chain`, `pr-outcome`,
+  `baseline`, `notify`), one function each, over `tests/harness.py` and
+  `tests/fixtures`: deterministic Codex/OpenCode/GitHub peers with real local Git.
+  `tests/distribution.py` checks the executable as shipped (HTTP, state lock
+  release, listener warning) and, with `--package`, the release archive against
+  `scripts/release-files.txt`. `tests/serve_ui.py` serves synthetic data to the
+  browser tests.
 - Release and deployment inputs: `VERSION` (the one version, read by `version.go`,
   the dashboard build and release tooling), `scripts/package.sh`, `install.sh`,
   `deploy/docker` (images, compose file, `setup.sh`, `env.example`) and the
@@ -112,18 +109,17 @@ race detector. Install dashboard dependencies with
 `npm ci --prefix web`. Install browser test prerequisites with
 `npx --prefix web playwright install --with-deps chromium`.
 
-- `make check`: gofmt/`go vet`, Svelte/TypeScript and Prettier checks, including
-  `tests/helpers`.
-- `make test`: Go tests (regular and `-race` suites), production
-  binary, dashboard build, all service suites through `tests/integration.py`,
-  and browser tests.
+- `make check`: gofmt/`go vet`, Svelte/TypeScript and Prettier checks.
+- `make test`: the stage targets in order: Go tests (regular and `-race`
+  suites), then against the production binary and dashboard build
+  `tests/distribution.py`, `tests/e2e.py` and the browser tests.
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
 - `make test-go`: the regular Go suite. `make test-go-race`: the race suite
   explicitly. Both run with `-shuffle=on`; a failure prints its seed to
   reproduce. `make test-contracts` / `make test-integration` /
   `make test-browser`: one stage each. `test-integration` accepts
-  `INTEGRATION_SCENARIOS` suite aliases or `suite/scenario` names;
-  `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests run four workers.
+  `SCENARIOS` names; `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests
+  run four workers.
 - `make test-race-e2e` (opt-in, about a minute): `tests/e2e.py` against the
   race-instrumented build.
 - `make test-sandbox` (opt-in, needs Docker Engine 28+): the broker against the real
@@ -131,10 +127,9 @@ race detector. Install dashboard dependencies with
 - `make audit` (govulncheck and `npm audit`; needs module downloads) and `make package`
   (release archive and `SHA256SUMS` in `dist/`) also run in CI.
 - Focused integration: `make build`, then
-  `OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/integration.py [SUITE_OR_SUITE/SCENARIO...]`;
-  direct suite files like `tests/e2e.py [SCENARIO...]` work the same way.
-  An unknown selection lists the suites and qualified names. These
-  tests use fixtures, not live accounts or model calls.
+  `OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e.py [SCENARIO...]`.
+  An unknown name lists the scenarios. These tests use fixtures, not live
+  accounts or model calls.
 
 Run relevant behavior tests while editing and the full checks before delivery.
 Keep Go and dashboard types aligned; `web/types_contract_test.go` and

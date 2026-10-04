@@ -17,6 +17,13 @@ func TestHealthcheckReachesTheConfiguredListener(t *testing.T) {
 		{"tcp6", "[::]:0"},
 	} {
 		t.Run(tc.address, func(t *testing.T) {
+			if tc.network == "tcp6" {
+				probe, err := net.Listen("tcp6", "[::1]:0")
+				if err != nil {
+					t.Skipf("IPv6 loopback unavailable: %v", err)
+				}
+				probe.Close()
+			}
 			listener, err := net.Listen(tc.network, tc.address)
 			if err != nil {
 				t.Fatal(err)

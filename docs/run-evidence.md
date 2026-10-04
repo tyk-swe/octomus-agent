@@ -195,46 +195,17 @@ evidence is not exported. The overview's "Recent tasks from this run" counts com
 dashboard's bounded recent-task window, not from this scan; the Inspect run panel is
 the complete view.
 
-### Validate and hash a candidate before sharing
+### Hash a candidate before sharing
 
-A candidate for review is a thin wrapper around the export:
-
-```json
-{
-  "public_schema_version": 1,
-  "mode": "recorded",
-  "evidence": { "...": "the complete exported RunEvidenceV1 shape" }
-}
-```
-
-The abbreviated `evidence` above is documentation, not a valid input. The wrapper must
-carry every required key, null, array entry, reviewer slot, finding, command result, gap
-and limitation; unknown keys at any object boundary are errors, including prompts,
-transcripts, configuration, logs and command output. The gate constructs allowlisted
-objects — it never silently strips a field, filters a record or repairs evidence.
-
-Validate and hash a candidate without writing anything. The example reads one explicit
-local file, rejects duplicate object keys at every depth (so no overwritten member can
-disappear from validation while surviving in the bytes), checks the shape and recorded
-facts, and prints the SHA-256 of the exact bytes it read.
+Export the run and hash the exact bytes you will hand over:
 
 ```sh
-node --input-type=module - /absolute/private/candidate.public.json <<'JS'
-import { readFileSync, statSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { parseUniqueJson, publicPayload } from './tests/helpers/public_payload.mjs';
-
-const input = process.argv[2];
-const info = statSync(input);
-if (!info.isFile() || info.size > 5_000_000)
-  throw new Error('Input must be a local regular JSON file, at most 5 MB');
-const bytes = readFileSync(input);
-publicPayload(parseUniqueJson(bytes.toString('utf8')), 'recorded');
-console.log('Candidate SHA-256: ' + createHash('sha256').update(bytes).digest('hex'));
-console.log('Shape checked only; nothing written and no sharing approval granted.');
-JS
+octomus-agent --data-dir /var/lib/octomus/.octomus --export-run <cycle-id> > candidate.json
+sha256sum candidate.json
 ```
 
-Run it from the repository root. Supply the reviewer with the candidate, its exact-byte
-SHA-256 and a short provenance summary. Never fabricate, upgrade or remove adverse
-evidence to make a run presentable.
+The export is already the allowlisted `RunEvidenceV1` shape described above: it carries
+no prompts, transcripts, configuration, logs or command output, and its display strings
+are redacted. Supply the reviewer with the file, its exact-byte SHA-256 and a short
+provenance summary. Never fabricate, upgrade or remove adverse evidence to make a run
+presentable.

@@ -29,25 +29,21 @@ jobs:
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref_name }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: go.sum
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Validate tag
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          python3 - <<'PY'
-          import os, pathlib
-          version = pathlib.Path('VERSION').read_text().strip()
-          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Tag must match the VERSION file'
-          PY
+        run: test "$RELEASE_TAG" = "v$(cat VERSION)"
       - run: npm ci --prefix web
       - run: make build
       - name: Package and smoke test

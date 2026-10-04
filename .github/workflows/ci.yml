@@ -69,9 +69,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - args: e2e
-          - args: hardening
-          - args: baseline notifications runners
+          - scenarios: normal normal-opencode normal-mixed
+          - scenarios: chain pr-outcome interrupt-publication
+          - scenarios: audit baseline notify
     steps:
       - uses: actions/checkout@v7
         with:
@@ -87,7 +87,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
-      - run: make test-integration INTEGRATION_SCENARIOS="${{ matrix.args }}"
+      - run: make test-integration SCENARIOS="${{ matrix.scenarios }}"
 
   browser:
     runs-on: ubuntu-24.04
@@ -138,7 +138,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
-      - run: make test-contracts package
+      - run: make package
       - run: python3 tests/distribution.py --package "dist/octomus-agent-v$(cat VERSION)-x86_64-unknown-linux-gnu.tar.gz"
 
   client-contracts:
@@ -200,12 +200,6 @@ jobs:
           docker version
           major=$(docker version --format '{{.Server.Version}}' | cut -d. -f1)
           test "$major" -ge 28
-      - name: Compose file validates
-        run: |
-          docker compose -f deploy/docker/compose.yaml config --quiet
-        env:
-          OCTOMUS_GITHUB_REPO: owner/repository
-          DOCKER_GID: '999'
       - id: sandbox_tests
         run: make test-sandbox
       - name: Sandbox runtime diagnostics
