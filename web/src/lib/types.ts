@@ -1,5 +1,7 @@
 export type Backend = 'codex' | 'opencode';
 export type CycleMode = 'execution' | 'audit';
+export type CycleStatus = 'running' | 'completed' | 'idle' | 'failed' | 'interrupted';
+export type SessionStatus = 'running' | 'completed' | 'failed' | 'interrupted';
 export type OperatingMode = 'paused' | 'run_once' | 'continuous';
 export type TaskStatus =
   | 'queued'
@@ -114,7 +116,7 @@ export type Session = {
   id: string;
   role: string;
   route: Route;
-  status: string;
+  status: SessionStatus;
   started_at: string;
   summary: string;
   sandbox: SandboxRecord | null;
@@ -224,6 +226,22 @@ export type ExternalPRContext = {
   title_truncated: boolean;
   body_truncated: boolean;
 };
+export type DecisionRecord = {
+  kind?: string;
+  id: string;
+  mode: CycleMode;
+  repository: string;
+  target: string;
+  problem_key: string;
+  relevant_paths: string[];
+  decision: string;
+  reason: string;
+  source_revision: string;
+  context_fingerprint: string;
+  reconsider_after: string;
+  cycle_id: string;
+  reconsideration_due?: boolean;
+};
 export type PRCoverage = {
   observed_at: string | null;
   complete: boolean;
@@ -240,7 +258,7 @@ export type Cycle = {
   mode: CycleMode;
   id: string;
   number: number;
-  status: string;
+  status: CycleStatus;
   started_at: string;
   completed_at: string | null;
   proposals: Proposal[];
@@ -257,7 +275,7 @@ export type Cycle = {
     maintenance_targets: string[];
   } | null;
   repository?: string;
-  decision_memory?: unknown[];
+  decision_memory?: DecisionRecord[];
   run_id?: string | null;
   lifecycle?: WorkspaceLifecycle;
 };
@@ -278,7 +296,7 @@ export type EvidenceRevisions = {
 export type SessionRoute = {
   id: string;
   role: string;
-  status: string;
+  status: SessionStatus;
   requested_route: Route;
   started_at: string;
 };
@@ -362,7 +380,7 @@ export type CycleEvidence = {
   id: string;
   number: number;
   mode: CycleMode;
-  status: string;
+  status: CycleStatus;
   started_at: string;
   completed_at: string | null;
   repository: string;

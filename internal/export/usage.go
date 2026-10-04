@@ -19,18 +19,18 @@ type Daily struct {
 }
 
 type CycleRow struct {
-	ID                 string          `json:"id"`
-	Mode               model.CycleMode `json:"mode"`
-	Number             uint64          `json:"number"`
-	Status             string          `json:"status"`
-	StartedAt          string          `json:"started_at"`
-	CompletedAt        *string         `json:"completed_at"`
-	WallSeconds        *float64        `json:"wall_seconds"`
-	PlanningAdmissions uint64          `json:"planning_admissions"`
-	TaskAdmissions     uint64          `json:"task_admissions"`
-	CompletedSessions  int             `json:"recorded_completed_sessions"`
-	Decisions          map[string]int  `json:"decisions"`
-	Error              *string         `json:"error"`
+	ID                 string            `json:"id"`
+	Mode               model.CycleMode   `json:"mode"`
+	Number             uint64            `json:"number"`
+	Status             model.CycleStatus `json:"status"`
+	StartedAt          string            `json:"started_at"`
+	CompletedAt        *string           `json:"completed_at"`
+	WallSeconds        *float64          `json:"wall_seconds"`
+	PlanningAdmissions uint64            `json:"planning_admissions"`
+	TaskAdmissions     uint64            `json:"task_admissions"`
+	CompletedSessions  int               `json:"recorded_completed_sessions"`
+	Decisions          map[string]int    `json:"decisions"`
+	Error              *string           `json:"error"`
 }
 
 type TaskRow struct {

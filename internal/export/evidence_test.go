@@ -61,23 +61,19 @@ func proposal(id, decision string) model.Proposal {
 	}
 }
 
-func reviewerSession(role, status string) model.Session {
+func reviewerSession(role string, status model.SessionStatus) model.Session {
 	return model.Session{
 		ID: role + "-session", Role: role, Route: config.NewRoute("fixture", "low"),
 		Status: status, StartedAt: "2026-09-12T00:10:00Z", Summary: "SECRET-TRANSCRIPT",
 	}
 }
 
-func savedBatch(entries ...map[string]any) map[string]any {
-	list := make([]any, 0, len(entries))
-	for _, entry := range entries {
-		list = append(list, entry)
-	}
-	return map[string]any{"assessments": list}
+func savedBatch(entries ...model.Assessment) model.AssessmentDocument {
+	return model.AssessmentDocument{Assessments: append([]model.Assessment{}, entries...)}
 }
 
-func savedEntry(id, decision, reason string) map[string]any {
-	return map[string]any{"id": id, "decision": decision, "reason": reason}
+func savedEntry(id, decision, reason string) model.Assessment {
+	return model.Assessment{ID: id, Decision: decision, Reason: reason}
 }
 
 func task(cycleID, proposalID string) model.Task {
@@ -93,7 +89,7 @@ func task(cycleID, proposalID string) model.Task {
 		Branch: "octomus/work", Workspace: "/private/workspace/path",
 		Sessions: []model.Session{{
 			ID: "exec-1", Role: "executor", Route: config.NewRoute("fixture", "low"),
-			Status: "completed", StartedAt: model.Now(), Summary: "SECRET-TRANSCRIPT",
+			Status: model.SessionCompleted, StartedAt: model.Now(), Summary: "SECRET-TRANSCRIPT",
 		}},
 		Reviews: []model.ReviewRound{}, Verification: []model.Verification{},
 		Error:     &errorText,
@@ -238,7 +234,7 @@ func TestCompleteCycleExport(t *testing.T) {
 			savedBatch(savedEntry("p1", "accepted", "a accepts"), savedEntry("p2", "deferred", "a defers")),
 			savedBatch(savedEntry("p1", "accepted", "b accepts"), savedEntry("p2", "rejected", "b rejects")),
 		},
-		[]model.Session{reviewerSession("adversary-a", "completed"), reviewerSession("adversary-b", "completed")})
+		[]model.Session{reviewerSession("adversary-a", model.SessionCompleted), reviewerSession("adversary-b", model.SessionCompleted)})
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{delivered})
 	value := exported(t, s, "cycle-a")
 
@@ -298,6 +294,36 @@ func TestCompleteCycleExport(t *testing.T) {
 	}
 	if !containsText(list(value, "limitations"), "Published is not merged") {
 		t.Fatalf("%v", value["limitations"])
+	}
+}
+
+func TestMalformedSavedAssessmentBatches(t *testing.T) {
+	for _, raw := range []string{`{}`, `null`, `{"assessments":null}`} {
+		for slot := range model.ReviewerSlots() {
+			t.Run(fmt.Sprintf("%s/slot-%d", raw, slot), func(t *testing.T) {
+				c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")},
+					[]any{savedBatch(savedEntry("p1", "accepted", "a accepts")), savedBatch(savedEntry("p1", "accepted", "b accepts"))},
+					[]model.Session{reviewerSession("adversary-a", model.SessionCompleted), reviewerSession("adversary-b", model.SessionCompleted)})
+				c.Assessments[slot] = json.RawMessage(raw)
+				s, path := fixture(t, []model.Cycle{c}, []model.Task{task(c.ID, "p1")})
+				readOnly, err := Run(path, c.ID)
+				must(t, err)
+				for name, value := range map[string]map[string]any{"run export": readOnly, "evidence API": exported(t, s, c.ID)} {
+					t.Run(name, func(t *testing.T) {
+						p := findProposal(t, value, "p1")
+						if get(p, "reviewer_verdicts", slot, "state") != "malformed" || get(p, "reviewer_verdicts", slot, "reviewer") != model.ReviewerSlots()[slot] {
+							t.Fatalf("malformed reviewer slot was lost: %v", p["reviewer_verdicts"])
+						}
+						if get(p, "reviewer_verdicts", 1-slot, "state") != "recorded" || get(p, "reviewer_verdicts", 1-slot, "decision") != "accepted" || len(list(p, "linked_tasks")) != 1 {
+							t.Fatalf("valid evidence was lost or reassigned: %v", p)
+						}
+						if !containsText(list(value, "gaps"), fmt.Sprintf("Saved assessment batch %d (%s) is malformed", slot, model.ReviewerSlots()[slot])) {
+							t.Fatalf("malformed batch gap missing: %v", value["gaps"])
+						}
+					})
+				}
+			})
+		}
 	}
 }
 

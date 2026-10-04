@@ -125,6 +125,7 @@ func TestTypesMirrorGoJSON(t *testing.T) {
 		"ExternalPRContext":        model.ExternalPRContext{},
 		"PRCoverage":               model.PRCoverage{},
 		"Cycle":                    model.Cycle{},
+		"DecisionRecord":           model.DecisionRecord{},
 		"PRCapacity":               model.PRCapacity{},
 		"PlanningCapacity":         model.PlanningCapacity{},
 		"BaselineCommand":          model.BaselineCommand{},
@@ -177,6 +178,8 @@ func TestVocabulariesMirrorGo(t *testing.T) {
 	}
 	for name, want := range map[string][]string{
 		"CycleMode":      enumNames[model.CycleMode](),
+		"CycleStatus":    enumNames[model.CycleStatus](),
+		"SessionStatus":  enumNames[model.SessionStatus](),
 		"OperatingMode":  enumNames[model.OperatingMode](),
 		"TaskStatus":     enumNames[model.Status](),
 		"BaselineStatus": enumNames[model.BaselineStatus](),

@@ -40,15 +40,15 @@ type RunEvidenceV1 struct {
 }
 
 type CycleEvidence struct {
-	ID                string          `json:"id"`
-	Number            uint64          `json:"number"`
-	Mode              model.CycleMode `json:"mode"`
-	Status            string          `json:"status"`
-	StartedAt         string          `json:"started_at"`
-	CompletedAt       *string         `json:"completed_at"`
-	Repository        string          `json:"repository"`
-	GroundingRevision *string         `json:"grounding_revision"`
-	Planning          PlanningOutcome `json:"planning"`
+	ID                string            `json:"id"`
+	Number            uint64            `json:"number"`
+	Mode              model.CycleMode   `json:"mode"`
+	Status            model.CycleStatus `json:"status"`
+	StartedAt         string            `json:"started_at"`
+	CompletedAt       *string           `json:"completed_at"`
+	Repository        string            `json:"repository"`
+	GroundingRevision *string           `json:"grounding_revision"`
+	Planning          PlanningOutcome   `json:"planning"`
 }
 
 type PlanningOutcome struct {
@@ -122,11 +122,11 @@ type Revisions struct {
 }
 
 type SessionRoute struct {
-	ID             string       `json:"id"`
-	Role           string       `json:"role"`
-	Status         string       `json:"status"`
-	RequestedRoute config.Route `json:"requested_route"`
-	StartedAt      string       `json:"started_at"`
+	ID             string              `json:"id"`
+	Role           string              `json:"role"`
+	Status         model.SessionStatus `json:"status"`
+	RequestedRoute config.Route        `json:"requested_route"`
+	StartedAt      string              `json:"started_at"`
 }
 
 type ReviewEvidence struct {
@@ -216,11 +216,6 @@ func slotSessions(cycle model.Cycle, role string) []model.Session {
 	return sessions
 }
 
-func stringField(object map[string]any, key string) (string, bool) {
-	value, ok := object[key].(string)
-	return value, ok
-}
-
 func normalizeBatches(cycle model.Cycle) ([]batch, []string) {
 	slots := model.ReviewerSlots()
 	gaps := []string{}
@@ -238,14 +233,14 @@ func normalizeBatches(cycle model.Cycle) ([]batch, []string) {
 		} else {
 			for _, item := range items {
 				fields, _ := item.(map[string]any)
-				id, _ := stringField(fields, "id")
+				id, _ := fields["id"].(string)
 				id = strings.TrimSpace(id)
-				decision, _ := stringField(fields, "decision")
+				decision, _ := fields["decision"].(string)
 				if id == "" || !slices.Contains(model.Assessments(), decision) {
 					b.malformedEntries++
 					continue
 				}
-				reason, _ := stringField(fields, "reason")
+				reason, _ := fields["reason"].(string)
 				b.entries = append(b.entries, entry{id: id, decision: decision, reason: reason})
 			}
 		}
@@ -620,7 +615,7 @@ func assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 			Repository:        cycle.Repository,
 			GroundingRevision: groundingRevision,
 			Planning: PlanningOutcome{
-				Status:                cycle.Status,
+				Status:                cycle.Status.String(),
 				PlanningFinished:      cycle.CompletedAt != nil && cycle.Status != model.CycleRunning,
 				ProposalCount:         len(cycle.Proposals),
 				Decisions:             decisions,

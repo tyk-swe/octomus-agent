@@ -16,32 +16,13 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-// decisionRecord is a saved decision as the store keeps it, without kind or reconsideration_due; planning sets both
-// for the prompt only.
-type decisionRecord struct {
-	Kind               string          `json:"kind,omitempty"`
-	ID                 string          `json:"id"`
-	CycleMode          model.CycleMode `json:"mode"`
-	Repository         string          `json:"repository"`
-	Target             string          `json:"target"`
-	ProblemKey         string          `json:"problem_key"`
-	RelevantPaths      []string        `json:"relevant_paths"`
-	Decision           string          `json:"decision"`
-	Reason             string          `json:"reason"`
-	SourceRevision     string          `json:"source_revision"`
-	ContextFingerprint string          `json:"context_fingerprint"`
-	ReconsiderAfter    string          `json:"reconsider_after"`
-	CycleID            string          `json:"cycle_id"`
-	ReconsiderationDue bool            `json:"reconsideration_due,omitempty"`
-}
-
 type rediscoveryRequest struct {
 	ID, Target string
 	entry      map[string]any
 }
 
 type decisionMemory struct {
-	decisions []decisionRecord
+	decisions []model.DecisionRecord
 	requests  []rediscoveryRequest
 }
 
@@ -72,13 +53,13 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 	if err != nil {
 		return decisionMemory{}, err
 	}
-	records := make([]decisionRecord, 0, len(raw))
+	records := make([]model.DecisionRecord, 0, len(raw))
 	for _, value := range raw {
 		data, err := json.Marshal(value)
 		if err != nil {
 			return decisionMemory{}, err
 		}
-		var record decisionRecord
+		var record model.DecisionRecord
 		if err := json.Unmarshal(data, &record); err != nil {
 			return decisionMemory{}, err
 		}
@@ -87,7 +68,7 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 		}
 		records = append(records, record)
 	}
-	memory := decisionMemory{decisions: make([]decisionRecord, 0, len(records)), requests: []rediscoveryRequest{}}
+	memory := decisionMemory{decisions: make([]model.DecisionRecord, 0, len(records)), requests: []rediscoveryRequest{}}
 	// Historical decisions often cover the same paths. Reuse successful tree
 	// fingerprints for this refresh only; still reevaluate each decision's date.
 	type fingerprintKey struct{ revision, paths string }
@@ -141,7 +122,7 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 	return memory, nil
 }
 
-func decisionAbsorbed(record decisionRecord, records []decisionRecord) bool {
+func decisionAbsorbed(record model.DecisionRecord, records []model.DecisionRecord) bool {
 	if record.Decision == model.DecisionAccepted {
 		return false
 	}
@@ -182,7 +163,7 @@ func decisionFingerprint(ctx context.Context, cfg config.Config, revision string
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimSpace(output)))), nil
 }
 
-func (a *App) recordDecisions(ctx context.Context, cfg config.Config, cycle model.Cycle) ([]any, error) {
+func (a *App) recordDecisions(ctx context.Context, cfg config.Config, cycle model.Cycle) ([]model.DecisionRecord, error) {
 	if cycle.Grounding == nil {
 		return nil, errors.New("Decision memory requires cycle grounding")
 	}
@@ -193,7 +174,7 @@ func (a *App) recordDecisions(ctx context.Context, cfg config.Config, cycle mode
 			accepted[key] = struct{}{}
 		}
 	}
-	records := []any{}
+	records := []model.DecisionRecord{}
 	for _, proposal := range cycle.Proposals {
 		key := strings.ToLower(cfg.GitHubRepo) + "\x00" + proposal.Target + "\x00" + proposal.ProblemIdentity()
 		if proposal.Decision != model.DecisionAccepted {
@@ -209,7 +190,7 @@ func (a *App) recordDecisions(ctx context.Context, cfg config.Config, cycle mode
 		if err != nil {
 			return nil, err
 		}
-		record, err := wirejson.GenericMap(decisionRecord{
+		records = append(records, model.DecisionRecord{
 			ID:                 cycle.ID + ":" + proposal.ID,
 			CycleMode:          cycle.Mode,
 			Repository:         cfg.GitHubRepo,
@@ -223,10 +204,6 @@ func (a *App) recordDecisions(ctx context.Context, cfg config.Config, cycle mode
 			ReconsiderAfter:    time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
 			CycleID:            cycle.ID,
 		})
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
 	}
 	return records, nil
 }

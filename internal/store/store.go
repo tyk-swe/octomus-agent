@@ -258,12 +258,10 @@ func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model
 			}
 		}
 		for _, decision := range cycle.DecisionMemory {
-			object, _ := decision.(map[string]any)
-			id, ok := object["id"].(string)
-			if !ok {
+			if decision.ID == "" {
 				return errors.New("Missing decision identity")
 			}
-			if err := txPut(c, "decision", id, decision); err != nil {
+			if err := txPut(c, "decision", decision.ID, decision); err != nil {
 				return err
 			}
 		}

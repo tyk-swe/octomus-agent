@@ -21,7 +21,7 @@ func TestUsageReport(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	route := config.NewRoute("fixture", "low")
-	session := func(id, status string) model.Session {
+	session := func(id string, status model.SessionStatus) model.Session {
 		saved := model.NewSession(id, "discovery", route)
 		saved.Status = status
 		return saved

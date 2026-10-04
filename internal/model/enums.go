@@ -126,6 +126,53 @@ func (v *BaselineStatus) UnmarshalText(text []byte) error {
 	return err
 }
 
+type CycleStatus uint8
+
+const (
+	CycleRunning CycleStatus = iota
+	CycleCompleted
+	CycleIdle
+	CycleFailed
+	CycleInterrupted
+)
+
+var cycleStatusNames = []string{"running", "completed", "idle", "failed", "interrupted"}
+
+func (v CycleStatus) String() string { return wirejson.EnumName(v, cycleStatusNames) }
+func (v CycleStatus) MarshalText() ([]byte, error) {
+	return wirejson.EnumText(v, cycleStatusNames)
+}
+func (v *CycleStatus) UnmarshalText(text []byte) error {
+	value, err := wirejson.ParseEnum(text, cycleStatusNames)
+	if err == nil {
+		*v = CycleStatus(value)
+	}
+	return err
+}
+
+type SessionStatus uint8
+
+const (
+	SessionRunning SessionStatus = iota
+	SessionCompleted
+	SessionFailed
+	SessionInterrupted
+)
+
+var sessionStatusNames = []string{"running", "completed", "failed", "interrupted"}
+
+func (v SessionStatus) String() string { return wirejson.EnumName(v, sessionStatusNames) }
+func (v SessionStatus) MarshalText() ([]byte, error) {
+	return wirejson.EnumText(v, sessionStatusNames)
+}
+func (v *SessionStatus) UnmarshalText(text []byte) error {
+	value, err := wirejson.ParseEnum(text, sessionStatusNames)
+	if err == nil {
+		*v = SessionStatus(value)
+	}
+	return err
+}
+
 type CycleMode uint8
 
 const (

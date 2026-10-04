@@ -320,7 +320,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 	cycle := model.Cycle{
 		Mode: mode, ID: id, Number: next.CycleNumber, Status: model.CycleRunning,
 		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
-		Repository: cfg.GitHubRepo, DecisionMemory: []any{}, RunID: runID,
+		Repository: cfg.GitHubRepo, DecisionMemory: []model.DecisionRecord{}, RunID: runID,
 	}
 	capacity, started, err := a.Store.BeginCycle(cycle, next, live, fingerprint, time.Now())
 	if err != nil {

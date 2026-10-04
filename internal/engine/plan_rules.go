@@ -313,7 +313,7 @@ func checkRediscoveries(requests []rediscoveryRequest, proposals []model.Proposa
 	return nil
 }
 
-func plannedStatus(proposals []model.Proposal) string {
+func plannedStatus(proposals []model.Proposal) model.CycleStatus {
 	for _, proposal := range proposals {
 		if proposal.Decision == model.DecisionAccepted {
 			return model.CycleCompleted

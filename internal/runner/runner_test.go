@@ -37,6 +37,16 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestMalformedAssessmentAnswers(t *testing.T) {
+	for _, raw := range []string{`{}`, `null`, `{"assessments":null}`} {
+		t.Run(raw, func(t *testing.T) {
+			if answer, err := FinishTurn(raw, schemas.AssessmentSchema()); err == nil || answer != "" {
+				t.Fatalf("malformed assessment answer accepted: %q, %v", answer, err)
+			}
+		})
+	}
+}
+
 func pyString(s string) string { return strconv.Quote(s) }
 
 // wrapper writes the one Python shim that starts a tests/fixtures runner peer as the named binary.

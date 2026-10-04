@@ -9,6 +9,16 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
+// App lock protocol:
+//   - gate: operator and scheduler admission. Hold it across a tick or control
+//     action; never across a runner turn (releaseGate / withoutGate).
+//   - runtimeMu: in-memory jobs only. Copy what you need, then unlock before any
+//     store I/O, filesystem work, or acquiring gate.
+//   - fsLock: planning clones versus the storage walk. Never hold it across a
+//     store call, gate, or runner turn.
+// Acquire gate before runtimeMu when both are needed. Recovery barrier helpers
+// in this file must run before tick starts new work.
+
 type cycleJob struct {
 	id     string
 	mode   model.CycleMode

@@ -208,7 +208,7 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	plan.ID = "cycle-1"
 	plan.RunID = str("run-1")
 	plan.Proposals[0].Reconsiders = []string{"missing-task-id"}
-	plan.DecisionMemory = []any{map[string]any{"id": "decision-1", "repository": "Fixture/Project"}}
+	plan.DecisionMemory = []model.DecisionRecord{{ID: "decision-1", Repository: "Fixture/Project"}}
 	if err := s.CommitPlan(t.Context(), plan, []model.Task{queued}); err == nil {
 		t.Fatal("plan with a missing rediscovery target committed")
 	}
@@ -245,7 +245,7 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	plan = cycleFor(valid)
 	plan.ID = "cycle-1"
 	plan.RunID = str("run-1")
-	plan.DecisionMemory = []any{map[string]any{"id": "decision-1", "repository": "Fixture/Project"}}
+	plan.DecisionMemory = []model.DecisionRecord{{ID: "decision-1", Repository: "Fixture/Project"}}
 	must(t, s.CommitPlan(t.Context(), plan, []model.Task{valid}))
 	saved, err := store.Get[model.Control](s, "settings", "control")
 	must(t, err)

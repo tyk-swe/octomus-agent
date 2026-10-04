@@ -118,19 +118,10 @@ func (o DefaultBranchObservation) Describes(c config.Config) bool {
 }
 
 const (
-	SessionRunning     = "running"
-	SessionCompleted   = "completed"
-	SessionFailed      = "failed"
-	SessionInterrupted = "interrupted"
-	DecisionAccepted   = "accepted"
-	DecisionRejected   = "rejected"
-	DecisionDeferred   = "deferred"
-	DecisionCandidate  = "candidate"
-	CycleRunning       = "running"
-	CycleCompleted     = "completed"
-	CycleIdle          = "idle"
-	CycleFailed        = "failed"
-	CycleInterrupted   = "interrupted"
+	DecisionAccepted  = "accepted"
+	DecisionRejected  = "rejected"
+	DecisionDeferred  = "deferred"
+	DecisionCandidate = "candidate"
 )
 
 func Decisions() []string {

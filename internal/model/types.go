@@ -114,6 +114,12 @@ type AssessmentDocument struct {
 	Assessments []Assessment `json:"assessments"`
 }
 
+func (v *AssessmentDocument) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v AssessmentDocument) MarshalJSON() ([]byte, error) {
+	type plain AssessmentDocument
+	return wirejson.Record(plain(v))
+}
+
 // GroundingDocument is the structured answer of the grounding role
 // (schemas.GroundingSchema).
 type GroundingDocument struct {
@@ -203,7 +209,7 @@ type Session struct {
 	ID        string         `json:"id"`
 	Role      string         `json:"role"`
 	Route     config.Route   `json:"route"`
-	Status    string         `json:"status"`
+	Status    SessionStatus  `json:"status"`
 	StartedAt string         `json:"started_at"`
 	Summary   string         `json:"summary"`
 	Sandbox   *SandboxRecord `json:"sandbox"`
@@ -403,11 +409,13 @@ func (v PRCapacity) MarshalJSON() ([]byte, error) {
 	return wirejson.Record(plain(v))
 }
 
+// Cycle keeps saved assessment batches raw so malformed slots remain exportable.
+// New reviewer answers are validated as AssessmentDocument before saving.
 type Cycle struct {
 	Mode           CycleMode          `json:"mode"`
 	ID             string             `json:"id"`
 	Number         uint64             `json:"number"`
-	Status         string             `json:"status"`
+	Status         CycleStatus        `json:"status"`
 	StartedAt      string             `json:"started_at"`
 	CompletedAt    *string            `json:"completed_at"`
 	Grounding      *Grounding         `json:"grounding"`
@@ -416,10 +424,36 @@ type Cycle struct {
 	Sessions       []Session          `json:"sessions"`
 	Error          *string            `json:"error"`
 	Repository     string             `json:"repository,omitempty" wire:"default"`
-	DecisionMemory []any              `json:"decision_memory,omitempty" wire:"default"`
+	DecisionMemory []DecisionRecord   `json:"decision_memory,omitempty" wire:"default"`
 	RunID          *string            `json:"run_id,omitempty"`
 	Lifecycle      WorkspaceLifecycle `json:"lifecycle,omitzero" wire:"default"`
 }
+
+// DecisionRecord is one saved planning decision. Kind and ReconsiderationDue are
+// filled only for planning prompts and omitted from the stored record.
+type DecisionRecord struct {
+	Kind               string    `json:"kind,omitempty" wire:"default"`
+	ID                 string    `json:"id"`
+	CycleMode          CycleMode `json:"mode"`
+	Repository         string    `json:"repository"`
+	Target             string    `json:"target"`
+	ProblemKey         string    `json:"problem_key"`
+	RelevantPaths      []string  `json:"relevant_paths"`
+	Decision           string    `json:"decision"`
+	Reason             string    `json:"reason"`
+	SourceRevision     string    `json:"source_revision"`
+	ContextFingerprint string    `json:"context_fingerprint"`
+	ReconsiderAfter    string    `json:"reconsider_after"`
+	CycleID            string    `json:"cycle_id"`
+	ReconsiderationDue bool      `json:"reconsideration_due,omitempty" wire:"default"`
+}
+
+func (v *DecisionRecord) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v DecisionRecord) MarshalJSON() ([]byte, error) {
+	type plain DecisionRecord
+	return wirejson.Record(plain(v))
+}
+func (v DecisionRecord) Clone() DecisionRecord { return wirejson.Clone(v) }
 
 func (v *Cycle) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v Cycle) MarshalJSON() ([]byte, error)     { type plain Cycle; return wirejson.Record(plain(v)) }

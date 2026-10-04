@@ -10,7 +10,6 @@ import (
 	"math"
 	"mime"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,7 +32,8 @@ type api struct {
 	tokenHash [32]byte
 	failures  *authFailures
 	assets    http.Handler
-	table     []apiRoute
+	mux       *http.ServeMux
+	methods   map[string][]string
 }
 
 type authFailures struct {
@@ -61,13 +61,7 @@ func (f *authFailures) delay(now time.Time) time.Duration {
 	return delay
 }
 
-type handlerFunc func(w http.ResponseWriter, r *http.Request, params map[string]string) (int, any, error)
-
-type apiRoute struct {
-	method string
-	segs   []string
-	handle handlerFunc
-}
+type handlerFunc func(w http.ResponseWriter, r *http.Request) (int, any, error)
 
 func Router(app *engine.App, token, assetsOverride, version string) http.Handler {
 	s := &api{
@@ -75,8 +69,31 @@ func Router(app *engine.App, token, assetsOverride, version string) http.Handler
 		tokenHash: sha256.Sum256([]byte(token)),
 		failures:  &authFailures{},
 		assets:    assetHandler(assetsOverride),
+		mux:       http.NewServeMux(),
+		methods:   map[string][]string{},
 	}
-	s.table = s.buildRoutes()
+	s.route("GET", "/api/state", s.stateView)
+	s.route("GET", "/api/tasks", s.history("task"))
+	s.route("GET", "/api/cycles", s.history("cycle"))
+	s.route("GET", "/api/cycles/{id}", s.cycleDetail)
+	s.route("GET", "/api/cycles/{id}/evidence", s.cycleEvidence)
+	s.route("POST", "/api/cycles/{id}/{action}", s.cycleAction)
+	s.route("GET", "/api/proposals", s.proposalHistory)
+	s.route("GET", "/api/proposals/{cycle}/{id}", s.proposalDetail)
+	s.route("GET", "/api/prs", s.history("pr"))
+	s.route("GET", "/api/tasks/{id}", s.taskDetail)
+	s.route("POST", "/api/tasks/{id}/{action}", s.taskAction)
+	s.route("GET", "/api/config", s.getConfig)
+	s.route("PUT", "/api/config", s.saveConfig)
+	s.route("POST", "/api/baseline-checks", s.baselineStart)
+	s.route("GET", "/api/baseline-checks/latest", s.baselineLatest)
+	s.route("GET", "/api/baseline-checks/{id}", s.baselineDetail)
+	s.route("POST", "/api/baseline-checks/{id}/cancel", s.baselineCancel)
+	s.route("POST", "/api/control/{action}", s.controlAction)
+	s.route("POST", "/api/doctor", s.doctor)
+	s.route("POST", "/api/sandbox/self-test", s.sandboxSelfTest)
+	s.route("POST", "/api/model-catalog", s.modelCatalog)
+	s.route("GET", "/api/events", s.events)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setHeaders(w)
 		if r.URL.Path == "/healthz" {
@@ -84,7 +101,7 @@ func Router(app *engine.App, token, assetsOverride, version string) http.Handler
 			return
 		}
 		if path, ok := strings.CutPrefix(r.URL.Path, "/api"); ok && (path == "" || strings.HasPrefix(path, "/")) {
-			s.serveAPI(w, r, path)
+			s.serveAPI(w, r)
 			return
 		}
 		s.assets.ServeHTTP(w, r)
@@ -100,68 +117,62 @@ func setHeaders(w http.ResponseWriter) {
 	h.Set("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 }
 
-func (a *api) buildRoutes() []apiRoute {
-	return []apiRoute{
-		{"GET", segs("/state"), a.stateView},
-		{"GET", segs("/tasks"), a.history("task")},
-		{"GET", segs("/cycles"), a.history("cycle")},
-		{"GET", segs("/cycles/{id}"), a.cycleDetail},
-		{"GET", segs("/cycles/{id}/evidence"), a.cycleEvidence},
-		{"POST", segs("/cycles/{id}/{action}"), a.cycleAction},
-		{"GET", segs("/proposals"), a.proposalHistory},
-		{"GET", segs("/proposals/{cycle}/{id}"), a.proposalDetail},
-		{"GET", segs("/prs"), a.history("pr")},
-		{"GET", segs("/tasks/{id}"), a.taskDetail},
-		{"POST", segs("/tasks/{id}/{action}"), a.taskAction},
-		{"GET", segs("/config"), a.getConfig},
-		{"PUT", segs("/config"), a.saveConfig},
-		{"POST", segs("/baseline-checks"), a.baselineStart},
-		{"GET", segs("/baseline-checks/latest"), a.baselineLatest},
-		{"GET", segs("/baseline-checks/{id}"), a.baselineDetail},
-		{"POST", segs("/baseline-checks/{id}/cancel"), a.baselineCancel},
-		{"POST", segs("/control/{action}"), a.controlAction},
-		{"POST", segs("/doctor"), a.doctor},
-		{"POST", segs("/sandbox/self-test"), a.sandboxSelfTest},
-		{"POST", segs("/model-catalog"), a.modelCatalog},
-		{"GET", segs("/events"), a.events},
-	}
+func (a *api) route(method, pattern string, handle handlerFunc) {
+	a.methods[pattern] = append(a.methods[pattern], method)
+	a.mux.HandleFunc(method+" "+pattern, func(w http.ResponseWriter, r *http.Request) {
+		status, body, err := handle(w, r)
+		if err != nil {
+			var be *bodyError
+			if errors.As(err, &be) {
+				writeBodyError(w, be)
+			} else {
+				writeAPIError(w, apiStatus(err), redact.Error(err))
+			}
+			return
+		}
+		writeJSON(w, status, body)
+	})
 }
 
-func segs(pattern string) []string { return strings.Split(strings.TrimPrefix(pattern, "/"), "/") }
+func patternPath(pattern string) string {
+	if _, path, ok := strings.Cut(pattern, " "); ok {
+		return path
+	}
+	return pattern
+}
 
-func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
-	parts := segs(path)
-	var allowed []string
-	var matched *apiRoute
-	params := map[string]string{}
-	for _, route := range a.table {
-		if len(route.segs) != len(parts) {
+var probeMethods = []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}
+
+func (a *api) pathMethods(r *http.Request) (path string, allowed []string) {
+	seen := map[string]struct{}{}
+	for _, method := range probeMethods {
+		probe := *r
+		probe.Method = method
+		_, pattern := a.mux.Handler(&probe)
+		if pattern == "" {
 			continue
 		}
-		candidate := map[string]string{}
-		ok := true
-		for i, seg := range route.segs {
-			if strings.HasPrefix(seg, "{") {
-				name := seg[1 : len(seg)-1]
-				candidate[name] = parts[i]
-			} else if seg != parts[i] {
-				ok = false
-				break
+		candidate := patternPath(pattern)
+		if path == "" {
+			path = candidate
+		}
+		if candidate != path {
+			continue
+		}
+		for _, registered := range a.methods[candidate] {
+			if _, dup := seen[registered]; dup {
+				continue
 			}
-		}
-		if !ok {
-			continue
-		}
-		if !slices.Contains(allowed, route.method) {
-			allowed = append(allowed, route.method)
-		}
-		if route.method == r.Method {
-			matched = &route
-			params = candidate
-			break
+			seen[registered] = struct{}{}
+			allowed = append(allowed, registered)
 		}
 	}
-	if len(allowed) == 0 {
+	return path, allowed
+}
+
+func (a *api) serveAPI(w http.ResponseWriter, r *http.Request) {
+	path, allowed := a.pathMethods(r)
+	if path == "" {
 		writeAPIError(w, http.StatusNotFound, "Unknown API route")
 		return
 	}
@@ -180,22 +191,19 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request, path string) {
 			return
 		}
 	}
-	if matched == nil {
+	matched := false
+	for _, method := range allowed {
+		if method == r.Method {
+			matched = true
+			break
+		}
+	}
+	if !matched {
 		w.Header().Set("Allow", strings.Join(allowed, ", "))
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	status, body, err := matched.handle(w, r, params)
-	if err != nil {
-		var be *bodyError
-		if errors.As(err, &be) {
-			writeBodyError(w, be)
-		} else {
-			writeAPIError(w, apiStatus(err), redact.Error(err))
-		}
-		return
-	}
-	writeJSON(w, status, body)
+	a.mux.ServeHTTP(w, r)
 }
 
 func (a *api) authenticate(w http.ResponseWriter, r *http.Request) bool {
@@ -298,7 +306,7 @@ func writeBodyError(w http.ResponseWriter, err *bodyError) {
 	_, _ = w.Write([]byte(redact.Text(err.message)))
 }
 
-func (a *api) stateView(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) stateView(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
 	view, err := a.app.StateView()
 	return http.StatusOK, view, err
 }
@@ -336,7 +344,7 @@ func first(values map[string][]string, key string) *string {
 }
 
 func (a *api) history(kind string) handlerFunc {
-	return func(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+	return func(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 		query, err := historyQuery(r)
 		if err != nil {
 			return 0, nil, err
@@ -346,7 +354,7 @@ func (a *api) history(kind string) handlerFunc {
 	}
 }
 
-func (a *api) proposalHistory(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) proposalHistory(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	query, err := historyQuery(r)
 	if err != nil {
 		return 0, nil, err
@@ -355,8 +363,8 @@ func (a *api) proposalHistory(_ http.ResponseWriter, r *http.Request, _ map[stri
 	return http.StatusOK, page, err
 }
 
-func (a *api) proposalDetail(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	detail, err := a.app.Store.ProposalDetail(params["cycle"], params["id"])
+func (a *api) proposalDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	detail, err := a.app.Store.ProposalDetail(r.PathValue("cycle"), r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -366,8 +374,8 @@ func (a *api) proposalDetail(_ http.ResponseWriter, _ *http.Request, params map[
 	return http.StatusOK, detail, nil
 }
 
-func (a *api) cycleDetail(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	cycle, err := store.Get[model.Cycle](a.app.Store, "cycle", params["id"])
+func (a *api) cycleDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	cycle, err := store.Get[model.Cycle](a.app.Store, "cycle", r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -377,8 +385,8 @@ func (a *api) cycleDetail(_ http.ResponseWriter, _ *http.Request, params map[str
 	return http.StatusOK, *cycle, nil
 }
 
-func (a *api) cycleEvidence(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	value, err := export.RunEvidence(a.app.Store, params["id"])
+func (a *api) cycleEvidence(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	value, err := export.RunEvidence(a.app.Store, r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -388,15 +396,15 @@ func (a *api) cycleEvidence(_ http.ResponseWriter, _ *http.Request, params map[s
 	return http.StatusOK, value, nil
 }
 
-func (a *api) cycleAction(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	if err := a.app.CycleAction(params["id"], params["action"]); err != nil {
+func (a *api) cycleAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := a.app.CycleAction(r.PathValue("id"), r.PathValue("action")); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, map[string]any{"ok": true}, nil
 }
 
-func (a *api) taskDetail(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	task, err := store.Get[model.Task](a.app.Store, "task", params["id"])
+func (a *api) taskDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	task, err := store.Get[model.Task](a.app.Store, "task", r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -420,14 +428,14 @@ func (a *api) taskDetail(_ http.ResponseWriter, _ *http.Request, params map[stri
 	return http.StatusOK, value, nil
 }
 
-func (a *api) taskAction(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	if err := a.app.TaskAction(params["id"], params["action"]); err != nil {
+func (a *api) taskAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := a.app.TaskAction(r.PathValue("id"), r.PathValue("action")); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, map[string]any{"ok": true}, nil
 }
 
-func (a *api) getConfig(_ http.ResponseWriter, _ *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) getConfig(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
 	view, err := a.app.Settings()
 	return http.StatusOK, view, err
 }
@@ -439,7 +447,7 @@ type configUpdateBody struct {
 
 func (v *configUpdateBody) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 
-func (a *api) saveConfig(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) saveConfig(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	var body configUpdateBody
 	if err := decodeBody(w, r, &body); err != nil {
 		return 0, nil, err
@@ -461,7 +469,7 @@ type baselineStartBody struct {
 
 func (v *baselineStartBody) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 
-func (a *api) baselineStart(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) baselineStart(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	var body baselineStartBody
 	if err := decodeBody(w, r, &body); err != nil {
 		return 0, nil, err
@@ -473,13 +481,13 @@ func (a *api) baselineStart(w http.ResponseWriter, r *http.Request, _ map[string
 	return http.StatusAccepted, *check, nil
 }
 
-func (a *api) baselineLatest(_ http.ResponseWriter, _ *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) baselineLatest(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
 	view, err := a.app.BaselineView(nil)
 	return http.StatusOK, view, err
 }
 
-func (a *api) baselineDetail(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	id := params["id"]
+func (a *api) baselineDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	id := r.PathValue("id")
 	check, err := store.Get[model.BaselineCheck](a.app.Store, "baseline", id)
 	if err != nil {
 		return 0, nil, err
@@ -491,19 +499,19 @@ func (a *api) baselineDetail(_ http.ResponseWriter, _ *http.Request, params map[
 	return http.StatusOK, view, err
 }
 
-func (a *api) baselineCancel(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	if err := a.app.CancelBaseline(params["id"]); err != nil {
+func (a *api) baselineCancel(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := a.app.CancelBaseline(r.PathValue("id")); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, map[string]any{"ok": true}, nil
 }
 
-func (a *api) controlAction(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	body, err := a.app.ControlAction(params["action"])
+func (a *api) controlAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	body, err := a.app.ControlAction(r.PathValue("action"))
 	return http.StatusOK, body, err
 }
 
-func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) doctor(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	mode := model.CycleModeExecution
 	if raw := first(r.URL.Query(), "mode"); raw != nil {
 		switch *raw {
@@ -541,7 +549,7 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 }
 
 // sandboxSelfTest proves the sandbox from inside a real one; with the sandbox off there is nothing to prove.
-func (a *api) sandboxSelfTest(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) sandboxSelfTest(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	result, err := a.app.SelfTest(r.Context())
 	return http.StatusOK, result, err
 }
@@ -553,7 +561,7 @@ type catalogRequest struct {
 
 func (v *catalogRequest) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
 
-func (a *api) modelCatalog(w http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) modelCatalog(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	var request catalogRequest
 	if err := decodeBody(w, r, &request); err != nil {
 		return 0, nil, err
@@ -562,7 +570,7 @@ func (a *api) modelCatalog(w http.ResponseWriter, r *http.Request, _ map[string]
 	return http.StatusOK, catalog, err
 }
 
-func (a *api) events(_ http.ResponseWriter, r *http.Request, _ map[string]string) (int, any, error) {
+func (a *api) events(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	events, err := a.app.Store.Events(first(r.URL.Query(), "entity"))
 	return http.StatusOK, events, err
 }

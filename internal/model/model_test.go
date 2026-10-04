@@ -59,6 +59,8 @@ func TestEnumWireNames(t *testing.T) {
 	enumRoundTrip[BlockedReason](t, []string{"budget_exhausted", "storage_limit", "stale_base", "remote_conflict", "publication_uncertain", "runner_unavailable", "invalid_review", "verification_failed", "dependency_blocked", "invalid_plan", "workspace_invalid", "retry_limit", "timeout", "unknown"})
 	enumRoundTrip[CapacityStatus](t, []string{"ready", "daily_exhausted", "limit_too_low"})
 	enumRoundTrip[BaselineStatus](t, []string{"running", "passed", "failed", "cancelled", "timed_out", "interrupted"})
+	enumRoundTrip[CycleStatus](t, []string{"running", "completed", "idle", "failed", "interrupted"})
+	enumRoundTrip[SessionStatus](t, []string{"running", "completed", "failed", "interrupted"})
 	enumRoundTrip[CycleMode](t, []string{"execution", "audit"})
 	enumRoundTrip[OperatingMode](t, []string{"paused", "run_once", "continuous"})
 	enumRoundTrip[BatchPhase](t, []string{"draining", "planning", "executing"})
