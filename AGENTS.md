@@ -44,11 +44,11 @@ owns strict typed JSON boundaries for saved records and API requests.
   process.
 - `internal/config`, `internal/model`, `internal/store`: policy, durable records
   and SQLite. In the store, `store.go` holds records, transactions and admission
-  reservation; `schema.sql` is the embedded fresh DDL whose triggers maintain
-  counts, batch membership, proposal rows, PR reservation release and the attention
-  outbox; `schema.go` creates it and generates the record projections; `queries.go`,
-  `capacity.go` and `notifications.go` serve operational views, PR capacity and the
-  outbox.
+  reservation; `schema.sql` is the complete fresh DDL, whose triggers maintain the
+  record projections, counts, batch membership, proposal rows, PR reservation
+  release and the attention outbox; `schema.go` checks the version and applies it;
+  `queries.go`, `capacity.go` and `notifications.go` serve operational views, PR
+  capacity and the outbox.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
   `--sandbox off`, `Remote` for the broker), owned-root preparation, OpenCode
   readiness and its stream connection (`opencode.go`), the in-sandbox helper
@@ -56,7 +56,8 @@ owns strict typed JSON boundaries for saved records and API requests.
   containment probe (`probe.go` runs it, `containment.go` checks from inside the
   sandbox). `sandbox/wire` is the broker wire contract in one file: requests, stream
   frames, the broker info document, the runner names, the programs both backends
-  start, the owned-root layout and the literals both sides share. `sandbox/broker` is
+  start, the owned-root layout, the probe-target contract and the literals both
+  sides share. `sandbox/broker` is
   `--sandboxd`: `config.go` (deployment settings), `startup.go` (daemon, network
   and volume checks, helper install), `image.go` (tag resolution and the
   runner-version probe), `listen.go` (peer-credential socket), `serve.go` (HTTP and
