@@ -1,6 +1,6 @@
 // The read-only usage report: daily totals, per-cycle attribution and wall time, task rows and per-tier aggregation.
 
-package report
+package export
 
 import (
 	"encoding/json"
@@ -92,7 +92,7 @@ func TestUsageReport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	value, err := UsageReport(path)
+	value, err := Usage(path)
 	if err != nil {
 		t.Fatal(err)
 	}

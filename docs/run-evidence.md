@@ -37,9 +37,9 @@ The same nine caveats ship inside each export as `limitations`:
 | HTTP | `GET /api/cycles/{id}/evidence` with `Authorization: Bearer <operator token>` |
 | CLI | `octomus-agent --data-dir <dir> --export-run <cycle-id>` |
 
-Both share one snapshot reader (`evidence.ReadSnapshot`) and one assembler
-(`evidence.Assemble`, redacted by `evidence.Value`) in `internal/evidence`, so their
-output is identical apart from `generated_at`.
+Both share one snapshot reader, one assembler and one redaction pass in
+`internal/export` (`export.RunEvidence` for the HTTP route, `export.Run` for the
+CLI), so their output is identical apart from `generated_at`.
 
 The HTTP route sits inside the existing authenticated API router, so it inherits the
 operator token check, the authentication backoff and the response-wide redaction pass.

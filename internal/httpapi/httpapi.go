@@ -18,7 +18,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
-	"github.com/tyk-swe/octomus-agent/internal/evidence"
+	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -384,7 +384,7 @@ func (a *api) cycleDetail(_ http.ResponseWriter, _ *http.Request, params map[str
 }
 
 func (a *api) cycleEvidence(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
-	value, err := evidence.RunEvidence(a.app.Store, params["id"])
+	value, err := export.RunEvidence(a.app.Store, params["id"])
 	if err != nil {
 		return 0, nil, err
 	}

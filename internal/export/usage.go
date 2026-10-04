@@ -1,4 +1,4 @@
-package report
+package export
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-const Measurement = "Admissions reserve budget before work starts. They include failed starts and retries; they are not completed turns or billed usage. Completed session counts describe persisted thread records; a repair thread can contain multiple turns. Cycle wall time excludes subsequent task execution. No provider charges or merge status are inferred."
+const measurement = "Admissions reserve budget before work starts. They include failed starts and retries; they are not completed turns or billed usage. Completed session counts describe persisted thread records; a repair thread can contain multiple turns. Cycle wall time excludes subsequent task execution. No provider charges or merge status are inferred."
 
 type Daily struct {
 	Day                    string `json:"day"`
@@ -67,29 +67,13 @@ type Report struct {
 	Admissions         []store.Admission `json:"admissions"`
 }
 
-func records[T any](c *sql.Conn, kind string) ([]T, error) {
-	return store.QueryRecords[T](c, "SELECT data FROM records WHERE kind=?1 ORDER BY id", kind)
+// Usage exports the usage report from the state database at stateDB, opened
+// read-only.
+func Usage(stateDB string) (map[string]any, error) {
+	return export(stateDB, "usage reporting", usage)
 }
 
-func UsageReport(path string) (map[string]any, error) {
-	r, err := store.OpenReadOnly(path, "usage reporting")
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	var report Report
-	err = r.Snapshot(func(c *sql.Conn) error {
-		var err error
-		report, err = assemble(c)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return store.RedactedValue(report)
-}
-
-func assemble(c *sql.Conn) (Report, error) {
+func usage(c *sql.Conn) (Report, error) {
 	admissions, err := store.QueryRecords[store.Admission](c, "SELECT data FROM admissions ORDER BY at,id")
 	if err != nil {
 		return Report{}, err
@@ -178,7 +162,7 @@ func assemble(c *sql.Conn) (Report, error) {
 	}
 	return Report{
 		SchemaVersion: 1, GeneratedAt: model.Now(), HasAdmissionLedger: true,
-		Measurement: Measurement, Daily: daily, Cycles: cycleRows, Tasks: taskRows,
+		Measurement: measurement, Daily: daily, Cycles: cycleRows, Tasks: taskRows,
 		Tiers: tiers, Admissions: admissions,
 	}, nil
 }

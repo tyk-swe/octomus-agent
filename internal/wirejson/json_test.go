@@ -5,6 +5,7 @@ package wirejson
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -154,5 +155,86 @@ func TestDecodeWellFormed(t *testing.T) {
 	}
 	if err := Decode([]byte(`{"z":1}`), &dst, true, true); err == nil || err.Error() != `unknown field "z"` {
 		t.Fatalf("defaultAll with an unknown field = %v; want it refused", err)
+	}
+}
+
+type testEnum uint8
+
+var testEnumNames = []string{"off", "on"}
+
+func (v testEnum) MarshalText() ([]byte, error) { return EnumText(v, testEnumNames) }
+func (v *testEnum) UnmarshalText(text []byte) error {
+	value, err := ParseEnum(text, testEnumNames)
+	if err == nil {
+		*v = testEnum(value)
+	}
+	return err
+}
+
+type enumRecord struct {
+	Mode   testEnum  `json:"mode"`
+	Option *testEnum `json:"option"`
+}
+
+func TestEnumTextNamesEveryValueAndParseEnumAcceptsOnlyExactNames(t *testing.T) {
+	for i, name := range testEnumNames {
+		text, err := EnumText(uint8(i), testEnumNames)
+		if err != nil || string(text) != name {
+			t.Fatalf("EnumText(%d) = %q, %v; want %q", i, text, err, name)
+		}
+		value, err := ParseEnum([]byte(name), testEnumNames)
+		if err != nil || int(value) != i {
+			t.Fatalf("ParseEnum(%q) = %d, %v; want %d", name, value, err, i)
+		}
+	}
+	var typed *Error
+	if text, err := EnumText(uint8(len(testEnumNames)), testEnumNames); !errors.As(err, &typed) {
+		t.Fatalf("EnumText(%d) = %q, %v; want a typed error", len(testEnumNames), text, err)
+	}
+	for _, text := range []string{"", "On", " on", "on ", "o", "onn", "null", "\"on\""} {
+		_, err := ParseEnum([]byte(text), testEnumNames)
+		if !errors.As(err, &typed) {
+			t.Fatalf("ParseEnum(%q) = %v; want a typed error", text, err)
+		}
+		if want := fmt.Sprintf("invalid enum value %q (expected one of: off, on)", text); err.Error() != want {
+			t.Fatalf("ParseEnum(%q) = %q; want %q", text, err, want)
+		}
+	}
+}
+
+func TestDecodeHoldsEnumFieldsToTheirExactNames(t *testing.T) {
+	var dst enumRecord
+	if err := Decode([]byte(`{"mode":"on","option":null}`), &dst, true, false); err != nil || dst.Mode != 1 || dst.Option != nil {
+		t.Fatalf("Decode = %+v, %v", dst, err)
+	}
+	if err := Decode([]byte(`{"mode":"off","option":"on"}`), &dst, true, false); err != nil || dst.Mode != 0 || dst.Option == nil || *dst.Option != 1 {
+		t.Fatalf("Decode = %+v, %v", dst, err)
+	}
+	if data, err := json.Marshal(dst); err != nil || string(data) != `{"mode":"off","option":"on"}` {
+		t.Fatalf("json.Marshal = %s, %v", data, err)
+	}
+	for raw, message := range map[string]string{
+		`{"mode":null}`:                   "mode: null is not allowed",
+		`{"mode":1}`:                      "",
+		`{"mode":true}`:                   "",
+		`{"mode":"On"}`:                   `mode: invalid enum value "On" (expected one of: off, on)`,
+		`{"mode":"on","option":2}`:        "",
+		`{"mode":"on","option":"x"}`:      `option: invalid enum value "x" (expected one of: off, on)`,
+		`{"mode":"on","option":[]}`:       "",
+		`{"mode":"on","option":"\ud800"}`: "",
+	} {
+		dst := enumRecord{Mode: 1}
+		err := Decode([]byte(raw), &dst, true, false)
+		var typed *Error
+		if !errors.As(err, &typed) {
+			t.Errorf("Decode(%s) = %v; want a typed error", raw, err)
+			continue
+		}
+		if message != "" && err.Error() != message {
+			t.Errorf("Decode(%s) = %q; want %q", raw, err, message)
+		}
+		if dst.Mode != 1 || dst.Option != nil {
+			t.Errorf("Decode(%s) changed dst to %+v", raw, dst)
+		}
 	}
 }

@@ -95,6 +95,31 @@ type Review struct {
 func (r *Review) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, r) }
 func (r Review) MarshalJSON() ([]byte, error)     { type plain Review; return wirejson.Record(plain(r)) }
 
+// ProposalDocument is the structured answer of the discovery and consolidation
+// roles (schemas.ProposalSchema); each proposal decodes strictly.
+type ProposalDocument struct {
+	Proposals []Proposal `json:"proposals"`
+}
+
+// Assessment is one reviewer verdict in an AssessmentDocument.
+type Assessment struct {
+	ID       string `json:"id"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+}
+
+// AssessmentDocument is the structured answer of a proposal reviewer
+// (schemas.AssessmentSchema).
+type AssessmentDocument struct {
+	Assessments []Assessment `json:"assessments"`
+}
+
+// GroundingDocument is the structured answer of the grounding role
+// (schemas.GroundingSchema).
+type GroundingDocument struct {
+	Context string `json:"context"`
+}
+
 type ReviewRound struct {
 	SessionID      string `json:"session_id"`
 	Revision       string `json:"revision"`

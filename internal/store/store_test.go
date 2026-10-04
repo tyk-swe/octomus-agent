@@ -5,14 +5,13 @@ package store_test
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/report"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -131,7 +130,7 @@ func TestPlanningCapacity(t *testing.T) {
 
 func usageReport(t *testing.T, path string) map[string]any {
 	t.Helper()
-	value, err := report.UsageReport(path)
+	value, err := export.Usage(path)
 	must(t, err)
 	return value
 }
@@ -263,20 +262,5 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	must(t, err)
 	if saved.IdleStreak != 1 || saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting {
 		t.Fatalf("%+v", saved)
-	}
-}
-
-func TestRedactedValue(t *testing.T) {
-	t.Parallel()
-	whitespace := "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
-	for _, separator := range whitespace {
-		t.Run(fmt.Sprintf("U+%04X", separator), func(t *testing.T) {
-			input := "before bEaReR" + string(separator) + "\t" + "synthetic-private-credential after"
-			value, err := store.RedactedValue(map[string]any{"nested": []any{input}, "count": 7})
-			must(t, err)
-			if got := canonical(t, value); got != `{"count":7,"nested":["before [redacted] after"]}` {
-				t.Fatalf("redacted export = %s", got)
-			}
-		})
 	}
 }

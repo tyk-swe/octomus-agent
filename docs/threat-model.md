@@ -127,7 +127,7 @@ rather than allowed to proceed unguarded.
 | Managed workspaces | `internal/workspace` | Cleanup refuses noncanonical paths, indirect children and symlink paths. |
 | Publication | `internal/git` | A push proceeds only while branch ownership, the reviewed revision and remote leases hold. |
 | Text egress | `internal/redact` | Complete values and cut fragments are normalized and scrubbed before display or evidence bounds. |
-| Durable state and evidence | `internal/store`, `internal/evidence` | Records stay typed and versioned; exports are read-only. |
+| Durable state and evidence | `internal/store`, `internal/export` | Records stay typed and versioned; exports are read-only. |
 
 ## Residual risk
 

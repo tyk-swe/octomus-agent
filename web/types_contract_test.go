@@ -14,7 +14,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
-	"github.com/tyk-swe/octomus-agent/internal/evidence"
+	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
@@ -133,20 +133,20 @@ func TestTypesMirrorGoJSON(t *testing.T) {
 		"Event":                    model.Event{},
 		"NotificationHealth":       store.NotificationHealth{},
 		"Model":                    runner.Model{},
-		"RunEvidenceV1":            evidence.RunEvidenceV1{},
-		"CycleEvidence":            evidence.CycleEvidence{},
-		"PlanningOutcome":          evidence.PlanningOutcome{},
-		"ProposalEvidence":         evidence.ProposalEvidence{},
-		"ReviewerVerdict":          evidence.ReviewerVerdict{},
-		"TaskEvidence":             evidence.TaskEvidence{},
-		"EvidenceRevisions":        evidence.Revisions{},
-		"SessionRoute":             evidence.SessionRoute{},
-		"ReviewEvidence":           evidence.ReviewEvidence{},
-		"ReviewRoundEvidence":      evidence.ReviewRoundEvidence{},
-		"FindingEvidence":          evidence.FindingEvidence{},
-		"CommandEvidence":          evidence.CommandEvidence{},
-		"CommandResult":            evidence.CommandResult{},
-		"PrReference":              evidence.PRReference{},
+		"RunEvidenceV1":            export.RunEvidenceV1{},
+		"CycleEvidence":            export.CycleEvidence{},
+		"PlanningOutcome":          export.PlanningOutcome{},
+		"ProposalEvidence":         export.ProposalEvidence{},
+		"ReviewerVerdict":          export.ReviewerVerdict{},
+		"TaskEvidence":             export.TaskEvidence{},
+		"EvidenceRevisions":        export.Revisions{},
+		"SessionRoute":             export.SessionRoute{},
+		"ReviewEvidence":           export.ReviewEvidence{},
+		"ReviewRoundEvidence":      export.ReviewRoundEvidence{},
+		"FindingEvidence":          export.FindingEvidence{},
+		"CommandEvidence":          export.CommandEvidence{},
+		"CommandResult":            export.CommandResult{},
+		"PrReference":              export.PRReference{},
 		"SandboxPosture":           engine.SandboxPosture{},
 		"SandboxRecord":            model.SandboxRecord{},
 		"SandboxEgress":            model.SandboxEgress{},

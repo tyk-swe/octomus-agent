@@ -1,15 +1,15 @@
-// The read-only RunEvidenceV1 export: what a cycle reports and what never leaves the state.
+// The read-only RunEvidenceV1 export: what a cycle reports, what never leaves the state, and the one redaction pass every export passes through.
 
-package evidence_test
+package export
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/evidence"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -68,7 +68,7 @@ func reviewerSession(role, status string) model.Session {
 	}
 }
 
-func batch(entries ...map[string]any) map[string]any {
+func savedBatch(entries ...map[string]any) map[string]any {
 	list := make([]any, 0, len(entries))
 	for _, entry := range entries {
 		list = append(list, entry)
@@ -76,7 +76,7 @@ func batch(entries ...map[string]any) map[string]any {
 	return map[string]any{"assessments": list}
 }
 
-func entry(id, decision, reason string) map[string]any {
+func savedEntry(id, decision, reason string) map[string]any {
 	return map[string]any{"id": id, "decision": decision, "reason": reason}
 }
 
@@ -149,9 +149,9 @@ func must(t *testing.T, err error) {
 	}
 }
 
-func export(t *testing.T, s *store.Store, cycleID string) map[string]any {
+func exported(t *testing.T, s *store.Store, cycleID string) map[string]any {
 	t.Helper()
-	value, err := evidence.RunEvidence(s, cycleID)
+	value, err := RunEvidence(s, cycleID)
 	must(t, err)
 	return value
 }
@@ -235,14 +235,14 @@ func TestCompleteCycleExport(t *testing.T) {
 	c := cycle("cycle-a", "execution",
 		[]model.Proposal{proposal("p1", "accepted"), proposal("p2", "deferred")},
 		[]any{
-			batch(entry("p1", "accepted", "a accepts"), entry("p2", "deferred", "a defers")),
-			batch(entry("p1", "accepted", "b accepts"), entry("p2", "rejected", "b rejects")),
+			savedBatch(savedEntry("p1", "accepted", "a accepts"), savedEntry("p2", "deferred", "a defers")),
+			savedBatch(savedEntry("p1", "accepted", "b accepts"), savedEntry("p2", "rejected", "b rejects")),
 		},
 		[]model.Session{reviewerSession("adversary-a", "completed"), reviewerSession("adversary-b", "completed")})
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{delivered})
-	value := export(t, s, "cycle-a")
+	value := exported(t, s, "cycle-a")
 
-	if number(value["schema_version"]) != int64(evidence.SchemaVersion) || value["review_required_before_sharing"] != true || value["kind"] != "recorded_review_check_evidence" {
+	if number(value["schema_version"]) != int64(SchemaVersion) || value["review_required_before_sharing"] != true || value["kind"] != "recorded_review_check_evidence" {
 		t.Fatalf("%v", value)
 	}
 	if generated, _ := value["generated_at"].(string); len(generated) <= 10 {
@@ -310,7 +310,7 @@ func TestPrivateFieldsOmitted(t *testing.T) {
 	tk.Verification = []model.Verification{check("make check", true, "out00001")}
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{tk})
-	value := export(t, s, "cycle-a")
+	value := exported(t, s, "cycle-a")
 	rendered := text(t, value)
 	for _, private := range []string{
 		"/private/workspace/path",
@@ -348,7 +348,7 @@ func TestLatestReviewGoverns(t *testing.T) {
 		review("out00001", true, "later round found a problem", model.Finding{Title: "t", File: "f", Detail: "d", Priority: "high"}),
 	}
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{regressed})
-	value := export(t, s, "cycle-a")
+	value := exported(t, s, "cycle-a")
 	linked := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
 	latest := linked["latest_review"].(map[string]any)
 	if number(latest["rounds_recorded"]) != 2 || latest["clean"] != false || latest["clean_at_output_revision"] != false || len(list(latest, "latest", "findings")) != 1 {
@@ -363,7 +363,7 @@ func TestLatestReviewGoverns(t *testing.T) {
 		tk.OutputCommit = &output
 		tk.Reviews = []model.ReviewRound{review("out00001", round.completed, round.summary)}
 		s, _ := fixture(t, []model.Cycle{c}, []model.Task{tk})
-		value := export(t, s, "cycle-a")
+		value := exported(t, s, "cycle-a")
 		latest := get(findProposal(t, value, "p1"), "linked_tasks", 0, "latest_review").(map[string]any)
 		if latest["clean"] != false || get(latest, "latest", "completed") != round.completed || get(latest, "latest", "summary_present") != (strings.TrimSpace(round.summary) != "") {
 			t.Fatalf("%v %q: %v", round.completed, round.summary, latest)
@@ -378,9 +378,41 @@ func TestNoConfiguredChecks(t *testing.T) {
 	output := "out00001"
 	tk.OutputCommit = &output
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{tk})
-	value := export(t, s, "cycle-a")
+	value := exported(t, s, "cycle-a")
 	commands := get(findProposal(t, value, "p1"), "linked_tasks", 0, "required_commands").(map[string]any)
 	if commands["state"] != "not_configured" || len(list(commands, "commands")) != 0 || commands["all_passed_at_output_revision"] != false {
 		t.Fatalf("%v", commands)
+	}
+}
+
+func TestRunExport(t *testing.T) {
+	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
+	s, path := fixture(t, []model.Cycle{c}, []model.Task{task("cycle-a", "p1")})
+	must(t, s.Close())
+	value, err := Run(path, "cycle-a")
+	must(t, err)
+	if get(value, "cycle", "id") != "cycle-a" || len(list(findProposal(t, value, "p1"), "linked_tasks")) != 1 {
+		t.Fatalf("%v", value)
+	}
+	if _, err := Run(path, "cycle-b"); err == nil || !strings.Contains(err.Error(), "No saved cycle cycle-b") {
+		t.Fatalf("missing cycle = %v; want an explicit error", err)
+	}
+	if _, err := Run(filepath.Join(t.TempDir(), "missing.db"), "cycle-a"); err == nil {
+		t.Fatal("a missing state database was exported")
+	}
+}
+
+func TestRedactedValue(t *testing.T) {
+	t.Parallel()
+	whitespace := "\t\n\v\f\r \u0085                 　"
+	for _, separator := range whitespace {
+		t.Run(fmt.Sprintf("U+%04X", separator), func(t *testing.T) {
+			input := "before bEaReR" + string(separator) + "\t" + "synthetic-private-credential after"
+			value, err := redacted(map[string]any{"nested": []any{input}, "count": 7})
+			must(t, err)
+			if got := text(t, value); got != `{"count":7,"nested":["before [redacted] after"]}` {
+				t.Fatalf("redacted export = %s", got)
+			}
+		})
 	}
 }

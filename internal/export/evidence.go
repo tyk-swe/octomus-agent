@@ -1,4 +1,4 @@
-package evidence
+package export
 
 import (
 	"database/sql"
@@ -13,7 +13,7 @@ import (
 
 const SchemaVersion uint32 = 1
 
-var Limitations = [9]string{
+var limitations = [9]string{
 	"Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
 	"Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
 	"Deferred is not rejected.",
@@ -25,7 +25,7 @@ var Limitations = [9]string{
 	"Free text carried here (proposal problem, benefit, scope and evidence, and code-review findings) is model-authored and still requires manual review before sharing.",
 }
 
-const ReviewRequirement = "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact."
+const reviewRequirement = "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact."
 
 type RunEvidenceV1 struct {
 	SchemaVersion     uint32             `json:"schema_version"`
@@ -510,7 +510,7 @@ func cloneString(s *string) *string {
 	return &copied
 }
 
-func Assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
+func assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 	batches, gaps := normalizeBatches(cycle)
 	execution := cycle.Mode == model.CycleModeExecution
 	decisions := map[string]int{}
@@ -608,8 +608,8 @@ func Assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 		GeneratedAt:       model.Now(),
 		Kind:              "recorded_review_check_evidence",
 		ReviewRequired:    true,
-		ReviewRequirement: ReviewRequirement,
-		Limitations:       Limitations,
+		ReviewRequirement: reviewRequirement,
+		Limitations:       limitations,
 		Cycle: CycleEvidence{
 			ID:                cycle.ID,
 			Number:            cycle.Number,
@@ -634,13 +634,11 @@ func Assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 	}
 }
 
-func Value(cycle model.Cycle, tasks []model.Task) (map[string]any, error) {
-	return store.RedactedValue(Assemble(cycle, tasks))
-}
-
 const cycleTasksQuery = "SELECT r.data FROM record_meta m INDEXED BY meta_cycle JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY r.id"
 
-func ReadSnapshot(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, error) {
+// runRecords reads one cycle and its tasks from the snapshot c. A missing cycle
+// is a nil cycle, not an error.
+func runRecords(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, error) {
 	cycle, err := store.RecordAt[model.Cycle](c, "cycle", cycleID)
 	if err != nil || cycle == nil {
 		return nil, nil, err
@@ -652,39 +650,32 @@ func ReadSnapshot(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, erro
 	return cycle, tasks, nil
 }
 
-type snapshotter interface {
-	Snapshot(fn func(c *sql.Conn) error) error
-}
-
-func readRun(s snapshotter, cycleID string) (cycle *model.Cycle, tasks []model.Task, err error) {
-	err = s.Snapshot(func(c *sql.Conn) error {
-		var readErr error
-		cycle, tasks, readErr = ReadSnapshot(c, cycleID)
-		return readErr
-	})
-	return cycle, tasks, err
-}
-
+// RunEvidence exports one cycle's run evidence from the live store, or nil
+// when no such cycle is saved.
 func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
-	cycle, tasks, err := readRun(s, cycleID)
+	var cycle *model.Cycle
+	var tasks []model.Task
+	err := s.Snapshot(func(c *sql.Conn) (err error) {
+		cycle, tasks, err = runRecords(c, cycleID)
+		return err
+	})
 	if err != nil || cycle == nil {
 		return nil, err
 	}
-	return Value(*cycle, tasks)
+	return redacted(assemble(*cycle, tasks))
 }
 
-func ExportRun(stateDB, cycleID string) (map[string]any, error) {
-	r, err := store.OpenReadOnly(stateDB, "run evidence export")
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	cycle, tasks, err := readRun(r, cycleID)
-	if err != nil {
-		return nil, err
-	}
-	if cycle == nil {
-		return nil, fmt.Errorf("No saved cycle %s in this state database", cycleID)
-	}
-	return Value(*cycle, tasks)
+// Run exports one cycle's run evidence from the state database at stateDB,
+// opened read-only. A missing cycle is an error, never an empty export.
+func Run(stateDB, cycleID string) (map[string]any, error) {
+	return export(stateDB, "run evidence export", func(c *sql.Conn) (RunEvidenceV1, error) {
+		cycle, tasks, err := runRecords(c, cycleID)
+		if err != nil {
+			return RunEvidenceV1{}, err
+		}
+		if cycle == nil {
+			return RunEvidenceV1{}, fmt.Errorf("No saved cycle %s in this state database", cycleID)
+		}
+		return assemble(*cycle, tasks), nil
+	})
 }

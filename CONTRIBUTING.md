@@ -70,7 +70,7 @@ Fresh-fixture scenario admission assertions compare the complete ledger and summ
 daily counters, so a run crossing UTC midnight still checks every turn. Use
 current-day counts only when testing daily budget behavior itself.
 Go tests share polling and process helpers through `internal/testutil`, and inject `internal/runner/runnertest`
-in place of runner processes; `internal/schemas/schematest` holds each structured-output
+in place of runner processes; the `internal/schemas` tests hold each structured-output
 schema to the Go type that decodes its answers. `web/types_contract_test.go` holds the
 dashboard's TypeScript types, limits and vocabularies to the Go records and
 validation. Browser tests use clearly synthetic

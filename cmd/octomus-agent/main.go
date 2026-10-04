@@ -20,12 +20,11 @@ import (
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
-	"github.com/tyk-swe/octomus-agent/internal/evidence"
+	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/httpapi"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/notifications"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
-	"github.com/tyk-swe/octomus-agent/internal/report"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -127,9 +126,9 @@ func run(args []string, env func(string) (string, bool), stdout, stderr io.Write
 		stateDB := filepath.Join(data, stateDBName)
 		var value map[string]any
 		if parsed.usageReport {
-			value, err = report.UsageReport(stateDB)
+			value, err = export.Usage(stateDB)
 		} else {
-			value, err = evidence.ExportRun(stateDB, *parsed.exportRun)
+			value, err = export.Run(stateDB, *parsed.exportRun)
 		}
 		if err == nil {
 			err = printJSON(stdout, value)

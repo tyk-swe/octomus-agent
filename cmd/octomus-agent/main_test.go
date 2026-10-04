@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/evidence"
+	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -180,7 +180,7 @@ func TestReadOnlyExportsReturnBeforeTouchingApplicationState(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &exported); err != nil {
 		t.Fatal(err, out)
 	}
-	if cycle, _ := exported["cycle"].(map[string]any); cycle["id"] != "cycle-a" || exported["schema_version"] != float64(evidence.SchemaVersion) {
+	if cycle, _ := exported["cycle"].(map[string]any); cycle["id"] != "cycle-a" || exported["schema_version"] != float64(export.SchemaVersion) {
 		t.Fatal(out)
 	}
 	code, out, errText = call("--usage-report")

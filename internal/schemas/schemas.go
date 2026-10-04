@@ -31,6 +31,10 @@ func ProposalSchema() Schema {
 func ReviewSchema() Schema {
 	return Object(Schema{"completed": Schema{"type": "boolean"}, "summary": String(), "findings": Array(Object(Schema{"title": String(), "file": String(), "detail": String(), "priority": String()}))})
 }
+func AssessmentSchema() Schema {
+	return Object(Schema{"assessments": Array(Object(Schema{"id": String(), "decision": String(), "reason": String()}))})
+}
+func GroundingSchema() Schema { return Object(Schema{"context": String()}) }
 
 func Validate(value any, schema Schema) error { return validate(value, schema, "") }
 

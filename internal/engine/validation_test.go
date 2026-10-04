@@ -1,16 +1,13 @@
 package engine
 
-// Plan rules: proposal validation, consolidation accounting, the dispatch-time task plan check, target
-// resolution and the structured-output schemas the planning roles answer in.
+// Plan rules: proposal validation, consolidation accounting, the dispatch-time task plan check and target
+// resolution.
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/schemas"
-	"github.com/tyk-swe/octomus-agent/internal/schemas/schematest"
 )
 
 func assertErrorNames(t *testing.T, err error, fragments ...string) {
@@ -218,27 +215,5 @@ func TestResolveTarget(t *testing.T) {
 	}
 	if target, err := ResolveTarget(cfg, open, "main"); err != nil || target != nil {
 		t.Fatalf("default branch resolved to %+v, %v; want no PR", target, err)
-	}
-}
-
-// Every structured-output schema is a closed object over exactly the Go type that decodes its answers.
-func TestPlanningSchemas(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name   string
-		schema schemas.Schema
-		typ    reflect.Type
-	}{
-		{"proposal document", schemas.ProposalSchema(), reflect.TypeOf(proposalDocument{})},
-		{"assessment document", assessmentSchema(), reflect.TypeOf(assessmentDocument{})},
-		{"grounding document", groundingSchema(), reflect.TypeOf(groundingDocument{})},
-		{"review", schemas.ReviewSchema(), reflect.TypeOf(model.Review{})},
-	} {
-		schematest.Match(t, tc.name, tc.schema, tc.typ)
-		sample := schematest.Sample(tc.schema)
-		if err := schemas.Validate(sample, tc.schema); err != nil {
-			t.Fatalf("sample %s: %v", tc.name, err)
-		}
-		schematest.SameAfterDecoding(t, sample, reflect.New(tc.typ).Interface())
 	}
 }

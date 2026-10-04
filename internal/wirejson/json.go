@@ -382,38 +382,7 @@ func ValidStrings(data []byte) error {
 	return nil
 }
 
-func UnmarshalEnum[T ~uint8](data []byte, names []string, dst *T) error {
-	value, err := enumOf(data, names)
-	if err == nil {
-		*dst = T(value)
-	}
-	return marked(err)
-}
-
-func enumOf(data []byte, names []string) (uint8, error) {
-	if err := ValidStrings(data); err != nil {
-		return 0, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	token, err := dec.Token()
-	if err != nil {
-		return 0, err
-	}
-	name, ok := token.(string)
-	if !ok {
-		return 0, fmt.Errorf("expected an enum string")
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return 0, fmt.Errorf("trailing enum data")
-	}
-	for i, allowed := range names {
-		if name == allowed {
-			return uint8(i), nil
-		}
-	}
-	return 0, fmt.Errorf("invalid enum value %q (expected one of: %s)", name, strings.Join(names, ", "))
-}
-
+// EnumName is the wire name of an enum value, or "" outside names.
 func EnumName[T ~uint8](value T, names []string) string {
 	if int(value) >= len(names) {
 		return ""
@@ -421,11 +390,23 @@ func EnumName[T ~uint8](value T, names []string) string {
 	return names[value]
 }
 
-func MarshalEnum[T ~uint8](value T, names []string) ([]byte, error) {
+// EnumText implements an enum's MarshalText: its wire name, or an *Error for a
+// value outside names.
+func EnumText[T ~uint8](value T, names []string) ([]byte, error) {
 	name := EnumName(value, names)
 	if name == "" {
 		return nil, &Error{inner: fmt.Errorf("invalid enum value %d", value)}
 	}
-	data, err := json.Marshal(name)
-	return data, marked(err)
+	return []byte(name), nil
+}
+
+// ParseEnum implements an enum's UnmarshalText: text must equal one name
+// exactly. Anything else is an *Error naming the value and the accepted names.
+func ParseEnum(text []byte, names []string) (uint8, error) {
+	for i, allowed := range names {
+		if string(text) == allowed {
+			return uint8(i), nil
+		}
+	}
+	return 0, &Error{inner: fmt.Errorf("invalid enum value %q (expected one of: %s)", text, strings.Join(names, ", "))}
 }

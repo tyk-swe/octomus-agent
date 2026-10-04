@@ -8,58 +8,45 @@ import (
 	"strings"
 )
 
-var fixtureDirectory = locateFixtureDirectory()
+var fixtureDirectory = fixtureDir()
 
-func locateFixtureDirectory() string {
+// fixtureDir resolves tests/fixtures from this file's recorded source path. A
+// -trimpath build records a module path instead of a filesystem path, so it
+// then walks up from the initial working directory to this checkout's go.mod
+// before any test can change the process directory. When neither resolves,
+// the relative path is kept so InstallFixtureScript can explain the failure.
+func fixtureDir() string {
 	_, file, _, _ := runtime.Caller(0)
-	var cwd string
-	if !filepath.IsAbs(file) {
-		cwd, _ = os.Getwd()
-	}
-	return fixtureDirectoryFromSource(file, cwd)
-}
-
-func fixtureDirectoryFromSource(file, initialDirectory string) string {
 	directory := filepath.Join(filepath.Dir(file), "..", "..", "tests", "fixtures")
 	if filepath.IsAbs(directory) {
 		return directory
 	}
-	// -trimpath records a module path instead of a filesystem path. Resolve
-	// the source checkout before any test can change the process directory.
-	if initialDirectory != "" {
-		if found := findFixtureDirectory(initialDirectory); found != "" {
-			return found
+	const module = "github.com/tyk-swe/octomus-agent"
+	current, _ := os.Getwd()
+	for current != "" {
+		data, err := os.ReadFile(filepath.Join(current, "go.mod"))
+		if err != nil {
+			parent := filepath.Dir(current)
+			if !os.IsNotExist(err) || parent == current {
+				return directory
+			}
+			current = parent
+			continue
 		}
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 || fields[0] != "module" || (fields[1] != module && fields[1] != `"`+module+`"`) {
+				continue
+			}
+			fixtures := filepath.Join(current, "tests", "fixtures")
+			if info, err := os.Stat(fixtures); err == nil && info.IsDir() {
+				return fixtures
+			}
+			break
+		}
+		return directory // An unrelated module is not this checkout.
 	}
 	return directory
-}
-
-func findFixtureDirectory(directory string) string {
-	const module = "github.com/tyk-swe/octomus-agent"
-	for {
-		data, err := os.ReadFile(filepath.Join(directory, "go.mod"))
-		if err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
-				fields := strings.Fields(line)
-				if len(fields) < 2 || fields[0] != "module" || (fields[1] != module && fields[1] != `"`+module+`"`) {
-					continue
-				}
-				fixtures := filepath.Join(directory, "tests", "fixtures")
-				if info, err := os.Stat(fixtures); err == nil && info.IsDir() {
-					return fixtures
-				}
-				return ""
-			}
-			return "" // An unrelated module is not this checkout.
-		} else if !os.IsNotExist(err) {
-			return ""
-		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			return ""
-		}
-		directory = parent
-	}
 }
 
 // FixturePath resolves a file in tests/fixtures independently of later working

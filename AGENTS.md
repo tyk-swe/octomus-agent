@@ -66,11 +66,12 @@ owns strict typed JSON boundaries for saved records and API requests.
 - `internal/redact`: the one secret scrubber and display bound, shared by every
   package that records or returns text, the token and webhook variable names, and
   `Fragment` for text already cut by a capture or read limit.
-- `internal/notifications`: opt-in webhook delivery. `internal/report`: read-only
-  usage reporting. `internal/evidence`: read-only `RunEvidenceV1` export.
-  `internal/httpapi`: authenticated controls and embedded dashboard serving.
-  `internal/schemas`: structured-output schemas and validation; its test-only
-  `schematest` holds each schema to the Go type that decodes its answers.
+- `internal/notifications`: opt-in webhook delivery. `internal/export`: the
+  read-only exports of saved records (`export.go` opens one snapshot and
+  redacts, `usage.go` is the usage report, `evidence.go` the `RunEvidenceV1`
+  export). `internal/httpapi`: authenticated controls and embedded dashboard
+  serving. `internal/schemas`: structured-output schemas and validation; its
+  tests hold each schema to the `internal/model` type that decodes its answers.
 - `internal/git`, `internal/process`, `internal/workspace`: Git/GitHub
   publication, owned process groups and managed-directory safety.
 - `web/src`: dashboard, shared TypeScript types, settings, setup checklist and
