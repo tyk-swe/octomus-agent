@@ -56,7 +56,7 @@ func TestInvocationAdmitsOncePerTurn(t *testing.T) {
 	app := f.newApp(t)
 
 	saved := driveTask(t, f, app, task.ID)
-	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonRunnerUnavailable {
+	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedRunnerUnavailable {
 		t.Fatalf("failed start outcome = %+v", saved)
 	}
 	if saved.ExecutionSession != nil || len(saved.Sessions) != 0 {

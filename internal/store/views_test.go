@@ -102,7 +102,7 @@ func TestIndexedViews(t *testing.T) {
 	if len(runningBaselines) != 1 || runningBaselines[0].ID != "base-running" {
 		t.Fatalf("running baselines: %+v", runningBaselines)
 	}
-	cleanup, err := s.BaselineCleanupCandidates("")
+	cleanup, err := s.StaleBaselines("")
 	must(t, err)
 	if len(cleanup) != 1 || cleanup[0].ID != "base-done" {
 		t.Fatalf("baseline cleanup: %+v", cleanup)
@@ -143,12 +143,12 @@ func TestIndexedViews(t *testing.T) {
 		t.Fatalf("missing proposal: %s %v", missing, err)
 	}
 
-	output, err := s.LatestPrOutput("FIXTURE/PROJECT", 9)
+	output, err := s.LatestPROutput("FIXTURE/PROJECT", 9)
 	must(t, err)
 	if output == nil || *output != "out00001" {
 		t.Fatalf("latest PR output: %v", output)
 	}
-	candidates, err := s.PrReservationCandidates()
+	candidates, err := s.ReservableTasks()
 	must(t, err)
 	if got := ids(candidates); len(got) != 2 {
 		t.Fatalf("reservation candidates: %v", got)
@@ -174,7 +174,7 @@ func TestIndexedViews(t *testing.T) {
 	control.Batch.CycleID = str(next.ID)
 	fingerprint, err := config.Default().Fingerprint()
 	must(t, err)
-	_, started, err := s.BeginCycleIfAffordable(next, control, expected, fingerprint, time.Now())
+	_, started, err := s.BeginCycle(next, control, expected, fingerprint, time.Now())
 	must(t, err)
 	if !started {
 		t.Fatal("begin cycle refused an affordable cycle under the saved control")

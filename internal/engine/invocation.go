@@ -54,7 +54,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		}
 		identity := *inv.resume
 		resume = &identity
-		if _, err := sessionMut(inv.task, identity, inv.role); err != nil {
+		if _, err := findSession(inv.task, identity, inv.role); err != nil {
 			return "", err
 		}
 	}
@@ -110,7 +110,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 			inv.keep(session)
 		}
 	} else {
-		record, err := sessionMut(task, session, inv.role)
+		record, err := findSession(task, session, inv.role)
 		if err != nil {
 			return "", err
 		}
@@ -121,13 +121,13 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	}
 	answer, summary, err := a.turn(clients, inv, session)
 	// The sandbox record stays with the session whether or not the turn succeeded; the caller saves the task.
-	if record, recordErr := sessionMut(task, session, inv.role); recordErr == nil {
+	if record, recordErr := findSession(task, session, inv.role); recordErr == nil {
 		record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
 	}
 	if err != nil {
 		return "", err
 	}
-	record, err := sessionMut(task, session, inv.role)
+	record, err := findSession(task, session, inv.role)
 	if err != nil {
 		return "", err
 	}
@@ -164,7 +164,7 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 		return answer, answer, nil
 	}
 	if inv.task != nil {
-		record, err := sessionMut(inv.task, session, inv.role)
+		record, err := findSession(inv.task, session, inv.role)
 		if err != nil {
 			return "", "", err
 		}
@@ -187,7 +187,7 @@ func (a *App) admit(ctx context.Context, cycleID string, task *model.Task, role 
 		taskID = &task.ID
 		owner = filepath.Join("tasks", task.ID)
 	}
-	size, err := a.measureForAdmission(ctx, owner)
+	size, err := a.measureLocked(ctx, owner)
 	if err != nil {
 		return err
 	}
@@ -197,15 +197,15 @@ func (a *App) admit(ctx context.Context, cycleID string, task *model.Task, role 
 	return a.Store.ReserveSession(size, store.NewAdmission(cycleID, taskID, role, route))
 }
 
-func (a *App) measureForAdmission(ctx context.Context, owner string) (uint64, error) {
-	a.planningStorage.Lock()
-	defer a.planningStorage.Unlock()
+func (a *App) measureLocked(ctx context.Context, owner string) (uint64, error) {
+	a.fsLock.Lock()
+	defer a.fsLock.Unlock()
 	if err := ctx.Err(); err != nil {
 		return 0, fmt.Errorf("Operation cancelled: %w", err)
 	}
 	// Storage is a pre-turn snapshot, not a disk reservation. Exclude trusted filesystem changes only for the scan;
 	// the store independently serializes budget reservations and must not stall unrelated setup/status/cleanup.
-	return a.measureFor(owner)
+	return a.measure(owner)
 }
 
 // ownedRoots are the data directory's parents of owned roots, each <parent>/<id>, where sandboxes write.
@@ -214,11 +214,11 @@ var ownedRoots = []string{"tasks", "cycles", "baselines", scratchDir}
 // ownerDepth is how many leading components of a path below the data directory name its owner: <parent>/<id>.
 const ownerDepth = 2
 
-// measureFor measures the data directory for an admission on behalf of owner, an owned root relative to it. A subtree
+// measure measures the data directory for an admission on behalf of owner, an owned root relative to it. A subtree
 // the walk could not measure, unreadable or too costly to traverse, holds unknown bytes: it puts its own owner over the
 // limit, and puts everyone over it when it lies outside any owned root. Another owner's unmeasured subtree does not
 // stop this admission; that owner can admit nothing more until its retained work is resolved.
-func (a *App) measureFor(owner string) (uint64, error) {
+func (a *App) measure(owner string) (uint64, error) {
 	usage, err := workspace.Measure(a.DataDir, ownerDepth)
 	if err != nil {
 		return 0, err
@@ -228,21 +228,21 @@ func (a *App) measureFor(owner string) (uint64, error) {
 		if !owned || !slices.Contains(ownedRoots, parent) {
 			// No sandbox writes here, so this is the host's own: lost+found at a filesystem's root, for example.
 			return 0, fmt.Errorf("Storage under %s in the data directory could not be measured; it is unreadable, nested too deeply, or too costly to traverse. Make it readable to the service or move it out of the data directory: %w",
-				redact.Text(rel), model.BlockedReasonStorageLimit)
+				redact.Text(rel), model.BlockedStorageLimit)
 		}
 		if rel == owner {
 			return 0, fmt.Errorf("Workspace storage under %s could not be measured; it is unreadable, nested too deeply, or too costly to traverse. Resolve that retained work: %w",
-				redact.Text(rel), model.BlockedReasonStorageLimit)
+				redact.Text(rel), model.BlockedStorageLimit)
 		}
 	}
 	return usage.Bytes, nil
 }
 
-func sessionMut(task *model.Task, thread, role string) (*model.Session, error) {
+func findSession(task *model.Task, thread, role string) (*model.Session, error) {
 	for i := range task.Sessions {
 		if task.Sessions[i].ID == thread && task.Sessions[i].Role == role {
 			return &task.Sessions[i], nil
 		}
 	}
-	return nil, fmt.Errorf("Task %s is missing its %s session record (%s): %w", task.ID, role, thread, model.BlockedReasonWorkspaceInvalid)
+	return nil, fmt.Errorf("Task %s is missing its %s session record (%s): %w", task.ID, role, thread, model.BlockedWorkspaceInvalid)
 }

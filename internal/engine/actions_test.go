@@ -35,7 +35,7 @@ func TestRetryResetsRepairBudget(t *testing.T) {
 		CreatedAt:      model.Now(),
 	}
 	task.Reviews = []model.ReviewRound{round, round}
-	reason := model.BlockedReasonVerificationFailed
+	reason := model.BlockedVerificationFailed
 	task.BlockedReason = &reason
 	putTask(t, f, task)
 	go func() { _ = app.TaskAction(context.Background(), task.ID, "retry") }()
@@ -65,7 +65,7 @@ func TestTaskActions(t *testing.T) {
 
 	stale := executionTask(t, f, f.cfg.DefaultBranch)
 	stale.Status = model.StatusBlocked
-	reason := model.BlockedReasonStaleBase
+	reason := model.BlockedStaleBase
 	stale.BlockedReason = &reason
 	putTask(t, f, stale)
 	if err := app.TaskAction(ctx, stale.ID, "supersede"); err != nil {
@@ -115,11 +115,11 @@ func TestRetryOnStaleBaseBlocks(t *testing.T) {
 	git(t, f.repo, "commit", "--allow-empty", "-m", "External work")
 	git(t, f.repo, "push", "origin", f.cfg.DefaultBranch)
 	err := app.TaskAction(context.Background(), task.ID, "retry")
-	if err == nil || model.BlockedReasonFromError(err) != model.BlockedReasonStaleBase {
+	if err == nil || model.BlockedReasonFromError(err) != model.BlockedStaleBase {
 		t.Fatalf("stale retry = %v; want the recorded stale-base failure", err)
 	}
 	saved := loadTask(t, f.state, task.ID)
-	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedReasonStaleBase {
+	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedStaleBase {
 		t.Fatalf("stale retry outcome = %+v", saved)
 	}
 	if saved.Attempts != 0 {

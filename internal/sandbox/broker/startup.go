@@ -19,13 +19,13 @@ import (
 // reach host services through their gateway.
 const isolatedGateway = "com.docker.network.bridge.gateway_mode_ipv4"
 
-// isolatedGatewayAPI is the Engine API of Docker Engine 28, the first whose bridge driver enforces an isolated gateway.
+// minEngineAPI is the Engine API of Docker Engine 28, the first whose bridge driver enforces an isolated gateway.
 // Older engines store the option as given without acting on it, so the network's options alone cannot tell.
-const isolatedGatewayAPI = "1.48"
+const minEngineAPI = "1.48"
 
-// startupSweepWait bounds the removal of a previous broker's leftovers, so one the daemon cannot remove fails startup,
+// sweepWait bounds the removal of a previous broker's leftovers, so one the daemon cannot remove fails startup,
 // and the broker restarts, rather than leaving it waiting with nothing served.
-const startupSweepWait = 2 * time.Minute
+const sweepWait = 2 * time.Minute
 
 // New removes any sandbox a previous broker left behind, checks the daemon, image, networks and volumes and installs
 // the broker's executable for sandboxes. It refuses to serve a deployment that would weaken isolation.
@@ -35,13 +35,13 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Docker Engine is unreachable at %s: %w", cfg.DockerSocket, err)
 	}
-	if !apiAtLeast(version.APIVersion, isolatedGatewayAPI) {
+	if !apiAtLeast(version.APIVersion, minEngineAPI) {
 		return nil, fmt.Errorf("Docker Engine API %s is older than %s; sandboxes need Docker Engine 28 or later to isolate their networks from the host",
-			version.APIVersion, isolatedGatewayAPI)
+			version.APIVersion, minEngineAPI)
 	}
 	// Leftovers go first: their time limits died with the previous broker, so a start that any later check refuses
 	// must not leave them running with live egress leases.
-	sweepCtx, cancelSweep := context.WithTimeout(ctx, startupSweepWait)
+	sweepCtx, cancelSweep := context.WithTimeout(ctx, sweepWait)
 	err = b.sweep(sweepCtx)
 	cancelSweep()
 	if err != nil {

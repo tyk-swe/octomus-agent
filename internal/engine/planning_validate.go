@@ -13,7 +13,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-type idCoverageErrors struct {
+type idMessages struct {
 	invented, duplicate, omitted func(id string) string
 }
 
@@ -25,7 +25,7 @@ func proposalIDs(proposals []model.Proposal) []string {
 	return ids
 }
 
-func exactIDs(wantList, got []string, messages idCoverageErrors, each func(i int, id string) error) error {
+func matchIDs(wantList, got []string, messages idMessages, each func(i int, id string) error) error {
 	want := make(map[string]struct{}, len(wantList))
 	for _, id := range wantList {
 		want[id] = struct{}{}
@@ -105,7 +105,7 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 		if len(proposal.Title) > 200 || len(proposal.Prompt) > 32000 || len(proposal.Evidence) > 40 {
 			return fmt.Errorf("Proposal %q exceeds task size limits: title %d bytes (limit 200), prompt %d bytes (limit 32000), %d evidence items (limit 40)", proposal.ID, len(proposal.Title), len(proposal.Prompt), len(proposal.Evidence))
 		}
-		if field := missingExecutionContext(proposal); field != "" {
+		if field := missingField(proposal); field != "" {
 			return fmt.Errorf("Accepted proposal is missing grounding or execution context: proposal %q has no %s", proposal.ID, field)
 		}
 		if _, ok := cfg.Tiers[proposal.Tier]; !ok || !slices.Contains(cfg.Categories, proposal.Category) {
@@ -149,7 +149,7 @@ func ValidateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 	return validateBranchOrder(cfg, acceptedInOrder)
 }
 
-func missingExecutionContext(proposal model.Proposal) string {
+func missingField(proposal model.Proposal) string {
 	for _, field := range []struct{ name, value string }{
 		{"title", proposal.Title}, {"problem", proposal.Problem}, {"benefit", proposal.Benefit},
 		{"scope", proposal.Scope}, {"prompt", proposal.Prompt},
@@ -215,7 +215,7 @@ const (
 	MaxPRContextBytes = 512 * 1024
 )
 
-func ExternalContext(inventory model.OpenPrInventory) ([]model.ExternalPrContext, model.PrCoverage, error) {
+func ExternalContext(inventory model.OpenPRInventory) ([]model.ExternalPRContext, model.PRCoverage, error) {
 	external := []model.PullRequest{}
 	for _, pr := range inventory.PRs {
 		if !pr.Owned {
@@ -224,7 +224,7 @@ func ExternalContext(inventory model.OpenPrInventory) ([]model.ExternalPrContext
 	}
 	sort.Slice(external, func(i, j int) bool { return external[i].Number < external[j].Number })
 	total := len(external)
-	result := []model.ExternalPrContext{}
+	result := []model.ExternalPRContext{}
 	bytesUsed := 2
 	for _, pr := range external {
 		if len(result) >= MaxExternalPRs {
@@ -232,10 +232,10 @@ func ExternalContext(inventory model.OpenPrInventory) ([]model.ExternalPrContext
 		}
 		title, titleCut := truncateRunes(pr.Title, MaxPRTitleChars)
 		body, bodyCut := truncateRunes(pr.Body, MaxPRBodyChars)
-		entry := model.ExternalPrContext{Number: pr.Number, URL: pr.URL, Title: title, Body: body, Branch: pr.Branch, Head: pr.Head, Base: pr.Base, HeadRepository: pr.HeadRepository, BaseRepository: pr.BaseRepository, TitleTruncated: titleCut, BodyTruncated: bodyCut}
+		entry := model.ExternalPRContext{Number: pr.Number, URL: pr.URL, Title: title, Body: body, Branch: pr.Branch, Head: pr.Head, Base: pr.Base, HeadRepository: pr.HeadRepository, BaseRepository: pr.BaseRepository, TitleTruncated: titleCut, BodyTruncated: bodyCut}
 		encoded, err := wirejson.Marshal(entry)
 		if err != nil {
-			return nil, model.PrCoverage{}, err
+			return nil, model.PRCoverage{}, err
 		}
 		extra := len(encoded)
 		if len(result) > 0 {
@@ -247,7 +247,7 @@ func ExternalContext(inventory model.OpenPrInventory) ([]model.ExternalPrContext
 		bytesUsed += extra
 		result = append(result, entry)
 	}
-	coverage := model.PrCoverage{ObservedAt: new(inventory.ObservedAt), Complete: true, TotalOpen: uint64(len(inventory.PRs)), TotalExternal: uint64(total), IncludedExternal: uint64(len(result)), OmittedExternal: uint64(total - len(result)), MaxExternal: MaxExternalPRs, MaxTitleChars: MaxPRTitleChars, MaxBodyChars: MaxPRBodyChars, MaxContextBytes: MaxPRContextBytes}
+	coverage := model.PRCoverage{ObservedAt: new(inventory.ObservedAt), Complete: true, TotalOpen: uint64(len(inventory.PRs)), TotalExternal: uint64(total), IncludedExternal: uint64(len(result)), OmittedExternal: uint64(total - len(result)), MaxExternal: MaxExternalPRs, MaxTitleChars: MaxPRTitleChars, MaxBodyChars: MaxPRBodyChars, MaxContextBytes: MaxPRContextBytes}
 	return result, coverage, nil
 }
 

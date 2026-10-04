@@ -78,7 +78,7 @@ type Captured struct {
 	tail      []byte
 }
 
-const diagnosticTruncatedMarker = "[diagnostic output truncated]"
+const truncatedMarker = "[diagnostic output truncated]"
 
 func (c Captured) SafePreview() string {
 	return strings.Join(redact.Parts(c.previewParts()...), "")
@@ -87,7 +87,7 @@ func (c Captured) SafePreview() string {
 func (c Captured) previewParts() []redact.Part {
 	parts := []redact.Part{{Text: strings.ToValidUTF8(string(c.Bytes), "\uFFFD"), CutEnd: c.Truncated}}
 	if c.Truncated {
-		parts = append(parts, redact.Part{Text: "\n" + diagnosticTruncatedMarker},
+		parts = append(parts, redact.Part{Text: "\n" + truncatedMarker},
 			redact.Part{Text: strings.ToValidUTF8(string(c.tail), "\uFFFD"), CutStart: true, Prefix: "\n"})
 	}
 	return parts
@@ -98,9 +98,9 @@ func joinPreview(head, tail string, truncated bool) string {
 		return head
 	}
 	if tail == "" {
-		return head + "\n" + diagnosticTruncatedMarker
+		return head + "\n" + truncatedMarker
 	}
-	return head + "\n" + diagnosticTruncatedMarker + "\n" + tail
+	return head + "\n" + truncatedMarker + "\n" + tail
 }
 
 type Status struct {
@@ -203,7 +203,7 @@ func (s Status) String() string {
 	return s.state.String()
 }
 
-type ProcessOutput struct {
+type Output struct {
 	Status Status
 	Stdout Captured
 	Stderr Captured
@@ -219,7 +219,7 @@ type SafeCapture struct {
 // SafeCaptures scrubs both streams together, before a caller inserts a stderr
 // label or trims whitespace that may separate a bearer prefix from its token.
 // It preserves each stream's head and tail for their different display policies.
-func (o ProcessOutput) SafeCaptures() (stdout, stderr SafeCapture) {
+func (o Output) SafeCaptures() (stdout, stderr SafeCapture) {
 	safe, stdoutParts := o.safeParts()
 	convert := func(parts []string) SafeCapture {
 		p := scrubbedPreview(parts)
@@ -228,7 +228,7 @@ func (o ProcessOutput) SafeCaptures() (stdout, stderr SafeCapture) {
 	return convert(safe[:stdoutParts]), convert(safe[stdoutParts+1:])
 }
 
-func (o ProcessOutput) safeParts() ([]string, int) {
+func (o Output) safeParts() ([]string, int) {
 	stdoutParts := o.Stdout.previewParts()
 	boundary := len(stdoutParts)
 	safe := redact.Streams(stdoutParts, o.Stderr.previewParts())
@@ -414,12 +414,12 @@ func (h *HostChild) Wait() (Status, error) {
 	return h.status, h.err
 }
 
-func Capture(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (*ProcessOutput, error) {
+func Capture(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode) (*Output, error) {
 	return CaptureEnv(ctx, binary, args, cwd, seconds, mode, nil)
 }
 
 // CaptureEnv is Capture with extra environment values appended to the Command environment.
-func CaptureEnv(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode, env []string) (*ProcessOutput, error) {
+func CaptureEnv(ctx context.Context, binary string, args []string, cwd string, seconds uint64, mode CaptureMode, env []string) (*Output, error) {
 	if ctx.Err() != nil {
 		return nil, ErrCancelled
 	}
@@ -432,7 +432,7 @@ func CaptureEnv(ctx context.Context, binary string, args []string, cwd string, s
 
 // CaptureStarted bounds an already started child's output and lifetime: a timeout or cancellation terminates it,
 // escalates to a kill after a grace period, and a normal exit still kills anything it left running.
-func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser, seconds uint64, mode CaptureMode) (*ProcessOutput, error) {
+func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser, seconds uint64, mode CaptureMode) (*Output, error) {
 	defer stdout.Close()
 	defer stderr.Close()
 	limit := DiagnosticLimit
@@ -526,7 +526,7 @@ func CaptureStarted(ctx context.Context, proc Proc, stdout, stderr io.ReadCloser
 	if errOut.err != nil {
 		return nil, errOut.err
 	}
-	return &ProcessOutput{
+	return &Output{
 		Status: result.status,
 		Stdout: out.captured,
 		Stderr: errOut.captured,
@@ -548,14 +548,14 @@ const (
 	elisionReserve   = 48
 )
 
-func ensureSuccess(binary string, output *ProcessOutput) error {
+func ensureSuccess(binary string, output *Output) error {
 	if output.Status.Success() {
 		return nil
 	}
 	return errors.New(failureText(binary, output))
 }
 
-func failureText(binary string, output *ProcessOutput) string {
+func failureText(binary string, output *Output) string {
 	prefix := fmt.Sprintf("%s exited with %s: ", binary, output.Status)
 	budget := failureTextLimit - utf8.RuneCountInString(prefix)
 	// Keep both streams intact until all overlapping secret spans are found.
@@ -596,7 +596,7 @@ func (p failurePreview) elide(limit int) string {
 	if p.tail == "" || utf8.RuneCountInString(text) <= limit {
 		return elideMiddle(text, limit)
 	}
-	const marker = "\n" + diagnosticTruncatedMarker + "\n"
+	const marker = "\n" + truncatedMarker + "\n"
 	keep := max(limit-utf8.RuneCountInString(marker), 0)
 	headRunes, tailRunes := utf8.RuneCountInString(p.head), utf8.RuneCountInString(p.tail)
 	switch {
@@ -642,7 +642,7 @@ func RunMachineEnv(ctx context.Context, binary string, args []string, cwd string
 	return machineResult(binary, output, err)
 }
 
-func machineResult(binary string, output *ProcessOutput, err error) (string, error) {
+func machineResult(binary string, output *Output, err error) (string, error) {
 	if err != nil {
 		return "", err
 	}

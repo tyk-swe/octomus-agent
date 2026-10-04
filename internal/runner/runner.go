@@ -276,7 +276,7 @@ func (r *Runners) Turn(session string, route config.Route, cwd, prompt string, s
 }
 
 func unavailable(err error) error {
-	return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
+	return fmt.Errorf("%w: %w", model.BlockedRunnerUnavailable, err)
 }
 
 func requireRoute(route config.Route, backend config.Backend) error {

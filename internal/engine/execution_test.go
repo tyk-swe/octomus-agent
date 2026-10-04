@@ -139,10 +139,10 @@ func TestInvalidReviewsNeverPublish(t *testing.T) {
 		answer  string
 		reasons []model.BlockedReason
 	}{
-		{"malformed", "The change looks fine to me.", []model.BlockedReason{model.BlockedReasonInvalidReview, model.BlockedReasonRunnerUnavailable}},
-		{"schema-invalid", `{"completed": "yes", "summary": "Looks fine", "findings": []}`, []model.BlockedReason{model.BlockedReasonInvalidReview, model.BlockedReasonRunnerUnavailable}},
-		{"incomplete", `{"completed": false, "summary": "Ran out of time", "findings": []}`, []model.BlockedReason{model.BlockedReasonInvalidReview}},
-		{"blank-summary", `{"completed": true, "summary": "  ", "findings": []}`, []model.BlockedReason{model.BlockedReasonInvalidReview}},
+		{"malformed", "The change looks fine to me.", []model.BlockedReason{model.BlockedInvalidReview, model.BlockedRunnerUnavailable}},
+		{"schema-invalid", `{"completed": "yes", "summary": "Looks fine", "findings": []}`, []model.BlockedReason{model.BlockedInvalidReview, model.BlockedRunnerUnavailable}},
+		{"incomplete", `{"completed": false, "summary": "Ran out of time", "findings": []}`, []model.BlockedReason{model.BlockedInvalidReview}},
+		{"blank-summary", `{"completed": true, "summary": "  ", "findings": []}`, []model.BlockedReason{model.BlockedInvalidReview}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newFixture(t)
@@ -191,7 +191,7 @@ func TestReviewerEditBlocks(t *testing.T) {
 	putTask(t, f, task)
 
 	saved := driveTask(t, f, f.newApp(t), task.ID)
-	if !blockedAs(saved, model.BlockedReasonWorkspaceInvalid) {
+	if !blockedAs(saved, model.BlockedWorkspaceInvalid) {
 		t.Fatalf("reviewer workspace edit outcome = %+v", saved)
 	}
 	if len(saved.Reviews) != 0 || len(saved.Verification) != 0 {
@@ -228,7 +228,7 @@ func TestRepairBudgetExhausted(t *testing.T) {
 	putTask(t, f, task)
 
 	saved := driveTask(t, f, f.newApp(t), task.ID)
-	if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
+	if !blockedAs(saved, model.BlockedVerificationFailed) {
 		t.Fatalf("failed verification outcome = %+v", saved)
 	}
 	if saved.Error == nil || !strings.Contains(*saved.Error, "Repair budget exhausted (max_repair_rounds 2)") {
@@ -299,7 +299,7 @@ func TestNoChangesBlocks(t *testing.T) {
 			putTask(t, f, task)
 
 			saved := driveTask(t, f, f.newApp(t), task.ID)
-			if !blockedAs(saved, model.BlockedReasonVerificationFailed) {
+			if !blockedAs(saved, model.BlockedVerificationFailed) {
 				t.Fatalf("unchanged outcome = %+v", saved)
 			}
 			if saved.Error == nil || !strings.Contains(*saved.Error, test.want) {
@@ -349,7 +349,7 @@ func TestTaskTimeout(t *testing.T) {
 		t.Fatal(finished.err)
 	}
 	saved := finished.task
-	if !blockedAs(saved, model.BlockedReasonTimeout) {
+	if !blockedAs(saved, model.BlockedTimeout) {
 		t.Fatalf("timeout outcome = %+v", saved)
 	}
 	if saved.Error == nil || !strings.Contains(*saved.Error, "time limit") {
@@ -359,7 +359,7 @@ func TestTaskTimeout(t *testing.T) {
 	if len(executors) != 1 || executors[0].Status != model.SessionFailed || !strings.Contains(executors[0].Summary, "time limit") {
 		t.Fatalf("timed-out executor session = %+v", executors)
 	}
-	if marked, _ := f.state.MarkerSet("cancel", task.ID); marked {
+	if marked, _ := f.state.Marked("cancel", task.ID); marked {
 		t.Fatal("a timeout must not be recorded as an operator cancellation")
 	}
 	assertUnpublished(t, f, saved)
@@ -398,7 +398,7 @@ func TestRemoteConflictBlocks(t *testing.T) {
 	putTask(t, f, task)
 
 	saved := driveTask(t, f, f.newApp(t), task.ID)
-	if !blockedAs(saved, model.BlockedReasonStaleBase) {
+	if !blockedAs(saved, model.BlockedStaleBase) {
 		t.Fatalf("remote conflict outcome = %+v", saved)
 	}
 	if saved.OutputCommit != nil || len(publications(t, f)) != 0 {
@@ -479,7 +479,7 @@ func TestDependencyOrderAndRollback(t *testing.T) {
 		git(t, f.repo, "fetch", filepath.Join(f.root, "remote.git"), "octomus/existing")
 		git(t, f.root, "--git-dir", filepath.Join(f.root, "remote.git"), "update-ref", "refs/heads/octomus/existing", head)
 		saved := driveTask(t, f, app, second.ID)
-		if !blockedAs(saved, model.BlockedReasonDependencyBlocked) {
+		if !blockedAs(saved, model.BlockedDependencyBlocked) {
 			t.Fatalf("rollback dependent outcome = %+v; want dependency_blocked", saved)
 		}
 		if saved.OutputCommit != nil {

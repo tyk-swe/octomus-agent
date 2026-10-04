@@ -264,10 +264,10 @@ func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
 }
 
-// CancelledTasksWithRunningSessionsExcept returns unfinished cancellation evidence
+// CancelledWithLiveSessions returns unfinished cancellation evidence
 // after its worker exits. Exclude ownership claims before decoding records, and
 // filter completed evidence before the page limit so old tasks cannot hide it.
-func (s *Store) CancelledTasksWithRunningSessionsExcept(excludedIDs []string) ([]model.Task, error) {
+func (s *Store) CancelledWithLiveSessions(excludedIDs []string) ([]model.Task, error) {
 	ids, err := json.Marshal(excludedIDs)
 	if err != nil {
 		return nil, err
@@ -307,7 +307,7 @@ func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
 	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')='running'")
 }
 
-func (s *Store) BaselineCleanupCandidates(after string) ([]model.BaselineCheck, error) {
+func (s *Store) StaleBaselines(after string) ([]model.BaselineCheck, error) {
 	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid<=COALESCE((SELECT rowid FROM records WHERE kind='baseline' AND id=?1),0),rowid LIMIT 100", after)
 }
 
@@ -423,7 +423,7 @@ func txStartBatch(c *sql.Conn, control model.Control) (model.Control, error) {
 	return next, nil
 }
 
-func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (model.PlanningCapacity, bool, error) {
+func (s *Store) StartBatch(control *model.Control, at time.Time) (model.PlanningCapacity, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var capacity model.PlanningCapacity
@@ -460,7 +460,7 @@ func (s *Store) StartBatchIfAffordable(control *model.Control, at time.Time) (mo
 	return capacity, started, err
 }
 
-func (s *Store) BeginCycleIfAffordable(cycle model.Cycle, control model.Control, expected model.Control, fingerprint string, at time.Time) (model.PlanningCapacity, bool, error) {
+func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected model.Control, fingerprint string, at time.Time) (model.PlanningCapacity, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var capacity model.PlanningCapacity
@@ -653,13 +653,13 @@ func (s *Store) CleanupEligible(kind, id, cutoff string) (bool, error) {
 	return eligible, err
 }
 
-func (s *Store) LatestPrOutput(repository string, number uint64) (*string, error) {
+func (s *Store) LatestPROutput(repository string, number uint64) (*string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return latestPrOutputAt(s.conn, repository, number)
+	return latestPROutputAt(s.conn, repository, number)
 }
 
-func (s *Store) RecordPrObservation(repository string, p model.PullRequest, deliveredNow bool) error {
+func (s *Store) RecordPRObservation(repository string, p model.PullRequest, deliveredNow bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	previousID, previous, err := prObservationAt(s.conn, repository, p.Number)
@@ -678,11 +678,11 @@ func (s *Store) RecordPrObservation(repository string, p model.PullRequest, deli
 	case previous != nil && previous.DeliveredHead != nil:
 		delivered = previous.DeliveredHead
 	default:
-		if delivered, err = latestPrOutputAt(s.conn, repository, p.Number); err != nil {
+		if delivered, err = latestPROutputAt(s.conn, repository, p.Number); err != nil {
 			return err
 		}
 	}
-	observation := model.PrObservation{
+	observation := model.PRObservation{
 		Repository:           repository,
 		ObservedAt:           model.Now(),
 		ExternalHeadMovement: delivered != nil && *delivered != p.Head,
@@ -700,7 +700,7 @@ func (s *Store) RediscoveryRequests(repository string) ([]any, error) {
 	return listRecords[any](s, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
 }
 
-func latestPrOutputAt(c *sql.Conn, repository string, number uint64) (*string, error) {
+func latestPROutputAt(c *sql.Conn, repository string, number uint64) (*string, error) {
 	var output *string
 	err := c.QueryRowContext(background, "SELECT json_extract(r.data,'$.output_commit') FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='published' AND json_extract(m.summary,'$.pr_number')=?2 ORDER BY json_extract(m.summary,'$.updated_at') DESC LIMIT 1", repository, int64(number)).Scan(&output)
 	if err == sql.ErrNoRows {
@@ -709,7 +709,7 @@ func latestPrOutputAt(c *sql.Conn, repository string, number uint64) (*string, e
 	return output, err
 }
 
-func prObservationAt(c *sql.Conn, repository string, number uint64) (string, *model.PrObservation, error) {
+func prObservationAt(c *sql.Conn, repository string, number uint64) (string, *model.PRObservation, error) {
 	var id, data string
 	err := c.QueryRowContext(background, "SELECT m.id,r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='pr' AND m.repository=?1 COLLATE NOCASE AND json_extract(m.summary,'$.pr.number')=?2 ORDER BY m.seq DESC LIMIT 1", repository, int64(number)).Scan(&id, &data)
 	if err == sql.ErrNoRows {
@@ -718,7 +718,7 @@ func prObservationAt(c *sql.Conn, repository string, number uint64) (string, *mo
 	if err != nil {
 		return "", nil, err
 	}
-	var observation model.PrObservation
+	var observation model.PRObservation
 	if err := decodeJSON([]byte(data), &observation); err != nil {
 		return "", nil, fmt.Errorf("Saved pr %s is unreadable: %w", id, err)
 	}

@@ -135,7 +135,7 @@ func (c Config) RoutesFor(audit bool) []NamedRoute {
 	return append(result, NamedRoute{"repair", c.RepairRoute.Clone()})
 }
 
-func (c Config) PlanningAdmissionsRequired() uint64 { return c.DiscoveryAgents + 4 }
+func (c Config) PlanningCost() uint64 { return c.DiscoveryAgents + 4 }
 func EqualASCII(a, b string) bool {
 	if len(a) != len(b) {
 		return false

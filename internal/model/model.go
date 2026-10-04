@@ -55,13 +55,13 @@ func (p Proposal) SameWork(other Proposal) bool {
 
 func (b BlockedReason) Error() string {
 	if int(b) >= len(blockedReasonMessages) {
-		return blockedReasonMessages[BlockedReasonUnknown]
+		return blockedReasonMessages[BlockedUnknown]
 	}
 	return blockedReasonMessages[b]
 }
 
 func BlockedReasonFromError(err error) BlockedReason {
-	result := BlockedReasonUnknown
+	result := BlockedUnknown
 	var visit func(error)
 	visit = func(e error) {
 		if e == nil {
@@ -83,13 +83,13 @@ func BlockedReasonFromError(err error) BlockedReason {
 	return result
 }
 
-func (p PlanningCapacity) Available() bool { return p.Status == PlanningCapacityStatusReady }
+func (p PlanningCapacity) Available() bool { return p.Status == CapacityReady }
 func (p PlanningCapacity) Message() string {
 	guidance := "Planning can start."
-	if p.Status == PlanningCapacityStatusDailyExhausted {
+	if p.Status == CapacityExhausted {
 		guidance = "Wait until UTC midnight or increase the daily limit."
 	}
-	if p.Status == PlanningCapacityStatusLimitTooLow {
+	if p.Status == CapacityTooLow {
 		guidance = "The configured daily limit cannot fund a complete planning pass; increase it."
 	}
 	return fmt.Sprintf("A complete planning pass requires %d daily admissions; %d remain (%d of %d used). %s", p.Required, p.Remaining, p.Used, p.Limit, guidance)
@@ -98,9 +98,9 @@ func (p PlanningCapacity) EnsureAvailable() error {
 	if p.Available() {
 		return nil
 	}
-	return fmt.Errorf("%s: %w", p.Message(), BlockedReasonBudgetExhausted)
+	return fmt.Errorf("%s: %w", p.Message(), BlockedBudgetExhausted)
 }
-func AttemptPolicyFromConfig(c config.Config) AttemptPolicy {
+func PolicyOf(c config.Config) AttemptPolicy {
 	return AttemptPolicy{c.MaxRepairRounds, c.MaxNoProgressRounds, c.MaxRetries, c.TaskTimeoutSeconds, c.SessionTimeoutSeconds, c.CommandTimeoutSeconds}
 }
 func (p AttemptPolicy) Apply(c *config.Config) {
@@ -215,16 +215,16 @@ func (t Task) AllowedActions() []string {
 		actions = append(actions, "cancel")
 	}
 	actions = append(actions, "archive")
-	reason := BlockedReasonUnknown
+	reason := BlockedUnknown
 	if t.BlockedReason != nil {
 		reason = *t.BlockedReason
 	}
 	switch reason {
-	case BlockedReasonStaleBase, BlockedReasonInvalidPlan, BlockedReasonWorkspaceInvalid:
+	case BlockedStaleBase, BlockedInvalidPlan, BlockedWorkspaceInvalid:
 		actions = append(actions, "supersede")
-	case BlockedReasonRemoteConflict, BlockedReasonPublicationUncertain:
+	case BlockedRemoteConflict, BlockedPublicationUncertain:
 		actions = append(actions, "reconcile")
-	case BlockedReasonDependencyBlocked, BlockedReasonRunnerUnavailable:
+	case BlockedDependencyBlocked, BlockedRunnerUnavailable:
 		actions = append(actions, "retry", "supersede")
 	default:
 		actions = append(actions, "retry")

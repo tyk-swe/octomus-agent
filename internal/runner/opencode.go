@@ -25,14 +25,14 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-const OpenCodeProtocolVersion = "1.18.30"
+const OpenCodeVersion = "1.18.30"
 
 func OpenCodeVersionWarning(version string) *string {
-	if version == OpenCodeProtocolVersion {
+	if version == OpenCodeVersion {
 		return nil
 	}
 	warning := VersionWarning(config.BackendOpencode, version,
-		fmt.Sprintf("protocol baseline %s. Pin the documented CLI", OpenCodeProtocolVersion))
+		fmt.Sprintf("protocol baseline %s. Pin the documented CLI", OpenCodeVersion))
 	return &warning
 }
 
@@ -89,7 +89,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	if err != nil {
 		var notStarted *sandbox.StartError
 		if errors.As(err, &notStarted) {
-			return nil, fmt.Errorf("Could not start OpenCode; %s: %w", runnerSetupHint(box, "install and configure OpenCode as the service user"), notStarted.Err)
+			return nil, fmt.Errorf("Could not start OpenCode; %s: %w", setupHint(box, "install and configure OpenCode as the service user"), notStarted.Err)
 		}
 		return nil, tail.explain(err)
 	}
@@ -152,7 +152,7 @@ func (o *OpenCode) protocolSchema(cwd string) (any, error) {
 func (o *OpenCode) Diagnose(cwd string) (Diagnostics, error) {
 	return Diagnostics{
 		Backend:         config.BackendOpencode,
-		ProtocolVersion: OpenCodeProtocolVersion,
+		ProtocolVersion: OpenCodeVersion,
 		Version:         o.version,
 		Warning:         OpenCodeVersionWarning(o.version),
 	}, nil

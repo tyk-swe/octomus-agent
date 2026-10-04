@@ -24,10 +24,10 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-const CodexTestedVersion = "0.153.4"
+const CodexVersion = "0.153.4"
 
 func CodexVersionWarning(installed string) *string {
-	expected := "codex-cli " + CodexTestedVersion
+	expected := "codex-cli " + CodexVersion
 	if strings.TrimSpace(installed) == expected {
 		return nil
 	}
@@ -108,7 +108,7 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 		Dir: cwd, Stdin: true, Stderr: tail,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("Could not start Codex app-server; %s: %w", runnerSetupHint(box, "install and authenticate Codex"), err)
+		return nil, fmt.Errorf("Could not start Codex app-server; %s: %w", setupHint(box, "install and authenticate Codex"), err)
 	}
 	done := make(chan struct{})
 	c := &Codex{
@@ -161,7 +161,7 @@ func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
 	version = strings.TrimSpace(version)
 	return Diagnostics{
 		Backend:         config.BackendCodex,
-		ProtocolVersion: CodexTestedVersion,
+		ProtocolVersion: CodexVersion,
 		Version:         version,
 		Warning:         CodexVersionWarning(version),
 	}, nil

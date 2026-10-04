@@ -28,15 +28,15 @@ var Limitations = [9]string{
 const ReviewRequirement = "Requires review before sharing. This is a private operator export of saved records, not a public-safe or publication-approved artifact."
 
 type RunEvidenceV1 struct {
-	SchemaVersion               uint32             `json:"schema_version"`
-	GeneratedAt                 string             `json:"generated_at"`
-	Kind                        string             `json:"kind"`
-	ReviewRequiredBeforeSharing bool               `json:"review_required_before_sharing"`
-	ReviewRequirement           string             `json:"review_requirement"`
-	Limitations                 [9]string          `json:"limitations"`
-	Cycle                       CycleEvidence      `json:"cycle"`
-	Proposals                   []ProposalEvidence `json:"proposals"`
-	Gaps                        []string           `json:"gaps"`
+	SchemaVersion     uint32             `json:"schema_version"`
+	GeneratedAt       string             `json:"generated_at"`
+	Kind              string             `json:"kind"`
+	ReviewRequired    bool               `json:"review_required_before_sharing"`
+	ReviewRequirement string             `json:"review_requirement"`
+	Limitations       [9]string          `json:"limitations"`
+	Cycle             CycleEvidence      `json:"cycle"`
+	Proposals         []ProposalEvidence `json:"proposals"`
+	Gaps              []string           `json:"gaps"`
 }
 
 type CycleEvidence struct {
@@ -110,7 +110,7 @@ type TaskEvidence struct {
 	Sessions         []SessionRoute  `json:"sessions"`
 	LatestReview     ReviewEvidence  `json:"latest_review"`
 	RequiredCommands CommandEvidence `json:"required_commands"`
-	PullRequest      *PrReference    `json:"pull_request"`
+	PullRequest      *PRReference    `json:"pull_request"`
 	Gaps             []string        `json:"gaps"`
 }
 
@@ -130,21 +130,21 @@ type SessionRoute struct {
 }
 
 type ReviewEvidence struct {
-	RoundsRecorded        int                  `json:"rounds_recorded"`
-	Latest                *ReviewRoundEvidence `json:"latest"`
-	Clean                 bool                 `json:"clean"`
-	CleanAtOutputRevision bool                 `json:"clean_at_output_revision"`
+	RoundsRecorded int                  `json:"rounds_recorded"`
+	Latest         *ReviewRoundEvidence `json:"latest"`
+	Clean          bool                 `json:"clean"`
+	CleanAtOutput  bool                 `json:"clean_at_output_revision"`
 }
 
 type ReviewRoundEvidence struct {
-	SessionID             string            `json:"session_id"`
-	Revision              string            `json:"revision"`
-	ComparisonBase        string            `json:"comparison_base"`
-	CreatedAt             string            `json:"created_at"`
-	Completed             bool              `json:"completed"`
-	SummaryPresent        bool              `json:"summary_present"`
-	MatchesOutputRevision *bool             `json:"matches_output_revision"`
-	Findings              []FindingEvidence `json:"findings"`
+	SessionID      string            `json:"session_id"`
+	Revision       string            `json:"revision"`
+	ComparisonBase string            `json:"comparison_base"`
+	CreatedAt      string            `json:"created_at"`
+	Completed      bool              `json:"completed"`
+	SummaryPresent bool              `json:"summary_present"`
+	AtOutput       *bool             `json:"matches_output_revision"`
+	Findings       []FindingEvidence `json:"findings"`
 }
 
 type FindingEvidence struct {
@@ -162,31 +162,31 @@ const (
 )
 
 type CommandEvidence struct {
-	State                     ChecksState     `json:"state"`
-	Commands                  []CommandResult `json:"commands"`
-	AllPassedAtOutputRevision bool            `json:"all_passed_at_output_revision"`
+	State     ChecksState     `json:"state"`
+	Commands  []CommandResult `json:"commands"`
+	AllPassed bool            `json:"all_passed_at_output_revision"`
 }
 
 type CommandState string
 
 const (
-	CommandPassed                CommandState = "passed"
-	CommandPassedAtOtherRevision CommandState = "passed_at_other_revision"
-	CommandFailed                CommandState = "failed"
-	CommandNoResult              CommandState = "no_result"
+	CommandPassed          CommandState = "passed"
+	CommandPassedElsewhere CommandState = "passed_at_other_revision"
+	CommandFailed          CommandState = "failed"
+	CommandNoResult        CommandState = "no_result"
 )
 
 type CommandResult struct {
-	Command               string       `json:"command"`
-	State                 CommandState `json:"state"`
-	ResultsRecorded       int          `json:"results_recorded"`
-	LatestSuccess         *bool        `json:"latest_success"`
-	LatestRevision        *string      `json:"latest_revision"`
-	LatestCreatedAt       *string      `json:"latest_created_at"`
-	MatchesOutputRevision *bool        `json:"matches_output_revision"`
+	Command         string       `json:"command"`
+	State           CommandState `json:"state"`
+	ResultsRecorded int          `json:"results_recorded"`
+	LatestSuccess   *bool        `json:"latest_success"`
+	LatestRevision  *string      `json:"latest_revision"`
+	LatestCreatedAt *string      `json:"latest_created_at"`
+	AtOutput        *bool        `json:"matches_output_revision"`
 }
 
-type PrReference struct {
+type PRReference struct {
 	Number *uint64 `json:"number"`
 	URL    *string `json:"url"`
 	Source string  `json:"source"`
@@ -365,22 +365,22 @@ func reviewEvidence(task model.Task) ReviewEvidence {
 			matches = &m
 		}
 		latest = &ReviewRoundEvidence{
-			SessionID:             round.SessionID,
-			Revision:              round.Revision,
-			ComparisonBase:        round.ComparisonBase,
-			CreatedAt:             round.CreatedAt,
-			Completed:             round.Result.Completed,
-			SummaryPresent:        strings.TrimSpace(round.Result.Summary) != "",
-			MatchesOutputRevision: matches,
-			Findings:              findings,
+			SessionID:      round.SessionID,
+			Revision:       round.Revision,
+			ComparisonBase: round.ComparisonBase,
+			CreatedAt:      round.CreatedAt,
+			Completed:      round.Result.Completed,
+			SummaryPresent: strings.TrimSpace(round.Result.Summary) != "",
+			AtOutput:       matches,
+			Findings:       findings,
 		}
 		clean = round.Result.Clean()
 	}
 	return ReviewEvidence{
-		RoundsRecorded:        len(task.Reviews),
-		Latest:                latest,
-		Clean:                 clean,
-		CleanAtOutputRevision: clean && latest != nil && latest.MatchesOutputRevision != nil && *latest.MatchesOutputRevision,
+		RoundsRecorded: len(task.Reviews),
+		Latest:         latest,
+		Clean:          clean,
+		CleanAtOutput:  clean && latest != nil && latest.AtOutput != nil && *latest.AtOutput,
 	}
 }
 
@@ -408,13 +408,13 @@ func commandEvidence(task model.Task) CommandEvidence {
 			case matches != nil && *matches:
 				out.State = CommandPassed
 			default:
-				out.State = CommandPassedAtOtherRevision
+				out.State = CommandPassedElsewhere
 			}
 			success := latest.Success
 			out.LatestSuccess = &success
 			out.LatestRevision = new(latest.Revision)
 			out.LatestCreatedAt = new(latest.CreatedAt)
-			out.MatchesOutputRevision = matches
+			out.AtOutput = matches
 		}
 		commands = append(commands, out)
 	}
@@ -428,7 +428,7 @@ func commandEvidence(task model.Task) CommandEvidence {
 			allPassed = false
 		}
 	}
-	return CommandEvidence{State: state, Commands: commands, AllPassedAtOutputRevision: allPassed}
+	return CommandEvidence{State: state, Commands: commands, AllPassed: allPassed}
 }
 
 func taskEvidence(task model.Task) TaskEvidence {
@@ -439,10 +439,10 @@ func taskEvidence(task model.Task) TaskEvidence {
 		gaps = append(gaps, "No comparison base is persisted, so the recorded review scope cannot be reconstructed.")
 	}
 	if task.OutputCommit != nil {
-		if !latestReview.CleanAtOutputRevision {
+		if !latestReview.CleanAtOutput {
 			gaps = append(gaps, "An output revision is recorded without a clean latest review at that revision.")
 		}
-		if requiredCommands.State == ChecksRecorded && !requiredCommands.AllPassedAtOutputRevision {
+		if requiredCommands.State == ChecksRecorded && !requiredCommands.AllPassed {
 			gaps = append(gaps, "An output revision is recorded without every required command passing at that revision.")
 		}
 	}
@@ -472,10 +472,10 @@ func taskEvidence(task model.Task) TaskEvidence {
 	for _, s := range task.Sessions {
 		sessions = append(sessions, SessionRoute{ID: s.ID, Role: s.Role, Status: s.Status, RequestedRoute: s.Route.Clone(), StartedAt: s.StartedAt})
 	}
-	var pr *PrReference
+	var pr *PRReference
 	if task.PRNumber != nil {
 		number := *task.PRNumber
-		pr = &PrReference{Number: &number, URL: cloneString(task.PRURL), Source: "recorded_task_reference"}
+		pr = &PRReference{Number: &number, URL: cloneString(task.PRURL), Source: "recorded_task_reference"}
 	}
 	return TaskEvidence{
 		ID:            task.ID,
@@ -604,12 +604,12 @@ func Assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 		groundingRevision = new(cycle.Grounding.Revision)
 	}
 	return RunEvidenceV1{
-		SchemaVersion:               SchemaVersion,
-		GeneratedAt:                 model.Now(),
-		Kind:                        "recorded_review_check_evidence",
-		ReviewRequiredBeforeSharing: true,
-		ReviewRequirement:           ReviewRequirement,
-		Limitations:                 Limitations,
+		SchemaVersion:     SchemaVersion,
+		GeneratedAt:       model.Now(),
+		Kind:              "recorded_review_check_evidence",
+		ReviewRequired:    true,
+		ReviewRequirement: ReviewRequirement,
+		Limitations:       Limitations,
 		Cycle: CycleEvidence{
 			ID:                cycle.ID,
 			Number:            cycle.Number,

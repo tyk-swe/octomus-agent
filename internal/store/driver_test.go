@@ -117,11 +117,11 @@ func TestReadOnlyConnectionRefusesWrites(t *testing.T) {
 	}
 }
 
-func inventory(prs ...model.PullRequest) model.OpenPrInventory {
+func inventory(prs ...model.PullRequest) model.OpenPRInventory {
 	if prs == nil {
 		prs = []model.PullRequest{}
 	}
-	return model.OpenPrInventory{Repository: "fixture/project", ObservedAt: "2026-01-01T00:00:00Z", PRs: prs}
+	return model.OpenPRInventory{Repository: "fixture/project", ObservedAt: "2026-01-01T00:00:00Z", PRs: prs}
 }
 
 func TestPRAdmissionTransaction(t *testing.T) {
@@ -134,18 +134,18 @@ func TestPRAdmissionTransaction(t *testing.T) {
 	must(t, s.Put("task", first.ID, first))
 	stale := inventory()
 	stale.ObservedAt = "2025-12-31T00:00:00Z"
-	admitted, err := s.AdmitNewPrTask(&first, stale)
+	admitted, err := s.AdmitNewPRTask(&first, stale)
 	must(t, err)
 	if admitted || first.Status != model.StatusQueued {
 		t.Fatal("admission with a stale inventory succeeded")
 	}
-	if has, _ := s.HasPrReservation(first.ID); has {
+	if has, _ := s.HasPRReservation(first.ID); has {
 		t.Fatal("refused admission reserved a slot")
 	}
 	if events, _ := s.Events(&first.ID); len(events) != 0 {
 		t.Fatal("refused admission recorded an event")
 	}
-	admitted, err = s.AdmitNewPrTask(&first, inventory())
+	admitted, err = s.AdmitNewPRTask(&first, inventory())
 	must(t, err)
 	if !admitted || first.Status != model.StatusExecuting {
 		t.Fatalf("admitted=%v status=%s", admitted, first.Status)
@@ -155,7 +155,7 @@ func TestPRAdmissionTransaction(t *testing.T) {
 	if saved.Status != model.StatusExecuting {
 		t.Fatal("admission did not persist the status")
 	}
-	if has, _ := s.HasPrReservation(first.ID); !has {
+	if has, _ := s.HasPRReservation(first.ID); !has {
 		t.Fatal("admission did not reserve a slot")
 	}
 	events, err := s.Events(&first.ID)
@@ -163,51 +163,51 @@ func TestPRAdmissionTransaction(t *testing.T) {
 	if len(events) != 1 || events[0].Kind != "status" || events[0].Message != "Executing" {
 		t.Fatalf("%+v", events)
 	}
-	reservations, err := s.PrReservations("Fixture/Project")
+	reservations, err := s.PRReservations("Fixture/Project")
 	must(t, err)
 	if len(reservations) != 1 || reservations[0].TaskID != first.ID || reservations[0].Branch != first.Branch {
 		t.Fatalf("%+v", reservations)
 	}
 	second := task()
 	must(t, s.Put("task", second.ID, second))
-	admitted, err = s.AdmitNewPrTask(&second, inventory())
+	admitted, err = s.AdmitNewPRTask(&second, inventory())
 	must(t, err)
 	if admitted || second.Status != model.StatusQueued {
 		t.Fatal("admission beyond the open-PR limit succeeded")
 	}
-	if has, _ := s.HasPrReservation(second.ID); has {
+	if has, _ := s.HasPRReservation(second.ID); has {
 		t.Fatal("refused admission reserved a slot")
 	}
-	observed, unrepresented, remaining := store.PrUnion(inventory(), reservations, 1)
+	observed, unrepresented, remaining := store.PRUnion(inventory(), reservations, 1)
 	if observed != 0 || unrepresented != 1 || remaining != 0 {
 		t.Fatalf("%d %d %d", observed, unrepresented, remaining)
 	}
 	first.Status = model.StatusBlocked
 	must(t, s.Put("task", first.ID, first))
-	if has, _ := s.HasPrReservation(first.ID); has {
+	if has, _ := s.HasPRReservation(first.ID); has {
 		t.Fatal("blocked task kept its reservation")
 	}
 	first.Status = model.StatusPublished
 	first.OutputCommit = str("out00001")
 	must(t, s.Put("task", first.ID, first))
-	must(t, s.SeedPrReservation(first))
+	must(t, s.SeedPRReservation(first))
 	published := inventory(model.PullRequest{Number: 7, Branch: first.Branch, State: "open", Owned: true, Head: "out00001", Base: "main"})
 	published.ObservedAt = "2026-01-02T00:00:00Z"
-	changed, err := s.PersistPrInventory(published, nil)
+	changed, err := s.PersistPRInventory(published, nil)
 	must(t, err)
 	if !changed {
 		t.Fatal("newer inventory was not persisted")
 	}
-	if has, _ := s.HasPrReservation(first.ID); has {
+	if has, _ := s.HasPRReservation(first.ID); has {
 		t.Fatal("published, represented task kept its reservation")
 	}
 	older := inventory()
-	if changed, err := s.PersistPrInventory(older, nil); err != nil || changed {
+	if changed, err := s.PersistPRInventory(older, nil); err != nil || changed {
 		t.Fatalf("older inventory persisted: %v %v", changed, err)
 	}
 	invalid := inventory()
 	invalid.ObservedAt = "yesterday"
-	if _, err := s.PersistPrInventory(invalid, nil); err == nil || !strings.Contains(err.Error(), "PR inventory timestamp is invalid") {
+	if _, err := s.PersistPRInventory(invalid, nil); err == nil || !strings.Contains(err.Error(), "PR inventory timestamp is invalid") {
 		t.Fatalf("%v", err)
 	}
 }

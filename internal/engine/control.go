@@ -18,12 +18,12 @@ var (
 	ErrRecoveryBlocked = conflictError("Wait for saved-state recovery to finish before starting new work.")
 )
 
-type planningCapacityError struct {
+type capacityError struct {
 	capacity model.PlanningCapacity
 }
 
-func (e *planningCapacityError) Error() string { return e.capacity.Message() }
-func (e *planningCapacityError) Unwrap() error { return model.BlockedReasonBudgetExhausted }
+func (e *capacityError) Error() string { return e.capacity.Message() }
+func (e *capacityError) Unwrap() error { return model.BlockedBudgetExhausted }
 
 func (a *App) runtimeIdle() bool {
 	a.runtimeMu.Lock()
@@ -59,7 +59,7 @@ func (a *App) enterContinuous(control *model.Control) error {
 }
 
 func (a *App) startRunOnceBatch(control *model.Control) error {
-	capacity, started, err := a.Store.StartBatchIfAffordable(control, time.Now())
+	capacity, started, err := a.Store.StartBatch(control, time.Now())
 	if err != nil {
 		return err
 	}
@@ -233,13 +233,13 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 		Repository: cfg.GitHubRepo, DecisionMemory: []any{}, RunID: runID,
 	}
-	capacity, started, err := a.Store.BeginCycleIfAffordable(cycle, next, live, fingerprint, time.Now())
+	capacity, started, err := a.Store.BeginCycle(cycle, next, live, fingerprint, time.Now())
 	if err != nil {
 		return "", err
 	}
 	if !started {
 		if !capacity.Available() {
-			return "", &planningCapacityError{capacity: capacity}
+			return "", &capacityError{capacity: capacity}
 		}
 		return "", conflictError("Configuration or control state changed during planning preflight")
 	}

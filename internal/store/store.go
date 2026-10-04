@@ -202,7 +202,7 @@ func (s *Store) ClearCancel(id string) error { return s.Put("cancel", id, nil) }
 
 func (s *Store) MarkCancel(id string) error { return s.Put("cancel", id, model.Now()) }
 
-func (s *Store) MarkerSet(kind, id string) (bool, error) {
+func (s *Store) Marked(kind, id string) (bool, error) {
 	value, found, err := s.GetValue(kind, id)
 	return found && value != nil, err
 }
@@ -460,7 +460,7 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 		if changed, err := result.RowsAffected(); err != nil {
 			return err
 		} else if changed != 1 {
-			return fmt.Errorf("Daily session budget exhausted; increase the configured limit or wait until UTC midnight: %w", model.BlockedReasonBudgetExhausted)
+			return fmt.Errorf("Daily session budget exhausted; increase the configured limit or wait until UTC midnight: %w", model.BlockedBudgetExhausted)
 		}
 		data, err := wirejson.Marshal(admission)
 		if err != nil {
@@ -507,17 +507,17 @@ func planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCapacity, erro
 		used = 0
 	}
 	limit := cfg.MaxSessionsPerDay
-	required := cfg.PlanningAdmissionsRequired()
+	required := cfg.PlanningCost()
 	remaining := uint64(0)
 	if limit > uint64(used) {
 		remaining = limit - uint64(used)
 	}
 	nextReset := time.Date(at.Year(), at.Month(), at.Day()+1, 0, 0, 0, 0, time.UTC).Unix()
-	status := model.PlanningCapacityStatusReady
+	status := model.CapacityReady
 	if limit < required {
-		status = model.PlanningCapacityStatusLimitTooLow
+		status = model.CapacityTooLow
 	} else if remaining < required {
-		status = model.PlanningCapacityStatusDailyExhausted
+		status = model.CapacityExhausted
 	}
 	return model.PlanningCapacity{Day: day, Limit: limit, Used: uint64(used), Remaining: remaining, Required: required, NextResetAt: nextReset, Status: status}, nil
 }
@@ -643,5 +643,5 @@ func savedRecordID(data []byte) string {
 }
 
 func StorageLimitError(measuredBytes uint64) error {
-	return fmt.Errorf("Workspace storage limit reached (%d bytes). Resolve retained tasks or increase the limit: %w", measuredBytes, model.BlockedReasonStorageLimit)
+	return fmt.Errorf("Workspace storage limit reached (%d bytes). Resolve retained tasks or increase the limit: %w", measuredBytes, model.BlockedStorageLimit)
 }

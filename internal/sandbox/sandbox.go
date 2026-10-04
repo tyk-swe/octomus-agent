@@ -173,7 +173,7 @@ const verifyGrace = 60
 
 // Verify starts one verification command in the backend's verify sandbox and bounds it like any captured command.
 // fresh starts the verification run's home empty.
-func Verify(ctx context.Context, backend Backend, dir, command string, seconds uint64, fresh bool) (*process.ProcessOutput, *model.SandboxRecord, error) {
+func Verify(ctx context.Context, backend Backend, dir, command string, seconds uint64, fresh bool) (*process.Output, *model.SandboxRecord, error) {
 	if ctx.Err() != nil {
 		return nil, nil, process.ErrCancelled
 	}

@@ -48,11 +48,11 @@ func (a *App) Tick() error {
 	if err := a.blockOrphanedPublications(); err != nil {
 		return a.blockRecovery(err)
 	}
-	if err := a.interruptCancelledTaskSessions(); err != nil {
+	if err := a.settleCancelledSessions(); err != nil {
 		return a.blockRecovery(err)
 	}
 	// Reset only after every maintenance recovery step succeeds.
-	a.recordedRecoveryActivity = recoveryActivity{}
+	a.recoveryLog = recoveryActivity{}
 	a.runtimeMu.Lock()
 	a.runtime.activeRecoveryError = nil
 	a.runtimeMu.Unlock()
@@ -67,9 +67,9 @@ func (a *App) Tick() error {
 	if a.ctx.Err() != nil {
 		return nil
 	}
-	a.maybeStartHousekeeping(cfg)
+	a.startHousekeeping(cfg)
 	a.runtimeMu.Lock()
-	reconciling := a.runtime.reconcilingPublication
+	reconciling := a.runtime.reconciling
 	baseline := a.runtime.baseline != nil
 	a.runtimeMu.Unlock()
 	if reconciling {
@@ -151,10 +151,10 @@ func (a *App) Tick() error {
 		if control.Batch.Phase != model.BatchPhaseDraining || pending != 0 {
 			return nil
 		}
-		return a.maybePlan(cfg, control)
+		return a.startPlanning(cfg, control)
 	}
 	if control.Mode == model.OperatingModeContinuous && time.Now().Unix() >= control.NextCycleAt {
-		return a.maybePlan(cfg, control)
+		return a.startPlanning(cfg, control)
 	}
 	return nil
 }
@@ -167,7 +167,7 @@ func (a *App) pauseLocked(control *model.Control, message *string) error {
 	if err := a.Store.SaveControl(*control); err != nil {
 		return err
 	}
-	a.invalidatePrObservation()
+	a.invalidatePRs()
 	return nil
 }
 
@@ -185,7 +185,7 @@ func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 	return a.Store.Event("system", "run_complete", message)
 }
 
-func (a *App) maybePlan(cfg config.Config, control model.Control) error {
+func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 	if a.ctx.Err() != nil {
 		return nil
 	}
@@ -203,7 +203,7 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 		return nil
 	}
 	if !capacity.Available() {
-		return a.handlePlanningCapacity(control, capacity)
+		return a.waitForCapacity(control, capacity)
 	}
 	a.runtimeMu.Lock()
 	if a.ctx.Err() != nil {
@@ -233,10 +233,10 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 		if loadErr != nil || !sameOperatorControl(live, expected) {
 			return
 		}
-		var capacityErr *planningCapacityError
+		var capacityErr *capacityError
 		switch {
 		case errors.As(err, &capacityErr):
-			_ = a.handlePlanningCapacity(live, capacityErr.capacity)
+			_ = a.waitForCapacity(live, capacityErr.capacity)
 		case live.Mode == model.OperatingModeRunOnce:
 			message := redact.Error(err)
 			_ = a.pauseLocked(&live, &message)
@@ -252,7 +252,7 @@ func (a *App) maybePlan(cfg config.Config, control model.Control) error {
 	return nil
 }
 
-func (a *App) handlePlanningCapacity(control model.Control, capacity model.PlanningCapacity) error {
+func (a *App) waitForCapacity(control model.Control, capacity model.PlanningCapacity) error {
 	if a.ctx.Err() != nil {
 		return nil
 	}
@@ -349,7 +349,7 @@ func (a *App) cancelQueuedTasks(tasks []model.Task) (bool, error) {
 		if task.Status != model.StatusQueued || task.OutputCommit != nil || a.cleanupClaimed(cleanupTask, task.ID) {
 			continue
 		}
-		marked, err := a.Store.MarkerSet("cancel", task.ID)
+		marked, err := a.Store.Marked("cancel", task.ID)
 		if err != nil {
 			return changed, err
 		}
@@ -399,13 +399,13 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 	}
 	started := false
 	waiting := false
-	var inventory *model.OpenPrInventory
+	var inventory *model.OpenPRInventory
 	inventoryChecked := false
 	refreshRequested := false
 	requestRefresh := func() {
 		if !refreshRequested && a.ctx.Err() == nil {
 			refreshRequested = true
-			a.startPrRefresh(cfg)
+			a.startPRRefresh(cfg)
 		}
 	}
 	for i := range tasks {
@@ -445,7 +445,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 			waiting = true
 			continue
 		}
-		reservation, err := a.Store.HasPrReservation(task.ID)
+		reservation, err := a.Store.HasPRReservation(task.ID)
 		if err != nil {
 			return started, waiting, err
 		}
@@ -455,7 +455,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 		admitted := false
 		if task.Proposal.Target == task.Config.DefaultBranch && !reservation {
 			if !inventoryChecked {
-				inventory, _ = a.takePrAdmissionInventory(cfg, time.Now())
+				inventory, _ = a.claimInventory(cfg, time.Now())
 				inventoryChecked = true
 			}
 			if inventory == nil {
@@ -466,7 +466,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 			if a.ctx.Err() != nil {
 				return started, waiting, nil
 			}
-			admitted, err = a.Store.AdmitNewPrTask(task, *inventory)
+			admitted, err = a.Store.AdmitNewPRTask(task, *inventory)
 			if err != nil {
 				return started, waiting, err
 			}
@@ -497,16 +497,16 @@ func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, e
 			return false, nil, err
 		}
 		if dependency == nil {
-			return false, fmt.Errorf("Dependency %s is missing: %w", id, model.BlockedReasonDependencyBlocked), nil
+			return false, fmt.Errorf("Dependency %s is missing: %w", id, model.BlockedDependencyBlocked), nil
 		}
 		if dependency.Status == model.StatusPublished {
 			continue
 		}
 		if control.Mode == model.OperatingModeRunOnce && (dependency.RunID == nil || task.RunID == nil || *dependency.RunID != *task.RunID) {
-			return false, fmt.Errorf("Dependency %s is outside this run-once batch: %w", id, model.BlockedReasonDependencyBlocked), nil
+			return false, fmt.Errorf("Dependency %s is outside this run-once batch: %w", id, model.BlockedDependencyBlocked), nil
 		}
 		if dependency.Status == model.StatusBlocked || dependency.Status == model.StatusFailed || dependency.Status == model.StatusCancelled {
-			return false, fmt.Errorf("Dependency %s is unresolved: %w", id, model.BlockedReasonDependencyBlocked), nil
+			return false, fmt.Errorf("Dependency %s is unresolved: %w", id, model.BlockedDependencyBlocked), nil
 		}
 		return false, nil, nil
 	}

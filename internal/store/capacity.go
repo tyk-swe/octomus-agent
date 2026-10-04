@@ -13,38 +13,38 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-type PrReservation struct {
+type PRReservation struct {
 	TaskID     string
 	Repository string
 	Branch     string
 	AdmittedAt string
 }
 
-type PrIdentity struct {
+type PRIdentity struct {
 	Repository    string
 	GitHubRepo    string
 	DefaultBranch string
 	BranchPrefix  string
 }
 
-func PrIdentityOf(c config.Config) PrIdentity {
-	return PrIdentity{Repository: c.Repository, GitHubRepo: strings.ToLower(c.GitHubRepo), DefaultBranch: c.DefaultBranch, BranchPrefix: c.BranchPrefix}
+func PRIdentityOf(c config.Config) PRIdentity {
+	return PRIdentity{Repository: c.Repository, GitHubRepo: strings.ToLower(c.GitHubRepo), DefaultBranch: c.DefaultBranch, BranchPrefix: c.BranchPrefix}
 }
-func (p PrIdentity) Matches(c config.Config) bool {
+func (p PRIdentity) Matches(c config.Config) bool {
 	return config.SamePath(p.Repository, c.Repository) && config.EqualASCII(c.GitHubRepo, p.GitHubRepo) && p.DefaultBranch == c.DefaultBranch && p.BranchPrefix == c.BranchPrefix
 }
 
 var errRollback = errors.New("rollback")
 
-func reservationRows(c *sql.Conn, repository string) ([]PrReservation, error) {
+func reservationRows(c *sql.Conn, repository string) ([]PRReservation, error) {
 	rows, err := c.QueryContext(background, "SELECT task_id,repository,branch,admitted_at FROM pr_reservations WHERE repository=?1", strings.ToLower(repository))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	reservations := []PrReservation{}
+	reservations := []PRReservation{}
 	for rows.Next() {
-		var r PrReservation
+		var r PRReservation
 		if err := rows.Scan(&r.TaskID, &r.Repository, &r.Branch, &r.AdmittedAt); err != nil {
 			return nil, err
 		}
@@ -68,8 +68,8 @@ func releaseReservation(c *sql.Conn, taskID string) error {
 	return err
 }
 
-func savedInventory(c *sql.Conn) (*model.OpenPrInventory, error) {
-	var inventory model.OpenPrInventory
+func savedInventory(c *sql.Conn) (*model.OpenPRInventory, error) {
+	var inventory model.OpenPRInventory
 	found, err := txGet(c, "settings", "pr_inventory", &inventory)
 	if err != nil || !found {
 		return nil, err
@@ -77,13 +77,13 @@ func savedInventory(c *sql.Conn) (*model.OpenPrInventory, error) {
 	return &inventory, nil
 }
 
-func (s *Store) OpenPrInventory() (*model.OpenPrInventory, error) {
+func (s *Store) OpenPRInventory() (*model.OpenPRInventory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return savedInventory(s.conn)
 }
 
-func PrUnion(inventory model.OpenPrInventory, reservations []PrReservation, limit uint64) (uint64, uint64, uint64) {
+func PRUnion(inventory model.OpenPRInventory, reservations []PRReservation, limit uint64) (uint64, uint64, uint64) {
 	numbers := map[uint64]struct{}{}
 	branches := map[string]struct{}{}
 	for _, p := range inventory.PRs {
@@ -106,7 +106,7 @@ func PrUnion(inventory model.OpenPrInventory, reservations []PrReservation, limi
 	return observed, unrepresented, remaining
 }
 
-func (s *Store) HasPrReservation(taskID string) (bool, error) {
+func (s *Store) HasPRReservation(taskID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var one int64
@@ -117,13 +117,13 @@ func (s *Store) HasPrReservation(taskID string) (bool, error) {
 	return err == nil, err
 }
 
-func (s *Store) PrReservations(repository string) ([]PrReservation, error) {
+func (s *Store) PRReservations(repository string) ([]PRReservation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return reservationRows(s.conn, repository)
 }
 
-func (s *Store) PrReservationCandidates() ([]model.Task, error) {
+func (s *Store) ReservableTasks() ([]model.Task, error) {
 	return listRecords[model.Task](s, fmt.Sprintf(`SELECT r.data FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
                 WHERE m.kind='task' AND (
                     m.status IN (%s)
@@ -132,13 +132,13 @@ func (s *Store) PrReservationCandidates() ([]model.Task, error) {
                 )`, statusList(model.ActiveStatuses())))
 }
 
-func (s *Store) SeedPrReservation(task model.Task) error {
+func (s *Store) SeedPRReservation(task model.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return seedReservation(s.conn, task.ID, strings.ToLower(task.Config.GitHubRepo), task.Branch, model.Now())
 }
 
-func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory) (bool, error) {
+func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	admitted := false
@@ -158,7 +158,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 		if saved == nil || !wirejson.Equal(*saved, inventory) {
 			return errRollback
 		}
-		if task.Proposal.Target != task.Config.DefaultBranch || !PrIdentityOf(task.Config).Matches(cfg) {
+		if task.Proposal.Target != task.Config.DefaultBranch || !PRIdentityOf(task.Config).Matches(cfg) {
 			return errRollback
 		}
 		var canonical model.Task
@@ -173,7 +173,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 		if err != nil {
 			return err
 		}
-		if _, _, remaining := PrUnion(inventory, reservations, cfg.MaxOpenPRs); remaining == 0 {
+		if _, _, remaining := PRUnion(inventory, reservations, cfg.MaxOpenPRs); remaining == 0 {
 			return errRollback
 		}
 		next = task.Clone()
@@ -200,7 +200,7 @@ func (s *Store) AdmitNewPrTask(task *model.Task, inventory model.OpenPrInventory
 	return admitted, err
 }
 
-func (s *Store) PersistPrInventory(inventory model.OpenPrInventory, released []string) (bool, error) {
+func (s *Store) PersistPRInventory(inventory model.OpenPRInventory, released []string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err := s.transaction(true, func(c *sql.Conn) error {

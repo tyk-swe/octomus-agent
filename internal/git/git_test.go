@@ -417,7 +417,7 @@ func TestPublishRejectsStaleBase(t *testing.T) {
 	if err == nil {
 		t.Fatal("publication over a moved base must fail")
 	}
-	if reason := model.BlockedReasonFromError(err); reason != model.BlockedReasonStaleBase {
+	if reason := model.BlockedReasonFromError(err); reason != model.BlockedStaleBase {
 		t.Fatalf("reason = %v; want stale_base", reason)
 	}
 	if rev, err := git.RemoteRevision(ctx, c, "octomus/work"); err != nil || rev != nil {

@@ -237,7 +237,7 @@ func TestControlActionsThroughHTTP(t *testing.T) {
 }
 
 func queuedTask(cfg config.Config) model.Task {
-	reason := model.BlockedReasonPublicationUncertain
+	reason := model.BlockedPublicationUncertain
 	return model.Task{
 		ID: "task-seed", CycleID: "cycle-seed",
 		Proposal: model.Proposal{

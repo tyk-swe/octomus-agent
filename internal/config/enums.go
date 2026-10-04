@@ -11,8 +11,8 @@ const (
 
 var backendNames = []string{"codex", "opencode"}
 
-func (v Backend) String() string               { return wirejson.EnumName(v, backendNames) }
-func (v Backend) MarshalJSON() ([]byte, error) { return wirejson.MarshalEnum(v, backendNames) }
-func (v *Backend) UnmarshalJSON(data []byte) error {
-	return wirejson.UnmarshalEnum(data, backendNames, v)
+func (b Backend) String() string               { return wirejson.EnumName(b, backendNames) }
+func (b Backend) MarshalJSON() ([]byte, error) { return wirejson.MarshalEnum(b, backendNames) }
+func (b *Backend) UnmarshalJSON(data []byte) error {
+	return wirejson.UnmarshalEnum(data, backendNames, b)
 }

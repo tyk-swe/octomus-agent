@@ -12,9 +12,9 @@ type Route struct {
 	Variant  *string `json:"variant,omitempty"`
 }
 
-func (v *Route) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
-func (v Route) MarshalJSON() ([]byte, error)     { type plain Route; return wirejson.Record(plain(v)) }
-func (v Route) Clone() Route                     { return wirejson.Clone(v) }
+func (r *Route) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, r) }
+func (r Route) MarshalJSON() ([]byte, error)     { type plain Route; return wirejson.Record(plain(r)) }
+func (r Route) Clone() Route                     { return wirejson.Clone(r) }
 
 type Config struct {
 	Repository             string            `json:"repository"`
@@ -49,8 +49,8 @@ type Config struct {
 	RetainEvents           uint64            `json:"retain_events"`
 }
 
-func (v *Config) UnmarshalJSON(data []byte) error {
-	return wirejson.DecodeWithDefaults(data, v, Default())
+func (c *Config) UnmarshalJSON(data []byte) error {
+	return wirejson.DecodeWithDefaults(data, c, Default())
 }
-func (v Config) MarshalJSON() ([]byte, error) { type plain Config; return wirejson.Record(plain(v)) }
-func (v Config) Clone() Config                { return wirejson.Clone(v) }
+func (c Config) MarshalJSON() ([]byte, error) { type plain Config; return wirejson.Record(plain(c)) }
+func (c Config) Clone() Config                { return wirejson.Clone(c) }

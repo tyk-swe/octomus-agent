@@ -24,27 +24,27 @@ type Proposal struct {
 	Reconsiders   []string `json:"reconsiders"`
 }
 
-func (v *Proposal) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
-func (v Proposal) MarshalJSON() ([]byte, error) {
+func (p *Proposal) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, p) }
+func (p Proposal) MarshalJSON() ([]byte, error) {
 	type plain Proposal
-	return wirejson.Record(plain(v))
+	return wirejson.Record(plain(p))
 }
-func (v Proposal) Clone() Proposal { return wirejson.Clone(v) }
+func (p Proposal) Clone() Proposal { return wirejson.Clone(p) }
 
 type PlanningCapacity struct {
-	Day         string                 `json:"day"`
-	Limit       uint64                 `json:"limit"`
-	Used        uint64                 `json:"used"`
-	Remaining   uint64                 `json:"remaining"`
-	Required    uint64                 `json:"required"`
-	NextResetAt int64                  `json:"next_reset_at"`
-	Status      PlanningCapacityStatus `json:"status"`
+	Day         string         `json:"day"`
+	Limit       uint64         `json:"limit"`
+	Used        uint64         `json:"used"`
+	Remaining   uint64         `json:"remaining"`
+	Required    uint64         `json:"required"`
+	NextResetAt int64          `json:"next_reset_at"`
+	Status      CapacityStatus `json:"status"`
 }
 
-func (v *PlanningCapacity) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v PlanningCapacity) MarshalJSON() ([]byte, error) {
+func (p *PlanningCapacity) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, p) }
+func (p PlanningCapacity) MarshalJSON() ([]byte, error) {
 	type plain PlanningCapacity
-	return wirejson.Record(plain(v))
+	return wirejson.Record(plain(p))
 }
 
 type AttemptPolicy struct {
@@ -56,10 +56,10 @@ type AttemptPolicy struct {
 	CommandTimeoutSeconds uint64 `json:"command_timeout_seconds"`
 }
 
-func (v *AttemptPolicy) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v AttemptPolicy) MarshalJSON() ([]byte, error) {
+func (p *AttemptPolicy) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, p) }
+func (p AttemptPolicy) MarshalJSON() ([]byte, error) {
 	type plain AttemptPolicy
-	return wirejson.Record(plain(v))
+	return wirejson.Record(plain(p))
 }
 
 type WorkspaceLifecycle struct {
@@ -92,8 +92,8 @@ type Review struct {
 	Findings  []Finding `json:"findings"`
 }
 
-func (v *Review) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
-func (v Review) MarshalJSON() ([]byte, error)     { type plain Review; return wirejson.Record(plain(v)) }
+func (r *Review) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, r) }
+func (r Review) MarshalJSON() ([]byte, error)     { type plain Review; return wirejson.Record(plain(r)) }
 
 type ReviewRound struct {
 	SessionID      string `json:"session_id"`
@@ -166,12 +166,12 @@ type DefaultBranchObservation struct {
 	ObservedAt    string `json:"observed_at"`
 }
 
-func (v *DefaultBranchObservation) UnmarshalJSON(data []byte) error {
-	return wirejson.DecodeRecord(data, v)
+func (o *DefaultBranchObservation) UnmarshalJSON(data []byte) error {
+	return wirejson.DecodeRecord(data, o)
 }
-func (v DefaultBranchObservation) MarshalJSON() ([]byte, error) {
+func (o DefaultBranchObservation) MarshalJSON() ([]byte, error) {
 	type plain DefaultBranchObservation
-	return wirejson.Record(plain(v))
+	return wirejson.Record(plain(o))
 }
 
 type Session struct {
@@ -184,12 +184,12 @@ type Session struct {
 	Sandbox   *SandboxRecord `json:"sandbox"`
 }
 
-func (v *Session) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v Session) MarshalJSON() ([]byte, error) {
+func (s *Session) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, s) }
+func (s Session) MarshalJSON() ([]byte, error) {
 	type plain Session
-	return wirejson.Record(plain(v))
+	return wirejson.Record(plain(s))
 }
-func (v Session) Clone() Session { return wirejson.Clone(v) }
+func (s Session) Clone() Session { return wirejson.Clone(s) }
 
 // RepairProgress accounts for completed repairs after review or verification still requires further work.
 // AwaitingReview prevents a restart between that accounting and the next repair from charging the same repair twice.
@@ -242,9 +242,9 @@ type Task struct {
 	Lifecycle            WorkspaceLifecycle `json:"lifecycle"`
 }
 
-func (v *Task) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v Task) MarshalJSON() ([]byte, error)     { type plain Task; return wirejson.Record(plain(v)) }
-func (v Task) Clone() Task                      { return wirejson.Clone(v) }
+func (t *Task) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, t) }
+func (t Task) MarshalJSON() ([]byte, error)     { type plain Task; return wirejson.Record(plain(t)) }
+func (t Task) Clone() Task                      { return wirejson.Clone(t) }
 
 type PullRequest struct {
 	Number         uint64 `json:"number"`
@@ -262,14 +262,14 @@ type PullRequest struct {
 	BaseRepository string `json:"base_repository"`
 }
 
-func (v *PullRequest) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v PullRequest) MarshalJSON() ([]byte, error) {
+func (p *PullRequest) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, p) }
+func (p PullRequest) MarshalJSON() ([]byte, error) {
 	type plain PullRequest
-	return wirejson.Record(plain(v))
+	return wirejson.Record(plain(p))
 }
-func (v PullRequest) Clone() PullRequest { return wirejson.Clone(v) }
+func (p PullRequest) Clone() PullRequest { return wirejson.Clone(p) }
 
-type PrObservation struct {
+type PRObservation struct {
 	Repository           string      `json:"repository"`
 	PR                   PullRequest `json:"pr"`
 	ObservedAt           string      `json:"observed_at"`
@@ -277,17 +277,17 @@ type PrObservation struct {
 	ExternalHeadMovement bool        `json:"external_head_movement"`
 }
 
-func (v *PrObservation) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v PrObservation) MarshalJSON() ([]byte, error) {
-	type plain PrObservation
+func (v *PRObservation) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v PRObservation) MarshalJSON() ([]byte, error) {
+	type plain PRObservation
 	return wirejson.Record(plain(v))
 }
 
 type Grounding struct {
 	Revision           string              `json:"revision"`
 	PRs                []PullRequest       `json:"prs"`
-	ExternalPRs        []ExternalPrContext `json:"external_prs"`
-	PRCoverage         PrCoverage          `json:"pr_coverage"`
+	ExternalPRs        []ExternalPRContext `json:"external_prs"`
+	PRCoverage         PRCoverage          `json:"pr_coverage"`
 	History            any                 `json:"history"`
 	MaintenanceDue     bool                `json:"maintenance_due"`
 	MaintenanceTargets []string            `json:"maintenance_targets"`
@@ -299,7 +299,7 @@ func (v Grounding) MarshalJSON() ([]byte, error) {
 	return wirejson.Record(plain(v))
 }
 
-type ExternalPrContext struct {
+type ExternalPRContext struct {
 	Number         uint64 `json:"number"`
 	URL            string `json:"url"`
 	Title          string `json:"title"`
@@ -313,13 +313,13 @@ type ExternalPrContext struct {
 	BodyTruncated  bool   `json:"body_truncated"`
 }
 
-func (v *ExternalPrContext) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v ExternalPrContext) MarshalJSON() ([]byte, error) {
-	type plain ExternalPrContext
+func (v *ExternalPRContext) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v ExternalPRContext) MarshalJSON() ([]byte, error) {
+	type plain ExternalPRContext
 	return wirejson.Record(plain(v))
 }
 
-type PrCoverage struct {
+type PRCoverage struct {
 	ObservedAt       *string `json:"observed_at"`
 	Complete         bool    `json:"complete"`
 	TotalOpen        uint64  `json:"total_open"`
@@ -332,26 +332,26 @@ type PrCoverage struct {
 	MaxContextBytes  uint64  `json:"max_context_bytes"`
 }
 
-func (v *PrCoverage) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v PrCoverage) MarshalJSON() ([]byte, error) {
-	type plain PrCoverage
+func (v *PRCoverage) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v PRCoverage) MarshalJSON() ([]byte, error) {
+	type plain PRCoverage
 	return wirejson.Record(plain(v))
 }
 
-type OpenPrInventory struct {
+type OpenPRInventory struct {
 	Repository string        `json:"repository"`
 	ObservedAt string        `json:"observed_at"`
 	PRs        []PullRequest `json:"prs"`
 }
 
-func (v *OpenPrInventory) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v OpenPrInventory) MarshalJSON() ([]byte, error) {
-	type plain OpenPrInventory
+func (v *OpenPRInventory) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v OpenPRInventory) MarshalJSON() ([]byte, error) {
+	type plain OpenPRInventory
 	return wirejson.Record(plain(v))
 }
-func (v OpenPrInventory) Clone() OpenPrInventory { return wirejson.Clone(v) }
+func (v OpenPRInventory) Clone() OpenPRInventory { return wirejson.Clone(v) }
 
-type PrCapacity struct {
+type PRCapacity struct {
 	Limit      uint64  `json:"limit"`
 	OwnedOpen  *uint64 `json:"owned_open"`
 	Reserved   uint64  `json:"reserved"`
@@ -361,9 +361,9 @@ type PrCapacity struct {
 	Reason     *string `json:"reason"`
 }
 
-func (v *PrCapacity) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v PrCapacity) MarshalJSON() ([]byte, error) {
-	type plain PrCapacity
+func (v *PRCapacity) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v PRCapacity) MarshalJSON() ([]byte, error) {
+	type plain PRCapacity
 	return wirejson.Record(plain(v))
 }
 

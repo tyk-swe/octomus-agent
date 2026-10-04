@@ -74,7 +74,7 @@ var hardened = []string{
 func treeArgs(workTree string, args []string) ([]string, error) {
 	gitDir, err := workspace.GitDir(workTree)
 	if err != nil {
-		return nil, reasoned(model.BlockedReasonWorkspaceInvalid, "Workspace git metadata is unavailable", err)
+		return nil, reasoned(model.BlockedWorkspaceInvalid, "Workspace git metadata is unavailable", err)
 	}
 	full := append([]string{"--git-dir=" + gitDir, "--work-tree=" + workTree}, hardened...)
 	return append(full, args...), nil
@@ -100,7 +100,7 @@ func WorkGit(ctx context.Context, c config.Config, workTree string, args []strin
 func DiffText(ctx context.Context, c config.Config, workTree string, args []string, limit int) (text string, complete bool, err error) {
 	gitDir, err := workspace.GitDir(workTree)
 	if err != nil {
-		return "", false, reasoned(model.BlockedReasonWorkspaceInvalid, "Workspace git metadata is unavailable", err)
+		return "", false, reasoned(model.BlockedWorkspaceInvalid, "Workspace git metadata is unavailable", err)
 	}
 	scratch, err := os.MkdirTemp("", "octomus-diff-")
 	if err != nil {
@@ -118,9 +118,9 @@ func DiffText(ctx context.Context, c config.Config, workTree string, args []stri
 	return process.RunTextEnv(ctx, "git", append(full, args...), empty, c.CommandTimeoutSeconds, env, limit)
 }
 
-// remoteWorkGit is WorkGit for pushes: they may need an inherited credential helper, and they write no work tree
+// pushGit is WorkGit for pushes: they may need an inherited credential helper, and they write no work tree
 // and apply no attributes.
-func remoteWorkGit(ctx context.Context, c config.Config, workTree string, args []string) (string, error) {
+func pushGit(ctx context.Context, c config.Config, workTree string, args []string) (string, error) {
 	full, err := treeArgs(workTree, args)
 	if err != nil {
 		return "", err
@@ -332,7 +332,7 @@ func CloneAt(ctx context.Context, c config.Config, path string, revision string)
 func CloneReviewed(ctx context.Context, c config.Config, source, path, revision string) error {
 	sourceGitDir, err := workspace.GitDir(source)
 	if err != nil {
-		return reasoned(model.BlockedReasonWorkspaceInvalid, "Workspace git metadata is unavailable", err)
+		return reasoned(model.BlockedWorkspaceInvalid, "Workspace git metadata is unavailable", err)
 	}
 	root := filepath.Dir(path)
 	gitDir := filepath.Join(root, workspace.GitDirName)
@@ -399,7 +399,7 @@ func refuseGitlinks(ctx context.Context, c config.Config, path string) error {
 		if len(name) > maxReportedPath {
 			name = name[:maxReportedPath]
 		}
-		return blocked(model.BlockedReasonWorkspaceInvalid, fmt.Sprintf(
+		return blocked(model.BlockedWorkspaceInvalid, fmt.Sprintf(
 			"Nested repository or changed submodule at %s; Octomus publishes only reviewed file content", strconv.Quote(redact.Text(name))))
 	}
 	return nil
@@ -439,24 +439,24 @@ func At(ctx context.Context, c config.Config, path string, revision string) (boo
 	return actual == revision, nil
 }
 
-func OpenPrInventory(ctx context.Context, c config.Config) (model.OpenPrInventory, error) {
+func OpenPRs(ctx context.Context, c config.Config) (model.OpenPRInventory, error) {
 	observedAt := model.Now()
 	out, err := gh(ctx, c, []string{
 		"api", "--paginate",
 		fmt.Sprintf("repos/%s/pulls?state=open&per_page=100", c.GitHubRepo),
 	})
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	inventory, err := ParseInventory(out, c)
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	inventory.ObservedAt = observedAt
 	return inventory, nil
 }
 
-func ParseInventory(out string, c config.Config) (model.OpenPrInventory, error) {
+func ParseInventory(out string, c config.Config) (model.OpenPRInventory, error) {
 	prs := map[uint64]model.PullRequest{}
 	pages := 0
 	err := ghPages(out, func(page []map[string]any) error {
@@ -490,10 +490,10 @@ func ParseInventory(out string, c config.Config) (model.OpenPrInventory, error) 
 		return nil
 	})
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	if pages < 1 {
-		return model.OpenPrInventory{}, errors.New("Open PR inventory response is empty")
+		return model.OpenPRInventory{}, errors.New("Open PR inventory response is empty")
 	}
 	ordered := make([]model.PullRequest, 0, len(prs))
 	for _, pr := range prs {
@@ -502,14 +502,14 @@ func ParseInventory(out string, c config.Config) (model.OpenPrInventory, error) 
 	slices.SortFunc(ordered, func(a, b model.PullRequest) int {
 		return cmp.Compare(a.Number, b.Number)
 	})
-	return model.OpenPrInventory{
+	return model.OpenPRInventory{
 		Repository: c.GitHubRepo,
 		ObservedAt: model.Now(),
 		PRs:        ordered,
 	}, nil
 }
 
-func OwnedPrDetails(ctx context.Context, c config.Config, inventory model.OpenPrInventory) ([]model.PullRequest, error) {
+func OwnedPRs(ctx context.Context, c config.Config, inventory model.OpenPRInventory) ([]model.PullRequest, error) {
 	prs := []model.PullRequest{}
 	for _, observed := range inventory.PRs {
 		if !observed.Owned {
@@ -646,7 +646,7 @@ func PublicationPR(ctx context.Context, c config.Config, branch string) (*model.
 		return nil, err
 	}
 	if len(matches) > 1 {
-		return nil, blocked(model.BlockedReasonRemoteConflict,
+		return nil, blocked(model.BlockedRemoteConflict,
 			"Ambiguous PR association; reconcile before publication")
 	}
 	if len(matches) == 0 {
@@ -674,10 +674,10 @@ func ValidatePublication(task model.Task, p model.PullRequest, marker bool, reco
 func Publish(ctx context.Context, task model.Task) (model.PullRequest, error) {
 	pr, err := publishInner(ctx, task)
 	if err != nil {
-		if model.BlockedReasonFromError(err) != model.BlockedReasonUnknown {
+		if model.BlockedReasonFromError(err) != model.BlockedUnknown {
 			return pr, err
 		}
-		return pr, fmt.Errorf("%w: %w", model.BlockedReasonPublicationUncertain, err)
+		return pr, fmt.Errorf("%w: %w", model.BlockedPublicationUncertain, err)
 	}
 	return pr, nil
 }
@@ -733,8 +733,8 @@ func prBody(task model.Task, existing *model.PullRequest, commit string) string 
 }
 
 const (
-	maxPublicationTitleChars = 256
-	maxPublicationBodyChars  = 65536
+	maxTitle = 256
+	maxBody  = 65536
 )
 
 type publicationMetadata struct {
@@ -744,7 +744,7 @@ type publicationMetadata struct {
 
 func preparePublication(task model.Task, existing *model.PullRequest, commit string) (publicationMetadata, error) {
 	refuse := func(message string) (publicationMetadata, error) {
-		return publicationMetadata{}, blocked(model.BlockedReasonWorkspaceInvalid, message)
+		return publicationMetadata{}, blocked(model.BlockedWorkspaceInvalid, message)
 	}
 	title := redact.Secrets(task.Proposal.Title)
 	body := redact.Secrets(prBody(task, existing, commit))
@@ -755,11 +755,11 @@ func preparePublication(task model.Task, existing *model.PullRequest, commit str
 		if strings.TrimSpace(title) == "" {
 			return refuse("Publication title is empty after public-safe preparation")
 		}
-		if utf8.RuneCountInString(title) > maxPublicationTitleChars {
+		if utf8.RuneCountInString(title) > maxTitle {
 			return refuse("Publication title exceeds the remote title limit")
 		}
 	}
-	if utf8.RuneCountInString(body) > maxPublicationBodyChars {
+	if utf8.RuneCountInString(body) > maxBody {
 		return refuse("Publication body exceeds the remote size limit")
 	}
 	marker := taskMarkerFor(task.ID)
@@ -778,7 +778,7 @@ func updatePR(ctx context.Context, c config.Config, task model.Task, p model.Pul
 		return model.PullRequest{}, err
 	}
 	if !latest.OwnedOpen() || latest.Base != c.DefaultBranch || latest.Head != commit {
-		return model.PullRequest{}, blocked(model.BlockedReasonRemoteConflict,
+		return model.PullRequest{}, blocked(model.BlockedRemoteConflict,
 			"PR changed around publication; retry will reconcile the current remote state")
 	}
 	marker, err := TaskMarker(ctx, c, task.ID, latest)
@@ -821,7 +821,7 @@ func createPR(ctx context.Context, c config.Config, task model.Task, title strin
 	if err != nil {
 		return model.PullRequest{}, err
 	}
-	number, err := parseCreatedPRURL(created, c.GitHubRepo)
+	number, err := prNumber(created, c.GitHubRepo)
 	if err != nil {
 		return model.PullRequest{}, err
 	}
@@ -837,27 +837,27 @@ func createPR(ctx context.Context, c config.Config, task model.Task, title strin
 	return published, nil
 }
 
-func parseCreatedPRURL(created string, repo string) (uint64, error) {
+func prNumber(created string, repo string) (uint64, error) {
 	trimmed := strings.TrimSpace(created)
 	url, err := whatwg.Parse(trimmed)
 	if err != nil {
-		return 0, reasoned(model.BlockedReasonRemoteConflict,
+		return 0, reasoned(model.BlockedRemoteConflict,
 			"PR creation returned no unambiguous URL; reconcile before retrying", err)
 	}
 	if url.Scheme() != "https" || url.Hostname() != "github.com" ||
 		strings.ContainsAny(trimmed, "?#") {
-		return 0, blocked(model.BlockedReasonRemoteConflict,
+		return 0, blocked(model.BlockedRemoteConflict,
 			"Invalid PR creation URL")
 	}
 	parts := strings.Split(strings.TrimPrefix(url.Pathname(), "/"), "/")
 	if !(len(parts) == 4 && parts[2] == "pull" &&
 		config.EqualASCII(parts[0]+"/"+parts[1], repo)) {
-		return 0, blocked(model.BlockedReasonRemoteConflict,
+		return 0, blocked(model.BlockedRemoteConflict,
 			"Created PR belongs to a different repository")
 	}
 	number, err := strconv.ParseUint(parts[3], 10, 64)
 	if err != nil {
-		return 0, reasoned(model.BlockedReasonRemoteConflict,
+		return 0, reasoned(model.BlockedRemoteConflict,
 			"Missing created PR number", err)
 	}
 	return number, nil
@@ -874,34 +874,34 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 	}
 	path := task.Workspace
 	if task.OutputCommit == nil {
-		return fail(blocked(model.BlockedReasonWorkspaceInvalid, "No reviewed commit"))
+		return fail(blocked(model.BlockedWorkspaceInvalid, "No reviewed commit"))
 	}
 	commit := *task.OutputCommit
 	if last := len(task.Reviews) - 1; last < 0 ||
 		task.Reviews[last].Revision != commit || !task.Reviews[last].Result.Clean() {
-		return fail(blocked(model.BlockedReasonWorkspaceInvalid,
+		return fail(blocked(model.BlockedWorkspaceInvalid,
 			"Publication requires a clean review at the output revision"))
 	}
 	for _, command := range c.VerificationCommands {
 		if v := latestVerification(task, command); v == nil || !v.Success || v.Revision != commit {
-			return fail(blocked(model.BlockedReasonWorkspaceInvalid,
+			return fail(blocked(model.BlockedWorkspaceInvalid,
 				"Publication requires successful verification at the reviewed revision"))
 		}
 	}
 	if !strings.HasPrefix(task.Branch, c.BranchPrefix) || task.Branch == c.DefaultBranch {
-		return fail(blocked(model.BlockedReasonWorkspaceInvalid,
+		return fail(blocked(model.BlockedWorkspaceInvalid,
 			"Cannot publish outside the owned branch namespace"))
 	}
 	if isClean, err := clean(ctx, c, path); err != nil {
 		return fail(err)
 	} else if !isClean {
-		return fail(blocked(model.BlockedReasonWorkspaceInvalid,
+		return fail(blocked(model.BlockedWorkspaceInvalid,
 			"Workspace changed after review"))
 	}
 	if actual, err := head(ctx, c, path); err != nil {
 		return fail(err)
 	} else if actual != commit {
-		return fail(blocked(model.BlockedReasonWorkspaceInvalid,
+		return fail(blocked(model.BlockedWorkspaceInvalid,
 			"Workspace HEAD changed after review"))
 	}
 	var existing *model.PullRequest
@@ -929,15 +929,15 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		// A delivery marker records a completed write. Even a reset to the
 		// original source must not authorize replaying that task's push.
 		if marker && existing.Head != commit {
-			return fail(blocked(model.BlockedReasonRemoteConflict,
+			return fail(blocked(model.BlockedRemoteConflict,
 				"Delivered PR head changed; reconcile before retrying"))
 		}
 		if !existing.OwnedOpen() || existing.Branch != task.Branch || existing.Base != c.DefaultBranch {
-			return fail(blocked(model.BlockedReasonRemoteConflict,
+			return fail(blocked(model.BlockedRemoteConflict,
 				"PR ownership, base, or open state changed; reconcile before retrying"))
 		}
 		if task.PRNumber == nil && !marker {
-			return fail(blocked(model.BlockedReasonRemoteConflict,
+			return fail(blocked(model.BlockedRemoteConflict,
 				"Branch is already associated with another task"))
 		}
 	}
@@ -954,22 +954,22 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 		return fail(err)
 	}
 	if defaultRevision == nil || *defaultRevision != task.DefaultRevision {
-		return fail(model.BlockedReasonStaleBase)
+		return fail(model.BlockedStaleBase)
 	}
 	if remote == nil || *remote != commit {
 		if task.PRNumber != nil {
 			if remote == nil || *remote != task.SourceRevision {
-				return fail(model.BlockedReasonRemoteConflict)
+				return fail(model.BlockedRemoteConflict)
 			}
 		} else if remote != nil {
-			return fail(model.BlockedReasonRemoteConflict)
+			return fail(model.BlockedRemoteConflict)
 		}
 		ancestor, err := workIsAncestor(ctx, c, path, task.SourceRevision, commit)
 		if err != nil {
 			return fail(err)
 		}
 		if !ancestor {
-			return fail(blocked(model.BlockedReasonRemoteConflict,
+			return fail(blocked(model.BlockedRemoteConflict,
 				"Reviewed output does not contain the recorded source; reconcile the branch"))
 		}
 		expected := ""
@@ -977,7 +977,7 @@ func publishInner(ctx context.Context, task model.Task) (model.PullRequest, erro
 			expected = *remote
 		}
 		// Hooks, tags and submodule recursion are pinned off so ambient configuration can never push anything but the owned branch.
-		if _, err := remoteWorkGit(ctx, c, path, []string{
+		if _, err := pushGit(ctx, c, path, []string{
 			"-c", "push.followTags=false",
 			"push",
 			"--recurse-submodules=no",

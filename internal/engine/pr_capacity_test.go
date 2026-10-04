@@ -36,24 +36,24 @@ func TestPRCapacityFreshness(t *testing.T) {
 		pr.Number = n
 		prs = append(prs, pr)
 	}
-	inventory := model.OpenPrInventory{Repository: cfg.GitHubRepo, ObservedAt: model.Now(), PRs: prs}
+	inventory := model.OpenPRInventory{Repository: cfg.GitHubRepo, ObservedAt: model.Now(), PRs: prs}
 
-	capacity, err := a.PrCapacity()
+	capacity, err := a.PRCapacity()
 	if err != nil || capacity.Status != "unavailable" || capacity.OwnedOpen != nil || capacity.Remaining != nil || capacity.Reason == nil {
 		t.Fatalf("capacity without any inventory was not fail-closed: %+v, %v", capacity, err)
 	}
-	if persisted, err := state.PersistPrInventory(inventory, nil); err != nil || !persisted {
+	if persisted, err := state.PersistPRInventory(inventory, nil); err != nil || !persisted {
 		t.Fatalf("persist inventory: %t, %v", persisted, err)
 	}
-	capacity, err = a.PrCapacity()
+	capacity, err = a.PRCapacity()
 	if err != nil || capacity.Status != "unavailable" || capacity.OwnedOpen == nil || *capacity.OwnedOpen != 3 || capacity.Remaining != nil {
 		t.Fatalf("persisted inventory alone authorized capacity: %+v, %v", capacity, err)
 	}
 
 	a.runtimeMu.Lock()
-	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now()}
+	a.runtime.prObservation = &freshPRs{identity: store.PRIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now()}
 	a.runtimeMu.Unlock()
-	capacity, err = a.PrCapacity()
+	capacity, err = a.PRCapacity()
 	if err != nil || capacity.Status != "ready" || capacity.OwnedOpen == nil || *capacity.OwnedOpen != 3 || capacity.Remaining == nil || *capacity.Remaining != 2 {
 		t.Fatalf("fresh observation did not report (3 owned, 2 remaining): %+v, %v", capacity, err)
 	}
@@ -64,44 +64,44 @@ func TestPRCapacityFreshness(t *testing.T) {
 	a.runtimeMu.Lock()
 	a.runtime.prRefreshError = "network refused"
 	a.runtimeMu.Unlock()
-	capacity, err = a.PrCapacity()
+	capacity, err = a.PRCapacity()
 	if err != nil || capacity.Status != "unavailable" || capacity.Remaining != nil || capacity.Reason == nil || !strings.Contains(*capacity.Reason, "network refused") {
 		t.Fatalf("refresh failure did not revoke capacity with its reason: %+v, %v", capacity, err)
 	}
 
 	a.runtimeMu.Lock()
 	a.runtime.prRefreshError = ""
-	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(observeInterval + time.Minute))}
+	a.runtime.prObservation = &freshPRs{identity: store.PRIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(observeInterval + time.Minute))}
 	a.runtimeMu.Unlock()
-	capacity, err = a.PrCapacity()
+	capacity, err = a.PRCapacity()
 	if err != nil || capacity.Status != "ready" || capacity.Remaining == nil {
 		t.Fatalf("observation within its lifetime was reported stale: %+v, %v", capacity, err)
 	}
 
 	a.runtimeMu.Lock()
-	a.runtime.prObservation = &freshPrObservation{identity: store.PrIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(prObservationLifetime + time.Second))}
+	a.runtime.prObservation = &freshPRs{identity: store.PRIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(prObservationLifetime + time.Second))}
 	a.runtimeMu.Unlock()
-	capacity, err = a.PrCapacity()
+	capacity, err = a.PRCapacity()
 	if err != nil || capacity.Status != "unavailable" || capacity.Remaining != nil {
 		t.Fatalf("stale observation authorized capacity: %+v, %v", capacity, err)
 	}
 
-	otherIdentity := store.PrIdentityOf(cfg)
+	otherIdentity := store.PRIdentityOf(cfg)
 	otherIdentity.BranchPrefix = "other/"
 	a.runtimeMu.Lock()
-	a.runtime.prObservation = &freshPrObservation{identity: otherIdentity, inventory: inventory.Clone(), fetchedAt: time.Now()}
+	a.runtime.prObservation = &freshPRs{identity: otherIdentity, inventory: inventory.Clone(), fetchedAt: time.Now()}
 	a.runtimeMu.Unlock()
-	capacity, err = a.PrCapacity()
+	capacity, err = a.PRCapacity()
 	if err != nil || capacity.Status != "unavailable" || capacity.Reason == nil || !strings.Contains(*capacity.Reason, "Configuration changed") {
 		t.Fatalf("observation under changed policy was not reported as such: %+v, %v", capacity, err)
 	}
 
 	wrongRepo := inventory.Clone()
 	wrongRepo.Repository = "other/project"
-	if persisted, err := state.PersistPrInventory(wrongRepo, nil); err != nil || persisted {
+	if persisted, err := state.PersistPRInventory(wrongRepo, nil); err != nil || persisted {
 		t.Fatalf("foreign-repository inventory was persisted: %t, %v", persisted, err)
 	}
-	capacity, err = a.PrCapacity()
+	capacity, err = a.PRCapacity()
 	if err != nil || capacity.OwnedOpen == nil || *capacity.OwnedOpen != 3 {
 		t.Fatalf("foreign-repository inventory replaced the evidence: %+v, %v", capacity, err)
 	}
@@ -120,7 +120,7 @@ func TestRefreshFailureRevokesCapacity(t *testing.T) {
 	if err := refreshLive(app); err != nil {
 		t.Fatal(err)
 	}
-	before, err := app.PrCapacity()
+	before, err := app.PRCapacity()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestRefreshFailureRevokesCapacity(t *testing.T) {
 	if err := refreshLive(app); err == nil {
 		t.Fatal("malformed remote inventory unexpectedly refreshed")
 	}
-	after, err := app.PrCapacity()
+	after, err := app.PRCapacity()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestRefreshFailureRevokesCapacity(t *testing.T) {
 	if err := refreshLive(app); err != nil {
 		t.Fatalf("restored inventory did not refresh: %v", err)
 	}
-	recovered, err := app.PrCapacity()
+	recovered, err := app.PRCapacity()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 	if len(started) != 2 {
 		t.Fatalf("one inventory admitted %d tasks; want both slots in the same batch", len(started))
 	}
-	capacity, err := app.PrCapacity()
+	capacity, err := app.PRCapacity()
 	if err != nil || capacity.Status != "ready" || capacity.Remaining == nil || *capacity.Remaining != 1 {
 		t.Fatalf("consuming admission evidence lost dashboard capacity: %+v, %v", capacity, err)
 	}
@@ -216,7 +216,7 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 	if len(started) != 2 {
 		t.Fatal("the previous inventory authorized a second admission batch")
 	}
-	capacity, err = app.PrCapacity()
+	capacity, err = app.PRCapacity()
 	if err != nil || capacity.Status != "full" || capacity.OwnedOpen == nil || *capacity.OwnedOpen != 1 || capacity.Reserved != 2 {
 		t.Fatalf("next batch did not refresh immediately and observe the full capacity: %+v, %v", capacity, err)
 	}

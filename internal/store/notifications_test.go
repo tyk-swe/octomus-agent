@@ -62,7 +62,7 @@ func TestAttentionCategories(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
-	must(t, s.ConfigureNotifications(str(notifyDest), "enabled", nil))
+	must(t, s.SetNotifyPolicy(str(notifyDest), "enabled", nil))
 	want := []string{}
 	for r := model.BlockedReason(0); r.String() != ""; r++ {
 		putNotificationTask(t, s, "insert-"+r.String(), "blocked", r.String())
@@ -70,7 +70,7 @@ func TestAttentionCategories(t *testing.T) {
 		putNotificationTask(t, s, "update-"+r.String(), "blocked", r.String())
 		want = append(want, r.String(), r.String())
 	}
-	if len(want) < 2*int(model.BlockedReasonUnknown+1) {
+	if len(want) < 2*int(model.BlockedUnknown+1) {
 		t.Fatalf("only %d reasons were enumerated", len(want)/2)
 	}
 	rows := pendingRows(t, path)

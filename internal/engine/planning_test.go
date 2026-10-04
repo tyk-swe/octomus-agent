@@ -184,7 +184,7 @@ func TestAuditPlansWithoutQueueing(t *testing.T) {
 	if err != nil || len(tasks) != 1 || tasks[0].ID != existing.ID || tasks[0].Status != model.StatusQueued || tasks[0].RunID != nil {
 		t.Fatalf("audit disturbed or queued executable work: %+v, %v", tasks, err)
 	}
-	assertAdmissions(t, f.state, f.cfg.PlanningAdmissionsRequired(), "audit")
+	assertAdmissions(t, f.state, f.cfg.PlanningCost(), "audit")
 }
 
 func TestRunOnceCommitsPlan(t *testing.T) {
@@ -814,7 +814,7 @@ func TestAdmissionBudgetIsAtomic(t *testing.T) {
 	for err := range results {
 		if err == nil {
 			successes++
-		} else if !errors.Is(err, model.BlockedReasonBudgetExhausted) {
+		} else if !errors.Is(err, model.BlockedBudgetExhausted) {
 			t.Fatalf("unexpected admission error: %v", err)
 		}
 	}
@@ -830,7 +830,7 @@ func TestUnaffordableAuditChangesNothing(t *testing.T) {
 	t.Parallel()
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
-	cfg.MaxSessionsPerDay = cfg.PlanningAdmissionsRequired() - 1
+	cfg.MaxSessionsPerDay = cfg.PlanningCost() - 1
 	original := model.DefaultControl()
 	saveSettings(t, state, cfg, original)
 	a := New(state, t.TempDir())

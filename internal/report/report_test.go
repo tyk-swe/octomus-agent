@@ -119,13 +119,13 @@ func TestUsageReport(t *testing.T) {
 	}
 
 	c1, c2 := report.Cycles[0], report.Cycles[1]
-	if c1.ID != "c1" || c1.PlanningAdmissions != 2 || c1.TaskAdmissions != 3 || c1.RecordedCompletedSessions != 2 {
+	if c1.ID != "c1" || c1.PlanningAdmissions != 2 || c1.TaskAdmissions != 3 || c1.CompletedSessions != 2 {
 		t.Fatalf("completed cycle row: %+v", c1)
 	}
 	if c1.WallSeconds == nil || *c1.WallSeconds != 3600 {
 		t.Fatalf("completed cycle wall time: %v", c1.WallSeconds)
 	}
-	if c2.ID != "c2" || c2.PlanningAdmissions != 0 || c2.TaskAdmissions != 1 || c2.RecordedCompletedSessions != 0 {
+	if c2.ID != "c2" || c2.PlanningAdmissions != 0 || c2.TaskAdmissions != 1 || c2.CompletedSessions != 0 {
 		t.Fatalf("running cycle row: %+v", c2)
 	}
 	cycles, _ := value["cycles"].([]any)
@@ -151,7 +151,7 @@ func TestUsageReport(t *testing.T) {
 	for _, row := range report.Tasks {
 		byTask[row.ID] = row
 	}
-	if row := byTask["t1"]; row.Tier != "M" || row.Admissions != 3 || row.RecordedCompletedSessions != 1 {
+	if row := byTask["t1"]; row.Tier != "M" || row.Admissions != 3 || row.CompletedSessions != 1 {
 		t.Fatalf("configured tier task row: %+v", row)
 	}
 	if row := byTask["t2"]; row.Tier != "ZZ" || row.Admissions != 1 {

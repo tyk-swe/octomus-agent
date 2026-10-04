@@ -52,15 +52,15 @@ func GitDir(workTree string) (string, error) {
 // a chain a sandbox built itself does.
 const maxMeasuredDepth = 2048 + 64
 
-// maxReopenedComponents bounds repeated traversal work for each requested ownership group. A deep chain needs no
+// maxReopens bounds repeated traversal work for each requested ownership group. A deep chain needs no
 // reopens, but deep non-leaf siblings otherwise multiply their ancestor depth by their fanout. This budget is much
 // larger than the depth limit, allowing ordinary branching without letting one owner force unbounded repeated work.
-const maxReopenedComponents = 64 * 1024
+const maxReopens = 64 * 1024
 
-// maxMeasurementAttempts lets transient file removals settle without trusting an incomplete snapshot. Every retry
+// maxAttempts lets transient file removals settle without trusting an incomplete snapshot. Every retry
 // starts over with fresh descriptors, accounting and traversal budgets; a final incomplete attempt keeps its owners
 // unknown. This is a bounded response to detected mutations, not a filesystem snapshot.
-const maxMeasurementAttempts = 3
+const maxAttempts = 3
 
 // Usage is one storage measurement. Bytes counts every file the walk reached. Unmeasured names, once each and sorted,
 // the subtrees whose bytes are unknown because they could not be read or exceeded a traversal depth or work bound,
@@ -85,7 +85,7 @@ type Usage struct {
 // fails the measurement.
 func Measure(path string, group int) (Usage, error) {
 	var usage Usage
-	for range maxMeasurementAttempts {
+	for range maxAttempts {
 		dir, err := os.Open(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			return Usage{}, nil
@@ -262,7 +262,7 @@ func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []
 // As with a swap during the initial descent, an inaccessible or changed subtree is reported as unmeasured.
 func (w *walker) reopen(path []measuredDir, prefix string) (*os.File, error) {
 	dir := w.root
-	limit := maxReopenedComponents
+	limit := maxReopens
 	for _, component := range path {
 		// Ancestors above the grouping level are shared by several owners. Reopening those must not spend a
 		// shared budget and incorrectly make healthy siblings unmeasured after visiting an expensive owner.

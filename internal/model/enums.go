@@ -19,29 +19,29 @@ const (
 
 var statusNames = []string{"queued", "executing", "reviewing", "repairing", "verifying", "publishing", "published", "blocked", "failed", "cancelled"}
 
-func (v Status) String() string               { return wirejson.EnumName(v, statusNames) }
-func (v Status) MarshalJSON() ([]byte, error) { return wirejson.MarshalEnum(v, statusNames) }
-func (v *Status) UnmarshalJSON(data []byte) error {
-	return wirejson.UnmarshalEnum(data, statusNames, v)
+func (s Status) String() string               { return wirejson.EnumName(s, statusNames) }
+func (s Status) MarshalJSON() ([]byte, error) { return wirejson.MarshalEnum(s, statusNames) }
+func (s *Status) UnmarshalJSON(data []byte) error {
+	return wirejson.UnmarshalEnum(data, statusNames, s)
 }
 
 type BlockedReason uint8
 
 const (
-	BlockedReasonBudgetExhausted      BlockedReason = 0
-	BlockedReasonStorageLimit         BlockedReason = 1
-	BlockedReasonStaleBase            BlockedReason = 2
-	BlockedReasonRemoteConflict       BlockedReason = 3
-	BlockedReasonPublicationUncertain BlockedReason = 4
-	BlockedReasonRunnerUnavailable    BlockedReason = 5
-	BlockedReasonInvalidReview        BlockedReason = 6
-	BlockedReasonVerificationFailed   BlockedReason = 7
-	BlockedReasonDependencyBlocked    BlockedReason = 8
-	BlockedReasonInvalidPlan          BlockedReason = 9
-	BlockedReasonWorkspaceInvalid     BlockedReason = 10
-	BlockedReasonRetryLimit           BlockedReason = 11
-	BlockedReasonTimeout              BlockedReason = 12
-	BlockedReasonUnknown              BlockedReason = 13
+	BlockedBudgetExhausted      BlockedReason = 0
+	BlockedStorageLimit         BlockedReason = 1
+	BlockedStaleBase            BlockedReason = 2
+	BlockedRemoteConflict       BlockedReason = 3
+	BlockedPublicationUncertain BlockedReason = 4
+	BlockedRunnerUnavailable    BlockedReason = 5
+	BlockedInvalidReview        BlockedReason = 6
+	BlockedVerificationFailed   BlockedReason = 7
+	BlockedDependencyBlocked    BlockedReason = 8
+	BlockedInvalidPlan          BlockedReason = 9
+	BlockedWorkspaceInvalid     BlockedReason = 10
+	BlockedRetryLimit           BlockedReason = 11
+	BlockedTimeout              BlockedReason = 12
+	BlockedUnknown              BlockedReason = 13
 )
 
 var blockedReasonNames = []string{"budget_exhausted", "storage_limit", "stale_base", "remote_conflict", "publication_uncertain", "runner_unavailable", "invalid_review", "verification_failed", "dependency_blocked", "invalid_plan", "workspace_invalid", "retry_limit", "timeout", "unknown"}
@@ -63,31 +63,31 @@ var blockedReasonMessages = [...]string{
 	"Unclassified task failure; inspect the recorded diagnostics",
 }
 
-func (v BlockedReason) String() string { return wirejson.EnumName(v, blockedReasonNames) }
-func (v BlockedReason) MarshalJSON() ([]byte, error) {
-	return wirejson.MarshalEnum(v, blockedReasonNames)
+func (b BlockedReason) String() string { return wirejson.EnumName(b, blockedReasonNames) }
+func (b BlockedReason) MarshalJSON() ([]byte, error) {
+	return wirejson.MarshalEnum(b, blockedReasonNames)
 }
-func (v *BlockedReason) UnmarshalJSON(data []byte) error {
-	return wirejson.UnmarshalEnum(data, blockedReasonNames, v)
+func (b *BlockedReason) UnmarshalJSON(data []byte) error {
+	return wirejson.UnmarshalEnum(data, blockedReasonNames, b)
 }
 
-type PlanningCapacityStatus uint8
+type CapacityStatus uint8
 
 const (
-	PlanningCapacityStatusReady          PlanningCapacityStatus = 0
-	PlanningCapacityStatusDailyExhausted PlanningCapacityStatus = 1
-	PlanningCapacityStatusLimitTooLow    PlanningCapacityStatus = 2
+	CapacityReady     CapacityStatus = 0
+	CapacityExhausted CapacityStatus = 1
+	CapacityTooLow    CapacityStatus = 2
 )
 
 var planningCapacityStatusNames = []string{"ready", "daily_exhausted", "limit_too_low"}
 
-func (v PlanningCapacityStatus) String() string {
+func (v CapacityStatus) String() string {
 	return wirejson.EnumName(v, planningCapacityStatusNames)
 }
-func (v PlanningCapacityStatus) MarshalJSON() ([]byte, error) {
+func (v CapacityStatus) MarshalJSON() ([]byte, error) {
 	return wirejson.MarshalEnum(v, planningCapacityStatusNames)
 }
-func (v *PlanningCapacityStatus) UnmarshalJSON(data []byte) error {
+func (v *CapacityStatus) UnmarshalJSON(data []byte) error {
 	return wirejson.UnmarshalEnum(data, planningCapacityStatusNames, v)
 }
 

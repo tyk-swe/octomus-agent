@@ -107,7 +107,7 @@ sys.stderr.flush()
 sys.exit(int(sys.argv[2]))
 `
 	type result struct {
-		out *process.ProcessOutput
+		out *process.Output
 		err error
 	}
 	done := make(chan result, 1)

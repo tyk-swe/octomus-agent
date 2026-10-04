@@ -53,7 +53,7 @@ func groundingSchema() schemas.Schema {
 	return schemas.Object(schemas.Schema{"context": schemas.String()})
 }
 
-const interruptedPlanningMessage = "Discovery interrupted; incomplete proposals were not dispatched"
+const interruptedMsg = "Discovery interrupted; incomplete proposals were not dispatched"
 
 // Caller holds the gate so worker ownership cannot change during recovery.
 func (a *App) interruptOrphanedCycles() error {
@@ -71,7 +71,7 @@ func (a *App) interruptOrphanedCycles() error {
 		model.InterruptRunning(cycle.Sessions)
 		cycle.Status = model.CycleInterrupted
 		cycle.CompletedAt = new(model.Now())
-		cycle.Error = new(interruptedPlanningMessage)
+		cycle.Error = new(interruptedMsg)
 		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
 			return err
 		}
@@ -101,7 +101,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 		cycle.Error = new(redact.Error(err))
 		if shuttingDown {
 			cycle.Status = model.CycleInterrupted
-			cycle.Error = new(interruptedPlanningMessage)
+			cycle.Error = new(interruptedMsg)
 		}
 		cycle.CompletedAt = new(model.Now())
 		terminalErr = a.saveCycleMergedSessions(&cycle)
@@ -111,7 +111,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 	// A refused terminal checkpoint leaves recovery work behind. Establish its
 	// admission barrier before releasing worker ownership, without waiting for Tick.
 	if terminalErr != nil {
-		a.setActiveRecoveryError(terminalErr)
+		a.setRecoveryError(terminalErr)
 	}
 	a.runtimeMu.Lock()
 	if a.runtime.cycle != nil && a.runtime.cycle.id == cycle.ID {
@@ -122,7 +122,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 	if loadErr != nil {
 		// The saved control may still require run-once settlement. Keep admission
 		// blocked until recovery can inspect it, even when the cycle write succeeded.
-		a.setActiveRecoveryError(loadErr)
+		a.setRecoveryError(loadErr)
 	} else if !shuttingDown {
 		var message string
 		if err != nil {
@@ -138,7 +138,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 		failedRunOnce := err != nil && cycle.Mode == model.CycleModeExecution && control.Mode == model.OperatingModeRunOnce
 		if failedRunOnce {
 			if pauseErr := a.pauseLocked(&control, &message); pauseErr != nil {
-				a.setActiveRecoveryError(pauseErr)
+				a.setRecoveryError(pauseErr)
 			}
 		} else {
 			_ = a.Store.SaveControl(control)
@@ -165,7 +165,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 			return err
 		}
 	}
-	reservations, err := a.Store.PrReservations(cfg.GitHubRepo)
+	reservations, err := a.Store.PRReservations(cfg.GitHubRepo)
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 		return err
 	}
 	if cycle.Mode == model.CycleModeExecution {
-		if err := checkRediscoveryDecisions(memory.requests, proposals); err != nil {
+		if err := checkRediscoveries(memory.requests, proposals); err != nil {
 			return err
 		}
 	}
@@ -253,7 +253,7 @@ func plannedStatus(proposals []model.Proposal) string {
 	return model.CycleIdle
 }
 
-func checkRediscoveryDecisions(requests []rediscoveryRequest, proposals []model.Proposal) error {
+func checkRediscoveries(requests []rediscoveryRequest, proposals []model.Proposal) error {
 	for _, request := range requests {
 		id := request.ID
 		count := 0
@@ -278,27 +278,27 @@ func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task) error {
 	return a.Store.CommitPlanContext(a.ctx, cycle, tasks)
 }
 
-func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle) (model.OpenPrInventory, error) {
+func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle) (model.OpenPRInventory, error) {
 	if err := a.doctor(ctx, cfg, cycle.Mode == model.CycleModeAudit); err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	revision, observedAt, err := a.defaultBranchSHA(ctx, cfg)
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	if err := a.observeDefaultBranch(cfg, revision, observedAt); err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	observed, err := a.observeOpenPRs(ctx, cfg)
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	if err := gitops.Fetch(ctx, cfg); err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	external, coverage, err := ExternalContext(observed.inventory)
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	forks := []uint64{}
 	for _, pr := range external {
@@ -308,7 +308,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	}
 	missing, err := gitops.FetchForkHeads(ctx, cfg, forks)
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	if len(missing) > 0 {
 		_ = a.Store.Event(cycle.ID, "grounding", fmt.Sprintf("Fork PR heads unavailable locally: %v", missing))
@@ -316,7 +316,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	limit := 100
 	history, err := a.Store.HistoryPage("task", store.HistoryQuery{Limit: &limit})
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	targets := []string{}
 	now := time.Now()
@@ -340,25 +340,25 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	defer a.gate.Unlock()
 	live, err := a.Config()
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	liveFingerprint, err := live.Fingerprint()
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	snapshotFingerprint, err := cfg.Fingerprint()
 	if err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	if liveFingerprint != snapshotFingerprint {
-		return model.OpenPrInventory{}, errors.New("Configuration changed during planning grounding")
+		return model.OpenPRInventory{}, errors.New("Configuration changed during planning grounding")
 	}
-	if _, err := a.commitPrObservationLocked(cfg, observed); err != nil {
-		return model.OpenPrInventory{}, err
+	if _, err := a.savePRsLocked(cfg, observed); err != nil {
+		return model.OpenPRInventory{}, err
 	}
 	cycle.Grounding = &grounding
 	if err := a.saveCycleMergedSessions(cycle); err != nil {
-		return model.OpenPrInventory{}, err
+		return model.OpenPRInventory{}, err
 	}
 	return observed.inventory, nil
 }
@@ -493,7 +493,7 @@ func checkAssessments(reviewer string, candidates []model.Proposal, assessments 
 	for i, item := range assessments {
 		ids[i] = item.ID
 	}
-	return exactIDs(proposalIDs(candidates), ids, idCoverageErrors{
+	return matchIDs(proposalIDs(candidates), ids, idMessages{
 		invented: func(id string) string {
 			return fmt.Sprintf("Adversarial reviewer %s invented proposal %q", reviewer, id)
 		},
@@ -548,7 +548,7 @@ func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.C
 }
 
 func checkConsolidation(candidates, returned []model.Proposal) error {
-	return exactIDs(proposalIDs(candidates), proposalIDs(returned), idCoverageErrors{
+	return matchIDs(proposalIDs(candidates), proposalIDs(returned), idMessages{
 		invented: func(id string) string {
 			return fmt.Sprintf("Orchestrator omitted or invented proposal IDs: invented %q", id)
 		},
@@ -611,8 +611,8 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 // scan of the same cycle. This only coordinates trusted host work; untrusted runners remain subject to Measure's
 // bounded, fail-closed traversal. Check cancellation after waiting before starting any new filesystem work.
 func (a *App) withPlanningWorkspace(ctx context.Context, work func() error) error {
-	a.planningStorage.RLock()
-	defer a.planningStorage.RUnlock()
+	a.fsLock.RLock()
+	defer a.fsLock.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("Operation cancelled: %w", err)
 	}
@@ -620,8 +620,8 @@ func (a *App) withPlanningWorkspace(ctx context.Context, work func() error) erro
 }
 
 func (a *App) removePlanningWorkspace(roleRoot string) error {
-	a.planningStorage.RLock()
-	defer a.planningStorage.RUnlock()
+	a.fsLock.RLock()
+	defer a.fsLock.RUnlock()
 	// Completed, already-owned cleanup must finish even if shutdown cancelled the role while this lock was queued.
 	return workspace.RemoveOwnedDir(filepath.Dir(roleRoot), roleRoot)
 }
@@ -719,7 +719,7 @@ func newPlannedTask(cfg config.Config, cycle *model.Cycle, original, proposal mo
 		number, url = &n, &u
 	}
 	now := model.Now()
-	policy := model.AttemptPolicyFromConfig(cfg)
+	policy := model.PolicyOf(cfg)
 	return model.Task{
 		ID:              taskID,
 		CycleID:         cycle.ID,

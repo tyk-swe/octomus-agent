@@ -51,7 +51,7 @@ type runnerStorage struct {
 	Status string  `json:"status"`
 }
 
-func (a *App) maybeStartHousekeeping(cfg config.Config) {
+func (a *App) startHousekeeping(cfg config.Config) {
 	now := time.Now()
 	a.runtimeMu.Lock()
 	if a.ctx.Err() != nil || a.runtime.housekeeping {
@@ -110,7 +110,7 @@ func (a *App) retention(cfg config.Config) error {
 		days = maxRetainDays
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
-	checks, err := a.Store.BaselineCleanupCandidates(a.retentionCursor(cleanupBaseline))
+	checks, err := a.Store.StaleBaselines(a.retentionCursor(cleanupBaseline))
 	if err != nil {
 		return err
 	}
@@ -262,7 +262,7 @@ func (a *App) releaseCleanup(kind cleanupKind, id string) {
 	a.runtimeMu.Lock()
 	delete(a.runtime.cleanups, cleanupKey{kind: kind, id: id})
 	if kind == cleanupTask {
-		a.runtime.cancelledSessionsChecked = false
+		a.runtime.cancelScanDone = false
 	}
 	a.runtimeMu.Unlock()
 }
@@ -418,12 +418,12 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if err := gitops.ValidateRemote(ctx, cfg); err != nil {
 		return err
 	}
-	if err := a.refreshPRs(ctx, cfg); errors.Is(err, errPrPolicyChanged) {
+	if err := a.refreshPRs(ctx, cfg); errors.Is(err, errPRPolicyChanged) {
 		return nil
-	} else if err != nil && !errors.Is(err, errPrInventorySuperseded) {
+	} else if err != nil && !errors.Is(err, errStaleInventory) {
 		return err
 	}
-	inventory, err := a.Store.OpenPrInventory()
+	inventory, err := a.Store.OpenPRInventory()
 	if err != nil || inventory == nil {
 		if err == nil {
 			err = errors.New("PR refresh did not persist an inventory")
@@ -488,11 +488,11 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	if !live.SameRemoteIdentity(cfg) {
 		return nil
 	}
-	if err := a.mergeDefaultObservationLocked(cfg, revisionValue, observedAt); err != nil {
+	if err := a.observeLocked(cfg, revisionValue, observedAt); err != nil {
 		return err
 	}
 	for _, pr := range closed {
-		if err := a.Store.RecordPrObservation(cfg.GitHubRepo, pr, false); err != nil {
+		if err := a.Store.RecordPRObservation(cfg.GitHubRepo, pr, false); err != nil {
 			return err
 		}
 	}

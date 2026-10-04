@@ -63,27 +63,27 @@ type taskJob struct {
 }
 
 type runtimeState struct {
-	cycle                  *cycleJob
-	preflight              *model.CycleMode
-	tasks                  map[string]taskJob
-	checkedCycles          map[string]struct{}
-	prRefresh              *prRefreshJob
-	prObservation          *freshPrObservation
-	prRefreshError         string
-	lastPrAttempt          time.Time
-	prAdmissionRefused     bool
-	housekeeping           bool
-	lastRetention          time.Time
-	lastObserve            time.Time
-	reconcilingPublication bool
-	baseline               *baselineJob
-	defaultObservation     *model.DefaultBranchObservation
-	cleanups               map[cleanupKey]struct{}
-	cleanupReports         map[cleanupKey]cleanupReport
-	retentionCursors       map[cleanupKind]string
-	activeRecoveryError    *string
+	cycle               *cycleJob
+	preflight           *model.CycleMode
+	tasks               map[string]taskJob
+	checkedCycles       map[string]struct{}
+	prRefresh           *prRefreshJob
+	prObservation       *freshPRs
+	prRefreshError      string
+	lastPRAttempt       time.Time
+	prAdmissionRefused  bool
+	housekeeping        bool
+	lastRetention       time.Time
+	lastObserve         time.Time
+	reconciling         bool
+	baseline            *baselineJob
+	defaultObservation  *model.DefaultBranchObservation
+	cleanups            map[cleanupKey]struct{}
+	cleanupReports      map[cleanupKey]cleanupReport
+	retentionCursors    map[cleanupKind]string
+	activeRecoveryError *string
 
-	cancelledSessionsChecked bool
+	cancelScanDone bool
 }
 
 func (r *runtimeState) idle() bool {
@@ -115,11 +115,11 @@ type App struct {
 	wg         sync.WaitGroup
 
 	// Guarded by gate; remember only successfully recorded recovery activity.
-	recordedRecoveryActivity recoveryActivity
+	recoveryLog recoveryActivity
 
-	// planningStorage excludes admission scans from trusted planning filesystem changes. Hold it only during
+	// fsLock excludes admission scans from trusted planning filesystem changes. Hold it only during
 	// filesystem work, never across store calls, gate acquisition, runner work, or another acquisition of this lock.
-	planningStorage sync.RWMutex
+	fsLock sync.RWMutex
 }
 
 func (a *App) withoutGate(fn func()) {
@@ -270,11 +270,11 @@ func (e *recoveryError) Unwrap() error { return e.err }
 // Run may report the failure later; operator controls and preflight completions
 // must already be blocked during that gap.
 func (a *App) blockRecovery(err error) error {
-	a.setActiveRecoveryError(err)
+	a.setRecoveryError(err)
 	return &recoveryError{err: err}
 }
 
-func (a *App) setActiveRecoveryError(err error) string {
+func (a *App) setRecoveryError(err error) string {
 	// The redactor may return a substring; retain only its bounded display text.
 	message := strings.Clone(redact.Error(err))
 	a.runtimeMu.Lock()
@@ -292,8 +292,8 @@ func (a *App) fail(err error) {
 	message := redact.Error(err)
 	var recovery *recoveryError
 	if errors.As(err, &recovery) {
-		message = a.setActiveRecoveryError(err)
-		activity := &a.recordedRecoveryActivity
+		message = a.setRecoveryError(err)
+		activity := &a.recoveryLog
 		if activity.overflowRecorded {
 			return
 		}
@@ -325,7 +325,7 @@ func (a *App) Recover() error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	a.runtimeMu.Lock()
-	a.runtime.cancelledSessionsChecked = false
+	a.runtime.cancelScanDone = false
 	a.runtimeMu.Unlock()
 
 	// Scratch roots only ever hold a check that died with the previous process.
@@ -335,7 +335,7 @@ func (a *App) Recover() error {
 	if err := a.recoverBaselines(); err != nil {
 		return err
 	}
-	candidates, err := a.Store.PrReservationCandidates()
+	candidates, err := a.Store.ReservableTasks()
 	if err != nil {
 		return err
 	}
@@ -343,7 +343,7 @@ func (a *App) Recover() error {
 		initializedQueued := task.Status == model.StatusQueued && workspace.Initialized(task)
 		needsReservation := task.Status.Active() || initializedQueued || (task.Status != model.StatusPublished && task.OutputCommit != nil)
 		if task.Proposal.Target == task.Config.DefaultBranch && task.Status != model.StatusCancelled && needsReservation {
-			if err := a.Store.SeedPrReservation(task); err != nil {
+			if err := a.Store.SeedPRReservation(task); err != nil {
 				return err
 			}
 		}
@@ -358,7 +358,7 @@ func (a *App) Recover() error {
 		return err
 	}
 	for _, task := range tasks {
-		markedCancelled, err := a.Store.MarkerSet("cancel", task.ID)
+		markedCancelled, err := a.Store.Marked("cancel", task.ID)
 		if err != nil {
 			return err
 		}
@@ -373,12 +373,12 @@ func (a *App) Recover() error {
 			task.Error = new("Recovering an interrupted task: inspecting the recorded workspace and reconciling remote state before continuing.")
 		default:
 			task.Status = model.StatusBlocked
-			reason := model.BlockedReasonWorkspaceInvalid
+			reason := model.BlockedWorkspaceInvalid
 			message := "Service interrupted before workspace initialization completed, or retry budget exhausted. Inspect the preserved task before retrying."
 			if workspace.Initialized(task) {
-				reason = model.BlockedReasonRetryLimit
+				reason = model.BlockedRetryLimit
 				if task.OutputCommit != nil {
-					reason = model.BlockedReasonPublicationUncertain
+					reason = model.BlockedPublicationUncertain
 					message = "Service interrupted during publication after the retry budget was exhausted. Reconcile publication to finish delivery without another model turn."
 				}
 			}
@@ -394,7 +394,7 @@ func (a *App) Recover() error {
 		}
 	}
 
-	if err := a.interruptCancelledTaskSessions(); err != nil {
+	if err := a.settleCancelledSessions(); err != nil {
 		return err
 	}
 	return a.interruptOrphanedCycles()
@@ -411,7 +411,7 @@ func (a *App) settleExitedTask(task *model.Task, cause error) {
 	publishing := task.Status == model.StatusPublishing && task.OutputCommit != nil
 	model.FailRunning(task.Sessions, redact.Error(cause))
 	if err := a.setTaskError(task, cause); err != nil && publishing {
-		a.setActiveRecoveryError(err)
+		a.setRecoveryError(err)
 	}
 }
 
@@ -444,12 +444,12 @@ func (a *App) runTask(task model.Task) {
 		} else if loadErr != nil {
 			// The final read could not establish whether a checkpoint remains.
 			// A successful recovery pass can safely clear this barrier.
-			a.setActiveRecoveryError(loadErr)
+			a.setRecoveryError(loadErr)
 		}
 		a.runtimeMu.Lock()
 		delete(a.runtime.tasks, task.ID)
 		if loadErr != nil || (current != nil && current.Status == model.StatusCancelled) {
-			a.runtime.cancelledSessionsChecked = false
+			a.runtime.cancelScanDone = false
 		}
 		a.runtimeMu.Unlock()
 		a.gate.Unlock()
@@ -458,5 +458,5 @@ func (a *App) runTask(task model.Task) {
 }
 
 func invalidPlan(message string) error {
-	return fmt.Errorf("%s: %w", message, model.BlockedReasonInvalidPlan)
+	return fmt.Errorf("%s: %w", message, model.BlockedInvalidPlan)
 }

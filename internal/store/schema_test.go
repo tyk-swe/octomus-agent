@@ -16,7 +16,7 @@ func TestFreshGoSchemaAndReopen(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
-	if version := queryInt(t, raw(t, path), "PRAGMA user_version"); version != store.SupportedSchemaVersion {
+	if version := queryInt(t, raw(t, path), "PRAGMA user_version"); version != 7 {
 		t.Fatalf("schema version = %d", version)
 	}
 	for _, table := range []string{"records", "record_meta", "proposal_records", "admissions", "notification_outbox"} {

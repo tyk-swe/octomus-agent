@@ -83,8 +83,8 @@ func connectFailed(err, closeErr error) error {
 	return fmt.Errorf("%w: %w", err, closeErr)
 }
 
-// runnerSetupHint names where a runner that cannot start must be fixed.
-func runnerSetupHint(box sandbox.Backend, action string) string {
+// setupHint names where a runner that cannot start must be fixed.
+func setupHint(box sandbox.Backend, action string) string {
 	if box.Mode() == sandbox.ModeDocker {
 		return "check the sandbox image and the runner login volume"
 	}

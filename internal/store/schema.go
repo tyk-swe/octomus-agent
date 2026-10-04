@@ -10,7 +10,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
-const SupportedSchemaVersion = 7
+const schemaVersion = 7
 
 //go:embed schema.sql
 var schemaSQL string
@@ -36,7 +36,7 @@ func schemaStatus(ctx context.Context, c *sql.Conn) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if version == SupportedSchemaVersion {
+	if version == schemaVersion {
 		return false, nil
 	}
 	if version == 0 {
@@ -57,7 +57,7 @@ func requireSchema(ctx context.Context, c *sql.Conn) error {
 	if err != nil {
 		return err
 	}
-	if version != SupportedSchemaVersion {
+	if version != schemaVersion {
 		return unsupportedSchema(version)
 	}
 	return nil
@@ -70,7 +70,7 @@ func userVersion(ctx context.Context, c *sql.Conn) (int64, error) {
 }
 
 func unsupportedSchema(version int64) error {
-	return fmt.Errorf("State database schema version %d is unsupported; this release requires a fresh version-%d data directory. Back up existing state before changing data directories", version, SupportedSchemaVersion)
+	return fmt.Errorf("State database schema version %d is unsupported; this release requires a fresh version-%d data directory. Back up existing state before changing data directories", version, schemaVersion)
 }
 
 func createSchema(ctx context.Context, c *sql.Conn) error {
@@ -84,7 +84,7 @@ func createSchema(ctx context.Context, c *sql.Conn) error {
 				return err
 			}
 		}
-		_, err := c.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SupportedSchemaVersion))
+		_, err := c.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", schemaVersion))
 		return err
 	})
 }

@@ -194,7 +194,7 @@ func TestWebhookDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer worker.Stop()
-	reason := model.BlockedReasonStaleBase
+	reason := model.BlockedStaleBase
 	putTask(t, state, "task-1", "blocked", &reason)
 	body := rBody(t, server.next(t))
 	for key, want := range map[string]any{
@@ -254,7 +254,7 @@ func TestStatusClassification(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer worker.Stop()
-			reason := model.BlockedReasonTimeout
+			reason := model.BlockedTimeout
 			putTask(t, state, "task-1", "blocked", &reason)
 			server.next(t)
 			recorded := func() bool {

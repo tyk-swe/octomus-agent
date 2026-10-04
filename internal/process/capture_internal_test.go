@@ -12,18 +12,18 @@ func TestSafeCaptures(t *testing.T) {
 	const credential = "opaque-cross-stream-credential"
 	for _, tc := range []struct {
 		name           string
-		output         ProcessOutput
+		output         Output
 		stdout, stderr SafeCapture
 	}{
 		{
 			name:   "complete streams",
-			output: ProcessOutput{Stdout: Captured{Bytes: []byte("Authorization: Bearer ")}, Stderr: Captured{Bytes: []byte(credential + "\nSTDERR-END")}},
+			output: Output{Stdout: Captured{Bytes: []byte("Authorization: Bearer ")}, Stderr: Captured{Bytes: []byte(credential + "\nSTDERR-END")}},
 			stdout: SafeCapture{Head: "Authorization: [redacted]"},
 			stderr: SafeCapture{Head: "\nSTDERR-END"},
 		},
 		{
 			name: "retained tails",
-			output: ProcessOutput{
+			output: Output{
 				Stdout: Captured{Bytes: []byte("STDOUT-HEAD\ncut"), Truncated: true, tail: []byte("cut\nAuthorization: Bearer ")},
 				Stderr: Captured{Bytes: []byte(credential + "\nSTDERR-HEAD\ncut"), Truncated: true, tail: []byte("cut\nSTDERR-END")},
 			},
@@ -33,13 +33,13 @@ func TestSafeCaptures(t *testing.T) {
 		{
 			name: "overlapping environment secret",
 			// TestMain installs the full two-line value as an environment secret.
-			output: ProcessOutput{Stdout: Captured{Bytes: []byte("ghp_abcdefghijklmnop")}, Stderr: Captured{Bytes: []byte("sensitive-suffix\nSTDERR-END")}},
+			output: Output{Stdout: Captured{Bytes: []byte("ghp_abcdefghijklmnop")}, Stderr: Captured{Bytes: []byte("sensitive-suffix\nSTDERR-END")}},
 			stdout: SafeCapture{Head: "[redacted]"},
 			stderr: SafeCapture{Head: "\nSTDERR-END"},
 		},
 		{
 			name:   "token starts stderr after ordinary stdout",
-			output: ProcessOutput{Stdout: Captured{Bytes: []byte("progress")}, Stderr: Captured{Bytes: []byte("sk-abcdefghijklmnop\nSTDERR-END")}},
+			output: Output{Stdout: Captured{Bytes: []byte("progress")}, Stderr: Captured{Bytes: []byte("sk-abcdefghijklmnop\nSTDERR-END")}},
 			stdout: SafeCapture{Head: "progress"},
 			stderr: SafeCapture{Head: "[redacted]\nSTDERR-END"},
 		},

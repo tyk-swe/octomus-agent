@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	baselineCommandOutputLimit   = 16 * 1024
-	baselineAggregateOutputLimit = 1024 * 1024
+	baselineCmdLimit   = 16 * 1024
+	baselineTotalLimit = 1024 * 1024
 )
 
 type baselineJob struct {
@@ -51,7 +51,7 @@ func boundedOutput(text string, limit int, diagnosticTruncated bool) (string, bo
 	return text[:keep] + marker, true
 }
 
-func commandOutput(output *process.ProcessOutput, err error) (string, bool, bool) {
+func commandOutput(output *process.Output, err error) (string, bool, bool) {
 	if err != nil {
 		return err.Error(), false, false
 	}
@@ -69,7 +69,7 @@ func commandOutput(output *process.ProcessOutput, err error) (string, bool, bool
 }
 
 func (a *App) baselineCancelled(id string) (bool, error) {
-	return a.Store.MarkerSet("baseline_cancel", id)
+	return a.Store.Marked("baseline_cancel", id)
 }
 
 func (a *App) defaultBranchSHA(ctx context.Context, cfg config.Config) (string, string, error) {
@@ -97,10 +97,10 @@ func (a *App) observeDefaultBranch(cfg config.Config, revision, observedAt strin
 	if !live.SameRemoteIdentity(cfg) {
 		return errors.New("Configuration identity changed during remote observation")
 	}
-	return a.mergeDefaultObservationLocked(cfg, revision, observedAt)
+	return a.observeLocked(cfg, revision, observedAt)
 }
 
-func (a *App) mergeDefaultObservationLocked(cfg config.Config, revision, observedAt string) error {
+func (a *App) observeLocked(cfg config.Config, revision, observedAt string) error {
 	observed, err := time.Parse(time.RFC3339Nano, observedAt)
 	if err != nil {
 		return err
@@ -246,7 +246,7 @@ func (a *App) CancelBaseline(id string) error {
 			return err
 		}
 		// Like the worker path, activity is best-effort after terminal state commits.
-		_ = a.Store.Event(id, "baseline", baselineStatusDebug[check.Status])
+		_ = a.Store.Event(id, "baseline", baselineLabels[check.Status])
 		return nil
 	}
 	cancel()
@@ -403,7 +403,7 @@ func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 	return a.Store.Put("baseline", check.ID, *current)
 }
 
-var baselineStatusDebug = map[model.BaselineStatus]string{
+var baselineLabels = map[model.BaselineStatus]string{
 	model.BaselineStatusRunning: "Running", model.BaselineStatusPassed: "Passed",
 	model.BaselineStatusFailed: "Failed", model.BaselineStatusCancelled: "Cancelled",
 	model.BaselineStatusTimedOut: "TimedOut", model.BaselineStatusInterrupted: "Interrupted",
@@ -478,7 +478,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	if err := a.Store.Put("baseline", id, *check); err != nil {
 		_ = a.Store.Event(id, "baseline_error", redact.Error(err))
 	} else {
-		_ = a.Store.Event(id, "baseline", baselineStatusDebug[status])
+		_ = a.Store.Event(id, "baseline", baselineLabels[status])
 	}
 	a.gate.Unlock()
 	if err := a.removeBaselineWorkspace(check); err != nil {
@@ -488,7 +488,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 
 func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (model.BaselineStatus, error) {
 	c := check.Config
-	measured, err := a.measureFor(filepath.Join("baselines", check.ID))
+	measured, err := a.measure(filepath.Join("baselines", check.ID))
 	if err != nil {
 		return model.BaselineStatusRunning, err
 	}
@@ -524,7 +524,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		return model.BaselineStatusRunning, errors.New("Cloned workspace does not match the identified revision")
 	}
 	allOK := true
-	remaining := baselineAggregateOutputLimit
+	remaining := baselineTotalLimit
 	for i, command := range c.VerificationCommands {
 		if ctx.Err() != nil {
 			return model.BaselineStatusRunning, process.ErrCancelled
@@ -553,8 +553,8 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 			}
 		}
 		limit := remaining
-		if limit > baselineCommandOutputLimit {
-			limit = baselineCommandOutputLimit
+		if limit > baselineCmdLimit {
+			limit = baselineCmdLimit
 		}
 		output, outputTruncated := boundedOutput(redact.Secrets(text), limit, diagnosticTruncated)
 		remaining -= len(output)

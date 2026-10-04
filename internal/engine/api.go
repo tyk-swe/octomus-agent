@@ -259,13 +259,13 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	if err := a.Store.Put("settings", "config", c); err != nil {
 		return nil, err
 	}
-	a.invalidatePrObservation()
+	a.invalidatePRs()
 	// Activity is best-effort after the configuration change has committed.
 	_ = a.Store.Event("system", "configuration", "Operator saved configuration")
 	return NewSettingsView(c)
 }
 
-func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
+func (a *App) Doctor(cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
 	if err := a.admitDiagnostic(); err != nil {
 		return nil, nil, err
 	}
@@ -376,7 +376,7 @@ func (a *App) DoctorFor(cfg config.Config, mode model.CycleMode) (map[string]any
 	for _, diagnostic := range diagnostics {
 		if diagnostic.Backend == config.BackendCodex {
 			result["codex_version"] = diagnostic.Version
-			result["tested_codex_version"] = runner.CodexTestedVersion
+			result["tested_codex_version"] = runner.CodexVersion
 			break
 		}
 	}

@@ -6,11 +6,11 @@ import (
 )
 
 const (
-	NotificationMaxAttempts int64 = 5
-	NotificationExpiry      int64 = 24 * 60 * 60
+	maxAttempts int64 = 5
+	expiry      int64 = 24 * 60 * 60
 )
 
-var NotificationRetryDelays = [NotificationMaxAttempts]int64{30, 120, 600, 1800, 1800}
+var retryDelays = [maxAttempts]int64{30, 120, 600, 1800, 1800}
 
 type NotificationDelivery struct {
 	Seq        int64   `json:"seq"`
@@ -35,7 +35,7 @@ type NotificationHealth struct {
 	LastHTTPStatus  *int64  `json:"last_http_status"`
 }
 
-func (s *Store) ConfigureNotifications(destination *string, state string, errorText *string) error {
+func (s *Store) SetNotifyPolicy(destination *string, state string, errorText *string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.transaction(false, func(c *sql.Conn) error {
@@ -53,16 +53,16 @@ func (s *Store) ConfigureNotifications(destination *string, state string, errorT
 	})
 }
 
-func (s *Store) ClaimNotification(destination string, now time.Time) (*NotificationDelivery, error) {
+func (s *Store) ClaimDelivery(destination string, now time.Time) (*NotificationDelivery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	epoch := now.Unix()
 	var claimed *NotificationDelivery
 	err := s.transaction(false, func(c *sql.Conn) error {
-		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='expired' WHERE status='pending' AND unixepoch(created_at) < ?1", epoch-NotificationExpiry); err != nil {
+		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='expired' WHERE status='pending' AND unixepoch(created_at) < ?1", epoch-expiry); err != nil {
 			return err
 		}
-		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='delivery_uncertain' WHERE status='pending' AND attempts >= ?1", NotificationMaxAttempts); err != nil {
+		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='delivery_uncertain' WHERE status='pending' AND attempts >= ?1", maxAttempts); err != nil {
 			return err
 		}
 		var d NotificationDelivery
@@ -77,7 +77,7 @@ func (s *Store) ClaimNotification(destination string, now time.Time) (*Notificat
 		if err == nil {
 			// Rows at the attempt limit were just failed, so the delay index is always in range.
 			attempt := d.Attempts + 1
-			delay := NotificationRetryDelays[attempt-1]
+			delay := retryDelays[attempt-1]
 			if _, err := c.ExecContext(background, "UPDATE notification_outbox SET attempts=?1, last_attempt_at=?2, next_attempt_at=?3 WHERE seq=?4", attempt, rfc3339(now), epoch+delay, d.Seq); err != nil {
 				return err
 			}
@@ -92,14 +92,14 @@ func (s *Store) ClaimNotification(destination string, now time.Time) (*Notificat
 	return claimed, err
 }
 
-func (s *Store) FinishNotificationDelivered(seq int64, now time.Time) error {
+func (s *Store) MarkDelivered(seq int64, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.conn.ExecContext(background, "UPDATE notification_outbox SET status='delivered', delivered_at=?1, last_error=NULL, http_status=NULL WHERE seq=?2 AND status='pending'", rfc3339(now), seq)
 	return err
 }
 
-func (s *Store) FinishNotificationFailure(seq int64, category string, httpStatus *uint16, retryable bool) error {
+func (s *Store) MarkFailed(seq int64, category string, httpStatus *uint16, retryable bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	retry := int64(0)
@@ -111,7 +111,7 @@ func (s *Store) FinishNotificationFailure(seq int64, category string, httpStatus
 		value := int64(*httpStatus)
 		status = &value
 	}
-	_, err := s.conn.ExecContext(background, "UPDATE notification_outbox SET status=CASE WHEN ?1=1 AND attempts<?2 THEN 'pending' ELSE 'failed' END, last_error=?3, http_status=?4 WHERE seq=?5 AND status='pending'", retry, NotificationMaxAttempts, category, status, seq)
+	_, err := s.conn.ExecContext(background, "UPDATE notification_outbox SET status=CASE WHEN ?1=1 AND attempts<?2 THEN 'pending' ELSE 'failed' END, last_error=?3, http_status=?4 WHERE seq=?5 AND status='pending'", retry, maxAttempts, category, status, seq)
 	return err
 }
 

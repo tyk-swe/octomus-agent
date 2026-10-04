@@ -414,7 +414,7 @@ func (a *api) taskDetail(_ http.ResponseWriter, _ *http.Request, params map[stri
 		return 0, nil, err
 	}
 	value["allowed_actions"] = task.AllowedActions()
-	value["effective_attempt_policy"] = model.AttemptPolicyFromConfig(task.ExecutionConfig())
+	value["effective_attempt_policy"] = model.PolicyOf(task.ExecutionConfig())
 	live, err := a.app.Config()
 	if err != nil {
 		return 0, nil, err
@@ -524,7 +524,7 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request, _ map[string]string
 	if err != nil {
 		return 0, nil, err
 	}
-	result, _, err := a.app.DoctorFor(cfg, mode)
+	result, _, err := a.app.Doctor(cfg, mode)
 	status := http.StatusOK
 	var body map[string]any
 	if err != nil {

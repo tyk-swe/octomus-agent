@@ -61,7 +61,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 			return nil, fmt.Errorf("Workspace state check failed during verification: %w", outcome.intactErr)
 		}
 		if !outcome.intact {
-			return nil, model.BlockedReasonWorkspaceInvalid
+			return nil, model.BlockedWorkspaceInvalid
 		}
 		if failed {
 			verificationErrors = append(verificationErrors, command+": "+output)
@@ -94,7 +94,7 @@ func (a *App) verificationCheckout(ctx context.Context, task *model.Task, revisi
 }
 
 type checkOutcome struct {
-	captured  *process.ProcessOutput
+	captured  *process.Output
 	capture   error
 	intact    bool
 	intactErr error
@@ -136,7 +136,7 @@ type sandboxUnavailable struct{ err error }
 
 func (e *sandboxUnavailable) Error() string { return e.err.Error() }
 func (e *sandboxUnavailable) Unwrap() []error {
-	return []error{model.BlockedReasonRunnerUnavailable, e.err}
+	return []error{model.BlockedRunnerUnavailable, e.err}
 }
 
 const (

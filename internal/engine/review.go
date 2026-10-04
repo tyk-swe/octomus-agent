@@ -37,10 +37,10 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	var review model.Review
 	judge := func(thread, answer string) (string, error) {
 		if err := json.Unmarshal([]byte(answer), &review); err != nil {
-			return "", fmt.Errorf("%w: Unparseable review is not clean: %s", model.BlockedReasonInvalidReview, redact.Text(err.Error()))
+			return "", fmt.Errorf("%w: Unparseable review is not clean: %s", model.BlockedInvalidReview, redact.Text(err.Error()))
 		}
 		if !review.Valid() {
-			return "", model.BlockedReasonInvalidReview
+			return "", model.BlockedInvalidReview
 		}
 		if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
 			return "", err
@@ -101,7 +101,7 @@ func trustedChangeSet(ctx context.Context, cfg config.Config, ws, base, revision
 	}
 	if !counted || !listed {
 		return changeSet{}, fmt.Errorf("%w: The change set from %s to %s lists more files than a review prompt carries (over %d bytes); narrow the task",
-			model.BlockedReasonInvalidReview, base, revision, reviewListLimit)
+			model.BlockedInvalidReview, base, revision, reviewListLimit)
 	}
 	set := changeSet{totals: strings.TrimSpace(totals), files: strings.TrimRight(files, "\n")}
 	changed, err := changedFiles(set.files)

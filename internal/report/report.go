@@ -20,33 +20,33 @@ type Daily struct {
 }
 
 type CycleRow struct {
-	ID                        string          `json:"id"`
-	Mode                      model.CycleMode `json:"mode"`
-	Number                    uint64          `json:"number"`
-	Status                    string          `json:"status"`
-	StartedAt                 string          `json:"started_at"`
-	CompletedAt               *string         `json:"completed_at"`
-	WallSeconds               *float64        `json:"wall_seconds"`
-	PlanningAdmissions        uint64          `json:"planning_admissions"`
-	TaskAdmissions            uint64          `json:"task_admissions"`
-	RecordedCompletedSessions int             `json:"recorded_completed_sessions"`
-	Decisions                 map[string]int  `json:"decisions"`
-	Error                     *string         `json:"error"`
+	ID                 string          `json:"id"`
+	Mode               model.CycleMode `json:"mode"`
+	Number             uint64          `json:"number"`
+	Status             string          `json:"status"`
+	StartedAt          string          `json:"started_at"`
+	CompletedAt        *string         `json:"completed_at"`
+	WallSeconds        *float64        `json:"wall_seconds"`
+	PlanningAdmissions uint64          `json:"planning_admissions"`
+	TaskAdmissions     uint64          `json:"task_admissions"`
+	CompletedSessions  int             `json:"recorded_completed_sessions"`
+	Decisions          map[string]int  `json:"decisions"`
+	Error              *string         `json:"error"`
 }
 
 type TaskRow struct {
-	ID                        string       `json:"id"`
-	CycleID                   string       `json:"cycle_id"`
-	Tier                      string       `json:"tier"`
-	Status                    model.Status `json:"status"`
-	Route                     config.Route `json:"route"`
-	RepairRoute               config.Route `json:"repair_route"`
-	Admissions                uint64       `json:"admissions"`
-	RecordedCompletedSessions int          `json:"recorded_completed_sessions"`
-	CreatedAt                 string       `json:"created_at"`
-	UpdatedAt                 string       `json:"updated_at"`
-	PRURL                     *string      `json:"pr_url"`
-	Error                     *string      `json:"error"`
+	ID                string       `json:"id"`
+	CycleID           string       `json:"cycle_id"`
+	Tier              string       `json:"tier"`
+	Status            model.Status `json:"status"`
+	Route             config.Route `json:"route"`
+	RepairRoute       config.Route `json:"repair_route"`
+	Admissions        uint64       `json:"admissions"`
+	CompletedSessions int          `json:"recorded_completed_sessions"`
+	CreatedAt         string       `json:"created_at"`
+	UpdatedAt         string       `json:"updated_at"`
+	PRURL             *string      `json:"pr_url"`
+	Error             *string      `json:"error"`
 }
 
 type TierRow struct {
@@ -150,8 +150,8 @@ func assemble(c *sql.Conn) (Report, error) {
 			ID: cycle.ID, Mode: cycle.Mode, Number: cycle.Number, Status: cycle.Status,
 			StartedAt: cycle.StartedAt, CompletedAt: cycle.CompletedAt, WallSeconds: wall,
 			PlanningAdmissions: counts.planning, TaskAdmissions: counts.task,
-			RecordedCompletedSessions: model.CompletedSessions(cycle.Sessions),
-			Decisions:                 decisions, Error: cycle.Error,
+			CompletedSessions: model.CompletedSessions(cycle.Sessions),
+			Decisions:         decisions, Error: cycle.Error,
 		})
 	}
 	taskRows := make([]TaskRow, 0, len(tasks))
@@ -159,9 +159,9 @@ func assemble(c *sql.Conn) (Report, error) {
 		taskRows = append(taskRows, TaskRow{
 			ID: task.ID, CycleID: task.CycleID, Tier: task.Proposal.Tier,
 			Status: task.Status, Route: task.Route, RepairRoute: task.Config.RepairRoute,
-			Admissions:                taskCounts[task.ID],
-			RecordedCompletedSessions: model.CompletedSessions(task.Sessions),
-			CreatedAt:                 task.CreatedAt, UpdatedAt: task.UpdatedAt,
+			Admissions:        taskCounts[task.ID],
+			CompletedSessions: model.CompletedSessions(task.Sessions),
+			CreatedAt:         task.CreatedAt, UpdatedAt: task.UpdatedAt,
 			PRURL: task.PRURL, Error: task.Error,
 		})
 	}

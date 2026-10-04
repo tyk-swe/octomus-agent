@@ -32,7 +32,7 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 			a.gate.Unlock()
 			return err
 		}
-		operatorCancelled, err := a.Store.MarkerSet("cancel", task.ID)
+		operatorCancelled, err := a.Store.Marked("cancel", task.ID)
 		if err == nil && !operatorCancelled {
 			err = a.transition(current, model.StatusQueued)
 		}
@@ -66,7 +66,7 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	}
 	message := taskErr.Error()
 	shuttingDown := a.ctx.Err() != nil
-	operatorCancelled, _ := a.Store.MarkerSet("cancel", task.ID)
+	operatorCancelled, _ := a.Store.Marked("cancel", task.ID)
 	if shuttingDown && !operatorCancelled && !timedOut && task.Status.Active() && workspace.Initialized(task) {
 		if err := a.saveTask(&task); err != nil {
 			_ = a.Store.Event(task.ID, "worker_error", redact.Error(err))
@@ -83,7 +83,7 @@ func (a *App) superviseExecution(ctx context.Context, task model.Task, execute f
 	} else {
 		recordTaskError(&task, taskErr)
 		if result.Expired {
-			task.BlockedReason = new(model.BlockedReasonTimeout)
+			task.BlockedReason = new(model.BlockedTimeout)
 		}
 	}
 	model.FailRunning(task.Sessions, *task.Error)
@@ -132,7 +132,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	client := a.runners(ctx, cfg, task.ID)
 	defer func() { _ = client.Close() }()
 	if err := a.validateRoutes(client, cfg, false); err != nil {
-		return fmt.Errorf("%w: %w", model.BlockedReasonRunnerUnavailable, err)
+		return fmt.Errorf("%w: %w", model.BlockedRunnerUnavailable, err)
 	}
 	admissionReserved := task.ExecutionSession == nil
 	if admissionReserved {
@@ -142,10 +142,10 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	}
 	ws := task.Workspace
 	if _, err := workspace.GitDir(ws); err != nil {
-		return model.BlockedReasonWorkspaceInvalid
+		return model.BlockedWorkspaceInvalid
 	}
 	if task.ComparisonBase == "" {
-		return fmt.Errorf("Comparison base was not persisted; cancel this task and rediscover: %w", model.BlockedReasonWorkspaceInvalid)
+		return fmt.Errorf("Comparison base was not persisted; cancel this task and rediscover: %w", model.BlockedWorkspaceInvalid)
 	}
 	if err := a.runExecutor(ctx, task, client, admissionReserved); err != nil {
 		return err
@@ -156,14 +156,14 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if revision == task.SourceRevision {
-			return fmt.Errorf("No changes were committed on top of the source revision: %w", model.BlockedReasonVerificationFailed)
+			return fmt.Errorf("No changes were committed on top of the source revision: %w", model.BlockedVerificationFailed)
 		}
 		names, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--name-only", "--ignore-submodules=none", task.SourceRevision, revision})
 		if err != nil {
 			return err
 		}
 		if names == "" {
-			return fmt.Errorf("The change set is empty against the source revision: %w", model.BlockedReasonVerificationFailed)
+			return fmt.Errorf("The change set is empty against the source revision: %w", model.BlockedVerificationFailed)
 		}
 		review, err := a.reviewRevision(ctx, task, client, revision)
 		if err != nil {
@@ -183,7 +183,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			}
 		}
 		if *task.RepairRounds >= cfg.MaxRepairRounds {
-			return fmt.Errorf("Repair budget exhausted (max_repair_rounds %d): %w", cfg.MaxRepairRounds, model.BlockedReasonVerificationFailed)
+			return fmt.Errorf("Repair budget exhausted (max_repair_rounds %d): %w", cfg.MaxRepairRounds, model.BlockedVerificationFailed)
 		}
 		if progress := task.RepairProgress; progress != nil {
 			if progress.Revision != revision {
@@ -199,7 +199,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 				return err
 			}
 			if progress.NoProgressRounds >= cfg.MaxNoProgressRounds {
-				return fmt.Errorf("Repairs made no progress on the reviewed revision (max_no_progress_rounds %d): %w", cfg.MaxNoProgressRounds, model.BlockedReasonVerificationFailed)
+				return fmt.Errorf("Repairs made no progress on the reviewed revision (max_no_progress_rounds %d): %w", cfg.MaxNoProgressRounds, model.BlockedVerificationFailed)
 			}
 		}
 		if err := a.repair(ctx, task, client, review, verificationErrors); err != nil {
@@ -228,7 +228,7 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 			return err
 		}
 		// The checkpoint is durable even if its separate status event fails.
-		return a.Store.Event(task.ID, "status", statusEventName(model.StatusPublishing))
+		return a.Store.Event(task.ID, "status", statusLabel(model.StatusPublishing))
 	}()
 	if err != nil {
 		return err
@@ -254,7 +254,7 @@ func (a *App) blockOrphanedPublications() error {
 		if a.ctx.Err() != nil {
 			return nil
 		}
-		err := fmt.Errorf("Publication has no active worker; reconcile publication to check delivery: %w", model.BlockedReasonPublicationUncertain)
+		err := fmt.Errorf("Publication has no active worker; reconcile publication to check delivery: %w", model.BlockedPublicationUncertain)
 		if err := a.setTaskError(&tasks[i], err); err != nil {
 			return err
 		}
@@ -266,15 +266,15 @@ func (a *App) blockOrphanedPublications() error {
 // final session evidence. A refused final write must not leave a running session
 // permanently attached to a cancelled task, including after archive or restart.
 // Caller holds the gate while checking ownership and updating the saved evidence.
-func (a *App) interruptCancelledTaskSessions() error {
+func (a *App) settleCancelledSessions() error {
 	a.runtimeMu.Lock()
-	if a.runtime.cancelledSessionsChecked {
+	if a.runtime.cancelScanDone {
 		a.runtimeMu.Unlock()
 		return nil
 	}
 	excluded := a.ownedTaskIDs()
 	a.runtimeMu.Unlock()
-	tasks, err := a.Store.CancelledTasksWithRunningSessionsExcept(excluded)
+	tasks, err := a.Store.CancelledWithLiveSessions(excluded)
 	if err != nil {
 		return err
 	}
@@ -289,7 +289,7 @@ func (a *App) interruptCancelledTaskSessions() error {
 	// full pages stay retryable without scanning finalized history every tick.
 	if len(tasks) < 500 {
 		a.runtimeMu.Lock()
-		a.runtime.cancelledSessionsChecked = true
+		a.runtime.cancelScanDone = true
 		a.runtimeMu.Unlock()
 	}
 	return nil
@@ -301,10 +301,10 @@ func (a *App) publishedDependency(id string) (model.Task, error) {
 		return model.Task{}, err
 	}
 	if dependency == nil {
-		return model.Task{}, model.BlockedReasonDependencyBlocked
+		return model.Task{}, model.BlockedDependencyBlocked
 	}
 	if dependency.Status != model.StatusPublished {
-		return model.Task{}, model.BlockedReasonDependencyBlocked
+		return model.Task{}, model.BlockedDependencyBlocked
 	}
 	return *dependency, nil
 }
@@ -315,7 +315,7 @@ func ensureWorkspaceAt(ctx context.Context, cfg config.Config, ws, revision stri
 		return err
 	}
 	if !at {
-		return model.BlockedReasonWorkspaceInvalid
+		return model.BlockedWorkspaceInvalid
 	}
 	return nil
 }
@@ -341,7 +341,7 @@ func requireDefaultRevision(ctx context.Context, cfg config.Config, want string)
 		return err
 	}
 	if def == nil || *def != want {
-		return model.BlockedReasonStaleBase
+		return model.BlockedStaleBase
 	}
 	return nil
 }
@@ -349,7 +349,7 @@ func requireDefaultRevision(ctx context.Context, cfg config.Config, want string)
 func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 	c := task.ExecutionConfig()
 	if task.Lifecycle.DiscardedAt != nil || task.Lifecycle.ArchivedAt != nil {
-		return model.BlockedReasonWorkspaceInvalid
+		return model.BlockedWorkspaceInvalid
 	}
 	if err := requireDefaultRevision(ctx, c, task.DefaultRevision); err != nil {
 		return err
@@ -369,24 +369,24 @@ func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 		}
 	}
 	if !authorized {
-		return model.BlockedReasonStaleBase
+		return model.BlockedStaleBase
 	}
 	if task.ExecutionSession != nil && !workspace.Initialized(*task) {
-		return model.BlockedReasonWorkspaceInvalid
+		return model.BlockedWorkspaceInvalid
 	}
 	if task.ExecutionSession == nil && task.Workspace != "" {
-		return a.validateRecordedWorkspace(ctx, task)
+		return a.checkWorkspace(ctx, task)
 	}
 	return nil
 }
 
-func (a *App) validateRecordedWorkspace(ctx context.Context, task *model.Task) error {
+func (a *App) checkWorkspace(ctx context.Context, task *model.Task) error {
 	ws := a.taskWorkspace(task.ID)
 	if !config.SamePath(task.Workspace, ws) || task.ComparisonBase == "" {
-		return model.BlockedReasonWorkspaceInvalid
+		return model.BlockedWorkspaceInvalid
 	}
 	if _, err := workspace.GitDir(ws); err != nil {
-		return model.BlockedReasonWorkspaceInvalid
+		return model.BlockedWorkspaceInvalid
 	}
 	return ensureWorkspaceAt(ctx, task.ExecutionConfig(), ws, task.SourceRevision)
 }
@@ -401,7 +401,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 		return err
 	}
 	if remote == nil {
-		return model.BlockedReasonStaleBase
+		return model.BlockedStaleBase
 	}
 	current := *remote
 	dependencyOutputs := []string{}
@@ -411,7 +411,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if dependency.Branch != task.Proposal.Target {
-			return model.BlockedReasonDependencyBlocked
+			return model.BlockedDependencyBlocked
 		}
 		if dependency.OutputCommit == nil {
 			return errors.New("Dependency output revision is missing")
@@ -421,13 +421,13 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if !ancestor {
-			return model.BlockedReasonDependencyBlocked
+			return model.BlockedDependencyBlocked
 		}
 		dependencyOutputs = append(dependencyOutputs, *dependency.OutputCommit)
 	}
 	if current != task.SourceRevision {
 		if !slices.Contains(dependencyOutputs, current) {
-			return model.BlockedReasonStaleBase
+			return model.BlockedStaleBase
 		}
 		task.SourceRevision = current
 		if err := a.saveTask(task); err != nil {
@@ -443,7 +443,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return err
 		}
 		if !p.OwnedOpen() || p.Base != cfg.DefaultBranch {
-			return model.BlockedReasonStaleBase
+			return model.BlockedStaleBase
 		}
 	}
 	if _, err := uuid.Parse(task.ID); err != nil {
@@ -471,7 +471,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 		}
 		return a.saveTask(task)
 	}
-	return a.validateRecordedWorkspace(ctx, task)
+	return a.checkWorkspace(ctx, task)
 }
 
 func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.Runners, admissionReserved bool) error {
@@ -554,7 +554,7 @@ func (a *App) published(task *model.Task, p model.PullRequest) error {
 	if err := a.transition(task, model.StatusPublished); err != nil {
 		return err
 	}
-	return a.Store.RecordPrObservation(task.Config.GitHubRepo, p, true)
+	return a.Store.RecordPRObservation(task.Config.GitHubRepo, p, true)
 }
 
 func (a *App) saveTask(task *model.Task) error {
@@ -567,10 +567,10 @@ func (a *App) transition(task *model.Task, status model.Status) error {
 	if err := a.saveTask(task); err != nil {
 		return err
 	}
-	return a.Store.Event(task.ID, "status", statusEventName(status))
+	return a.Store.Event(task.ID, "status", statusLabel(status))
 }
 
-func statusEventName(status model.Status) string {
+func statusLabel(status model.Status) string {
 	name := status.String()
 	if name == "" {
 		return name

@@ -57,7 +57,7 @@ func enumRoundTrip[T interface {
 func TestEnumWireNames(t *testing.T) {
 	enumRoundTrip[Status](t, []string{"queued", "executing", "reviewing", "repairing", "verifying", "publishing", "published", "blocked", "failed", "cancelled"})
 	enumRoundTrip[BlockedReason](t, []string{"budget_exhausted", "storage_limit", "stale_base", "remote_conflict", "publication_uncertain", "runner_unavailable", "invalid_review", "verification_failed", "dependency_blocked", "invalid_plan", "workspace_invalid", "retry_limit", "timeout", "unknown"})
-	enumRoundTrip[PlanningCapacityStatus](t, []string{"ready", "daily_exhausted", "limit_too_low"})
+	enumRoundTrip[CapacityStatus](t, []string{"ready", "daily_exhausted", "limit_too_low"})
 	enumRoundTrip[BaselineStatus](t, []string{"running", "passed", "failed", "cancelled", "timed_out", "interrupted"})
 	enumRoundTrip[CycleMode](t, []string{"execution", "audit"})
 	enumRoundTrip[OperatingMode](t, []string{"paused", "run_once", "continuous"})
@@ -84,8 +84,8 @@ func TestTaskAllowedActions(t *testing.T) {
 		{"discarded failed", Task{Status: StatusFailed, Lifecycle: WorkspaceLifecycle{DiscardedAt: &at}}, []string{}},
 		{"publishing", Task{Status: StatusPublishing}, []string{}},
 		{"publishing with output", Task{Status: StatusPublishing, OutputCommit: &commit}, []string{}},
-		{"blocked with output", Task{Status: StatusBlocked, OutputCommit: &commit, BlockedReason: reason(BlockedReasonStaleBase)}, []string{"archive", "supersede"}},
-		{"failed with output", Task{Status: StatusFailed, OutputCommit: &commit, BlockedReason: reason(BlockedReasonRemoteConflict)}, []string{"archive", "reconcile"}},
+		{"blocked with output", Task{Status: StatusBlocked, OutputCommit: &commit, BlockedReason: reason(BlockedStaleBase)}, []string{"archive", "supersede"}},
+		{"failed with output", Task{Status: StatusFailed, OutputCommit: &commit, BlockedReason: reason(BlockedRemoteConflict)}, []string{"archive", "reconcile"}},
 		{"failed without a reason", Task{Status: StatusFailed}, []string{"cancel", "archive", "retry"}},
 		{"blocked without a reason", Task{Status: StatusBlocked}, []string{"cancel", "archive", "retry"}},
 	} {
@@ -104,13 +104,13 @@ func TestTaskAllowedActions(t *testing.T) {
 	}
 
 	recovery := map[BlockedReason][]string{
-		BlockedReasonStaleBase:            {"supersede"},
-		BlockedReasonInvalidPlan:          {"supersede"},
-		BlockedReasonWorkspaceInvalid:     {"supersede"},
-		BlockedReasonRemoteConflict:       {"reconcile"},
-		BlockedReasonPublicationUncertain: {"reconcile"},
-		BlockedReasonDependencyBlocked:    {"retry", "supersede"},
-		BlockedReasonRunnerUnavailable:    {"retry", "supersede"},
+		BlockedStaleBase:            {"supersede"},
+		BlockedInvalidPlan:          {"supersede"},
+		BlockedWorkspaceInvalid:     {"supersede"},
+		BlockedRemoteConflict:       {"reconcile"},
+		BlockedPublicationUncertain: {"reconcile"},
+		BlockedDependencyBlocked:    {"retry", "supersede"},
+		BlockedRunnerUnavailable:    {"retry", "supersede"},
 	}
 	for _, status := range []Status{StatusFailed, StatusBlocked} {
 		for i := range blockedReasonNames {

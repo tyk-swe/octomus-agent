@@ -140,7 +140,7 @@ func TestDoctorDiagnostics(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	app := f.pausedApp(t)
-	result, warnings, err := app.DoctorFor(f.cfg, model.CycleModeExecution)
+	result, warnings, err := app.Doctor(f.cfg, model.CycleModeExecution)
 	if err != nil || len(warnings) != 0 {
 		t.Fatalf("doctor = %v, warnings %q", err, warnings)
 	}
@@ -148,7 +148,7 @@ func TestDoctorDiagnostics(t *testing.T) {
 	if want := `[{"backend":"codex","protocol_version":"scripted","version":"scripted","warning":null}]`; err != nil || string(backends) != want {
 		t.Fatalf("backends = %s, %v; want %s", backends, err, want)
 	}
-	if result["codex_version"] != "scripted" || result["tested_codex_version"] != runner.CodexTestedVersion {
+	if result["codex_version"] != "scripted" || result["tested_codex_version"] != runner.CodexVersion {
 		t.Fatalf("codex versions = %v, %v", result["codex_version"], result["tested_codex_version"])
 	}
 	if message := result["message"]; message != "Repository, GitHub authentication, and all model routes are available." {
@@ -165,7 +165,7 @@ func TestDoctorDiagnostics(t *testing.T) {
 		return mismatchAdapter{Adapter: client, warning: warning}, nil
 	}
 	app = f.pausedApp(t, WithRunnerConnector(mismatched))
-	result, warnings, err = app.DoctorFor(f.cfg, model.CycleModeAudit)
+	result, warnings, err = app.Doctor(f.cfg, model.CycleModeAudit)
 	if err != nil || len(warnings) != 1 || warnings[0] != warning {
 		t.Fatalf("doctor = %v, warnings %q; want %q", err, warnings, warning)
 	}
@@ -178,7 +178,7 @@ func TestDoctorDiagnostics(t *testing.T) {
 		t.Fatalf("message = %v", message)
 	}
 	f.script.SetCatalog()
-	result, warnings, err = app.DoctorFor(f.cfg, model.CycleModeAudit)
+	result, warnings, err = app.Doctor(f.cfg, model.CycleModeAudit)
 	if err == nil || result != nil || len(warnings) != 1 || warnings[0] != warning {
 		t.Fatalf("failing doctor = %v, %v, warnings %q; want the warning with the failure", result, err, warnings)
 	}
@@ -191,7 +191,7 @@ func TestDoctorDiagnostics(t *testing.T) {
 		return catalogFailingAdapter{mismatchAdapter{Adapter: client, warning: warning}}, nil
 	}
 	app = f.pausedApp(t, WithRunnerConnector(catalogFailing))
-	result, warnings, err = app.DoctorFor(f.cfg, model.CycleModeAudit)
+	result, warnings, err = app.Doctor(f.cfg, model.CycleModeAudit)
 	if err == nil || err.Error() != "Codex: model/list: unexpected response shape" || result != nil || len(warnings) != 1 || warnings[0] != warning {
 		t.Fatalf("doctor with a failing catalog = %v, %v, warnings %q; want the warning with the failure", result, err, warnings)
 	}

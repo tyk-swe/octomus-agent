@@ -39,7 +39,7 @@ func cycle(id, mode string, proposals []model.Proposal, assessments []any, sessi
 		Grounding: &model.Grounding{
 			Revision:           "base0000",
 			PRs:                []model.PullRequest{},
-			ExternalPRs:        []model.ExternalPrContext{},
+			ExternalPRs:        []model.ExternalPRContext{},
 			History:            []any{},
 			MaintenanceDue:     false,
 			MaintenanceTargets: []string{},

@@ -24,7 +24,7 @@ func conflictError(message string) error { return &actionConflict{message} }
 
 func IsActionConflict(err error) bool {
 	var c *actionConflict
-	return errors.As(err, &c) || model.BlockedReasonFromError(err) != model.BlockedReasonUnknown
+	return errors.As(err, &c) || model.BlockedReasonFromError(err) != model.BlockedUnknown
 }
 
 func (a *App) TaskAction(_ context.Context, id, action string) error {
@@ -74,7 +74,7 @@ func (a *App) TaskAction(_ context.Context, id, action string) error {
 	if actionErr == nil {
 		if action == "cancel" || task.Status == model.StatusCancelled {
 			a.runtimeMu.Lock()
-			a.runtime.cancelledSessionsChecked = false
+			a.runtime.cancelScanDone = false
 			a.runtimeMu.Unlock()
 		}
 		_ = a.Store.Event(id, "operator", action)
@@ -115,7 +115,7 @@ func (a *App) retryTask(task *model.Task) error {
 		return conflictError("Retry limit reached. Adjust the operating limit after inspecting the failure.")
 	}
 	original := task.Clone()
-	policy := model.AttemptPolicyFromConfig(cfg)
+	policy := model.PolicyOf(cfg)
 	task.AttemptPolicy = &policy
 	if task.OutputCommit == nil {
 		var preflightErr error
@@ -127,7 +127,7 @@ func (a *App) retryTask(task *model.Task) error {
 		if err != nil {
 			return err
 		}
-		livePolicy := model.AttemptPolicyFromConfig(live)
+		livePolicy := model.PolicyOf(live)
 		if task.AttemptPolicy == nil || *task.AttemptPolicy != livePolicy {
 			return conflictError("Retry policy changed during remote checks; try again with the current limits")
 		}
@@ -220,7 +220,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 			return err
 		}
 		if preflightErr == nil {
-			reason := model.BlockedReasonUnknown
+			reason := model.BlockedUnknown
 			task.BlockedReason = &reason
 			task.Error = new("Remote prerequisites are restored; task can be retried")
 		} else {
@@ -247,12 +247,12 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	defer cancel()
 	a.runtimeMu.Lock()
 	a.runtime.tasks[id] = taskJob{branch: task.Branch, cancel: cancel}
-	a.runtime.reconcilingPublication = true
+	a.runtime.reconciling = true
 	a.runtimeMu.Unlock()
 	defer func() {
 		a.runtimeMu.Lock()
 		delete(a.runtime.tasks, id)
-		a.runtime.reconcilingPublication = false
+		a.runtime.reconciling = false
 		a.runtimeMu.Unlock()
 		a.notify()
 	}()
@@ -271,9 +271,9 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		publishErr = err
 		if publishErr != nil && result.Expired {
 			if result.AlreadyCancelled {
-				publishErr = fmt.Errorf("Publication reconciliation was interrupted; reconcile again: %w", model.BlockedReasonPublicationUncertain)
+				publishErr = fmt.Errorf("Publication reconciliation was interrupted; reconcile again: %w", model.BlockedPublicationUncertain)
 			} else {
-				publishErr = model.BlockedReasonTimeout
+				publishErr = model.BlockedTimeout
 			}
 		}
 	})
@@ -290,7 +290,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	if loadErr == nil && current != nil && current.Status.Active() {
 		a.settleExitedTask(current, errors.New("Task worker exited unexpectedly; inspect the preserved workspace"))
 	} else if loadErr != nil {
-		a.setActiveRecoveryError(loadErr)
+		a.setRecoveryError(loadErr)
 	}
 	return actionErr
 }

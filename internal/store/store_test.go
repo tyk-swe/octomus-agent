@@ -33,7 +33,7 @@ func saveConfig(t *testing.T, s *store.Store, edit func(*config.Config)) config.
 func startBatch(t *testing.T, s *store.Store) model.Control {
 	t.Helper()
 	control := model.DefaultControl()
-	capacity, started, err := s.StartBatchIfAffordable(&control, time.Now())
+	capacity, started, err := s.StartBatch(&control, time.Now())
 	must(t, err)
 	if !started {
 		t.Fatalf("batch did not start: capacity %+v", capacity)
@@ -50,7 +50,7 @@ func TestDurableAndBudgetAtomic(t *testing.T) {
 	must(t, s.ReserveSession(0, store.NewAdmission("cycle", nil, "discovery", config.NewRoute("fixture", "low"))))
 	if err := s.ReserveSession(0, store.NewAdmission("cycle", nil, "discovery", config.NewRoute("fixture", "low"))); err == nil {
 		t.Fatal("second reservation exceeded the daily budget")
-	} else if !errors.Is(err, model.BlockedReasonBudgetExhausted) {
+	} else if !errors.Is(err, model.BlockedBudgetExhausted) {
 		t.Fatalf("budget error is not classified: %v", err)
 	}
 	must(t, s.Close())
@@ -74,7 +74,7 @@ func TestPlanningCapacity(t *testing.T) {
 		saveConfig(t, s, func(c *config.Config) { c.DiscoveryAgents = agents })
 		capacity, err := s.PlanningCapacity()
 		must(t, err)
-		if capacity.Required != required || capacity.Status != model.PlanningCapacityStatusReady {
+		if capacity.Required != required || capacity.Status != model.CapacityReady {
 			t.Fatalf("agents %d: %+v", agents, capacity)
 		}
 		must(t, capacity.EnsureAvailable())
@@ -82,10 +82,10 @@ func TestPlanningCapacity(t *testing.T) {
 	saveConfig(t, s, func(c *config.Config) { c.DiscoveryAgents = 9; c.MaxSessionsPerDay = 12 })
 	capacity, err := s.PlanningCapacity()
 	must(t, err)
-	if capacity.Status != model.PlanningCapacityStatusLimitTooLow || !strings.Contains(capacity.Message(), "cannot fund") {
+	if capacity.Status != model.CapacityTooLow || !strings.Contains(capacity.Message(), "cannot fund") {
 		t.Fatalf("%+v %q", capacity, capacity.Message())
 	}
-	if err := capacity.EnsureAvailable(); err == nil || !errors.Is(err, model.BlockedReasonBudgetExhausted) {
+	if err := capacity.EnsureAvailable(); err == nil || !errors.Is(err, model.BlockedBudgetExhausted) {
 		t.Fatalf("limit too low is not budget exhaustion: %v", err)
 	}
 	saveConfig(t, s, func(c *config.Config) { c.DiscoveryAgents = 9; c.MaxSessionsPerDay = 14 })
@@ -97,12 +97,12 @@ func TestPlanningCapacity(t *testing.T) {
 			t.Fatalf("after %d reservations: %+v", i+1, capacity)
 		}
 		if i == 0 {
-			if capacity.Status != model.PlanningCapacityStatusReady {
+			if capacity.Status != model.CapacityReady {
 				t.Fatalf("%+v", capacity)
 			}
 			must(t, capacity.EnsureAvailable())
 		} else {
-			if capacity.Status != model.PlanningCapacityStatusDailyExhausted || !strings.Contains(capacity.Message(), "Wait until UTC midnight") {
+			if capacity.Status != model.CapacityExhausted || !strings.Contains(capacity.Message(), "Wait until UTC midnight") {
 				t.Fatalf("%+v %q", capacity, capacity.Message())
 			}
 			if capacity.EnsureAvailable() == nil {
@@ -119,12 +119,12 @@ func TestPlanningCapacity(t *testing.T) {
 	capacity, err = s2.PlanningCapacityAt(at)
 	must(t, err)
 	reset := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC).Unix()
-	if capacity.Day != "2026-03-01" || capacity.Used != 2 || capacity.Remaining != 12 || capacity.Status != model.PlanningCapacityStatusDailyExhausted || capacity.NextResetAt != reset {
+	if capacity.Day != "2026-03-01" || capacity.Used != 2 || capacity.Remaining != 12 || capacity.Status != model.CapacityExhausted || capacity.NextResetAt != reset {
 		t.Fatalf("%+v", capacity)
 	}
 	capacity, err = s2.PlanningCapacityAt(time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC))
 	must(t, err)
-	if capacity.Day != "2026-03-02" || capacity.Used != 0 || capacity.Remaining != 14 || capacity.Status != model.PlanningCapacityStatusReady {
+	if capacity.Day != "2026-03-02" || capacity.Used != 0 || capacity.Remaining != 14 || capacity.Status != model.CapacityReady {
 		t.Fatalf("%+v", capacity)
 	}
 }
@@ -167,7 +167,7 @@ func TestAdmissionLedger(t *testing.T) {
 		t.Fatal("duplicate admission id was accepted")
 	}
 	must(t, s.ReserveSession(0, admission("2026-09-09T23:59:59.500Z")))
-	if err := s.ReserveSession(0, admission("2026-09-09T23:59:59.900Z")); err == nil || !errors.Is(err, model.BlockedReasonBudgetExhausted) {
+	if err := s.ReserveSession(0, admission("2026-09-09T23:59:59.900Z")); err == nil || !errors.Is(err, model.BlockedBudgetExhausted) {
 		t.Fatalf("third same-day admission: %v", err)
 	}
 	must(t, s.ReserveSession(0, admission("2026-09-10T00:00:00Z")))

@@ -51,7 +51,7 @@ func TestVerificationMutationFails(t *testing.T) {
 	} {
 		app, task, revision := verificationFixture(t, commands)
 		_, err := app.verifyRevision(context.Background(), &task, revision)
-		if err == nil || model.BlockedReasonFromError(err) != model.BlockedReasonWorkspaceInvalid {
+		if err == nil || model.BlockedReasonFromError(err) != model.BlockedWorkspaceInvalid {
 			t.Fatalf("commands %v: err = %v, want workspace_invalid", commands, err)
 		}
 		saved, getErr := store.Get[model.Task](app.Store, "task", task.ID)

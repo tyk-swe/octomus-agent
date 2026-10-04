@@ -28,7 +28,7 @@ func TestDefaultRoutes(t *testing.T) {
 	if c.RepairRoute != DefaultRepairRoute() {
 		t.Fatal("repair route default changed")
 	}
-	if len(c.RoutesFor(true)) != 3 || len(c.RoutesFor(false)) != 10 || c.PlanningAdmissionsRequired() != 13 {
+	if len(c.RoutesFor(true)) != 3 || len(c.RoutesFor(false)) != 10 || c.PlanningCost() != 13 {
 		t.Fatal("route/admission counts")
 	}
 	names := func(routes []NamedRoute) []string {

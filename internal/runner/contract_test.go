@@ -114,9 +114,9 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 	if err != nil {
 		t.Fatalf("the pinned client did not report a version: %v", err)
 	}
-	expected := OpenCodeProtocolVersion
+	expected := OpenCodeVersion
 	if backend == config.BackendCodex {
-		expected = "codex-cli " + CodexTestedVersion
+		expected = "codex-cli " + CodexVersion
 	}
 	if strings.TrimSpace(version) != expected {
 		t.Fatalf("pinned contract requires %s, got %s", expected, strings.TrimSpace(version))

@@ -143,7 +143,7 @@ func configure(db *store.Store, configuredURL string) (string, string, error) {
 			destination = &destinationID
 		}
 	}
-	if err := db.ConfigureNotifications(destination, state, errorText); err != nil {
+	if err := db.SetNotifyPolicy(destination, state, errorText); err != nil {
 		return "", "", err
 	}
 	return normalized, destinationID, nil
@@ -200,7 +200,7 @@ func (w *Worker) run() {
 }
 
 func (w *Worker) deliverNext() {
-	delivery, err := w.store.ClaimNotification(w.destID, time.Now().UTC())
+	delivery, err := w.store.ClaimDelivery(w.destID, time.Now().UTC())
 	if err != nil {
 		w.warn(err)
 		return
@@ -217,11 +217,11 @@ func (w *Worker) deliverNext() {
 	}
 	switch {
 	case category != "":
-		w.warn(w.store.FinishNotificationFailure(delivery.Seq, category, nil, category != invalidPayload))
+		w.warn(w.store.MarkFailed(delivery.Seq, category, nil, category != invalidPayload))
 	case status >= 200 && status < 300:
-		w.warn(w.store.FinishNotificationDelivered(delivery.Seq, time.Now().UTC()))
+		w.warn(w.store.MarkDelivered(delivery.Seq, time.Now().UTC()))
 	default:
-		w.warn(w.store.FinishNotificationFailure(delivery.Seq, httpStatusCategory, &status, retryable(status)))
+		w.warn(w.store.MarkFailed(delivery.Seq, httpStatusCategory, &status, retryable(status)))
 	}
 }
 
