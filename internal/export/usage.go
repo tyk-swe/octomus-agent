@@ -1,7 +1,6 @@
 package export
 
 import (
-	"context"
 	"database/sql"
 	"time"
 
@@ -74,7 +73,7 @@ func Usage(stateDB string) (map[string]any, error) {
 }
 
 func usage(c *sql.Conn) (Report, error) {
-	admissions, err := store.QueryRecords[store.Admission](c, "SELECT data FROM admissions ORDER BY at,id")
+	admissions, err := store.Admissions(c)
 	if err != nil {
 		return Report{}, err
 	}
@@ -168,24 +167,18 @@ func usage(c *sql.Conn) (Report, error) {
 }
 
 func dailyUsage(c *sql.Conn, attributed map[string]uint64) ([]Daily, error) {
-	rows, err := c.QueryContext(context.Background(), "SELECT day,sessions FROM usage ORDER BY day")
+	days, err := store.DailySessions(c)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	daily := []Daily{}
-	for rows.Next() {
-		var day string
-		var total int64
-		if err := rows.Scan(&day, &total); err != nil {
-			return nil, err
-		}
-		recorded := attributed[day]
+	for _, day := range days {
+		recorded := attributed[day.Day]
 		unattributed := uint64(0)
-		if uint64(total) > recorded {
-			unattributed = uint64(total) - recorded
+		if day.Sessions > recorded {
+			unattributed = day.Sessions - recorded
 		}
-		daily = append(daily, Daily{Day: day, Admissions: uint64(total), AttributedAdmissions: recorded, UnattributedAdmissions: unattributed})
+		daily = append(daily, Daily{Day: day.Day, Admissions: day.Sessions, AttributedAdmissions: recorded, UnattributedAdmissions: unattributed})
 	}
-	return daily, rows.Err()
+	return daily, nil
 }

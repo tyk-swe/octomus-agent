@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -22,6 +23,15 @@ func TestFreshGoSchemaAndReopen(t *testing.T) {
 	for _, table := range []string{"records", "record_meta", "proposal_records", "admissions", "notification_outbox"} {
 		if n := queryInt(t, raw(t, path), "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table); n != 1 {
 			t.Fatalf("missing %s", table)
+		}
+	}
+	for _, trigger := range []string{"project_record_insert", "project_record_update"} {
+		var sql string
+		must(t, raw(t, path).QueryRow("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", trigger).Scan(&sql))
+		for _, decision := range model.Decisions() {
+			if !strings.Contains(sql, "'"+decision+"'") {
+				t.Fatalf("%s does not count %s decisions", trigger, decision)
+			}
 		}
 	}
 	must(t, s.Close())

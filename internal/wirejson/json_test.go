@@ -22,7 +22,7 @@ type decodeRecord struct {
 func TestDecodeAbsentFields(t *testing.T) {
 	stale := "stale"
 	dst := decodeRecord{P: &stale, D: "kept"}
-	if err := Decode([]byte(`{"s":"x"}`), &dst, true, false); err != nil {
+	if err := decodeAs([]byte(`{"s":"x"}`), &dst, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if dst.S != "x" || dst.P == nil || *dst.P != "stale" || dst.D != "kept" || dst.L == nil || len(dst.L) != 0 {
@@ -30,19 +30,19 @@ func TestDecodeAbsentFields(t *testing.T) {
 	}
 	before := dst
 	for _, raw := range []string{`{"s":"y","unknown":1}`, `{"s":"y","s":"z"}`, `{"p":"y"}`, `{"s":"y","l":null}`, `{"s":"y"} {}`} {
-		err := Decode([]byte(raw), &dst, true, false)
+		err := decodeAs([]byte(raw), &dst, true, false)
 		var typed *Error
 		if !errors.As(err, &typed) {
-			t.Fatalf("Decode(%s) = %v; want a typed error", raw, err)
+			t.Fatalf("decodeAs(%s) = %v; want a typed error", raw, err)
 		}
 		if dst.S != before.S || dst.P != before.P || dst.D != before.D || len(dst.L) != 0 {
-			t.Fatalf("Decode(%s) changed dst to %+v", raw, dst)
+			t.Fatalf("decodeAs(%s) changed dst to %+v", raw, dst)
 		}
 	}
-	if err := Decode([]byte(`{"s":"y"}`), &decodeRecord{}, false, false); err != nil {
+	if err := decodeAs([]byte(`{"s":"y"}`), &decodeRecord{}, false, false); err != nil {
 		t.Fatalf("absent pointer and default fields: %v", err)
 	}
-	if err := Decode([]byte(`{}`), &decodeRecord{}, false, true); err != nil {
+	if err := decodeAs([]byte(`{}`), &decodeRecord{}, false, true); err != nil {
 		t.Fatalf("defaultAll with every field absent: %v", err)
 	}
 }
@@ -88,17 +88,17 @@ func TestDecodeRefusals(t *testing.T) {
 	} {
 		dst := Clone(start)
 		strict := !tc.lenient
-		err := Decode([]byte(tc.raw), &dst, strict, false)
+		err := decodeAs([]byte(tc.raw), &dst, strict, false)
 		var typed *Error
 		if !errors.As(err, &typed) {
-			t.Errorf("Decode(%s, strict=%t) = %v; want a typed error", tc.raw, strict, err)
+			t.Errorf("decodeAs(%s, strict=%t) = %v; want a typed error", tc.raw, strict, err)
 			continue
 		}
 		if tc.message != "" && err.Error() != tc.message {
-			t.Errorf("Decode(%s, strict=%t) = %q; want %q", tc.raw, strict, err, tc.message)
+			t.Errorf("decodeAs(%s, strict=%t) = %q; want %q", tc.raw, strict, err, tc.message)
 		}
 		if !reflect.DeepEqual(dst, start) {
-			t.Errorf("Decode(%s) changed dst to %+v", tc.raw, dst)
+			t.Errorf("decodeAs(%s) changed dst to %+v", tc.raw, dst)
 		}
 	}
 }
@@ -131,29 +131,29 @@ func TestDecodeWellFormed(t *testing.T) {
 		},
 	} {
 		var dst decodeRecord
-		if err := Decode([]byte(tc.raw), &dst, !tc.lenient, false); err != nil {
-			t.Errorf("Decode(%s) = %v", tc.raw, err)
+		if err := decodeAs([]byte(tc.raw), &dst, !tc.lenient, false); err != nil {
+			t.Errorf("decodeAs(%s) = %v", tc.raw, err)
 			continue
 		}
 		if !reflect.DeepEqual(dst, tc.want) {
-			t.Errorf("Decode(%s) = %#v; want %#v", tc.raw, dst, tc.want)
+			t.Errorf("decodeAs(%s) = %#v; want %#v", tc.raw, dst, tc.want)
 		}
 	}
 
 	stale := "stale"
 	dst := decodeRecord{P: &stale, A: "stale"}
-	if err := Decode([]byte(`{"s":"x","p":null,"a":null}`), &dst, true, false); err != nil || dst.P != nil || dst.A != nil {
+	if err := decodeAs([]byte(`{"s":"x","p":null,"a":null}`), &dst, true, false); err != nil || dst.P != nil || dst.A != nil {
 		t.Fatalf("explicit nulls = %+v, %v; want P and A cleared", dst, err)
 	}
 
 	dst = decodeRecord{S: "kept", L: []string{"kept"}}
-	if err := Decode([]byte(`{"d":"x"}`), &dst, true, true); err != nil {
+	if err := decodeAs([]byte(`{"d":"x"}`), &dst, true, true); err != nil {
 		t.Fatal(err)
 	}
 	if want := (decodeRecord{S: "kept", D: "x", L: []string{"kept"}, M: map[string]int{}}); !reflect.DeepEqual(dst, want) {
 		t.Fatalf("defaultAll = %#v; want %#v", dst, want)
 	}
-	if err := Decode([]byte(`{"z":1}`), &dst, true, true); err == nil || err.Error() != `unknown field "z"` {
+	if err := decodeAs([]byte(`{"z":1}`), &dst, true, true); err == nil || err.Error() != `unknown field "z"` {
 		t.Fatalf("defaultAll with an unknown field = %v; want it refused", err)
 	}
 }
@@ -204,10 +204,10 @@ func TestEnumTextNamesEveryValueAndParseEnumAcceptsOnlyExactNames(t *testing.T) 
 
 func TestDecodeHoldsEnumFieldsToTheirExactNames(t *testing.T) {
 	var dst enumRecord
-	if err := Decode([]byte(`{"mode":"on","option":null}`), &dst, true, false); err != nil || dst.Mode != 1 || dst.Option != nil {
+	if err := decodeAs([]byte(`{"mode":"on","option":null}`), &dst, true, false); err != nil || dst.Mode != 1 || dst.Option != nil {
 		t.Fatalf("Decode = %+v, %v", dst, err)
 	}
-	if err := Decode([]byte(`{"mode":"off","option":"on"}`), &dst, true, false); err != nil || dst.Mode != 0 || dst.Option == nil || *dst.Option != 1 {
+	if err := decodeAs([]byte(`{"mode":"off","option":"on"}`), &dst, true, false); err != nil || dst.Mode != 0 || dst.Option == nil || *dst.Option != 1 {
 		t.Fatalf("Decode = %+v, %v", dst, err)
 	}
 	if data, err := json.Marshal(dst); err != nil || string(data) != `{"mode":"off","option":"on"}` {
@@ -224,17 +224,21 @@ func TestDecodeHoldsEnumFieldsToTheirExactNames(t *testing.T) {
 		`{"mode":"on","option":"\ud800"}`: "",
 	} {
 		dst := enumRecord{Mode: 1}
-		err := Decode([]byte(raw), &dst, true, false)
+		err := decodeAs([]byte(raw), &dst, true, false)
 		var typed *Error
 		if !errors.As(err, &typed) {
-			t.Errorf("Decode(%s) = %v; want a typed error", raw, err)
+			t.Errorf("decodeAs(%s) = %v; want a typed error", raw, err)
 			continue
 		}
 		if message != "" && err.Error() != message {
-			t.Errorf("Decode(%s) = %q; want %q", raw, err, message)
+			t.Errorf("decodeAs(%s) = %q; want %q", raw, err, message)
 		}
 		if dst.Mode != 1 || dst.Option != nil {
-			t.Errorf("Decode(%s) changed dst to %+v", raw, dst)
+			t.Errorf("decodeAs(%s) changed dst to %+v", raw, dst)
 		}
 	}
+}
+
+func decodeAs(data []byte, dst any, strict, defaultAll bool) error {
+	return marked(decode(data, dst, strict, defaultAll))
 }

@@ -28,30 +28,32 @@ func marked(err error) error {
 	return &Error{inner: err}
 }
 
-func Decode(data []byte, dst any, strict, defaultAll bool) error {
-	return marked(decode(data, dst, strict, defaultAll))
-}
-
+// DecodeStrict decodes a struct whose every non-pointer field must be present and whose keys must all be known:
+// operator requests and model answers.
 func DecodeStrict[T any](data []byte, dst *T) error {
 	var decoded T
-	return decodeInto(data, dst, decoded, true, false)
-}
-
-func DecodeRecord[T any](data []byte, dst *T) error {
-	var decoded T
-	return decodeInto(data, dst, decoded, false, false)
-}
-
-func DecodeWithDefaults[T any](data []byte, dst *T, defaults T) error {
-	return decodeInto(data, dst, defaults, true, true)
-}
-
-func decodeInto[T any](data []byte, dst *T, decoded T, strict, defaultAll bool) error {
-	if err := Decode(data, &decoded, strict, defaultAll); err != nil {
+	if err := marked(decode(data, &decoded, true, false)); err != nil {
 		return err
 	}
 	*dst = decoded
 	return nil
+}
+
+// DecodeRecord decodes a saved record: unknown keys are ignored, so older binaries can read newer records, but every
+// other rule (required fields, duplicates, exact case, no null, valid UTF-8, no trailing data) holds.
+func DecodeRecord[T any](data []byte, dst *T) error {
+	var decoded T
+	if err := marked(decode(data, &decoded, false, false)); err != nil {
+		return err
+	}
+	*dst = decoded
+	return nil
+}
+
+// DecodeDefaults decodes strictly into dst, whose current values stand for every absent field; dst is unchanged on
+// failure.
+func DecodeDefaults(data []byte, dst any) error {
+	return marked(decode(data, dst, true, true))
 }
 
 func decode(data []byte, dst any, strict, defaultAll bool) error {

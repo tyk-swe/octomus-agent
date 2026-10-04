@@ -45,6 +45,9 @@ func (v Admission) MarshalJSON() ([]byte, error) {
 
 var background = context.Background()
 
+// fromMeta joins the indexed projection of a record to the record itself.
+const fromMeta = "record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id"
+
 type Store struct {
 	mu   sync.Mutex
 	db   *sql.DB
@@ -202,9 +205,16 @@ func (s *Store) ClearCancel(id string) error { return s.Put("cancel", id, nil) }
 
 func (s *Store) MarkCancel(id string) error { return s.Put("cancel", id, model.Now()) }
 
+// Marked reports whether a marker record exists and is not JSON null.
 func (s *Store) Marked(kind, id string) (bool, error) {
-	value, found, err := s.GetValue(kind, id)
-	return found && value != nil, err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var marked bool
+	err := s.conn.QueryRowContext(background, "SELECT data != 'null' FROM records WHERE kind=?1 AND id=?2", kind, id).Scan(&marked)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return marked, err
 }
 
 func (s *Store) CommitPlan(cycle model.Cycle, tasks []model.Task) error {
@@ -469,6 +479,35 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 		_, err = c.ExecContext(background, "INSERT INTO admissions(id,at,day,data) VALUES (?1,?2,?3,?4)", admission.ID, admission.At, day, string(data))
 		return err
 	})
+}
+
+// Admissions is the whole admission ledger in order, for the usage report.
+func Admissions(c *sql.Conn) ([]Admission, error) {
+	return QueryRecords[Admission](c, "SELECT data FROM admissions ORDER BY at,id")
+}
+
+// DaySessions is one day's durable session counter.
+type DaySessions struct {
+	Day      string
+	Sessions uint64
+}
+
+// DailySessions is every day's session counter in day order, for the usage report.
+func DailySessions(c *sql.Conn) ([]DaySessions, error) {
+	rows, err := c.QueryContext(background, "SELECT day,sessions FROM usage ORDER BY day")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	days := []DaySessions{}
+	for rows.Next() {
+		var day DaySessions
+		if err := rows.Scan(&day.Day, &day.Sessions); err != nil {
+			return nil, err
+		}
+		days = append(days, day)
+	}
+	return days, rows.Err()
 }
 
 func sessionsOn(c *sql.Conn, day string) (int64, error) {

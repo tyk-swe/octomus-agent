@@ -24,7 +24,7 @@ type Proposal struct {
 	Reconsiders   []string `json:"reconsiders"`
 }
 
-func (p *Proposal) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, p) }
+func (p *Proposal) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, p) }
 func (p Proposal) MarshalJSON() ([]byte, error) {
 	type plain Proposal
 	return wirejson.Record(plain(p))
@@ -80,7 +80,7 @@ type Finding struct {
 	Priority string `json:"priority"`
 }
 
-func (v *Finding) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
+func (v *Finding) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
 func (v Finding) MarshalJSON() ([]byte, error) {
 	type plain Finding
 	return wirejson.Record(plain(v))
@@ -92,7 +92,7 @@ type Review struct {
 	Findings  []Finding `json:"findings"`
 }
 
-func (r *Review) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, r) }
+func (r *Review) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, r) }
 func (r Review) MarshalJSON() ([]byte, error)     { type plain Review; return wirejson.Record(plain(r)) }
 
 // ProposalDocument is the structured answer of the discovery and consolidation

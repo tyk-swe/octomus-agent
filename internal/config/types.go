@@ -50,7 +50,12 @@ type Config struct {
 }
 
 func (c *Config) UnmarshalJSON(data []byte) error {
-	return wirejson.DecodeWithDefaults(data, c, Default())
+	cfg := Default()
+	if err := wirejson.DecodeDefaults(data, &cfg); err != nil {
+		return err
+	}
+	*c = cfg
+	return nil
 }
 func (c Config) MarshalJSON() ([]byte, error) { type plain Config; return wirejson.Record(plain(c)) }
 func (c Config) Clone() Config                { return wirejson.Clone(c) }

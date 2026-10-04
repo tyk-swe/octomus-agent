@@ -235,7 +235,7 @@ func schedulingTasksSQL() string {
                     AND status IN (%s)
                 UNION ALL
                 SELECT id,seq FROM (
-                    SELECT m.id,m.seq FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
+                    SELECT m.id,m.seq FROM `+fromMeta+`
                         WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued'
                             AND (?1 IS NULL OR m.run_id=?1)
                             AND (json_extract(r.data,'$.proposal.target') != json_extract(r.data,'$.config.default_branch')
@@ -244,7 +244,7 @@ func schedulingTasksSQL() string {
                 )
                 UNION ALL
                 SELECT id,seq FROM (
-                    SELECT m.id,m.seq FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
+                    SELECT m.id,m.seq FROM `+fromMeta+`
                         WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued'
                             AND (?1 IS NULL OR m.run_id=?1)
                             AND json_extract(r.data,'$.proposal.target') = json_extract(r.data,'$.config.default_branch')
@@ -261,7 +261,7 @@ func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
+	return listRecords[model.Task](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
 }
 
 // CancelledWithLiveSessions returns unfinished cancellation evidence
@@ -272,7 +272,7 @@ func (s *Store) CancelledWithLiveSessions(excludedIDs []string) ([]model.Task, e
 	if err != nil {
 		return nil, err
 	}
-	return listRecords[model.Task](s, `SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id
+	return listRecords[model.Task](s, `SELECT r.data FROM `+fromMeta+`
         WHERE m.kind='task' AND m.status='cancelled'
             AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id)
             AND EXISTS (SELECT 1 FROM json_each(r.data,'$.sessions') WHERE json_extract(value,'$.status')='running')
@@ -285,14 +285,14 @@ func (s *Store) PublishingTasksExcept(excludedIDs []string) ([]model.Task, error
 	if err != nil {
 		return nil, err
 	}
-	return listRecords[model.Task](s, `SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id
+	return listRecords[model.Task](s, `SELECT r.data FROM `+fromMeta+`
         WHERE m.kind='task' AND m.status='publishing' AND m.archived IS NULL AND m.discarded IS NULL
             AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id) AND json_extract(r.data,'$.output_commit') IS NOT NULL
         ORDER BY m.seq ASC LIMIT 500`, string(ids))
 }
 
 func (s *Store) RunningCycles() ([]model.Cycle, error) {
-	return listRecords[model.Cycle](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running'")
+	return listRecords[model.Cycle](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='cycle' AND m.status='running'")
 }
 
 // RunningCyclesExcept excludes live worker evidence before reading and decoding it.
@@ -300,7 +300,7 @@ func (s *Store) RunningCyclesExcept(activeID string) ([]model.Cycle, error) {
 	if activeID == "" {
 		return s.RunningCycles()
 	}
-	return listRecords[model.Cycle](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='cycle' AND m.status='running' AND m.id!=?1", activeID)
+	return listRecords[model.Cycle](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='cycle' AND m.status='running' AND m.id!=?1", activeID)
 }
 
 func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
@@ -321,7 +321,7 @@ func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
 }
 
 func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
-	return listRecords[model.Task](s, "SELECT r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq", id)
+	return listRecords[model.Task](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq", id)
 }
 
 func (s *Store) Snapshot(fn func(c *sql.Conn) error) error {
@@ -697,12 +697,12 @@ func (s *Store) DecisionMemory(repository string) ([]any, error) {
 }
 
 func (s *Store) RediscoveryRequests(repository string) ([]any, error) {
-	return listRecords[any](s, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
+	return listRecords[any](s, "SELECT json_object('id',r.id,'title',json_extract(r.data,'$.proposal.title'),'target',json_extract(r.data,'$.proposal.target'),'problem',json_extract(r.data,'$.proposal.problem'),'scope',json_extract(r.data,'$.proposal.scope')) FROM "+fromMeta+" WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='cancelled' AND m.archived IS NULL AND json_extract(r.data,'$.rediscovery_requested')=1 AND json_array_length(r.data,'$.superseded_by')=0 ORDER BY m.seq DESC LIMIT 100", repository)
 }
 
 func latestPROutputAt(c *sql.Conn, repository string, number uint64) (*string, error) {
 	var output *string
-	err := c.QueryRowContext(background, "SELECT json_extract(r.data,'$.output_commit') FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='published' AND json_extract(m.summary,'$.pr_number')=?2 ORDER BY json_extract(m.summary,'$.updated_at') DESC LIMIT 1", repository, int64(number)).Scan(&output)
+	err := c.QueryRowContext(background, "SELECT json_extract(r.data,'$.output_commit') FROM "+fromMeta+" WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.status='published' AND json_extract(m.summary,'$.pr_number')=?2 ORDER BY json_extract(m.summary,'$.updated_at') DESC LIMIT 1", repository, int64(number)).Scan(&output)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -711,7 +711,7 @@ func latestPROutputAt(c *sql.Conn, repository string, number uint64) (*string, e
 
 func prObservationAt(c *sql.Conn, repository string, number uint64) (string, *model.PRObservation, error) {
 	var id, data string
-	err := c.QueryRowContext(background, "SELECT m.id,r.data FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='pr' AND m.repository=?1 COLLATE NOCASE AND json_extract(m.summary,'$.pr.number')=?2 ORDER BY m.seq DESC LIMIT 1", repository, int64(number)).Scan(&id, &data)
+	err := c.QueryRowContext(background, "SELECT m.id,r.data FROM "+fromMeta+" WHERE m.kind='pr' AND m.repository=?1 COLLATE NOCASE AND json_extract(m.summary,'$.pr.number')=?2 ORDER BY m.seq DESC LIMIT 1", repository, int64(number)).Scan(&id, &data)
 	if err == sql.ErrNoRows {
 		return "", nil, nil
 	}

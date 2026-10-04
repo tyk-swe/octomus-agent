@@ -53,13 +53,13 @@ func reservationRows(c *sql.Conn, repository string) ([]PRReservation, error) {
 	return reservations, rows.Err()
 }
 
-func insertReservation(c *sql.Conn, taskID, repository, branch, admittedAt string) error {
-	_, err := c.ExecContext(background, "INSERT INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)", taskID, repository, branch, admittedAt)
-	return err
-}
-
-func seedReservation(c *sql.Conn, taskID, repository, branch, admittedAt string) error {
-	_, err := c.ExecContext(background, "INSERT OR IGNORE INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)", taskID, repository, branch, admittedAt)
+// insertReservation records a PR slot for a task; orIgnore keeps an existing reservation instead of failing.
+func insertReservation(c *sql.Conn, taskID, repository, branch, admittedAt string, orIgnore bool) error {
+	verb := "INSERT"
+	if orIgnore {
+		verb = "INSERT OR IGNORE"
+	}
+	_, err := c.ExecContext(background, verb+" INTO pr_reservations(task_id,repository,branch,admitted_at) VALUES (?1,?2,?3,?4)", taskID, repository, branch, admittedAt)
 	return err
 }
 
@@ -124,7 +124,7 @@ func (s *Store) PRReservations(repository string) ([]PRReservation, error) {
 }
 
 func (s *Store) ReservableTasks() ([]model.Task, error) {
-	return listRecords[model.Task](s, fmt.Sprintf(`SELECT r.data FROM record_meta m JOIN records r ON r.kind='task' AND r.id=m.id
+	return listRecords[model.Task](s, fmt.Sprintf(`SELECT r.data FROM `+fromMeta+`
                 WHERE m.kind='task' AND (
                     m.status IN (%s)
                     OR (m.status='queued' AND json_extract(r.data,'$.execution_session') IS NOT NULL)
@@ -135,7 +135,7 @@ func (s *Store) ReservableTasks() ([]model.Task, error) {
 func (s *Store) SeedPRReservation(task model.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return seedReservation(s.conn, task.ID, strings.ToLower(task.Config.GitHubRepo), task.Branch, model.Now())
+	return insertReservation(s.conn, task.ID, strings.ToLower(task.Config.GitHubRepo), task.Branch, model.Now(), true)
 }
 
 func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory) (bool, error) {
@@ -182,7 +182,7 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 		if err := txPut(c, "task", next.ID, next); err != nil {
 			return err
 		}
-		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now()); err != nil {
+		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now(), false); err != nil {
 			return err
 		}
 		if err := txEvent(c, next.ID, "status", "Executing"); err != nil {
