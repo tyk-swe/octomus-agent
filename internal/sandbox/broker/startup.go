@@ -31,7 +31,7 @@ const sweepWait = 2 * time.Minute
 // the broker's executable for sandboxes. It refuses to serve a deployment that would weaken isolation.
 func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	b := newBroker(cfg)
-	version, err := b.engine.Version(ctx)
+	version, err := b.engine.version(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("Docker Engine is unreachable at %s: %w", cfg.DockerSocket, err)
 	}
@@ -52,7 +52,7 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		return nil, err
 	}
 	for _, name := range []string{cfg.RunnerNetwork, cfg.VerifyNetwork} {
-		network, err := b.engine.NetworkInspect(ctx, name)
+		network, err := b.engine.networkInspect(ctx, name)
 		if err != nil {
 			return nil, fmt.Errorf("Sandbox network %s: %w", name, err)
 		}
@@ -67,7 +67,7 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		}
 	}
 	for _, name := range []string{cfg.DataVolume, cfg.RunnerVolume, cfg.ToolsVolume} {
-		if err := b.engine.VolumeInspect(ctx, name); err != nil {
+		if err := b.engine.volumeInspect(ctx, name); err != nil {
 			return nil, fmt.Errorf("Sandbox volume %s: %w", name, err)
 		}
 	}

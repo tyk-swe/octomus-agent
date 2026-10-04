@@ -54,7 +54,7 @@ func (r ProbeReport) Passed() bool {
 
 // Probe runs the containment probe in a fresh probe sandbox and returns its report.
 func Probe(ctx context.Context, remote *Remote) (ProbeReport, error) {
-	child, err := remote.Start(ctx, Spec{Kind: KindProbe, Probe: wire.ProbeContainment, Timeout: 120})
+	child, err := remote.Start(ctx, Spec{Kind: wire.KindProbe, Probe: wire.ProbeContainment, Timeout: 120})
 	if err != nil {
 		return ProbeReport{}, err
 	}

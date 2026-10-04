@@ -46,19 +46,19 @@ owns strict typed JSON boundaries for saved records and API requests.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
   `--sandbox off`, `Remote` for the broker), owned-root preparation, OpenCode
   readiness and its stream connection (`opencode.go`), the in-sandbox helper
-  (`init.go`, `--sandbox-init`: OpenCode HTTP/2 bridge and version probe) and the
+  (`helper.go`, `--sandbox-init`: OpenCode HTTP/2 bridge and version probe) and the
   containment probe (`probe.go` runs it, `containment.go` checks from inside the
-  sandbox). `sandbox/wire` is the broker wire contract: requests, stream
-  frames, the broker info document, the runner names and the runner and verification
-  programs both backends start, and the owned-root home layout. `sandbox/broker` is
+  sandbox). `sandbox/wire` is the broker wire contract in one file: requests, stream
+  frames, the broker info document, the runner names, the programs both backends
+  start, the owned-root layout and the literals both sides share. `sandbox/broker` is
   `--sandboxd`: `config.go` (deployment settings), `startup.go` (daemon, network
   and volume checks, helper install), `image.go` (tag resolution and the
   runner-version probe), `listen.go` (peer-credential socket), `serve.go` (HTTP and
   the upgraded stream), `validate.go` (request and owned-root checks), `spec.go`
   (the golden container spec, `testdata/spec-*.json`), `lifecycle.go` (create,
   attach, run and evidence, granting egress leases) and `teardown.go` (teardown
-  bounds, removal, reaper and sweep); `sandbox/engineapi` is its minimal Docker
-  Engine client. `internal/egress` is the `--egress` gateway: `policy.go`
+  bounds, removal, reaper and sweep) and `dockerapi.go` (its minimal Docker Engine
+  client). `internal/egress` is the `--egress` gateway: `policy.go`
   (allowlists, `PolicyFromEnv`), `gateway.go` (the CONNECT gateway) and `serve.go`
   (listener bounds and the lease sweep). It owns its contract with the broker:
   `lease.go` (lease files and proxy credentials) and `collector.go` (the summary

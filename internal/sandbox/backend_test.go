@@ -53,11 +53,11 @@ func startFakeBroker(t *testing.T, max int) *fakeBroker {
 	t.Helper()
 	f := &fakeBroker{requests: make(chan wire.Request, 64)}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET "+wire.InfoPath, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(wire.BrokerInfo{Image: "sandbox:test", Limits: wire.BrokerLimits{Max: max},
 			Runners: map[string]string{"codex": "codex-cli 0.153.4"}})
 	})
-	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST "+wire.SandboxesPath, func(w http.ResponseWriter, r *http.Request) {
 		var req wire.Request
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.requests <- req
@@ -138,7 +138,7 @@ func (f *fakeBroker) serve(req wire.Request, conn net.Conn, reader *bufio.Reader
 		exitFrame(out, wire.ExitReport{Code: 137, OOM: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1, OOM: true,
 			Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"example.com:443": 2}}}})
 	case "limit":
-		exitFrame(out, wire.ExitReport{Code: 137, Killed: true, Error: TimeLimitReason})
+		exitFrame(out, wire.ExitReport{Code: 137, Killed: true, Error: wire.TimeLimitReason})
 	case "bad-report":
 		_ = out.Frame(wire.FrameExit, []byte("{"))
 	case "flood":
@@ -243,7 +243,7 @@ func TestRemoteUnavailableBroker(t *testing.T) {
 
 func ownedWorkspace(t *testing.T) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "workspace")
+	dir := filepath.Join(t.TempDir(), wire.WorkspaceDir)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

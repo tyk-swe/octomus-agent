@@ -27,6 +27,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/report"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -58,7 +59,7 @@ type arguments struct {
 func main() { os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr)) }
 func run(args []string, env func(string) (string, bool), stdout, stderr io.Writer) int {
 	// The in-sandbox helper runs inside containers and takes its own arguments.
-	if len(args) > 0 && args[0] == "--sandbox-init" {
+	if len(args) > 0 && args[0] == wire.InitFlag {
 		return sandbox.RunInit(args[1:], os.Stdin, stdout, stderr)
 	}
 	// Compose's login-lease service runs this before each runner login.

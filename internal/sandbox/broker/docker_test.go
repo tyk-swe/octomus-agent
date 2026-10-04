@@ -22,7 +22,9 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/broker"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 // dockerBroker runs a real broker against the local Docker daemon, with named volumes bound to temporary directories
@@ -172,7 +174,7 @@ func (h *dockerBroker) containers(t *testing.T) string {
 func (h *dockerBroker) taskRoot(t *testing.T) string {
 	t.Helper()
 	ws := broker.OwnedRoot(t, h.cfg, "tasks/"+uuid.NewString())
-	if err := os.WriteFile(filepath.Join(filepath.Dir(ws), "repo.git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(ws), workspace.GitDirName, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return ws
@@ -240,7 +242,7 @@ func TestDockerVerifySandboxIsContained(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(ws, "result.txt")); err != nil || string(data) != "written\n" {
 		t.Fatalf("work tree write = %q, %v", data, err)
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(ws), "repo.git", "escape")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(ws), workspace.GitDirName, "escape")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the sandbox wrote the trusted git metadata")
 	}
 	if left := h.containers(t); left != "" {
@@ -253,7 +255,7 @@ func TestDockerRunnerStdioStreams(t *testing.T) {
 	ws := h.taskRoot(t)
 	var stderr testutil.SyncBuffer
 	child, err := h.remote.Start(context.Background(), sandbox.Spec{
-		Kind: sandbox.KindRunner, Runner: config.BackendCodex, Dir: ws, Stdin: true, Stderr: &stderr,
+		Kind: wire.KindRunner, Runner: config.BackendCodex, Dir: ws, Stdin: true, Stderr: &stderr,
 	})
 	if err != nil {
 		t.Fatal(err)

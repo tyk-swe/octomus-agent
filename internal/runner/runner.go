@@ -26,6 +26,20 @@ func VersionWarning(backend config.Backend, installed, expected string) string {
 	return fmt.Sprintf("%s version mismatch: installed %s; %s; protocol compatibility is unverified.", backend.Display(), installed, expected)
 }
 
+// versionWarning is the diagnostics' warning for a runner whose installed version is not the expected one (Codex's
+// "codex-cli " + CodexVersion, OpenCode's OpenCodeVersion), or nil when it is.
+func versionWarning(backend config.Backend, installed, expected string) *string {
+	if installed == expected {
+		return nil
+	}
+	advice := fmt.Sprintf("protocol baseline %s. Pin the documented CLI", expected)
+	if backend == config.BackendCodex {
+		advice = fmt.Sprintf("tested %s. Pin the tested CLI before live commissioning", expected)
+	}
+	warning := VersionWarning(backend, installed, advice)
+	return &warning
+}
+
 type Diagnostics struct {
 	Backend         config.Backend `json:"backend"`
 	ProtocolVersion string         `json:"protocol_version"`

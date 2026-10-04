@@ -54,7 +54,7 @@ func (r *Remote) Info(ctx context.Context) (wire.BrokerInfo, error) {
 		Proxy: nil, DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return r.dial(ctx) },
 	}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://sandboxd/v1/info", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://sandboxd"+wire.InfoPath, nil)
 	if err != nil {
 		return wire.BrokerInfo{}, err
 	}
@@ -108,13 +108,13 @@ func brokerError(resp *http.Response) error {
 }
 
 func (r *Remote) request(spec Spec) wire.Request {
-	req := wire.Request{Kind: spec.Kind.String(), Dir: spec.Dir, Env: spec.Env, Stdin: spec.Stdin, FreshHome: spec.FreshHome, Timeout: spec.Timeout}
+	req := wire.Request{Kind: spec.Kind, Dir: spec.Dir, Env: spec.Env, Stdin: spec.Stdin, FreshHome: spec.FreshHome, Timeout: spec.Timeout}
 	switch spec.Kind {
-	case KindRunner:
+	case wire.KindRunner:
 		req.Runner, req.Mode = runnerName(spec.Runner), wire.RunnerModeStdio
-	case KindVerify:
+	case wire.KindVerify:
 		req.Command = spec.Command
-	case KindProbe:
+	case wire.KindProbe:
 		req.Mode, req.Dir = spec.Probe, ""
 	}
 	return req
@@ -131,9 +131,9 @@ func (r *Remote) start(ctx context.Context, spec Spec, req wire.Request) (*remot
 	if _, err := r.Info(ctx); err != nil {
 		return nil, notStarted(ctx, err)
 	}
-	if spec.Kind != KindProbe {
+	if spec.Kind != wire.KindProbe {
 		if err := PrepareRoot(spec); err != nil {
-			return nil, &SandboxError{fmt.Errorf("Preparing the sandbox root: %w", err)}
+			return nil, &Error{Err: fmt.Errorf("Preparing the sandbox root: %w", err)}
 		}
 	}
 	r.mu.Lock()
@@ -163,7 +163,7 @@ func notStarted(ctx context.Context, err error) error {
 	if ctx.Err() != nil || errors.Is(err, process.ErrSessionCancelled) {
 		return process.ErrSessionCancelled
 	}
-	return &SandboxError{err}
+	return &Error{Err: err}
 }
 
 // open asks the broker for a sandbox and returns the upgraded stream that is its lifeline.
@@ -183,7 +183,7 @@ func (r *Remote) open(ctx context.Context, req wire.Request) (net.Conn, *bufio.R
 // handshake: a slot wait, an image-version probe, create and attach can together outlast any one startup step.
 // Once upgraded, the stream belongs to the child and no longer follows this startup context.
 func upgradeSandbox(ctx context.Context, conn net.Conn, body []byte) (net.Conn, *bufio.Reader, error) {
-	httpReq, err := http.NewRequest(http.MethodPost, "http://sandboxd/v1/sandboxes", bytes.NewReader(body))
+	httpReq, err := http.NewRequest(http.MethodPost, "http://sandboxd"+wire.SandboxesPath, bytes.NewReader(body))
 	if err != nil {
 		conn.Close()
 		return nil, nil, err
@@ -375,23 +375,19 @@ func (c *remoteChild) lose(err error) {
 	} else {
 		err = fmt.Errorf("Sandbox stream was lost: %w", err)
 	}
-	c.lost = &SandboxError{err}
+	c.lost = &Error{Err: err, Started: true}
 }
 
-// TimeLimitReason is the broker's report of a sandbox it killed at its time limit. Running too long is the program's
-// own result, as a timeout is; any other error an exit report carries means the broker failed the sandbox.
-const TimeLimitReason = "Sandbox time limit reached"
-
 // Wait reports how the sandbox ended. A lost stream, an unconfirmed kill and every error the broker reports but its
-// time limit, such as a sandbox it could not start or remove, are the sandbox's failures, never the program's result,
-// even when the broker had killed it.
+// time limit (wire.TimeLimitReason), such as a sandbox it could not start or remove, are the sandbox's failures, never
+// the program's result, even when the broker had killed it.
 func (c *remoteChild) Wait() (process.Status, error) {
 	<-c.done
 	if c.lost != nil {
 		return process.Status{}, c.lost
 	}
-	if c.report.Error != "" && !(c.report.Killed && c.report.Error == TimeLimitReason) {
-		return process.Status{}, &SandboxError{errors.New(c.report.Error)}
+	if c.report.Error != "" && !(c.report.Killed && c.report.Error == wire.TimeLimitReason) {
+		return process.Status{}, &Error{Err: errors.New(c.report.Error), Started: true}
 	}
 	return process.ExitStatus(process.Exit{Code: c.report.Code, OOM: c.report.OOM, Killed: c.report.Killed, Reason: c.report.Error}), nil
 }

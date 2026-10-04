@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/redact"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
@@ -25,10 +24,10 @@ type imageFailure struct {
 const probeRetry = 30 * time.Second
 
 // inspectImage resolves the configured tag. Only an image the daemon does not have is reported as missing.
-func (b *Broker) inspectImage(ctx context.Context) (engineapi.Image, error) {
-	image, err := b.engine.ImageInspect(ctx, b.cfg.Image)
+func (b *Broker) inspectImage(ctx context.Context) (engineImage, error) {
+	image, err := b.engine.imageInspect(ctx, b.cfg.Image)
 	switch {
-	case engineapi.IsNotFound(err):
+	case notFound(err):
 		return image, fmt.Errorf("Sandbox image %s is not available locally (the broker never pulls): %w", b.cfg.Image, err)
 	case err != nil:
 		return image, fmt.Errorf("Inspecting sandbox image %s: %w", b.cfg.Image, err)

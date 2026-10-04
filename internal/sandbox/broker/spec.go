@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 // runnerGitConfig replaces the global git configuration of runner sandboxes. The executor, repair and reviewer turns
@@ -26,7 +26,7 @@ const runnerGitConfig = `# Written by the Octomus sandbox broker for runner sand
 // container builds the one container spec a plan can produce. Every hardening choice lives here, so a golden test can
 // hold it: non-root, no capabilities, no privilege escalation, a read-only image, bounded resources, no log copy of
 // transcripts, and only the mounts the plan's kind needs.
-func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
+func (c Config) container(p plan, extraEnv []string) ContainerConfig {
 	user := fmt.Sprintf("%d:%d", c.UID, c.GID)
 	entrypoint, cmd := c.program(p)
 	workdir := p.dir
@@ -66,7 +66,7 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 		}
 		tmpfs[sandboxHome] = fmt.Sprintf("rw,nosuid,nodev,size=%d,uid=%d,gid=%d,mode=0700", 64<<20, c.UID, c.GID)
 	}
-	return engineapi.ContainerConfig{
+	return ContainerConfig{
 		Image:        "",
 		User:         user,
 		Entrypoint:   entrypoint,
@@ -81,7 +81,7 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 		StdinOnce:    p.stdin,
 		Tty:          false,
 		StopSignal:   "SIGTERM",
-		HostConfig: engineapi.HostConfig{
+		HostConfig: hostConfig{
 			Init:           true,
 			Privileged:     false,
 			ReadonlyRootfs: true,
@@ -98,8 +98,8 @@ func (c Config) container(p plan, extraEnv []string) engineapi.ContainerConfig {
 			Mounts:         mounts,
 			Runtime:        c.Runtime,
 			AutoRemove:     false,
-			LogConfig:      engineapi.LogConfig{Type: "none"},
-			RestartPolicy:  engineapi.RestartPolicy{Name: "no"},
+			LogConfig:      logConfig{Type: "none"},
+			RestartPolicy:  restartPolicy{Name: "no"},
 		},
 	}
 }
@@ -109,41 +109,41 @@ func (c Config) program(p plan) ([]string, []string) {
 	case wire.KindRunner:
 		args := wire.RunnerArgs(p.runner)
 		if p.mode == wire.RunnerModeOpenCode {
-			return []string{toolsBinary, "--sandbox-init", wire.RunnerModeOpenCode, strconv.FormatUint(p.readiness, 10), "--", p.runner}, args
+			return []string{toolsBinary, wire.InitFlag, wire.RunnerModeOpenCode, strconv.FormatUint(p.readiness, 10), "--", p.runner}, args
 		}
 		return []string{p.runner}, args
 	case wire.KindVerify:
 		program, args := wire.VerifyProgram(p.command)
 		return []string{program}, args
 	}
-	return []string{toolsBinary, "--sandbox-init", p.probe}, nil
+	return []string{toolsBinary, wire.InitFlag, p.probe}, nil
 }
 
-func (c Config) mounts(p plan) []engineapi.Mount {
-	data := func(rel, target string, readOnly bool) engineapi.Mount {
-		return engineapi.Mount{Type: "volume", Source: c.DataVolume, Target: target, ReadOnly: readOnly,
-			VolumeOptions: &engineapi.VolumeOptions{NoCopy: true, Subpath: rel}}
+func (c Config) mounts(p plan) []Mount {
+	data := func(rel, target string, readOnly bool) Mount {
+		return Mount{Type: "volume", Source: c.DataVolume, Target: target, ReadOnly: readOnly,
+			VolumeOptions: &VolumeOptions{NoCopy: true, Subpath: rel}}
 	}
-	mounts := []engineapi.Mount{{Type: "volume", Source: c.ToolsVolume, Target: toolsMount, ReadOnly: true,
-		VolumeOptions: &engineapi.VolumeOptions{NoCopy: true}}}
+	mounts := []Mount{{Type: "volume", Source: c.ToolsVolume, Target: toolsMount, ReadOnly: true,
+		VolumeOptions: &VolumeOptions{NoCopy: true}}}
 	if p.kind == wire.KindProbe {
 		return mounts
 	}
-	mounts = append(mounts, data(filepath.Join(p.rel, "workspace"), p.dir, false))
+	mounts = append(mounts, data(filepath.Join(p.rel, wire.WorkspaceDir), p.dir, false))
 	if !p.scratch {
 		// Trusted metadata and the work tree's .git pointer both mount read-only: the pointer itself must stay the
 		// CloneAt file, or a turn could plant a repository the next turn's reviewer would diff against.
 		mounts = append(mounts,
-			data(filepath.Join(p.rel, "repo.git"), filepath.Join(p.root, "repo.git"), true),
-			data(filepath.Join(p.rel, "workspace", ".git"), filepath.Join(p.dir, ".git"), true),
+			data(filepath.Join(p.rel, workspace.GitDirName), filepath.Join(p.root, workspace.GitDirName), true),
+			data(filepath.Join(p.rel, wire.WorkspaceDir, ".git"), filepath.Join(p.dir, ".git"), true),
 		)
 	}
 	switch p.kind {
 	case wire.KindRunner:
 		mounts = append(mounts, data(filepath.Join(p.rel, wire.RunnerHome), sandboxHome, false))
 		for _, dir := range wire.RunnerHomeDirs {
-			mounts = append(mounts, engineapi.Mount{Type: "volume", Source: c.RunnerVolume,
-				Target: filepath.Join(sandboxHome, dir.Home), VolumeOptions: &engineapi.VolumeOptions{NoCopy: true, Subpath: dir.Volume}})
+			mounts = append(mounts, Mount{Type: "volume", Source: c.RunnerVolume,
+				Target: filepath.Join(sandboxHome, dir.Home), VolumeOptions: &VolumeOptions{NoCopy: true, Subpath: dir.Volume}})
 		}
 	case wire.KindVerify:
 		mounts = append(mounts, data(filepath.Join(p.rel, wire.VerifyHome), sandboxHome, false))

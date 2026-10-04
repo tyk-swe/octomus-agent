@@ -1,4 +1,4 @@
-package engineapi
+package broker
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func TestAttachHandshakeHonoursCancellation(t *testing.T) {
 	time.AfterFunc(100*time.Millisecond, cancel)
 	done := make(chan error, 1)
 	go func() {
-		_, err := New(socket).ContainerAttach(ctx, "silent", true)
+		_, err := newDockerClient(socket).containerAttach(ctx, "silent", true)
 		done <- err
 	}()
 	select {

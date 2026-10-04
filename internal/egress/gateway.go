@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Resolver is the part of net.Resolver the gateway uses, replaceable in tests.
@@ -417,12 +419,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	host, err := NormalizeHost(hostText)
 	if err != nil {
-		deny(http.StatusForbidden, refusedHost(hostText), uint16(port), "target is not an allowlisted host name ("+err.Error()+")")
+		deny(http.StatusForbidden, refusedHost(hostText), uint16(port), wire.RefusalNotHostName+" ("+err.Error()+")")
 		return
 	}
 	// The allowlist is decided before any lookup, so a refused name never reaches DNS and cannot carry data out.
 	if !g.policy.Allows(lease.Kind, host, uint16(port)) {
-		deny(http.StatusForbidden, host, uint16(port), "host is not on the "+lease.Kind+" allowlist")
+		deny(http.StatusForbidden, host, uint16(port), fmt.Sprintf(wire.RefusalNotAllowlisted, lease.Kind))
 		return
 	}
 	if !g.reserve(lease.Sandbox) {

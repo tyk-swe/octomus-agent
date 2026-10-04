@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // probeTargets are paths a sandbox must never see: orchestrator state, deployment secrets and the Docker daemon.
@@ -61,15 +62,15 @@ func runContainmentProbe(stdout io.Writer) int {
 	}
 	add("no_orchestrator_state", "Cannot see Octomus state, secrets or the Docker socket", len(visible) == 0,
 		detailList("visible", visible, "none visible"))
-	reached := reachable([]string{"1.1.1.1:443", "8.8.8.8:53", "[2606:4700:4700::1111]:443"}, 3*time.Second, dialTCP)
+	reached := reachable([]string{"1.1.1.1:443", "8.8.8.8:53", "[2606:4700:4700::1111]:443"}, 3*time.Second)
 	add("no_direct_egress", "Has no direct route to the internet", len(reached) == 0, detailList("reached", reached, "no route"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	resolved, err := net.DefaultResolver.LookupHost(ctx, "example.com")
 	cancel()
 	add("no_external_dns", "Cannot resolve internet names directly", err != nil, detailList("resolved", resolved, "lookup refused"))
-	isolated, detail := hostIsolation(os.ReadFile, ownAddresses(), dialTCP, containerName)
+	isolated, detail := hostIsolation()
 	add("no_host_route", "Has no gateway to the host or its neighbours", isolated, detail)
-	report.Limits = cgroupLimits(os.ReadFile)
+	report.Limits = cgroupLimits()
 	add("resource_limits", "Runs under memory and process limits", limited(report.Limits.Memory) && limited(report.Limits.Pids),
 		fmt.Sprintf("memory.max %s, pids.max %s", report.Limits.Memory, report.Limits.Pids))
 	proxy := os.Getenv("HTTPS_PROXY")
@@ -171,9 +172,7 @@ func errnoText(err error) string {
 	return err.Error()
 }
 
-// dialFunc opens and closes one TCP connection.
-type dialFunc func(ctx context.Context, address string) error
-
+// dialTCP opens and closes one TCP connection.
 func dialTCP(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err == nil {
@@ -189,13 +188,13 @@ func answered(err error) bool {
 }
 
 // reachable dials every address at once, within timeout, and returns the ones that answered in the order given.
-func reachable(addresses []string, timeout time.Duration, dial dialFunc) []string {
+func reachable(addresses []string, timeout time.Duration) []string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	answers := make([]bool, len(addresses))
 	var wg sync.WaitGroup
 	for i, address := range addresses {
-		wg.Go(func() { answers[i] = answered(dial(ctx, address)) })
+		wg.Go(func() { answers[i] = answered(dialTCP(ctx, address)) })
 	}
 	wg.Wait()
 	reached := []string{}
@@ -216,12 +215,12 @@ var hostPorts = []uint16{22, 53, 80, 443, 2375, 2376, 4200}
 // complete ARP entry has answered too. An isolated gateway leaves that address free for a container, so an answer from
 // an address Docker's DNS names as a container on the network is a neighbour, which sandboxes may reach, not the host.
 // An unreadable routing or ARP table fails.
-func hostIsolation(read func(string) ([]byte, error), own []netip.Addr, dial dialFunc, container func(netip.Addr) string) (bool, string) {
-	route, err := read("/proc/net/route")
+func hostIsolation() (bool, string) {
+	route, err := os.ReadFile("/proc/net/route")
 	if err != nil {
 		return false, "routing table unreadable: " + errnoText(err)
 	}
-	route6, err := read("/proc/net/ipv6_route")
+	route6, err := os.ReadFile("/proc/net/ipv6_route")
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, "IPv6 routing table unreadable: " + errnoText(err)
 	}
@@ -232,6 +231,7 @@ func hostIsolation(read func(string) ([]byte, error), own []netip.Addr, dial dia
 	if len(defaults) > 0 {
 		return false, "default route via " + strings.Join(defaults, ", ")
 	}
+	own := ownAddresses()
 	targets, notes := []netip.Addr{}, []string{}
 	for _, gateway := range gateways {
 		switch {
@@ -248,10 +248,10 @@ func hostIsolation(read func(string) ([]byte, error), own []netip.Addr, dial dia
 			addresses = append(addresses, netip.AddrPortFrom(target, port).String())
 		}
 	}
-	answers := reachable(addresses, 3*time.Second, dial)
+	answers := reachable(addresses, 3*time.Second)
 	arpAnswered := map[netip.Addr]bool{}
 	if slices.ContainsFunc(targets, netip.Addr.Is4) {
-		arp, err := read("/proc/net/arp")
+		arp, err := os.ReadFile("/proc/net/arp")
 		if err != nil {
 			return false, "ARP table unreadable: " + errnoText(err)
 		}
@@ -269,7 +269,7 @@ func hostIsolation(read func(string) ([]byte, error), own []netip.Addr, dial dia
 		}
 		if len(ports) == 0 && !arpAnswered[target] {
 			notes = append(notes, "no answer from "+target.String())
-		} else if name := container(target); name != "" {
+		} else if name := containerName(target); name != "" {
 			notes = append(notes, target.String()+" is the container "+name)
 		} else if len(ports) > 0 {
 			reached = append(reached, ports...)
@@ -459,10 +459,10 @@ func containerName(addr netip.Addr) string {
 
 // cgroupLimits reads the sandbox's memory and process limits from cgroup v2's files, or, where those are absent, from
 // cgroup v1's controller files: on a v1 host, and under gVisor, the runtime mounts the container's own cgroup there.
-func cgroupLimits(read func(string) ([]byte, error)) ProbeLimits {
+func cgroupLimits() ProbeLimits {
 	first := func(paths ...string) string {
 		for _, path := range paths {
-			if data, err := read(path); err == nil {
+			if data, err := os.ReadFile(path); err == nil {
 				return strings.TrimSpace(string(data))
 			}
 		}
@@ -493,9 +493,9 @@ func egressRefusals(proxy, unlisted string) (bool, string) {
 		return false, "not proven refused: the gateway's unlisted probe target is missing or invalid"
 	}
 	targets := []struct{ target, reason string }{
-		{unlisted, "host is not on the " + KindRunner.String() + " allowlist"},
-		{"169.254.169.254:80", "target is not an allowlisted host name"},
-		{"localhost:4200", "target is not an allowlisted host name"},
+		{unlisted, fmt.Sprintf(wire.RefusalNotAllowlisted, wire.KindRunner)},
+		{"169.254.169.254:80", wire.RefusalNotHostName},
+		{"localhost:4200", wire.RefusalNotHostName},
 	}
 	denied, failures := []string{}, []string{}
 	for _, refusal := range targets {

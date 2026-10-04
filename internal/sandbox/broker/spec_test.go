@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden container specs")
@@ -32,16 +33,16 @@ func testConfig(t *testing.T) Config {
 func OwnedRoot(t *testing.T, cfg Config, rel string, dirs ...string) string {
 	t.Helper()
 	root := filepath.Join(cfg.DataDir, rel)
-	for _, dir := range append([]string{"workspace", "repo.git"}, dirs...) {
+	for _, dir := range append([]string{wire.WorkspaceDir, workspace.GitDirName}, dirs...) {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, "workspace", ".git"),
-		[]byte("gitdir: "+filepath.Join(root, "repo.git")+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, wire.WorkspaceDir, ".git"),
+		[]byte("gitdir: "+filepath.Join(root, workspace.GitDirName)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(root, "workspace")
+	return filepath.Join(root, wire.WorkspaceDir)
 }
 
 // TestContainerSpecsAreGolden holds every hardening choice for each kind of sandbox. A change to a golden file is a
@@ -120,7 +121,7 @@ func TestEverySandboxIsHardened(t *testing.T) {
 			if mount.Source == cfg.DataVolume && (mount.VolumeOptions.Subpath == "" || strings.Contains(mount.VolumeOptions.Subpath, "..")) {
 				t.Errorf("%s mounts the data volume beyond an owned root: %+v", req.Kind, mount)
 			}
-			if mount.Source == cfg.DataVolume && strings.HasSuffix(mount.Target, "repo.git") && !mount.ReadOnly {
+			if mount.Source == cfg.DataVolume && strings.HasSuffix(mount.Target, workspace.GitDirName) && !mount.ReadOnly {
 				t.Errorf("%s mounts trusted git metadata writable", req.Kind)
 			}
 			if mount.Source == cfg.ToolsVolume && !mount.ReadOnly {
@@ -137,7 +138,7 @@ func TestPlanValidation(t *testing.T) {
 	cfg := testConfig(t)
 	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	scratch := OwnedRoot(t, cfg, "system/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
-	if err := os.RemoveAll(filepath.Join(filepath.Dir(scratch), "repo.git")); err != nil {
+	if err := os.RemoveAll(filepath.Join(filepath.Dir(scratch), workspace.GitDirName)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cfg.plan(wire.Request{Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: scratch}); err != nil {

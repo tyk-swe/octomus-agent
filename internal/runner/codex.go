@@ -20,21 +20,12 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 const CodexVersion = "0.153.4"
-
-func CodexVersionWarning(installed string) *string {
-	expected := "codex-cli " + CodexVersion
-	if strings.TrimSpace(installed) == expected {
-		return nil
-	}
-	warning := VersionWarning(config.BackendCodex, installed,
-		fmt.Sprintf("tested %s. Pin the tested CLI before live commissioning", expected))
-	return &warning
-}
 
 var errCodexDisconnected = errors.New("Codex app-server disconnected")
 
@@ -104,7 +95,7 @@ func ConnectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	}
 	tail := &stderrTail{}
 	child, err := box.Start(ctx, sandbox.Spec{
-		Kind: sandbox.KindRunner, Runner: config.BackendCodex, Binary: cfg.CodexBinary,
+		Kind: wire.KindRunner, Runner: config.BackendCodex, Binary: cfg.CodexBinary,
 		Dir: cwd, Stdin: true, Stderr: tail,
 	})
 	if err != nil {
@@ -153,7 +144,7 @@ func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
 		return Diagnostics{}, fmt.Errorf("Codex authentication is missing; run codex login as the service user")
 	}
 	version, err := c.box.RunnerVersion(c.ctx, sandbox.Spec{
-		Kind: sandbox.KindRunner, Runner: config.BackendCodex, Binary: c.binary, Dir: cwd,
+		Kind: wire.KindRunner, Runner: config.BackendCodex, Binary: c.binary, Dir: cwd,
 	}, min(c.commandTimeout, 60))
 	if err != nil {
 		return Diagnostics{}, err
@@ -163,7 +154,7 @@ func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
 		Backend:         config.BackendCodex,
 		ProtocolVersion: CodexVersion,
 		Version:         version,
-		Warning:         CodexVersionWarning(version),
+		Warning:         versionWarning(config.BackendCodex, version, "codex-cli "+CodexVersion),
 	}, nil
 }
 

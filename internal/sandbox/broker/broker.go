@@ -9,14 +9,13 @@ import (
 	"sync"
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Broker is one --sandboxd instance: it owns the sandbox slots, the sandboxes it has started and their egress leases.
 type Broker struct {
 	cfg    Config
-	engine *engineapi.Client
+	engine *dockerClient
 	info   wire.BrokerInfo
 	// slots admits sandboxes up to the limit. A sandbox gives its slot back only once its removal is confirmed.
 	slots  chan struct{}
@@ -37,7 +36,7 @@ type Broker struct {
 func newBroker(cfg Config) *Broker {
 	b := &Broker{
 		cfg:     cfg,
-		engine:  engineapi.New(cfg.DockerSocket),
+		engine:  newDockerClient(cfg.DockerSocket),
 		slots:   make(chan struct{}, cfg.Max),
 		closing: make(chan struct{}),
 		refresh: make(chan struct{}, 1),

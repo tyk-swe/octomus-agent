@@ -58,7 +58,7 @@ func (d Deployment) check(cfg config.Config) error {
 func (a *App) scratchWorkspace() (string, func(), error) {
 	parent := filepath.Join(a.DataDir, scratchDir)
 	root := filepath.Join(parent, uuid.NewString())
-	dir := filepath.Join(root, "workspace")
+	dir := filepath.Join(root, wire.WorkspaceDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", nil, err
 	}

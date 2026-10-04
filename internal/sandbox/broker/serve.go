@@ -21,10 +21,10 @@ func (b *Broker) Serve(ctx context.Context, listener net.Listener) error {
 	requests, cancelRequests := context.WithCancel(ctx)
 	defer cancelRequests()
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET "+wire.InfoPath, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, b.Info())
 	})
-	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) { b.handleSandbox(requests, w, r) })
+	mux.HandleFunc("POST "+wire.SandboxesPath, func(w http.ResponseWriter, r *http.Request) { b.handleSandbox(requests, w, r) })
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second,
 		BaseContext: func(net.Listener) context.Context { return requests }}
 	done := make(chan error, 1)

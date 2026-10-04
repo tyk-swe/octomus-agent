@@ -1,6 +1,6 @@
 // Package sandbox is where every untrusted child starts: runner sessions, verification commands and containment
 // probes. The orchestrator's own git and gh commands never pass through it. It also holds the helper the broker
-// installs into every sandbox (RunInit, --sandbox-init) and the containment checks that helper runs from inside.
+// installs into every sandbox (RunInit, wire.InitFlag) and the containment checks that helper runs from inside.
 package sandbox
 
 import (
@@ -17,37 +17,18 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
-// Kind names what a sandbox runs. The backend, not the caller, chooses the program for each kind.
-type Kind uint8
-
-const (
-	KindRunner Kind = iota + 1
-	KindVerify
-	KindProbe
-)
-
-func (k Kind) String() string {
-	switch k {
-	case KindRunner:
-		return wire.KindRunner
-	case KindVerify:
-		return wire.KindVerify
-	case KindProbe:
-		return wire.KindProbe
-	}
-	return "unknown"
-}
-
 // Spec is everything a caller may choose about a sandboxed child.
 type Spec struct {
-	Kind Kind
+	// Kind is one of the wire.Kind* names and says what the sandbox runs. The backend, not the caller, chooses the
+	// program for each kind, and both backends refuse a kind they do not know.
+	Kind string
 	// Dir is the working directory: an owned root's workspace, identical inside and outside a container.
 	Dir string
-	// Runner selects Codex or OpenCode for KindRunner.
+	// Runner selects Codex or OpenCode for wire.KindRunner.
 	Runner config.Backend
 	// Binary is the configured runner program. Only the host backend honours it; containers run their image's runner.
 	Binary string
-	// Command is the KindVerify shell command.
+	// Command is the wire.KindVerify shell command.
 	Command string
 	// Env adds runner policy variables (KEY=VALUE) such as OpenCode's unattended configuration.
 	Env []string
@@ -60,7 +41,7 @@ type Spec struct {
 	// Timeout is a hard limit in seconds, beyond the caller's own graceful one. The Docker backend's broker enforces it,
 	// capped at and defaulting (zero) to its maximum; the host backend sets no limit beyond the caller's own.
 	Timeout uint64
-	// Probe names the KindProbe check to run.
+	// Probe names the wire.KindProbe check to run.
 	Probe string
 }
 
@@ -102,24 +83,21 @@ type OpenCodeServer struct {
 	Drained <-chan struct{}
 }
 
-// StartError reports that a child never started, as opposed to one that started and then failed.
-type StartError struct{ Err error }
+// Error reports that the sandbox, not the program in it, failed: the child could not be started, or the broker refused
+// it, lost its stream or could not confirm how it ended. Callers must not record it as the program's own result.
+// Started is false when the child never started, as opposed to one that started and then failed with its sandbox.
+type Error struct {
+	Err     error
+	Started bool
+}
 
-func (e *StartError) Error() string { return e.Err.Error() }
-func (e *StartError) Unwrap() error { return e.Err }
-
-// SandboxError reports that the sandbox, not the program in it, failed: the broker refused the child, lost its
-// stream, or could not confirm how it ended. Callers must not record it as the program's own result.
-type SandboxError struct{ Err error }
-
-func (e *SandboxError) Error() string { return e.Err.Error() }
-func (e *SandboxError) Unwrap() error { return e.Err }
+func (e *Error) Error() string { return e.Err.Error() }
+func (e *Error) Unwrap() error { return e.Err }
 
 // Infrastructure reports whether err means the sandbox failed rather than the program it ran.
 func Infrastructure(err error) bool {
-	var started *StartError
-	var failed *SandboxError
-	return errors.As(err, &started) || errors.As(err, &failed)
+	var failed *Error
+	return errors.As(err, &failed)
 }
 
 // Backend starts sandboxed children. Implementations never fall back to one another.
@@ -177,7 +155,7 @@ func Verify(ctx context.Context, backend Backend, dir, command string, seconds u
 	if ctx.Err() != nil {
 		return nil, nil, process.ErrCancelled
 	}
-	child, err := backend.Start(ctx, Spec{Kind: KindVerify, Dir: dir, Command: command, FreshHome: fresh, Timeout: seconds + verifyGrace})
+	child, err := backend.Start(ctx, Spec{Kind: wire.KindVerify, Dir: dir, Command: command, FreshHome: fresh, Timeout: seconds + verifyGrace})
 	if err != nil {
 		return nil, nil, err
 	}

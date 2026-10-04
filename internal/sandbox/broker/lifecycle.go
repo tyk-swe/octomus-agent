@@ -12,7 +12,6 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
@@ -25,7 +24,7 @@ type prepared struct {
 	lease string
 	// granted is when the egress lease was granted: a gateway that started later never saw all of the sandbox.
 	granted time.Time
-	attach  *engineapi.Attached
+	attach  *attachStream
 	// release gives the sandbox's admission slot back, once its removal is confirmed.
 	release func()
 	once    sync.Once
@@ -80,7 +79,7 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 		spec.Image = b.cfg.Image
 	}
 	createCtx, cancel := context.WithTimeout(base, createTimeout)
-	id, warnings, err := b.engine.ContainerCreate(createCtx, name, spec)
+	id, warnings, err := b.engine.containerCreate(createCtx, name, spec)
 	cancel()
 	if err != nil {
 		if lease != "" {
@@ -88,11 +87,11 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 		}
 		// A create cut short can still finish in the daemon; removing by name finds the container if it already has.
 		removeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := b.engine.ContainerRemove(removeCtx, name); err != nil {
+		if err := b.engine.containerRemove(removeCtx, name); err != nil {
 			b.logf("Removing sandbox %s after its create failed did not succeed; the next sweep removes it: %v", name, err)
 		}
 		cancel()
-		var refused *engineapi.Error
+		var refused *dockerError
 		if !errors.As(err, &refused) {
 			// The daemon never answered, so the create may still be running, and it cannot be found until it ends.
 			b.removeLate(name)
@@ -114,7 +113,7 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 		return nil, fmt.Errorf("Creating the sandbox: %w", err)
 	}
 	attachCtx, cancel := context.WithTimeout(ctx, attachTimeout)
-	attach, err := b.engine.ContainerAttach(attachCtx, id, p.stdin)
+	attach, err := b.engine.containerAttach(attachCtx, id, p.stdin)
 	cancel()
 	if err != nil {
 		s.discard()
@@ -145,7 +144,7 @@ const sigkillStatus = 128 + 9
 // ending is how a sandbox's run ended.
 type ending struct {
 	// result is the exit the daemon reported, if it did.
-	result *engineapi.WaitResult
+	result *waitResult
 	// killed is set when a SIGKILL the daemon delivered, or the removal by force, stopped the sandbox.
 	killed bool
 	reason string
@@ -174,16 +173,16 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 				return
 			case msg := <-input:
 				if msg.eof {
-					_ = s.attach.CloseStdin()
-				} else if _, err := s.attach.Conn.Write(msg.stdin); err != nil {
-					_ = s.attach.CloseStdin()
+					_ = s.attach.closeStdin()
+				} else if _, err := s.attach.conn.Write(msg.stdin); err != nil {
+					_ = s.attach.closeStdin()
 				}
 			}
 		}
 	}()
 	attached := make(chan error, 1)
 	go func() {
-		attached <- engineapi.Demux(s.attach.Reader, out.stdout, out.stderr)
+		attached <- demux(s.attach.reader, out.stdout, out.stderr)
 	}()
 	end := s.run(ctx, timeout, controls, input)
 	if end.deadline.IsZero() {
@@ -247,7 +246,7 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 // whose answer never came counts as delivered when the sandbox then ends with a SIGKILL's status.
 func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-chan control, input chan<- control) (end ending) {
 	b := s.b
-	if err := b.engine.ContainerStart(ctx, s.id); err != nil {
+	if err := b.engine.containerStart(ctx, s.id); err != nil {
 		end.err = fmt.Errorf("Starting the sandbox: %w", err)
 		return end
 	}
@@ -255,7 +254,7 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 	waitCtx, cancelWait := context.WithCancel(context.Background())
 	defer cancelWait()
 	// Waiting for not-running after start also observes an exit that happened before the wait request arrived.
-	results, errs := b.engine.ContainerWait(waitCtx, s.id)
+	results, errs := b.engine.containerWait(waitCtx, s.id)
 	limit := time.NewTimer(timeout)
 	defer limit.Stop()
 	retry := time.NewTimer(time.Hour)
@@ -270,14 +269,14 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			end.deadline, stopped, asked = time.Now().Add(teardownBudget), time.After(stopWait), reason
 		}
 		killCtx, cancel := context.WithTimeout(context.Background(), killWait)
-		err := b.engine.ContainerKill(killCtx, s.id, "SIGKILL")
+		err := b.engine.containerKill(killCtx, s.id, "SIGKILL")
 		cancel()
 		switch {
 		case err == nil:
 			if !end.killed {
 				end.killed, end.reason = true, reason
 			}
-		case engineapi.IsConflict(err) || engineapi.IsNotFound(err):
+		case conflict(err) || notFound(err):
 			// It is no longer running: it ended on its own, or by an unanswered kill, and the wait reports how.
 		default:
 			unanswered = true
@@ -315,7 +314,7 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			end.err = fmt.Errorf("Waiting for the sandbox: %w", err)
 			return end
 		case <-limit.C:
-			kill("Sandbox time limit reached")
+			kill(wire.TimeLimitReason)
 		case <-retry.C:
 			kill(asked)
 		case <-stopped:
@@ -342,7 +341,7 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 				pendingBytes += len(msg.stdin)
 			case msg.signal == wire.SignalTerminate:
 				termCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_ = b.engine.ContainerKill(termCtx, s.id, "SIGTERM")
+				_ = b.engine.containerKill(termCtx, s.id, "SIGTERM")
 				cancel()
 			case msg.signal == wire.SignalKill:
 				kill("")
@@ -372,11 +371,11 @@ func (s *prepared) drain(end ending, attached <-chan error, out output, within f
 	}
 	if end.result != nil {
 		if done, err := join(within(drainWait)); done {
-			s.attach.Close()
+			s.attach.close()
 			return false, err
 		}
 	}
-	s.attach.Close()
+	s.attach.close()
 	if done, _ := join(within(joinWait)); !done {
 		if out.interrupt != nil {
 			out.interrupt()
@@ -390,7 +389,7 @@ func (s *prepared) drain(end ending, attached <-chan error, out output, within f
 func (s *prepared) oomKilled(wait time.Duration) (killed, known bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
-	state, err := s.b.engine.ContainerInspect(ctx, s.id)
+	state, err := s.b.engine.containerInspect(ctx, s.id)
 	if err != nil {
 		s.b.logf("Reading the state of sandbox %s failed; its record is marked incomplete: %v", s.name, err)
 		return false, false

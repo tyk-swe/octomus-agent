@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 )
 
 // Teardown bounds. Once a sandbox ends, or a kill is asked for, the broker drains its output, reads its state and
@@ -36,7 +34,7 @@ const (
 // egress lease is cleared even then: no sandbox an earlier broker started keeps its way out.
 func (b *Broker) sweep(ctx context.Context) error {
 	var errs []error
-	containers, err := b.engine.ContainerList(ctx, map[string]string{instanceLabel: b.cfg.Instance})
+	containers, err := b.engine.containerList(ctx, map[string]string{instanceLabel: b.cfg.Instance})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("Listing leftover sandboxes: %w", err))
 	}
@@ -44,7 +42,7 @@ func (b *Broker) sweep(ctx context.Context) error {
 		if container.Labels[instanceLabel] != b.cfg.Instance {
 			continue
 		}
-		if err := b.engine.ContainerRemove(ctx, container.ID); err != nil {
+		if err := b.engine.containerRemove(ctx, container.ID); err != nil {
 			errs = append(errs, fmt.Errorf("Removing leftover sandbox %s: %w", container.ID, err))
 		}
 	}
@@ -62,7 +60,7 @@ func (b *Broker) sweep(ctx context.Context) error {
 func (s *prepared) remove(ctx context.Context) error {
 	s.once.Do(func() {
 		if s.attach != nil {
-			s.attach.Close()
+			s.attach.close()
 		}
 		// Egress is cut at once; that needs no confirmation.
 		if s.lease != "" {
@@ -95,7 +93,7 @@ func (s *prepared) forget() {
 // removeContainer force-removes a container, retrying until the daemon confirms it is gone or ctx ends.
 func (b *Broker) removeContainer(ctx context.Context, id string) error {
 	for delay := 250 * time.Millisecond; ; delay = min(2*delay, 2*time.Second) {
-		err := b.engine.ContainerRemove(ctx, id)
+		err := b.engine.containerRemove(ctx, id)
 		if err == nil {
 			return nil
 		}
@@ -121,7 +119,7 @@ func (b *Broker) removeLate(name string) {
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			container, err := b.engine.ContainerInspect(ctx, name)
+			container, err := b.engine.containerInspect(ctx, name)
 			if err == nil {
 				err = b.removeContainer(ctx, container.ID)
 				if err == nil {
@@ -132,7 +130,7 @@ func (b *Broker) removeLate(name string) {
 			switch {
 			case err == nil:
 				return
-			case !engineapi.IsNotFound(err):
+			case !notFound(err):
 				b.logf("Removing sandbox %s, whose create the broker gave up on, failed; retrying: %v", name, err)
 			}
 			if time.Now().After(deadline) {
@@ -154,7 +152,7 @@ func (b *Broker) reap(s *prepared) {
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			err := b.engine.ContainerRemove(ctx, s.id)
+			err := b.engine.containerRemove(ctx, s.id)
 			cancel()
 			if err == nil {
 				b.logf("Removed sandbox %s after earlier failures", s.name)

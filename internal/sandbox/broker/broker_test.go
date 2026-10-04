@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
@@ -111,7 +110,7 @@ func TestKillReport(t *testing.T) {
 	t.Run("time limit before a kill", func(t *testing.T) {
 		e := newFakeEngine(t)
 		e.run = func(*fakeContainer) {}
-		if report := run(t, e, 100*time.Millisecond); !report.Killed || report.Error != "Sandbox time limit reached" {
+		if report := run(t, e, 100*time.Millisecond); !report.Killed || report.Error != wire.TimeLimitReason {
 			t.Fatalf("kill after the time limit stopped it = %+v; want the time limit named", report)
 		}
 	})
@@ -132,7 +131,7 @@ func TestWaitErrorFailsSandbox(t *testing.T) {
 func TestServeShutdown(t *testing.T) {
 	creating, cancelled := make(chan struct{}), make(chan struct{})
 	var removed atomic.Bool
-	prefix := "/v" + engineapi.APIVersion + "/containers/"
+	prefix := "/v" + engineAPIVersion + "/containers/"
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+prefix+"create", func(_ http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -147,7 +146,7 @@ func TestServeShutdown(t *testing.T) {
 		removed.Store(true)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("GET /v"+engineapi.APIVersion+"/images/{ref}/json", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /v"+engineAPIVersion+"/images/{ref}/json", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"Id":"sha256:test"}`)
 	})
 	b := brokerOn(t, testutil.UnixHTTPServer(t, mux), 1)
@@ -163,7 +162,7 @@ func TestServeShutdown(t *testing.T) {
 	requestDone := make(chan struct{})
 	go func() {
 		defer close(requestDone)
-		req, _ := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+"/v1/sandboxes",
+		req, _ := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+wire.SandboxesPath,
 			bytes.NewBufferString(`{"kind":"probe","mode":"versions"}`))
 		req.Header.Set("Upgrade", wire.UpgradeProtocol)
 		resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)

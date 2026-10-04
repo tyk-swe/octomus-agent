@@ -20,21 +20,13 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 const OpenCodeVersion = "1.18.30"
-
-func OpenCodeVersionWarning(version string) *string {
-	if version == OpenCodeVersion {
-		return nil
-	}
-	warning := VersionWarning(config.BackendOpencode, version,
-		fmt.Sprintf("protocol baseline %s. Pin the documented CLI", OpenCodeVersion))
-	return &warning
-}
 
 type OpenCode struct {
 	child     sandbox.Child
@@ -75,7 +67,7 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 	}
 	tail := &stderrTail{}
 	started, err := box.StartOpenCode(ctx, sandbox.Spec{
-		Kind: sandbox.KindRunner, Runner: config.BackendOpencode, Binary: cfg.OpencodeBinary, Dir: cwd, Stderr: tail,
+		Kind: wire.KindRunner, Runner: config.BackendOpencode, Binary: cfg.OpencodeBinary, Dir: cwd, Stderr: tail,
 		Env: []string{
 			"OPENCODE_SERVER_USERNAME=octomus",
 			"OPENCODE_SERVER_PASSWORD=" + password,
@@ -87,9 +79,9 @@ func ConnectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		},
 	}, min(cfg.CommandTimeoutSeconds, 60))
 	if err != nil {
-		var notStarted *sandbox.StartError
-		if errors.As(err, &notStarted) {
-			return nil, fmt.Errorf("Could not start OpenCode; %s: %w", setupHint(box, "install and configure OpenCode as the service user"), notStarted.Err)
+		var failed *sandbox.Error
+		if errors.As(err, &failed) && !failed.Started {
+			return nil, fmt.Errorf("Could not start OpenCode; %s: %w", setupHint(box, "install and configure OpenCode as the service user"), failed.Err)
 		}
 		return nil, tail.explain(err)
 	}
@@ -154,7 +146,7 @@ func (o *OpenCode) Diagnose(cwd string) (Diagnostics, error) {
 		Backend:         config.BackendOpencode,
 		ProtocolVersion: OpenCodeVersion,
 		Version:         o.version,
-		Warning:         OpenCodeVersionWarning(o.version),
+		Warning:         versionWarning(config.BackendOpencode, o.version, OpenCodeVersion),
 	}, nil
 }
 

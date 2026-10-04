@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/sandbox/engineapi"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
@@ -65,7 +64,7 @@ type fakeContainer struct {
 	e      *fakeEngine
 	ID     string
 	Name   string
-	Spec   engineapi.ContainerConfig
+	Spec   ContainerConfig
 	Ready  chan struct{} // closed once the container is attached and started
 	exited chan struct{}
 
@@ -113,7 +112,7 @@ func (e *fakeEngine) leftover(name, instance string) *fakeContainer {
 	e.nextID++
 	c := &fakeContainer{e: e, ID: fmt.Sprintf("c%d", e.nextID), Name: name, Ready: make(chan struct{}),
 		exited: make(chan struct{}), attached: make(chan struct{}), started: true, running: true,
-		Spec: engineapi.ContainerConfig{Labels: map[string]string{instanceLabel: instance}}}
+		Spec: ContainerConfig{Labels: map[string]string{instanceLabel: instance}}}
 	close(c.Ready)
 	e.containers[c.ID] = c
 	return c
@@ -245,7 +244,7 @@ func (c *fakeContainer) closeOutput() {
 }
 
 func (e *fakeEngine) mux() http.Handler {
-	prefix := "/v" + engineapi.APIVersion
+	prefix := "/v" + engineAPIVersion
 	mux := http.NewServeMux()
 	reply := func(w http.ResponseWriter, status int, value any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -309,7 +308,7 @@ func (e *fakeEngine) mux() http.Handler {
 		reply(w, http.StatusOK, list)
 	})
 	mux.HandleFunc("POST "+prefix+"/containers/create", func(w http.ResponseWriter, r *http.Request) {
-		var spec engineapi.ContainerConfig
+		var spec ContainerConfig
 		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
 			refuse(w, http.StatusBadRequest, err.Error())
 			return

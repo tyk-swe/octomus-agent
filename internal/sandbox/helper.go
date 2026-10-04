@@ -20,11 +20,12 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
-// RunInit is the helper the broker installs into every sandbox (octomus-agent --sandbox-init). It runs inside the
-// container, as the sandbox user, and only relays: it holds no credential and trusts nothing it reads.
+// RunInit is the helper the broker installs into every sandbox (octomus-agent --sandbox-init, wire.InitFlag). It runs
+// inside the container, as the sandbox user, and only relays: it holds no credential and trusts nothing it reads.
+// args are the arguments after the flag.
 func RunInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "Error: --sandbox-init needs a mode")
+		fmt.Fprintln(stderr, "Error: "+wire.InitFlag+" needs a mode")
 		return 2
 	}
 	switch args[0] {
@@ -35,7 +36,7 @@ func RunInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case wire.ProbeContainment:
 		return runContainmentProbe(stdout)
 	}
-	fmt.Fprintf(stderr, "Error: unknown --sandbox-init mode %q\n", args[0])
+	fmt.Fprintf(stderr, "Error: unknown %s mode %q\n", wire.InitFlag, args[0])
 	return 2
 }
 
@@ -43,7 +44,7 @@ func RunInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // API as HTTP/2 over this process's stdin and stdout. Closing stdin ends the bridge and the server.
 func runOpenCodeBridge(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) < 3 || args[1] != "--" {
-		fmt.Fprintln(stderr, "Error: usage: --sandbox-init opencode SECONDS -- PROGRAM [ARGS...]")
+		fmt.Fprintln(stderr, "Error: usage: "+wire.InitFlag+" "+wire.RunnerModeOpenCode+" SECONDS -- PROGRAM [ARGS...]")
 		return 2
 	}
 	seconds, err := strconv.ParseUint(args[0], 10, 64)

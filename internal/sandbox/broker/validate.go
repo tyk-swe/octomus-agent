@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 const uuidPattern = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
@@ -119,7 +120,7 @@ func (c Config) plan(req wire.Request) (plan, error) {
 }
 
 func (c Config) resolveRoot(p *plan, dir string) error {
-	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir || filepath.Base(dir) != "workspace" {
+	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir || filepath.Base(dir) != wire.WorkspaceDir {
 		return errors.New("Sandbox directory must be an owned root's workspace")
 	}
 	root := filepath.Dir(dir)
@@ -129,9 +130,9 @@ func (c Config) resolveRoot(p *plan, dir string) error {
 	}
 	p.dir, p.root, p.rel = dir, root, rel
 	p.scratch = strings.HasPrefix(rel, "system/")
-	required := []string{filepath.Join(rel, "workspace")}
+	required := []string{filepath.Join(rel, wire.WorkspaceDir)}
 	if !p.scratch {
-		required = append(required, filepath.Join(rel, "repo.git"))
+		required = append(required, filepath.Join(rel, workspace.GitDirName))
 	}
 	for _, dir := range wire.HomeDirs(p.kind) {
 		required = append(required, filepath.Join(rel, dir))
@@ -144,7 +145,7 @@ func (c Config) resolveRoot(p *plan, dir string) error {
 	if !p.scratch {
 		// The .git pointer mounts read-only into the sandbox, so it must already be the plain file a trusted clone
 		// writes; a missing or replaced pointer would otherwise be created or swapped inside the sandbox.
-		if err := c.ownedFile(filepath.Join(rel, "workspace", ".git")); err != nil {
+		if err := c.ownedFile(filepath.Join(rel, wire.WorkspaceDir, ".git")); err != nil {
 			return err
 		}
 	}

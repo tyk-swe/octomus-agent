@@ -1,6 +1,4 @@
-// Package engineapi is the small part of the Docker Engine API the sandbox broker uses, spoken over the daemon's unix
-// socket without an SDK.
-package engineapi
+package broker
 
 import (
 	"bufio"
@@ -18,16 +16,19 @@ import (
 	"time"
 )
 
-// APIVersion is the oldest Engine API with volume subpath mounts, which sandboxes rely on.
-const APIVersion = "1.45"
+// This file is the small part of the Docker Engine API the broker uses, spoken over the daemon's unix socket without
+// an SDK. The request documents are serialised as they are: the golden container specs hold their JSON.
 
-type Client struct {
+// engineAPIVersion is the oldest Engine API with volume subpath mounts, which sandboxes rely on.
+const engineAPIVersion = "1.45"
+
+type dockerClient struct {
 	socket string
 	http   *http.Client
 }
 
-func New(socket string) *Client {
-	c := &Client{socket: socket}
+func newDockerClient(socket string) *dockerClient {
+	c := &dockerClient{socket: socket}
 	c.http = &http.Client{Transport: &http.Transport{
 		Proxy:               nil,
 		DialContext:         func(ctx context.Context, _, _ string) (net.Conn, error) { return c.dial(ctx) },
@@ -37,40 +38,40 @@ func New(socket string) *Client {
 	return c
 }
 
-func (c *Client) dial(ctx context.Context) (net.Conn, error) {
+func (c *dockerClient) dial(ctx context.Context) (net.Conn, error) {
 	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", c.socket)
 }
 
-// Error is a daemon refusal with its HTTP status.
-type Error struct {
+// dockerError is a daemon refusal with its HTTP status.
+type dockerError struct {
 	Status  int
 	Message string
 }
 
-func (e *Error) Error() string {
+func (e *dockerError) Error() string {
 	return fmt.Sprintf("Docker Engine: %s (HTTP %d)", e.Message, e.Status)
 }
 
-func IsNotFound(err error) bool {
-	var engine *Error
+func notFound(err error) bool {
+	var engine *dockerError
 	return errors.As(err, &engine) && engine.Status == http.StatusNotFound
 }
 
-// IsConflict reports a request the container's state refuses, such as killing one that is no longer running.
-func IsConflict(err error) bool {
-	var engine *Error
+// conflict reports a request the container's state refuses, such as killing one that is no longer running.
+func conflict(err error) bool {
+	var engine *dockerError
 	return errors.As(err, &engine) && engine.Status == http.StatusConflict
 }
 
-func path(format string, args ...any) string {
+func apiPath(format string, args ...any) string {
 	escaped := make([]any, len(args))
 	for i, arg := range args {
 		escaped[i] = url.PathEscape(fmt.Sprint(arg))
 	}
-	return "/v" + APIVersion + fmt.Sprintf(format, escaped...)
+	return "/v" + engineAPIVersion + fmt.Sprintf(format, escaped...)
 }
 
-func (c *Client) do(ctx context.Context, method, target string, body any, out any) error {
+func (c *dockerClient) do(ctx context.Context, method, target string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -110,47 +111,47 @@ func readError(resp *http.Response) error {
 	if json.Unmarshal(data, &doc) == nil && doc.Message != "" {
 		message = doc.Message
 	}
-	return &Error{Status: resp.StatusCode, Message: message}
+	return &dockerError{Status: resp.StatusCode, Message: message}
 }
 
-type Version struct {
+type engineVersion struct {
 	Version    string `json:"Version"`
 	APIVersion string `json:"ApiVersion"`
 }
 
-func (c *Client) Version(ctx context.Context) (Version, error) {
-	var v Version
+func (c *dockerClient) version(ctx context.Context) (engineVersion, error) {
+	var v engineVersion
 	err := c.do(ctx, http.MethodGet, "/version", nil, &v)
 	return v, err
 }
 
-type Image struct {
+type engineImage struct {
 	ID          string   `json:"Id"`
 	RepoDigests []string `json:"RepoDigests"`
 }
 
-func (c *Client) ImageInspect(ctx context.Context, ref string) (Image, error) {
-	var image Image
-	err := c.do(ctx, http.MethodGet, path("/images/%s/json", ref), nil, &image)
+func (c *dockerClient) imageInspect(ctx context.Context, ref string) (engineImage, error) {
+	var image engineImage
+	err := c.do(ctx, http.MethodGet, apiPath("/images/%s/json", ref), nil, &image)
 	return image, err
 }
 
-type Network struct {
+type engineNetwork struct {
 	Internal   bool              `json:"Internal"`
 	EnableIPv6 bool              `json:"EnableIPv6"`
 	Options    map[string]string `json:"Options"`
 }
 
-func (c *Client) NetworkInspect(ctx context.Context, name string) (Network, error) {
-	var network Network
-	err := c.do(ctx, http.MethodGet, path("/networks/%s", name), nil, &network)
+func (c *dockerClient) networkInspect(ctx context.Context, name string) (engineNetwork, error) {
+	var network engineNetwork
+	err := c.do(ctx, http.MethodGet, apiPath("/networks/%s", name), nil, &network)
 	return network, err
 }
 
-// VolumeInspect reports whether the daemon has the named volume.
-func (c *Client) VolumeInspect(ctx context.Context, name string) error {
+// volumeInspect reports whether the daemon has the named volume.
+func (c *dockerClient) volumeInspect(ctx context.Context, name string) error {
 	var volume struct{}
-	return c.do(ctx, http.MethodGet, path("/volumes/%s", name), nil, &volume)
+	return c.do(ctx, http.MethodGet, apiPath("/volumes/%s", name), nil, &volume)
 }
 
 // ContainerConfig is the container create body. Only fields the broker sets are modelled; everything else keeps the
@@ -170,10 +171,10 @@ type ContainerConfig struct {
 	StdinOnce    bool              `json:"StdinOnce"`
 	Tty          bool              `json:"Tty"`
 	StopSignal   string            `json:"StopSignal"`
-	HostConfig   HostConfig        `json:"HostConfig"`
+	HostConfig   hostConfig        `json:"HostConfig"`
 }
 
-type HostConfig struct {
+type hostConfig struct {
 	Init           bool              `json:"Init"`
 	Privileged     bool              `json:"Privileged"`
 	ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
@@ -198,8 +199,8 @@ type HostConfig struct {
 	Devices        []any             `json:"Devices"`
 	Runtime        string            `json:"Runtime,omitempty"`
 	AutoRemove     bool              `json:"AutoRemove"`
-	LogConfig      LogConfig         `json:"LogConfig"`
-	RestartPolicy  RestartPolicy     `json:"RestartPolicy"`
+	LogConfig      logConfig         `json:"LogConfig"`
+	RestartPolicy  restartPolicy     `json:"RestartPolicy"`
 }
 
 type Mount struct {
@@ -215,47 +216,47 @@ type VolumeOptions struct {
 	Subpath string `json:"Subpath,omitempty"`
 }
 
-type LogConfig struct {
+type logConfig struct {
 	Type string `json:"Type"`
 }
 
-type RestartPolicy struct {
+type restartPolicy struct {
 	Name string `json:"Name"`
 }
 
-// ContainerCreate creates a container and returns its ID with the daemon's warnings. The daemon drops a setting the
+// containerCreate creates a container and returns its ID with the daemon's warnings. The daemon drops a setting the
 // host cannot enforce, such as a swap or process limit, and says so only in a warning.
-func (c *Client) ContainerCreate(ctx context.Context, name string, config ContainerConfig) (string, []string, error) {
+func (c *dockerClient) containerCreate(ctx context.Context, name string, config ContainerConfig) (string, []string, error) {
 	var created struct {
 		ID       string   `json:"Id"`
 		Warnings []string `json:"Warnings"`
 	}
-	target := path("/containers/create") + "?name=" + url.QueryEscape(name)
+	target := apiPath("/containers/create") + "?name=" + url.QueryEscape(name)
 	if err := c.do(ctx, http.MethodPost, target, config, &created); err != nil {
 		return "", nil, err
 	}
 	return created.ID, created.Warnings, nil
 }
 
-func (c *Client) ContainerStart(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodPost, path("/containers/%s/start", id), nil, nil)
+func (c *dockerClient) containerStart(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, apiPath("/containers/%s/start", id), nil, nil)
 }
 
-func (c *Client) ContainerKill(ctx context.Context, id, signal string) error {
-	return c.do(ctx, http.MethodPost, path("/containers/%s/kill", id)+"?signal="+url.QueryEscape(signal), nil, nil)
+func (c *dockerClient) containerKill(ctx context.Context, id, signal string) error {
+	return c.do(ctx, http.MethodPost, apiPath("/containers/%s/kill", id)+"?signal="+url.QueryEscape(signal), nil, nil)
 }
 
-// ContainerRemove force-removes a container, by ID or name, with its anonymous volumes, and returns once it is gone.
+// containerRemove force-removes a container, by ID or name, with its anonymous volumes, and returns once it is gone.
 // Named volumes are never removed. A removal already in progress elsewhere is not a failure: the daemon refuses a
 // second one meanwhile, so the removal is asked for again until the container is gone, or until it fails on its own
 // account. The other removal can fail and leave the container, so waiting for it alone could wait forever.
-func (c *Client) ContainerRemove(ctx context.Context, id string) error {
+func (c *dockerClient) containerRemove(ctx context.Context, id string) error {
 	for delay := 50 * time.Millisecond; ; delay = min(2*delay, time.Second) {
-		err := c.do(ctx, http.MethodDelete, path("/containers/%s", id)+"?force=1&v=1", nil, nil)
-		if err == nil || IsNotFound(err) {
+		err := c.do(ctx, http.MethodDelete, apiPath("/containers/%s", id)+"?force=1&v=1", nil, nil)
+		if err == nil || notFound(err) {
 			return nil
 		}
-		var engine *Error
+		var engine *dockerError
 		if !errors.As(err, &engine) || engine.Status != http.StatusConflict || !strings.Contains(engine.Message, "already in progress") {
 			return err
 		}
@@ -267,28 +268,28 @@ func (c *Client) ContainerRemove(ctx context.Context, id string) error {
 	}
 }
 
-type ContainerState struct {
+type containerState struct {
 	OOMKilled bool `json:"OOMKilled"`
 }
 
-type ContainerJSON struct {
+type containerDetails struct {
 	ID    string         `json:"Id"`
-	State ContainerState `json:"State"`
+	State containerState `json:"State"`
 }
 
-func (c *Client) ContainerInspect(ctx context.Context, id string) (ContainerJSON, error) {
-	var container ContainerJSON
-	err := c.do(ctx, http.MethodGet, path("/containers/%s/json", id), nil, &container)
+func (c *dockerClient) containerInspect(ctx context.Context, id string) (containerDetails, error) {
+	var container containerDetails
+	err := c.do(ctx, http.MethodGet, apiPath("/containers/%s/json", id), nil, &container)
 	return container, err
 }
 
-type ContainerSummary struct {
+type containerSummary struct {
 	ID     string            `json:"Id"`
 	Labels map[string]string `json:"Labels"`
 }
 
-// ContainerList lists every container, running or not, that carries all the given labels.
-func (c *Client) ContainerList(ctx context.Context, labels map[string]string) ([]ContainerSummary, error) {
+// containerList lists every container, running or not, that carries all the given labels.
+func (c *dockerClient) containerList(ctx context.Context, labels map[string]string) ([]containerSummary, error) {
 	filter := []string{}
 	for key, value := range labels {
 		filter = append(filter, key+"="+value)
@@ -297,24 +298,24 @@ func (c *Client) ContainerList(ctx context.Context, labels map[string]string) ([
 	if err != nil {
 		return nil, err
 	}
-	var containers []ContainerSummary
-	err = c.do(ctx, http.MethodGet, path("/containers/json")+"?all=1&filters="+url.QueryEscape(string(encoded)), nil, &containers)
+	var containers []containerSummary
+	err = c.do(ctx, http.MethodGet, apiPath("/containers/json")+"?all=1&filters="+url.QueryEscape(string(encoded)), nil, &containers)
 	return containers, err
 }
 
-type WaitResult struct {
+type waitResult struct {
 	StatusCode int `json:"StatusCode"`
 	Error      *struct {
 		Message string `json:"Message"`
 	} `json:"Error"`
 }
 
-// ContainerWait asynchronously reports when a started container is no longer running, including one that has
+// containerWait asynchronously reports when a started container is no longer running, including one that has
 // already exited. Call it only after a successful start so the created state is not mistaken for an exit.
-func (c *Client) ContainerWait(ctx context.Context, id string) (<-chan WaitResult, <-chan error) {
-	results := make(chan WaitResult, 1)
+func (c *dockerClient) containerWait(ctx context.Context, id string) (<-chan waitResult, <-chan error) {
+	results := make(chan waitResult, 1)
 	errs := make(chan error, 1)
-	target := path("/containers/%s/wait", id) + "?condition=not-running"
+	target := apiPath("/containers/%s/wait", id) + "?condition=not-running"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://docker"+target, nil)
 	if err != nil {
 		errs <- err
@@ -334,7 +335,7 @@ func (c *Client) ContainerWait(ctx context.Context, id string) (<-chan WaitResul
 			errs <- readError(resp)
 			return
 		}
-		var result WaitResult
+		var result waitResult
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 			errs <- err
 			return
@@ -344,20 +345,21 @@ func (c *Client) ContainerWait(ctx context.Context, id string) (<-chan WaitResul
 	return results, errs
 }
 
-// Attached is a hijacked attach stream: Reader yields the daemon's multiplexed stdout and stderr, Conn takes stdin.
-type Attached struct {
-	Conn   *net.UnixConn
-	Reader *bufio.Reader
+// attachStream is a hijacked attach stream: reader yields the daemon's multiplexed stdout and stderr, conn takes
+// stdin.
+type attachStream struct {
+	conn   *net.UnixConn
+	reader *bufio.Reader
 }
 
-// CloseStdin half-closes the stream so a container created with StdinOnce sees end of input.
-func (a *Attached) CloseStdin() error { return a.Conn.CloseWrite() }
+// closeStdin half-closes the stream so a container created with StdinOnce sees end of input.
+func (a *attachStream) closeStdin() error { return a.conn.CloseWrite() }
 
-func (a *Attached) Close() error { return a.Conn.Close() }
+func (a *attachStream) close() error { return a.conn.Close() }
 
-// ContainerAttach hijacks an attach stream before the container starts, so no early output is lost. ctx bounds the
+// containerAttach hijacks an attach stream before the container starts, so no early output is lost. ctx bounds the
 // handshake; the stream itself outlives it.
-func (c *Client) ContainerAttach(ctx context.Context, id string, stdin bool) (*Attached, error) {
+func (c *dockerClient) containerAttach(ctx context.Context, id string, stdin bool) (*attachStream, error) {
 	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
@@ -367,7 +369,7 @@ func (c *Client) ContainerAttach(ctx context.Context, id string, stdin bool) (*A
 	if stdin {
 		query += "&stdin=1"
 	}
-	req, err := http.NewRequest(http.MethodPost, "http://docker"+path("/containers/%s/attach", id)+query, nil)
+	req, err := http.NewRequest(http.MethodPost, "http://docker"+apiPath("/containers/%s/attach", id)+query, nil)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -379,7 +381,7 @@ func (c *Client) ContainerAttach(ctx context.Context, id string, stdin bool) (*A
 	}
 	// The handshake runs on the raw connection, so cancellation reaches it as an expired deadline.
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
-	fail := func(err error) (*Attached, error) {
+	fail := func(err error) (*attachStream, error) {
 		stop()
 		conn.Close()
 		if ctx.Err() != nil {
@@ -402,11 +404,11 @@ func (c *Client) ContainerAttach(ctx context.Context, id string, stdin bool) (*A
 		return fail(ctx.Err())
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &Attached{Conn: unixConn, Reader: reader}, nil
+	return &attachStream{conn: unixConn, reader: reader}, nil
 }
 
-// Demux splits the daemon's multiplexed attach stream (for containers without a TTY) into stdout and stderr.
-func Demux(r io.Reader, stdout, stderr func([]byte) error) error {
+// demux splits the daemon's multiplexed attach stream (for containers without a TTY) into stdout and stderr.
+func demux(r io.Reader, stdout, stderr func([]byte) error) error {
 	var header [8]byte
 	buf := make([]byte, 32<<10)
 	for {

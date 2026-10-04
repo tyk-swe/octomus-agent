@@ -25,21 +25,21 @@ func (Host) Start(ctx context.Context, spec Spec) (Child, error) {
 	}
 	binary, args := spec.Binary, wire.RunnerArgs(runnerName(spec.Runner))
 	switch spec.Kind {
-	case KindRunner:
+	case wire.KindRunner:
 		if args == nil {
 			return nil, errors.New("Invalid backend")
 		}
-	case KindVerify:
+	case wire.KindVerify:
 		binary, args = wire.VerifyProgram(spec.Command)
 	default:
 		return nil, fmt.Errorf("The host backend cannot run %s sandboxes", spec.Kind)
 	}
 	started, err := process.StartHost(binary, args, spec.Dir, spec.Env, spec.Stdin)
 	if err != nil {
-		if spec.Kind == KindVerify {
+		if spec.Kind == wire.KindVerify {
 			return nil, fmt.Errorf("Could not start %s: %w", binary, err)
 		}
-		return nil, &StartError{err}
+		return nil, &Error{Err: err}
 	}
 	child := &hostChild{HostChild: started, copied: make(chan struct{})}
 	if spec.Stderr == nil {
