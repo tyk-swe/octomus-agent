@@ -172,7 +172,10 @@ func (a *App) connect(entity string) runner.Connector {
 	if a.connector != nil {
 		return a.connector
 	}
-	return runner.DefaultConnector(a.Store, entity, a.sandbox)
+	progress := func(message string) error { return a.Store.Event(entity, "session_progress", message) }
+	return func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (runner.Adapter, error) {
+		return runner.Connect(ctx, backend, cfg, cwd, entity, progress, a.sandbox)
+	}
 }
 
 func (a *App) fail(err error) {

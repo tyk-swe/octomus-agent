@@ -178,6 +178,11 @@ func SamePath(a, b string) bool { return pathIdentity(a) == pathIdentity(b) }
 func (c Config) SameRemoteIdentity(other Config) bool {
 	return SamePath(c.Repository, other.Repository) && EqualASCII(c.GitHubRepo, other.GitHubRepo) && c.DefaultBranch == other.DefaultBranch
 }
+
+// SamePRPolicy reports whether an open-PR observation made under a still describes b: the same remote and branch prefix.
+func SamePRPolicy(a, b Config) bool {
+	return a.SameRemoteIdentity(b) && a.BranchPrefix == b.BranchPrefix
+}
 func (c Config) Validate(ready bool) error { return c.validateMode(ready, false) }
 func (c Config) ValidateAudit() error      { return c.validateMode(true, true) }
 func between(v, low, high uint64) bool     { return v >= low && v <= high }

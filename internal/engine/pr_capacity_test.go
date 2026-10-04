@@ -51,7 +51,7 @@ func TestPRCapacityFreshness(t *testing.T) {
 	}
 
 	a.runtimeMu.Lock()
-	a.runtime.prObservation = &freshPRs{identity: store.PRIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now()}
+	a.runtime.prObservation = &freshPRs{policy: cfg, inventory: inventory.Clone(), fetchedAt: time.Now()}
 	a.runtimeMu.Unlock()
 	capacity, err = a.prCapacity(cfg)
 	if err != nil || capacity.Status != "ready" || capacity.OwnedOpen == nil || *capacity.OwnedOpen != 3 || capacity.Remaining == nil || *capacity.Remaining != 2 {
@@ -71,7 +71,7 @@ func TestPRCapacityFreshness(t *testing.T) {
 
 	a.runtimeMu.Lock()
 	a.runtime.prRefreshError = ""
-	a.runtime.prObservation = &freshPRs{identity: store.PRIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(observeInterval + time.Minute))}
+	a.runtime.prObservation = &freshPRs{policy: cfg, inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(observeInterval + time.Minute))}
 	a.runtimeMu.Unlock()
 	capacity, err = a.prCapacity(cfg)
 	if err != nil || capacity.Status != "ready" || capacity.Remaining == nil {
@@ -79,17 +79,17 @@ func TestPRCapacityFreshness(t *testing.T) {
 	}
 
 	a.runtimeMu.Lock()
-	a.runtime.prObservation = &freshPRs{identity: store.PRIdentityOf(cfg), inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(observationLifetime + time.Second))}
+	a.runtime.prObservation = &freshPRs{policy: cfg, inventory: inventory.Clone(), fetchedAt: time.Now().Add(-(observationLifetime + time.Second))}
 	a.runtimeMu.Unlock()
 	capacity, err = a.prCapacity(cfg)
 	if err != nil || capacity.Status != "unavailable" || capacity.Remaining != nil {
 		t.Fatalf("stale observation authorized capacity: %+v, %v", capacity, err)
 	}
 
-	otherIdentity := store.PRIdentityOf(cfg)
-	otherIdentity.BranchPrefix = "other/"
+	other := cfg
+	other.BranchPrefix = "other/"
 	a.runtimeMu.Lock()
-	a.runtime.prObservation = &freshPRs{identity: otherIdentity, inventory: inventory.Clone(), fetchedAt: time.Now()}
+	a.runtime.prObservation = &freshPRs{policy: other, inventory: inventory.Clone(), fetchedAt: time.Now()}
 	a.runtimeMu.Unlock()
 	capacity, err = a.prCapacity(cfg)
 	if err != nil || capacity.Status != "unavailable" || capacity.Reason == nil || !strings.Contains(*capacity.Reason, "Configuration changed") {

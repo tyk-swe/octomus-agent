@@ -76,10 +76,10 @@ func TestIndexedViews(t *testing.T) {
 	if got := ids(scheduling); len(got) != 3 || !slices.Contains(got, "active") || !slices.Contains(got, "queued") || !slices.Contains(got, "reserved") {
 		t.Fatalf("scheduling: %v", got)
 	}
-	withStatus, err := s.TasksWithStatus([]string{"reviewing", "blocked"})
+	activeTasks, err := s.ActiveTasks()
 	must(t, err)
-	if got := ids(withStatus); len(got) != 2 {
-		t.Fatalf("tasks with status: %v", got)
+	if got := ids(activeTasks); len(got) != 1 || got[0] != "active" {
+		t.Fatalf("active tasks: %v", got)
 	}
 	forCycle, err := s.TasksForCycle("cycle")
 	must(t, err)
@@ -92,10 +92,13 @@ func TestIndexedViews(t *testing.T) {
 		t.Fatal("blocked work should count as unresolved")
 	}
 
-	running, err := s.RunningCycles()
+	running, err := s.RunningCycles("")
 	must(t, err)
 	if len(running) != 1 || running[0].ID != "cycle-running" {
 		t.Fatalf("running cycles: %+v", running)
+	}
+	if others, err := s.RunningCycles("cycle-running"); err != nil || len(others) != 0 {
+		t.Fatalf("running cycles except the live one: %+v, %v", others, err)
 	}
 	runningBaselines, err := s.RunningBaselines()
 	must(t, err)
@@ -143,11 +146,6 @@ func TestIndexedViews(t *testing.T) {
 		t.Fatalf("missing proposal: %s %v", missing, err)
 	}
 
-	output, err := s.LatestPROutput("FIXTURE/PROJECT", 9)
-	must(t, err)
-	if output == nil || *output != "out00001" {
-		t.Fatalf("latest PR output: %v", output)
-	}
 	candidates, err := s.ReservableTasks()
 	must(t, err)
 	if got := ids(candidates); len(got) != 2 {

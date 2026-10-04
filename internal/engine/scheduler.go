@@ -196,7 +196,7 @@ func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 		return nil
 	}
 	a.runtimeMu.Unlock()
-	capacity, err := a.Store.PlanningCapacity()
+	capacity, err := a.Store.PlanningCapacity(time.Now())
 	if err != nil {
 		return err
 	}

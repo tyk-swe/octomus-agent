@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
@@ -57,7 +58,9 @@ func transformKinds(t *testing.T, fields []map[string]any, field string) []any {
 }
 
 func TestConfigAPIRevisionGate(t *testing.T) {
-	app, state := testApp(t)
+	dir := t.TempDir()
+	state := openStore(t, dir)
+	app := engine.New(state, dir)
 	router := Router(app, token, "", "test")
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
@@ -139,15 +142,12 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 		t.Fatalf("returned revision %q != saved fingerprint %q", revision, newFingerprint)
 	}
 
-	after, found, err := state.GetRaw("settings", "config")
-	if err != nil || !found {
-		t.Fatalf("saved config: found=%t, err=%v", found, err)
-	}
+	after := savedConfig(t, state)
 	if response := call(t, router, "PUT", "/api/config",
 		`{"expected_revision":"`+strings.Repeat("0", 64)+`","config":{"max_sessions_per_day":10}}`); response.Code != http.StatusConflict {
 		t.Fatalf("stale revision: %d %s", response.Code, response.Body.String())
 	}
-	if raw, _, _ := state.GetRaw("settings", "config"); string(raw) != string(after) {
+	if savedConfig(t, state) != after {
 		t.Fatal("stale save changed the saved record")
 	}
 
@@ -164,10 +164,7 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 	if len(fields) != 0 {
 		t.Fatalf("transforms after clean save: %v", fields)
 	}
-	after, found, err = state.GetRaw("settings", "config")
-	if err != nil || !found {
-		t.Fatalf("saved config: found=%t, err=%v", found, err)
-	}
+	after = savedConfig(t, state)
 
 	escapedKey := `{"expected_revision":"` + revision + `","config":{"runner_storage_paths":{"codex":"/a","co` + "\\u0064" + `ex":"/b"}}}`
 	for name, body := range map[string]struct {
@@ -194,13 +191,13 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 			if got := response.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
 				t.Fatalf("content type: %q", got)
 			}
-			if raw, _, _ := state.GetRaw("settings", "config"); string(raw) != string(after) {
+			if savedConfig(t, state) != after {
 				t.Fatal("rejected save changed the saved record")
 			}
 		})
 	}
 
-	reopened, err := store.Open(state.Path())
+	reopened, err := store.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

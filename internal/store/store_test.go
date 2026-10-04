@@ -59,7 +59,7 @@ func TestDurableAndBudgetAtomic(t *testing.T) {
 	if value == nil || len(*value) != 2 || (*value)[0] != 1 || (*value)[1] != 2 {
 		t.Fatalf("durable record differs: %v", value)
 	}
-	capacity, err := s.PlanningCapacity()
+	capacity, err := s.PlanningCapacity(time.Now())
 	must(t, err)
 	if capacity.Used != 1 {
 		t.Fatalf("sessions today %d", capacity.Used)
@@ -71,7 +71,7 @@ func TestPlanningCapacity(t *testing.T) {
 	s := open(t, statePath(t))
 	for agents, required := range map[uint64]uint64{8: 12, 9: 13, 10: 14} {
 		saveConfig(t, s, func(c *config.Config) { c.DiscoveryAgents = agents })
-		capacity, err := s.PlanningCapacity()
+		capacity, err := s.PlanningCapacity(time.Now())
 		must(t, err)
 		if capacity.Required != required || capacity.Status != model.CapacityReady {
 			t.Fatalf("agents %d: %+v", agents, capacity)
@@ -79,7 +79,7 @@ func TestPlanningCapacity(t *testing.T) {
 		must(t, capacity.EnsureAvailable())
 	}
 	saveConfig(t, s, func(c *config.Config) { c.DiscoveryAgents = 9; c.MaxSessionsPerDay = 12 })
-	capacity, err := s.PlanningCapacity()
+	capacity, err := s.PlanningCapacity(time.Now())
 	must(t, err)
 	if capacity.Status != model.CapacityTooLow || !strings.Contains(capacity.Message(), "cannot fund") {
 		t.Fatalf("%+v %q", capacity, capacity.Message())
@@ -90,7 +90,7 @@ func TestPlanningCapacity(t *testing.T) {
 	saveConfig(t, s, func(c *config.Config) { c.DiscoveryAgents = 9; c.MaxSessionsPerDay = 14 })
 	for i, expected := range [][2]uint64{{1, 13}, {2, 12}} {
 		must(t, s.ReserveSession(0, store.NewAdmission("cycle", nil, "discovery", config.NewRoute("fixture", "low"))))
-		capacity, err := s.PlanningCapacity()
+		capacity, err := s.PlanningCapacity(time.Now())
 		must(t, err)
 		if capacity.Used != expected[0] || capacity.Remaining != expected[1] {
 			t.Fatalf("after %d reservations: %+v", i+1, capacity)
@@ -115,13 +115,13 @@ func TestPlanningCapacity(t *testing.T) {
 		must(t, s2.ReserveSession(0, admission("2026-03-01T23:30:00Z")))
 	}
 	at := time.Date(2026, 3, 1, 23, 59, 0, 0, time.UTC)
-	capacity, err = s2.PlanningCapacityAt(at)
+	capacity, err = s2.PlanningCapacity(at)
 	must(t, err)
 	reset := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC).Unix()
 	if capacity.Day != "2026-03-01" || capacity.Used != 2 || capacity.Remaining != 12 || capacity.Status != model.CapacityExhausted || capacity.NextResetAt != reset {
 		t.Fatalf("%+v", capacity)
 	}
-	capacity, err = s2.PlanningCapacityAt(time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC))
+	capacity, err = s2.PlanningCapacity(time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC))
 	must(t, err)
 	if capacity.Day != "2026-03-02" || capacity.Used != 0 || capacity.Remaining != 14 || capacity.Status != model.CapacityReady {
 		t.Fatalf("%+v", capacity)
@@ -209,7 +209,7 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	plan.RunID = str("run-1")
 	plan.Proposals[0].Reconsiders = []string{"missing-task-id"}
 	plan.DecisionMemory = []any{map[string]any{"id": "decision-1", "repository": "Fixture/Project"}}
-	if err := s.CommitPlan(plan, []model.Task{queued}); err == nil {
+	if err := s.CommitPlan(t.Context(), plan, []model.Task{queued}); err == nil {
 		t.Fatal("plan with a missing rediscovery target committed")
 	}
 	assertEmpty := func(taskID string) {
@@ -220,12 +220,12 @@ func TestCommitPlanAtomicity(t *testing.T) {
 		if tk, _ := store.Get[model.Task](s, "task", taskID); tk != nil {
 			t.Fatal("task survived the failed commit")
 		}
-		if d, _, _ := s.GetValue("decision", "decision-1"); d != nil {
+		if d, _ := store.Get[any](s, "decision", "decision-1"); d != nil {
 			t.Fatal("decision survived the failed commit")
 		}
-		saved, _, err := s.GetValue("settings", "control")
+		saved, err := store.Get[any](s, "settings", "control")
 		must(t, err)
-		if !equalJSON(t, saved, control) {
+		if saved == nil || !equalJSON(t, *saved, control) {
 			t.Fatal(canonical(t, saved))
 		}
 	}
@@ -236,7 +236,7 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	plan = cycleFor(superseding)
 	plan.ID = "cycle-1"
 	plan.RunID = str("run-1")
-	if err := s.CommitPlan(plan, []model.Task{superseding}); err == nil {
+	if err := s.CommitPlan(t.Context(), plan, []model.Task{superseding}); err == nil {
 		t.Fatal("plan with a missing superseded task committed")
 	}
 	assertEmpty(superseding.ID)
@@ -246,18 +246,18 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	plan.ID = "cycle-1"
 	plan.RunID = str("run-1")
 	plan.DecisionMemory = []any{map[string]any{"id": "decision-1", "repository": "Fixture/Project"}}
-	must(t, s.CommitPlan(plan, []model.Task{valid}))
+	must(t, s.CommitPlan(t.Context(), plan, []model.Task{valid}))
 	saved, err := store.Get[model.Control](s, "settings", "control")
 	must(t, err)
 	if saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting || saved.IdleStreak != 0 {
 		t.Fatalf("%+v", saved)
 	}
-	if d, _, _ := s.GetValue("decision", "decision-1"); d == nil {
+	if d, _ := store.Get[any](s, "decision", "decision-1"); d == nil {
 		t.Fatal("decision memory missing")
 	}
 	empty := cycleFor(valid)
 	empty.ID = "cycle-2"
-	must(t, s.CommitPlan(empty, nil))
+	must(t, s.CommitPlan(t.Context(), empty, nil))
 	saved, err = store.Get[model.Control](s, "settings", "control")
 	must(t, err)
 	if saved.IdleStreak != 1 || saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting {

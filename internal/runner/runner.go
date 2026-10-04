@@ -14,7 +14,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
-	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -109,22 +108,19 @@ type Adapter interface {
 
 type Connector func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (Adapter, error)
 
-func DefaultConnector(state *store.Store, entity string, box sandbox.Backend) Connector {
-	return func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (Adapter, error) {
-		return Connect(ctx, backend, cfg, cwd, state, entity, box)
-	}
-}
+// Progress receives one line per runner-reported step of a turn; the caller records it against the session.
+type Progress func(message string) error
 
-// Connect starts a runner whose sandbox is bound to cwd's owned root for as long as the adapter stays open.
-func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (Adapter, error) {
+// Connect starts a runner for entity whose sandbox is bound to cwd's owned root for as long as the adapter stays open.
+func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd, entity string, progress Progress, box sandbox.Backend) (Adapter, error) {
 	if err := config.ValidateBinary(cfg.Binary(backend)); err != nil {
 		return nil, err
 	}
 	switch backend {
 	case config.BackendCodex:
-		return connectCodex(ctx, cfg, cwd, state, entity, box)
+		return connectCodex(ctx, cfg, cwd, progress, box)
 	case config.BackendOpencode:
-		return connectOpenCode(ctx, cfg, cwd, state, entity, box)
+		return connectOpenCode(ctx, cfg, cwd, entity, progress, box)
 	}
 	return nil, fmt.Errorf("Invalid backend")
 }

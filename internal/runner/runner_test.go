@@ -16,7 +16,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
-	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -57,7 +56,7 @@ type fixture struct {
 	root      string
 	workspace string
 	cfg       config.Config
-	state     *store.Store
+	progress  testutil.SyncBuffer
 }
 
 func newFixture(t *testing.T, name string, configure func(shim string) config.Config) *fixture {
@@ -68,12 +67,19 @@ func newFixture(t *testing.T, name string, configure func(shim string) config.Co
 		t.Fatal(err)
 	}
 	shim := wrapper(t, root, name, name+".py")
-	state, err := store.Open(filepath.Join(root, "state.db"))
-	if err != nil {
-		t.Fatal(err)
+	return &fixture{t: t, root: root, workspace: workspace, cfg: configure(shim)}
+}
+
+// record keeps every progress line the adapters report, for assertions on what they contain.
+func (f *fixture) record(message string) error {
+	_, err := f.progress.Write([]byte(message + "\n"))
+	return err
+}
+
+func (f *fixture) connector() Connector {
+	return func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (Adapter, error) {
+		return Connect(ctx, backend, cfg, cwd, "fixture", f.record, sandbox.Host{})
 	}
-	t.Cleanup(func() { state.Close() })
-	return &fixture{t: t, root: root, workspace: workspace, cfg: configure(shim), state: state}
 }
 
 func opencodeFixture(t *testing.T) *fixture {
@@ -120,11 +126,11 @@ func (f *fixture) exists(name string) bool {
 }
 
 func (f *fixture) connect(ctx context.Context) (*OpenCode, error) {
-	return connectOpenCode(ctx, f.cfg, f.workspace, f.state, "fixture", sandbox.Host{})
+	return connectOpenCode(ctx, f.cfg, f.workspace, "fixture", f.record, sandbox.Host{})
 }
 
 func (f *fixture) connectCodex(ctx context.Context) (*Codex, error) {
-	return connectCodex(ctx, f.cfg, f.workspace, f.state, "fixture", sandbox.Host{})
+	return connectCodex(ctx, f.cfg, f.workspace, f.record, sandbox.Host{})
 }
 
 func published(path string) (string, bool) {
@@ -274,7 +280,7 @@ func TestRunnersMixedBackendCatalogs(t *testing.T) {
 		cfg.CommandTimeoutSeconds = 2
 		return cfg
 	})
-	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
+	clients := New(context.Background(), f.cfg, f.connector())
 	defer clients.Close()
 	if err := clients.checkRoute(codexRoute(), f.workspace); err != nil {
 		t.Fatalf("codex route: %v", err)

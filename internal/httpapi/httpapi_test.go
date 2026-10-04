@@ -30,6 +30,16 @@ func openStore(t *testing.T, dir string) *store.Store {
 	return state
 }
 
+// savedConfig returns the saved configuration record's exact bytes, so a test can prove a rejected save left it untouched.
+func savedConfig(t *testing.T, state *store.Store) string {
+	t.Helper()
+	raw, err := store.Get[json.RawMessage](state, "settings", "config")
+	if err != nil || raw == nil {
+		t.Fatalf("saved config: %v, %v", raw, err)
+	}
+	return string(*raw)
+}
+
 func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
@@ -269,17 +279,14 @@ func TestHTTPBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, _, err := state.GetRaw("settings", "config")
-	if err != nil {
-		t.Fatal(err)
-	}
+	saved := savedConfig(t, state)
 	oversized := `{"expected_revision":"` + revision + `","config":{"github_repo":"` + strings.Repeat("x", 300*1024) + `"}}`
 	response := call(t, router, "PUT", "/api/config", oversized)
 	if response.Code != http.StatusRequestEntityTooLarge || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
 		!strings.Contains(response.Body.String(), "length limit exceeded") {
 		t.Fatalf("oversized save: %d %q %.200q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
 	}
-	if after, _, err := state.GetRaw("settings", "config"); err != nil || string(after) != string(saved) {
+	if savedConfig(t, state) != saved {
 		t.Fatalf("oversized save changed the configuration: %v", err)
 	}
 	if view := decode(t, call(t, router, "GET", "/api/config", "")); view["revision"] != revision {
@@ -341,10 +348,7 @@ func TestRequestErrorRedaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, _, err := state.GetRaw("settings", "config")
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := savedConfig(t, state)
 	router := Router(app, token, "", "test")
 	const secret = "ghp_requestSecret0123456789"
 	for _, tc := range []struct {
@@ -368,7 +372,7 @@ func TestRequestErrorRedaction(t *testing.T) {
 			}
 		})
 	}
-	if after, _, err := state.GetRaw("settings", "config"); err != nil || string(after) != string(before) {
+	if savedConfig(t, state) != before {
 		t.Fatalf("rejected requests changed saved settings: %v", err)
 	}
 	if latest, err := state.LatestBaseline(); err != nil || latest != nil {

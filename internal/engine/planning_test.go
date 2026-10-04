@@ -828,7 +828,7 @@ func TestAdmissionBudgetIsAtomic(t *testing.T) {
 	if successes != 5 {
 		t.Fatalf("got %d successful admissions, want exactly 5", successes)
 	}
-	if capacity, err := state.PlanningCapacity(); err != nil || capacity.Used != 5 {
+	if capacity, err := state.PlanningCapacity(time.Now()); err != nil || capacity.Used != 5 {
 		t.Fatalf("durable usage = %+v, %v; want 5 used", capacity, err)
 	}
 }

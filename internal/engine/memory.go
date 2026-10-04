@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -154,20 +155,31 @@ func decisionAbsorbed(record decisionRecord, records []decisionRecord) bool {
 	return false
 }
 
+// decisionFingerprint identifies the repository state a decision was made against: the revision itself when the decision
+// names no paths, otherwise a digest of those paths' tree entries at that revision.
 func decisionFingerprint(ctx context.Context, cfg config.Config, revision string, paths []string) (string, error) {
+	if len(paths) > 40 {
+		return "", fmt.Errorf("Decision has too many relevant paths")
+	}
+	for _, path := range paths {
+		if path == "" || strings.HasPrefix(path, "/") {
+			return "", fmt.Errorf("Decision paths must be repository-relative files")
+		}
+		for i, part := range strings.Split(path, "/") {
+			if part == ".." || (part == "." && i == 0) {
+				return "", fmt.Errorf("Decision paths must be repository-relative files")
+			}
+		}
+	}
 	if len(paths) == 0 {
-		return model.DecisionMemoryFingerprint(revision, paths, "")
+		return revision, nil
 	}
-	if _, err := model.DecisionMemoryFingerprint(revision, paths, ""); err != nil {
-		return "", err
-	}
-	args := []string{"--literal-pathspecs", "ls-tree", "-r", revision, "--"}
-	args = append(args, paths...)
+	args := append([]string{"--literal-pathspecs", "ls-tree", "-r", revision, "--"}, paths...)
 	output, err := gitops.Git(ctx, cfg, cfg.Repository, args)
 	if err != nil {
 		return "", err
 	}
-	return model.DecisionMemoryFingerprint(revision, paths, output)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimSpace(output)))), nil
 }
 
 func (a *App) recordDecisions(ctx context.Context, cfg config.Config, cycle model.Cycle) ([]any, error) {

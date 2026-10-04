@@ -24,7 +24,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
-	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -40,8 +39,8 @@ type OpenCode struct {
 	version   string
 	timeout   uint64
 	ctx       context.Context
-	state     *store.Store
 	entity    string
+	progress  Progress
 	waitCh    chan error
 	done      chan struct{}
 	drainDone <-chan struct{}
@@ -49,7 +48,7 @@ type OpenCode struct {
 	closeErr  error
 }
 
-func connectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (*OpenCode, error) {
+func connectOpenCode(ctx context.Context, cfg config.Config, cwd, entity string, progress Progress, box sandbox.Backend) (*OpenCode, error) {
 	if ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
 	}
@@ -98,8 +97,8 @@ func connectOpenCode(ctx context.Context, cfg config.Config, cwd string, state *
 		agent:     agent,
 		timeout:   cfg.SessionTimeoutSeconds,
 		ctx:       ctx,
-		state:     state,
 		entity:    entity,
+		progress:  progress,
 		waitCh:    waitCh,
 		done:      make(chan struct{}),
 		drainDone: started.Drained,
@@ -499,7 +498,7 @@ func (o *OpenCode) handleEvent(event any, session, message string, route config.
 			state, _ := asObject(part["state"])
 			status, _ := strAt(state, "status")
 			if status == "completed" || status == "error" {
-				return o.state.Event(o.entity, "session_progress", fmt.Sprintf("%s · tool · %s", session, status))
+				return o.progress(fmt.Sprintf("%s · tool · %s", session, status))
 			}
 		}
 	}

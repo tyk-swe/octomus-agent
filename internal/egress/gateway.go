@@ -503,7 +503,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if logged {
 		closed := decision
 		closed.Decision, closed.Reason = "closed", t.reason()
-		closed.BytesUp, closed.BytesDown, closed.Millis = up, down, time.Now().Sub(started).Milliseconds()
+		closed.BytesUp, closed.BytesDown, closed.Millis = up, down, time.Since(started).Milliseconds()
 		g.logDecision(closed)
 	}
 }

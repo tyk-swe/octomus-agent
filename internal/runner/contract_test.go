@@ -17,7 +17,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
-	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
@@ -159,14 +158,9 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 			Variant:  stringPtr("high"),
 		}
 	}
-	state, err := store.Open(filepath.Join(root, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer state.Close()
 	owner, cancel := context.WithCancel(ctx)
 	defer cancel()
-	client, err := Connect(owner, backend, cfg, workspace, state, "contract", sandbox.Host{})
+	client, err := Connect(owner, backend, cfg, workspace, "contract", func(string) error { return nil }, sandbox.Host{})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -219,7 +213,7 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 	if err := client.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	client, err = Connect(owner, backend, cfg, workspace, state, "contract", sandbox.Host{})
+	client, err = Connect(owner, backend, cfg, workspace, "contract", func(string) error { return nil }, sandbox.Host{})
 	if err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}

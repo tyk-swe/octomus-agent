@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
 
@@ -54,7 +53,7 @@ func TestCodexModelsAndPreResponseEvents(t *testing.T) {
 func TestCodexStructuredOutput(t *testing.T) {
 	t.Parallel()
 	f := codexFixture(t)
-	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
+	clients := New(context.Background(), f.cfg, f.connector())
 	defer clients.Close()
 	session, err := clients.Start(codexRoute(), f.workspace, nil)
 	if err != nil {
@@ -115,7 +114,7 @@ func TestCodexRequiresAuthentication(t *testing.T) {
 		cfg.Tiers[tier] = codexRoute()
 	}
 	cfg.RepairRoute = codexRoute()
-	clients := New(context.Background(), f.cfg, DefaultConnector(f.state, "fixture", sandbox.Host{}))
+	clients := New(context.Background(), f.cfg, f.connector())
 	defer clients.Close()
 	err := clients.ValidateRoutes(cfg, f.workspace, false)
 	if err == nil || !strings.Contains(err.Error(), "authentication") {

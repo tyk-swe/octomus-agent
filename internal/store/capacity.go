@@ -20,20 +20,6 @@ type PRReservation struct {
 	AdmittedAt string
 }
 
-type PRIdentity struct {
-	Repository    string
-	GitHubRepo    string
-	DefaultBranch string
-	BranchPrefix  string
-}
-
-func PRIdentityOf(c config.Config) PRIdentity {
-	return PRIdentity{Repository: c.Repository, GitHubRepo: strings.ToLower(c.GitHubRepo), DefaultBranch: c.DefaultBranch, BranchPrefix: c.BranchPrefix}
-}
-func (p PRIdentity) Matches(c config.Config) bool {
-	return config.SamePath(p.Repository, c.Repository) && config.EqualASCII(c.GitHubRepo, p.GitHubRepo) && p.DefaultBranch == c.DefaultBranch && p.BranchPrefix == c.BranchPrefix
-}
-
 var errRollback = errors.New("rollback")
 
 func reservationRows(c *sql.Conn, repository string) ([]PRReservation, error) {
@@ -157,7 +143,7 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 		if saved == nil || !wirejson.Equal(*saved, inventory) {
 			return errRollback
 		}
-		if task.Proposal.Target != task.Config.DefaultBranch || !PRIdentityOf(task.Config).Matches(cfg) {
+		if task.Proposal.Target != task.Config.DefaultBranch || !config.SamePRPolicy(task.Config, cfg) {
 			return errRollback
 		}
 		var canonical model.Task

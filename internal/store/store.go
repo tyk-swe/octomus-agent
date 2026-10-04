@@ -97,8 +97,6 @@ func (s *Store) initialize() error {
 	return nil
 }
 
-func (s *Store) Path() string { return s.path }
-
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -217,14 +215,10 @@ func (s *Store) Marked(kind, id string) (bool, error) {
 	return marked, err
 }
 
-func (s *Store) CommitPlan(cycle model.Cycle, tasks []model.Task) error {
-	return s.CommitPlanContext(background, cycle, tasks)
-}
-
-// CommitPlanContext uses ctx only for admission after acquiring the store mutex.
+// CommitPlan uses ctx only for admission after acquiring the store mutex.
 // Once admitted, cancellation does not interrupt the plan transaction: it finishes
 // atomically, like other store writes.
-func (s *Store) CommitPlanContext(ctx context.Context, cycle model.Cycle, tasks []model.Task) error {
+func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -328,31 +322,11 @@ func (s *Store) AppendCycleSession(cycleID string, session model.Session) error 
 	return txPut(s.conn, "cycle", cycleID, cycle)
 }
 
-func (s *Store) Get(kind, id string, dst any) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return txGet(s.conn, kind, id, dst)
-}
-
-func (s *Store) GetValue(kind, id string) (any, bool, error) {
-	var value any
-	found, err := s.Get(kind, id, &value)
-	return value, found, err
-}
-
-func (s *Store) GetRaw(kind, id string) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return txGetRaw(s.conn, kind, id)
-}
-
+// Get returns the saved record, or nil when none exists.
 func Get[T any](s *Store, kind, id string) (*T, error) {
-	var value T
-	found, err := s.Get(kind, id, &value)
-	if err != nil || !found {
-		return nil, err
-	}
-	return &value, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return RecordAt[T](s.conn, kind, id)
 }
 
 func List[T any](s *Store, kind string) ([]T, error) {
@@ -519,16 +493,10 @@ func sessionsOn(c *sql.Conn, day string) (int64, error) {
 	return sessions, err
 }
 
-func (s *Store) PlanningCapacity() (model.PlanningCapacity, error) {
-	return s.PlanningCapacityAt(time.Now())
-}
-
-func (s *Store) PlanningCapacityAt(at time.Time) (model.PlanningCapacity, error) {
-	at = at.UTC()
+func (s *Store) PlanningCapacity(at time.Time) (model.PlanningCapacity, error) {
 	s.mu.Lock()
-	capacity, err := planningCapacityAt(s.conn, at)
-	s.mu.Unlock()
-	return capacity, err
+	defer s.mu.Unlock()
+	return planningCapacityAt(s.conn, at)
 }
 
 func planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCapacity, error) {
@@ -583,24 +551,16 @@ func storedConfig(c *sql.Conn) (config.Config, error) {
 	return cfg, nil
 }
 
-func txGetRaw(c *sql.Conn, kind, id string) ([]byte, bool, error) {
+func txGet(c *sql.Conn, kind, id string, dst any) (bool, error) {
 	var data string
 	err := c.QueryRowContext(background, "SELECT data FROM records WHERE kind=?1 AND id=?2", kind, id).Scan(&data)
 	if err == sql.ErrNoRows {
-		return nil, false, nil
+		return false, nil
 	}
 	if err != nil {
-		return nil, false, err
-	}
-	return []byte(data), true, nil
-}
-
-func txGet(c *sql.Conn, kind, id string, dst any) (bool, error) {
-	data, found, err := txGetRaw(c, kind, id)
-	if err != nil || !found {
 		return false, err
 	}
-	if err := decodeJSON(data, dst); err != nil {
+	if err := decodeJSON([]byte(data), dst); err != nil {
 		return true, fmt.Errorf("Saved %s %s is unreadable: %w", kind, id, err)
 	}
 	return true, nil

@@ -256,12 +256,9 @@ func schedulingTasksSQL() string {
             ORDER BY candidates.seq ASC`, statusList(model.ActiveStatuses()))
 }
 
-func (s *Store) TasksWithStatus(statuses []string) ([]model.Task, error) {
-	list, err := json.Marshal(statuses)
-	if err != nil {
-		return nil, err
-	}
-	return listRecords[model.Task](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='task' AND m.status IN (SELECT value FROM json_each(?1)) AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500", string(list))
+// ActiveTasks returns the unarchived tasks whose status is still active, oldest first.
+func (s *Store) ActiveTasks() ([]model.Task, error) {
+	return listRecords[model.Task](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='task' AND m.status IN ("+statusList(model.ActiveStatuses())+") AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500")
 }
 
 // CancelledWithLiveSessions returns unfinished cancellation evidence
@@ -291,16 +288,10 @@ func (s *Store) PublishingTasksExcept(excludedIDs []string) ([]model.Task, error
         ORDER BY m.seq ASC LIMIT 500`, string(ids))
 }
 
-func (s *Store) RunningCycles() ([]model.Cycle, error) {
-	return listRecords[model.Cycle](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='cycle' AND m.status='running'")
-}
-
-// RunningCyclesExcept excludes live worker evidence before reading and decoding it.
-func (s *Store) RunningCyclesExcept(activeID string) ([]model.Cycle, error) {
-	if activeID == "" {
-		return s.RunningCycles()
-	}
-	return listRecords[model.Cycle](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='cycle' AND m.status='running' AND m.id!=?1", activeID)
+// RunningCycles returns the running cycles other than except, the live worker's own, so its evidence is excluded before
+// reading and decoding.
+func (s *Store) RunningCycles(except string) ([]model.Cycle, error) {
+	return listRecords[model.Cycle](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='cycle' AND m.status='running' AND m.id!=?1", except)
 }
 
 func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
@@ -312,12 +303,11 @@ func (s *Store) StaleBaselines(after string) ([]model.BaselineCheck, error) {
 }
 
 func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
-	var id string
-	found, err := s.Get("settings", "baseline_latest", &id)
-	if err != nil || !found {
+	id, err := Get[string](s, "settings", "baseline_latest")
+	if err != nil || id == nil {
 		return nil, err
 	}
-	return Get[model.BaselineCheck](s, "baseline", id)
+	return Get[model.BaselineCheck](s, "baseline", *id)
 }
 
 func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
@@ -651,12 +641,6 @@ func (s *Store) CleanupEligible(kind, id, cutoff string) (bool, error) {
 	var eligible bool
 	err := s.conn.QueryRowContext(background, "SELECT EXISTS(SELECT 1 FROM record_meta WHERE id=?3 AND "+cleanupEligible+")", kind, cutoff, id).Scan(&eligible)
 	return eligible, err
-}
-
-func (s *Store) LatestPROutput(repository string, number uint64) (*string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return latestPROutputAt(s.conn, repository, number)
 }
 
 func (s *Store) RecordPRObservation(repository string, p model.PullRequest, deliveredNow bool) error {

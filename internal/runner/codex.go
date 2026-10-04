@@ -22,7 +22,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
-	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 const CodexVersion = "0.153.4"
@@ -79,8 +78,7 @@ type Codex struct {
 	pending        backlog
 	timeout        uint64
 	ctx            context.Context
-	state          *store.Store
-	entity         string
+	progress       Progress
 	waitCh         chan error
 	done           chan struct{}
 	once           sync.Once
@@ -89,7 +87,7 @@ type Codex struct {
 	commandTimeout uint64
 }
 
-func connectCodex(ctx context.Context, cfg config.Config, cwd string, state *store.Store, entity string, box sandbox.Backend) (*Codex, error) {
+func connectCodex(ctx context.Context, cfg config.Config, cwd string, progress Progress, box sandbox.Backend) (*Codex, error) {
 	if ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
 	}
@@ -103,17 +101,16 @@ func connectCodex(ctx context.Context, cfg config.Config, cwd string, state *sto
 	}
 	done := make(chan struct{})
 	c := &Codex{
-		child:   child,
-		box:     box,
-		stdin:   child.Stdin(),
-		stdout:  child.Stdout(),
-		lines:   lineReader(child.Stdout(), MaxMessage, done),
-		timeout: cfg.SessionTimeoutSeconds,
-		ctx:     ctx,
-		state:   state,
-		entity:  entity,
-		waitCh:  make(chan error, 1),
-		done:    done,
+		child:    child,
+		box:      box,
+		stdin:    child.Stdin(),
+		stdout:   child.Stdout(),
+		lines:    lineReader(child.Stdout(), MaxMessage, done),
+		timeout:  cfg.SessionTimeoutSeconds,
+		ctx:      ctx,
+		progress: progress,
+		waitCh:   make(chan error, 1),
+		done:     done,
 
 		binary:         cfg.CodexBinary,
 		commandTimeout: cfg.CommandTimeoutSeconds,
@@ -514,7 +511,7 @@ func (c *Codex) awaitTurn(thread, turn string, deadline time.Time) (string, erro
 			if itemStatus == "" {
 				itemStatus = "completed"
 			}
-			if err := c.state.Event(c.entity, "session_progress", fmt.Sprintf("%s · %s · %s", thread, itemType, itemStatus)); err != nil {
+			if err := c.progress(fmt.Sprintf("%s · %s · %s", thread, itemType, itemStatus)); err != nil {
 				return "", err
 			}
 		case "turn/completed":

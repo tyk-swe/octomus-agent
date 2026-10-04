@@ -36,11 +36,7 @@ func (a *App) Recover() error {
 		}
 	}
 
-	active := make([]string, 0, len(model.ActiveStatuses()))
-	for _, status := range model.ActiveStatuses() {
-		active = append(active, status.String())
-	}
-	tasks, err := a.Store.TasksWithStatus(active)
+	tasks, err := a.Store.ActiveTasks()
 	if err != nil {
 		return err
 	}
@@ -95,7 +91,7 @@ func (a *App) interruptOrphanedCycles() error {
 		activeID = a.runtime.cycle.id
 	}
 	a.runtimeMu.Unlock()
-	cycles, err := a.Store.RunningCyclesExcept(activeID)
+	cycles, err := a.Store.RunningCycles(activeID)
 	if err != nil {
 		return err
 	}

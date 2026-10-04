@@ -95,7 +95,7 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 		return nil, err
 	}
 	if action == "resume" {
-		capacity, err := a.Store.PlanningCapacity()
+		capacity, err := a.Store.PlanningCapacity(time.Now())
 		if err != nil {
 			return nil, err
 		}
@@ -226,7 +226,7 @@ func (a *App) admitAuditPreflight() (config.Config, model.Control, error) {
 	if control.Mode != model.OperatingModePaused {
 		return config.Config{}, model.Control{}, errNotPaused
 	}
-	capacity, err := a.Store.PlanningCapacity()
+	capacity, err := a.Store.PlanningCapacity(time.Now())
 	if err != nil {
 		return config.Config{}, model.Control{}, err
 	}

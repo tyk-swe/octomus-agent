@@ -3,7 +3,6 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -68,13 +67,8 @@ func TestOpenCodeSessions(t *testing.T) {
 	if value["completed"] != true || len(value["findings"].([]any)) != 0 {
 		t.Fatalf("review is not clean: %s", review)
 	}
-	events, err := f.state.Events(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := json.Marshal(events)
-	if bytes.Contains(encoded, []byte("private fixture")) {
-		t.Fatalf("tool output leaked into events: %s", encoded)
+	if progress := f.progress.String(); strings.Contains(progress, "private fixture") {
+		t.Fatalf("tool output leaked into progress: %s", progress)
 	}
 	f.mode("opencode", "wrong-workspace")
 	if _, err := client.Start(route(), f.workspace, &session); err == nil {

@@ -33,7 +33,7 @@ func (a *App) StateView() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	planningCapacity, err := a.Store.PlanningCapacity()
+	planningCapacity, err := a.Store.PlanningCapacity(time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func (a *App) StateView() (map[string]any, error) {
 	recoveryError := a.runtime.activeRecoveryError
 	a.runtimeMu.Unlock()
 	if !cycleActive {
-		running, err := a.Store.RunningCycles()
+		running, err := a.Store.RunningCycles("")
 		if err != nil {
 			return nil, err
 		}
@@ -109,7 +109,7 @@ func (a *App) StateView() (map[string]any, error) {
 		})
 		baselineView = summary
 	}
-	storage, _, err := a.Store.GetValue("settings", "storage")
+	storage, err := store.Get[any](a.Store, "settings", "storage")
 	if err != nil {
 		return nil, err
 	}

@@ -189,7 +189,7 @@ func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task) error {
 	if err := a.ctx.Err(); err != nil {
 		return err
 	}
-	return a.Store.CommitPlanContext(a.ctx, cycle, tasks)
+	return a.Store.CommitPlan(a.ctx, cycle, tasks)
 }
 
 func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle) (model.OpenPRInventory, error) {

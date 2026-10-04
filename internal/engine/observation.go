@@ -197,13 +197,13 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 		}
 		a.gate.Lock()
 		defer a.gate.Unlock()
-		if live, err := a.Config(); err == nil && !store.PRIdentityOf(snapshot).Matches(live) {
+		if live, err := a.Config(); err == nil && !config.SamePRPolicy(snapshot, live) {
 			result = errPRPolicyChanged
 			return
 		}
 		a.runtimeMu.Lock()
 		observation := a.runtime.prObservation
-		if observation == nil || (observation.identity.Matches(snapshot) && !observation.fetchedAt.After(startedAt)) {
+		if observation == nil || (config.SamePRPolicy(observation.policy, snapshot) && !observation.fetchedAt.After(startedAt)) {
 			a.runtime.prObservation = nil
 			a.runtime.prRefreshError = redact.Error(result)
 		}
@@ -223,7 +223,7 @@ func (a *App) refreshPRs(ctx context.Context, snapshot config.Config) (result er
 	if err != nil {
 		return err
 	}
-	if !store.PRIdentityOf(snapshot).Matches(live) {
+	if !config.SamePRPolicy(snapshot, live) {
 		return errPRPolicyChanged
 	}
 	persisted, err := a.savePRsLocked(live, observed)
@@ -287,7 +287,7 @@ func (a *App) savePRsLocked(observed config.Config, snapshot prSnapshot) (bool, 
 	}
 	a.runtimeMu.Lock()
 	if control.Mode != model.OperatingModePaused {
-		a.runtime.prObservation = &freshPRs{identity: store.PRIdentityOf(observed), inventory: snapshot.inventory.Clone(), fetchedAt: time.Now()}
+		a.runtime.prObservation = &freshPRs{policy: observed, inventory: snapshot.inventory.Clone(), fetchedAt: time.Now()}
 	}
 	a.runtime.prRefreshError = ""
 	a.runtimeMu.Unlock()

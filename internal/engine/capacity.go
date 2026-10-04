@@ -17,7 +17,7 @@ var errStaleInventory = errors.New("Pull request inventory became stale before p
 var errPRPolicyChanged = errors.New("Pull request policy changed during refresh")
 
 type freshPRs struct {
-	identity          store.PRIdentity
+	policy            config.Config
 	inventory         model.OpenPRInventory
 	fetchedAt         time.Time
 	admissionConsumed bool
@@ -46,7 +46,7 @@ func (a *App) claimInventory(cfg config.Config, now time.Time) (*model.OpenPRInv
 		}
 		return nil, "A current-process pull request observation is required"
 	}
-	if !observation.identity.Matches(cfg) {
+	if !config.SamePRPolicy(observation.policy, cfg) {
 		return nil, "The pull request observation belongs to different repository policy"
 	}
 	if observation.admissionConsumed {
@@ -97,7 +97,7 @@ func (a *App) prCapacity(cfg config.Config) (model.PRCapacity, error) {
 	refreshing := a.runtime.prRefresh != nil
 	lastError := a.runtime.prRefreshError
 	observation := a.runtime.prObservation
-	fresh := lastError == "" && observation != nil && observation.identity.Matches(cfg) && time.Since(observation.fetchedAt) <= observationLifetime && stored != nil
+	fresh := lastError == "" && observation != nil && config.SamePRPolicy(observation.policy, cfg) && time.Since(observation.fetchedAt) <= observationLifetime && stored != nil
 	a.runtimeMu.Unlock()
 
 	status := "unavailable"
@@ -115,7 +115,7 @@ func (a *App) prCapacity(cfg config.Config) (model.PRCapacity, error) {
 			reason = lastError
 		case observation == nil || stored == nil:
 			reason = "No complete open-PR inventory has been observed"
-		case !observation.identity.Matches(cfg):
+		case !config.SamePRPolicy(observation.policy, cfg):
 			reason = "Configuration changed since the last complete open-PR inventory"
 		default:
 			reason = "The last complete open-PR inventory is stale"

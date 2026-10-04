@@ -17,7 +17,8 @@ import (
 
 func TestConnectionSettings(t *testing.T) {
 	t.Parallel()
-	s := open(t, statePath(t))
+	path := statePath(t)
+	s := open(t, path)
 	must(t, s.Snapshot(func(c *sql.Conn) error {
 		var mode string
 		var synchronous, busy, queryOnly int64
@@ -38,7 +39,7 @@ func TestConnectionSettings(t *testing.T) {
 		}
 		return nil
 	}))
-	r, err := store.OpenReadOnly(s.Path(), "probe")
+	r, err := store.OpenReadOnly(path, "probe")
 	must(t, err)
 	defer r.Close()
 	var busy int64
@@ -78,11 +79,11 @@ func TestPanicInsideTransactionRollsBack(t *testing.T) {
 
 	must(t, s.Close())
 	s = open(t, path)
-	if _, found, err := s.GetRaw("x", "after"); err != nil || !found {
-		t.Fatalf("write after the panic = found %v, %v; want it committed", found, err)
+	if after, err := store.Get[any](s, "x", "after"); err != nil || after == nil {
+		t.Fatalf("write after the panic = %v, %v; want it committed", after, err)
 	}
-	if _, found, err := s.GetRaw("x", "inside"); err != nil || found {
-		t.Fatalf("write inside the panicking transaction = found %v, %v; want it rolled back", found, err)
+	if inside, err := store.Get[any](s, "x", "inside"); err != nil || inside != nil {
+		t.Fatalf("write inside the panicking transaction = %v, %v; want it rolled back", inside, err)
 	}
 }
 
@@ -107,8 +108,8 @@ func TestReadOnlyConnectionRefusesWrites(t *testing.T) {
 		t.Fatalf("read-only write error = %v", err)
 	}
 	must(t, s.Put("x", "b", 2))
-	if found, err := s.Get("x", "ro", new(any)); err != nil || found {
-		t.Fatalf("read-only write landed: found=%v err=%v", found, err)
+	if landed, err := store.Get[any](s, "x", "ro"); err != nil || landed != nil {
+		t.Fatalf("read-only write landed: %v, %v", landed, err)
 	}
 	entries, err := os.ReadDir(parent)
 	must(t, err)
