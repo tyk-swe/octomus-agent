@@ -3,11 +3,10 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"io"
 	"os"
 	"strings"
-
-	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
 // githubTokenEnv is where the Docker deployment's GitHub token lives inside the control plane, for gh and the git
@@ -17,8 +16,8 @@ const githubTokenEnv = "GH_TOKEN"
 // secretFiles lets each secret the service reads from its environment arrive as a file instead, the way Docker
 // secrets do, which keeps it out of `docker inspect`.
 var secretFiles = []struct{ variable, file string }{
-	{redact.TokenEnv, "OCTOMUS_TOKEN_FILE"},
-	{redact.WebhookEnv, "OCTOMUS_NOTIFICATION_WEBHOOK_URL_FILE"},
+	{config.TokenEnv, "OCTOMUS_TOKEN_FILE"},
+	{config.WebhookEnv, "OCTOMUS_NOTIFICATION_WEBHOOK_URL_FILE"},
 	{githubTokenEnv, "OCTOMUS_GITHUB_TOKEN_FILE"},
 }
 

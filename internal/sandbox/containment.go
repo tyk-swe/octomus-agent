@@ -24,7 +24,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/egress"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
@@ -77,7 +76,7 @@ func runContainmentProbe(stdout io.Writer) int {
 	if proxy == "" {
 		add("egress_gateway", "Egress is limited to the allowlist", true, "no egress gateway: sandboxes are offline")
 	} else {
-		refused, detail := egressRefusals(proxy, os.Getenv(egress.ProbeTargetEnv))
+		refused, detail := egressRefusals(proxy, os.Getenv(wire.ProbeTargetEnv))
 		add("egress_gateway", "The egress gateway refuses unlisted, metadata and local targets", refused, detail)
 	}
 	if err := json.NewEncoder(stdout).Encode(report); err != nil {
@@ -489,7 +488,7 @@ func detailList(prefix string, items []string, otherwise string) string {
 // the gateway did not accept the probe's lease, so its allowlist was never consulted. The broker obtains the unlisted
 // DNS target from the gateway's effective policy; no fixed name is necessarily outside a deployment's allowlist.
 func egressRefusals(proxy, unlisted string) (bool, string) {
-	if !egress.ValidProbeTarget(unlisted) {
+	if !wire.ValidProbeTarget(unlisted) {
 		return false, "not proven refused: the gateway's unlisted probe target is missing or invalid"
 	}
 	targets := []struct{ target, reason string }{

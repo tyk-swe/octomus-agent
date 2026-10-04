@@ -13,6 +13,12 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
+// The environment variables the operator sets for the service; children never see them.
+const (
+	TokenEnv   = "OCTOMUS_TOKEN"
+	WebhookEnv = "OCTOMUS_NOTIFICATION_WEBHOOK_URL"
+)
+
 func Categories() []string {
 	return []string{"features", "correctness", "performance", "ux-dx", "refactoring", "simplification", "tests", "dependencies", "documentation"}
 }

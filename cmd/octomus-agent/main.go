@@ -24,7 +24,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/httpapi"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/notifications"
-	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -203,12 +202,12 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		}
 		return runDoctor(sigCtx, app, mode, stdout, stderr)
 	}
-	token, ok := env(redact.TokenEnv)
+	token, ok := env(config.TokenEnv)
 	if !ok {
-		return fmt.Errorf("Set %s to a random operator token of at least 32 characters (openssl rand -hex 32)", redact.TokenEnv)
+		return fmt.Errorf("Set %s to a random operator token of at least 32 characters (openssl rand -hex 32)", config.TokenEnv)
 	}
 	if len(token) < 32 {
-		return fmt.Errorf("%s must contain at least 32 characters", redact.TokenEnv)
+		return fmt.Errorf("%s must contain at least 32 characters", config.TokenEnv)
 	}
 	var assetsOverride string
 	if parsed.assets != nil {
@@ -224,7 +223,7 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 			fmt.Fprintf(stderr, "Non-loopback listener %s exposes operator access. Use a loopback address and an SSH tunnel; the token grants full operator control.\n", parsed.listen)
 		}
 	}
-	webhook, _ := env(redact.WebhookEnv)
+	webhook, _ := env(config.WebhookEnv)
 	server := newHTTPServer(httpapi.Router(app, token, assetsOverride, octomus.Version))
 	components := serviceComponents{
 		app:  app,

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
@@ -205,11 +205,11 @@ func TestDeadlineKillsGroup(t *testing.T) {
 
 func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	temp := t.TempDir()
-	t.Setenv(redact.TokenEnv, "test-token-value-that-must-not-leak")
-	t.Setenv(redact.WebhookEnv, "https://example.invalid/hook")
+	t.Setenv(config.TokenEnv, "test-token-value-that-must-not-leak")
+	t.Setenv(config.WebhookEnv, "https://example.invalid/hook")
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
 	script := fmt.Sprintf(`printf 't=%%s w=%%s g=%%s' "${%s-unset}" "${%s-unset}" "$GIT_TERMINAL_PROMPT"`,
-		redact.TokenEnv, redact.WebhookEnv)
+		config.TokenEnv, config.WebhookEnv)
 	out, err := RunMachine(context.Background(), "bash", []string{"-c", script}, temp, 10, nil)
 	if err != nil {
 		t.Fatal(err)

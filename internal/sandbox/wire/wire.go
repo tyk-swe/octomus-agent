@@ -7,11 +7,56 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
+	"net/netip"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
+
+// ProbeTargetEnv carries the gateway-selected refusal target into the containment helper.
+const ProbeTargetEnv = "OCTOMUS_EGRESS_PROBE_TARGET"
+
+var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ValidLabel reports whether label is one lowercase DNS label.
+func ValidLabel(label string) bool { return hostLabel.MatchString(label) }
+
+// NormalizeHost lowercases a DNS name and refuses anything that is not one, including IP literals: an allowlist
+// names services, never addresses.
+func NormalizeHost(host string) (string, error) {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" || len(host) > 253 {
+		return "", errors.New("host name length")
+	}
+	if _, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		return "", errors.New("IP literal")
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return "", errors.New("single-label host")
+	}
+	for _, label := range labels {
+		if !ValidLabel(label) {
+			return "", errors.New("invalid host name")
+		}
+	}
+	return host, nil
+}
+
+// ValidProbeTarget accepts only a canonical DNS name on HTTPS's port. Invalid names and addresses would exercise a
+// different gateway boundary and cannot stand in for the unlisted-host check.
+func ValidProbeTarget(target string) bool {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil || port != "443" {
+		return false
+	}
+	normalized, err := NormalizeHost(host)
+	return err == nil && normalized == host
+}
 
 // UpgradeProtocol names the framed stream a broker switches to after accepting a sandbox request. One stream carries
 // one sandbox for its whole life: when it closes, the broker kills and removes the container.

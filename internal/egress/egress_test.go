@@ -399,7 +399,7 @@ func TestProbeTarget(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			target, err := c.policy.probeTarget()
-			if err != nil || target != c.want || !ValidProbeTarget(target) {
+			if err != nil || target != c.want || !wire.ValidProbeTarget(target) {
 				t.Fatalf("target = %q, %v; want %q", target, err, c.want)
 			}
 			host, _, _ := net.SplitHostPort(target)

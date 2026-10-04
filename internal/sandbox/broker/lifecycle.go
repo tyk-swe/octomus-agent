@@ -70,7 +70,7 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 		lease, extraEnv = token, egress.ProxyEnv(b.cfg.EgressProxy, token)
 	}
 	if probeTarget != "" {
-		extraEnv = append(extraEnv, egress.ProbeTargetEnv+"="+probeTarget)
+		extraEnv = append(extraEnv, wire.ProbeTargetEnv+"="+probeTarget)
 	}
 	spec := b.cfg.container(p, extraEnv)
 	// A sandbox runs the image ID its tag resolved to, so its evidence names exactly what ran.

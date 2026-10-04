@@ -71,7 +71,7 @@ owns strict typed JSON boundaries for saved records and API requests.
   collector).
 - `internal/redact`: the one secret scrubber and display bound, shared by every
   package that records or returns text: `redact.go` (patterns, environment secrets,
-  `Text`, `JSON` and the token and webhook variable names) and `fragment.go`
+  `Text` and `JSON`; `internal/config` names the operator environment variables) and `fragment.go`
   (`Parts`, `Streams` and `Fragment` for text already cut by a capture or read limit).
 - `internal/notifications`: opt-in webhook delivery. `internal/export`: the
   read-only exports of saved records (`export.go` opens one snapshot and

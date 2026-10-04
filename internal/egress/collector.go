@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"io"
 	"net"
 	"net/http"
@@ -37,9 +38,6 @@ const summaryPath = "/v1/summary"
 // probeTargetPath answers with one DNS target outside the gateway's effective runner allowlist. It exposes no
 // credentials or full policy, and is served only on the broker's local collector socket.
 const probeTargetPath = "/v1/probe-target"
-
-// ProbeTargetEnv carries the gateway-selected refusal target into the containment helper.
-const ProbeTargetEnv = "OCTOMUS_EGRESS_PROBE_TARGET"
 
 // ServeCollector answers the broker's request for a finished sandbox's summary on a local socket.
 func (g *Gateway) ServeCollector(ctx context.Context, listener net.Listener) error {
@@ -93,21 +91,10 @@ func FetchProbeTarget(ctx context.Context, socket string) (string, error) {
 	if err := fetch(ctx, socket, probeTargetPath, 1024, &target); err != nil {
 		return "", err
 	}
-	if !ValidProbeTarget(target) {
+	if !wire.ValidProbeTarget(target) {
 		return "", errors.New("invalid containment probe target")
 	}
 	return target, nil
-}
-
-// ValidProbeTarget accepts only a canonical DNS name on HTTPS's port. Invalid names and addresses would exercise a
-// different gateway boundary and cannot stand in for the unlisted-host check.
-func ValidProbeTarget(target string) bool {
-	host, port, err := net.SplitHostPort(target)
-	if err != nil || port != "443" {
-		return false
-	}
-	normalized, err := NormalizeHost(host)
-	return err == nil && normalized == host
 }
 
 // FetchSummary collects a finished sandbox's summary from the collector on socket.

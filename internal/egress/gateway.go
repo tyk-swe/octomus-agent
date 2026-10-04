@@ -358,13 +358,13 @@ func (g *Gateway) lease(header string) (Lease, string, bool) {
 // refusedHost names a refused target for the summary without carrying arbitrary text into it: the normalized host
 // name, a single valid label, the canonical form of an IP literal, or a fixed label for anything else.
 func refusedHost(text string) string {
-	if host, err := NormalizeHost(text); err == nil {
+	if host, err := wire.NormalizeHost(text); err == nil {
 		return host
 	}
 	if addr, err := netip.ParseAddr(strings.Trim(text, "[]")); err == nil {
 		return addr.WithZone("").Unmap().String()
 	}
-	if label := strings.TrimSuffix(strings.ToLower(text), "."); labelPattern.MatchString(label) {
+	if label := strings.TrimSuffix(strings.ToLower(text), "."); wire.ValidLabel(label) {
 		return label
 	}
 	return "(invalid host)"
@@ -435,7 +435,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusBadRequest, refusedHost(hostText), 0, "malformed tunnel target")
 		return
 	}
-	host, err := NormalizeHost(hostText)
+	host, err := wire.NormalizeHost(hostText)
 	if err != nil {
 		deny(http.StatusForbidden, refusedHost(hostText), uint16(port), wire.RefusalNotHostName+" ("+err.Error()+")")
 		return

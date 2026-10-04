@@ -10,10 +10,6 @@ import (
 	"sync"
 )
 
-const TokenEnv = "OCTOMUS_TOKEN"
-
-const WebhookEnv = "OCTOMUS_NOTIFICATION_WEBHOOK_URL"
-
 func Error(err error) string { return Text(err.Error()) }
 
 const tokenWhitespace = `\p{Z}\x{0009}-\x{000D}\x{0085}`
@@ -34,7 +30,7 @@ func environmentSecrets() []string {
 			if !ok || len(value) < 8 {
 				continue
 			}
-			if key == WebhookEnv || strings.Contains(key, "TOKEN") || strings.Contains(key, "SECRET") || strings.Contains(key, "PASSWORD") || strings.Contains(key, "API_KEY") {
+			if strings.Contains(key, "WEBHOOK") || strings.Contains(key, "TOKEN") || strings.Contains(key, "SECRET") || strings.Contains(key, "PASSWORD") || strings.Contains(key, "API_KEY") {
 				secrets = append(secrets, value)
 			}
 		}

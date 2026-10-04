@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,30 +96,6 @@ func (p Policy) Describe() map[string][]string {
 	return map[string][]string{"model": describe(p.Model), "build": describe(p.Build)}
 }
 
-var labelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-
-// NormalizeHost lowercases a DNS name and refuses anything that is not one, including IP literals: an allowlist
-// names services, never addresses.
-func NormalizeHost(host string) (string, error) {
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	if host == "" || len(host) > 253 {
-		return "", errors.New("host name length")
-	}
-	if _, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
-		return "", errors.New("IP literal")
-	}
-	labels := strings.Split(host, ".")
-	if len(labels) < 2 {
-		return "", errors.New("single-label host")
-	}
-	for _, label := range labels {
-		if !labelPattern.MatchString(label) {
-			return "", errors.New("invalid host name")
-		}
-	}
-	return host, nil
-}
-
 // ParseRules reads a comma- or space-separated allowlist such as "api.openai.com, *.npmjs.org, git.example.com:8443".
 func ParseRules(list string) ([]Rule, error) {
 	rules := []Rule{}
@@ -138,7 +113,7 @@ func ParseRules(list string) ([]Rule, error) {
 		if trimmed, ok := strings.CutPrefix(host, "*."); ok {
 			rule.Wildcard, host = true, trimmed
 		}
-		normalized, err := NormalizeHost(host)
+		normalized, err := wire.NormalizeHost(host)
 		if err != nil {
 			return nil, fmt.Errorf("Egress rule %q is not a host name: %w", entry, err)
 		}

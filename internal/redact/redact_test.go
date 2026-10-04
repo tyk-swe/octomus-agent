@@ -5,6 +5,7 @@ package redact_test
 import (
 	"encoding/json"
 	"errors"
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"os"
 	"strings"
 	"testing"
@@ -18,10 +19,10 @@ const (
 )
 
 func TestMain(m *testing.M) {
-	if err := os.Setenv(redact.TokenEnv, operatorToken); err != nil {
+	if err := os.Setenv(config.TokenEnv, operatorToken); err != nil {
 		panic(err)
 	}
-	if err := os.Setenv(redact.WebhookEnv, webhookURL); err != nil {
+	if err := os.Setenv(config.WebhookEnv, webhookURL); err != nil {
 		panic(err)
 	}
 	os.Exit(m.Run())
