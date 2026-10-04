@@ -18,9 +18,12 @@ owns strict typed JSON boundaries for saved records and API requests.
 - `internal/engine`: scheduler and cycle orchestration: `engine.go` (App
   construction, options, runtime state and restart recovery), `scheduler.go`
   (tick, dispatch, pauses and idle backoff), `planning.go` (grounding, discovery,
-  proposal review and plan validation), `execution.go` (execution, review, repair and
-  verification, with their role prompts), `invocation.go` (role invocation: every
-  agent turn's admission, session start or resume, session record and redaction),
+  proposal review and consolidation), `planning_validate.go` (proposal validation,
+  target resolution and external PR context), `execution.go` (execution, repair and
+  publication), `review.go` (trusted change set and code-review turns),
+  `verification.go` (task verification commands and sandbox evidence), `invocation.go`
+  (role invocation: every agent turn's admission, session start or resume, session
+  record and redaction),
   `memory.go` (decision memory and rediscovery requests), `housekeeping.go`
   (retention, storage measurement and remote observation), `baseline.go`
   (clean-baseline checks, separate from task verification), `capacity.go` (open-PR

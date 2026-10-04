@@ -71,6 +71,21 @@ func (a *App) baselineCancelled(id string) (bool, error) {
 	return a.Store.MarkerSet("baseline_cancel", id)
 }
 
+func (a *App) defaultBranchSHA(ctx context.Context, cfg config.Config) (string, string, error) {
+	observedAt := model.Now()
+	revision, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
+	if err != nil {
+		return "", "", err
+	}
+	if revision == nil || *revision == "" {
+		if err := a.observeDefaultBranch(cfg, "", observedAt); err != nil {
+			return "", "", err
+		}
+		return "", "", errors.New("Default branch missing on remote")
+	}
+	return *revision, observedAt, nil
+}
+
 func (a *App) observeDefaultBranch(cfg config.Config, revision, observedAt string) error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -485,32 +500,25 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 	if err := gitops.ValidateRemote(ctx, c); err != nil {
 		return model.BaselineStatusRunning, err
 	}
-	observedAt := model.Now()
-	revision, err := gitops.RemoteRevision(ctx, c, c.DefaultBranch)
+	revision, observedAt, err := a.defaultBranchSHA(ctx, c)
 	if err != nil {
 		return model.BaselineStatusRunning, err
 	}
-	if revision == nil {
-		if err := a.observeDefaultBranch(c, "", observedAt); err != nil {
-			return model.BaselineStatusRunning, err
-		}
-		return model.BaselineStatusRunning, errors.New("Default branch missing on remote")
-	}
-	check.Revision = revision
+	check.Revision = &revision
 	if err := a.Store.Put("baseline", check.ID, *check); err != nil {
 		return model.BaselineStatusRunning, err
 	}
-	if err := a.observeDefaultBranch(c, *revision, observedAt); err != nil {
+	if err := a.observeDefaultBranch(c, revision, observedAt); err != nil {
 		return model.BaselineStatusRunning, err
 	}
 	if err := gitops.Fetch(ctx, c); err != nil {
 		return model.BaselineStatusRunning, err
 	}
 	workspaceDir := filepath.Join(a.DataDir, "baselines", check.ID, "workspace")
-	if err := gitops.CloneAt(ctx, c, workspaceDir, *revision); err != nil {
+	if err := gitops.CloneAt(ctx, c, workspaceDir, revision); err != nil {
 		return model.BaselineStatusRunning, err
 	}
-	intact, err := gitops.At(ctx, c, workspaceDir, *revision)
+	intact, err := gitops.At(ctx, c, workspaceDir, revision)
 	if err != nil {
 		return model.BaselineStatusRunning, err
 	}
@@ -523,7 +531,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		if ctx.Err() != nil {
 			return model.BaselineStatusRunning, process.ErrCancelled
 		}
-		outcome := runCheckCommand(ctx, a.sandbox, c, workspaceDir, command, *revision, i == 0)
+		outcome := runCheckCommand(ctx, a.sandbox, c, workspaceDir, command, revision, i == 0)
 		if ctx.Err() == nil && outcome.sandboxFailed() {
 			a.keepSandboxEvidence(check.ID, command, outcome.sandbox)
 			return model.BaselineStatusRunning, sandboxFailure(command, outcome.capture)
