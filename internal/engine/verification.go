@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -45,11 +46,12 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 		note := ""
 		switch {
 		case outcome.intactErr != nil:
-			note = "\n" + boundedTail(redact.Secrets(outcome.intactErr.Error()), verificationNoteLimit)
+			text, _ := bound(redact.Secrets(outcome.intactErr.Error()), noteLimit, true)
+			note = "\n" + text
 		case !outcome.intact:
 			note = "\nWorkspace or HEAD changed during this verification command"
 		}
-		output := outcome.evidenceText(verificationOutputLimit-len(note)) + note
+		output := outcome.evidenceText(outputLimit-len(note)) + note
 		task.Verification = append(task.Verification, model.Verification{
 			Command: command, Success: outcome.intactErr == nil && outcome.intact && !failed, Output: output, Revision: revision, CreatedAt: model.Now(),
 			Sandbox: outcome.sandbox,
@@ -112,7 +114,7 @@ func (o checkOutcome) sandboxFailed() bool {
 }
 
 func sandboxFailure(command string, err error) error {
-	return fmt.Errorf("The sandbox could not run verification command %s: %w", debugString(command), err)
+	return fmt.Errorf("The sandbox could not run verification command %s: %w", strconv.Quote(command), err)
 }
 
 // keepSandboxEvidence keeps the broker's record of a sandbox whose command has no result of its own, as a session
@@ -127,7 +129,7 @@ func (a *App) keepSandboxEvidence(entity, command string, record *model.SandboxR
 	if err != nil {
 		return
 	}
-	_ = a.Store.Event(entity, "sandbox_evidence", debugString(command)+": "+string(data))
+	_ = a.Store.Event(entity, "sandbox_evidence", strconv.Quote(command)+": "+string(data))
 }
 
 // sandboxUnavailable blocks a task as runner_unavailable, which a retry clears, when the sandbox failed one of its
@@ -139,15 +141,23 @@ func (e *sandboxUnavailable) Unwrap() []error {
 	return []error{model.BlockedRunnerUnavailable, e.err}
 }
 
+// Command output recorded as evidence is bounded to outputLimit bytes; a workspace note appended to it to noteLimit.
 const (
-	verificationOutputLimit = 16 * 1024
-	verificationNoteLimit   = 4096
-	outputTruncatedMarker   = "[output truncated]"
+	outputLimit     = 16 << 10
+	noteLimit       = 4 << 10
+	truncatedMarker = "[output truncated]"
 )
 
+// evidenceText is a verification command's evidence: stdout, then any stderr in a [stderr] section, then the exit
+// status on failure, within limit bytes. Each stream keeps its end, stderr may use half of the bound however long
+// stdout is, and the marker shows every cut.
 func (o checkOutcome) evidenceText(limit int) string {
+	tail := func(text string, limit int) string {
+		text, _ = bound(text, limit, true)
+		return text
+	}
 	if o.capture != nil {
-		return boundedTail(redact.Secrets(o.capture.Error()), limit)
+		return tail(redact.Secrets(o.capture.Error()), limit)
 	}
 	stdoutCapture, stderrCapture := o.captured.SafeCaptures()
 	clean := func(stream process.SafeCapture) string {
@@ -155,7 +165,7 @@ func (o checkOutcome) evidenceText(limit int) string {
 		if !stream.Truncated {
 			return text
 		}
-		text += "\n" + outputTruncatedMarker
+		text += "\n" + truncatedMarker
 		if tail := strings.TrimSpace(stream.Tail); tail != "" {
 			text += "\n" + tail
 		}
@@ -170,21 +180,34 @@ func (o checkOutcome) evidenceText(limit int) string {
 	if text := clean(stderrCapture); text != "" {
 		const separator = "\n[stderr]\n"
 		budget := max(limit/2, limit-len(separator)-len(stdout)-len(status))
-		stderr = separator + boundedTail(text, budget)
+		stderr = separator + tail(text, budget)
 	}
-	return boundedTail(stdout, limit-len(stderr)-len(status)) + stderr + status
+	return tail(stdout, limit-len(stderr)-len(status)) + stderr + status
 }
 
-func boundedTail(text string, limit int) string {
+// bound cuts text that exceeds limit bytes at a rune boundary and marks the cut: a tail keeps the end of the text
+// behind a leading marker, a head keeps its start before a trailing one. The flag reports a cut.
+func bound(text string, limit int, keepTail bool) (string, bool) {
 	if len(text) <= limit {
-		return text
+		return text, false
 	}
-	const prefix = outputTruncatedMarker + "\n"
-	start := len(text) - max(limit-len(prefix), 0)
-	for start < len(text) && !utf8.RuneStart(text[start]) {
-		start++
+	if keepTail {
+		const prefix = truncatedMarker + "\n"
+		start := len(text) - max(limit-len(prefix), 0)
+		for start < len(text) && !utf8.RuneStart(text[start]) {
+			start++
+		}
+		return prefix + text[start:], true
 	}
-	return prefix + text[start:]
+	const suffix = "\n" + truncatedMarker
+	if limit < len(suffix) {
+		return suffix[:limit], true
+	}
+	keep := limit - len(suffix)
+	for keep > 0 && !utf8.RuneStart(text[keep]) {
+		keep--
+	}
+	return text[:keep] + suffix, true
 }
 
 func runCheckCommand(ctx context.Context, box sandbox.Backend, cfg config.Config, ws, command, revision string, fresh bool) checkOutcome {

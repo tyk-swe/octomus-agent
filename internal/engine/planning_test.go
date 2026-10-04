@@ -20,6 +20,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func fixtureProposal(decision, reason string) map[string]any {
@@ -167,7 +168,7 @@ func TestAuditPlansWithoutQueueing(t *testing.T) {
 	existing := queuedTask(f.cfg, "already-queued", f.cfg.DefaultBranch, "octomus/already-queued")
 	putTask(t, f, existing)
 	app := f.pausedApp(t)
-	cycleID, err := app.StartAudit(context.Background())
+	cycleID, err := app.startAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +196,7 @@ func TestRunOnceCommitsPlan(t *testing.T) {
 	if err := control(app, "cycle"); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Tick(); err != nil {
+	if err := app.tick(); err != nil {
 		t.Fatal(err)
 	}
 	cycle := waitOnlyCycle(t, f.state)
@@ -253,7 +254,7 @@ func TestFailedPlanningCommitsNothing(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := time.Now().Unix()
-			if err := app.Tick(); err != nil {
+			if err := app.tick(); err != nil {
 				t.Fatal(err)
 			}
 			failed := waitOnlyCycle(t, f.state)
@@ -308,7 +309,7 @@ func TestConsolidationCoversEveryProposal(t *testing.T) {
 	plan.consolidation = runnertest.Reply{Answer: `{"proposals": []}`}
 	plan.queue(f)
 	app := f.pausedApp(t)
-	cycleID, err := app.StartAudit(context.Background())
+	cycleID, err := app.startAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +416,7 @@ func TestPlanningRejectsMutatedWorkspace(t *testing.T) {
 			test.mutate(&plan, test.mutation.effect)
 			plan.queue(f)
 			app := f.pausedApp(t)
-			cycleID, err := app.StartAudit(context.Background())
+			cycleID, err := app.startAudit(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -749,9 +750,15 @@ func TestDecisionMemoryAbsorbs(t *testing.T) {
 		t.Fatalf("same-cycle alternative was not absorbed: %d, %v", len(records), err)
 	}
 	stored := records[0].(map[string]any)
-	paths, pathsOK := stored["relevant_paths"].([]string)
-	if stored["mode"] != model.CycleModeExecution || stored["cycle_mode"] != nil || stored["kind"] != nil || stored["reconsideration_due"] != nil || !pathsOK || paths == nil {
-		t.Fatalf("decision record changed: %+v", stored)
+	saved, err := wirejson.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The saved shape is the version-7 record: mode as text, an empty path list, no kind or reconsideration_due.
+	want := fmt.Sprintf(`{"context_fingerprint":%q,"cycle_id":%q,"decision":"accepted","id":%q,"mode":"execution","problem_key":"stable-problem","reason":%q,"reconsider_after":%q,"relevant_paths":[],"repository":%q,"source_revision":"revision","target":%q}`,
+		stored["context_fingerprint"], cycle.ID, cycle.ID+":accepted", accepted.Reason, stored["reconsider_after"], cfg.GitHubRepo, cfg.DefaultBranch)
+	if string(saved) != want {
+		t.Fatalf("decision record changed:\n%s\nwant\n%s", saved, want)
 	}
 	recorded := decisionRecord{
 		Kind: "decision", ID: model.ID(), CycleMode: model.CycleModeExecution,
@@ -835,7 +842,7 @@ func TestUnaffordableAuditChangesNothing(t *testing.T) {
 	saveSettings(t, state, cfg, original)
 	a := New(state, t.TempDir())
 	t.Cleanup(a.Shutdown)
-	if _, err := a.StartAudit(context.Background()); err == nil {
+	if _, err := a.startAudit(context.Background()); err == nil {
 		t.Fatal("unaffordable audit started")
 	}
 	control, err := a.Control()

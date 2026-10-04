@@ -185,7 +185,7 @@ func reviewPrompt(task *model.Task, revision string, trusted changeSet) string {
 	base := task.ComparisonBase
 	prompt := fmt.Sprintf(
 		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
-		base, revision, task.Proposal.Prompt, task.Proposal.Scope, debugOption(task.PRURL))
+		base, revision, task.Proposal.Prompt, task.Proposal.Scope, quoteOption(task.PRURL))
 	prompt += fmt.Sprintf("\nThe orchestrator's own git computed the change set from %s to %s below. ", base, revision) +
 		"Git inside your sandbox reads configuration and shell startup files earlier turns could change, " +
 		"so where it shows other changes or other content, what follows is authoritative and the difference is itself a finding. " +

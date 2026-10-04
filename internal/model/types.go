@@ -376,6 +376,17 @@ func (v OpenPRInventory) MarshalJSON() ([]byte, error) {
 }
 func (v OpenPRInventory) Clone() OpenPRInventory { return wirejson.Clone(v) }
 
+// OwnedBranches is the set of branches with an owned open PR in the inventory.
+func (v OpenPRInventory) OwnedBranches() map[string]struct{} {
+	branches := map[string]struct{}{}
+	for _, pr := range v.PRs {
+		if pr.OwnedOpen() {
+			branches[pr.Branch] = struct{}{}
+		}
+	}
+	return branches
+}
+
 type PRCapacity struct {
 	Limit      uint64  `json:"limit"`
 	OwnedOpen  *uint64 `json:"owned_open"`

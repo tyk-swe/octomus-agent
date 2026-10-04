@@ -80,7 +80,20 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	if inv.task == nil {
 		record := model.NewSession(session, inv.role, inv.route)
 		_ = a.Store.Event(inv.cycleID, "session_started", fmt.Sprintf("%s: %s · %s", inv.role, session, inv.route))
-		answer, summary, turnErr := a.planningTurn(clients, inv, session)
+		// Planning roles run in their own goroutines, outside the task supervisor. Convert a turn panic before the
+		// session is finalized so the failed evidence is retained and the ordinary cycle failure path can join
+		// siblings and release ownership.
+		var answer, summary string
+		var turnErr error
+		func() {
+			defer func() {
+				if panicked := recover(); panicked != nil {
+					answer, summary = "", ""
+					turnErr = errors.Join(fmt.Errorf("Planning role %s panicked: %v", inv.role, panicked), clients.Release())
+				}
+			}()
+			answer, summary, turnErr = a.turn(clients, inv, session)
+		}()
 		record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
 		if inv.ownsClients {
 			if closeErr := clients.Close(); turnErr == nil && closeErr != nil {
@@ -138,19 +151,6 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	}
 	record.MarkCompleted(redact.Text(summary))
 	return answer, a.saveTask(task)
-}
-
-// Planning roles run in their own goroutines, outside the task supervisor. Convert a
-// turn panic before invoke finalizes its session so the failed evidence is retained
-// and the ordinary cycle failure path can join siblings and release ownership.
-func (a *App) planningTurn(clients *runner.Runners, inv invocation, session string) (answer, summary string, err error) {
-	defer func() {
-		if panicked := recover(); panicked != nil {
-			answer, summary = "", ""
-			err = errors.Join(fmt.Errorf("Planning role %s panicked: %v", inv.role, panicked), clients.Release())
-		}
-	}()
-	return a.turn(clients, inv, session)
 }
 
 func (a *App) turn(clients *runner.Runners, inv invocation, session string) (answer, summary string, err error) {
@@ -219,7 +219,7 @@ const ownerDepth = 2
 // limit, and puts everyone over it when it lies outside any owned root. Another owner's unmeasured subtree does not
 // stop this admission; that owner can admit nothing more until its retained work is resolved.
 func (a *App) measure(owner string) (uint64, error) {
-	usage, err := workspace.Measure(a.DataDir, ownerDepth)
+	usage, err := workspace.Measure(a.dataDir, ownerDepth)
 	if err != nil {
 		return 0, err
 	}

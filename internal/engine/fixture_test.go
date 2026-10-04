@@ -307,7 +307,7 @@ func driveTask(t *testing.T, f *fixture, app *App, taskID string) model.Task {
 func driveTaskResult(f *fixture, app *App, taskID string) (model.Task, error) {
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := app.Tick(); err != nil {
+		if err := app.tick(); err != nil {
 			return model.Task{}, err
 		}
 		app.wg.Wait()

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -42,15 +42,11 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 		}
 		task = *current
 	}
-	return a.superviseExecution(ctx, task, a.execute)
-}
-
-func (a *App) superviseExecution(ctx context.Context, task model.Task, execute func(context.Context, *model.Task) error) error {
 	workCtx, workCancel := context.WithCancel(ctx)
 	defer workCancel()
 	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
 	result, executeErr := runJoined(ctx, workCancel, limit, "Task worker panicked", func() error {
-		return execute(workCtx, &task)
+		return a.execute(workCtx, &task)
 	})
 	if executeErr == nil {
 		return nil
@@ -240,61 +236,6 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 	return a.published(task, p)
 }
 
-// Caller holds the gate so a publication cannot acquire or release its worker
-// claim while recovery checks ownership and preserves its checkpoint.
-func (a *App) blockOrphanedPublications() error {
-	a.runtimeMu.Lock()
-	excluded := a.ownedTaskIDs()
-	a.runtimeMu.Unlock()
-	tasks, err := a.Store.PublishingTasksExcept(excluded)
-	if err != nil {
-		return err
-	}
-	for i := range tasks {
-		if a.ctx.Err() != nil {
-			return nil
-		}
-		err := fmt.Errorf("Publication has no active worker; reconcile publication to check delivery: %w", model.BlockedPublicationUncertain)
-		if err := a.setTaskError(&tasks[i], err); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Cancellation commits its terminal status before the worker joins and saves its
-// final session evidence. A refused final write must not leave a running session
-// permanently attached to a cancelled task, including after archive or restart.
-// Caller holds the gate while checking ownership and updating the saved evidence.
-func (a *App) settleCancelledSessions() error {
-	a.runtimeMu.Lock()
-	if a.runtime.cancelScanDone {
-		a.runtimeMu.Unlock()
-		return nil
-	}
-	excluded := a.ownedTaskIDs()
-	a.runtimeMu.Unlock()
-	tasks, err := a.Store.CancelledWithLiveSessions(excluded)
-	if err != nil {
-		return err
-	}
-	for i := range tasks {
-		model.InterruptRunning(tasks[i].Sessions)
-		if err := a.saveTask(&tasks[i]); err != nil {
-			return err
-		}
-	}
-	// A new service scans durable history once. Worker exit and cleanup release
-	// invalidate this check after an excluded owner finishes; failed writes and
-	// full pages stay retryable without scanning finalized history every tick.
-	if len(tasks) < 500 {
-		a.runtimeMu.Lock()
-		a.runtime.cancelScanDone = true
-		a.runtimeMu.Unlock()
-	}
-	return nil
-}
-
 func (a *App) publishedDependency(id string) (model.Task, error) {
 	dependency, err := store.Get[model.Task](a.Store, "task", id)
 	if err != nil {
@@ -318,21 +259,6 @@ func ensureWorkspaceAt(ctx context.Context, cfg config.Config, ws, revision stri
 		return model.BlockedWorkspaceInvalid
 	}
 	return nil
-}
-
-// Caller holds runtimeMu. The copy must complete before any store call, matching
-// the recovery scans that exclude in-flight workers and claimed cleanups.
-func (a *App) ownedTaskIDs() []string {
-	excluded := make([]string, 0, len(a.runtime.tasks)+len(a.runtime.cleanups))
-	for id := range a.runtime.tasks {
-		excluded = append(excluded, id)
-	}
-	for key := range a.runtime.cleanups {
-		if key.kind == cleanupTask {
-			excluded = append(excluded, key.id)
-		}
-	}
-	return excluded
 }
 
 func requireDefaultRevision(ctx context.Context, cfg config.Config, want string) error {
@@ -494,13 +420,13 @@ func executorPrompt(task *model.Task, cfg config.Config) string {
 		"Implement this accepted task end to end in this workspace. Source revision: %s. Full comparison base: %s. Existing PR: %s. Preserve existing accumulated branch behavior; inspect its full diff. Do not push, publish, merge or deploy. Required repository verification commands: %s. Objective and constraints:\n%s\nProblem: %s\nBenefit: %s\nScope: %s\nEvidence: %s\nReturn a concise summary of actual changes, verification and material risks or migration notes.",
 		task.SourceRevision,
 		task.ComparisonBase,
-		debugOption(task.PRURL),
-		debugList(cfg.VerificationCommands),
+		quoteOption(task.PRURL),
+		quoteList(cfg.VerificationCommands),
 		task.Proposal.Prompt,
 		task.Proposal.Problem,
 		task.Proposal.Benefit,
 		task.Proposal.Scope,
-		debugList(task.Proposal.Evidence))
+		quoteList(task.Proposal.Evidence))
 }
 
 func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runners, review model.Review, verificationErrors []string) error {
@@ -539,11 +465,11 @@ func repairPrompt(task *model.Task, cfg config.Config, review model.Review, veri
 	}
 	return fmt.Sprintf(
 		"Repair actionable findings and verification failures for this task. Preserve useful capabilities and meaningful tests. Do not push, publish, merge or deploy. If a finding is unsupported, explain the technical evidence in your final summary; the next fresh reviewer must independently assess it. Rerun relevant verification %s. Full comparison base: %s. Task: %s. Findings: %s. Verification failures: %s",
-		debugList(cfg.VerificationCommands),
+		quoteList(cfg.VerificationCommands),
 		task.ComparisonBase,
 		task.Proposal.Prompt,
 		string(findingsJSON),
-		debugList(verificationErrors)), nil
+		quoteList(verificationErrors)), nil
 }
 
 func (a *App) published(task *model.Task, p model.PullRequest) error {
@@ -579,7 +505,29 @@ func statusLabel(status model.Status) string {
 }
 
 func (a *App) taskWorkspace(taskID string) string {
-	return filepath.Join(a.DataDir, "tasks", taskID, "workspace")
+	return filepath.Join(a.dataDir, "tasks", taskID, "workspace")
+}
+
+func (a *App) setTaskError(task *model.Task, err error) error {
+	recordTaskError(task, err)
+	return a.transition(task, model.StatusBlocked)
+}
+
+func recordTaskError(task *model.Task, err error) {
+	reason := model.BlockedReasonFromError(err)
+	task.BlockedReason = &reason
+	message := redact.Error(err)
+	task.Error = &message
+}
+
+// Caller holds the gate until the exited worker releases its runtime claim.
+// Keep new work blocked when a publication checkpoint cannot be settled yet.
+func (a *App) settleExitedTask(task *model.Task, cause error) {
+	publishing := task.Status == model.StatusPublishing && task.OutputCommit != nil
+	model.FailRunning(task.Sessions, redact.Error(cause))
+	if err := a.setTaskError(task, cause); err != nil && publishing {
+		a.setRecoveryError(err)
+	}
 }
 
 func sourcePtrEqual(a, b *string) bool {
@@ -589,46 +537,18 @@ func sourcePtrEqual(a, b *string) bool {
 	return *a == *b
 }
 
-func debugOption(value *string) string {
-	if value == nil {
-		return "None"
-	}
-	return "Some(" + debugString(*value) + ")"
-}
-
-func debugList(values []string) string {
+// quoteList and quoteOption render prompt operands as quoted literals, so a command or path reads as one unit.
+func quoteList(values []string) string {
 	parts := make([]string, len(values))
 	for i, v := range values {
-		parts[i] = debugString(v)
+		parts[i] = strconv.Quote(v)
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
-func debugString(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		case 0:
-			b.WriteString(`\0`)
-		default:
-			if unicode.IsPrint(r) {
-				b.WriteRune(r)
-			} else {
-				fmt.Fprintf(&b, `\u{%x}`, r)
-			}
-		}
+func quoteOption(value *string) string {
+	if value == nil {
+		return "none"
 	}
-	b.WriteByte('"')
-	return b.String()
+	return strconv.Quote(*value)
 }

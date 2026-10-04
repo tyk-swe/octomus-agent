@@ -20,19 +20,28 @@ owns strict typed JSON boundaries for saved records and API requests.
   checkout), `secrets.go` (secret files and the git credential helper) and
   `sandbox.go` (sandbox backend, egress gateway, login lease and broker entry points).
 - `internal/engine`: scheduler and cycle orchestration: `engine.go` (App
-  construction, options, runtime state and restart recovery), `scheduler.go`
-  (tick, dispatch, pauses and idle backoff), `planning.go` (grounding, discovery,
-  proposal review and consolidation), `planning_validate.go` (proposal validation,
-  target resolution and external PR context), `execution.go` (execution, repair and
-  publication), `review.go` (trusted change set and code-review turns),
-  `verification.go` (task verification commands and sandbox evidence), `invocation.go`
-  (role invocation: every agent turn's admission, session start or resume, session
-  record and redaction),
-  `memory.go` (decision memory and rediscovery requests), `housekeeping.go`
-  (retention, storage measurement and remote observation), `baseline.go`
-  (clean-baseline checks, separate from task verification), `capacity.go` (open-PR
-  observation and owned-PR admission), `actions.go`/`control.go`/`api.go` (operator
-  controls and views).
+  construction, options, Run/Shutdown, Config/Control and failure reporting),
+  `runtime.go` (runtime state and jobs, the recovery barrier and cleanup claims),
+  `scheduler.go` (tick, dispatch, planning start, capacity waits and task
+  workers), `plan_rules.go` (the one dependency validator planning and dispatch
+  share, proposal validation, target resolution, assessment and consolidation
+  checks and external PR context), `planning.go` (grounding, discovery, proposal
+  review, consolidation and plan commit), `memory.go` (decision memory and
+  rediscovery requests), `invocation.go` (role invocation: every agent turn's
+  admission, session start or resume, session record and redaction),
+  `execution.go` (task supervision, execution, repair and publication),
+  `review.go` (trusted change set and code-review turns), `verification.go`
+  (task verification commands, sandbox evidence and the shared output bound),
+  `recovery.go` (restart recovery and the orphan scans every tick repeats),
+  `controls.go` (operating-mode and configuration controls, audit start,
+  planning preflight and cycle start), `actions.go` (per-record cycle and task
+  actions, reconciliation and owned-root removal), `views.go` (state, baseline,
+  doctor, model-catalog and sandbox posture views and the containment
+  self-test), `capacity.go` (open-PR inventory claims and capacity),
+  `observation.go` (default-branch and open-PR observation, context fingerprint),
+  `housekeeping.go` (retention and storage measurement), `baseline.go`
+  (clean-baseline checks, separate from task verification), `deployment.go`
+  (deployment pinning, scratch roots, sandbox readiness and route validation).
 - `internal/runner`: runner-neutral model discovery, exact routing and dispatch
   (`runner.go`); `codex.go` (app-server protocol) and `opencode.go` (HTTP/SSE, with
   `opencode_policy.go` for the worker policy and `opencode_catalog.go`) implement it

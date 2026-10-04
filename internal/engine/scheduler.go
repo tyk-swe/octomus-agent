@@ -1,19 +1,20 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
-func IdleDelay(base uint64, streak uint32) uint64 {
+func idleDelay(base uint64, streak uint32) uint64 {
 	ceiling := uint64(86400)
 	if base > ceiling {
 		ceiling = base
@@ -35,7 +36,7 @@ func IdleDelay(base uint64, streak uint32) uint64 {
 	return delay
 }
 
-func (a *App) Tick() error {
+func (a *App) tick() error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	if a.ctx.Err() != nil {
@@ -215,7 +216,7 @@ func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 	snapshot := cfg.Clone()
 	expected := control.Clone()
 	a.wg.Go(func() {
-		err := a.doctor(a.ctx, snapshot, false)
+		err := a.preflight(a.ctx, snapshot, false)
 		a.gate.Lock()
 		defer a.gate.Unlock()
 		defer a.notify()
@@ -226,7 +227,7 @@ func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 			return
 		}
 		a.endPreflight()
-		if a.ctx.Err() != nil || errors.Is(err, ErrRecoveryBlocked) {
+		if a.ctx.Err() != nil || errors.Is(err, errRecoveryBlocked) {
 			return
 		}
 		live, loadErr := a.Control()
@@ -313,7 +314,7 @@ func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 			continue
 		}
 		deferred := false
-		if err := ValidateTaskPlan(cycleTasks); err != nil {
+		if err := validateTaskPlan(cycleTasks); err != nil {
 			for i := range cycleTasks {
 				if a.ctx.Err() != nil {
 					return changed, nil
@@ -337,6 +338,10 @@ func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 		}
 	}
 	return changed, nil
+}
+
+func invalidPlan(message string) error {
+	return fmt.Errorf("%s: %w", message, model.BlockedInvalidPlan)
 }
 
 func (a *App) cancelQueuedTasks(tasks []model.Task) (bool, error) {
@@ -513,84 +518,44 @@ func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, e
 	return true, nil, nil
 }
 
-func ValidateTaskPlan(tasks []model.Task) error {
-	byID := map[string]model.Task{}
-	for _, task := range tasks {
-		if _, duplicate := byID[task.ID]; duplicate {
-			return fmt.Errorf("Duplicate task identity %s", task.ID)
-		}
-		byID[task.ID] = task
-	}
-	edges := map[string][]string{}
-	for _, task := range tasks {
-		for _, dependencyID := range task.Proposal.Dependencies {
-			dependency, ok := byID[dependencyID]
-			if !ok {
-				return fmt.Errorf("Task %s has unknown dependency %s", task.ID, dependencyID)
-			}
-			if task.Proposal.Target == task.Config.DefaultBranch {
-				return fmt.Errorf("Default-branch tasks cannot depend on another task")
-			}
-			if dependency.Proposal.Target != task.Proposal.Target {
-				return fmt.Errorf("Dependent tasks must write the same existing pull request")
-			}
-			edges[task.ID] = append(edges[task.ID], dependencyID)
-		}
-	}
-	state := map[string]uint8{}
-	var visit func(string) error
-	visit = func(id string) error {
-		if state[id] == 1 {
-			return errors.New("Task dependency cycle")
-		}
-		if state[id] == 2 {
-			return nil
-		}
-		state[id] = 1
-		for _, dependency := range edges[id] {
-			if err := visit(dependency); err != nil {
-				return err
-			}
-		}
-		state[id] = 2
-		return nil
-	}
-	for id := range byID {
-		if err := visit(id); err != nil {
-			return err
-		}
-	}
-	groups := map[string][]string{}
-	for _, task := range tasks {
-		if task.Proposal.Target != task.Config.DefaultBranch {
-			groups[task.Proposal.Target] = append(groups[task.Proposal.Target], task.ID)
-		}
-	}
-	var reaches func(string, string, map[string]bool) bool
-	reaches = func(from, target string, seen map[string]bool) bool {
-		if from == target {
-			return true
-		}
-		if seen[from] {
-			return false
-		}
-		seen[from] = true
-		for _, dependency := range edges[from] {
-			if reaches(dependency, target, seen) {
-				return true
-			}
-		}
-		return false
-	}
-	for target, ids := range groups {
-		sort.Strings(ids)
-		for i := 0; i < len(ids); i++ {
-			for j := i + 1; j < len(ids); j++ {
-				if !reaches(ids[i], ids[j], map[string]bool{}) && !reaches(ids[j], ids[i], map[string]bool{}) {
-					return fmt.Errorf("Writers to %s do not form a total dependency order", target)
+func (a *App) runTask(task model.Task) {
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.runtimeMu.Lock()
+	a.runtime.tasks[task.ID] = taskJob{branch: task.Branch, cancel: cancel}
+	a.runtimeMu.Unlock()
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		defer cancel()
+		var runErr error
+		func() {
+			defer func() {
+				if panicked := recover(); panicked != nil {
+					runErr = fmt.Errorf("Task worker panicked: %v", panicked)
 				}
+			}()
+			runErr = a.supervise(ctx, task.Clone())
+		}()
+		a.gate.Lock()
+		current, loadErr := store.Get[model.Task](a.Store, "task", task.ID)
+		interrupted := a.ctx.Err() != nil && current != nil && workspace.Initialized(*current)
+		if loadErr == nil && current != nil && current.Status.Active() && !interrupted {
+			if runErr == nil || errors.Is(runErr, context.Canceled) {
+				runErr = errors.New("Task worker exited unexpectedly; inspect the preserved workspace")
 			}
+			a.settleExitedTask(current, runErr)
+		} else if loadErr != nil {
+			// The final read could not establish whether a checkpoint remains.
+			// A successful recovery pass can safely clear this barrier.
+			a.setRecoveryError(loadErr)
 		}
-	}
-	return nil
+		a.runtimeMu.Lock()
+		delete(a.runtime.tasks, task.ID)
+		if loadErr != nil || (current != nil && current.Status == model.StatusCancelled) {
+			a.runtime.cancelScanDone = false
+		}
+		a.runtimeMu.Unlock()
+		a.gate.Unlock()
+		a.notify()
+	}()
 }

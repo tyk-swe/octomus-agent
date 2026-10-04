@@ -3,9 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,32 +13,11 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
-	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 const schedulerInterval = time.Second
 
-type TaskRunner interface {
-	RunTask(context.Context, model.Task) error
-}
-
-type TaskRunnerFunc func(context.Context, model.Task) error
-
-func (f TaskRunnerFunc) RunTask(ctx context.Context, task model.Task) error { return f(ctx, task) }
-
 type Option func(*App)
-
-func WithTaskRunner(runner TaskRunner) Option {
-	return func(a *App) {
-		if runner != nil {
-			a.taskRunner = runner
-		}
-	}
-}
-
-func WithRunnerConnector(connect runner.Connector) Option {
-	return func(a *App) { a.connector = connect }
-}
 
 // WithSandbox selects where untrusted children run. Without it the engine runs them directly on the host.
 func WithSandbox(backend sandbox.Backend) Option {
@@ -51,64 +28,25 @@ func WithSandbox(backend sandbox.Backend) Option {
 	}
 }
 
-type cycleJob struct {
-	id     string
-	mode   model.CycleMode
-	cancel context.CancelFunc
+// WithDeployment applies the host deployment's fixed settings.
+func WithDeployment(deployment Deployment) Option {
+	return func(a *App) { a.deployment = deployment }
 }
 
-type taskJob struct {
-	branch string
-	cancel context.CancelFunc
+func WithRunnerConnector(connect runner.Connector) Option {
+	return func(a *App) { a.connector = connect }
 }
-
-type runtimeState struct {
-	cycle               *cycleJob
-	preflight           *model.CycleMode
-	tasks               map[string]taskJob
-	checkedCycles       map[string]struct{}
-	prRefresh           *prRefreshJob
-	prObservation       *freshPRs
-	prRefreshError      string
-	lastPRAttempt       time.Time
-	prAdmissionRefused  bool
-	housekeeping        bool
-	lastRetention       time.Time
-	lastObserve         time.Time
-	reconciling         bool
-	baseline            *baselineJob
-	defaultObservation  *model.DefaultBranchObservation
-	cleanups            map[cleanupKey]struct{}
-	cleanupReports      map[cleanupKey]cleanupReport
-	retentionCursors    map[cleanupKind]string
-	activeRecoveryError *string
-
-	cancelScanDone bool
-}
-
-func (r *runtimeState) idle() bool {
-	return !r.planning() && len(r.tasks) == 0 && r.baseline == nil
-}
-
-func (r *runtimeState) planning() bool { return r.cycle != nil || r.preflight != nil }
-
-func (r *runtimeState) auditActive() bool {
-	return r.cycle != nil && r.cycle.mode == model.CycleModeAudit ||
-		r.preflight != nil && *r.preflight == model.CycleModeAudit
-}
-
-func (r *runtimeState) startPreflight(mode model.CycleMode) { r.preflight = &mode }
 
 type App struct {
 	Store      *store.Store
-	DataDir    string
+	dataDir    string
 	gate       sync.Mutex
 	runtimeMu  sync.Mutex
 	runtime    runtimeState
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wake       chan struct{}
-	taskRunner TaskRunner
+	supervise  func(context.Context, model.Task) error
 	connector  runner.Connector
 	sandbox    sandbox.Backend
 	deployment Deployment
@@ -122,38 +60,17 @@ type App struct {
 	fsLock sync.RWMutex
 }
 
-func (a *App) withoutGate(fn func()) {
-	a.gate.Unlock()
-	defer a.gate.Lock()
-	fn()
-}
-
-func (a *App) runners(ctx context.Context, cfg config.Config, entity string) *runner.Runners {
-	return runner.New(ctx, cfg, a.connect(entity))
-}
-
-func (a *App) connectRunner(ctx context.Context, backend config.Backend, cfg config.Config, cwd, entity string) (runner.Adapter, error) {
-	return a.connect(entity)(ctx, backend, cfg, cwd)
-}
-
-func (a *App) connect(entity string) runner.Connector {
-	if a.connector != nil {
-		return a.connector
-	}
-	return runner.DefaultConnector(a.Store, entity, a.sandbox)
-}
-
 func New(state *store.Store, dataDir string, options ...Option) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
 		Store:   state,
-		DataDir: filepath.Clean(dataDir),
+		dataDir: filepath.Clean(dataDir),
 		ctx:     ctx,
 		cancel:  cancel,
 		wake:    make(chan struct{}, 1),
 		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}, retentionCursors: map[cleanupKind]string{}},
 	}
-	a.taskRunner = TaskRunnerFunc(a.superviseTask)
+	a.supervise = a.superviseTask
 	a.sandbox = sandbox.Host{}
 	for _, option := range options {
 		if option != nil {
@@ -161,35 +78,6 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 		}
 	}
 	return a
-}
-
-func (a *App) notify() {
-	select {
-	case a.wake <- struct{}{}:
-	default:
-	}
-}
-
-func (a *App) Config() (config.Config, error) {
-	cfg, err := store.Get[config.Config](a.Store, "settings", "config")
-	if err != nil {
-		return config.Config{}, err
-	}
-	if cfg == nil {
-		return a.deployment.pin(config.Default()), nil
-	}
-	return a.deployment.pin(*cfg), nil
-}
-
-func (a *App) Control() (model.Control, error) {
-	control, err := store.Get[model.Control](a.Store, "settings", "control")
-	if err != nil {
-		return model.Control{}, err
-	}
-	if control == nil {
-		return model.DefaultControl(), nil
-	}
-	return *control, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -203,7 +91,7 @@ func (a *App) Run(ctx context.Context) error {
 			a.Shutdown()
 			return nil
 		}
-		if err := a.Tick(); err != nil && ctx.Err() == nil {
+		if err := a.tick(); err != nil && ctx.Err() == nil {
 			a.fail(err)
 		}
 		select {
@@ -241,46 +129,50 @@ func (a *App) Shutdown() {
 	a.wg.Wait()
 }
 
-func (a *App) Context() context.Context { return a.ctx }
-
-func (a *App) Drained() bool {
-	a.runtimeMu.Lock()
-	defer a.runtimeMu.Unlock()
-	r := &a.runtime
-	return len(r.tasks) == 0 && !r.planning() && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
+func (a *App) notify() {
+	select {
+	case a.wake <- struct{}{}:
+	default:
+	}
 }
 
-// recoveryError blocks the current scheduling pass without changing saved
-// operating policy while a background recovery write is being retried.
-type recoveryError struct{ err error }
-
-// Keep the first eight recorded causes for the whole episode, without eviction.
-// After saturation, a single overflow notice bounds activity even if causes keep
-// changing. Only successful event writes consume a cause slot or the notice.
-type recoveryActivity struct {
-	causes           [8]string
-	count            int
-	overflowRecorded bool
+func (a *App) Config() (config.Config, error) {
+	cfg, err := store.Get[config.Config](a.Store, "settings", "config")
+	if err != nil {
+		return config.Config{}, err
+	}
+	if cfg == nil {
+		return a.deployment.pin(config.Default()), nil
+	}
+	return a.deployment.pin(*cfg), nil
 }
 
-func (e *recoveryError) Error() string { return e.err.Error() }
-func (e *recoveryError) Unwrap() error { return e.err }
-
-// blockRecovery establishes the admission barrier before Tick releases the gate.
-// Run may report the failure later; operator controls and preflight completions
-// must already be blocked during that gap.
-func (a *App) blockRecovery(err error) error {
-	a.setRecoveryError(err)
-	return &recoveryError{err: err}
+func (a *App) Control() (model.Control, error) {
+	control, err := store.Get[model.Control](a.Store, "settings", "control")
+	if err != nil {
+		return model.Control{}, err
+	}
+	if control == nil {
+		return model.DefaultControl(), nil
+	}
+	return *control, nil
 }
 
-func (a *App) setRecoveryError(err error) string {
-	// The redactor may return a substring; retain only its bounded display text.
-	message := strings.Clone(redact.Error(err))
-	a.runtimeMu.Lock()
-	a.runtime.activeRecoveryError = &message
-	a.runtimeMu.Unlock()
-	return message
+func (a *App) withoutGate(fn func()) {
+	a.gate.Unlock()
+	defer a.gate.Lock()
+	fn()
+}
+
+func (a *App) runners(ctx context.Context, cfg config.Config, entity string) *runner.Runners {
+	return runner.New(ctx, cfg, a.connect(entity))
+}
+
+func (a *App) connect(entity string) runner.Connector {
+	if a.connector != nil {
+		return a.connector
+	}
+	return runner.DefaultConnector(a.Store, entity, a.sandbox)
 }
 
 func (a *App) fail(err error) {
@@ -321,142 +213,11 @@ func (a *App) fail(err error) {
 	_ = a.Store.Event("system", "error", message)
 }
 
-func (a *App) Recover() error {
-	a.gate.Lock()
-	defer a.gate.Unlock()
+func (a *App) Drained() bool {
 	a.runtimeMu.Lock()
-	a.runtime.cancelScanDone = false
-	a.runtimeMu.Unlock()
-
-	// Scratch roots only ever hold a check that died with the previous process.
-	if err := workspace.RemoveOwnedDir(a.DataDir, filepath.Join(a.DataDir, scratchDir)); err != nil {
-		return err
-	}
-	if err := a.recoverBaselines(); err != nil {
-		return err
-	}
-	candidates, err := a.Store.ReservableTasks()
-	if err != nil {
-		return err
-	}
-	for _, task := range candidates {
-		initializedQueued := task.Status == model.StatusQueued && workspace.Initialized(task)
-		needsReservation := task.Status.Active() || initializedQueued || (task.Status != model.StatusPublished && task.OutputCommit != nil)
-		if task.Proposal.Target == task.Config.DefaultBranch && task.Status != model.StatusCancelled && needsReservation {
-			if err := a.Store.SeedPRReservation(task); err != nil {
-				return err
-			}
-		}
-	}
-
-	active := make([]string, 0, len(model.ActiveStatuses()))
-	for _, status := range model.ActiveStatuses() {
-		active = append(active, status.String())
-	}
-	tasks, err := a.Store.TasksWithStatus(active)
-	if err != nil {
-		return err
-	}
-	for _, task := range tasks {
-		markedCancelled, err := a.Store.Marked("cancel", task.ID)
-		if err != nil {
-			return err
-		}
-		model.InterruptRunning(task.Sessions)
-		switch {
-		case markedCancelled && task.OutputCommit == nil:
-			task.Status = model.StatusCancelled
-			task.Error = new("Operator cancellation preserved across restart")
-		case workspace.Initialized(task) && task.Attempts < task.ExecutionConfig().MaxRetries:
-			task.Status = model.StatusQueued
-			task.Attempts++
-			task.Error = new("Recovering an interrupted task: inspecting the recorded workspace and reconciling remote state before continuing.")
-		default:
-			task.Status = model.StatusBlocked
-			reason := model.BlockedWorkspaceInvalid
-			message := "Service interrupted before workspace initialization completed, or retry budget exhausted. Inspect the preserved task before retrying."
-			if workspace.Initialized(task) {
-				reason = model.BlockedRetryLimit
-				if task.OutputCommit != nil {
-					reason = model.BlockedPublicationUncertain
-					message = "Service interrupted during publication after the retry budget was exhausted. Reconcile publication to finish delivery without another model turn."
-				}
-			}
-			task.BlockedReason = &reason
-			task.Error = new(message)
-		}
-		task.UpdatedAt = model.Now()
-		if err := a.Store.Put("task", task.ID, task); err != nil {
-			return err
-		}
-		if err := a.Store.Event(task.ID, "recovery", *task.Error); err != nil {
-			return err
-		}
-	}
-
-	if err := a.settleCancelledSessions(); err != nil {
-		return err
-	}
-	return a.interruptOrphanedCycles()
+	defer a.runtimeMu.Unlock()
+	r := &a.runtime
+	return len(r.tasks) == 0 && !r.planning() && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
 }
 
-func (a *App) setTaskError(task *model.Task, err error) error {
-	recordTaskError(task, err)
-	return a.transition(task, model.StatusBlocked)
-}
-
-// Caller holds the gate until the exited worker releases its runtime claim.
-// Keep new work blocked when a publication checkpoint cannot be settled yet.
-func (a *App) settleExitedTask(task *model.Task, cause error) {
-	publishing := task.Status == model.StatusPublishing && task.OutputCommit != nil
-	model.FailRunning(task.Sessions, redact.Error(cause))
-	if err := a.setTaskError(task, cause); err != nil && publishing {
-		a.setRecoveryError(err)
-	}
-}
-
-func (a *App) runTask(task model.Task) {
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.runtimeMu.Lock()
-	a.runtime.tasks[task.ID] = taskJob{branch: task.Branch, cancel: cancel}
-	a.runtimeMu.Unlock()
-	a.wg.Add(1)
-	go func() {
-		defer a.wg.Done()
-		defer cancel()
-		var runErr error
-		func() {
-			defer func() {
-				if panicked := recover(); panicked != nil {
-					runErr = fmt.Errorf("Task worker panicked: %v", panicked)
-				}
-			}()
-			runErr = a.taskRunner.RunTask(ctx, task.Clone())
-		}()
-		a.gate.Lock()
-		current, loadErr := store.Get[model.Task](a.Store, "task", task.ID)
-		interrupted := a.ctx.Err() != nil && current != nil && workspace.Initialized(*current)
-		if loadErr == nil && current != nil && current.Status.Active() && !interrupted {
-			if runErr == nil || errors.Is(runErr, context.Canceled) {
-				runErr = errors.New("Task worker exited unexpectedly; inspect the preserved workspace")
-			}
-			a.settleExitedTask(current, runErr)
-		} else if loadErr != nil {
-			// The final read could not establish whether a checkpoint remains.
-			// A successful recovery pass can safely clear this barrier.
-			a.setRecoveryError(loadErr)
-		}
-		a.runtimeMu.Lock()
-		delete(a.runtime.tasks, task.ID)
-		if loadErr != nil || (current != nil && current.Status == model.StatusCancelled) {
-			a.runtime.cancelScanDone = false
-		}
-		a.runtimeMu.Unlock()
-		a.gate.Unlock()
-		a.notify()
-	}()
-}
-
-func invalidPlan(message string) error {
-	return fmt.Errorf("%s: %w", message, model.BlockedInvalidPlan)
-}
+func (a *App) Context() context.Context { return a.ctx }

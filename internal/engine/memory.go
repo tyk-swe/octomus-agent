@@ -12,8 +12,11 @@ import (
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
+// decisionRecord is a saved decision as the store keeps it, without kind or reconsideration_due; planning sets both
+// for the prompt only.
 type decisionRecord struct {
 	Kind               string          `json:"kind,omitempty"`
 	ID                 string          `json:"id"`
@@ -41,10 +44,17 @@ type decisionMemory struct {
 	requests  []rediscoveryRequest
 }
 
-func (m decisionMemory) promptEntries() []any {
+// promptEntries is what the planning roles are shown: every decision with its kind and reconsideration flag spelled
+// out, then the rediscovery requests.
+func (m decisionMemory) promptEntries() ([]any, error) {
 	entries := make([]any, 0, len(m.decisions)+len(m.requests))
 	for _, record := range m.decisions {
-		entries = append(entries, recordToMap(record))
+		entry, err := wirejson.GenericMap(record)
+		if err != nil {
+			return nil, err
+		}
+		entry["kind"], entry["reconsideration_due"] = record.Kind, record.ReconsiderationDue
+		entries = append(entries, entry)
 	}
 	for _, request := range m.requests {
 		entry := map[string]any{"kind": "rediscovery"}
@@ -53,7 +63,7 @@ func (m decisionMemory) promptEntries() []any {
 		}
 		entries = append(entries, entry)
 	}
-	return entries
+	return entries, nil
 }
 
 func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding model.Grounding) (decisionMemory, error) {
@@ -85,7 +95,7 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 		if decisionAbsorbed(record, records) {
 			continue
 		}
-		target, err := ResolveTarget(cfg, grounding.PRs, record.Target)
+		target, err := resolveTarget(cfg, grounding.PRs, record.Target)
 		if err != nil {
 			continue
 		}
@@ -180,56 +190,33 @@ func (a *App) recordDecisions(ctx context.Context, cfg config.Config, cycle mode
 			}
 		}
 		revision := cycle.Grounding.Revision
-		if target, resolveErr := ResolveTarget(cfg, cycle.Grounding.PRs, proposal.Target); resolveErr == nil && target != nil {
+		if target, resolveErr := resolveTarget(cfg, cycle.Grounding.PRs, proposal.Target); resolveErr == nil && target != nil {
 			revision = target.Head
 		}
 		fingerprint, err := decisionFingerprint(ctx, cfg, revision, proposal.RelevantPaths)
 		if err != nil {
 			return nil, err
 		}
-		record := decisionRecord{
-			Kind:               "decision",
+		record, err := wirejson.GenericMap(decisionRecord{
 			ID:                 cycle.ID + ":" + proposal.ID,
 			CycleMode:          cycle.Mode,
 			Repository:         cfg.GitHubRepo,
 			Target:             proposal.Target,
 			ProblemKey:         proposal.ProblemIdentity(),
-			RelevantPaths:      append([]string(nil), proposal.RelevantPaths...),
+			RelevantPaths:      append([]string{}, proposal.RelevantPaths...),
 			Decision:           proposal.Decision,
 			Reason:             redact.Text(proposal.Reason),
 			SourceRevision:     revision,
 			ContextFingerprint: fingerprint,
 			ReconsiderAfter:    time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
 			CycleID:            cycle.ID,
+		})
+		if err != nil {
+			return nil, err
 		}
-		records = append(records, durableDecisionMap(record))
+		records = append(records, record)
 	}
 	return records, nil
-}
-
-func durableDecisionMap(record decisionRecord) map[string]any {
-	paths := append([]string{}, record.RelevantPaths...)
-	return map[string]any{
-		"id":                  record.ID,
-		"mode":                record.CycleMode,
-		"repository":          record.Repository,
-		"target":              record.Target,
-		"problem_key":         record.ProblemKey,
-		"relevant_paths":      paths,
-		"decision":            record.Decision,
-		"reason":              record.Reason,
-		"source_revision":     record.SourceRevision,
-		"context_fingerprint": record.ContextFingerprint,
-		"reconsider_after":    record.ReconsiderAfter,
-		"cycle_id":            record.CycleID,
-	}
-}
-
-func recordToMap(record decisionRecord) map[string]any {
-	value := durableDecisionMap(record)
-	value["kind"] = record.Kind
-	value["reconsideration_due"] = record.ReconsiderationDue
-	return value
 }
 
 func validateDecisionMemory(proposals []model.Proposal, memory decisionMemory) error {

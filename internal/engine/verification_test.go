@@ -199,7 +199,7 @@ func TestEvidenceRedactsCrossStream(t *testing.T) {
 				t.Fatalf("verification records = %d; want one", len(saved.Verification))
 			}
 			result := saved.Verification[0]
-			if result.Success || result.Revision != revision || !utf8.ValidString(result.Output) || len(result.Output) > verificationOutputLimit {
+			if result.Success || result.Revision != revision || !utf8.ValidString(result.Output) || len(result.Output) > outputLimit {
 				t.Fatalf("incorrect verification result: %+v", result)
 			}
 			if strings.Contains(result.Output, crossStreamToken) {

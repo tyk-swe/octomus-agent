@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -17,155 +16,10 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
-	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
-const (
-	baselineCmdLimit   = 16 * 1024
-	baselineTotalLimit = 1024 * 1024
-)
-
-type baselineJob struct {
-	id     string
-	cancel context.CancelFunc
-}
-
-func boundedOutput(text string, limit int, diagnosticTruncated bool) (string, bool) {
-	if limit == 0 {
-		return "", diagnosticTruncated || text != ""
-	}
-	const marker = "\n" + outputTruncatedMarker
-	if !diagnosticTruncated && len(text) <= limit {
-		return text, false
-	}
-	if limit < len(marker) {
-		return marker[:limit], true
-	}
-	keep := limit - len(marker)
-	if keep > len(text) {
-		keep = len(text)
-	}
-	for keep > 0 && keep < len(text) && !utf8.RuneStart(text[keep]) {
-		keep--
-	}
-	return text[:keep] + marker, true
-}
-
-func commandOutput(output *process.Output, err error) (string, bool, bool) {
-	if err != nil {
-		return err.Error(), false, false
-	}
-	stdout, stderr := output.SafeCaptures()
-	var text strings.Builder
-	text.WriteString(stdout.Head)
-	if len(output.Stderr.Bytes) > 0 {
-		text.WriteString("\n[stderr]\n")
-		text.WriteString(stderr.Head)
-	}
-	if !output.Status.Success() {
-		text.WriteString("\n" + output.Status.String())
-	}
-	return text.String(), output.Stdout.Truncated || output.Stderr.Truncated, output.Status.Success()
-}
-
-func (a *App) baselineCancelled(id string) (bool, error) {
-	return a.Store.Marked("baseline_cancel", id)
-}
-
-func (a *App) defaultBranchSHA(ctx context.Context, cfg config.Config) (string, string, error) {
-	observedAt := model.Now()
-	revision, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
-	if err != nil {
-		return "", "", err
-	}
-	if revision == nil || *revision == "" {
-		if err := a.observeDefaultBranch(cfg, "", observedAt); err != nil {
-			return "", "", err
-		}
-		return "", "", errors.New("Default branch missing on remote")
-	}
-	return *revision, observedAt, nil
-}
-
-func (a *App) observeDefaultBranch(cfg config.Config, revision, observedAt string) error {
-	a.gate.Lock()
-	defer a.gate.Unlock()
-	live, err := a.Config()
-	if err != nil {
-		return err
-	}
-	if !live.SameRemoteIdentity(cfg) {
-		return errors.New("Configuration identity changed during remote observation")
-	}
-	return a.observeLocked(cfg, revision, observedAt)
-}
-
-func (a *App) observeLocked(cfg config.Config, revision, observedAt string) error {
-	observed, err := time.Parse(time.RFC3339Nano, observedAt)
-	if err != nil {
-		return err
-	}
-	a.runtimeMu.Lock()
-	defer a.runtimeMu.Unlock()
-	if existing := a.runtime.defaultObservation; existing != nil {
-		sameTarget := existing.Describes(cfg)
-		newer := true
-		if at, parseErr := time.Parse(time.RFC3339Nano, existing.ObservedAt); parseErr == nil {
-			newer = !at.Before(observed)
-		}
-		if sameTarget && newer {
-			return nil
-		}
-	}
-	a.runtime.defaultObservation = &model.DefaultBranchObservation{
-		Repository: cfg.GitHubRepo, DefaultBranch: cfg.DefaultBranch, Revision: revision, ObservedAt: observedAt,
-	}
-	// An empty revision records a successful read of a missing branch. Keep its
-	// timestamp so an older in-flight read cannot restore the previous revision.
-	return nil
-}
-
-func (a *App) baselineRuntimeIneligibility() (*string, error) {
-	control, err := a.Control()
-	if err != nil {
-		return nil, err
-	}
-	a.runtimeMu.Lock()
-	baseline := a.runtime.baseline != nil
-	tasks := len(a.runtime.tasks)
-	planning := a.runtime.planning()
-	a.runtimeMu.Unlock()
-	var reason *string
-	switch {
-	case baseline:
-		reason = new("A baseline check is already running")
-	case a.ctx.Err() != nil:
-		reason = new("The service is shutting down")
-	case !control.Paused:
-		reason = new("Pause the service before running a baseline check")
-	case tasks > 0:
-		reason = new("Wait for active tasks before running a baseline check")
-	case planning:
-		reason = new("Wait for planning to finish before running a baseline check")
-	}
-	return reason, nil
-}
-
-func (a *App) baselineEligibility() (bool, *string, error) {
-	reason, err := a.baselineRuntimeIneligibility()
-	if err != nil || reason != nil {
-		return false, reason, err
-	}
-	cfg, err := a.Config()
-	if err != nil {
-		return false, nil, err
-	}
-	if err := cfg.ValidateBaseline(); err != nil {
-		message := redact.Error(err)
-		return false, &message, nil
-	}
-	return true, nil, nil
-}
+// A baseline check's output is capped at outputLimit bytes per command and baselineTotalLimit bytes per check.
+const baselineTotalLimit = 1 << 20
 
 func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, error) {
 	a.gate.Lock()
@@ -181,7 +35,7 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 	if fingerprint != expectedRevision {
 		return nil, conflictError("The saved configuration changed; reload settings and check the current values")
 	}
-	reason, err := a.baselineRuntimeIneligibility()
+	reason, err := a.baselineBlocker()
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +107,33 @@ func (a *App) CancelBaseline(id string) error {
 	return nil
 }
 
+// baselineBlocker is why the runtime or operating state keeps a baseline check from starting now, or nil.
+func (a *App) baselineBlocker() (*string, error) {
+	control, err := a.Control()
+	if err != nil {
+		return nil, err
+	}
+	a.runtimeMu.Lock()
+	baseline := a.runtime.baseline != nil
+	tasks := len(a.runtime.tasks)
+	planning := a.runtime.planning()
+	a.runtimeMu.Unlock()
+	var reason *string
+	switch {
+	case baseline:
+		reason = new("A baseline check is already running")
+	case a.ctx.Err() != nil:
+		reason = new("The service is shutting down")
+	case !control.Paused:
+		reason = new("Pause the service before running a baseline check")
+	case tasks > 0:
+		reason = new("Wait for active tasks before running a baseline check")
+	case planning:
+		reason = new("Wait for planning to finish before running a baseline check")
+	}
+	return reason, nil
+}
+
 func baselineConfigMatches(check *model.BaselineCheck, live config.Config) bool {
 	fingerprint, err := live.Fingerprint()
 	return err == nil && fingerprint == check.ConfigFingerprint
@@ -282,125 +163,6 @@ func (a *App) baselineRevisionStatus(check *model.BaselineCheck, live config.Con
 	default:
 		return "unknown"
 	}
-}
-
-const baselineCaveat = "A baseline check verifies the saved commands on a clone made at its start time; it does not prove later host, tool or remote health and is not publication evidence."
-
-func (a *App) BaselineView(id *string) (map[string]any, error) {
-	var check *model.BaselineCheck
-	var err error
-	if id != nil {
-		check, err = store.Get[model.BaselineCheck](a.Store, "baseline", *id)
-	} else {
-		check, err = a.Store.LatestBaseline()
-	}
-	if err != nil {
-		return nil, err
-	}
-	eligible, reason, err := a.baselineEligibility()
-	if err != nil {
-		return nil, err
-	}
-	live, err := a.Config()
-	if err != nil {
-		return nil, err
-	}
-	var configMatches any
-	var configRevision any
-	revisionStatus := "unknown"
-	if check != nil {
-		configMatches = baselineConfigMatches(check, live)
-		configRevision = check.ConfigFingerprint
-		revisionStatus = a.baselineRevisionStatus(check, live)
-	}
-	a.runtimeMu.Lock()
-	observation := a.runtime.defaultObservation
-	a.runtimeMu.Unlock()
-	if observation != nil && (observation.Revision == "" || !observation.Describes(live)) {
-		observation = nil
-	}
-	var reasonValue any
-	if reason != nil {
-		reasonValue = *reason
-	}
-	return map[string]any{
-		"check":               check,
-		"eligible":            eligible,
-		"reason":              reasonValue,
-		"config_matches":      configMatches,
-		"config_revision":     configRevision,
-		"revision_status":     revisionStatus,
-		"default_observation": observation,
-		"caveat":              baselineCaveat,
-	}, nil
-}
-
-func (a *App) recoverBaselines() error {
-	checks, err := a.Store.RunningBaselines()
-	if err != nil {
-		return err
-	}
-	for i := range checks {
-		if err := a.abandonBaseline(&checks[i],
-			"The operator cancelled this check before the service stopped",
-			"The service stopped while the baseline check was running"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted string) error {
-	marked, err := a.baselineCancelled(check.ID)
-	if err != nil {
-		return err
-	}
-	check.Status = model.BaselineStatusInterrupted
-	message := interrupted
-	if marked {
-		check.Status = model.BaselineStatusCancelled
-		message = cancelled
-	}
-	check.CompletedAt = new(model.Now())
-	check.Error = &message
-	return a.Store.Put("baseline", check.ID, *check)
-}
-
-func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
-	if _, err := uuid.Parse(check.ID); err != nil {
-		return errors.New("Invalid baseline identity")
-	}
-	if !a.claimCleanup(cleanupBaseline, check.ID) {
-		return nil
-	}
-	root := filepath.Join(a.DataDir, "baselines")
-	removeErr := workspace.RemoveOwnedDir(root, filepath.Join(root, check.ID))
-	a.gate.Lock()
-	defer func() {
-		a.releaseCleanup(cleanupBaseline, check.ID)
-		a.gate.Unlock()
-	}()
-	var cleanupError *string
-	if removeErr != nil {
-		message := redact.Error(removeErr)
-		cleanupError = &message
-	}
-	if removeErr == nil {
-		check.WorkspaceRemoved = true
-	}
-	check.CleanupError = cleanupError
-	current, err := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
-	if err != nil {
-		return err
-	}
-	if current == nil {
-		return nil
-	}
-	if removeErr == nil {
-		current.WorkspaceRemoved = true
-	}
-	current.CleanupError = cleanupError
-	return a.Store.Put("baseline", check.ID, *current)
 }
 
 var baselineLabels = map[model.BaselineStatus]string{
@@ -462,7 +224,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	} else {
 		status = result.Output
 	}
-	marked, markerErr := a.baselineCancelled(id)
+	marked, markerErr := a.Store.Marked("baseline_cancel", id)
 	switch {
 	case markerErr != nil:
 		status = model.BaselineStatusInterrupted
@@ -512,7 +274,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 	if err := gitops.Fetch(ctx, c); err != nil {
 		return model.BaselineStatusRunning, err
 	}
-	workspaceDir := filepath.Join(a.DataDir, "baselines", check.ID, "workspace")
+	workspaceDir := filepath.Join(a.dataDir, "baselines", check.ID, "workspace")
 	if err := gitops.CloneAt(ctx, c, workspaceDir, revision); err != nil {
 		return model.BaselineStatusRunning, err
 	}
@@ -535,7 +297,8 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 			return model.BaselineStatusRunning, sandboxFailure(command, outcome.capture)
 		}
 		timedOut := errors.Is(outcome.capture, process.ErrDeadlineElapsed)
-		text, diagnosticTruncated, success := commandOutput(outcome.captured, outcome.capture)
+		success := !outcome.failed()
+		note := ""
 		var failure error
 		if ctx.Err() != nil {
 			success = false
@@ -544,19 +307,15 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 			switch {
 			case outcome.intactErr != nil:
 				success = false
-				text += "\n" + outcome.intactErr.Error()
+				note = "\n" + outcome.intactErr.Error()
 				failure = fmt.Errorf("Workspace state check failed during verification: %w", outcome.intactErr)
 			case !outcome.intact:
 				success = false
-				text += "\nWorkspace or HEAD changed during this verification command"
+				note = "\nWorkspace or HEAD changed during this verification command"
 				failure = errors.New("Workspace or HEAD changed during verification")
 			}
 		}
-		limit := remaining
-		if limit > baselineCmdLimit {
-			limit = baselineCmdLimit
-		}
-		output, outputTruncated := boundedOutput(redact.Secrets(text), limit, diagnosticTruncated)
+		output, outputTruncated := commandOutput(outcome, note, min(remaining, outputLimit))
 		remaining -= len(output)
 		if remaining < 0 {
 			remaining = 0
@@ -586,4 +345,70 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		return model.BaselineStatusPassed, nil
 	}
 	return model.BaselineStatusFailed, nil
+}
+
+// commandOutput is a baseline command's evidence: stdout, then any stderr in a [stderr] section, then the exit status
+// on failure and the workspace note, secret-scrubbed and bounded to limit bytes keeping the head. The flag reports a
+// cut, including one the diagnostic capture made before this bound.
+func commandOutput(outcome checkOutcome, note string, limit int) (string, bool) {
+	var text strings.Builder
+	captureTruncated := false
+	if outcome.capture != nil {
+		text.WriteString(outcome.capture.Error())
+	} else {
+		stdout, stderr := outcome.captured.SafeCaptures()
+		text.WriteString(stdout.Head)
+		if len(outcome.captured.Stderr.Bytes) > 0 {
+			text.WriteString("\n[stderr]\n")
+			text.WriteString(stderr.Head)
+		}
+		if !outcome.captured.Status.Success() {
+			text.WriteString("\n" + outcome.captured.Status.String())
+		}
+		captureTruncated = outcome.captured.Stdout.Truncated || outcome.captured.Stderr.Truncated
+	}
+	text.WriteString(note)
+	scrubbed := redact.Secrets(text.String())
+	if captureTruncated {
+		// The capture already dropped output, so the evidence is marked even when what remains fits the bound.
+		scrubbed += "\n" + truncatedMarker
+	}
+	output, cut := bound(scrubbed, limit, false)
+	return output, cut || captureTruncated
+}
+
+func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
+	if _, err := uuid.Parse(check.ID); err != nil {
+		return errors.New("Invalid baseline identity")
+	}
+	root := filepath.Join(a.dataDir, "baselines")
+	a.gate.Lock()
+	defer a.gate.Unlock()
+	removeErr := a.removeOwnedRoot(cleanupBaseline, check.ID, root, filepath.Join(root, check.ID))
+	var conflict *actionConflict
+	if errors.As(removeErr, &conflict) {
+		// Another cleanup owns the root and records its own outcome.
+		return nil
+	}
+	var cleanupError *string
+	if removeErr != nil {
+		message := redact.Error(removeErr)
+		cleanupError = &message
+	}
+	if removeErr == nil {
+		check.WorkspaceRemoved = true
+	}
+	check.CleanupError = cleanupError
+	current, err := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return nil
+	}
+	if removeErr == nil {
+		current.WorkspaceRemoved = true
+	}
+	current.CleanupError = cleanupError
+	return a.Store.Put("baseline", check.ID, *current)
 }

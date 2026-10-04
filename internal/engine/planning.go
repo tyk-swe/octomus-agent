@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -29,43 +28,6 @@ type roleOutcome struct {
 
 const interruptedMsg = "Discovery interrupted; incomplete proposals were not dispatched"
 
-// Caller holds the gate so worker ownership cannot change during recovery.
-func (a *App) interruptOrphanedCycles() error {
-	a.runtimeMu.Lock()
-	activeID := ""
-	if a.runtime.cycle != nil {
-		activeID = a.runtime.cycle.id
-	}
-	a.runtimeMu.Unlock()
-	cycles, err := a.Store.RunningCyclesExcept(activeID)
-	if err != nil {
-		return err
-	}
-	for _, cycle := range cycles {
-		model.InterruptRunning(cycle.Sessions)
-		cycle.Status = model.CycleInterrupted
-		cycle.CompletedAt = new(model.Now())
-		cycle.Error = new(interruptedMsg)
-		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
-			return err
-		}
-	}
-	if activeID != "" {
-		return nil
-	}
-	// Retry control settlement even if an earlier pass interrupted the cycle
-	// successfully but could not pause its now-workerless planning batch.
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	if control.Mode == model.OperatingModeRunOnce && control.Batch != nil && control.Batch.Phase == model.BatchPhasePlanning {
-		message := "Run once was interrupted before its planning transaction committed"
-		return a.pauseLocked(&control, &message)
-	}
-	return nil
-}
-
 func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycle) {
 	err := a.plan(ctx, cfg, &cycle)
 	shuttingDown := err != nil && a.ctx.Err() != nil
@@ -78,12 +40,12 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 			cycle.Error = new(interruptedMsg)
 		}
 		cycle.CompletedAt = new(model.Now())
-		terminalErr = a.saveCycleMergedSessions(&cycle)
+		terminalErr = a.saveCycle(&cycle)
 	}
 
 	a.gate.Lock()
 	// A refused terminal checkpoint leaves recovery work behind. Establish its
-	// admission barrier before releasing worker ownership, without waiting for Tick.
+	// admission barrier before releasing worker ownership, without waiting for tick.
 	if terminalErr != nil {
 		a.setRecoveryError(terminalErr)
 	}
@@ -106,7 +68,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 			control.Error = nil
 		}
 		if cycle.Mode == model.CycleModeExecution {
-			delay := IdleDelay(cfg.CycleIntervalSeconds, control.IdleStreak)
+			delay := idleDelay(cfg.CycleIntervalSeconds, control.IdleStreak)
 			control.NextCycleAt = time.Now().Unix() + int64(delay)
 		}
 		failedRunOnce := err != nil && cycle.Mode == model.CycleModeExecution && control.Mode == model.OperatingModeRunOnce
@@ -143,9 +105,12 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if err != nil {
 		return err
 	}
-	capacity := prCapacityFrom(cfg, inventory, reservations)
-	contextValue := map[string]any{"grounding": cycle.Grounding, "decision_memory": memory.promptEntries(), "pr_capacity": capacity}
-	contextBytes, err := wirejson.Marshal(contextValue)
+	capacity, _ := capacityOf(cfg, inventory, reservations)
+	decisions, err := memory.promptEntries()
+	if err != nil {
+		return err
+	}
+	contextBytes, err := wirejson.Marshal(map[string]any{"grounding": cycle.Grounding, "decision_memory": decisions, "pr_capacity": capacity})
 	if err != nil {
 		return err
 	}
@@ -170,7 +135,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if err != nil {
 		return err
 	}
-	if err := ValidateProposals(cfg, proposals, *cycle.Grounding, history); err != nil {
+	if err := validateProposals(cfg, proposals, *cycle.Grounding, history); err != nil {
 		return err
 	}
 	if err := validateDecisionMemory(proposals, memory); err != nil {
@@ -218,31 +183,6 @@ func (a *App) seedRediscoveries(cycle *model.Cycle, requests []rediscoveryReques
 	return nil
 }
 
-func plannedStatus(proposals []model.Proposal) string {
-	for _, proposal := range proposals {
-		if proposal.Decision == model.DecisionAccepted {
-			return model.CycleCompleted
-		}
-	}
-	return model.CycleIdle
-}
-
-func checkRediscoveries(requests []rediscoveryRequest, proposals []model.Proposal) error {
-	for _, request := range requests {
-		id := request.ID
-		count := 0
-		for _, proposal := range proposals {
-			if slices.Contains(proposal.Reconsiders, id) {
-				count++
-			}
-		}
-		if count != 1 {
-			return fmt.Errorf("Every rediscovery request needs exactly one fresh decision (request %s had %d)", id, count)
-		}
-	}
-	return nil
-}
-
 func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task) error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
@@ -253,7 +193,7 @@ func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task) error {
 }
 
 func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle) (model.OpenPRInventory, error) {
-	if err := a.doctor(ctx, cfg, cycle.Mode == model.CycleModeAudit); err != nil {
+	if err := a.preflight(ctx, cfg, cycle.Mode == model.CycleModeAudit); err != nil {
 		return model.OpenPRInventory{}, err
 	}
 	revision, observedAt, err := a.defaultBranchSHA(ctx, cfg)
@@ -270,7 +210,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 	if err := gitops.Fetch(ctx, cfg); err != nil {
 		return model.OpenPRInventory{}, err
 	}
-	external, coverage, err := ExternalContext(observed.inventory)
+	external, coverage, err := externalContext(observed.inventory)
 	if err != nil {
 		return model.OpenPRInventory{}, err
 	}
@@ -331,7 +271,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		return model.OpenPRInventory{}, err
 	}
 	cycle.Grounding = &grounding
-	if err := a.saveCycleMergedSessions(cycle); err != nil {
+	if err := a.saveCycle(cycle); err != nil {
 		return model.OpenPRInventory{}, err
 	}
 	return observed.inventory, nil
@@ -366,16 +306,6 @@ func (a *App) summarizeGrounding(ctx context.Context, cfg config.Config, cycle *
 }
 
 const proposalLimits = "Hard limits: title at most 200 bytes; always set problem_key to a short stable identifier of at most 200 bytes; at most 40 relevant_paths and 40 evidence items; prompt at most 32000 bytes."
-
-const maxPlanningProposals = 100
-
-func discoveryProposalLimit(seeded int, agents uint64) int {
-	room := maxPlanningProposals - seeded
-	if room <= 0 || agents == 0 || agents > uint64(room) {
-		return 0
-	}
-	return room / int(agents)
-}
 
 var discoveryScopes = []string{"feature completion", "reproducible correctness bugs", "performance with evidence", "user and developer experience", "refactoring and architecture", "capability-preserving simplification", "test health and meaningful regression protection", "dependencies and required migrations", "documentation accuracy", "cross-cutting coherence"}
 
@@ -416,7 +346,7 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 		}
 		identities[proposal.ID] = struct{}{}
 	}
-	return a.saveCycleMergedSessions(cycle)
+	return a.saveCycle(cycle)
 }
 
 var reviewFocus = map[string]string{
@@ -459,34 +389,7 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 		}
 		cycle.Assessments = append(cycle.Assessments, generic)
 	}
-	return a.saveCycleMergedSessions(cycle)
-}
-
-func checkAssessments(reviewer string, candidates []model.Proposal, assessments []model.Assessment) error {
-	ids := make([]string, len(assessments))
-	for i, item := range assessments {
-		ids[i] = item.ID
-	}
-	return matchIDs(proposalIDs(candidates), ids, idMessages{
-		invented: func(id string) string {
-			return fmt.Sprintf("Adversarial reviewer %s invented proposal %q", reviewer, id)
-		},
-		duplicate: func(id string) string {
-			return fmt.Sprintf("Adversarial reviewer %s assessed proposal %q more than once", reviewer, id)
-		},
-		omitted: func(id string) string {
-			return fmt.Sprintf("Adversarial reviewer %s omitted proposal %q", reviewer, id)
-		},
-	}, func(i int, id string) error {
-		item := assessments[i]
-		if !slices.Contains(model.Assessments(), item.Decision) {
-			return fmt.Errorf("Adversarial reviewer %s gave proposal %q an invalid decision %q", reviewer, id, item.Decision)
-		}
-		if strings.TrimSpace(item.Reason) == "" {
-			return fmt.Errorf("Adversarial reviewer %s gave proposal %q no rationale", reviewer, id)
-		}
-		return nil
-	})
+	return a.saveCycle(cycle)
 }
 
 func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) ([]model.Proposal, error) {
@@ -521,20 +424,6 @@ func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.C
 	return document.Proposals, nil
 }
 
-func checkConsolidation(candidates, returned []model.Proposal) error {
-	return matchIDs(proposalIDs(candidates), proposalIDs(returned), idMessages{
-		invented: func(id string) string {
-			return fmt.Sprintf("Orchestrator omitted or invented proposal IDs: invented %q", id)
-		},
-		duplicate: func(id string) string {
-			return fmt.Sprintf("Orchestrator omitted or invented proposal IDs: returned %q twice", id)
-		},
-		omitted: func(id string) string {
-			return fmt.Sprintf("Orchestrator omitted or invented proposal IDs: omitted %q", id)
-		},
-	}, nil)
-}
-
 func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, label, role, prompt string, schema schemas.Schema) (outcome roleOutcome) {
 	defer func() {
 		if panicked := recover(); panicked != nil {
@@ -547,7 +436,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 		outcome.err = fmt.Errorf("Missing %s route", role)
 		return outcome
 	}
-	roleRoot := filepath.Join(a.DataDir, "cycles", cycleID, label)
+	roleRoot := filepath.Join(a.dataDir, "cycles", cycleID, label)
 	roleWorkspace := filepath.Join(roleRoot, "workspace")
 	outcome.answer, outcome.err = a.invoke(ctx, a.runners(ctx, cfg, cycleID), invocation{
 		cycleID: cycleID, role: label, route: route, workspace: roleWorkspace,
@@ -620,23 +509,17 @@ func (a *App) attachOutcomes(cycle *model.Cycle, outcomes []roleOutcome) error {
 	if first != nil {
 		return first
 	}
-	return a.saveCycleMergedSessions(cycle)
+	return a.saveCycle(cycle)
 }
 
-func (a *App) refreshCycleSessions(cycle *model.Cycle) error {
+// saveCycle writes the cycle with the sessions the store holds, which running roles append as they finish.
+func (a *App) saveCycle(cycle *model.Cycle) error {
 	current, err := store.Get[model.Cycle](a.Store, "cycle", cycle.ID)
 	if err != nil {
 		return err
 	}
 	if current != nil {
 		cycle.Sessions = current.Sessions
-	}
-	return nil
-}
-
-func (a *App) saveCycleMergedSessions(cycle *model.Cycle) error {
-	if err := a.refreshCycleSessions(cycle); err != nil {
-		return err
 	}
 	return a.Store.Put("cycle", cycle.ID, *cycle)
 }
@@ -665,7 +548,7 @@ func (a *App) commitTasks(cfg config.Config, cycle *model.Cycle) error {
 			proposal.Dependencies[i] = id
 		}
 		taskID := ids[original.ID]
-		target, err := ResolveTarget(cfg, cycle.Grounding.PRs, original.Target)
+		target, err := resolveTarget(cfg, cycle.Grounding.PRs, original.Target)
 		if err != nil {
 			return err
 		}

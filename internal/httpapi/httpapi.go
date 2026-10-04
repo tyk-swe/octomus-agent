@@ -215,13 +215,7 @@ func apiStatus(err error) int {
 	switch {
 	case errors.As(err, &sq) || errors.As(err, &jc):
 		return http.StatusInternalServerError
-	case errors.Is(err, engine.ErrTaskNotFound),
-		errors.Is(err, engine.ErrCycleNotFound),
-		errors.Is(err, engine.ErrUnknownControl),
-		errors.Is(err, engine.ErrUnknownCycleAction),
-		errors.Is(err, engine.ErrUnknownTaskAction),
-		errors.Is(err, engine.ErrBaselineNotFound),
-		errors.Is(err, engine.ErrProposalNotFound):
+	case errors.As(err, new(engine.NotFound)):
 		return http.StatusNotFound
 	case engine.IsActionConflict(err):
 		return http.StatusConflict
@@ -367,7 +361,7 @@ func (a *api) proposalDetail(_ http.ResponseWriter, _ *http.Request, params map[
 		return 0, nil, err
 	}
 	if detail == nil {
-		return 0, nil, engine.ErrProposalNotFound
+		return 0, nil, engine.NotFound("Proposal not found")
 	}
 	return http.StatusOK, detail, nil
 }
@@ -378,7 +372,7 @@ func (a *api) cycleDetail(_ http.ResponseWriter, _ *http.Request, params map[str
 		return 0, nil, err
 	}
 	if cycle == nil {
-		return 0, nil, engine.ErrCycleNotFound
+		return 0, nil, engine.NotFound("Cycle not found")
 	}
 	return http.StatusOK, *cycle, nil
 }
@@ -389,7 +383,7 @@ func (a *api) cycleEvidence(_ http.ResponseWriter, _ *http.Request, params map[s
 		return 0, nil, err
 	}
 	if value == nil {
-		return 0, nil, engine.ErrCycleNotFound
+		return 0, nil, engine.NotFound("Cycle not found")
 	}
 	return http.StatusOK, value, nil
 }
@@ -407,7 +401,7 @@ func (a *api) taskDetail(_ http.ResponseWriter, _ *http.Request, params map[stri
 		return 0, nil, err
 	}
 	if task == nil {
-		return 0, nil, engine.ErrTaskNotFound
+		return 0, nil, engine.NotFound("Task not found")
 	}
 	value, err := wirejson.GenericMap(*task)
 	if err != nil {
@@ -426,8 +420,8 @@ func (a *api) taskDetail(_ http.ResponseWriter, _ *http.Request, params map[stri
 	return http.StatusOK, value, nil
 }
 
-func (a *api) taskAction(_ http.ResponseWriter, r *http.Request, params map[string]string) (int, any, error) {
-	if err := a.app.TaskAction(r.Context(), params["id"], params["action"]); err != nil {
+func (a *api) taskAction(_ http.ResponseWriter, _ *http.Request, params map[string]string) (int, any, error) {
+	if err := a.app.TaskAction(params["id"], params["action"]); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, map[string]any{"ok": true}, nil
@@ -491,7 +485,7 @@ func (a *api) baselineDetail(_ http.ResponseWriter, _ *http.Request, params map[
 		return 0, nil, err
 	}
 	if check == nil {
-		return 0, nil, engine.ErrBaselineNotFound
+		return 0, nil, engine.NotFound("Baseline check not found")
 	}
 	view, err := a.app.BaselineView(&id)
 	return http.StatusOK, view, err

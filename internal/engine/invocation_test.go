@@ -71,7 +71,7 @@ func TestInvocationAdmitsOncePerTurn(t *testing.T) {
 	script.Queue(routes.Repair,
 		runnertest.Reply{Answer: "Rewrote the draft", Effect: writeFile("feature.txt", "second draft\n")},
 		runnertest.Reply{Answer: "Wrote the fixed output", Effect: writeFile("feature.txt", "fixed output\n")})
-	if err := app.TaskAction(context.Background(), task.ID, "retry"); err != nil {
+	if err := app.TaskAction(task.ID, "retry"); err != nil {
 		t.Fatal(err)
 	}
 	saved = driveTask(t, f, app, task.ID)
@@ -193,7 +193,7 @@ func TestSummariesAreRedacted(t *testing.T) {
 		script.Answer(routes.ProposalReviewer, review, review)
 
 		app := f.pausedApp(t)
-		cycleID, err := app.StartAudit(context.Background())
+		cycleID, err := app.startAudit(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}

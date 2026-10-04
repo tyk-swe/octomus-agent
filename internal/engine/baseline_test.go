@@ -101,7 +101,7 @@ func TestStartBaselineRefusesStale(t *testing.T) {
 	if latest, err := app.Store.LatestBaseline(); err != nil || latest != nil {
 		t.Fatal("stale start created a baseline record")
 	}
-	if entries, err := os.ReadDir(filepath.Join(app.DataDir, "baselines")); err == nil && len(entries) != 0 {
+	if entries, err := os.ReadDir(filepath.Join(app.dataDir, "baselines")); err == nil && len(entries) != 0 {
 		t.Fatalf("clone directory created: %v", entries)
 	}
 }

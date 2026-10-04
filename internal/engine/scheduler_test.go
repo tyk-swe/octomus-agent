@@ -38,16 +38,17 @@ func TestRunOnceAcceptsPublishedDependency(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			app := New(state, t.TempDir(), WithTaskRunner(TaskRunnerFunc(func(_ context.Context, task model.Task) error {
+			app := New(state, t.TempDir())
+			app.supervise = func(_ context.Context, task model.Task) error {
 				task.Status = model.StatusPublished
 				return state.Put("task", task.ID, task)
-			})))
+			}
 			t.Cleanup(app.Shutdown)
 			deferHousekeeping(app)
 			if err := control(app, "cycle"); err != nil {
 				t.Fatal(err)
 			}
-			if err := app.Tick(); err != nil {
+			if err := app.tick(); err != nil {
 				t.Fatal(err)
 			}
 			app.wg.Wait()
@@ -70,7 +71,7 @@ func TestPreflightRefusesNoAuth(t *testing.T) {
 			}
 			app := f.pausedApp(t)
 			if mode == "audit" {
-				id, err := app.StartAudit(context.Background())
+				id, err := app.startAudit(context.Background())
 				if err == nil || !strings.Contains(err.Error(), "authentication") || id != "" {
 					t.Fatalf("unauthenticated audit passed preflight: id=%q err=%v", id, err)
 				}
@@ -82,7 +83,7 @@ func TestPreflightRefusesNoAuth(t *testing.T) {
 				if err := control(app, action); err != nil {
 					t.Fatal(err)
 				}
-				if err := app.Tick(); err != nil {
+				if err := app.tick(); err != nil {
 					t.Fatal(err)
 				}
 				app.wg.Wait()
@@ -102,7 +103,8 @@ func TestPreflightRefusesNoAuth(t *testing.T) {
 				t.Fatalf("unauthenticated preflight created cycles: %d, %v", len(cycles), err)
 			}
 			assertAdmissions(t, f.state, 0, "unauthenticated preflight")
-			if !app.runtimeIdle() {
+			app.wg.Wait()
+			if !app.Drained() {
 				t.Fatal("failed preflight retained runtime work")
 			}
 		})
@@ -130,7 +132,7 @@ func TestOneWriterPerBranch(t *testing.T) {
 	started := make(chan string, 2)
 	release := make(chan struct{})
 	published := make(chan string, 2)
-	runner := TaskRunnerFunc(func(_ context.Context, task model.Task) error {
+	runner := func(_ context.Context, task model.Task) error {
 		started <- task.ID
 		current, err := store.Get[model.Task](state, "task", task.ID)
 		if err != nil || current == nil {
@@ -144,11 +146,12 @@ func TestOneWriterPerBranch(t *testing.T) {
 		published <- task.ID
 		<-release
 		return nil
-	})
-	a := New(state, t.TempDir(), WithTaskRunner(runner))
+	}
+	a := New(state, t.TempDir())
+	a.supervise = runner
 	t.Cleanup(a.Shutdown)
 	deferHousekeeping(a)
-	if err := a.Tick(); err != nil {
+	if err := a.tick(); err != nil {
 		t.Fatal(err)
 	}
 	if id := <-started; id != first.ID {
@@ -162,7 +165,7 @@ func TestOneWriterPerBranch(t *testing.T) {
 	if id := <-published; id != first.ID {
 		t.Fatalf("published unexpected task %s", id)
 	}
-	if err := a.Tick(); err != nil {
+	if err := a.tick(); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -172,7 +175,7 @@ func TestOneWriterPerBranch(t *testing.T) {
 	}
 	close(release)
 	a.wg.Wait()
-	if err := a.Tick(); err != nil {
+	if err := a.tick(); err != nil {
 		t.Fatal(err)
 	}
 	if id := <-started; id != second.ID {

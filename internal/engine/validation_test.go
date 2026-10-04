@@ -71,11 +71,13 @@ func TestValidateProposals(t *testing.T) {
 		{name: "task limit", limit: 1, proposals: []model.Proposal{onMain("a"), onMain("b")},
 			fragments: []string{"Accepted task limit exceeded: 2 accepted (limit 1)"}},
 		{name: "dependency cycle", proposals: []model.Proposal{onPR("first", "second"), onPR("second", "first")},
-			fragments: []string{`cycle detected through proposal "first"`}},
+			fragments: []string{`Dependency cycle through proposal "first"`}},
 		{name: "unknown dependency", proposals: []model.Proposal{onPR("unknown", "missing")},
-			fragments: []string{`proposal "unknown" depends on "missing"`}},
+			fragments: []string{`proposal "unknown" depends on "missing"`, "not an accepted proposal"}},
 		{name: "default-branch dependency", proposals: []model.Proposal{onPR("first"), with(onMain("dependent"), func(p *model.Proposal) { p.Dependencies = []string{"first"} })},
-			fragments: []string{`proposal "dependent" (target "main") depends on "first" (target "octomus/existing")`}},
+			fragments: []string{"Default-branch work cannot depend on another proposal", `proposal "dependent" depends on "first"`}},
+		{name: "cross-target dependency", proposals: []model.Proposal{onMain("first"), onPR("second", "first")},
+			fragments: []string{`proposal "second" (target "octomus/existing") depends on "first" (target "main")`}},
 		{name: "forked writers", proposals: []model.Proposal{onPR("first"), onPR("second", "first"), onPR("fork", "first")},
 			fragments: []string{"complete dependency order"}},
 	} {
@@ -84,7 +86,7 @@ func TestValidateProposals(t *testing.T) {
 			if tc.limit != 0 {
 				limited.MaxTasksPerCycle = tc.limit
 			}
-			err := ValidateProposals(limited, tc.proposals, grounding, tc.history)
+			err := validateProposals(limited, tc.proposals, grounding, tc.history)
 			if len(tc.fragments) == 0 {
 				if err != nil {
 					t.Fatalf("valid plan rejected: %v", err)
@@ -94,9 +96,9 @@ func TestValidateProposals(t *testing.T) {
 			assertErrorNames(t, err, tc.fragments...)
 		})
 	}
-	first := ValidateProposals(cfg, []model.Proposal{onPR("x", "gone"), onPR("y", "lost")}, grounding, nil)
+	first := validateProposals(cfg, []model.Proposal{onPR("x", "gone"), onPR("y", "lost")}, grounding, nil)
 	for i := 0; i < 20; i++ {
-		again := ValidateProposals(cfg, []model.Proposal{onPR("x", "gone"), onPR("y", "lost")}, grounding, nil)
+		again := validateProposals(cfg, []model.Proposal{onPR("x", "gone"), onPR("y", "lost")}, grounding, nil)
 		if again == nil || first == nil || again.Error() != first.Error() {
 			t.Fatalf("validation reported %v, then %v", first, again)
 		}
@@ -162,16 +164,16 @@ func TestValidateTaskPlan(t *testing.T) {
 		{name: "chain saved out of order", tasks: []model.Task{task("c", existing, "b"), task("b", existing, "a"), task("a", existing)}},
 		{name: "writers to different PRs", tasks: []model.Task{task("a", existing), task("b", "octomus/other")}},
 		{name: "duplicate identity", tasks: []model.Task{task("a", existing), task("a", existing)}, want: "Duplicate task identity a"},
-		{name: "unknown dependency", tasks: []model.Task{task("b", existing, "missing")}, want: "Task b has unknown dependency missing"},
-		{name: "default-branch dependency", tasks: []model.Task{task("a", "main"), task("b", "main", "a")}, want: "Default-branch tasks cannot depend on another task"},
-		{name: "cross-target dependency", tasks: []model.Task{task("a", "octomus/other"), task("b", existing, "a")}, want: "Dependent tasks must write the same existing pull request"},
-		{name: "two-task cycle", tasks: []model.Task{task("a", existing, "b"), task("b", existing, "a")}, want: "Task dependency cycle"},
-		{name: "self dependency", tasks: []model.Task{task("a", existing, "a")}, want: "Task dependency cycle"},
-		{name: "unordered writers", tasks: []model.Task{task("a", existing), task("b", existing)}, want: "Writers to octomus/existing do not form a total dependency order"},
-		{name: "forked writers", tasks: []model.Task{task("a", existing), task("b", existing, "a"), task("c", existing, "a")}, want: "Writers to octomus/existing do not form a total dependency order"},
+		{name: "unknown dependency", tasks: []model.Task{task("b", existing, "missing")}, want: `task "b" depends on "missing", which is not an accepted task in this plan`},
+		{name: "default-branch dependency", tasks: []model.Task{task("a", "main"), task("b", "main", "a")}, want: `Default-branch work cannot depend on another task; consolidate or defer it until the prerequisite PR has merged: task "b" depends on "a"`},
+		{name: "cross-target dependency", tasks: []model.Task{task("a", "octomus/other"), task("b", existing, "a")}, want: `Dependent tasks must write the same existing pull request: task "b" (target "octomus/existing") depends on "a" (target "octomus/other")`},
+		{name: "two-task cycle", tasks: []model.Task{task("a", existing, "b"), task("b", existing, "a")}, want: `Dependency cycle through task "a"`},
+		{name: "self dependency", tasks: []model.Task{task("a", existing, "a")}, want: `Dependency cycle through task "a"`},
+		{name: "unordered writers", tasks: []model.Task{task("a", existing), task("b", existing)}, want: "Accepted tasks on octomus/existing need a complete dependency order; unordered or forked branch plans cannot execute"},
+		{name: "forked writers", tasks: []model.Task{task("a", existing), task("b", existing, "a"), task("c", existing, "a")}, want: "Accepted tasks on octomus/existing need a complete dependency order; unordered or forked branch plans cannot execute"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateTaskPlan(tc.tasks)
+			err := validateTaskPlan(tc.tasks)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("valid plan rejected: %v", err)
@@ -179,7 +181,7 @@ func TestValidateTaskPlan(t *testing.T) {
 				return
 			}
 			if err == nil || err.Error() != tc.want {
-				t.Fatalf("ValidateTaskPlan = %v; want %q", err, tc.want)
+				t.Fatalf("validateTaskPlan = %v; want %q", err, tc.want)
 			}
 		})
 	}
@@ -196,7 +198,7 @@ func TestResolveTarget(t *testing.T) {
 		}
 	}
 	open := []model.PullRequest{pr("open", true, "fixture/project")}
-	bound, err := ResolveTarget(cfg, open, "octomus/fix")
+	bound, err := resolveTarget(cfg, open, "octomus/fix")
 	if err != nil || bound == nil || bound.Number != 7 {
 		t.Fatalf("owned open PR = %+v, %v; want PR 7", bound, err)
 	}
@@ -209,11 +211,11 @@ func TestResolveTarget(t *testing.T) {
 		"foreign base":  {pr("open", true, "upstream/project")},
 		"non-main base": {release},
 	} {
-		if target, err := ResolveTarget(cfg, prs, "octomus/fix"); err == nil {
+		if target, err := resolveTarget(cfg, prs, "octomus/fix"); err == nil {
 			t.Errorf("%s PR resolved as a target: %+v", name, target)
 		}
 	}
-	if target, err := ResolveTarget(cfg, open, "main"); err != nil || target != nil {
+	if target, err := resolveTarget(cfg, open, "main"); err != nil || target != nil {
 		t.Fatalf("default branch resolved to %+v, %v; want no PR", target, err)
 	}
 }

@@ -1,20 +1,13 @@
 package engine
 
 import (
-	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -22,11 +15,8 @@ import (
 )
 
 const (
-	retentionInterval     = 15 * time.Minute
-	observeInterval       = 5 * time.Minute
-	observationLifetime   = 2 * observeInterval
-	maxRetainDays         = 36500
-	cleanupReportInterval = 24 * time.Hour
+	retentionInterval = 15 * time.Minute
+	maxRetainDays     = 36500
 )
 
 type storageUsage struct {
@@ -172,36 +162,6 @@ func (a *App) advanceRetentionCursor(kind cleanupKind, id string) {
 	a.runtimeMu.Unlock()
 }
 
-type cleanupReport struct {
-	message string
-	at      time.Time
-}
-
-func (a *App) reportCleanupFailure(kind cleanupKind, id string, err error) error {
-	message := redact.Error(err)
-	key := cleanupKey{kind: kind, id: id}
-	now := time.Now()
-	a.runtimeMu.Lock()
-	last, reported := a.runtime.cleanupReports[key]
-	if reported && last.message == message && now.Sub(last.at) < cleanupReportInterval {
-		a.runtimeMu.Unlock()
-		return nil
-	}
-	a.runtime.cleanupReports[key] = cleanupReport{message: message, at: now}
-	a.runtimeMu.Unlock()
-	if eventErr := a.Store.Event(id, "cleanup_error", message); eventErr != nil {
-		a.clearCleanupReport(kind, id)
-		return eventErr
-	}
-	return nil
-}
-
-func (a *App) clearCleanupReport(kind cleanupKind, id string) {
-	a.runtimeMu.Lock()
-	delete(a.runtime.cleanupReports, cleanupKey{kind: kind, id: id})
-	a.runtimeMu.Unlock()
-}
-
 func (a *App) retainCandidateLocked(kind cleanupKind, id, cutoff string) error {
 	eligible, err := a.Store.CleanupEligible(string(kind), id, cutoff)
 	if err != nil || !eligible {
@@ -227,132 +187,6 @@ func (a *App) retainCandidateLocked(kind cleanupKind, id, cutoff string) error {
 	return a.discardCycle(cycle)
 }
 
-type cleanupKind string
-
-const (
-	cleanupTask     cleanupKind = "task"
-	cleanupCycle    cleanupKind = "cycle"
-	cleanupBaseline cleanupKind = "baseline"
-)
-
-type cleanupKey struct {
-	kind cleanupKind
-	id   string
-}
-
-func (a *App) claimCleanup(kind cleanupKind, id string) bool {
-	a.runtimeMu.Lock()
-	defer a.runtimeMu.Unlock()
-	key := cleanupKey{kind: kind, id: id}
-	if _, owned := a.runtime.cleanups[key]; owned {
-		return false
-	}
-	a.runtime.cleanups[key] = struct{}{}
-	return true
-}
-
-func (a *App) cleanupClaimed(kind cleanupKind, id string) bool {
-	a.runtimeMu.Lock()
-	defer a.runtimeMu.Unlock()
-	_, owned := a.runtime.cleanups[cleanupKey{kind: kind, id: id}]
-	return owned
-}
-
-func (a *App) releaseCleanup(kind cleanupKind, id string) {
-	a.runtimeMu.Lock()
-	delete(a.runtime.cleanups, cleanupKey{kind: kind, id: id})
-	if kind == cleanupTask {
-		a.runtime.cancelScanDone = false
-	}
-	a.runtimeMu.Unlock()
-}
-
-func (a *App) discardTask(task *model.Task) error {
-	if task.Status.Active() || task.Status == model.StatusQueued {
-		return errors.New("Active or queued workspaces cannot be discarded")
-	}
-	if task.Lifecycle.DiscardedAt != nil {
-		return conflictError("The task workspace was already discarded")
-	}
-	owner := ""
-	if task.Workspace != "" {
-		owner = filepath.Dir(filepath.Clean(task.Workspace))
-		expected := filepath.Join(a.DataDir, "tasks", task.ID)
-		if owner != expected {
-			return errors.New("Cleanup path does not belong to this task")
-		}
-	}
-	if !a.claimCleanup(cleanupTask, task.ID) {
-		return conflictError("Workspace cleanup is already in progress for this task")
-	}
-	defer a.releaseCleanup(cleanupTask, task.ID)
-	if owner != "" {
-		var removeErr error
-		a.withoutGate(func() { removeErr = workspace.RemoveOwnedDir(filepath.Join(a.DataDir, "tasks"), owner) })
-		if removeErr != nil {
-			return removeErr
-		}
-	}
-	current, err := store.Get[model.Task](a.Store, "task", task.ID)
-	if err != nil {
-		return err
-	}
-	if current == nil {
-		return nil
-	}
-	if current.Status.Active() || current.Status == model.StatusQueued {
-		return conflictError("Task resumed work during workspace cleanup; inspect it before discarding")
-	}
-	now := model.Now()
-	current.Lifecycle.DiscardedAt = &now
-	if err := a.Store.Put("task", current.ID, *current); err != nil {
-		return err
-	}
-	task.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
-	a.clearCleanupReport(cleanupTask, task.ID)
-	return nil
-}
-
-func (a *App) discardCycle(cycle *model.Cycle) error {
-	if cycle.Status == model.CycleRunning {
-		return errors.New("Running planning work cannot be discarded")
-	}
-	if cycle.Lifecycle.DiscardedAt != nil {
-		return conflictError("The cycle workspaces were already discarded")
-	}
-	if _, err := uuid.Parse(cycle.ID); err != nil {
-		return errors.New("Invalid cycle workspace identity")
-	}
-	if !a.claimCleanup(cleanupCycle, cycle.ID) {
-		return conflictError("Workspace cleanup is already in progress for this cycle")
-	}
-	defer a.releaseCleanup(cleanupCycle, cycle.ID)
-	root := filepath.Join(a.DataDir, "cycles")
-	var removeErr error
-	a.withoutGate(func() { removeErr = workspace.RemoveOwnedDir(root, filepath.Join(root, cycle.ID)) })
-	if removeErr != nil {
-		return removeErr
-	}
-	current, err := store.Get[model.Cycle](a.Store, "cycle", cycle.ID)
-	if err != nil {
-		return err
-	}
-	if current == nil {
-		return nil
-	}
-	if current.Status == model.CycleRunning {
-		return conflictError("Planning work restarted during workspace cleanup; inspect it before discarding")
-	}
-	now := model.Now()
-	current.Lifecycle.DiscardedAt = &now
-	if err := a.Store.Put("cycle", current.ID, *current); err != nil {
-		return err
-	}
-	cycle.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
-	a.clearCleanupReport(cleanupCycle, cycle.ID)
-	return nil
-}
-
 var errStorageIncomplete = errors.New("Storage measurement is incomplete")
 
 // measuredBytes returns only complete observations. An unknown subtree must not turn a partial byte count into a
@@ -369,15 +203,15 @@ func measuredBytes(path string) (uint64, error) {
 }
 
 func (a *App) measureStorage(cfg config.Config) error {
-	application, err := measuredBytes(a.DataDir)
+	application, err := measuredBytes(a.dataDir)
 	if err != nil {
 		return err
 	}
-	tasks, err := measuredBytes(filepath.Join(a.DataDir, "tasks"))
+	tasks, err := measuredBytes(filepath.Join(a.dataDir, "tasks"))
 	if err != nil {
 		return err
 	}
-	planning, err := measuredBytes(filepath.Join(a.DataDir, "cycles"))
+	planning, err := measuredBytes(filepath.Join(a.dataDir, "cycles"))
 	if err != nil {
 		return err
 	}
@@ -412,116 +246,4 @@ func (a *App) measureStorage(cfg config.Config) error {
 	}
 	usage := storageUsage{MeasuredAt: model.Now(), ApplicationBytes: application, TaskBytes: tasks, PlanningBytes: planning, RunnerTranscripts: transcripts}
 	return a.Store.Put("settings", "storage", usage)
-}
-
-func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
-	if err := gitops.ValidateRemote(ctx, cfg); err != nil {
-		return err
-	}
-	if err := a.refreshPRs(ctx, cfg); errors.Is(err, errPRPolicyChanged) {
-		return nil
-	} else if err != nil && !errors.Is(err, errStaleInventory) {
-		return err
-	}
-	inventory, err := a.Store.OpenPRInventory()
-	if err != nil || inventory == nil {
-		if err == nil {
-			err = errors.New("PR refresh did not persist an inventory")
-		}
-		return err
-	}
-	open := map[uint64]struct{}{}
-	for _, pr := range inventory.PRs {
-		open[pr.Number] = struct{}{}
-	}
-	before := (*int64)(nil)
-	status := "open"
-	limit := 100
-	closed := []model.PullRequest{}
-	for {
-		page, err := a.Store.HistoryPage("pr", store.HistoryQuery{Before: before, Status: &status, Limit: &limit})
-		if err != nil {
-			return err
-		}
-		for _, raw := range page.Items {
-			if ctx.Err() != nil {
-				return nil
-			}
-			var summary struct {
-				Repository string `json:"repository"`
-				PR         struct {
-					Number uint64 `json:"number"`
-				} `json:"pr"`
-			}
-			if json.Unmarshal(raw, &summary) != nil || !config.EqualASCII(summary.Repository, cfg.GitHubRepo) {
-				continue
-			}
-			if _, present := open[summary.PR.Number]; !present {
-				pr, err := gitops.PR(ctx, cfg, summary.PR.Number)
-				if err != nil {
-					return err
-				}
-				closed = append(closed, pr)
-			}
-		}
-		before = page.NextCursor
-		if before == nil {
-			break
-		}
-	}
-	observedAt := model.Now()
-	revision, err := gitops.RemoteRevision(ctx, cfg, cfg.DefaultBranch)
-	if err != nil {
-		return err
-	}
-	revisionValue := ""
-	if revision != nil {
-		revisionValue = *revision
-	}
-	fingerprint := contextFingerprint(revisionValue, inventory.PRs)
-	a.gate.Lock()
-	defer a.gate.Unlock()
-	live, err := a.Config()
-	if err != nil {
-		return err
-	}
-	if !live.SameRemoteIdentity(cfg) {
-		return nil
-	}
-	if err := a.observeLocked(cfg, revisionValue, observedAt); err != nil {
-		return err
-	}
-	for _, pr := range closed {
-		if err := a.Store.RecordPRObservation(cfg.GitHubRepo, pr, false); err != nil {
-			return err
-		}
-	}
-	control, err := a.Control()
-	if err != nil {
-		return err
-	}
-	applyContextFingerprint(&control, fingerprint, time.Now(), cfg.CycleIntervalSeconds)
-	return a.Store.SaveControl(control)
-}
-
-func applyContextFingerprint(control *model.Control, fingerprint string, now time.Time, interval uint64) {
-	if control.ContextFingerprint != "" && control.ContextFingerprint != fingerprint {
-		if control.IdleStreak > 1 {
-			ordinary := now.Unix() + int64(interval)
-			if control.NextCycleAt > ordinary {
-				control.NextCycleAt = ordinary
-			}
-		}
-		control.IdleStreak = 0
-	}
-	control.ContextFingerprint = fingerprint
-}
-
-func contextFingerprint(revision string, prs []model.PullRequest) string {
-	parts := make([]string, 0, len(prs))
-	for _, pr := range prs {
-		parts = append(parts, fmt.Sprintf("%d:%s:%s:%s", pr.Number, pr.Head, pr.Base, pr.State))
-	}
-	sort.Strings(parts)
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(revision+"\n"+strings.Join(parts, "\n"))))
 }

@@ -3,7 +3,6 @@ package engine
 // Per-task operator actions: retry, supersede, archive and discard.
 
 import (
-	"context"
 	"os"
 	"testing"
 	"time"
@@ -38,7 +37,7 @@ func TestRetryResetsRepairBudget(t *testing.T) {
 	reason := model.BlockedVerificationFailed
 	task.BlockedReason = &reason
 	putTask(t, f, task)
-	go func() { _ = app.TaskAction(context.Background(), task.ID, "retry") }()
+	go func() { _ = app.TaskAction(task.ID, "retry") }()
 	waitForPreflights(t, f, 1)
 	releasePreflight(t, f)
 	var saved model.Task
@@ -61,14 +60,13 @@ func TestTaskActions(t *testing.T) {
 	f := newFixture(t)
 	app := New(f.state, f.dataDir)
 	t.Cleanup(app.Shutdown)
-	ctx := context.Background()
 
 	stale := executionTask(t, f, f.cfg.DefaultBranch)
 	stale.Status = model.StatusBlocked
 	reason := model.BlockedStaleBase
 	stale.BlockedReason = &reason
 	putTask(t, f, stale)
-	if err := app.TaskAction(ctx, stale.ID, "supersede"); err != nil {
+	if err := app.TaskAction(stale.ID, "supersede"); err != nil {
 		t.Fatal(err)
 	}
 	saved := loadTask(t, f.state, stale.ID)
@@ -79,17 +77,17 @@ func TestTaskActions(t *testing.T) {
 	done := checkpointedTask(t, f, f.cfg.DefaultBranch)
 	done.Status = model.StatusPublished
 	putTask(t, f, done)
-	if err := app.TaskAction(ctx, done.ID, "discard"); err == nil || !IsActionConflict(err) {
+	if err := app.TaskAction(done.ID, "discard"); err == nil || !IsActionConflict(err) {
 		t.Fatalf("discard before archive = %v; want ineligible", err)
 	}
-	if err := app.TaskAction(ctx, done.ID, "archive"); err != nil {
+	if err := app.TaskAction(done.ID, "archive"); err != nil {
 		t.Fatal(err)
 	}
 	saved = loadTask(t, f.state, done.ID)
 	if saved.Lifecycle.ArchivedAt == nil {
 		t.Fatalf("archived task = %+v", saved)
 	}
-	if err := app.TaskAction(ctx, done.ID, "discard"); err != nil {
+	if err := app.TaskAction(done.ID, "discard"); err != nil {
 		t.Fatal(err)
 	}
 	saved = loadTask(t, f.state, done.ID)
@@ -114,7 +112,7 @@ func TestRetryOnStaleBaseBlocks(t *testing.T) {
 	putTask(t, f, task)
 	git(t, f.repo, "commit", "--allow-empty", "-m", "External work")
 	git(t, f.repo, "push", "origin", f.cfg.DefaultBranch)
-	err := app.TaskAction(context.Background(), task.ID, "retry")
+	err := app.TaskAction(task.ID, "retry")
 	if err == nil || model.BlockedReasonFromError(err) != model.BlockedStaleBase {
 		t.Fatalf("stale retry = %v; want the recorded stale-base failure", err)
 	}

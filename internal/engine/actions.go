@@ -4,34 +4,70 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
-var ErrTaskNotFound = errors.New("Task not found")
-
-type actionConflict struct{ msg string }
-
-func (e *actionConflict) Error() string { return e.msg }
-
-func conflictError(message string) error { return &actionConflict{message} }
-
-func IsActionConflict(err error) bool {
-	var c *actionConflict
-	return errors.As(err, &c) || model.BlockedReasonFromError(err) != model.BlockedUnknown
+func (a *App) CycleAction(id, action string) error {
+	if action != "archive" && action != "discard" {
+		return NotFound("Unknown cycle action")
+	}
+	a.gate.Lock()
+	if err := a.ctx.Err(); err != nil {
+		a.gate.Unlock()
+		return err
+	}
+	a.wg.Add(1)
+	defer a.wg.Done()
+	defer a.gate.Unlock()
+	cycle, err := store.Get[model.Cycle](a.Store, "cycle", id)
+	if err != nil {
+		return err
+	}
+	if cycle == nil {
+		return NotFound("Cycle not found")
+	}
+	if cycle.Status == model.CycleRunning {
+		return conflictError("Wait for planning to finish")
+	}
+	if a.cleanupClaimed(cleanupCycle, id) {
+		return conflictError("Workspace cleanup is in progress for this cycle; wait for it to finish")
+	}
+	switch action {
+	case "archive":
+		if cycle.Lifecycle.ArchivedAt != nil {
+			return conflictError("The cycle is already archived")
+		}
+		now := model.Now()
+		cycle.Lifecycle.ArchivedAt = &now
+		if err := a.Store.Put("cycle", id, *cycle); err != nil {
+			return err
+		}
+	case "discard":
+		if cycle.Lifecycle.ArchivedAt == nil {
+			return conflictError("Archive the cycle before discarding its workspace")
+		}
+		if err := a.discardCycle(cycle); err != nil {
+			return err
+		}
+	}
+	_ = a.Store.Event(id, "operator", action)
+	return nil
 }
 
-func (a *App) TaskAction(_ context.Context, id, action string) error {
+func (a *App) TaskAction(id, action string) error {
 	switch action {
 	case "cancel", "retry", "supersede", "archive", "discard", "reconcile":
 	default:
-		return ErrUnknownTaskAction
+		return NotFound("Unknown task action")
 	}
 	a.gate.Lock()
 	if err := a.ctx.Err(); err != nil {
@@ -165,7 +201,7 @@ func (a *App) eligibleTask(id, action string) (*model.Task, error) {
 		return nil, err
 	}
 	if task == nil {
-		return nil, ErrTaskNotFound
+		return nil, NotFound("Task not found")
 	}
 	if !slices.Contains(task.AllowedActions(), action) {
 		return nil, conflictError("This action is not eligible for the task's recorded failure and workspace state")
@@ -193,13 +229,6 @@ func (a *App) revalidateTaskAction(original *model.Task, action string) error {
 		return conflictError("Task changed during remote checks; inspect its current state before trying again")
 	}
 	return nil
-}
-
-func recordTaskError(task *model.Task, err error) {
-	reason := model.BlockedReasonFromError(err)
-	task.BlockedReason = &reason
-	message := redact.Error(err)
-	task.Error = &message
 }
 
 func (a *App) reconcileLocked(id string, task *model.Task) error {
@@ -293,4 +322,88 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		a.setRecoveryError(loadErr)
 	}
 	return actionErr
+}
+
+// removeOwnedRoot removes root, an owned root under parent, under its cleanup claim: the claim is taken with the
+// gate the caller holds, so no operator action can act on the record meanwhile, and released once the removal is
+// done; the removal itself runs without the gate. A root another cleanup already claims is a conflict.
+func (a *App) removeOwnedRoot(kind cleanupKind, id, parent, root string) error {
+	if !a.claimCleanup(kind, id) {
+		return conflictError("Workspace cleanup is already in progress for this " + string(kind))
+	}
+	defer a.releaseCleanup(kind, id)
+	var err error
+	a.withoutGate(func() { err = workspace.RemoveOwnedDir(parent, root) })
+	return err
+}
+
+func (a *App) discardTask(task *model.Task) error {
+	if task.Status.Active() || task.Status == model.StatusQueued {
+		return errors.New("Active or queued workspaces cannot be discarded")
+	}
+	if task.Lifecycle.DiscardedAt != nil {
+		return conflictError("The task workspace was already discarded")
+	}
+	if task.Workspace != "" {
+		parent := filepath.Join(a.dataDir, "tasks")
+		owner := filepath.Dir(filepath.Clean(task.Workspace))
+		if owner != filepath.Join(parent, task.ID) {
+			return errors.New("Cleanup path does not belong to this task")
+		}
+		if err := a.removeOwnedRoot(cleanupTask, task.ID, parent, owner); err != nil {
+			return err
+		}
+	}
+	current, err := store.Get[model.Task](a.Store, "task", task.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return nil
+	}
+	if current.Status.Active() || current.Status == model.StatusQueued {
+		return conflictError("Task resumed work during workspace cleanup; inspect it before discarding")
+	}
+	now := model.Now()
+	current.Lifecycle.DiscardedAt = &now
+	if err := a.Store.Put("task", current.ID, *current); err != nil {
+		return err
+	}
+	task.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
+	a.clearCleanupReport(cleanupTask, task.ID)
+	return nil
+}
+
+func (a *App) discardCycle(cycle *model.Cycle) error {
+	if cycle.Status == model.CycleRunning {
+		return errors.New("Running planning work cannot be discarded")
+	}
+	if cycle.Lifecycle.DiscardedAt != nil {
+		return conflictError("The cycle workspaces were already discarded")
+	}
+	if _, err := uuid.Parse(cycle.ID); err != nil {
+		return errors.New("Invalid cycle workspace identity")
+	}
+	root := filepath.Join(a.dataDir, "cycles")
+	if err := a.removeOwnedRoot(cleanupCycle, cycle.ID, root, filepath.Join(root, cycle.ID)); err != nil {
+		return err
+	}
+	current, err := store.Get[model.Cycle](a.Store, "cycle", cycle.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return nil
+	}
+	if current.Status == model.CycleRunning {
+		return conflictError("Planning work restarted during workspace cleanup; inspect it before discarding")
+	}
+	now := model.Now()
+	current.Lifecycle.DiscardedAt = &now
+	if err := a.Store.Put("cycle", current.ID, *current); err != nil {
+		return err
+	}
+	cycle.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
+	a.clearCleanupReport(cleanupCycle, cycle.ID)
+	return nil
 }

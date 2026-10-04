@@ -85,13 +85,12 @@ func (s *Store) OpenPRInventory() (*model.OpenPRInventory, error) {
 
 func PRUnion(inventory model.OpenPRInventory, reservations []PRReservation, limit uint64) (uint64, uint64, uint64) {
 	numbers := map[uint64]struct{}{}
-	branches := map[string]struct{}{}
 	for _, p := range inventory.PRs {
 		if p.OwnedOpen() {
 			numbers[p.Number] = struct{}{}
-			branches[p.Branch] = struct{}{}
 		}
 	}
+	branches := inventory.OwnedBranches()
 	unrepresented := uint64(0)
 	for _, r := range reservations {
 		if _, ok := branches[r.Branch]; !ok {
@@ -231,12 +230,7 @@ func (s *Store) PersistPRInventory(inventory model.OpenPRInventory, released []s
 		if err := txPut(c, "settings", "pr_inventory", inventory); err != nil {
 			return err
 		}
-		represented := map[string]struct{}{}
-		for _, p := range inventory.PRs {
-			if p.OwnedOpen() {
-				represented[p.Branch] = struct{}{}
-			}
-		}
+		represented := inventory.OwnedBranches()
 		reservations, err := reservationRows(c, cfg.GitHubRepo)
 		if err != nil {
 			return err
