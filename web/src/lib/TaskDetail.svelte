@@ -45,6 +45,9 @@
     evidenceLoading = $state(false),
     taskStale = $state(false);
   let loading = $state(false);
+  let eventsLoading = $state(false),
+    eventsError = $state('');
+  let eventsRequest: AbortController | null = null;
   let recoveryButton = $state<HTMLButtonElement>();
   let disposed = false;
   let generation = 0;
@@ -131,6 +134,33 @@
       }
     }
   }
+  async function loadEvents(force = false) {
+    if (disposed || (eventsLoading && !force)) return;
+    eventsRequest?.abort();
+    const controller = new AbortController();
+    eventsRequest = controller;
+    eventsLoading = true;
+    try {
+      const nextEvents = await api<Event[]>(
+        `/events?entity=${encodeURIComponent(id)}`,
+        'GET',
+        undefined,
+        controller.signal
+      );
+      if (eventsRequest === controller && !controller.signal.aborted) {
+        events = nextEvents;
+        eventsError = '';
+      }
+    } catch (e) {
+      if (eventsRequest === controller && !controller.signal.aborted)
+        eventsError = (e as Error).message;
+    } finally {
+      if (eventsRequest === controller) {
+        eventsLoading = false;
+        eventsRequest = null;
+      }
+    }
+  }
   async function load(force = false) {
     if (disposed || (loading && !force)) return;
     request?.abort();
@@ -138,19 +168,16 @@
     const controller = new AbortController();
     request = controller;
     loading = true;
+    void loadEvents(force);
     try {
-      const [nextTask, nextEvents] = await Promise.all([
-        api<Task>(`/tasks/${encodeURIComponent(id)}`, 'GET', undefined, controller.signal),
-        api<Event[]>(
-          `/events?entity=${encodeURIComponent(id)}`,
-          'GET',
-          undefined,
-          controller.signal
-        )
-      ]);
+      const nextTask = await api<Task>(
+        `/tasks/${encodeURIComponent(id)}`,
+        'GET',
+        undefined,
+        controller.signal
+      );
       if (current === generation && !controller.signal.aborted) {
         task = nextTask;
-        events = nextEvents;
         error = '';
         taskStale = false;
         if (recoveryButton && document.activeElement === recoveryButton)
@@ -180,6 +207,7 @@
       feedback.dispose();
       generation++;
       request?.abort();
+      eventsRequest?.abort();
       evidenceGeneration++;
       evidenceRequest?.abort();
     };
@@ -513,7 +541,11 @@
             <h3>No verification results yet</h3>
             <p>All configured checks must pass on the reviewed revision.</p>
           </div>{/if}
-      {:else}<div class="activity-list">
+      {:else}
+        {#if eventsError}<p class="notice error" role="alert">
+            {events.length ? 'Retained activity · stale. ' : ''}{eventsError}
+          </p>{/if}
+        <div class="activity-list">
           {#each events as event}<div class="activity-item">
               <span class={'activity-point ' + (event.kind === 'error' ? 'error-point' : '')}
               ></span>
@@ -521,7 +553,9 @@
                 <p>{event.message}</p>
                 <small>{event.kind.replaceAll('_', ' ')} · {relative(event.at)}</small>
               </div>
-            </div>{:else}<p class="muted">No activity recorded yet.</p>{/each}
+            </div>{:else}{#if !eventsError}<p class="muted">
+                {eventsLoading ? 'Loading activity…' : 'No activity recorded yet.'}
+              </p>{/if}{/each}
         </div>{/if}
     </div>
     <div class="dialog-footer">

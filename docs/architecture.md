@@ -227,19 +227,24 @@ window); invalid UTF-8 also fails explicitly. Git/GitHub machine consumers
 never parse a diagnostic truncation marker. All captures retain timeout,
 draining and process-group ownership.
 
-State-snapshot cost was measured on 2026-09-22 at `529b63f` with
-`OCTOMUS_SCALE_TEST=1 go test ./internal/store -run TestBoundedHistoryScale -v`. The
+State-snapshot cost was measured on 2026-10-05 against `fa98f37` with Go 1.27.1
+on Linux x86_64 using
+`OCTOMUS_SCALE_TEST=1 go test ./internal/store -run '^TestBoundedHistoryScale$' -count=1 -v`. The
 fixture stores 4 KiB prompts in 1,000, 10,000 and 100,000 historical task records;
 each measurement includes 20 dashboard snapshots.
 
 | Historical tasks | State JSON bytes | Median query time | p95 query time | Peak Go heap allocated per snapshot |
 | --- | ---: | ---: | ---: | ---: |
-| 1,000 | 95,227 | 4.23 ms | 7.81 ms | 790,520 bytes |
-| 10,000 | 95,528 | 4.50 ms | 5.75 ms | 785,752 bytes |
-| 100,000 | 95,829 | 4.11 ms | 7.57 ms | 784,880 bytes |
+| 1,000 | 95,227 | 1.51 ms | 2.53 ms | 782,480 bytes |
+| 10,000 | 95,528 | 1.42 ms | 2.52 ms | 783,928 bytes |
+| 100,000 | 95,829 | 1.64 ms | 4.50 ms | 778,240 bytes |
 
 These timings are environment-dependent. Allocation measurements count Go heap
 bytes allocated during each snapshot, not SQLite's page cache or total process RSS.
+The weekly GitHub Actions workflow repeats this check and the race-instrumented
+fixture e2e suite each Monday at 06:17 UTC; it also accepts manual dispatch.
+Every push and pull request packages and smoke-tests the x86_64 and arm64 archives
+on native Ubuntu 24.04 runners. Both package jobs gate the aggregate `verify` job.
 
 ## Decision memory and outcomes
 

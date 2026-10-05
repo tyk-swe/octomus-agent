@@ -58,10 +58,26 @@ dropped.
 
 ```text
 Milestone: M3
-Status: TODO
-Revision: Not started.
-Delivered output: None.
-Commands and results: Not run.
-Unrun checks and blockers: All checks unrun.
-Next: M4 after M3 is DONE.
+Status: IN_PROGRESS
+Revision: Working tree after fa98f37.
+Delivered output: CI packages and smoke-tests each archive on its native Ubuntu
+24.04 runner. verify still gates the complete package matrix. weekly.yml runs
+the 100,000-record scale check and all race-instrumented fixture e2e scenarios
+each Monday at 06:17 UTC, with manual dispatch for acceptance verification.
+The activity-latency branch adds coverage main lacks: task controls appear while
+the initial activity read is held, and accepted cancellation waits for the
+canonical task response while a delayed activity read cannot delay new controls.
+Both cases are folded into controls.spec.ts, using the shared synthetic helpers.
+They exposed TaskDetail's task/activity Promise.all: it held canonical controls
+behind activity. Task and activity now refresh independently, with separate
+activity loading/errors and a regression case for activity outage recovery.
+Commands and results: make check passed. The scale check passed at all three
+history sizes; architecture.md records the new 2026-10-05 measurements.
+make test passed (regular and race Go, distribution, all ten fixture e2e
+scenarios, and 58 browser cases; six non-applicable mobile evidence-unit cases
+remain intentionally skipped). make audit and make package passed, as did the
+native x86_64 archive smoke test.
+Unrun checks and blockers: Native archive failure injection, two consecutive
+weekly-workflow passes and merged remote branch pruning remain.
+Next: Verify and record M3, then M4.
 ```

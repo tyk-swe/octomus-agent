@@ -1,7 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import type { Snapshot } from '../src/lib/types';
-import { deferred, login, patchState, test } from './synthetic';
+import type { Snapshot, Task } from '../src/lib/types';
+import { deferred, login, openNavigation, patchState, test } from './synthetic';
 
 /** A paused, idle, configured service whose state the test moves between polls. */
 function idle(snapshot: Snapshot) {
@@ -14,6 +14,146 @@ function idle(snapshot: Snapshot) {
   snapshot.active_cycle_mode = null;
   snapshot.baseline_active = false;
 }
+
+async function taskActivityFixture(page: Page, holdInitialEvents: boolean) {
+  const taskGate = deferred();
+  const eventsGate = deferred();
+  const state = {
+    task: null as Task | null,
+    holdTask: false,
+    holdEvents: holdInitialEvents,
+    failEvents: false,
+    heldTaskReads: 0,
+    heldEventsReads: 0,
+    completedEventsReads: 0,
+    cancelWrites: 0
+  };
+  await page.route('**/api/tasks/task-active', async (route) => {
+    expect(route.request().method()).toBe('GET');
+    if (!state.task) {
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      state.task = (await response.json()) as Task;
+      expect(state.task.status).toBe('queued');
+      expect(state.task.allowed_actions).toEqual(['cancel']);
+    }
+    const task = structuredClone(state.task);
+    if (state.holdTask) {
+      state.heldTaskReads++;
+      await taskGate.promise;
+    }
+    await route.fulfill({ json: task });
+  });
+  await page.route('**/api/events?entity=task-active', async (route) => {
+    expect(route.request().method()).toBe('GET');
+    if (state.failEvents) {
+      await route.fulfill({ status: 503, json: { error: 'Synthetic activity read outage' } });
+      return;
+    }
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    expect(Array.isArray(await response.json())).toBe(true);
+    if (state.holdEvents) {
+      state.heldEventsReads++;
+      await eventsGate.promise;
+    }
+    await route.fulfill({ response });
+    state.completedEventsReads++;
+  });
+  await page.route('**/api/tasks/task-active/cancel', async (route) => {
+    expect(route.request().method()).toBe('POST');
+    expect(state.task?.allowed_actions).toEqual(['cancel']);
+    state.cancelWrites++;
+    // Keep parallel tests' shared service records unchanged.
+    state.task = {
+      ...state.task!,
+      status: 'cancelled',
+      allowed_actions: ['archive', 'supersede'],
+      updated_at: new Date().toISOString()
+    };
+    await route.fulfill({ json: { ok: true } });
+  });
+  return { state, taskGate, eventsGate };
+}
+
+test('an initial queued task exposes Cancel while valid activity is delayed', async ({
+  page,
+  isMobile
+}) => {
+  const current = await taskActivityFixture(page, true);
+  try {
+    await login(page);
+    await openNavigation(page, 'Task queue', !!isMobile);
+    await page.getByRole('button', { name: /Complete the repository setup flow/ }).click();
+    await expect.poll(() => current.state.heldEventsReads).toBeGreaterThan(0);
+    await expect(
+      page.getByRole('dialog').getByRole('button', { name: 'Cancel task', exact: true })
+    ).toBeEnabled();
+    expect(current.state.completedEventsReads).toBe(0);
+    expect(current.state.cancelWrites).toBe(0);
+  } finally {
+    current.taskGate.resolve();
+    current.eventsGate.resolve();
+  }
+});
+
+test('task controls stay available and activity recovers after an activity read failure', async ({
+  page,
+  isMobile
+}) => {
+  const current = await taskActivityFixture(page, false);
+  current.state.failEvents = true;
+  await page.clock.install();
+  await login(page);
+  await openNavigation(page, 'Task queue', !!isMobile);
+  await page.getByRole('button', { name: /Complete the repository setup flow/ }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('button', { name: 'Cancel task', exact: true })).toBeEnabled();
+  await dialog.getByRole('tab', { name: 'Activity', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Synthetic activity read outage');
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+  current.state.failEvents = false;
+  await page.clock.runFor(4000);
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await expect.poll(() => current.state.completedEventsReads).toBe(1);
+  await expect(dialog.getByRole('button', { name: 'Cancel task', exact: true })).toBeEnabled();
+  expect(current.state.cancelWrites).toBe(0);
+});
+
+test('accepted cancellation waits for its task but not delayed activity to replace controls', async ({
+  page,
+  isMobile
+}) => {
+  const current = await taskActivityFixture(page, false);
+  try {
+    await page.clock.install();
+    await login(page);
+    await openNavigation(page, 'Task queue', !!isMobile);
+    await page.getByRole('button', { name: /Complete the repository setup flow/ }).click();
+    const dialog = page.getByRole('dialog');
+    const cancel = dialog.getByRole('button', { name: 'Cancel task', exact: true });
+    await expect(cancel).toBeEnabled();
+    await expect.poll(() => current.state.completedEventsReads).toBe(1);
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    current.state.holdTask = true;
+    current.state.holdEvents = true;
+    await cancel.click();
+    await expect.poll(() => current.state.heldTaskReads).toBe(1);
+    await expect.poll(() => current.state.heldEventsReads).toBe(1);
+    await expect(cancel).toBeDisabled();
+    await cancel.dispatchEvent('click');
+    await expect(dialog.getByRole('button', { name: 'Archive task', exact: true })).toHaveCount(0);
+    expect(current.state.cancelWrites).toBe(1);
+    current.taskGate.resolve();
+    await expect(dialog.getByRole('button', { name: 'Archive task', exact: true })).toBeEnabled();
+    await expect(cancel).toHaveCount(0);
+    expect(current.state.completedEventsReads).toBe(1);
+    expect(current.state.cancelWrites).toBe(1);
+  } finally {
+    current.taskGate.resolve();
+    current.eventsGate.resolve();
+  }
+});
 
 for (const capacity of ['daily_exhausted', 'limit_too_low'] as const) {
   test(`planning controls respect ${capacity} and recover with refreshed capacity`, async ({

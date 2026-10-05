@@ -121,7 +121,15 @@ jobs:
           retention-days: 7
 
   package:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -139,7 +147,10 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
       - run: make package
-      - run: python3 tests/distribution.py --package "dist/octomus-agent-v$(cat VERSION)-x86_64-unknown-linux-gnu.tar.gz"
+      - name: Smoke test the native ${{ matrix.target }} archive
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: python3 tests/distribution.py --package "dist/octomus-agent-v$(cat VERSION)-$RELEASE_TARGET.tar.gz"
 
   client-contracts:
     runs-on: ubuntu-24.04
