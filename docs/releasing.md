@@ -111,22 +111,6 @@ python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --expect-version 8
 
 Use the release's actual schema version (`8` for v0.2.0). Check it in with its provenance (commit, scenario, sha256) and extend the golden tests so
 later releases keep opening every checked-in golden. Before tagging a schema change,
-rehearse the upgrade on a copy of real state. The operator procedure is in
-[Backup and upgrade](deployment.md#backup-and-upgrade).
-
-For a fixture rehearsal using the actual released images, pull both versions,
-then run:
-
-```bash
-python3 tests/rehearse_upgrade.py \
-  --new-agent ghcr.io/tyk-swe/octomus-agent:0.2.0 \
-  --new-sandbox ghcr.io/tyk-swe/octomus-sandbox:0.2.0
-```
-
-This starts v0.1.0 from its released-binary-generated golden in an isolated
-compose project, passes Check connection and containment, stops and backs up its data, upgrades to
-schema 8, checks saved records/evidence and the private automatic backup, then
-restores the manual backup and reopens v0.1.0. Local Git/GitHub fixtures and dummy
-secrets and a synthetic API-key fixture replace account access; it makes no model turn and
-does not validate an owner's VM or bot. Record the image identities and printed
-results with the release.
+rehearse the upgrade on a copy of real state with the released images, following
+[Backup and upgrade](deployment.md#backup-and-upgrade), and record the image
+identities and results with the release.

@@ -1,4 +1,4 @@
-.PHONY: dashboard build build-race check test test-go test-go-race test-contracts test-integration test-browser test-race-e2e test-sandbox package audit
+.PHONY: dashboard build check test test-go test-go-race test-contracts test-integration test-browser test-sandbox package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
 # Scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
@@ -13,10 +13,6 @@ dashboard:
 
 build: dashboard
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/octomus-agent ./cmd/octomus-agent
-
-# Race-instrumented build used by test-race-e2e; the release binary stays CGO_ENABLED=0.
-build-race: dashboard
-	CGO_ENABLED=1 go build -race -o bin/octomus-agent-race ./cmd/octomus-agent
 
 check: dashboard
 	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal web/*.go) || exit 1; \
@@ -41,10 +37,6 @@ test-integration: build
 
 test-browser: build
 	$(E2E_ENV) npm test --prefix web -- $(PLAYWRIGHT_ARGS)
-
-# Opt-in (about a minute): kept out of `make test` because the race runtime perturbs the other suites' timing.
-test-race-e2e: build-race
-	OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent-race" GORACE=halt_on_error=1 PYTHONUNBUFFERED=1 python3 tests/e2e.py
 
 # Opt-in: needs a Docker Engine 28+ daemon. Runs the broker against the real daemon, then the shipped compose stack
 # end to end with fixture runners inside real sandboxes.

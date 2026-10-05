@@ -165,8 +165,6 @@ race detector. Install dashboard dependencies with
   `make test-browser`: one stage each. `test-integration` accepts
   `SCENARIOS` names; `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests
   run four workers.
-- `make test-race-e2e` (opt-in, about a minute): `tests/e2e.py` against the
-  race-instrumented build.
 - `make test-sandbox` (opt-in, needs Docker Engine 28+): the broker against the real
   daemon (`OCTOMUS_DOCKER_TEST=1`) and `tests/e2e_sandbox.py` against the compose stack.
 - `make audit` (govulncheck and `npm audit`; needs module downloads) and `make package`

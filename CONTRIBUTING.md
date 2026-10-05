@@ -23,11 +23,7 @@ executable. Make targets handle this order. For focused Go work, first run
 `npm run build --prefix web`, then `go test ./...`. After UI edits rebuild
 the dashboard and binary so browser tests exercise current assets.
 
-`make build` creates the production executable at `bin/octomus-agent`, and
-`make build-race` produces a race-instrumented variant. The opt-in
-`make test-race-e2e` (about a minute; needs a C compiler) runs `tests/e2e.py`
-against that variant so the race detector sees real HTTP, scheduler and runner
-interleavings; it is not part of `make test`. `--assets web/build`
+`make build` creates the production executable at `bin/octomus-agent`. `--assets web/build`
 explicitly serves a development dashboard instead of the embedded copy. The
 application version lives in the root `VERSION` file; change it in one place.
 See [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md) for the code map.

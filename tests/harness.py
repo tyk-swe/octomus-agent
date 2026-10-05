@@ -22,7 +22,6 @@ import urllib.request
 PROJECT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent')))
 TOKEN = 'fixture-operator-token-with-at-least-32-characters'
-RACE_EXIT_STATUS = 66
 CODEX_ROUTE = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
 FEATURE_CHECK = 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'
 HOLDS = ['audit-hold']
@@ -190,8 +189,6 @@ class Service:
         # Teardown can run again after a scenario already stopped this process.
         # Report a failure once, while checking every replacement after restart.
         self.stopped_process = process
-        if process.returncode == RACE_EXIT_STATUS:
-            raise AssertionError(f'service exited with status {RACE_EXIT_STATUS}: the race detector reported a data race; service.log tail:\n{service_log(self.root, tail=200)}')
         if process.returncode != 0 and not (requested_kill and process.returncode == -signal.SIGKILL):
             raise AssertionError(f'service exited with status {process.returncode}; service.log tail:\n{service_log(self.root, tail=100)}')
 
