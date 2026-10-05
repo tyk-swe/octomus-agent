@@ -58,8 +58,8 @@ dropped.
 
 ```text
 Milestone: M3
-Status: IN_PROGRESS
-Revision: Working tree after fa98f37.
+Status: DONE
+Revision: a53606d0495fb28fc4d5952c60bc59c873b5bc12.
 Delivered output: CI packages and smoke-tests each archive on its native Ubuntu
 24.04 runner. verify still gates the complete package matrix. weekly.yml runs
 the 100,000-record scale check and all race-instrumented fixture e2e scenarios
@@ -77,7 +77,20 @@ make test passed (regular and race Go, distribution, all ten fixture e2e
 scenarios, and 58 browser cases; six non-applicable mobile evidence-unit cases
 remain intentionally skipped). make audit and make package passed, as did the
 native x86_64 archive smoke test.
-Unrun checks and blockers: Native archive failure injection, two consecutive
-weekly-workflow passes and merged remote branch pruning remain.
-Next: Verify and record M3, then M4.
+Repository CI passed, including both native package jobs and verify:
+https://github.com/tyk-swe/octomus-agent/actions/runs/37278189021
+The throwaway tyk/roadmap-native-arm64-negative commit f8d468a deliberately
+corrupted only the arm64 archive. Its arm64 smoke test and verify failed while
+the x86_64 package and every other job passed:
+https://github.com/tyk-swe/octomus-agent/actions/runs/37278271540
+Two consecutive manual dispatches of the scheduled weekly workflow passed
+both scale and race-e2e (the Monday schedule is configured, not claimed to have
+already fired twice):
+https://github.com/tyk-swe/octomus-agent/actions/runs/37278265977
+https://github.com/tyk-swe/octomus-agent/actions/runs/37278782824
+Pruned 104 ancestry-merged remote tyk/* branches with atomic exact-head leases.
+The two unique latency cases are incorporated and their branch had no PR; it
+was deleted with an exact-head lease. The negative-test branch was also removed.
+Unrun checks and blockers: None.
+Next: M4.
 ```
