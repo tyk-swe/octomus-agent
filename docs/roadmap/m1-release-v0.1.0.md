@@ -5,12 +5,12 @@
 
 ## Why
 
-The repository has no tags, and the release workflow (`.github/workflows/release.yml`)
-has never run. [Releasing](../releasing.md) says public releases "remain pending"
-and image publication "has not run yet: the first release will exercise it".
-`install.sh` fails with "No published stable release found" until a stable
-release exists, so every operator builds from source. Arm64 has only ever been
-tested under emulation.
+When this milestone was written, the repository had no tags and the release
+workflow (`.github/workflows/release.yml`) had never run. [Releasing](../releasing.md)
+then said public releases "remain pending" and image publication "has not run
+yet: the first release will exercise it". `install.sh` failed with "No published
+stable release found" until a stable release existed, so every operator built
+from source. Arm64 had only ever been tested under emulation.
 
 ## Deliverable
 
