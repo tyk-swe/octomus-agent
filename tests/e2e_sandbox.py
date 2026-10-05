@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import secrets
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -20,7 +19,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from harness import FEATURE_CHECK, PROJECT, TOKEN, local_urlopen, poll, routes, run_selected, setup
+from harness import FEATURE_CHECK, PROJECT, TOKEN, free_port, local_urlopen, poll, routes, run_selected, setup
 
 COMPOSE = PROJECT / 'deploy/docker/compose.yaml'
 IMAGES = {'base': 'octomus-agent:e2e-base', 'control': 'octomus-agent:e2e', 'sandbox': 'octomus-sandbox:e2e'}
@@ -47,12 +46,6 @@ def build_images():
             result = subprocess.run(['docker', *step], cwd=PROJECT, capture_output=True, text=True, timeout=1800)
             assert result.returncode == 0, f'docker {" ".join(step)} failed:\n{result.stderr[-4000:]}'
         _images_ready = True
-
-
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        return sock.getsockname()[1]
 
 
 class Stack:

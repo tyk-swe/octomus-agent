@@ -31,15 +31,14 @@ See [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md) for the code
 ## Meaningful evidence
 
 `make test` runs the regular Go suite, the race suite, then three checks against the
-freshly built binary: `tests/distribution.py` (the executable as shipped; with
-`--package`, CI and the release workflow also check the archive against
-`scripts/release-files.txt`), `tests/e2e.py` (the nine service scenarios against
+freshly built binary: `tests/distribution.py` (the executable as shipped; CI also
+runs it on each extracted release archive), `tests/e2e.py` (the nine service scenarios against
 deterministic Codex, OpenCode and GitHub peers, without live model calls or network
 writes) and `npm test --prefix web` (the dashboard browser tests). AGENTS.md lists the
 suites, the fixtures and the shared test helpers.
 
 Focused targets run one stage each: `make test-go`, `make test-go-race`,
-`make test-contracts`, `make test-integration` (with `SCENARIOS`, for example
+`make test-integration` (the distribution smoke, then the scenarios; with `SCENARIOS`, for example
 `make test-integration SCENARIOS="chain pr-outcome"`) and `make test-browser` (with
 `PLAYWRIGHT_ARGS` such as `--project=desktop`). `tests/e2e.py` also takes scenario
 names directly and lists them on an unknown name; `OCTOMUS_TEST_JOBS` bounds its

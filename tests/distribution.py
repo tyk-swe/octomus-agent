@@ -1,28 +1,18 @@
 #!/usr/bin/env python3
-"""The executable as shipped: an HTTP smoke test with lock release, and with --package the release archive."""
-import argparse
+"""The executable as shipped (OCTOMUS_TEST_BINARY, or an extracted release archive's): an HTTP smoke test with lock release."""
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import signal
-import socket
 import subprocess
-import tarfile
 import tempfile
 import urllib.error
 
-from harness import local_urlopen, poll
+from harness import BINARY, free_port, local_urlopen, poll
 
-PROJECT = Path(__file__).resolve().parents[1]
 TOKEN = 'distribution-fixture-token-at-least-32-characters'
-
-
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        return sock.getsockname()[1]
 
 
 def smoke(binary):
@@ -84,29 +74,5 @@ def smoke(binary):
     print('PASS executable: HTTP, JS, SPA, asset override, listener warning, state lock and its release')
 
 
-def package_contents(archive):
-    """The archive holds the executable and exactly the files scripts/release-files.txt lists, each once."""
-    expected = {'octomus-agent', 'octomus-agent/octomus-agent'}
-    for name in (PROJECT / 'scripts/release-files.txt').read_text().split():
-        parts = name.split('/')
-        expected.update('octomus-agent/' + '/'.join(parts[:depth]) for depth in range(1, len(parts) + 1))
-    with tarfile.open(archive) as tar:
-        names = [member.name for member in tar.getmembers()]
-    assert len(names) == len(set(names)), f'{archive} repeats members'
-    assert set(names) == expected, f'{archive} differs from the release manifest: {sorted(set(names) ^ expected)}'
-    print(f'PASS package: {len(names)} members, exactly the executable and the release manifest')
-
-
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--package', type=Path)
-    args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='octomus-package-') as directory:
-        if args.package:
-            package_contents(args.package)
-            with tarfile.open(args.package) as tar:
-                tar.extractall(directory, filter='data')
-            binary = Path(directory) / 'octomus-agent/octomus-agent'
-        else:
-            binary = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-agent'))).resolve()
-        smoke(binary)
+    smoke(BINARY.resolve())

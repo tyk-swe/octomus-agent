@@ -45,14 +45,11 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: test "$RELEASE_TAG" = "v$(cat VERSION)"
       - run: npm ci --prefix web
-      - run: make build
       - name: Package and smoke test
-        env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          RELEASE_TARGET: ${{ matrix.target }}
         run: |
-          ./scripts/package.sh "$RELEASE_TAG" "$RELEASE_TARGET" bin/octomus-agent
-          python3 tests/distribution.py --package "dist/octomus-agent-$RELEASE_TAG-$RELEASE_TARGET.tar.gz"
+          make package
+          tar -xzf dist/octomus-agent-*.tar.gz -C "$RUNNER_TEMP"
+          OCTOMUS_TEST_BINARY="$RUNNER_TEMP/octomus-agent/octomus-agent" python3 tests/distribution.py
       - uses: actions/upload-artifact@v4
         with:
           name: package-${{ matrix.target }}

@@ -46,6 +46,12 @@ def fixture_git_environment():
     return env
 
 
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+
+
 def git(*args, cwd):
     return subprocess.check_output(['/usr/bin/git', *args], cwd=cwd, env=fixture_git_environment(), stderr=subprocess.DEVNULL, text=True).strip()
 
@@ -156,9 +162,7 @@ class Service:
         self.process = None
         self.stopped_process = None
         self.log = (root / 'service.log').open('a')
-        with socket.socket() as sock:
-            sock.bind(('127.0.0.1', 0))
-            self.port = sock.getsockname()[1]
+        self.port = free_port()
         self.env = fixture_git_environment()
         self.env.pop('OCTOMUS_NOTIFICATION_WEBHOOK_URL', None)
         # Fixture runners are host scripts; tests/e2e_sandbox.py covers the Docker sandbox.

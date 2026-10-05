@@ -1,4 +1,4 @@
-.PHONY: dashboard build check test test-go test-go-race test-contracts test-integration test-browser test-sandbox package audit
+.PHONY: dashboard build check test test-go test-go-race test-integration test-browser test-sandbox package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
 # Scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
@@ -21,7 +21,7 @@ check: dashboard
 	npm run check --prefix web
 	npm run format:check --prefix web
 
-test: test-go test-go-race test-contracts test-integration test-browser
+test: test-go test-go-race test-integration test-browser
 
 test-go: dashboard
 	go test $(GO_TEST_FLAGS) ./...
@@ -29,10 +29,8 @@ test-go: dashboard
 test-go-race: dashboard
 	CGO_ENABLED=1 go test -race $(GO_TEST_FLAGS) ./...
 
-test-contracts: build
-	$(E2E_ENV) python3 tests/distribution.py
-
 test-integration: build
+	$(E2E_ENV) python3 tests/distribution.py
 	$(E2E_ENV) python3 tests/e2e.py $(SCENARIOS)
 
 test-browser: build
@@ -52,11 +50,4 @@ audit:
 	npm audit --prefix web --audit-level=high
 
 package: build
-	@arch=$$(go env GOARCH); \
-	case $$arch in \
-	  amd64) target=x86_64-unknown-linux-gnu ;; \
-	  arm64) target=aarch64-unknown-linux-gnu ;; \
-	  *) echo "Unsupported release architecture: $$arch" >&2; exit 1 ;; \
-	esac; \
-	./scripts/package.sh "v$$(cat VERSION)" "$$target" bin/octomus-agent
-	cd dist && sha256sum octomus-agent-*.tar.gz > SHA256SUMS
+	./scripts/package.sh

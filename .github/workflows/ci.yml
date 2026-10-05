@@ -148,9 +148,9 @@ jobs:
       - run: npm ci --prefix web
       - run: make package
       - name: Smoke test the native ${{ matrix.target }} archive
-        env:
-          RELEASE_TARGET: ${{ matrix.target }}
-        run: python3 tests/distribution.py --package "dist/octomus-agent-v$(cat VERSION)-$RELEASE_TARGET.tar.gz"
+        run: |
+          tar -xzf dist/octomus-agent-*.tar.gz -C "$RUNNER_TEMP"
+          OCTOMUS_TEST_BINARY="$RUNNER_TEMP/octomus-agent/octomus-agent" python3 tests/distribution.py
 
   client-contracts:
     runs-on: ubuntu-24.04

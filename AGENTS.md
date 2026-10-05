@@ -126,8 +126,8 @@ strict typed JSON boundaries for saved records and API requests.
   `baseline`, `notify`, `pr-context`, `upgrade`), one function each, over `tests/harness.py` and
   `tests/fixtures`: deterministic Codex/OpenCode/GitHub peers with real local Git.
   `tests/distribution.py` checks the executable as shipped (HTTP, state lock
-  release, listener warning) and, with `--package`, the release archive against
-  `scripts/release-files.txt`. `tests/serve_ui.py` serves synthetic data to the
+  release, listener warning); CI also runs it on each extracted release archive.
+  `tests/serve_ui.py` serves synthetic data to the
   browser tests.
 - Release and deployment inputs: `VERSION` (the one version, read by `version.go`,
   the dashboard build and release tooling), `scripts/package.sh`, `install.sh`,
@@ -161,8 +161,8 @@ race detector. Install dashboard dependencies with
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
 - `make test-go`: the regular Go suite. `make test-go-race`: the race suite
   explicitly. Both run with `-shuffle=on`; a failure prints its seed to
-  reproduce. `make test-contracts` / `make test-integration` /
-  `make test-browser`: one stage each. `test-integration` accepts
+  reproduce. `make test-integration` (`tests/distribution.py`, then
+  `tests/e2e.py`) / `make test-browser`: one stage each. `test-integration` accepts
   `SCENARIOS` names; `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests
   run four workers.
 - `make test-sandbox` (opt-in, needs Docker Engine 28+): the broker against the real
