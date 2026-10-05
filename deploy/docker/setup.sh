@@ -55,7 +55,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 # The GitHub token comes first, so an abandoned prompt leaves no operator token nobody has seen.
 if [ ! -e secrets/github_token ]; then
-  printf 'Fine-grained GitHub token for %s only, with Contents and Pull requests read/write (input hidden): ' "$repo"
+  printf 'Fine-grained GitHub token for %s only, with Contents and Pull requests read/write and Checks/Commit statuses read (input hidden): ' "$repo"
   if stty -echo 2>/dev/null; then echo_off=1; fi
   read -r github_token || github_token=
   if [ -n "$echo_off" ]; then stty echo 2>/dev/null || :; echo_off=; fi

@@ -224,6 +224,19 @@ func TestGoldenExportsReadBack(t *testing.T) {
 		}
 		return code, value, err.String()
 	}
+	for _, args := range [][]string{{"--usage-report"}, {"--export-run", "4306e9ae-0833-47e5-b569-14b7b1d7d4f8"}} {
+		if code, _, errText := call(args...); code != 1 || !strings.Contains(errText, "must be upgraded") {
+			t.Fatalf("old read-only export: code=%d error=%s", code, errText)
+		}
+	}
+	// The service-owned upgrade precedes read-only exports of historical state.
+	s, err := store.Open(filepath.Join(dataDir, stateDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		cycle  string
 		number float64

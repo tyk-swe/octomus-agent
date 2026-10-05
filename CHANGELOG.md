@@ -5,17 +5,35 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-05
+
 ### Added
 
 - Startup state upgrades: ordered forward-only migrations applied behind a verified,
   never-overwritten backup written beside the state database.
 - The golden v0.1.0 state database (`internal/store/testdata/state-v0.1.0.db`) and its
   generator `scripts/golden-state.py`; a new `upgrade` e2e scenario reads it back end to end.
+- Opt-in webhook notices for published tasks, failed planning cycles and successful
+  audits, including audits that find no accepted work. The durable outbox keeps the
+  existing minimal schema, redaction, backlog and retry limits.
+- Source-attributed owned-PR review decision, head-commit CI rollup and mergeability
+  in planning context, without downloading review text or individual checks.
+- Native arm64 archive smoke tests in pull-request CI and a scheduled/manual weekly
+  scale and race-e2e workflow.
 
 ### Changed
 
 - State refusal messages now distinguish pre-release, newer and needs-upgrade databases;
   read-only exports refuse an older schema until the service upgrades it.
+- Schema version 8 upgrades v0.1.0's version 7 behind a verified automatic backup;
+  historical notifications are not replayed.
+- Owned-PR review, CI and mergeability changes reset planning's idle backoff, while
+  unchanged observation timestamps do not.
+
+### Fixed
+
+- Slow or failed activity reads no longer hold current task controls behind them.
+  Accepted task actions wait for the canonical task refresh, independently of activity.
 
 ## [0.1.0] - 2026-10-04
 

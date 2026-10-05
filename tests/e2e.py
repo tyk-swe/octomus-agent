@@ -432,7 +432,7 @@ def assert_no_url_leak(root, service):
 
 
 def notify():
-    """A blocked task produces one minimal attention event at the configured webhook, and the URL never leaks anywhere."""
+    """Blocked and published tasks, failed planning and completed audits deliver minimal opt-in events without leaking the URL."""
     with contextlib.closing(Receiver()) as receiver, fixture_service('octomus-notify-', lambda root: (root / 'malformed-review').touch(), env={WEBHOOK_ENV: receiver.url}) as (root, service):
         service.configure(routes())
         found = receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['task_id']], 'attention delivery without dashboard polling')[0]
@@ -447,9 +447,73 @@ def notify():
         assert health['state'] == 'enabled' and health['configured'], health
         assert_no_url_leak(root, service)
 
+    for category, mode in [('task_published', 'execution'), ('cycle_failed', 'failure'), ('audit_completed', 'audit')]:
+        def prepare(root):
+            if mode == 'failure':
+                (root / 'malformed-grounding').touch()
+            elif mode == 'audit':
+                (root / 'audit-decisions').touch()
+        with contextlib.closing(Receiver()) as receiver, fixture_service('octomus-notify-' + category + '-', prepare, env={WEBHOOK_ENV: receiver.url}) as (root, service):
+            service.configure(routes(), start=False)
+            service.request('/control/audit' if mode == 'audit' else '/control/cycle', 'POST')
+            found = receiver.wait(lambda rows: [r for r in rows if attention(r['body'])['category'] == category], category + ' delivery without dashboard polling')[0]
+            event = attention(found['body'])
+            cycle = service.request('/cycles/' + event['cycle_id'])
+            assert event['repository'] == cycle['repository'] == 'fixture/project'
+            assert event['run_id'] == cycle.get('run_id')
+            if category == 'task_published':
+                task = service.request('/tasks/' + event['task_id'])
+                assert task['status'] == 'published' and task['pr_url'] and task['cycle_id'] == cycle['id'], task
+                assert event['action'] == 'inspect_task'
+            else:
+                assert event['task_id'] is None and event['action'] == 'inspect_cycle', event
+                assert cycle['status'] == ('failed' if mode == 'failure' else 'completed'), cycle
+                assert service.request('/state')['tasks'] == []
+            service.wait(lambda: not service.request('/state')['cycle_active'], 'terminal notification cycle settled')
+            service.stop()
+            service.start()
+            service.wait(lambda: service.request('/state')['notifications']['pending'] == 0, 'notifications settled after restart')
+            assert len([r for r in receiver.events() if attention(r['body'])['category'] == category]) == 1, receiver.events()
+            assert_no_url_leak(root, service)
+
+
+def pr_context():
+    """An audit receives source-attributed, head-matched owned-PR status, never queries external status and publishes nothing."""
+    def prepare(root):
+        existing_pr(root)
+        expected = {'number': 42, 'review_decision': 'changes_requested', 'check_status': 'failure', 'mergeability': 'conflicting'}
+        (root / 'expected-pr-status.json').write_text(json.dumps([expected]))
+        prs = json.loads((root / 'prs.json').read_text())
+        prs[0].update(review_decision='CHANGES_REQUESTED', check_status='FAILURE', mergeability='CONFLICTING')
+        head = git('rev-parse', 'main', cwd=root / 'checkout')
+        git('--git-dir', str(root / 'remote.git'), 'update-ref', 'refs/pull/43/head', head, cwd=root)
+        prs.append({'number': 43, 'title': 'Contributor improvement', 'body': 'Read-only contributor evidence.',
+                    'head': {'ref': 'contributor/feature', 'sha': head, 'repo': {'full_name': 'contributor/project'}},
+                    'base': {'ref': 'main'}, 'html_url': 'https://github.com/fixture/project/pull/43',
+                    'state': 'open', 'merged_at': None, 'additions': 2, 'deletions': 0, 'created_at': '2026-10-01T00:00:00Z'})
+        (root / 'prs.json').write_text(json.dumps(prs))
+
+    with fixture_service('octomus-pr-context-', prepare) as (root, service):
+        service.configure(routes(), start=False)
+        before = git('--git-dir', str(root / 'remote.git'), 'for-each-ref', '--format=%(refname) %(objectname)', cwd=root)
+        service.request('/control/audit', 'POST')
+        service.wait(lambda: (root / 'planning-status-observed.json').exists(), 'owned PR status reached a real planning prompt')
+        service.wait(lambda: service.request('/state')['cycles'] and not service.request('/state')['cycle_active'], 'PR-context audit completion')
+        state = service.request('/state')
+        cycle = service.request('/cycles/' + state['cycles'][0]['id'])
+        assert cycle['status'] == 'completed' and cycle['mode'] == 'audit', cycle
+        pr = cycle['grounding']['prs'][0]
+        expected = json.loads((root / 'expected-pr-status.json').read_text())[0]
+        assert all(pr[k] == v for k, v in expected.items()), pr
+        assert pr['status_source'] == pr['url'] and pr['status_observed_at']
+        assert [p['number'] for p in cycle['grounding']['external_prs']] == [43]
+        assert {json.loads(line)['number'] for line in (root / 'github-status.jsonl').read_text().splitlines()} == {42}
+        assert state['tasks'] == [] and not (root / 'publications.jsonl').exists()
+        assert git('--git-dir', str(root / 'remote.git'), 'for-each-ref', '--format=%(refname) %(objectname)', cwd=root) == before
+
 
 def upgrade():
-    """A v0.1.0 state database opens on this binary and serves every saved record back.
+    """A v0.1.0 database migrates, serves saved evidence and plans with refreshed owned-PR status.
 
     The golden's configuration points at a repository path from the generating fixture,
     which no longer exists; the service must still serve and stop cleanly.
@@ -484,6 +548,26 @@ def upgrade():
             assert not backups, f'upgrade ran without a migration: {backups}'
         else:
             assert len(backups) == 1, f'expected one pre-upgrade backup: {backups}'
+            with sqlite3.connect(backups[0]) as db:
+                assert db.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
+                assert db.execute('PRAGMA user_version').fetchone()[0] == 7
+                assert db.execute("SELECT count(*) FROM records WHERE kind='task'").fetchone()[0] == 3
+        existing_pr(root)
+        update_prs(root, lambda prs: prs[0].update(review_decision='APPROVED', check_status='SUCCESS', mergeability='MERGEABLE'))
+        (root / 'expected-pr-status.json').write_text(json.dumps([{'number': 42, 'review_decision': 'approved', 'check_status': 'success', 'mergeability': 'mergeable'}]))
+        service.start()
+        service.configure(routes(), start=False, max_sessions_per_day=1000)
+        service.request('/control/audit', 'POST')
+        service.wait(lambda: (root / 'planning-status-observed.json').exists(), 'migrated state reaches planning with owned PR status')
+        def planned():
+            state = service.request('/state')
+            latest = state['cycles'][0]
+            return latest if latest['mode'] == 'audit' and not state['cycle_active'] else None
+        cycle = service.wait(planned, 'audit on upgraded state')
+        assert cycle['status'] == 'completed', service.request('/cycles/' + cycle['id'])
+        assert not (root / 'publications.jsonl').exists()
+        assert all(service.request('/tasks/' + task['id'])['status'] == 'published' for task in tasks)
+        assert list((root / '.octomus').glob('state.db.v*-backup-*')) == backups, 'reopen created another backup'
 
 
 SCENARIOS = [
@@ -496,6 +580,7 @@ SCENARIOS = [
     ('pr-outcome', pr_outcome),
     ('baseline', baseline),
     ('notify', notify),
+    ('pr-context', pr_context),
     ('upgrade', upgrade),
 ]
 

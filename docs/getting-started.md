@@ -26,8 +26,8 @@ commands ahead of any model work and is separate from verifying a task's changes
 - **Owner-supplied accounts**, arranged and approved before you start: a Codex or
   OpenCode provider login that exposes the models you intend to route, and a GitHub
   fine-grained token limited to the one target repository (Contents and Pull requests
-  read/write). Octomus never creates accounts or performs logins; you run each login
-  yourself.
+  read/write; Checks and Commit statuses read). Octomus never creates accounts or
+  performs logins; you run each login yourself.
 - Your project's build and test tools, added to the sandbox image when verification needs
   them (see [extending the sandbox image](sandbox.md#extend-the-sandbox-image)).
 
@@ -119,7 +119,7 @@ curl -fsSL https://raw.githubusercontent.com/tyk-swe/octomus-agent/main/install.
 
 The installer verifies the downloaded archive against release SHA-256 checksums
 and installs to `/usr/local/bin`. To select a version, download the script and run
-`sh install.sh v0.1.0`, or set `OCTOMUS_VERSION=v0.1.0` for the piped `sh`; an
+`sh install.sh v0.2.0`, or set `OCTOMUS_VERSION=v0.2.0` for the piped `sh`; an
 alternate writable absolute destination is supported through `INSTALL_DIR`.
 Checksums detect corruption; they are not independent signatures against a
 compromised release account.

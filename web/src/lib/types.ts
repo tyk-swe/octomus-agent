@@ -212,6 +212,11 @@ export type PR = {
   owned: boolean;
   head_repository: string;
   base_repository: string;
+  review_decision?: string;
+  check_status?: string;
+  mergeability?: string;
+  status_source?: string;
+  status_observed_at?: string;
 };
 export type ExternalPRContext = {
   number: number;

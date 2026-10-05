@@ -176,3 +176,14 @@ available to your provider account. The file is a reference, not a ready-to-run 
 For command-line options, environment variables, and the optional attention webhook, see
 [deployment and operations](deployment.md#cli). Keep account credentials in the service
 user's protected environment and runner settings, never in the repository.
+
+The optional webhook now covers published tasks, failed planning cycles and
+successful audits as well as blocked/failed tasks and service-error pauses.
+It is still configured only through the protected environment, with the same
+minimal payload and delivery limits; see [webhook categories](deployment.md#optional-attention-webhook).
+
+Planning automatically observes owned-PR review decisions, aggregate head-commit
+CI status and mergeability from GitHub. These source-attributed, bounded fields
+need no additional setting. They are evidence, not authorization to publish,
+merge or rebase, and external PRs remain read-only. Old saved PRs start with
+unobserved status until refreshed. See [planning context](architecture.md#planning).

@@ -1,6 +1,6 @@
 # Releasing
 
-v0.1.0 is published: a public GitHub release with x86_64 and aarch64 archives
+v0.2.0 publishes a public GitHub release with x86_64 and aarch64 archives
 and `SHA256SUMS`, plus signed `octomus-agent` and `octomus-sandbox` images on
 GHCR. Local packages, fixture tests and workflow definitions do not prove
 public download availability; the release page, the green release workflow run
@@ -60,7 +60,7 @@ Prerelease tags are marked as prereleases and excluded from the installer's
 latest-stable lookup.
 
 The manual workflow accepts an existing tag and optional multiline notes. Use
-that path with the final owner-written v0.1.0 notes. If the release already exists,
+that path with the final owner-approved release notes. If the release already exists,
 nonempty supplied notes update only its description; published assets are never
 replaced. A rerun without notes fails for an existing release.
 The workflow does not push tags, merge PRs or change visibility.
@@ -77,7 +77,7 @@ build provenance attached, and signs the pushed digest with cosign keyless signi
 the workflow's GitHub identity. Verify a pulled image before using it:
 
 ```bash
-cosign verify ghcr.io/tyk-swe/octomus-agent:0.1.0 \
+cosign verify ghcr.io/tyk-swe/octomus-agent:0.2.0 \
   --certificate-identity-regexp '^https://github.com/tyk-swe/octomus-agent/.github/workflows/release.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -103,10 +103,27 @@ fails when `schema.sql` drifts from a migrated golden.
 After tagging a release, generate its golden database:
 
 ```bash
-python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --output internal/store/testdata/state-vX.Y.Z.db
+python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --expect-version 8 --output internal/store/testdata/state-vX.Y.Z.db
 ```
 
-Check it in with its provenance (commit, scenario, sha256) and extend the golden tests so
+Use the release's actual schema version (`8` for v0.2.0). Check it in with its provenance (commit, scenario, sha256) and extend the golden tests so
 later releases keep opening every checked-in golden. Before tagging a schema change,
 rehearse the upgrade on a copy of real state. The operator procedure is in
 [Backup and upgrade](deployment.md#backup-and-upgrade).
+
+For a fixture rehearsal using the actual released images, pull both versions,
+then run:
+
+```bash
+python3 tests/rehearse_upgrade.py \
+  --new-agent ghcr.io/tyk-swe/octomus-agent:0.2.0 \
+  --new-sandbox ghcr.io/tyk-swe/octomus-sandbox:0.2.0
+```
+
+This starts v0.1.0 from its released-binary-generated golden in an isolated
+compose project, passes Check connection and containment, stops and backs up its data, upgrades to
+schema 8, checks saved records/evidence and the private automatic backup, then
+restores the manual backup and reopens v0.1.0. Local Git/GitHub fixtures and dummy
+secrets and a synthetic API-key fixture replace account access; it makes no model turn and
+does not validate an owner's VM or bot. Record image identities and the printed
+results with the milestone.

@@ -278,19 +278,24 @@ func (t Task) MarshalJSON() ([]byte, error)     { type plain Task; return wirejs
 func (t Task) Clone() Task                      { return wirejson.Clone(t) }
 
 type PullRequest struct {
-	Number         uint64 `json:"number"`
-	Title          string `json:"title"`
-	Branch         string `json:"branch"`
-	Head           string `json:"head"`
-	Base           string `json:"base"`
-	URL            string `json:"url"`
-	Body           string `json:"body"`
-	State          string `json:"state"`
-	ChangedLines   uint64 `json:"changed_lines"`
-	CreatedAt      string `json:"created_at"`
-	Owned          bool   `json:"owned"`
-	HeadRepository string `json:"head_repository"`
-	BaseRepository string `json:"base_repository"`
+	Number           uint64 `json:"number"`
+	Title            string `json:"title"`
+	Branch           string `json:"branch"`
+	Head             string `json:"head"`
+	Base             string `json:"base"`
+	URL              string `json:"url"`
+	Body             string `json:"body"`
+	State            string `json:"state"`
+	ChangedLines     uint64 `json:"changed_lines"`
+	CreatedAt        string `json:"created_at"`
+	Owned            bool   `json:"owned"`
+	HeadRepository   string `json:"head_repository"`
+	BaseRepository   string `json:"base_repository"`
+	ReviewDecision   string `json:"review_decision" wire:"default"`
+	CheckStatus      string `json:"check_status" wire:"default"`
+	Mergeability     string `json:"mergeability" wire:"default"`
+	StatusSource     string `json:"status_source" wire:"default"`
+	StatusObservedAt string `json:"status_observed_at" wire:"default"`
 }
 
 func (p *PullRequest) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, p) }

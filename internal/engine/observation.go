@@ -183,7 +183,8 @@ func applyContextFingerprint(control *model.Control, fingerprint string, now tim
 func contextFingerprint(revision string, prs []model.PullRequest) string {
 	parts := make([]string, 0, len(prs))
 	for _, pr := range prs {
-		parts = append(parts, fmt.Sprintf("%d:%s:%s:%s", pr.Number, pr.Head, pr.Base, pr.State))
+		parts = append(parts, fmt.Sprintf("%d:%s:%s:%s:%s:%s:%s", pr.Number, pr.Head, pr.Base, pr.State,
+			pr.ReviewDecision, pr.CheckStatus, pr.Mergeability))
 	}
 	sort.Strings(parts)
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(revision+"\n"+strings.Join(parts, "\n"))))

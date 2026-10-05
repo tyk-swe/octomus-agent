@@ -133,8 +133,16 @@ func TestGoldenStateReadsBack(t *testing.T) {
 	if len(prs) != 1 || prs[0].(map[string]any)["pr"].(map[string]any)["number"] != float64(42) {
 		t.Fatalf("prs: %v", prs)
 	}
-	if events := list("/events"); len(events) != 103 {
-		t.Fatalf("%d events", len(events))
+	events := list("/events")
+	const wantUpgrades = 1 // One final event for the whole v0.1.0 upgrade chain.
+	upgrades := 0
+	for _, event := range events {
+		if event.(map[string]any)["kind"] == "upgrade" {
+			upgrades++
+		}
+	}
+	if upgrades != wantUpgrades || len(events) != 103+wantUpgrades {
+		t.Fatalf("%d events, %d upgrade events; want %d and %d", len(events), upgrades, 103+wantUpgrades, wantUpgrades)
 	}
 	settings := object("/config")
 	if settings["config"].(map[string]any)["github_repo"] != "fixture/project" || len(settings["revision"].(string)) != 64 {

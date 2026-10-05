@@ -25,7 +25,15 @@ type migration struct {
 }
 
 // releaseMigrations[i] upgrades baseVersion+i to baseVersion+i+1. Append only; schema.sql is the result.
-var releaseMigrations = []migration{}
+var releaseMigrations = []migration{
+	{name: "v8-notification-events", apply: func(ctx context.Context, c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, notificationEventsV8)
+		return err
+	}},
+}
+
+//go:embed migrations/008-notifications.sql
+var notificationEventsV8 string
 
 type schemaPlan struct {
 	ddl        string

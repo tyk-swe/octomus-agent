@@ -25,6 +25,20 @@ The dashboard polls authoritative service state and never schedules work itself.
 
 Each cycle records the remote default-branch revision, owned open PRs, their heads and accumulated scope, maintenance targets, task history, and separate read-only external PR summaries. The complete open inventory is paginated and fails explicitly if machine capture is incomplete. External context is ordered by PR number and limited to 100 entries, 200 title characters, 2,000 body characters, and 512 KiB serialized total; source/head references, omitted counts and truncation flags are recorded. External/fork PRs never become execution or maintenance targets. The orchestrator inspects the repository and PR diffs. Each discovery and proposal-review role has a separate clone and runner session. Planning sessions are instructed to inspect rather than mutate, and their worktree/HEAD must remain unchanged.
 
+Owned PRs also carry GitHub's aggregate `review_decision`, `check_status` and
+`mergeability`, with `status_source` (the source PR URL) and `status_observed_at`.
+One fixed-size GraphQL selection per owned PR reads the review decision and the
+head commit's status-check rollup, which includes both check runs and commit
+statuses, without copying comments, review bodies or check logs into prompts.
+The GraphQL PR identity and commit must match the REST detail's head; a partial,
+unknown enum or racing response fails the refresh rather than supplying false
+success. Status fields are backward-compatible defaults on v0.1.0 records;
+empty means not observed, `none` means no decision/checks, and `unknown`
+mergeability is not a clean verdict. The recorded context reaches grounding and
+discovery. Status changes reset idle backoff; source/timestamp-only refreshes do
+not. External PRs receive no status query and remain read-only. None of these
+observations replaces task review/verification or authorizes merging or rebasing.
+
 After an orchestrator grounding turn, the standard cycle runs nine discovery agents (configurable from eight to ten), followed by two adversarial reviewers and orchestrator consolidation. The final result must account for every original proposal ID, with a decision and reason. Accepted work needs project evidence, benefit, scope, a self-contained prompt, a supported tier, an enabled category, and an eligible target. Unknown dependencies, dependency cycles, unordered/forked same-PR plans, accepted proposals that repeat each other's work on one target (the same title or problem identity), accepted work that repeats a recorded task on the same repository and target that is neither cancelled nor archived, and unowned targets are rejected by the core; a rejected plan fails the cycle and dispatches nothing. Same-PR proposals require a unique dependency order; unrelated branches remain parallelizable.
 
 Semantic value, overlapping ideas, and conflicting assessments are judged by the proposal reviewers and orchestrator; their results are recorded. The core cannot independently prove an idea's product value. Returning an empty task set is a successful idle cycle.
@@ -142,7 +156,16 @@ SQLite uses full synchronous writes and WAL. Only one service may hold the state
 
 ## Usage records and state
 
-Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. State starts at schema version 7 (v0.1.0). Later releases upgrade it at startup through ordered forward-only migrations after a verified backup. The version check runs before any schema or journal change, and pre-release or newer databases are refused untouched. Route snapshots record the selected backend, model, effort or variant.
+Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. State starts at schema version 7 (v0.1.0); v0.2.0 uses version 8 for the new notification triggers. Releases upgrade it at startup through ordered forward-only migrations after a verified backup. The version check runs before any schema or journal change, and pre-release or newer databases are refused untouched. Route snapshots record the selected backend, model, effort or variant.
+
+Opt-in webhook events are inserted by SQLite triggers in the same transaction as
+the record transition: blocked/failed or published tasks, failed planning cycles,
+successful audits (completed or idle), and error-paused service episodes.
+Version 8 replaces the task triggers and adds cycle triggers without rewriting
+records or replaying historical events. Fresh DDL and migrated DDL must match.
+The existing durable outbox supplies destination rotation, a 1,000-pending-event
+bound, five attempts and 24-hour expiry. Payloads contain only identifiers,
+repository, category and action: no errors, prompts or PR/review/check text.
 
 `--usage-report` opens the database read-only at this release's schema version and reads one transaction snapshot without taking the service lock or initializing state. It exports metadata rather than raw prompts/transcripts or credentials. Admissions are not provider charges; see [cost methodology](cost.md). Keep a full state backup before replacing a binary.
 

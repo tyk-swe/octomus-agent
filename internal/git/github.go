@@ -146,9 +146,101 @@ func OwnedPRs(ctx context.Context, c config.Config, inventory model.OpenPRInvent
 		if !detail.OwnedOpen() || detail.Branch != observed.Branch || detail.Base != observed.Base {
 			return nil, errors.New("Owned PR changed while the open inventory was being read")
 		}
+		if err := ownedPRStatus(ctx, c, &detail); err != nil {
+			return nil, err
+		}
 		prs = append(prs, detail)
 	}
 	return prs, nil
+}
+
+// Aggregate server-side: statusCheckRollup covers both check runs and commit
+// statuses without downloading an unbounded list of checks or review text.
+const ownedPRStatusQuery = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){pullRequest(number:$number){
+    number url headRefOid reviewDecision mergeable
+    commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}
+  }}
+}`
+
+func ownedPRStatus(ctx context.Context, c config.Config, pr *model.PullRequest) error {
+	owner, name, _ := strings.Cut(c.GitHubRepo, "/")
+	out, err := gh(ctx, c, []string{"api", "graphql", "-f", "query=" + ownedPRStatusQuery,
+		"-f", "owner=" + owner, "-f", "name=" + name, "-F", fmt.Sprintf("number=%d", pr.Number)})
+	if err != nil {
+		return err
+	}
+	return applyOwnedPRStatus(out, c.GitHubRepo, pr)
+}
+
+func applyOwnedPRStatus(out, repository string, pr *model.PullRequest) error {
+	var response struct {
+		Errors []json.RawMessage `json:"errors"`
+		Data   struct {
+			Repository *struct {
+				PullRequest *struct {
+					Number         uint64  `json:"number"`
+					URL            string  `json:"url"`
+					Head           string  `json:"headRefOid"`
+					ReviewDecision *string `json:"reviewDecision"`
+					Mergeable      string  `json:"mergeable"`
+					Commits        struct {
+						Nodes []struct {
+							Commit struct {
+								OID    string `json:"oid"`
+								Rollup *struct {
+									State string `json:"state"`
+								} `json:"statusCheckRollup"`
+							} `json:"commit"`
+						} `json:"nodes"`
+					} `json:"commits"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		return errors.New("Invalid GitHub PR status response")
+	}
+	if len(response.Errors) != 0 || response.Data.Repository == nil || response.Data.Repository.PullRequest == nil {
+		return errors.New("GitHub PR status query did not return a pull request")
+	}
+	status := response.Data.Repository.PullRequest
+	if status.Number != pr.Number || status.URL != pr.URL || status.Head != pr.Head ||
+		len(status.Commits.Nodes) != 1 || status.Commits.Nodes[0].Commit.OID != pr.Head {
+		return errors.New("Owned PR changed while its status was being read")
+	}
+	review := "none"
+	if status.ReviewDecision != nil {
+		switch *status.ReviewDecision {
+		case "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED":
+			review = strings.ToLower(*status.ReviewDecision)
+		default:
+			return errors.New("Unrecognized GitHub PR review decision")
+		}
+	}
+	checks := "none"
+	if rollup := status.Commits.Nodes[0].Commit.Rollup; rollup != nil {
+		switch rollup.State {
+		case "SUCCESS":
+			checks = "success"
+		case "ERROR", "FAILURE":
+			checks = "failure"
+		case "EXPECTED", "PENDING":
+			checks = "pending"
+		default:
+			return errors.New("Unrecognized GitHub PR check status")
+		}
+	}
+	mergeability := strings.ToLower(status.Mergeable)
+	switch status.Mergeable {
+	case "CONFLICTING", "MERGEABLE", "UNKNOWN":
+	default:
+		return errors.New("Unrecognized GitHub PR mergeability")
+	}
+	pr.ReviewDecision, pr.CheckStatus, pr.Mergeability = review, checks, mergeability
+	pr.StatusSource = fmt.Sprintf("https://github.com/%s/pull/%d", repository, pr.Number)
+	pr.StatusObservedAt = model.Now()
+	return nil
 }
 
 func PR(ctx context.Context, c config.Config, number uint64) (model.PullRequest, error) {

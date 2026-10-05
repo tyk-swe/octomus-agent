@@ -35,8 +35,20 @@ def refresh(pr):
 if args[:2] == ['auth', 'status']:
     print('Authenticated fixture operator')
 elif args[0] == 'api':
-    route = args[-1]
-    if '/comments' in route:
+    route = args[1] if args[1] == 'graphql' else args[-1]
+    if route == 'graphql':
+        fields = dict(a.split('=', 1) for a in args if '=' in a)
+        assert fields['owner'] == 'fixture' and fields['name'] == 'project', fields
+        assert 'statusCheckRollup{state}' in fields['query'] and 'commits(last:1)' in fields['query']
+        pr = refresh(next(p for p in prs if p['number'] == int(fields['number'])))
+        rollup = {'state': pr['check_status']} if pr.get('check_status') else None
+        value = {'number': pr['number'], 'url': pr['html_url'], 'headRefOid': pr['head']['sha'],
+                 'reviewDecision': pr.get('review_decision'), 'mergeable': pr.get('mergeability', 'MERGEABLE'),
+                 'commits': {'nodes': [{'commit': {'oid': pr['head']['sha'], 'statusCheckRollup': rollup}}]}}
+        with (root / 'github-status.jsonl').open('a') as log:
+            log.write(json.dumps({'number': pr['number']}) + '\n')
+        print(json.dumps({'data': {'repository': {'pullRequest': value}}}))
+    elif '/comments' in route:
         number = int(route.split('/')[-2])
         print(json.dumps(next(p for p in prs if p['number'] == number).get('comments', [])))
     elif '?' in route:

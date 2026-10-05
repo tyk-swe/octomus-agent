@@ -70,7 +70,7 @@ jobs:
       matrix:
         include:
           - scenarios: normal normal-opencode normal-mixed
-          - scenarios: chain pr-outcome interrupt-publication
+          - scenarios: chain pr-outcome interrupt-publication pr-context
           - scenarios: audit baseline notify upgrade
     steps:
       - uses: actions/checkout@v7

@@ -123,7 +123,7 @@ strict typed JSON boundaries for saved records and API requests.
   provided.
 - `tests/e2e.py` holds the service scenarios (`normal`, `normal-opencode`,
   `normal-mixed`, `interrupt-publication`, `audit`, `chain`, `pr-outcome`,
-  `baseline`, `notify`, `upgrade`), one function each, over `tests/harness.py` and
+  `baseline`, `notify`, `pr-context`, `upgrade`), one function each, over `tests/harness.py` and
   `tests/fixtures`: deterministic Codex/OpenCode/GitHub peers with real local Git.
   `tests/distribution.py` checks the executable as shipped (HTTP, state lock
   release, listener warning) and, with `--package`, the release archive against

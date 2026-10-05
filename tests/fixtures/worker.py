@@ -44,11 +44,23 @@ def respond(prompt, cwd, thread, file):
     match = re.search(r'fixture-file=([a-z-]+\.txt)', prompt)
     feature_file = match.group(1) if match else 'feature.txt'
     if prompt.startswith('Ground this repository'):
+        if (root / 'expected-pr-status.json').exists():
+            expected = json.loads((root / 'expected-pr-status.json').read_text())
+            context = json.loads(prompt.split('Context: ', 1)[1])
+            owned = context['grounding']['prs']
+            for wanted in expected:
+                observed = next(pr for pr in owned if pr['number'] == wanted['number'])
+                assert all(observed[k] == v for k, v in wanted.items()), observed
+                assert observed['status_source'] == f'https://github.com/fixture/project/pull/{wanted["number"]}'
+                assert observed['status_observed_at'] and observed['head']
+            assert all(not pr.get('review_decision') and not pr.get('check_status') and not pr.get('mergeability')
+                       for pr in context['grounding']['external_prs'])
+            (root / 'planning-status-observed.json').write_text(json.dumps(owned))
         if (root / 'audit-hold').exists():
             (root / 'audit-entered').touch()
             while (root / 'audit-hold').exists():
                 time.sleep(0.05)
-        answer = {'context': 'Small fixture with a feature contract in README.md.'}
+        answer = 'not valid grounding JSON' if (root / 'malformed-grounding').exists() else {'context': 'Small fixture with a feature contract in README.md.'}
     elif prompt.startswith('Discover worthwhile'):
         answer = {'proposals': [] if 'IDs prefixed d0-' not in prompt else proposals()}
     elif prompt.startswith('Adversarial proposal'):

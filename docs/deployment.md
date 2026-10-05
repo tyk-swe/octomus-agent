@@ -11,7 +11,7 @@ runs repository code. The older unsandboxed deployment on a
 You need:
 - Docker Engine 28 or later with the Compose plugin, on x86_64 or aarch64;
 - a GitHub fine-grained token for the one repository, with Contents and Pull requests
-  read/write;
+  read/write, and Checks and Commit statuses read;
 - Codex or OpenCode provider access.
 
 Nothing else is installed on the host.
@@ -166,8 +166,11 @@ placeholder or commit the actual URL. Unset the variable to disable notification
 URL rotation cancels old pending deliveries rather than forwarding them to a new
 receiver. No dashboard URL editor or inbound integration is provided.
 
-Notices cover newly blocked/failed tasks and error-paused service episodes, including
-those discovered during restart recovery; historical failures are not backfilled.
+Notices cover newly blocked/failed or published tasks, failed planning cycles,
+successful completed audits (including idle audits), and error-paused service
+episodes, including those discovered during restart recovery. Historical events
+are not backfilled during setup or upgrades; resaving or archiving a terminal
+record does not create another notice.
 The receiver accepts an `application/json` POST whose
 body always carries every key below:
 
@@ -178,15 +181,21 @@ body always carries every key below:
 | `occurred_at` | UTC RFC 3339 time with milliseconds, such as `2026-09-26T12:00:00.123Z` |
 | `repository` | The recorded GitHub `OWNER/REPOSITORY`, or an empty string when none is recorded |
 | `cycle_id`, `run_id`, `task_id` | A string or `null`, never absent |
-| `category` | A task's blocked reason, `unknown`, or `service_error_paused` |
-| `action` | `inspect_task` or `inspect_service` |
+| `category` | A task's blocked reason, `unknown`, `task_published`, `cycle_failed`, `audit_completed`, or `service_error_paused` |
+| `action` | `inspect_task`, `inspect_cycle`, or `inspect_service` |
 
 A task notice (`inspect_task`) names the task, its cycle and its **Run once** batch
 (`run_id` is `null` outside one). Its category is the task's blocked reason
 (`budget_exhausted`, `storage_limit`, `stale_base`, `remote_conflict`,
 `publication_uncertain`, `runner_unavailable`, `invalid_review`, `verification_failed`,
 `dependency_blocked`, `invalid_plan`, `workspace_invalid`, `retry_limit` or `timeout`),
-or `unknown` when the task has no known reason. A service notice
+or `unknown` when the task has no known reason; a published task uses `task_published`
+with the same identifiers and action. Cycle notices (`cycle_failed` or
+`audit_completed`, `inspect_cycle`) name the recorded cycle and its optional Run
+once batch, with `task_id: null`. A failed audit is a `cycle_failed` notice, not
+an audit-completed notice. An interrupted/cancelled cycle is not a failure notice.
+Cycle repository attribution comes from its saved snapshot, not the configuration
+at delivery time. A service notice
 (`service_error_paused`, `inspect_service`) has a `null` `task_id`. Its `cycle_id` and
 `run_id` would name a Run once batch recorded with the pause, but pausing clears the
 batch, so expect `null` while still accepting strings there. For example, a task

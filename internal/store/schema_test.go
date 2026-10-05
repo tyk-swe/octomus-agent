@@ -19,7 +19,7 @@ func TestFreshGoSchemaAndReopen(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
-	if version := queryInt(t, raw(t, path), "PRAGMA user_version"); version != 7 {
+	if version := queryInt(t, raw(t, path), "PRAGMA user_version"); version != store.ReleaseVersion() {
 		t.Fatalf("schema version = %d", version)
 	}
 	for _, table := range []string{"records", "record_meta", "proposal_records", "admissions", "notification_outbox"} {
@@ -98,7 +98,7 @@ func TestUnsupportedStateRefused(t *testing.T) {
 	}{
 		{0, "requires a fresh data directory"},
 		{6, "requires a fresh data directory"},
-		{8, "is newer than this release's version 7"},
+		{int(store.ReleaseVersion() + 1), "is newer than this release's version " + strconv.FormatInt(store.ReleaseVersion(), 10)},
 	} {
 		t.Run(strconv.Itoa(tc.version), func(t *testing.T) {
 			path := create(t, tc.version)
