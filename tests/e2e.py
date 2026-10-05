@@ -498,7 +498,10 @@ def pr_context():
         before = git('--git-dir', str(root / 'remote.git'), 'for-each-ref', '--format=%(refname) %(objectname)', cwd=root)
         service.request('/control/audit', 'POST')
         service.wait(lambda: (root / 'planning-status-observed.json').exists(), 'owned PR status reached a real planning prompt')
-        service.wait(lambda: service.request('/state')['cycles'] and not service.request('/state')['cycle_active'], 'PR-context audit completion')
+        def finished():
+            state = service.request('/state')
+            return state['cycles'] and state['cycles'][0]['status'] in ('completed', 'idle', 'failed', 'interrupted', 'cancelled') and not state['cycle_active']
+        service.wait(finished, 'PR-context audit completion')
         state = service.request('/state')
         cycle = service.request('/cycles/' + state['cycles'][0]['id'])
         assert cycle['status'] == 'completed' and cycle['mode'] == 'audit', cycle
@@ -562,7 +565,7 @@ def upgrade():
         def planned():
             state = service.request('/state')
             latest = state['cycles'][0]
-            return latest if latest['mode'] == 'audit' and not state['cycle_active'] else None
+            return latest if latest['mode'] == 'audit' and latest['status'] in ('completed', 'idle', 'failed', 'interrupted', 'cancelled') and not state['cycle_active'] else None
         cycle = service.wait(planned, 'audit on upgraded state')
         assert cycle['status'] == 'completed', service.request('/cycles/' + cycle['id'])
         assert not (root / 'publications.jsonl').exists()

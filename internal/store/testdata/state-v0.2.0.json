@@ -1,0 +1,11 @@
+{
+  "ref": "v0.2.0",
+  "commit": "ac34bca477559961d6b33333e508e2d37d087c7d",
+  "scenario": "chain",
+  "version": "0.2.0",
+  "sha256": "237f2707ff810aa58b39151b0948e8da628652ca639a25abce9d4a05d0dba8fe",
+  "bytes": 299008,
+  "user_version": 8,
+  "generated_at": "2026-10-05T08:50:20Z",
+  "sqlite_version": "3.46.1"
+}
