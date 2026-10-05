@@ -57,8 +57,10 @@ jobs:
         with:
           name: package-${{ matrix.target }}
           path: dist/*.tar.gz
+  # Ordering: the release must exist before anything version-tagged is published. A run that
+  # fails at `publish` pushes no image, so no version tag can outlive a release that never shipped.
   images:
-    needs: build
+    needs: [build, publish]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -75,7 +77,7 @@ jobs:
             context: deploy/docker
             file: deploy/docker/sandbox.Dockerfile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - uses: docker/setup-qemu-action@v3
@@ -109,7 +111,7 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "${IMAGE_REF%:*}@${DIGEST}"
   publish:
-    needs: [build, images]
+    needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -145,3 +147,43 @@ jobs:
           else
             gh release create "$RELEASE_TAG" "${options[@]}" ./*.tar.gz SHA256SUMS
           fi
+  # Installs the published release exactly as documented: the tagged installer, its release
+  # assets and checksums, on a fresh x86_64 and a native aarch64 Ubuntu 24.04 host.
+  install:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Install the published release
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          EXPECT_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$EXPECT_ARCH"
+          url="https://raw.githubusercontent.com/${{ github.repository }}/$RELEASE_TAG/install.sh"
+          for attempt in 1 2 3; do
+            curl --proto '=https' --proto-redir '=https' -fsSL "$url" -o "$RUNNER_TEMP/install.sh" && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 5
+          done
+          # Assets can lag the release record briefly; retry the whole install, which re-verifies checksums.
+          for attempt in 1 2 3; do
+            if sh "$RUNNER_TEMP/install.sh" "$RELEASE_TAG"; then break; fi
+            [ "$attempt" = 3 ] && exit 1
+            sleep 15
+          done
+          version=$(/usr/local/bin/octomus-agent --version)
+          test "$version" = "octomus-agent ${RELEASE_TAG#v}"
+          {
+            echo "### Install check ($EXPECT_ARCH)"
+            echo "- Host: $(. /etc/os-release && echo "$PRETTY_NAME")"
+            echo "- Architecture: $(uname -m)"
+            echo "- Version output: \`$version\`"
+          } >> "$GITHUB_STEP_SUMMARY"

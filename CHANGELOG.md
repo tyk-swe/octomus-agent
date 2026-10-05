@@ -3,10 +3,7 @@
 Notable changes are recorded here using [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-Binary releases remain pending; this section describes what
-the first release contains.
+## [0.1.0] - 2026-10-04
 
 ### Added
 
