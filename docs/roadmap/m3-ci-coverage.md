@@ -5,17 +5,17 @@
 
 ## Why
 
-CI runs on every push and pull request, and its `verify` job requires every other
-job (`.github/workflows/ci.yml`). Some checks still only run on a tag, or never
-run automatically:
+At planning time, CI ran on every push and pull request, and its `verify` job
+required every other job (`.github/workflows/ci.yml`). Some checks ran only on a
+tag, or never ran automatically:
 
-- The `package` job builds and checks only the x86_64 archive. The aarch64 archive
-  is built only by `release.yml`, so an arm64 break first shows up on a tag.
+- The `package` job built and checked only the x86_64 archive. The aarch64 archive
+  was built only by `release.yml`, so an arm64 break first showed up on a tag.
 - The scale check (`OCTOMUS_SCALE_TEST=1`) skips unless its environment is set.
   It was last measured on 2026-09-22 at `529b63f` ([architecture](../architecture.md)).
-- `make test-race-e2e`, the e2e scenarios against a race-instrumented build, is
+- `make test-race-e2e`, the e2e scenarios against a race-instrumented build, was
   opt-in.
-- One browser spec, `task-activity-latency.spec.ts`, exists only on the unmerged
+- One browser spec, `task-activity-latency.spec.ts`, existed only on the unmerged
   `tyk/audit-task-activity-reads` branch.
 
 ## Deliverable

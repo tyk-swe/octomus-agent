@@ -1,12 +1,15 @@
 # Releasing
 
-v0.2.0 publishes a public GitHub release with x86_64 and aarch64 archives
+[v0.2.0 is published](https://github.com/tyk-swe/octomus-agent/releases/tag/v0.2.0)
+with x86_64 and aarch64 archives
 and `SHA256SUMS`, plus signed `octomus-agent` and `octomus-sandbox` images on
 GHCR. Local packages, fixture tests and workflow definitions do not prove
 public download availability; the release page, the green release workflow run
 and the installer's checksum verification do. LICENSE/NOTICE ownership facts
 remain owner-supplied: AGENTS.md defers those edits until the owner supplies
-cleared facts.
+cleared facts. Its [release workflow](https://github.com/tyk-swe/octomus-agent/actions/runs/37286084064)
+passed both native build/install checks; the [upgrade rehearsal](roadmap/evidence/v0.2.0-upgrade.json)
+records the released-image schema-7-to-8 upgrade and restore-based rollback.
 
 ## Version
 

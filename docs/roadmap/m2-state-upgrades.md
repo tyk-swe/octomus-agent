@@ -6,10 +6,10 @@
 
 ## Why
 
-`internal/store/schema.go` opens two kinds of database: an empty one, which it
-creates at version 7, and one already at exactly version 7. Anything else is
-refused with "this release requires a fresh version-7 data directory". That was
-right while no operator held state. Once v0.1.0 ships, any schema change would
+At planning time, `internal/store/schema.go` opened two kinds of database: an
+empty one, which it created at version 7, and one already at exactly version 7.
+Anything else was refused with "this release requires a fresh version-7 data
+directory". That was right while no operator held state. Once v0.1.0 shipped, any schema change would
 strand everyone who installed it.
 
 Schema changes are already waiting:

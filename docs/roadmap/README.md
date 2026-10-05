@@ -1,12 +1,13 @@
 # Octomus Agent roadmap: October–November 2026
 
-**Status: proposed.** Written on 2026-10-04 against `044e1cb`. Every milestone
-starts at `TODO`; progress is recorded in each milestone file's progress record.
+**Planning baseline.** Written on 2026-10-04 against `044e1cb`. Every milestone
+started at `TODO`; current status and evidence are recorded in each milestone
+file's progress record.
 
-The October cleanup is merged, the issue and pull-request queues are empty, and
-the service passes CI on `main`. What it lacks is a release. No tag exists, the
-release workflow has never run, every installation builds from source, and the
-state database refuses anything but an empty or version-7 file. This roadmap
+At planning time, the October cleanup was merged, the issue and pull-request
+queues were empty, and the service passed CI on `main`. It lacked a release:
+no tag existed, the release workflow had never run, every installation built
+from source, and the state database refused anything but an empty or version-7 file. This roadmap
 covers the six weeks from 2026-10-05 to 2026-11-15 and aims to:
 
 - ship the first public release, v0.1.0;
