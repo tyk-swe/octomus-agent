@@ -55,10 +55,11 @@ release archives do not include Sigstore signatures.
 
 ## GitHub release workflow
 
-After owner clearance, a pushed `v*` tag runs the reusable full checks and native
-Ubuntu 24.04 builds on x86_64 and aarch64. The tag must equal `v` plus the
-`VERSION` file contents. Both tarballs must pass the archive-contents check and the
-embedded HTTP smoke test before the publishing job receives contents-write permission.
+After owner clearance, a pushed `v*` tag runs the reusable full checks, whose
+native Ubuntu 24.04 package jobs on x86_64 and aarch64 build the archives the
+release publishes. The tag must equal `v` plus the `VERSION` file contents; the
+publishing job refuses archives named for any other version. Both tarballs must pass
+the embedded HTTP smoke test before the publishing job receives contents-write permission.
 Checksums cover both archives; generated release notes are the default.
 Prerelease tags are marked as prereleases and excluded from the installer's
 latest-stable lookup.

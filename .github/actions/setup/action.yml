@@ -1,0 +1,17 @@
+name: Set up toolchains
+description: Go per go.mod, Node 22 and the dashboard's npm dependencies.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v7
+      with:
+        go-version-file: go.mod
+        cache-dependency-path: go.sum
+        cache: true
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: web/package-lock.json
+    - run: npm ci --prefix web
+      shell: bash
