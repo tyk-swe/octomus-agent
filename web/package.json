@@ -11,7 +11,7 @@
     "test": "playwright test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "launch:assets": "node scripts/render-launch-assets.mjs"
+    "launch:assets": "OCTOMUS_LAUNCH_ASSETS=1 playwright test launch-assets --project=desktop"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

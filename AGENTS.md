@@ -134,8 +134,7 @@ strict typed JSON boundaries for saved records and API requests.
   `scripts/golden-state.py` (per-release golden state databases), `deploy/docker`
   (images, compose file, `setup.sh`, `env.example`) and the
   unsandboxed `deploy/octomus-agent.service`. `tests/e2e_sandbox.py` runs the compose
-  stack with test images from `tests/docker`. `web/scripts/render-launch-assets.mjs` captures
-  `docs/dashboard.png`.
+  stack with test images from `tests/docker`.
 - `web/tests`: dashboard browser tests against the synthetic service
   `tests/serve_ui.py` starts, with the shared fixtures in `synthetic.ts` (login,
   navigation, the configuration mock, `patchState` and recorded-evidence builders):
@@ -143,8 +142,9 @@ strict typed JSON boundaries for saved records and API requests.
   `configuration.spec.ts` (revision conflicts, drafts, the setup checklist),
   `controls.spec.ts` (planning capacity, queued state refreshes, control eligibility
   and an audit), `recovery.spec.ts` (list retries and refused actions),
-  `run-evidence.spec.ts`, `sandbox.spec.ts`, and `evidence.spec.ts`, which checks
-  the evidence and sandbox verdict rules without a page.
+  `run-evidence.spec.ts`, `sandbox.spec.ts`, `evidence.spec.ts`, which checks
+  the evidence and sandbox verdict rules without a page, and `launch-assets.spec.ts`,
+  which captures `docs/dashboard.png` only under `npm run launch:assets`.
 - `docs/architecture.md` describes the operating contract.
 
 ## Build and verify
