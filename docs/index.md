@@ -47,9 +47,10 @@ Octomus publishes pull requests. Merging, deployment, and production migrations 
 with you. **Pause** stops new scheduling; active tasks can still finish and publish.
 Use **Cancel task** to stop an individual task.
 
-Installation currently means building the images from source. Public image and binary
-distribution is pending. VM and provider costs depend on your setup; session-admission
-limits are not dollar caps.
+Install from the published release: the checksum-verifying installer delivers the
+binary, and the signed release images deploy with Docker Compose; building from
+source remains supported. VM and provider costs depend on your setup;
+session-admission limits are not dollar caps.
 
 For questions and reproducible bugs, use [GitHub issues](https://github.com/tyk-swe/octomus-agent/issues).
 Report vulnerabilities through the [security policy](../SECURITY.md).

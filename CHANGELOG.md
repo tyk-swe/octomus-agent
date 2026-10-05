@@ -42,7 +42,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as run evidence.
 - Release images: tags build `octomus-agent` and `octomus-sandbox` for amd64 and arm64,
   push them to GHCR with an SBOM and build provenance, and sign each digest with cosign
-  keyless signing. Image publication has not run yet.
+  keyless signing. The `v0.1.0` release publishes both images to GHCR.
 - `make test-sandbox` and a `sandbox` CI job: the broker against a real Docker daemon, and
   the shipped compose file end to end with fixture runners inside real sandboxes.
 

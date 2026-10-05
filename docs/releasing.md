@@ -1,8 +1,12 @@
 # Releasing
 
-Public GitHub releases remain pending. Local packages, fixture tests and
-workflow definitions do not prove public download availability.
-Employer/name clearance and LICENSE/NOTICE ownership facts remain owner gates.
+v0.1.0 is published: a public GitHub release with x86_64 and aarch64 archives
+and `SHA256SUMS`, plus signed `octomus-agent` and `octomus-sandbox` images on
+GHCR. Local packages, fixture tests and workflow definitions do not prove
+public download availability; the release page, the green release workflow run
+and the installer's checksum verification do. LICENSE/NOTICE ownership facts
+remain owner-supplied: AGENTS.md defers those edits until the owner supplies
+cleared facts.
 
 ## Version
 
@@ -80,7 +84,8 @@ cosign verify ghcr.io/tyk-swe/octomus-agent:0.1.0 \
 
 To deploy release images instead of building locally, set `OCTOMUS_IMAGE` and
 `OCTOMUS_SANDBOX_IMAGE` in `deploy/docker/.env` and pull them before `docker compose up -d`; the
-broker never pulls. Image publication has not run yet: the first release will exercise it.
+broker never pulls. Every release tag publishes both images to GHCR; verify a
+pulled image with the command above before deploying it.
 
 ## State format
 

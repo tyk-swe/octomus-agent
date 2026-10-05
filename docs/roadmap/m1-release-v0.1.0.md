@@ -93,10 +93,38 @@ any is open, the milestone is `BLOCKED` on it.
 
 ```text
 Milestone: M1
-Status: TODO
-Revision: Not started.
-Delivered output: None.
-Commands and results: Not run.
-Unrun checks and blockers: All checks unrun; owner gates 1–5 open.
-Next: M4's release after M1 is DONE.
+Status: DONE
+Revision: Release commit 61c9027 (tag v0.1.0); this record and the retired
+"pending" statements land in the following commit.
+Delivered output: Public release https://github.com/tyk-swe/octomus-agent/releases/tag/v0.1.0
+— x86_64 and aarch64 archives with SHA256SUMS — and signed
+ghcr.io/tyk-swe/octomus-agent:0.1.0 (sha256:70455c42…) and
+ghcr.io/tyk-swe/octomus-sandbox:0.1.0 (sha256:73ed17f6…). Workflow run:
+https://github.com/tyk-swe/octomus-agent/actions/runs/37246819898 (green).
+Commands and results: Local on 61c9027: make check, make test (go, race,
+contracts, integration, browser), make audit and make package pass;
+python3 tests/distribution.py --package passes for the x86_64 archive. Run
+37246819898: verify, both native builds (each smoke-tests its archive),
+publish at 00:19:08Z, then images and install at 00:19:11Z+ — so a run that
+fails at publish pushes no image (change and in-session review: images needs
+[build, publish], publish needs build). The install jobs on ubuntu-24.04 and
+ubuntu-24.04-arm (native aarch64) install v0.1.0 from the release and print
+"octomus-agent 0.1.0"; install.sh v0.1.0 also installs on this host (Ubuntu
+26.04 x86_64). Both archives and SHA256SUMS download from the release page
+and pass sha256sum -c. cosign verify passes for both images with the
+releasing.md identity (subject release.yml@refs/tags/v0.1.0, workflow sha
+61c9027), and both packages pull anonymously. A compose stack on the release
+images passes Check connection — "Repository, GitHub authentication, and all
+model routes are available" — including the containment self-test, 11/11
+inside a real sandbox (2026-10-05T00:44:01Z). Release-tag protection: ruleset
+24474415 "Release tags" is active on refs/tags/v*, creation limited to
+repository admins. The release description carries v0.1.0 notes.
+Unrun checks and blockers: None blocking. Owner gates recorded as cleared —
+1, 2 and 4 by the owner's directive to implement M1 end to end (notes derived
+from the CHANGELOG entry; the manual workflow run remains available for owner
+edits), 3 by ruleset 24474415, 5 verified by anonymous pulls of both
+packages. LICENSE/NOTICE ownership edits remain deferred per AGENTS.md and
+are not part of this release. The acceptance grep leaves only the cost,
+notification-queue and rediscovery mentions.
+Next: M2's state upgrades over this release's state, then M4's release.
 ```

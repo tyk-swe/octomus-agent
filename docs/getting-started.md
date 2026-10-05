@@ -1,8 +1,9 @@
 # Getting started
 
-Octomus is a self-hosted preview for one operator and one repository. Installation
-currently means building from source. Public release binaries
-are not published yet; [releasing](releasing.md) describes what is prepared for them.
+Octomus is a self-hosted preview for one operator and one repository. Install the
+published release with the checksum-verifying installer below, deploy the signed
+release images, or build from source; [releasing](releasing.md) describes how the
+release is built, packaged and verified.
 
 Your first run has four explicit steps:
 
@@ -109,8 +110,8 @@ make build
 sudo install -m 755 bin/octomus-agent /usr/local/bin/octomus-agent
 ```
 
-**Pending release options:** after binary releases are published, the installer
-will support the following command:
+**Release installer:** binary releases are published; the installer supports the
+following command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tyk-swe/octomus-agent/main/install.sh | sh

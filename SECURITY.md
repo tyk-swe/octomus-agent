@@ -8,10 +8,11 @@ days**; remediation and coordinated disclosure timing depend on the report.
 
 ## Supported versions
 
-No public release is recorded yet. During preparation, report findings against
-`main` with a commit ID. Once releases begin, security fixes target the latest
+The latest published release is `v0.1.0`. Security fixes target the latest
 published release; older releases are unsupported and operators should upgrade.
-This is a maintenance policy, not a guarantee of a fix within a particular time.
+Report findings against the latest release, or against `main` with a commit ID
+when it is ahead of it. This is a maintenance policy, not a guarantee of a fix
+within a particular time.
 
 ## Intended deployment
 

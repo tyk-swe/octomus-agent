@@ -1,7 +1,7 @@
 # Octomus Agent roadmap: October–November 2026
 
 **Status: proposed.** Written on 2026-10-04 against `044e1cb`. Every milestone
-starts at `TODO`; this roadmap records no completed work.
+starts at `TODO`; progress is recorded in each milestone file's progress record.
 
 The October cleanup is merged, the issue and pull-request queues are empty, and
 the service passes CI on `main`. What it lacks is a release. No tag exists, the
