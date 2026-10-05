@@ -12,6 +12,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 func TestCurrentCLIContract(t *testing.T) {
@@ -202,5 +203,62 @@ func TestReadOnlyExportsReturnBeforeTouchingApplicationState(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGoldenExportsReadBack(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), ".octomus")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	testutil.GoldenState(t, "0.1.0", filepath.Join(dataDir, stateDBName))
+	noEnv := func(string) (string, bool) { return "", false }
+	call := func(args ...string) (int, map[string]any, string) {
+		var out, err bytes.Buffer
+		code := run(append([]string{"--data-dir", dataDir}, args...), noEnv, &out, &err)
+		var value map[string]any
+		if code == 0 {
+			if err := json.Unmarshal(out.Bytes(), &value); err != nil {
+				t.Fatalf("%v: %v", args, err)
+			}
+		}
+		return code, value, err.String()
+	}
+	for _, tc := range []struct {
+		cycle  string
+		number float64
+		status string
+	}{
+		{"4306e9ae-0833-47e5-b569-14b7b1d7d4f8", 1, "completed"},
+		{"0346c423-2759-4071-bd68-a87ed546ebcb", 2, "failed"},
+	} {
+		code, value, errText := call("--export-run", tc.cycle)
+		if code != 0 {
+			t.Fatalf("--export-run %s: code=%d stderr=%q", tc.cycle, code, errText)
+		}
+		if value["schema_version"] != float64(1) || value["kind"] != "recorded_review_check_evidence" {
+			t.Fatalf("%s: %v", tc.cycle, value)
+		}
+		cycle, ok := value["cycle"].(map[string]any)
+		if !ok || cycle["id"] != tc.cycle || cycle["number"] != tc.number || cycle["status"] != tc.status {
+			t.Fatalf("%s: %v", tc.cycle, cycle)
+		}
+		planning, ok := cycle["planning"].(map[string]any)
+		if !ok || planning["proposal_count"] != float64(3) {
+			t.Fatalf("%s planning: %v", tc.cycle, planning)
+		}
+	}
+	code, value, errText := call("--usage-report")
+	if code != 0 {
+		t.Fatalf("--usage-report: code=%d stderr=%q", code, errText)
+	}
+	if len(value["admissions"].([]any)) != 44 || len(value["cycles"].([]any)) != 2 || len(value["tasks"].([]any)) != 3 {
+		t.Fatalf("usage report: %v %v %v", len(value["admissions"].([]any)), len(value["cycles"].([]any)), len(value["tasks"].([]any)))
+	}
+	if value["has_admission_ledger"] != true {
+		t.Fatalf("usage report: %v", value["has_admission_ledger"])
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "service.lock")); !os.IsNotExist(err) {
+		t.Fatal("read-only export created service.lock", err)
 	}
 }

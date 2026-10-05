@@ -142,9 +142,9 @@ SQLite uses full synchronous writes and WAL. Only one service may hold the state
 
 ## Usage records and state
 
-Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. Fresh state uses schema version 7. The service refuses earlier databases before changing their schema or journal settings. Route snapshots record the selected backend, model, effort or variant.
+Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. State starts at schema version 7 (v0.1.0). Later releases upgrade it at startup through ordered forward-only migrations after a verified backup. The version check runs before any schema or journal change, and pre-release or newer databases are refused untouched. Route snapshots record the selected backend, model, effort or variant.
 
-`--usage-report` opens a version-7 database read-only and reads one transaction snapshot without taking the service lock or initializing state. It exports metadata rather than raw prompts/transcripts or credentials. Admissions are not provider charges; see [cost methodology](cost.md). Keep a full state backup before replacing a binary.
+`--usage-report` opens the database read-only at this release's schema version and reads one transaction snapshot without taking the service lock or initializing state. It exports metadata rather than raw prompts/transcripts or credentials. Admissions are not provider charges; see [cost methodology](cost.md). Keep a full state backup before replacing a binary.
 
 `GET /api/cycles/{id}/evidence` and `--export-run` assemble `RunEvidenceV1`, a read-only account of what one cycle and its tasks saved: positional reviewer verdicts, the latest review round and the latest result per required command, joined by cycle and proposal identity, with explicit gaps and limitations and without prompts, transcripts or command output. See [run evidence](run-evidence.md).
 

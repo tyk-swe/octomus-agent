@@ -180,6 +180,9 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		return err
 	}
 	defer state.Close()
+	if upgraded := state.Upgraded(); upgraded != nil {
+		fmt.Fprintf(stderr, "Upgraded state database from schema version %d to %d; the pre-upgrade backup %s is kept until you remove it\n", upgraded.From, upgraded.To, upgraded.Backup)
+	}
 	backend := sandboxBackend(parsed.sandbox, env, stderr)
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stopSignals()

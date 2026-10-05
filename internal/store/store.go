@@ -49,11 +49,15 @@ var background = context.Background()
 const fromMeta = "record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id"
 
 type Store struct {
-	mu   sync.Mutex
-	db   *sql.DB
-	conn *sql.Conn
-	path string
+	mu       sync.Mutex
+	db       *sql.DB
+	conn     *sql.Conn
+	path     string
+	upgraded *Upgrade
 }
+
+// Upgraded reports the upgrade Open applied, or nil when it applied none.
+func (s *Store) Upgraded() *Upgrade { return s.upgraded }
 
 func dsn(path string, params string) string {
 	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(path)
@@ -61,6 +65,10 @@ func dsn(path string, params string) string {
 }
 
 func Open(path string) (*Store, error) {
+	return open(path, release)
+}
+
+func open(path string, plan schemaPlan) (*Store, error) {
 	// Journal and synchronous pragmas run only after the schema-version check, so a refused database is never modified.
 	db, err := sql.Open("sqlite", dsn(path, "_pragma=busy_timeout(5000)"))
 	if err != nil {
@@ -76,15 +84,15 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{db: db, conn: conn, path: path}
-	if err := s.initialize(); err != nil {
+	if err := s.initialize(plan); err != nil {
 		s.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
-func (s *Store) initialize() error {
-	fresh, err := schemaStatus(background, s.conn)
+func (s *Store) initialize(plan schemaPlan) error {
+	version, fresh, err := inspect(background, s.conn, plan)
 	if err != nil {
 		return err
 	}
@@ -92,7 +100,10 @@ func (s *Store) initialize() error {
 		return err
 	}
 	if fresh {
-		return createSchema(background, s.conn)
+		return createSchema(background, s.conn, plan)
+	}
+	if version < plan.version() {
+		return s.migrate(plan, version)
 	}
 	return nil
 }
@@ -120,6 +131,10 @@ type ReadOnly struct {
 }
 
 func OpenReadOnly(path, what string) (*ReadOnly, error) {
+	return openReadOnly(path, what, release)
+}
+
+func openReadOnly(path, what string, plan schemaPlan) (*ReadOnly, error) {
 	fail := func(err error) error {
 		return fmt.Errorf("Cannot open existing state database for read-only %s: %w", what, err)
 	}
@@ -140,7 +155,7 @@ func OpenReadOnly(path, what string) (*ReadOnly, error) {
 		db.Close()
 		return nil, fail(err)
 	}
-	if err := requireSchema(background, conn); err != nil {
+	if err := requireSchema(background, conn, plan, what); err != nil {
 		conn.Close()
 		db.Close()
 		return nil, err

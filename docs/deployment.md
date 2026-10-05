@@ -291,7 +291,47 @@ sudo systemctl stop octomus-agent
 
 Back up `/var/lib/octomus/.octomus` in full, the service account's selected runner session stores (Codex home and/or OpenCode data directory), and the target repository. Protect backups as sensitive operator data. Keep `.octomus/state.db`, its WAL files if present, task workspaces, and runner session state together. OpenCode sessions normally live under the service user's XDG data directory; retain that directory when using OpenCode. Do not copy only the SQLite database while it is being written.
 
-Replace the binary with a tested package and restart only when the data directory already contains version-7 state. This release initializes version 7 in an empty data directory and refuses earlier databases before changing them. Back up an older data directory and configure a new one for this release. State uses SQLite with WAL and full synchronous writes; a file lock prevents two processes from operating on the same directory.
+### Upgrading
+
+Take the backup above first. Then install the tested release — the new binary under systemd, or `OCTOMUS_IMAGE` and `OCTOMUS_SANDBOX_IMAGE` in `deploy/docker/.env` for the Docker deployment — and start the service.
+
+When the release's schema is newer, the first start — the service or `--doctor` — checks the saved version before changing anything. It then writes a consistent copy `state.db.v<old>-backup-<UTC yyyymmddThhmmssZ>` beside `state.db` through the SQLite backup API, integrity-checks it and stores it mode 0600, never overwriting an earlier backup. Only then does it apply each migration in its own transaction. The start logs `Upgraded state database from schema version …` (`docker compose logs octomus`, `journalctl -u octomus-agent`) and records an `upgrade` activity event.
+
+A failed migration rolls back alone: the database stays at the version that step started from, and the error names the backup it keeps. Starting again retries with a fresh backup. If the backup cannot be written (space, permissions), nothing changes. A database newer than the binary is refused untouched, as are pre-release databases older than version 7 — those need a fresh data directory. `--usage-report` and `--export-run` from a newer binary refuse an older database until the service has upgraded it. Restarting the same release changes nothing.
+
+The backup holds the same sensitive data as `state.db` and counts toward application storage. It stays until you remove it, so remove it once the upgraded release has run satisfactorily.
+
+State uses SQLite with WAL and full synchronous writes; a file lock prevents two processes from operating on the same directory.
+
+### Rolling back
+
+There are no down-migrations, and an older release refuses a newer schema, so a rollback restores the pre-upgrade backup. Stop the service. Move `state.db`, `state.db-wal` and `state.db-shm` aside together — leaving a newer WAL beside the restored file would corrupt it. Copy the backup to `state.db` with the service user's ownership and mode 0600, reinstall the older release and start.
+
+In the Docker deployment, run the file moves in a throwaway container on the `octomus-data` volume, mounted at `/var/lib/octomus/data` inside the service container; the service runs as uid 10001:
+
+```bash
+docker compose stop
+docker run --rm --network none -v octomus-data:/data debian:trixie-slim sh -c '
+  cd /data && install -d -o 10001 -g 10001 -m 700 .rollback && \
+  for f in state.db state.db-wal state.db-shm; do [ ! -e "$f" ] || mv "$f" .rollback/; done && \
+  install -o 10001 -g 10001 -m 600 state.db.v7-backup-<timestamp> state.db'
+```
+
+Then point `OCTOMUS_IMAGE` and `OCTOMUS_SANDBOX_IMAGE` in `deploy/docker/.env` back at the older release, pull and `docker compose up -d`.
+
+Under systemd, state lives in `/var/lib/octomus/.octomus`, owned by the `octomus` user:
+
+```bash
+sudo systemctl stop octomus-agent
+sudo -u octomus sh -c '
+  cd /var/lib/octomus/.octomus && mkdir -m 700 -p .rollback && \
+  for f in state.db state.db-wal state.db-shm; do [ ! -e "$f" ] || mv "$f" .rollback/; done && \
+  install -m 600 state.db.v7-backup-<timestamp> state.db'
+sh install.sh vX.Y.Z
+sudo systemctl start octomus-agent
+```
+
+Anything recorded after the upgrade is lost from state. PRs it opened stay on GitHub, and task workspaces it created may remain on disk.
 
 Rotate the dashboard token by updating the environment file and restarting the service. Existing browser tokens stop working immediately after restart.
 
@@ -407,4 +447,4 @@ before live commissioning. SIGINT, SIGTERM or a hangup stops a running `--doctor
 along with the runner processes it started; it then exits with status 1 and
 `Error: Doctor interrupted`.
 
-`--usage-report` opens version-7 SQLite state read-only, works alongside the service, and needs neither a token nor dashboard assets. It exports admission counts and saved cycle/task evidence, not provider billing. See the [cost methodology](cost.md). Admission records are retained with the state database; include their growth in disk monitoring and backups. `--export-run` likewise opens the database read-only, without the service lock, and prints the recorded `RunEvidenceV1` for one saved cycle; see [run evidence](run-evidence.md).
+`--usage-report` opens SQLite state read-only at this release's schema version — it refuses an older database until the service has upgraded it — works alongside the service, and needs neither a token nor dashboard assets. It exports admission counts and saved cycle/task evidence, not provider billing. See the [cost methodology](cost.md). Admission records are retained with the state database; include their growth in disk monitoring and backups. `--export-run` likewise opens the database read-only, without the service lock, and prints the recorded `RunEvidenceV1` for one saved cycle; see [run evidence](run-evidence.md).

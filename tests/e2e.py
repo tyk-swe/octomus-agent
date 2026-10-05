@@ -18,7 +18,7 @@ import subprocess
 import sys
 import threading
 
-from harness import BINARY, FEATURE_CHECK, TOKEN, fixture_service, git, poll, routes, run_selected
+from harness import BINARY, FEATURE_CHECK, PROJECT, TOKEN, fixture_service, git, poll, routes, run_selected
 
 WEBHOOK_ENV = 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'
 WEBHOOK_SECRET = 'synthetic-path-secret-9f27c1/query?key=synthetic-query-secret-4d80'
@@ -448,6 +448,44 @@ def notify():
         assert_no_url_leak(root, service)
 
 
+def upgrade():
+    """A v0.1.0 state database opens on this binary and serves every saved record back.
+
+    The golden's configuration points at a repository path from the generating fixture,
+    which no longer exists; the service must still serve and stop cleanly.
+    """
+    def prepare(root):
+        state = root / '.octomus'
+        state.mkdir(mode=0o700)
+        shutil.copyfile(PROJECT / 'internal/store/testdata/state-v0.1.0.db', state / 'state.db')
+        (state / 'state.db').chmod(0o600)
+
+    with fixture_service('octomus-upgrade-', prepare) as (root, service):
+        state = service.request('/state')
+        assert state['status'] == 'paused' and not state['cycle_active'], state['status']
+        assert len(state['tasks']) == 3 and len(state['cycles']) == 2 and len(state['prs']) == 1
+        tasks = [service.request(f'/tasks/{t["id"]}') for t in state['tasks']]
+        assert all(t['status'] == 'published' and t['pr_number'] == 42 for t in tasks)
+        assert [t['lifecycle']['archived_at'] is not None for t in tasks].count(True) == 1
+        evidence = {}
+        for row in state['cycles']:
+            detail = service.request(f'/cycles/{row["id"]}')
+            assert detail['id'] == row['id'] and detail['mode'] == 'execution' and len(detail['proposals']) == 3
+            evidence[row['id']] = service.request(f'/cycles/{row["id"]}/evidence')
+        service.stop()
+        for cycle_id, via_http in evidence.items():
+            exported = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--export-run', cycle_id], text=True, timeout=30))
+            assert exported.pop('generated_at') and via_http.pop('generated_at')
+            assert exported == via_http, cycle_id
+        with sqlite3.connect(root / '.octomus/state.db') as db:
+            user_version = db.execute('PRAGMA user_version').fetchone()[0]
+        backups = list((root / '.octomus').glob('state.db.v*-backup-*'))
+        if user_version == 7:
+            assert not backups, f'upgrade ran without a migration: {backups}'
+        else:
+            assert len(backups) == 1, f'expected one pre-upgrade backup: {backups}'
+
+
 SCENARIOS = [
     ('normal', normal),
     ('normal-opencode', functools.partial(normal, 'opencode')),
@@ -458,6 +496,7 @@ SCENARIOS = [
     ('pr-outcome', pr_outcome),
     ('baseline', baseline),
     ('notify', notify),
+    ('upgrade', upgrade),
 ]
 
 if __name__ == '__main__':

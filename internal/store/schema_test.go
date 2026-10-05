@@ -3,6 +3,8 @@
 package store_test
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -44,31 +46,96 @@ func TestFreshGoSchemaAndReopen(t *testing.T) {
 
 func TestUnsupportedStateRefused(t *testing.T) {
 	t.Parallel()
-	for _, version := range []int{0, 6, 8} {
-		t.Run(strconv.Itoa(version), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "state.db")
-			db := raw(t, path)
-			exec(t, db, "CREATE TABLE records(kind TEXT,id TEXT,data TEXT)")
-			exec(t, db, "PRAGMA user_version="+strconv.Itoa(version))
-			must(t, db.Close())
-			before, err := os.ReadFile(path)
-			must(t, err)
-			if _, err := store.Open(path); err == nil || !strings.Contains(err.Error(), "requires a fresh version-7 data directory") {
-				t.Fatalf("writable open: %v", err)
+	create := func(t *testing.T, version int) string {
+		path := filepath.Join(t.TempDir(), "state.db")
+		db := raw(t, path)
+		exec(t, db, "CREATE TABLE records(kind TEXT,id TEXT,data TEXT)")
+		exec(t, db, "PRAGMA user_version="+strconv.Itoa(version))
+		must(t, db.Close())
+		return path
+	}
+	// A refusal must leave the file untouched and create nothing beside it:
+	// no journal or WAL side file and no backup.
+	refused := func(t *testing.T, path string, open func() error, want string) {
+		t.Helper()
+		before, err := os.ReadFile(path)
+		must(t, err)
+		if err := open(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%v, want %q", err, want)
+		}
+		after, err := os.ReadFile(path)
+		must(t, err)
+		if string(before) != string(after) {
+			t.Fatal("refused database changed")
+		}
+		matches, err := filepath.Glob(path + "*")
+		must(t, err)
+		if len(matches) != 1 {
+			t.Fatalf("refusal left files: %v", matches)
+		}
+	}
+	writable := func(path string) func() error {
+		return func() error {
+			s, err := store.Open(path)
+			if s != nil {
+				s.Close()
 			}
-			if _, err := store.OpenReadOnly(path, "schema test"); err == nil || !strings.Contains(err.Error(), "requires a fresh version-7 data directory") {
-				t.Fatalf("read-only open: %v", err)
+			return err
+		}
+	}
+	readOnly := func(path string) func() error {
+		return func() error {
+			r, err := store.OpenReadOnly(path, "schema test")
+			if r != nil {
+				r.Close()
 			}
-			after, err := os.ReadFile(path)
-			must(t, err)
-			if string(before) != string(after) {
-				t.Fatal("unsupported database changed")
-			}
-			for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-				if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
-					t.Fatalf("unsupported database acquired %s", suffix)
-				}
-			}
+			return err
+		}
+	}
+	for _, tc := range []struct {
+		version int
+		want    string
+	}{
+		{0, "requires a fresh data directory"},
+		{6, "requires a fresh data directory"},
+		{8, "is newer than this release's version 7"},
+	} {
+		t.Run(strconv.Itoa(tc.version), func(t *testing.T) {
+			path := create(t, tc.version)
+			refused(t, path, writable(path), tc.want)
+			refused(t, path, readOnly(path), tc.want)
 		})
 	}
+	// A plan with pending migrations still refuses what its last step cannot cover.
+	steps := []store.Migration{
+		store.NewMigration("test-v8", func(context.Context, *sql.Conn) error { return nil }),
+		store.NewMigration("test-v9", func(context.Context, *sql.Conn) error { return nil }),
+	}
+	planWritable := func(path string) func() error {
+		return func() error {
+			s, err := store.OpenPlan(path, store.SchemaDDL(), steps...)
+			if s != nil {
+				s.Close()
+			}
+			return err
+		}
+	}
+	planReadOnly := func(path string) func() error {
+		return func() error {
+			r, err := store.OpenReadOnlyPlan(path, "schema test", store.SchemaDDL(), steps...)
+			if r != nil {
+				r.Close()
+			}
+			return err
+		}
+	}
+	t.Run("newer-than-last-migration", func(t *testing.T) {
+		path := create(t, 10)
+		refused(t, path, planWritable(path), "is newer than this release's version 9")
+		refused(t, path, planReadOnly(path), "is newer than this release's version 9")
+	})
+	t.Run("read-only-needs-upgrade", func(t *testing.T) {
+		path := create(t, 7)
+		refused(t, path, planReadOnly(path), "must be upgraded to version 9 before a read-only schema test")
+	})
 }

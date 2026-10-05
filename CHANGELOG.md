@@ -3,6 +3,20 @@
 Notable changes are recorded here using [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Startup state upgrades: ordered forward-only migrations applied behind a verified,
+  never-overwritten backup written beside the state database.
+- The golden v0.1.0 state database (`internal/store/testdata/state-v0.1.0.db`) and its
+  generator `scripts/golden-state.py`; a new `upgrade` e2e scenario reads it back end to end.
+
+### Changed
+
+- State refusal messages now distinguish pre-release, newer and needs-upgrade databases;
+  read-only exports refuse an older schema until the service upgrades it.
+
 ## [0.1.0] - 2026-10-04
 
 ### Added

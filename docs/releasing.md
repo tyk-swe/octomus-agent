@@ -89,6 +89,24 @@ pulled image with the command above before deploying it.
 
 ## State format
 
-This release creates version-7 SQLite state. It refuses earlier database versions
-before changing their schema or journal settings. Back up existing state and use
-a fresh data directory when installing this release.
+v0.1.0 shipped schema version 7, the oldest database a release upgrades. Migrations are
+forward-only: `releaseMigrations` in `internal/store/schema.go` lists one step per
+version, appended only, each upgrading the schema by exactly one version inside a single
+`BEGIN IMMEDIATE` transaction that also sets `user_version`. A migration must not begin,
+commit or change the journal mode.
+
+`internal/store/schema.sql` stays the complete DDL of the latest version; a fresh database
+never replays migrations. A field added to a saved record is a pointer, tagged
+`wire:"default"`, or filled in by the migration. `TestFreshSchemaMatchesOpenedGolden`
+fails when `schema.sql` drifts from a migrated golden.
+
+After tagging a release, generate its golden database:
+
+```bash
+python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --output internal/store/testdata/state-vX.Y.Z.db
+```
+
+Check it in with its provenance (commit, scenario, sha256) and extend the golden tests so
+later releases keep opening every checked-in golden. Before tagging a schema change,
+rehearse the upgrade on a copy of real state. The operator procedure is in
+[Backup and upgrade](deployment.md#backup-and-upgrade).

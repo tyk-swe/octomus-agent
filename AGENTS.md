@@ -7,10 +7,16 @@ dashboard builds to static assets embedded in the binary (`web/embed.go`). By
 default every runner turn and verification command runs in a Docker sandbox built
 by the sandbox broker (`docs/sandbox.md`); `--sandbox off` runs them on the host.
 
-The service uses a Go-owned SQLite schema at version 7. Existing databases from
-earlier versions are refused before schema or journal changes; start this release
-with a fresh data directory and keep any old state backed up. `internal/wirejson`
-owns strict typed JSON boundaries for saved records and API requests.
+The service uses a Go-owned SQLite schema; v0.1.0 shipped version 7, the oldest
+upgradable baseline. `internal/store/schema.go`'s `releaseMigrations` upgrade it
+forward-only at startup: `Open` checks the version before any schema or journal
+change, writes a verified `state.db.v<N>-backup-<UTC>` beside the database, then
+runs each migration in its own transaction. A fresh database applies `schema.sql`,
+the complete latest DDL, and never replays migrations. Pre-release and newer
+databases are refused untouched; read-only exports refuse an older schema until the
+service upgrades it. Golden databases under `internal/store/testdata`, produced by
+`scripts/golden-state.py`, must keep opening on `main`. `internal/wirejson` owns
+strict typed JSON boundaries for saved records and API requests.
 
 ## Repository map
 
@@ -55,7 +61,9 @@ owns strict typed JSON boundaries for saved records and API requests.
   and SQLite. In the store, `store.go` holds records, transactions and admission
   reservation; `schema.sql` is the complete fresh DDL, whose triggers maintain the
   record projections, counts, batch membership, proposal rows, PR reservation
-  release and the attention outbox; `schema.go` checks the version and applies it;
+  release and the attention outbox; `schema.go` checks the version, creates fresh
+  databases and runs the backup-then-migrate upgrade path, with `export_test.go`'s
+  plan hooks and the `testdata/state-v*.db` goldens exercising it;
   `queries.go`, `capacity.go` and `notifications.go` serve operational views, PR
   capacity and the outbox.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
@@ -115,7 +123,7 @@ owns strict typed JSON boundaries for saved records and API requests.
   provided.
 - `tests/e2e.py` holds the service scenarios (`normal`, `normal-opencode`,
   `normal-mixed`, `interrupt-publication`, `audit`, `chain`, `pr-outcome`,
-  `baseline`, `notify`), one function each, over `tests/harness.py` and
+  `baseline`, `notify`, `upgrade`), one function each, over `tests/harness.py` and
   `tests/fixtures`: deterministic Codex/OpenCode/GitHub peers with real local Git.
   `tests/distribution.py` checks the executable as shipped (HTTP, state lock
   release, listener warning) and, with `--package`, the release archive against
@@ -123,7 +131,8 @@ owns strict typed JSON boundaries for saved records and API requests.
   browser tests.
 - Release and deployment inputs: `VERSION` (the one version, read by `version.go`,
   the dashboard build and release tooling), `scripts/package.sh`, `install.sh`,
-  `deploy/docker` (images, compose file, `setup.sh`, `env.example`) and the
+  `scripts/golden-state.py` (per-release golden state databases), `deploy/docker`
+  (images, compose file, `setup.sh`, `env.example`) and the
   unsandboxed `deploy/octomus-agent.service`. `tests/e2e_sandbox.py` runs the compose
   stack with test images from `tests/docker`. `web/scripts/render-launch-assets.mjs` captures
   `docs/dashboard.png`.
@@ -169,8 +178,9 @@ race detector. Install dashboard dependencies with
 
 Run relevant behavior tests while editing and the full checks before delivery.
 Keep Go and dashboard types aligned; `web/types_contract_test.go` compares
-types, vocabularies and limits. Keep saved version-7 records
-loadable when adding fields.
+types, vocabularies and limits. Keep records in every
+checked-in golden database loadable when adding fields: a pointer, a
+`wire:"default"` tag, or a migration.
 
 ## Conventions and boundaries
 

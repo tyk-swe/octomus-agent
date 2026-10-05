@@ -126,8 +126,10 @@ compromised release account.
 
 The executable is statically linked (`CGO_ENABLED=0`) and embeds the dashboard,
 so installation is a single administrator-owned file with no runtime toolchain.
-Use a fresh data directory: this release creates version-7 state and refuses
-earlier databases. Preserve a backup of any older state separately.
+Use a fresh data directory, or state from v0.1.0 or later: the service upgrades an
+older release's database at startup after writing a backup beside it; see
+[Backup and upgrade](deployment.md#backup-and-upgrade). Preserve a separate backup of any
+older state.
 
 ### Connect as the service user
 

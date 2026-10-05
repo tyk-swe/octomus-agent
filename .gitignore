@@ -11,6 +11,7 @@
 *.db
 *.db-shm
 *.db-wal
+!/internal/store/testdata/state-v*.db
 /dist/
 __pycache__/
 /web/artifacts/

@@ -65,9 +65,10 @@ moves: enter the configuration, save it, check the connection (which runs the sa
 self-test), then choose **Run an audit** or **Run once**. Start with an audit to inspect
 recommendations without queuing code changes. A later execution run plans afresh.
 
-The service initializes a version-7 state database in a fresh data directory. Earlier
-databases cannot be opened by this release; back them up before installing. An unsandboxed
-install on a dedicated VM remains available with `--sandbox off`.
+The service creates its state database in a fresh data directory and upgrades state from
+v0.1.0 or later at startup, after writing a backup beside it; see
+[Backup and upgrade](docs/deployment.md#backup-and-upgrade). An unsandboxed install on a
+dedicated VM remains available with `--sandbox off`.
 
 VM and provider costs depend on your setup. Session admissions are operating limits,
 not dollar caps; validated per-task and daily cost figures are not available yet.
