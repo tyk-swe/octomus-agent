@@ -7,8 +7,8 @@ No real GitHub account, provider login, model turn or publication is used. The
 isolated runner has a dummy API-key fixture for account/catalogue reads only.
 The only control-plane command overrides are local Git/GitHub fixtures.
 
-python3 tests/rehearse_upgrade.py --new-agent octomus-agent:roadmap-v020-rehearsal \
-    --new-sandbox octomus-sandbox:roadmap-v020-rehearsal
+python3 tests/rehearse_upgrade.py --new-agent octomus-agent:v0.2.0-rehearsal \
+    --new-sandbox octomus-sandbox:v0.2.0-rehearsal
 """
 import argparse
 import hashlib

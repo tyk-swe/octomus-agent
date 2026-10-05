@@ -8,8 +8,8 @@ public download availability; the release page, the green release workflow run
 and the installer's checksum verification do. LICENSE/NOTICE ownership facts
 remain owner-supplied: AGENTS.md defers those edits until the owner supplies
 cleared facts. Its [release workflow](https://github.com/tyk-swe/octomus-agent/actions/runs/37286084064)
-passed both native build/install checks; the [upgrade rehearsal](roadmap/evidence/v0.2.0-upgrade.json)
-records the released-image schema-7-to-8 upgrade and restore-based rollback.
+passed both native build/install checks; the upgrade rehearsal exercised the
+released-image schema-7-to-8 upgrade and restore-based rollback.
 
 ## Version
 
@@ -128,5 +128,5 @@ compose project, passes Check connection and containment, stops and backs up its
 schema 8, checks saved records/evidence and the private automatic backup, then
 restores the manual backup and reopens v0.1.0. Local Git/GitHub fixtures and dummy
 secrets and a synthetic API-key fixture replace account access; it makes no model turn and
-does not validate an owner's VM or bot. Record image identities and the printed
-results with the milestone.
+does not validate an owner's VM or bot. Record the image identities and printed
+results with the release.
