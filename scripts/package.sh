@@ -17,9 +17,11 @@ mkdir "$stage/octomus-agent"
 cp -p bin/octomus-agent "$stage/octomus-agent/"
 # The manifest is the complete public input set; never walk operator-populated directories.
 # A listed input must be a regular file whose path has no symlink or non-canonical component.
+checkout_root=$(pwd -P)
 while IFS= read -r input || [ -n "$input" ]; do
-  [ -f "$input" ] && [ "$(realpath -e -- "$input")" = "$PWD/$input" ] || fail "Invalid release input: $input"
-  cp -p --parents -- "$input" "$stage/octomus-agent/"
+  [ -f "$input" ] && [ "$(realpath -e -- "$input")" = "$checkout_root/$input" ] || fail "Invalid release input: $input"
+  mkdir -p -- "$stage/octomus-agent/$(dirname -- "$input")"
+  cp -p -- "$input" "$stage/octomus-agent/$input"
 done < scripts/release-files.txt
 chmod -R u+w,go-w,a+rX "$stage"
 mkdir -p dist
