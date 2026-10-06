@@ -48,7 +48,7 @@ test-browser: build
 
 # Opt-in: needs a Docker Engine 28+ daemon. Runs the broker against the real daemon, then the shipped compose stack
 # end to end with fixture runners inside real sandboxes.
-test-sandbox:
+test-sandbox: dashboard
 	OCTOMUS_DOCKER_TEST=1 go test -count=1 ./internal/sandbox/...
 	PYTHONUNBUFFERED=1 python3 tests/e2e_sandbox.py
 
