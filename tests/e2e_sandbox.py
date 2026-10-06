@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import secrets
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -20,7 +19,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from harness import FEATURE_CHECK, PROJECT, TOKEN, local_urlopen, poll, routes, run_selected, setup
+from harness import FEATURE_CHECK, PROJECT, TOKEN, free_port, local_urlopen, poll, routes, run_selected, setup
 
 COMPOSE = PROJECT / 'deploy/docker/compose.yaml'
 IMAGES = {'base': 'octomus-agent:e2e-base', 'control': 'octomus-agent:e2e', 'sandbox': 'octomus-sandbox:e2e'}
@@ -49,12 +48,6 @@ def build_images():
         _images_ready = True
 
 
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        return sock.getsockname()[1]
-
-
 class Stack:
     """One isolated compose project: the shipped compose file plus a test override."""
 
@@ -74,7 +67,7 @@ class Stack:
         return docker('compose', '-p', self.project, '-f', str(COMPOSE), '-f', str(self.override), *args,
                       check=check, timeout=timeout, env=self.env)
 
-    def prepare(self, *, own_remote=False):
+    def prepare(self):
         (self.root / 'control-bin').mkdir()
         for name in ['gh', 'git']:
             shutil.copy(self.root / 'bin' / name, self.root / 'control-bin' / name)
@@ -88,12 +81,6 @@ class Stack:
             docker('volume', 'create', self.volume(name))
         docker('volume', 'create', '--driver', 'local', '--opt', 'type=none', '--opt', f'device={self.root}',
                '--opt', 'o=bind', self.volume('fixture'))
-        if own_remote:
-            # Real release images keep Git's ownership check. Transfer only
-            # this fixture remote, after the host-side permissions are set.
-            docker('run', '--rm', '--network', 'none', '--user', '0',
-                   '-v', f'{self.volume("fixture")}:{self.root}', '--entrypoint', '/bin/chown', IMAGES['control'],
-                   '-R', '10001:10001', str(self.root / 'remote.git'))
         # The deployment's trusted checkout lives in the data volume; the fixture remote stands in for GitHub.
         docker('run', '--rm', '--network', 'none', '-v', f'{self.volume("data")}:/var/lib/octomus/data',
                '-v', f'{self.volume("fixture")}:{self.root}', '--entrypoint', '/usr/bin/git', IMAGES['control'],

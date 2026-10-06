@@ -13,54 +13,15 @@ on:
 permissions:
   contents: read
 jobs:
+  # The full checks build, smoke-test and upload both native archives; publish releases those.
   verify:
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ inputs.tag || github.ref_name }}
-  build:
-    needs: verify
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.tag || github.ref_name }}
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-          cache: true
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-      - name: Validate tag
-        env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: test "$RELEASE_TAG" = "v$(cat VERSION)"
-      - run: npm ci --prefix web
-      - run: make build
-      - name: Package and smoke test
-        env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          RELEASE_TARGET: ${{ matrix.target }}
-        run: |
-          ./scripts/package.sh "$RELEASE_TAG" "$RELEASE_TARGET" bin/octomus-agent
-          python3 tests/distribution.py --package "dist/octomus-agent-$RELEASE_TAG-$RELEASE_TARGET.tar.gz"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: package-${{ matrix.target }}
-          path: dist/*.tar.gz
   # Ordering: the release must exist before anything version-tagged is published. A run that
   # fails at `publish` pushes no image, so no version tag can outlive a release that never shipped.
   images:
-    needs: [build, publish]
+    needs: publish
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -111,7 +72,7 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "${IMAGE_REF%:*}@${DIGEST}"
   publish:
-    needs: build
+    needs: verify
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -129,6 +90,10 @@ jobs:
           RELEASE_NOTES: ${{ inputs.notes }}
         run: |
           cd dist
+          # Archive names carry v plus the VERSION file, so this also checks the tag.
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            test -f "octomus-agent-$RELEASE_TAG-$target.tar.gz" || { echo "No $target archive named for $RELEASE_TAG; the tag must be v plus VERSION" >&2; exit 1; }
+          done
           sha256sum -- *.tar.gz > SHA256SUMS
           printf '%s\n' "$RELEASE_NOTES" > /tmp/octomus-release-notes.md
           options=(--verify-tag)

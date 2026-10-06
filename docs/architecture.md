@@ -264,8 +264,8 @@ each measurement includes 20 dashboard snapshots.
 
 These timings are environment-dependent. Allocation measurements count Go heap
 bytes allocated during each snapshot, not SQLite's page cache or total process RSS.
-The weekly GitHub Actions workflow repeats this check and the race-instrumented
-fixture e2e suite each Monday at 06:17 UTC; it also accepts manual dispatch.
+The weekly GitHub Actions workflow repeats this check each Monday at 06:17 UTC; it
+also accepts manual dispatch.
 Every push and pull request packages and smoke-tests the x86_64 and arm64 archives
 on native Ubuntu 24.04 runners. Both package jobs gate the aggregate `verify` job.
 

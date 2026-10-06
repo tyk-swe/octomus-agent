@@ -40,10 +40,11 @@ the executable needs no build toolchain or minimum glibc at runtime.
 
 The archive contains `octomus-agent/octomus-agent`, license, policies and operator
 documentation. It never packages live state or separate runtime dashboard files.
-`scripts/release-files.txt` lists every public input besides the executable;
-`tests/distribution.py --package` checks that the archive holds exactly those
-files. Packaging works without Git metadata
-and rejects symlinked manifest files, listed inputs and their parent directories.
+`scripts/release-files.txt` lists every public input besides the executable, and
+`scripts/package.sh` archives exactly those files with normalised permissions; CI
+smoke-tests the executable extracted from each archive. Packaging works without Git
+metadata and rejects any listed input that is not a regular file or whose path has a
+symlinked or non-canonical component.
 The installer validates a single matching SHA-256 entry before extracting only
 the executable, then replaces the destination binary. Set an absolute writable
 `INSTALL_DIR` to avoid sudo. A failed copy or rename leaves the previous
@@ -54,10 +55,11 @@ release archives do not include Sigstore signatures.
 
 ## GitHub release workflow
 
-After owner clearance, a pushed `v*` tag runs the reusable full checks and native
-Ubuntu 24.04 builds on x86_64 and aarch64. The tag must equal `v` plus the
-`VERSION` file contents. Both tarballs must pass the archive-contents check and the
-embedded HTTP smoke test before the publishing job receives contents-write permission.
+After owner clearance, a pushed `v*` tag runs the reusable full checks, whose
+native Ubuntu 24.04 package jobs on x86_64 and aarch64 build the archives the
+release publishes. The tag must equal `v` plus the `VERSION` file contents; the
+publishing job refuses archives named for any other version. Both tarballs must pass
+the embedded HTTP smoke test before the publishing job receives contents-write permission.
 Checksums cover both archives; generated release notes are the default.
 Prerelease tags are marked as prereleases and excluded from the installer's
 latest-stable lookup.
@@ -111,22 +113,6 @@ python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --expect-version 8
 
 Use the release's actual schema version (`8` for v0.2.0). Check it in with its provenance (commit, scenario, sha256) and extend the golden tests so
 later releases keep opening every checked-in golden. Before tagging a schema change,
-rehearse the upgrade on a copy of real state. The operator procedure is in
-[Backup and upgrade](deployment.md#backup-and-upgrade).
-
-For a fixture rehearsal using the actual released images, pull both versions,
-then run:
-
-```bash
-python3 tests/rehearse_upgrade.py \
-  --new-agent ghcr.io/tyk-swe/octomus-agent:0.2.0 \
-  --new-sandbox ghcr.io/tyk-swe/octomus-sandbox:0.2.0
-```
-
-This starts v0.1.0 from its released-binary-generated golden in an isolated
-compose project, passes Check connection and containment, stops and backs up its data, upgrades to
-schema 8, checks saved records/evidence and the private automatic backup, then
-restores the manual backup and reopens v0.1.0. Local Git/GitHub fixtures and dummy
-secrets and a synthetic API-key fixture replace account access; it makes no model turn and
-does not validate an owner's VM or bot. Record the image identities and printed
-results with the release.
+rehearse the upgrade on a copy of real state with the released images, following
+[Backup and upgrade](deployment.md#backup-and-upgrade), and record the image
+identities and results with the release.

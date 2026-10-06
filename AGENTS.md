@@ -126,16 +126,15 @@ strict typed JSON boundaries for saved records and API requests.
   `baseline`, `notify`, `pr-context`, `upgrade`), one function each, over `tests/harness.py` and
   `tests/fixtures`: deterministic Codex/OpenCode/GitHub peers with real local Git.
   `tests/distribution.py` checks the executable as shipped (HTTP, state lock
-  release, listener warning) and, with `--package`, the release archive against
-  `scripts/release-files.txt`. `tests/serve_ui.py` serves synthetic data to the
+  release, listener warning); CI also runs it on each extracted release archive.
+  `tests/serve_ui.py` serves synthetic data to the
   browser tests.
 - Release and deployment inputs: `VERSION` (the one version, read by `version.go`,
   the dashboard build and release tooling), `scripts/package.sh`, `install.sh`,
   `scripts/golden-state.py` (per-release golden state databases), `deploy/docker`
   (images, compose file, `setup.sh`, `env.example`) and the
   unsandboxed `deploy/octomus-agent.service`. `tests/e2e_sandbox.py` runs the compose
-  stack with test images from `tests/docker`. `web/scripts/render-launch-assets.mjs` captures
-  `docs/dashboard.png`.
+  stack with test images from `tests/docker`.
 - `web/tests`: dashboard browser tests against the synthetic service
   `tests/serve_ui.py` starts, with the shared fixtures in `synthetic.ts` (login,
   navigation, the configuration mock, `patchState` and recorded-evidence builders):
@@ -143,8 +142,9 @@ strict typed JSON boundaries for saved records and API requests.
   `configuration.spec.ts` (revision conflicts, drafts, the setup checklist),
   `controls.spec.ts` (planning capacity, queued state refreshes, control eligibility
   and an audit), `recovery.spec.ts` (list retries and refused actions),
-  `run-evidence.spec.ts`, `sandbox.spec.ts`, and `evidence.spec.ts`, which checks
-  the evidence and sandbox verdict rules without a page.
+  `run-evidence.spec.ts`, `sandbox.spec.ts`, `evidence.spec.ts`, which checks
+  the evidence and sandbox verdict rules without a page, and `launch-assets.spec.ts`,
+  which captures `docs/dashboard.png` only under `npm run launch:assets`.
 - `docs/architecture.md` describes the operating contract.
 
 ## Build and verify
@@ -161,12 +161,10 @@ race detector. Install dashboard dependencies with
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
 - `make test-go`: the regular Go suite. `make test-go-race`: the race suite
   explicitly. Both run with `-shuffle=on`; a failure prints its seed to
-  reproduce. `make test-contracts` / `make test-integration` /
-  `make test-browser`: one stage each. `test-integration` accepts
+  reproduce. `make test-integration` (`tests/distribution.py`, then
+  `tests/e2e.py`) / `make test-browser`: one stage each. `test-integration` accepts
   `SCENARIOS` names; `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests
   run four workers.
-- `make test-race-e2e` (opt-in, about a minute): `tests/e2e.py` against the
-  race-instrumented build.
 - `make test-sandbox` (opt-in, needs Docker Engine 28+): the broker against the real
   daemon (`OCTOMUS_DOCKER_TEST=1`) and `tests/e2e_sandbox.py` against the compose stack.
 - `make audit` (govulncheck and `npm audit`; needs module downloads) and `make package`

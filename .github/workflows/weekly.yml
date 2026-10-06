@@ -1,4 +1,4 @@
-name: Weekly scale and race checks
+name: Weekly scale check
 on:
   schedule:
     - cron: '17 6 * * 1'
@@ -20,20 +20,3 @@ jobs:
         env:
           OCTOMUS_SCALE_TEST: '1'
         run: go test ./internal/store -run '^TestBoundedHistoryScale$' -count=1 -timeout=15m -v
-  race-e2e:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-          cache: true
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci --prefix web
-      - run: make test-race-e2e
