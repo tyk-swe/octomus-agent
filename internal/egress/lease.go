@@ -44,9 +44,7 @@ func leaseFile(token string) string {
 // Grant writes a lease for a sandbox of this kind and returns its new proxy credential.
 func (l Leases) Grant(sandbox, kind string) (string, error) {
 	var secret [tokenBytes]byte
-	if _, err := rand.Read(secret[:]); err != nil {
-		return "", err
-	}
+	_, _ = rand.Read(secret[:])
 	token := hex.EncodeToString(secret[:])
 	data, err := json.Marshal(Lease{Sandbox: sandbox, Kind: kind})
 	if err != nil {

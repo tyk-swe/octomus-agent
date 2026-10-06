@@ -30,10 +30,7 @@ func sandboxBackend(mode sandbox.Mode, env func(string) (string, bool), stderr i
 
 // brokerSocket is the broker's socket the control plane dials.
 func brokerSocket(env func(string) (string, bool)) string {
-	if v, ok := env("OCTOMUS_SANDBOXD_SOCKET"); ok && v != "" {
-		return v
-	}
-	return wire.DefaultSocket
+	return envOr(env, wire.SocketEnv, wire.DefaultSocket)
 }
 
 // getenv adapts env to a lookup that reads an unset variable as empty.

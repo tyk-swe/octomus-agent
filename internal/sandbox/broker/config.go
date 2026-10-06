@@ -75,7 +75,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return fallback
 	}
 	c := Config{
-		Socket:          value("OCTOMUS_SANDBOXD_SOCKET", wire.DefaultSocket),
+		Socket:          value(wire.SocketEnv, wire.DefaultSocket),
 		DockerSocket:    value("OCTOMUS_DOCKER_SOCKET", "/var/run/docker.sock"),
 		Image:           value("OCTOMUS_SANDBOX_IMAGE", ""),
 		DataDir:         value("OCTOMUS_DATA_DIR", ""),
@@ -107,7 +107,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 	}
 	for key, path := range map[string]string{
-		"OCTOMUS_SANDBOXD_SOCKET":    c.Socket,
+		wire.SocketEnv:               c.Socket,
 		"OCTOMUS_DOCKER_SOCKET":      c.DockerSocket,
 		"OCTOMUS_DATA_DIR":           c.DataDir,
 		"OCTOMUS_SANDBOX_RUNNER_DIR": c.RunnerDir,

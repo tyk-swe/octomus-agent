@@ -62,8 +62,12 @@ func ValidProbeTarget(target string) bool {
 // one sandbox for its whole life: when it closes, the broker kills and removes the container.
 const UpgradeProtocol = "octomus-sandbox/1"
 
-// DefaultSocket is where the broker listens and the control plane dials when OCTOMUS_SANDBOXD_SOCKET is unset.
-const DefaultSocket = "/run/octomus/sandboxd.sock"
+// SocketEnv names the broker's socket for both the broker and the control plane; DefaultSocket is used when it is
+// unset.
+const (
+	SocketEnv     = "OCTOMUS_SANDBOXD_SOCKET"
+	DefaultSocket = "/run/octomus/sandboxd.sock"
+)
 
 // The broker's two endpoints: its info document, and the request that upgrades to a sandbox stream.
 const (

@@ -366,10 +366,7 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return "", statusError("OpenCode event subscription failed", response, cancel)
 	}
-	message, err := messageID()
-	if err != nil {
-		return "", err
-	}
+	message := messageID()
 	events := make(chan valueResult)
 	post := make(chan valueResult, 1)
 	var wg sync.WaitGroup
@@ -592,11 +589,9 @@ func (o *OpenCode) Close() error {
 
 var messageClock atomic.Uint64
 
-func messageID() (string, error) {
+func messageID() string {
 	var random [14]byte
-	if _, err := io.ReadFull(rand.Reader, random[:]); err != nil {
-		return "", err
-	}
+	_, _ = rand.Read(random[:])
 	now := uint64(time.Now().UnixMilli()) * 4096
 	for {
 		previous := messageClock.Load()
@@ -611,7 +606,7 @@ func messageID() (string, error) {
 			for i := range suffix {
 				suffix[i] = alphabet[int(random[i])%len(alphabet)]
 			}
-			return fmt.Sprintf("msg_%012x%s", clock, suffix), nil
+			return fmt.Sprintf("msg_%012x%s", clock, suffix)
 		}
 	}
 }

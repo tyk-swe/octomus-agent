@@ -434,17 +434,19 @@ func (s *prepared) egressEvidence(record *model.SandboxRecord, summary egress.Su
 		b.logf("The egress record of sandbox %s has unresolved requests; its record is marked incomplete", s.name)
 		record.Incomplete = true
 	}
-	for host, count := range summary.Allowed {
-		record.Egress.Allowed[host] = uint64(count.Count)
-	}
-	for host, count := range summary.Denied {
-		record.Egress.Denied[host] = uint64(count.Count)
-	}
-	record.Egress.Failed = map[string]uint64{}
-	for host, count := range summary.Failed {
-		record.Egress.Failed[host] = uint64(count.Count)
-	}
+	record.Egress.Allowed = hostCounts(summary.Allowed)
+	record.Egress.Denied = hostCounts(summary.Denied)
+	record.Egress.Failed = hostCounts(summary.Failed)
 	return model.MergeSandbox(nil, record)
+}
+
+// hostCounts is the record's view of the collector's per-host request counts.
+func hostCounts(counts map[string]egress.HostCount) map[string]uint64 {
+	out := make(map[string]uint64, len(counts))
+	for host, count := range counts {
+		out[host] = uint64(count.Count)
+	}
+	return out
 }
 
 // runSandbox runs a plan to completion without a control-plane stream, for the broker's own probes.
