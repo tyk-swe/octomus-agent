@@ -1,11 +1,11 @@
 package model
 
 import (
-	"crypto/rand"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 )
 
@@ -26,14 +26,8 @@ func timestamp(at time.Time) string {
 }
 func UTCDay(at time.Time) string { return at.UTC().Format("2006-01-02") }
 func Today() string              { return UTCDay(time.Now()) }
-func ID() string {
-	var id [16]byte
-	_, _ = rand.Read(id[:])
-	id[6] = id[6]&0x0f | 0x40
-	id[8] = id[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
-}
-func ReviewerSlots() []string { return []string{"adversary-a", "adversary-b"} }
+func ID() string                 { return uuid.NewString() }
+func ReviewerSlots() []string    { return []string{"adversary-a", "adversary-b"} }
 func ActiveStatuses() []Status {
 	return []Status{StatusExecuting, StatusReviewing, StatusRepairing, StatusVerifying, StatusPublishing}
 }

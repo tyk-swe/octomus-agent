@@ -1,15 +1,24 @@
-// Durable record behaviour: review cleanliness, enum wire names, task actions and version-7 task compatibility.
+// Durable record behaviour: record IDs, review cleanliness, enum wire names, task actions and version-7 task compatibility.
 
 package model
 
 import (
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"strconv"
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 )
+
+// Saved records and workspace paths carry these IDs, so the lowercase version-4 form must not drift.
+func TestIDIsLowercaseUUIDv4(t *testing.T) {
+	form := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	if first, second := ID(), ID(); !form.MatchString(first) || !form.MatchString(second) || first == second {
+		t.Fatalf("ID() = %q, %q; want two distinct lowercase version-4 UUIDs", first, second)
+	}
+}
 
 func TestReviewClean(t *testing.T) {
 	for _, r := range []Review{{Completed: true}, {Completed: true, Summary: "\u2003"}, {Summary: "interrupted"}, {Completed: true, Summary: "findings", Findings: []Finding{{Title: "issue"}}}} {

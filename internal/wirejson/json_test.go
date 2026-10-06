@@ -162,14 +162,8 @@ type testEnum uint8
 
 var testEnumNames = []string{"off", "on"}
 
-func (v testEnum) MarshalText() ([]byte, error) { return EnumText(v, testEnumNames) }
-func (v *testEnum) UnmarshalText(text []byte) error {
-	value, err := ParseEnum(text, testEnumNames)
-	if err == nil {
-		*v = testEnum(value)
-	}
-	return err
-}
+func (v testEnum) MarshalText() ([]byte, error)     { return EnumText(v, testEnumNames) }
+func (v *testEnum) UnmarshalText(text []byte) error { return ParseEnum(v, text, testEnumNames) }
 
 type enumRecord struct {
 	Mode   testEnum  `json:"mode"`
@@ -182,8 +176,8 @@ func TestEnumTextNamesEveryValueAndParseEnumAcceptsOnlyExactNames(t *testing.T) 
 		if err != nil || string(text) != name {
 			t.Fatalf("EnumText(%d) = %q, %v; want %q", i, text, err, name)
 		}
-		value, err := ParseEnum([]byte(name), testEnumNames)
-		if err != nil || int(value) != i {
+		var value testEnum
+		if err := ParseEnum(&value, []byte(name), testEnumNames); err != nil || int(value) != i {
 			t.Fatalf("ParseEnum(%q) = %d, %v; want %d", name, value, err, i)
 		}
 	}
@@ -192,9 +186,13 @@ func TestEnumTextNamesEveryValueAndParseEnumAcceptsOnlyExactNames(t *testing.T) 
 		t.Fatalf("EnumText(%d) = %q, %v; want a typed error", len(testEnumNames), text, err)
 	}
 	for _, text := range []string{"", "On", " on", "on ", "o", "onn", "null", "\"on\""} {
-		_, err := ParseEnum([]byte(text), testEnumNames)
+		value := testEnum(1)
+		err := ParseEnum(&value, []byte(text), testEnumNames)
 		if !errors.As(err, &typed) {
 			t.Fatalf("ParseEnum(%q) = %v; want a typed error", text, err)
+		}
+		if value != 1 {
+			t.Fatalf("ParseEnum(%q) set the value to %d; a refused name must leave it unchanged", text, value)
 		}
 		if want := fmt.Sprintf("invalid enum value %q (expected one of: off, on)", text); err.Error() != want {
 			t.Fatalf("ParseEnum(%q) = %q; want %q", text, err, want)

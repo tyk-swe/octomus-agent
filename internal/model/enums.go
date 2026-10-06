@@ -19,15 +19,9 @@ const (
 
 var statusNames = []string{"queued", "executing", "reviewing", "repairing", "verifying", "publishing", "published", "blocked", "failed", "cancelled"}
 
-func (s Status) String() string               { return wirejson.EnumName(s, statusNames) }
-func (s Status) MarshalText() ([]byte, error) { return wirejson.EnumText(s, statusNames) }
-func (s *Status) UnmarshalText(text []byte) error {
-	value, err := wirejson.ParseEnum(text, statusNames)
-	if err == nil {
-		*s = Status(value)
-	}
-	return err
-}
+func (s Status) String() string                   { return wirejson.EnumName(s, statusNames) }
+func (s Status) MarshalText() ([]byte, error)     { return wirejson.EnumText(s, statusNames) }
+func (s *Status) UnmarshalText(text []byte) error { return wirejson.ParseEnum(s, text, statusNames) }
 
 type BlockedReason uint8
 
@@ -70,11 +64,7 @@ var blockedReasonMessages = [...]string{
 func (b BlockedReason) String() string               { return wirejson.EnumName(b, blockedReasonNames) }
 func (b BlockedReason) MarshalText() ([]byte, error) { return wirejson.EnumText(b, blockedReasonNames) }
 func (b *BlockedReason) UnmarshalText(text []byte) error {
-	value, err := wirejson.ParseEnum(text, blockedReasonNames)
-	if err == nil {
-		*b = BlockedReason(value)
-	}
-	return err
+	return wirejson.ParseEnum(b, text, blockedReasonNames)
 }
 
 type CapacityStatus uint8
@@ -94,11 +84,7 @@ func (v CapacityStatus) MarshalText() ([]byte, error) {
 	return wirejson.EnumText(v, planningCapacityStatusNames)
 }
 func (v *CapacityStatus) UnmarshalText(text []byte) error {
-	value, err := wirejson.ParseEnum(text, planningCapacityStatusNames)
-	if err == nil {
-		*v = CapacityStatus(value)
-	}
-	return err
+	return wirejson.ParseEnum(v, text, planningCapacityStatusNames)
 }
 
 type BaselineStatus uint8
@@ -119,11 +105,7 @@ func (v BaselineStatus) MarshalText() ([]byte, error) {
 	return wirejson.EnumText(v, baselineStatusNames)
 }
 func (v *BaselineStatus) UnmarshalText(text []byte) error {
-	value, err := wirejson.ParseEnum(text, baselineStatusNames)
-	if err == nil {
-		*v = BaselineStatus(value)
-	}
-	return err
+	return wirejson.ParseEnum(v, text, baselineStatusNames)
 }
 
 type CycleStatus uint8
@@ -143,11 +125,7 @@ func (v CycleStatus) MarshalText() ([]byte, error) {
 	return wirejson.EnumText(v, cycleStatusNames)
 }
 func (v *CycleStatus) UnmarshalText(text []byte) error {
-	value, err := wirejson.ParseEnum(text, cycleStatusNames)
-	if err == nil {
-		*v = CycleStatus(value)
-	}
-	return err
+	return wirejson.ParseEnum(v, text, cycleStatusNames)
 }
 
 type SessionStatus uint8
@@ -166,11 +144,7 @@ func (v SessionStatus) MarshalText() ([]byte, error) {
 	return wirejson.EnumText(v, sessionStatusNames)
 }
 func (v *SessionStatus) UnmarshalText(text []byte) error {
-	value, err := wirejson.ParseEnum(text, sessionStatusNames)
-	if err == nil {
-		*v = SessionStatus(value)
-	}
-	return err
+	return wirejson.ParseEnum(v, text, sessionStatusNames)
 }
 
 type CycleMode uint8
@@ -185,11 +159,7 @@ var cycleModeNames = []string{"execution", "audit"}
 func (v CycleMode) String() string               { return wirejson.EnumName(v, cycleModeNames) }
 func (v CycleMode) MarshalText() ([]byte, error) { return wirejson.EnumText(v, cycleModeNames) }
 func (v *CycleMode) UnmarshalText(text []byte) error {
-	value, err := wirejson.ParseEnum(text, cycleModeNames)
-	if err == nil {
-		*v = CycleMode(value)
-	}
-	return err
+	return wirejson.ParseEnum(v, text, cycleModeNames)
 }
 
 type OperatingMode uint8
@@ -205,11 +175,7 @@ var operatingModeNames = []string{"paused", "run_once", "continuous"}
 func (v OperatingMode) String() string               { return wirejson.EnumName(v, operatingModeNames) }
 func (v OperatingMode) MarshalText() ([]byte, error) { return wirejson.EnumText(v, operatingModeNames) }
 func (v *OperatingMode) UnmarshalText(text []byte) error {
-	value, err := wirejson.ParseEnum(text, operatingModeNames)
-	if err == nil {
-		*v = OperatingMode(value)
-	}
-	return err
+	return wirejson.ParseEnum(v, text, operatingModeNames)
 }
 
 type BatchPhase uint8
@@ -225,9 +191,5 @@ var batchPhaseNames = []string{"draining", "planning", "executing"}
 func (v BatchPhase) String() string               { return wirejson.EnumName(v, batchPhaseNames) }
 func (v BatchPhase) MarshalText() ([]byte, error) { return wirejson.EnumText(v, batchPhaseNames) }
 func (v *BatchPhase) UnmarshalText(text []byte) error {
-	value, err := wirejson.ParseEnum(text, batchPhaseNames)
-	if err == nil {
-		*v = BatchPhase(value)
-	}
-	return err
+	return wirejson.ParseEnum(v, text, batchPhaseNames)
 }

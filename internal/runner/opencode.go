@@ -52,16 +52,8 @@ func connectOpenCode(ctx context.Context, cfg config.Config, cwd, entity string,
 	if ctx.Err() != nil {
 		return nil, process.ErrSessionCancelled
 	}
-	passwordID, err := uuid.NewRandom()
-	if err != nil {
-		return nil, err
-	}
-	password := passwordID.String()
-	agentID, err := uuid.NewRandom()
-	if err != nil {
-		return nil, err
-	}
-	agent := "octomus-" + strings.ReplaceAll(agentID.String(), "-", "")
+	password := uuid.NewString()
+	agent := "octomus-" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	policyJSON, err := marshal(workerPolicy(agent))
 	if err != nil {
 		return nil, err

@@ -403,12 +403,14 @@ func EnumText[T ~uint8](value T, names []string) ([]byte, error) {
 }
 
 // ParseEnum implements an enum's UnmarshalText: text must equal one name
-// exactly. Anything else is an *Error naming the value and the accepted names.
-func ParseEnum(text []byte, names []string) (uint8, error) {
+// exactly, and only then is *dst set. Anything else is an *Error naming the
+// value and the accepted names.
+func ParseEnum[T ~uint8](dst *T, text []byte, names []string) error {
 	for i, allowed := range names {
 		if string(text) == allowed {
-			return uint8(i), nil
+			*dst = T(i)
+			return nil
 		}
 	}
-	return 0, &Error{inner: fmt.Errorf("invalid enum value %q (expected one of: %s)", text, strings.Join(names, ", "))}
+	return &Error{inner: fmt.Errorf("invalid enum value %q (expected one of: %s)", text, strings.Join(names, ", "))}
 }
