@@ -47,7 +47,8 @@ strict typed JSON boundaries for saved records and API requests.
   `observation.go` (default-branch and open-PR observation, context fingerprint),
   `housekeeping.go` (retention and storage measurement), `baseline.go`
   (clean-baseline checks, separate from task verification), `deployment.go`
-  (deployment pinning, scratch roots, sandbox readiness and route validation).
+  (deployment pinning, scratch roots, sandbox readiness and route validation),
+  `prompts.go` (the planning roles' prompts).
 - `internal/runner`: runner-neutral model discovery, exact routing and dispatch
   (`runner.go`); `codex.go` (app-server protocol) and `opencode.go` (HTTP/SSE, with
   `opencode_policy.go` for the worker policy and `opencode_catalog.go`) implement it
@@ -62,10 +63,10 @@ strict typed JSON boundaries for saved records and API requests.
   reservation; `schema.sql` is the complete fresh DDL, whose triggers maintain the
   record projections, counts, batch membership, proposal rows, PR reservation
   release and the attention outbox; `schema.go` checks the version, creates fresh
-  databases and runs the backup-then-migrate upgrade path, with `export_test.go`'s
-  plan hooks and the `testdata/state-v*.db` goldens exercising it;
-  `queries.go`, `capacity.go` and `notifications.go` serve operational views, PR
-  capacity and the outbox.
+  databases and runs the backup-then-migrate upgrade path over `migrations/`, with
+  `export_test.go`'s plan hooks and the `testdata/state-v*.db` goldens exercising
+  it; `queries.go`, `capacity.go`, `notifications.go` and `baseline.go` serve
+  operational views, PR capacity, the outbox and baseline-check admission.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
   `--sandbox off`, `Remote` for the broker), owned-root preparation, OpenCode
   readiness and its stream connection (`opencode.go`), the in-sandbox helper
