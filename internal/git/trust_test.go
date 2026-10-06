@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/git"
+	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
 // hostileTrap returns a directory whose appearance of any file proves that git executed agent-controlled configuration.
@@ -17,8 +18,8 @@ func hostileTrap(t *testing.T) (dir string, touch string) {
 	t.Helper()
 	dir = t.TempDir()
 	script := filepath.Join(t.TempDir(), "trap")
-	writeFile(t, script, fmt.Sprintf("#!/bin/sh\ntouch %q/\"$(basename \"$0\")-$$\"\ncat >/dev/null 2>&1 || true\n", dir))
-	if err := os.Chmod(script, 0o755); err != nil {
+	// A trap that fails to start would hide the very execution the test looks for.
+	if err := testutil.WriteExecutable(script, fmt.Appendf(nil, "#!/bin/sh\ntouch %q/\"$(basename \"$0\")-$$\"\ncat >/dev/null 2>&1 || true\n", dir)); err != nil {
 		t.Fatal(err)
 	}
 	return dir, script

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 var fixtureDirectory = fixtureDir()
@@ -70,5 +71,15 @@ func InstallFixtureScript(dst, name string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o755)
+	return WriteExecutable(dst, data)
+}
+
+// WriteExecutable writes a file a test is about to run. A process forked while the file is
+// open for writing inherits that descriptor until it execs, and running the file then fails
+// with "text file busy" (go.dev/issue/22315). Forks take syscall.ForkLock for writing, so
+// holding it for reading keeps them all outside that window.
+func WriteExecutable(path string, data []byte) error {
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	return os.WriteFile(path, data, 0o755)
 }

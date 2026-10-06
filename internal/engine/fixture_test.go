@@ -500,7 +500,7 @@ func heldUploadPack(t *testing.T, f *fixture) {
 	t.Helper()
 	script := "#!/bin/sh\nfixture_dir=$(dirname \"$0\")\ntouch \"$fixture_dir/entered-$$\"\nwhile [ -e \"$fixture_dir/hold\" ]; do sleep 0.02; done\nif [ -e \"$fixture_dir/fail\" ]; then exit 1; fi\nexec git-upload-pack \"$@\"\n"
 	path := filepath.Join(f.root, "held-upload-pack")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testutil.WriteExecutable(path, []byte(script)); err != nil {
 		t.Fatal(err)
 	}
 	git(t, f.repo, "config", "remote.origin.uploadpack", path)

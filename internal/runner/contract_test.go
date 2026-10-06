@@ -106,7 +106,7 @@ env['OPENCODE_DISABLE_MODELS_FETCH']='true'
 binary=%s
 os.execve(binary,[binary]+sys.argv[1:],env)
 `, pyString(root), pyString(providerConfig), pyString(binary))
-	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+	if err := testutil.WriteExecutable(wrapper, []byte(script)); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()

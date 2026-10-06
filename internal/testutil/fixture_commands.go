@@ -48,7 +48,7 @@ func InstallFixtureCommands() (func(), error) {
 		return nil, err
 	}
 	for _, name := range []string{"git", "gh"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(fixtureDispatcher), 0o755); err != nil {
+		if err := WriteExecutable(filepath.Join(dir, name), []byte(fixtureDispatcher)); err != nil {
 			return fail(err)
 		}
 	}

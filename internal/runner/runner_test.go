@@ -55,7 +55,7 @@ func wrapper(t *testing.T, root, name, fixture string) string {
 	path := filepath.Join(root, name)
 	script := fmt.Sprintf("#!/usr/bin/env python3\nimport os, runpy, sys\nos.environ['OCTOMUS_FIXTURE'] = %s\nsys.path.insert(0, %s)\nrunpy.run_path(%s, run_name='__main__')\n",
 		pyString(root), pyString(filepath.Dir(testutil.FixturePath(fixture))), pyString(testutil.FixturePath(fixture)))
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testutil.WriteExecutable(path, []byte(script)); err != nil {
 		t.Fatal(err)
 	}
 	return path

@@ -60,7 +60,7 @@ func writeFixtureCommand(t *testing.T, root, name string) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nprintf '%s\\n' \"$OCTOMUS_FIXTURE\" \"$@\"\n"), 0o755); err != nil {
+	if err := testutil.WriteExecutable(filepath.Join(bin, name), []byte("#!/bin/sh\nprintf '%s\\n' \"$OCTOMUS_FIXTURE\" \"$@\"\n")); err != nil {
 		t.Fatal(err)
 	}
 }
