@@ -80,7 +80,18 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
-      - run: npx --prefix web playwright install --with-deps chromium
+      # Browsers are cached per Playwright version; a cache hit still installs their system packages.
+      - id: playwright
+        run: echo "version=$(node -p "require('./web/package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
+      - id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}-chromium
+      - if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx --prefix web playwright install --with-deps chromium
+      - if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx --prefix web playwright install-deps chromium
       - run: make test-integration test-browser
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -174,12 +185,6 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
           cache: true
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci --prefix web
       - id: sandbox_tests
         run: make test-sandbox
       - name: Sandbox runtime diagnostics

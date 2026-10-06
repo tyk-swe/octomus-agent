@@ -545,17 +545,9 @@ def upgrade():
             exported = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--export-run', cycle_id], text=True, timeout=30))
             assert exported.pop('generated_at') and via_http.pop('generated_at')
             assert exported == via_http, cycle_id
-        with sqlite3.connect(root / '.octomus/state.db') as db:
-            user_version = db.execute('PRAGMA user_version').fetchone()[0]
+        # TestMigrationUpgradesGolden checks the backup's contents; here the shipped binary must have written it.
         backups = list((root / '.octomus').glob('state.db.v*-backup-*'))
-        if user_version == 7:
-            assert not backups, f'upgrade ran without a migration: {backups}'
-        else:
-            assert len(backups) == 1, f'expected one pre-upgrade backup: {backups}'
-            with sqlite3.connect(backups[0]) as db:
-                assert db.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
-                assert db.execute('PRAGMA user_version').fetchone()[0] == 7
-                assert db.execute("SELECT count(*) FROM records WHERE kind='task'").fetchone()[0] == 3
+        assert len(backups) == 1, f'expected one pre-upgrade backup: {backups}'
         existing_pr(root)
         update_prs(root, lambda prs: prs[0].update(review_decision='APPROVED', check_status='SUCCESS', mergeability='MERGEABLE'))
         (root / 'expected-pr-status.json').write_text(json.dumps([{'number': 42, 'review_decision': 'approved', 'check_status': 'success', 'mergeability': 'mergeable'}]))

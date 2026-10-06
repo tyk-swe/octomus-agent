@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a golden state database from a released ref for the upgrade tests.
 
-    python3 scripts/golden-state.py --ref v0.1.0 --scenario chain --output internal/store/testdata/state-v0.1.0.db
+    python3 scripts/golden-state.py --ref v0.1.0 --scenario chain --expect-version 7 --output internal/store/testdata/state-v0.1.0.db
 
 The ref is extracted with `git archive` into a temporary directory (no worktree, no .git
 changes), built there, and the named e2e scenario runs against that binary with the ref's
@@ -43,7 +43,7 @@ def main():
     parser.add_argument('--ref', required=True, help='git ref whose binary produces the golden state')
     parser.add_argument('--scenario', required=True, help='e2e scenario name to run (as registered in tests/e2e.py)')
     parser.add_argument('--output', required=True, type=Path, help='destination for the golden state.db')
-    parser.add_argument('--expect-version', type=int, default=7, help='schema user_version the golden must carry')
+    parser.add_argument('--expect-version', type=int, required=True, help='schema user_version the golden must carry')
     args = parser.parse_args()
     output = args.output.resolve()
 
