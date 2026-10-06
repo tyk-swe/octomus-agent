@@ -107,16 +107,7 @@ func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, e
 }
 
 func collectPageRows(rows *sql.Rows) ([]pageRow, error) {
-	defer rows.Close()
-	var out []pageRow
-	for rows.Next() {
-		var r pageRow
-		if err := rows.Scan(&r.summary, &r.seq, &r.id); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanAll(rows, func(r *pageRow) []any { return []any{&r.summary, &r.seq, &r.id} })
 }
 
 func decodePage(rows []pageRow, limit int) Page {
@@ -225,8 +216,11 @@ func (s *Store) ProposalDetail(cycle, id string) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
+// PageLimit bounds each oldest-first task scan below; a full page means more tasks may remain.
+const PageLimit = 500
+
 func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
-	return listRecords[model.Task](s, schedulingTasksSQL(), runID)
+	return listRecords[model.Task](s, schedulingTasksSQL(), runID, PageLimit)
 }
 
 func schedulingTasksSQL() string {
@@ -240,7 +234,7 @@ func schedulingTasksSQL() string {
                             AND (?1 IS NULL OR m.run_id=?1)
                             AND (json_extract(r.data,'$.proposal.target') != json_extract(r.data,'$.config.default_branch')
                                 OR EXISTS(SELECT 1 FROM pr_reservations p WHERE p.task_id=m.id))
-                        ORDER BY m.seq ASC LIMIT 500
+                        ORDER BY m.seq ASC LIMIT ?2
                 )
                 UNION ALL
                 SELECT id,seq FROM (
@@ -249,7 +243,7 @@ func schedulingTasksSQL() string {
                             AND (?1 IS NULL OR m.run_id=?1)
                             AND json_extract(r.data,'$.proposal.target') = json_extract(r.data,'$.config.default_branch')
                             AND NOT EXISTS(SELECT 1 FROM pr_reservations p WHERE p.task_id=m.id)
-                        ORDER BY m.seq ASC LIMIT 500
+                        ORDER BY m.seq ASC LIMIT ?2
                 )
             )
             SELECT r.data FROM candidates CROSS JOIN records r ON r.kind='task' AND r.id=candidates.id
@@ -258,7 +252,7 @@ func schedulingTasksSQL() string {
 
 // ActiveTasks returns the unarchived tasks whose status is still active, oldest first.
 func (s *Store) ActiveTasks() ([]model.Task, error) {
-	return listRecords[model.Task](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='task' AND m.status IN ("+statusList(model.ActiveStatuses())+") AND m.archived IS NULL ORDER BY m.seq ASC LIMIT 500")
+	return listRecords[model.Task](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='task' AND m.status IN ("+statusList(model.ActiveStatuses())+") AND m.archived IS NULL ORDER BY m.seq ASC LIMIT ?1", PageLimit)
 }
 
 // CancelledWithLiveSessions returns unfinished cancellation evidence
@@ -273,7 +267,7 @@ func (s *Store) CancelledWithLiveSessions(excludedIDs []string) ([]model.Task, e
         WHERE m.kind='task' AND m.status='cancelled'
             AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id)
             AND EXISTS (SELECT 1 FROM json_each(r.data,'$.sessions') WHERE json_extract(value,'$.status')='running')
-        ORDER BY m.seq ASC LIMIT 500`, string(ids))
+        ORDER BY m.seq ASC LIMIT ?2`, string(ids), PageLimit)
 }
 
 // PublishingTasksExcept excludes live workers and cleanup claims before decoding their evidence.
@@ -285,7 +279,7 @@ func (s *Store) PublishingTasksExcept(excludedIDs []string) ([]model.Task, error
 	return listRecords[model.Task](s, `SELECT r.data FROM `+fromMeta+`
         WHERE m.kind='task' AND m.status='publishing' AND m.archived IS NULL AND m.discarded IS NULL
             AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id) AND json_extract(r.data,'$.output_commit') IS NOT NULL
-        ORDER BY m.seq ASC LIMIT 500`, string(ids))
+        ORDER BY m.seq ASC LIMIT ?2`, string(ids), PageLimit)
 }
 
 // RunningCycles returns the running cycles other than except, the live worker's own, so its evidence is excluded before
@@ -418,8 +412,7 @@ func (s *Store) StartBatch(control *model.Control, at time.Time) (model.Planning
 	defer s.mu.Unlock()
 	var capacity model.PlanningCapacity
 	var next model.Control
-	started := false
-	err := s.transaction(true, func(c *sql.Conn) error {
+	started, err := s.conditional(func(c *sql.Conn) error {
 		var live model.Control
 		found, err := txGet(c, "settings", "control", &live)
 		if err != nil {
@@ -435,16 +428,10 @@ func (s *Store) StartBatch(control *model.Control, at time.Time) (model.Planning
 		if !wirejson.Equal(live, *control) || !capacity.Available() {
 			return errRollback
 		}
-		if next, err = txStartBatch(c, *control); err != nil {
-			return err
-		}
-		started = true
-		return nil
+		next, err = txStartBatch(c, *control)
+		return err
 	})
-	if err == errRollback {
-		return capacity, false, nil
-	}
-	if err == nil && started {
+	if started {
 		*control = next
 	}
 	return capacity, started, err
@@ -454,8 +441,7 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var capacity model.PlanningCapacity
-	started := false
-	err := s.transaction(true, func(c *sql.Conn) error {
+	started, err := s.conditional(func(c *sql.Conn) error {
 		cfg, err := storedConfig(c)
 		if err != nil {
 			return err
@@ -482,15 +468,8 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {
 			return err
 		}
-		if err := txPut(c, "settings", "control", control); err != nil {
-			return err
-		}
-		started = true
-		return nil
+		return txPut(c, "settings", "control", control)
 	})
-	if err == errRollback {
-		return capacity, false, nil
-	}
 	return capacity, started, err
 }
 
@@ -622,15 +601,7 @@ SELECT id FROM (
 func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := queryStrings(s.conn, cleanupCandidatesSQL, kind, cutoff, after)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(raw))
-	for _, id := range raw {
-		ids = append(ids, string(id))
-	}
-	return ids, nil
+	return queryStrings(s.conn, cleanupCandidatesSQL, kind, cutoff, after)
 }
 
 // CleanupEligible rechecks a candidate after the retention pass released the operator gate.

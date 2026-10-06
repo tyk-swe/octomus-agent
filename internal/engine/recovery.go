@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
@@ -167,7 +168,7 @@ func (a *App) settleCancelledSessions() error {
 	// A new service scans durable history once. Worker exit and cleanup release
 	// invalidate this check after an excluded owner finishes; failed writes and
 	// full pages stay retryable without scanning finalized history every tick.
-	if len(tasks) < 500 {
+	if len(tasks) < store.PageLimit {
 		a.runtimeMu.Lock()
 		a.runtime.cancelScanDone = true
 		a.runtimeMu.Unlock()

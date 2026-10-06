@@ -32,8 +32,7 @@ type Admission struct {
 func NewAdmission(cycleID string, taskID *string, role string, route config.Route) Admission {
 	var task *string
 	if taskID != nil {
-		copied := *taskID
-		task = &copied
+		task = new(*taskID)
 	}
 	return Admission{ID: model.ID(), At: model.Now(), CycleID: cycleID, TaskID: task, Role: role, Route: route.Clone()}
 }
@@ -288,8 +287,7 @@ func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model
 							return errors.New("Rediscovery decisions must reference an eligible request in this repository and target")
 						}
 						old.RediscoveryRequested = false
-						result := fmt.Sprintf("%s: %s", proposal.Decision, proposal.Reason)
-						old.RediscoveryResult = &result
+						old.RediscoveryResult = new(fmt.Sprintf("%s: %s", proposal.Decision, proposal.Reason))
 						return nil
 					})
 					if err != nil {
@@ -379,6 +377,21 @@ func QueryRecords[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
 	return values, nil
 }
 
+// scanAll reads every row into a T through the scan destinations fields returns, then closes rows. The result is
+// never nil, so an empty one encodes as [].
+func scanAll[T any](rows *sql.Rows, fields func(*T) []any) ([]T, error) {
+	defer rows.Close()
+	values := []T{}
+	for rows.Next() {
+		var value T
+		if err := rows.Scan(fields(&value)...); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
 func listRecords[T any](s *Store, query string, args ...any) ([]T, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -407,16 +420,7 @@ func queryEvents(c *sql.Conn, query string, args ...any) ([]model.Event, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	events := []model.Event{}
-	for rows.Next() {
-		var e model.Event
-		if err := rows.Scan(&e.ID, &e.At, &e.EntityID, &e.Kind, &e.Message); err != nil {
-			return nil, err
-		}
-		events = append(events, e)
-	}
-	return events, rows.Err()
+	return scanAll(rows, func(e *model.Event) []any { return []any{&e.ID, &e.At, &e.EntityID, &e.Kind, &e.Message} })
 }
 
 func (s *Store) PruneEvents(retain int64) error {
@@ -485,16 +489,7 @@ func DailySessions(c *sql.Conn) ([]DaySessions, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	days := []DaySessions{}
-	for rows.Next() {
-		var day DaySessions
-		if err := rows.Scan(&day.Day, &day.Sessions); err != nil {
-			return nil, err
-		}
-		days = append(days, day)
-	}
-	return days, rows.Err()
+	return scanAll(rows, func(day *DaySessions) []any { return []any{&day.Day, &day.Sessions} })
 }
 
 func sessionsOn(c *sql.Conn, day string) (int64, error) {
@@ -607,21 +602,12 @@ func updateLineageTask(c *sql.Conn, id string, check func(*model.Task) error) er
 	return txPut(c, "task", id, task)
 }
 
-func queryStrings(c *sql.Conn, query string, args ...any) ([][]byte, error) {
+func queryStrings(c *sql.Conn, query string, args ...any) ([]string, error) {
 	rows, err := c.QueryContext(background, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out [][]byte
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, err
-		}
-		out = append(out, []byte(data))
-	}
-	return out, rows.Err()
+	return scanAll(rows, func(value *string) []any { return []any{value} })
 }
 
 func decodeJSON(data []byte, dst any) error {

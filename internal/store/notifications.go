@@ -108,8 +108,7 @@ func (s *Store) MarkFailed(seq int64, category string, httpStatus *uint16, retry
 	}
 	var status *int64
 	if httpStatus != nil {
-		value := int64(*httpStatus)
-		status = &value
+		status = new(int64(*httpStatus))
 	}
 	_, err := s.conn.ExecContext(background, "UPDATE notification_outbox SET status=CASE WHEN ?1=1 AND attempts<?2 THEN 'pending' ELSE 'failed' END, last_error=?3, http_status=?4 WHERE seq=?5 AND status='pending'", retry, maxAttempts, category, status, seq)
 	return err

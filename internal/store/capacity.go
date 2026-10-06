@@ -22,21 +22,22 @@ type PRReservation struct {
 
 var errRollback = errors.New("rollback")
 
+// conditional runs fn in an immediate transaction. fn returns errRollback when a precondition no longer holds, which
+// rolls back and reports false without an error.
+func (s *Store) conditional(fn func(c *sql.Conn) error) (bool, error) {
+	err := s.transaction(true, fn)
+	if err == errRollback {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func reservationRows(c *sql.Conn, repository string) ([]PRReservation, error) {
 	rows, err := c.QueryContext(background, "SELECT task_id,repository,branch,admitted_at FROM pr_reservations WHERE repository=?1", strings.ToLower(repository))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	reservations := []PRReservation{}
-	for rows.Next() {
-		var r PRReservation
-		if err := rows.Scan(&r.TaskID, &r.Repository, &r.Branch, &r.AdmittedAt); err != nil {
-			return nil, err
-		}
-		reservations = append(reservations, r)
-	}
-	return reservations, rows.Err()
+	return scanAll(rows, func(r *PRReservation) []any { return []any{&r.TaskID, &r.Repository, &r.Branch, &r.AdmittedAt} })
 }
 
 // insertReservation records a PR slot for a task; orIgnore keeps an existing reservation instead of failing.
@@ -126,9 +127,8 @@ func (s *Store) SeedPRReservation(task model.Task) error {
 func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	admitted := false
 	var next model.Task
-	err := s.transaction(true, func(c *sql.Conn) error {
+	admitted, err := s.conditional(func(c *sql.Conn) error {
 		cfg, err := storedConfig(c)
 		if err != nil {
 			return err
@@ -170,16 +170,9 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now(), false); err != nil {
 			return err
 		}
-		if err := txEvent(c, next.ID, "status", "Executing"); err != nil {
-			return err
-		}
-		admitted = true
-		return nil
+		return txEvent(c, next.ID, "status", "Executing")
 	})
-	if err == errRollback {
-		return false, nil
-	}
-	if err == nil && admitted {
+	if admitted {
 		*task = next
 	}
 	return admitted, err
@@ -188,7 +181,7 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 func (s *Store) PersistPRInventory(inventory model.OpenPRInventory, released []string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err := s.transaction(true, func(c *sql.Conn) error {
+	return s.conditional(func(c *sql.Conn) error {
 		cfg, err := storedConfig(c)
 		if err != nil {
 			return err
@@ -251,10 +244,6 @@ func (s *Store) PersistPRInventory(inventory model.OpenPRInventory, released []s
 		}
 		return nil
 	})
-	if err == errRollback {
-		return false, nil
-	}
-	return err == nil, err
 }
 
 const invalidTimestamp = "input contains invalid characters"
