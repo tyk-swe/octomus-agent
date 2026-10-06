@@ -155,16 +155,16 @@ race detector. Install dashboard dependencies with
 `npx --prefix web playwright install --with-deps chromium`.
 
 - `make check`: gofmt/`go vet`, Svelte/TypeScript and Prettier checks.
-- `make test`: the stage targets in order: Go tests (regular and `-race`
-  suites), then against the production binary and dashboard build
-  `tests/distribution.py`, `tests/e2e.py` and the browser tests.
+- `make test`: the stage targets in order: the `-race` Go suite, then against
+  the production binary and dashboard build `tests/distribution.py`,
+  `tests/e2e.py` and the browser tests.
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
-- `make test-go`: the regular Go suite. `make test-go-race`: the race suite
-  explicitly. Both run with `-shuffle=on`; a failure prints its seed to
-  reproduce. `make test-integration` (`tests/distribution.py`, then
+- `make test-go`: the regular Go suite, the quick local loop.
+  `make test-go-race`: the same tests under the race detector. Both run with
+  `-shuffle=on`; a failure prints its seed to reproduce. `make test-integration` (`tests/distribution.py`, then
   `tests/e2e.py`) / `make test-browser`: one stage each. `test-integration` accepts
   `SCENARIOS` names; `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests
-  run four workers.
+  run four workers; the `mobile` project reruns only specs tagged `@responsive`.
 - `make test-sandbox` (opt-in, needs Docker Engine 28+): the broker against the real
   daemon (`OCTOMUS_DOCKER_TEST=1`) and `tests/e2e_sandbox.py` against the compose stack.
 - `make audit` (govulncheck and `npm audit`; needs module downloads) and `make package`

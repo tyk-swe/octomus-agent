@@ -8,7 +8,13 @@ E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
 # a failure prints its seed (-test.shuffle N) to reproduce.
 GO_TEST_FLAGS = -timeout 30m -shuffle=on
 
-dashboard:
+# The dashboard rebuilds only when one of its inputs changes; vite also reads VERSION.
+DASHBOARD_INPUTS = $(shell find web/src web/static -type f) VERSION \
+	$(addprefix web/,package.json package-lock.json svelte.config.js vite.config.ts tsconfig.json)
+
+dashboard: web/build/200.html
+
+web/build/200.html: $(DASHBOARD_INPUTS)
 	npm run build --prefix web
 
 build: dashboard
@@ -21,7 +27,8 @@ check: dashboard
 	npm run check --prefix web
 	npm run format:check --prefix web
 
-test: test-go test-go-race test-integration test-browser
+# The race suite runs the same tests as test-go, with the race detector; test-go is the quick local loop.
+test: test-go-race test-integration test-browser
 
 test-go: dashboard
 	go test $(GO_TEST_FLAGS) ./...

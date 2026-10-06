@@ -30,9 +30,9 @@ See [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md) for the code
 
 ## Meaningful evidence
 
-`make test` runs the regular Go suite, the race suite, then three checks against the
+`make test` runs the Go suite under the race detector, then three checks against the
 freshly built binary: `tests/distribution.py` (the executable as shipped; CI also
-runs it on each extracted release archive), `tests/e2e.py` (the nine service scenarios against
+runs it on each extracted release archive), `tests/e2e.py` (the service scenarios against
 deterministic Codex, OpenCode and GitHub peers, without live model calls or network
 writes) and `npm test --prefix web` (the dashboard browser tests). AGENTS.md lists the
 suites, the fixtures and the shared test helpers.
