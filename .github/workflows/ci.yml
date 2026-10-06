@@ -10,9 +10,9 @@ on:
         required: false
 permissions:
   contents: read
-# Coalesce overlapping push/PR checks for the same repository and commit.
+# Coalesce overlapping checks for the same repository and checkout commit.
 concurrency:
-  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+  group: ci-${{ github.repository }}-${{ inputs.ref || github.sha }}
   cancel-in-progress: true
 jobs:
   quality:
