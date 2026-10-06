@@ -19,7 +19,9 @@ cp -p bin/octomus-agent "$stage/octomus-agent/"
 # A listed input must be a regular file whose path has no symlink or non-canonical component.
 checkout_root=$(pwd -P)
 while IFS= read -r input || [ -n "$input" ]; do
-  [ -f "$input" ] && [ "$(realpath -e -- "$input")" = "$checkout_root/$input" ] || fail "Invalid release input: $input"
+  if [ ! -f "$input" ] || [ "$(realpath -e -- "$input")" != "$checkout_root/$input" ]; then
+    fail "Invalid release input: $input"
+  fi
   mkdir -p -- "$stage/octomus-agent/$(dirname -- "$input")"
   cp -p -- "$input" "$stage/octomus-agent/$input"
 done < scripts/release-files.txt
