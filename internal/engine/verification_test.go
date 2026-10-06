@@ -117,6 +117,7 @@ func captureRedactionChild(t *testing.T, env ...string) bool {
 }
 
 func TestEvidenceRedactsAdjacentSecrets(t *testing.T) {
+	t.Parallel()
 	if !captureRedactionChild(t) {
 		return
 	}
@@ -144,12 +145,14 @@ func TestEvidenceRedactsAdjacentSecrets(t *testing.T) {
 		{"stdout tail cut", `{ head -c 400000 /dev/zero | tr '\000' x; printf 's3cr3tValue-'; }; printf '0123456789\nDIAGNOSTIC-END\n' >&2; exit 3`, true},
 	} {
 		t.Run(boundary.name, func(t *testing.T) {
+			t.Parallel()
 			for _, tc := range []struct{ name, before string }{
 				{"short", "printf 'STDOUT-HEAD\\n'; "},
 				{"display limited", "seq -f 'progress line %g' 2000; "},
 				{"capture limited", "seq -f 'progress line %g' 40000; "},
 			} {
 				t.Run("verification/"+tc.name, func(t *testing.T) {
+					t.Parallel()
 					app, task, revision := verificationFixture(t, []string{tc.before + boundary.emit})
 					if _, err := app.verifyRevision(context.Background(), &task, revision); err != nil {
 						t.Fatal(err)
@@ -162,6 +165,7 @@ func TestEvidenceRedactsAdjacentSecrets(t *testing.T) {
 				})
 			}
 			t.Run("baseline", func(t *testing.T) {
+				t.Parallel()
 				f := newFixture(t)
 				app := New(f.state, f.dataDir)
 				t.Cleanup(app.Shutdown)
@@ -188,6 +192,7 @@ func TestEvidenceRedactsCrossStream(t *testing.T) {
 		{"capture limited", "seq -f 'progress line %g' 40000; "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			command := tc.before + crossStreamCommand
 			app, task, revision := verificationFixture(t, []string{command})
 			failures, err := app.verifyRevision(context.Background(), &task, revision)

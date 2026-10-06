@@ -26,8 +26,10 @@ test: test-go test-go-race test-integration test-browser
 test-go: dashboard
 	go test $(GO_TEST_FLAGS) ./...
 
+# -race also turns on checkptr, which spends most of its time in the pure-Go SQLite driver's
+# unsafe code; this module has none of its own.
 test-go-race: dashboard
-	CGO_ENABLED=1 go test -race $(GO_TEST_FLAGS) ./...
+	CGO_ENABLED=1 go test -race -gcflags='modernc.org/...=-d=checkptr=0' $(GO_TEST_FLAGS) ./...
 
 test-integration: build
 	$(E2E_ENV) python3 tests/distribution.py

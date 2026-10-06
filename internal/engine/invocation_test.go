@@ -156,6 +156,7 @@ func scriptedProposal(id, decision string) map[string]any {
 func TestSummariesAreRedacted(t *testing.T) {
 	t.Parallel()
 	t.Run("task roles", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.configure(t, func(cfg *config.Config) { cfg.VerificationCommands = []string{"grep -q fixed feature.txt"} })
 		routes, script := f.routes, f.script
@@ -173,6 +174,7 @@ func TestSummariesAreRedacted(t *testing.T) {
 	})
 
 	t.Run("planning roles", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		routes, script := f.routes, f.script
 		ids := []string{}

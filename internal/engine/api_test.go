@@ -77,6 +77,7 @@ func TestStateViewStatus(t *testing.T) {
 		{name: "paused and idle", wantStatus: "paused"},
 	} {
 		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
 			app, control := controlFixture(t, "idle")
 			if check.continuous {
 				control.SetMode(model.OperatingModeContinuous)

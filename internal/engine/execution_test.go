@@ -145,6 +145,7 @@ func TestInvalidReviewsNeverPublish(t *testing.T) {
 		{"blank-summary", `{"completed": true, "summary": "  ", "findings": []}`, []model.BlockedReason{model.BlockedInvalidReview}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			routes, script := f.routes, f.script
 			script.Queue(routes.Executor, runnertest.Reply{Answer: "Created feature.txt", Effect: writeFile("feature.txt", "fixed\n")})
@@ -292,6 +293,7 @@ func TestNoChangesBlocks(t *testing.T) {
 		}, "The change set is empty against the source revision"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			routes, script := f.routes, f.script
 			script.Queue(routes.Executor, runnertest.Reply{Answer: "Nothing needed changing", Effect: test.effect})
@@ -433,6 +435,7 @@ func dependentTasks(t *testing.T, f *fixture, head string) (model.Task, model.Ta
 func TestDependencyOrderAndRollback(t *testing.T) {
 	t.Parallel()
 	t.Run("orders onto dependency output", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		first, second := dependentTasks(t, f, existingPRBranch(t, f))
 		f.script.Queue(f.routes.Executor,
@@ -462,6 +465,7 @@ func TestDependencyOrderAndRollback(t *testing.T) {
 		}
 	})
 	t.Run("rewound dependency output blocks", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		head := existingPRBranch(t, f)
 		first, second := dependentTasks(t, f, head)

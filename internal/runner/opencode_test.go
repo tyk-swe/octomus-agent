@@ -84,6 +84,7 @@ func TestOpenCodeSessions(t *testing.T) {
 }
 
 func TestOpenCodeFailures(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{
 		"wrong-model", "wrong-variant", "wrong-session", "wrong-message",
 		"incomplete", "truncated", "failed", "missing-structured",
@@ -92,6 +93,7 @@ func TestOpenCodeFailures(t *testing.T) {
 		"invalid-event", "invalid-json", "oversized-json", "event-404",
 	} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			f := opencodeFixture(t)
 			client, err := f.connect(context.Background())
 			if err != nil {

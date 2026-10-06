@@ -25,6 +25,7 @@ func TestRunOnceAcceptsPublishedDependency(t *testing.T) {
 		{name: "published in earlier RunOnce", runID: new("earlier-batch")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			state := testStore(t)
 			cfg := testConfig(t.TempDir())
 			saveSettings(t, state, cfg, model.DefaultControl())
@@ -65,6 +66,7 @@ func TestPreflightRefusesNoAuth(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"audit", "run_once", "continuous"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			for range 2 {
 				f.script.FailConnect(config.BackendCodex, errors.New("Codex authentication required: run codex login"))

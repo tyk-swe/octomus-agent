@@ -235,6 +235,7 @@ func TestFailedPlanningCommitsNothing(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []model.OperatingMode{model.OperatingModeRunOnce, model.OperatingModeContinuous} {
 		t.Run(mode.String(), func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			plan := completePlan(t, f)
 			plan.discovery[0] = runnertest.Reply{Answer: "this discovery answer is not JSON"}
@@ -410,6 +411,7 @@ func TestPlanningRejectsMutatedWorkspace(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			plan := completePlan(t, f)
 			test.mutate(&plan, test.mutation.effect)

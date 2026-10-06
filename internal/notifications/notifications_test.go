@@ -247,6 +247,7 @@ func TestStatusClassification(t *testing.T) {
 		{408, true}, {429, true}, {503, true}, {404, false}, {302, false},
 	} {
 		t.Run(http.StatusText(check.status), func(t *testing.T) {
+			t.Parallel()
 			state, path := testStore(t)
 			server := newReceiver(t, check.status, 0)
 			worker, err := Start(context.Background(), state, server.url)
