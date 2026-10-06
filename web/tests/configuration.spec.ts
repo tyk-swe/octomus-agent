@@ -9,7 +9,7 @@ import {
   unsandboxed
 } from './synthetic';
 
-test('a revision conflict offers to discard the draft and reload the saved configuration in place', async ({
+test('a revision conflict offers to discard the draft and reload the saved configuration in place @responsive', async ({
   page,
   isMobile
 }) => {

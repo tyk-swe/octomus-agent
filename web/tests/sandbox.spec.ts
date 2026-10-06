@@ -1,9 +1,10 @@
 import { expect } from '@playwright/test';
-import { login, openNavigation, patchState, test, unsandboxed } from './synthetic';
+import { login, nextPoll, openNavigation, patchState, test, unsandboxed } from './synthetic';
 
 test('the overview proves containment from inside a sandbox, names the deployment limits, then names a failed check', async ({
   page
 }) => {
+  await page.clock.install();
   await login(page);
   const panel = page.getByRole('region', { name: 'Sandbox' });
   await expect(panel.locator('.badge')).toHaveText('Contained');
@@ -25,6 +26,7 @@ test('the overview proves containment from inside a sandbox, names the deploymen
     test.passed = false;
     test.checks[6] = { ...test.checks[6], passed: false, detail: 'reached 1.1.1.1:443' };
   });
+  await nextPoll(page);
   await expect(panel.locator('.badge')).toHaveText('1 check failed', { timeout: 10000 });
   await expect(panel.locator('li.failed')).toContainText(
     'Has no direct route to the internet reached 1.1.1.1:443'

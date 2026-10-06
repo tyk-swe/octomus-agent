@@ -17,8 +17,6 @@ import type {
 } from '../src/lib/types';
 import { A, command, reviewer, reviewRound, taskEvidence, test } from './synthetic';
 
-test.skip(({ isMobile }) => isMobile, 'Pure mapping rules run once, on the desktop project.');
-
 function withReview(review: Partial<ReviewEvidence>, latest: Partial<ReviewRoundEvidence> = {}) {
   return taskEvidence('synthetic-task', {
     latest_review: {

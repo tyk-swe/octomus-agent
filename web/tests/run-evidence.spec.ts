@@ -14,7 +14,7 @@ import {
   trackWrites
 } from './synthetic';
 
-test('inspect run reports recorded reviewer roles, review, checks and delivery, exports without writes, then hands off to the task', async ({
+test('inspect run reports recorded reviewer roles, review, checks and delivery, exports without writes, then hands off to the task @responsive', async ({
   page,
   context
 }) => {

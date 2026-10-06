@@ -59,6 +59,18 @@ export async function login(page: Page) {
   await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
 }
 
+/**
+ * Fires the dashboard's 4s polls now instead of waiting for them, then waits until the page has
+ * applied the response to `path`. Install the page clock before the page loads; it keeps running,
+ * so a poll this races still arrives on its own schedule.
+ */
+export async function nextPoll(page: Page, path = '**/api/state') {
+  const response = page.waitForResponse(path);
+  await page.clock.fastForward(4000);
+  await (await response).finished();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+}
+
 export async function openNavigation(page: Page, name: string, mobile: boolean) {
   if (mobile) await page.getByRole('button', { name: 'Toggle navigation' }).click();
   await page.getByRole('navigation').getByRole('button', { name, exact: true }).click();

@@ -5,6 +5,7 @@ import type { Model } from '../src/lib/types';
 import {
   configurationFixture,
   login,
+  nextPoll,
   openNavigation,
   patchState,
   test,
@@ -47,7 +48,7 @@ async function accessible(page: Page, within?: string) {
 const fitsViewport = (page: Page) =>
   page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
 
-test('the private dashboard names its version and tours tasks, proposals, pull requests, run evidence and configuration', async ({
+test('the private dashboard names its version and tours tasks, proposals, pull requests, run evidence and configuration @responsive', async ({
   page,
   isMobile
 }) => {
@@ -56,6 +57,7 @@ test('the private dashboard names its version and tours tasks, proposals, pull r
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await configurationFixture(page, { catalog: [...codexModels, ...opencodeModels] });
+  await page.clock.install();
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Your project’s control room.' })).toBeVisible();
   await page.getByLabel('Operator access token').fill('incorrect');
@@ -126,7 +128,7 @@ test('the private dashboard names its version and tours tasks, proposals, pull r
   await expect(page.getByRole('status').and(page.locator('.settings-feedback'))).toHaveText(
     'Configuration saved.'
   );
-  await page.waitForTimeout(4500);
+  await nextPoll(page);
   await expect(page.getByLabel('Orchestrator model', { exact: true })).toHaveValue('gpt-6-astra');
   await expect(page.getByLabel('Repair model', { exact: true })).toHaveValue('gpt-5.6-luna');
   await navigate('Overview');
@@ -138,7 +140,7 @@ test('the private dashboard names its version and tours tasks, proposals, pull r
   expect(errors).toEqual([]);
 });
 
-test('ownership and status are written out, and task tabs follow the arrow-key tabs pattern', async ({
+test('ownership and status are written out, and task tabs follow the arrow-key tabs pattern @responsive', async ({
   page,
   isMobile
 }) => {
@@ -204,7 +206,7 @@ test('ownership and status are written out, and task tabs follow the arrow-key t
   await page.getByRole('button', { name: 'Close task details' }).click();
 });
 
-test('model routing across all roles, provider variants, draft catalogs and unavailable selections', async ({
+test('model routing across all roles, provider variants, draft catalogs and unavailable selections @responsive', async ({
   page,
   isMobile
 }) => {
@@ -219,6 +221,7 @@ test('model routing across all roles, provider variants, draft catalogs and unav
       await route.fulfill({ json: catalogState === 'normal' ? opencodeModels : [] });
     }
   });
+  await page.clock.install();
   await login(page);
   const navigate = (name: string) => openNavigation(page, name, !!isMobile);
   await navigate('Configuration');
@@ -266,7 +269,7 @@ test('model routing across all roles, provider variants, draft catalogs and unav
   catalogState = 'error';
   await page.getByRole('button', { name: 'Load OpenCode models' }).click();
   await expect(page.getByRole('alert')).toContainText('catalog is unavailable');
-  await page.waitForTimeout(4500);
+  await nextPoll(page);
   await expect(page.getByLabel('Repair model', { exact: true })).toHaveValue('fixture-model');
   await expect(page.getByLabel('Repair variant', { exact: true })).toHaveValue('deep');
   await page.getByRole('button', { name: 'Save configuration' }).click();

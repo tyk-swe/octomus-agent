@@ -1,7 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import type { Snapshot, Task } from '../src/lib/types';
-import { deferred, login, openNavigation, patchState, test } from './synthetic';
+import { deferred, login, nextPoll, openNavigation, patchState, test } from './synthetic';
 
 /** A paused, idle, configured service whose state the test moves between polls. */
 function idle(snapshot: Snapshot) {
@@ -344,7 +344,7 @@ for (const action of ['cycle', 'audit'] as const) {
   });
 }
 
-test('controls share eligibility, refuse duplicate pending actions, and an audit records decisions without queuing work', async ({
+test('controls share eligibility, refuse duplicate pending actions, and an audit records decisions without queuing work @responsive', async ({
   page
 }) => {
   let restriction = 'continuous';
@@ -437,12 +437,14 @@ test('controls share eligibility, refuse duplicate pending actions, and an audit
     restriction = 'continuous';
     await route.fulfill({ json: { paused: false } });
   });
+  await page.clock.install();
   await login(page);
   const run = page.getByRole('button', { name: 'Run once', exact: true });
   const runAudit = page.getByRole('button', { name: 'Run an audit', exact: true });
   const discover = page.getByRole('button', { name: 'Discover opportunities', exact: true });
   for (const value of ['continuous', 'task', 'execution', 'audit', 'idle']) {
     restriction = value;
+    await nextPoll(page);
     if (value === 'idle') {
       await expect(run).toBeEnabled({ timeout: 10000 });
       await expect(discover).toBeEnabled();
@@ -468,6 +470,7 @@ test('controls share eligibility, refuse duplicate pending actions, and an audit
   // Only the audit routes are saved: the audit is offered, a run is not.
   configured = false;
   restriction = 'idle';
+  await nextPoll(page);
   await expect(runAudit).toBeEnabled({ timeout: 10000 });
   await expect(run).toBeDisabled();
   await runAudit.click();
@@ -478,6 +481,7 @@ test('controls share eligibility, refuse duplicate pending actions, and an audit
   await expect(page.getByRole('button', { name: 'Start continuous', exact: true })).toBeDisabled();
   await expect(runAudit).toBeDisabled();
   audit = 'finished';
+  await nextPoll(page);
   await expect(page.getByRole('heading', { name: 'Audit rejected recommendation' })).toBeVisible({
     timeout: 10000
   });

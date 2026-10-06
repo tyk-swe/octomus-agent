@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 import type { CycleSummary } from '../src/lib/types';
-import { deferred, login, openNavigation, test } from './synthetic';
+import { deferred, login, nextPoll, openNavigation, test } from './synthetic';
 
 for (const list of [
   {
@@ -44,6 +44,7 @@ for (const list of [
         await route.fulfill({ json: result });
       }
     });
+    await page.clock.install();
     await login(page);
     await openNavigation(page, list.view, !!isMobile);
     await expect(page.getByText(`Loading ${list.noun}…`, { exact: true })).toBeVisible();
@@ -64,6 +65,7 @@ for (const list of [
       );
     const positions = await rowPositions();
     gate = deferred();
+    await nextPoll(page);
     await expect(page.getByText(`Refreshing ${list.noun}…`, { exact: true })).toBeVisible({
       timeout: 10000
     });
@@ -86,6 +88,7 @@ for (const list of [
     await expect(page.getByText(`Refreshing ${list.noun}…`, { exact: true })).toHaveCount(0);
     expect(await rowPositions()).toEqual(positions);
     mode = 'empty';
+    await nextPoll(page);
     await expect(page.getByRole('heading', { name: list.empty, exact: true })).toBeVisible({
       timeout: 10000
     });
@@ -188,10 +191,9 @@ test('a refused task action remains visible across polling until the next action
   });
   async function pollTask(page: Page, change: () => void = () => {}) {
     change();
-    const response = await page.waitForResponse(taskPath, { timeout: 10000 });
-    await response.finished();
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    await nextPoll(page, taskPath);
   }
+  await page.clock.install();
   await login(page);
   await openNavigation(page, 'Task queue', !!isMobile);
   await page.getByRole('button', { name: /Handle interrupted verification commands/ }).click();
