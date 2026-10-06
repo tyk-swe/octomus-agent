@@ -314,8 +314,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 	}
 	var runID *string
 	if next.Mode == model.OperatingModeRunOnce && next.Batch != nil {
-		value := next.Batch.ID
-		runID = &value
+		runID = new(next.Batch.ID)
 	}
 	cycle := model.Cycle{
 		Mode: mode, ID: id, Number: next.CycleNumber, Status: model.CycleRunning,

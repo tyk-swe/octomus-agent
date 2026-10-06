@@ -9,6 +9,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 const SchemaVersion uint32 = 1
@@ -356,8 +357,7 @@ func reviewEvidence(task model.Task) ReviewEvidence {
 		}
 		var matches *bool
 		if task.OutputCommit != nil {
-			m := *task.OutputCommit == round.Revision
-			matches = &m
+			matches = new(*task.OutputCommit == round.Revision)
 		}
 		latest = &ReviewRoundEvidence{
 			SessionID:      round.SessionID,
@@ -394,8 +394,7 @@ func commandEvidence(task model.Task) CommandEvidence {
 			latest := recorded[n-1]
 			var matches *bool
 			if task.OutputCommit != nil {
-				m := *task.OutputCommit == latest.Revision
-				matches = &m
+				matches = new(*task.OutputCommit == latest.Revision)
 			}
 			switch {
 			case !latest.Success:
@@ -405,8 +404,7 @@ func commandEvidence(task model.Task) CommandEvidence {
 			default:
 				out.State = CommandPassedElsewhere
 			}
-			success := latest.Success
-			out.LatestSuccess = &success
+			out.LatestSuccess = new(latest.Success)
 			out.LatestRevision = new(latest.Revision)
 			out.LatestCreatedAt = new(latest.CreatedAt)
 			out.AtOutput = matches
@@ -469,8 +467,7 @@ func taskEvidence(task model.Task) TaskEvidence {
 	}
 	var pr *PRReference
 	if task.PRNumber != nil {
-		number := *task.PRNumber
-		pr = &PRReference{Number: &number, URL: cloneString(task.PRURL), Source: "recorded_task_reference"}
+		pr = &PRReference{Number: new(*task.PRNumber), URL: wirejson.Clone(task.PRURL), Source: "recorded_task_reference"}
 	}
 	return TaskEvidence{
 		ID:            task.ID,
@@ -487,7 +484,7 @@ func taskEvidence(task model.Task) TaskEvidence {
 			Source:         task.SourceRevision,
 			ComparisonBase: comparison,
 			DefaultBranch:  task.DefaultRevision,
-			Output:         cloneString(task.OutputCommit),
+			Output:         wirejson.Clone(task.OutputCommit),
 		},
 		Sessions:         sessions,
 		LatestReview:     latestReview,
@@ -495,14 +492,6 @@ func taskEvidence(task model.Task) TaskEvidence {
 		PullRequest:      pr,
 		Gaps:             gaps,
 	}
-}
-
-func cloneString(s *string) *string {
-	if s == nil {
-		return nil
-	}
-	copied := *s
-	return &copied
 }
 
 func assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
@@ -611,7 +600,7 @@ func assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 			Mode:              cycle.Mode,
 			Status:            cycle.Status,
 			StartedAt:         cycle.StartedAt,
-			CompletedAt:       cloneString(cycle.CompletedAt),
+			CompletedAt:       wirejson.Clone(cycle.CompletedAt),
 			Repository:        cycle.Repository,
 			GroundingRevision: groundingRevision,
 			Planning: PlanningOutcome{

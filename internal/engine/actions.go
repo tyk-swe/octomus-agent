@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
-	"time"
 
 	"github.com/google/uuid"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
@@ -46,8 +45,7 @@ func (a *App) CycleAction(id, action string) error {
 		if cycle.Lifecycle.ArchivedAt != nil {
 			return conflictError("The cycle is already archived")
 		}
-		now := model.Now()
-		cycle.Lifecycle.ArchivedAt = &now
+		cycle.Lifecycle.ArchivedAt = new(model.Now())
 		if err := a.Store.Put("cycle", id, *cycle); err != nil {
 			return err
 		}
@@ -101,8 +99,7 @@ func (a *App) TaskAction(id, action string) error {
 		if task.Status.Retryable() {
 			task.Status = model.StatusCancelled
 		}
-		now := model.Now()
-		task.Lifecycle.ArchivedAt = &now
+		task.Lifecycle.ArchivedAt = new(model.Now())
 		actionErr = a.saveTask(task)
 	case "discard":
 		actionErr = a.discardTask(task)
@@ -175,8 +172,7 @@ func (a *App) retryTask(task *model.Task) error {
 	}
 	task.Attempts++
 	task.ReviewBaseline = uint64(len(task.Reviews))
-	rounds := uint64(0)
-	task.RepairRounds = &rounds
+	task.RepairRounds = new(uint64(0))
 	task.RepairProgress = nil
 	task.Error = nil
 	task.BlockedReason = nil
@@ -249,8 +245,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 			return err
 		}
 		if preflightErr == nil {
-			reason := model.BlockedUnknown
-			task.BlockedReason = &reason
+			task.BlockedReason = new(model.BlockedUnknown)
 			task.Error = new("Remote prerequisites are restored; task can be retried")
 		} else {
 			recordTaskError(task, preflightErr)
@@ -289,7 +284,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	var published model.PullRequest
 	var publishErr error
 	a.withoutGate(func() {
-		limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
+		limit := task.ExecutionConfig().TaskTimeout()
 		result, err := runJoined(workCtx, cancel, limit, "Publication reconciliation panicked", func() error {
 			p, err := gitops.Publish(workCtx, *task)
 			if err == nil {
@@ -364,8 +359,7 @@ func (a *App) discardTask(task *model.Task) error {
 	if current.Status.Active() || current.Status == model.StatusQueued {
 		return conflictError("Task resumed work during workspace cleanup; inspect it before discarding")
 	}
-	now := model.Now()
-	current.Lifecycle.DiscardedAt = &now
+	current.Lifecycle.DiscardedAt = new(model.Now())
 	if err := a.Store.Put("task", current.ID, *current); err != nil {
 		return err
 	}
@@ -398,8 +392,7 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 	if current.Status == model.CycleRunning {
 		return conflictError("Planning work restarted during workspace cleanup; inspect it before discarding")
 	}
-	now := model.Now()
-	current.Lifecycle.DiscardedAt = &now
+	current.Lifecycle.DiscardedAt = new(model.Now())
 	if err := a.Store.Put("cycle", current.ID, *current); err != nil {
 		return err
 	}

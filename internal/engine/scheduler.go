@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -510,7 +511,7 @@ func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, e
 		if control.Mode == model.OperatingModeRunOnce && (dependency.RunID == nil || task.RunID == nil || *dependency.RunID != *task.RunID) {
 			return false, fmt.Errorf("Dependency %s is outside this run-once batch: %w", id, model.BlockedDependencyBlocked), nil
 		}
-		if dependency.Status == model.StatusBlocked || dependency.Status == model.StatusFailed || dependency.Status == model.StatusCancelled {
+		if slices.Contains(model.UnresolvedStatuses(), dependency.Status) {
 			return false, fmt.Errorf("Dependency %s is unresolved: %w", id, model.BlockedDependencyBlocked), nil
 		}
 		return false, nil, nil

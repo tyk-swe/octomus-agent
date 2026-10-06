@@ -210,8 +210,7 @@ func (a *App) fail(err error) {
 		return
 	}
 	if control, loadErr := a.Control(); loadErr == nil {
-		redacted := redact.Text(message)
-		_ = a.pauseLocked(&control, &redacted)
+		_ = a.pauseLocked(&control, &message)
 	}
 	_ = a.Store.Event("system", "error", message)
 }

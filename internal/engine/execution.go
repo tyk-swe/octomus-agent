@@ -44,7 +44,7 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	}
 	workCtx, workCancel := context.WithCancel(ctx)
 	defer workCancel()
-	limit := time.Duration(task.ExecutionConfig().TaskTimeoutSeconds) * time.Second
+	limit := task.ExecutionConfig().TaskTimeout()
 	result, executeErr := runJoined(ctx, workCancel, limit, "Task worker panicked", func() error {
 		return a.execute(workCtx, &task)
 	})
@@ -113,8 +113,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	if task.RepairRounds == nil {
 		// Older records have only the review-based budget estimate. Retain
 		// that conservative allowance, then count completed repairs directly.
-		rounds := task.AttemptReviews()
-		task.RepairRounds = &rounds
+		task.RepairRounds = new(task.AttemptReviews())
 	}
 	if err := a.saveTask(task); err != nil {
 		return err
@@ -514,10 +513,8 @@ func (a *App) setTaskError(task *model.Task, err error) error {
 }
 
 func recordTaskError(task *model.Task, err error) {
-	reason := model.BlockedReasonFromError(err)
-	task.BlockedReason = &reason
-	message := redact.Error(err)
-	task.Error = &message
+	task.BlockedReason = new(model.BlockedReasonFromError(err))
+	task.Error = new(redact.Error(err))
 }
 
 // Caller holds the gate until the exited worker releases its runtime claim.

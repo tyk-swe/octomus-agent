@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/tyk-swe/octomus-agent/internal/config"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
@@ -48,7 +48,7 @@ func (d Deployment) check(cfg config.Config) error {
 // runner started for them can see no repository, workspace or state. Discarding it removes the whole root.
 func (a *App) scratchWorkspace() (string, func(), error) {
 	parent := filepath.Join(a.dataDir, scratchDir)
-	root := filepath.Join(parent, uuid.NewString())
+	root := filepath.Join(parent, model.ID())
 	dir := filepath.Join(root, wire.WorkspaceDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", nil, err

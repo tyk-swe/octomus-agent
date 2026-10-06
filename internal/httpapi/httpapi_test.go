@@ -220,8 +220,7 @@ func TestControlActionsThroughHTTP(t *testing.T) {
 	}
 	control.SetMode(model.OperatingModePaused)
 	control.NextCycleAt = time.Now().Add(time.Hour).Unix()
-	message := "earlier planning failure"
-	control.Error = &message
+	control.Error = new("earlier planning failure")
 	if err := state.SaveControl(control); err != nil {
 		t.Fatal(err)
 	}
@@ -260,12 +259,10 @@ func queuedTask(cfg config.Config) model.Task {
 		Config: cfg.Clone(), SourceRevision: "s", ComparisonBase: "s",
 		DefaultRevision: "s", Branch: "octomus/seed", Workspace: "",
 		Sessions: []model.Session{}, Reviews: []model.ReviewRound{}, Verification: []model.Verification{},
-		OutputCommit: stringPointer("o"), Attempts: 0,
+		OutputCommit: new("o"), Attempts: 0,
 		CreatedAt: model.Now(), UpdatedAt: model.Now(),
 	}
 }
-
-func stringPointer(s string) *string { return &s }
 
 func TestHTTPBoundaries(t *testing.T) {
 	app, state := testApp(t)

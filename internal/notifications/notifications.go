@@ -138,8 +138,7 @@ func configure(db *store.Store, configuredURL string) (string, string, error) {
 		destinationURL, id, err := webhookDestination(raw)
 		if err != nil {
 			state = "invalid"
-			message := err.Error()
-			errorText = &message
+			errorText = new(err.Error())
 		} else {
 			normalized, destinationID = destinationURL, id
 			state = "enabled"
@@ -275,7 +274,6 @@ func isTimeout(err error) bool {
 
 // webhookDestination normalizes the configured webhook URL and derives the stable identity its deliveries are keyed by.
 func webhookDestination(raw string) (normalized, identity string, err error) {
-	raw = strings.TrimSpace(raw)
 	if raw == "" || len(raw) > 8192 {
 		return "", "", fmt.Errorf("Notification webhook URL is empty or exceeds the 8192-byte limit")
 	}

@@ -52,11 +52,9 @@ func (a *App) StateView() (map[string]any, error) {
 	a.runtimeMu.Lock()
 	var cycleMode *model.CycleMode
 	if a.runtime.cycle != nil {
-		mode := a.runtime.cycle.mode
-		cycleMode = &mode
+		cycleMode = new(a.runtime.cycle.mode)
 	} else if a.runtime.preflight != nil {
-		mode := *a.runtime.preflight
-		cycleMode = &mode
+		cycleMode = new(*a.runtime.preflight)
 	}
 	activeTasks := len(a.runtime.tasks)
 	cycleActive := a.runtime.cycle != nil
@@ -71,8 +69,7 @@ func (a *App) StateView() (map[string]any, error) {
 		if len(running) > 0 {
 			cycleActive = true
 			if cycleMode == nil {
-				mode := running[0].Mode
-				cycleMode = &mode
+				cycleMode = new(running[0].Mode)
 			}
 		}
 	}
@@ -377,16 +374,14 @@ type SandboxPosture struct {
 func (a *App) SandboxPosture() SandboxPosture {
 	posture := SandboxPosture{Mode: a.sandbox.Mode().String(), Healthy: a.sandbox.Mode() == sandbox.ModeDocker, Egress: a.deployment.Egress}
 	if a.deployment.pinned() {
-		repo := a.deployment.GitHubRepo
-		posture.PinnedRepository = &repo
+		posture.PinnedRepository = new(a.deployment.GitHubRepo)
 	}
 	if remote, ok := a.sandbox.(*sandbox.Remote); ok {
 		ctx, cancel := context.WithTimeout(a.ctx, 3*time.Second)
 		info, err := remote.Info(ctx)
 		cancel()
 		if err != nil {
-			message := redact.Error(err)
-			posture.Healthy, posture.Error = false, &message
+			posture.Healthy, posture.Error = false, new(redact.Error(err))
 		} else {
 			posture.Broker = &info
 		}
@@ -451,8 +446,7 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 		return record, cancelErr
 	}
 	if err != nil {
-		message := redact.Error(err)
-		record.Error = &message
+		record.Error = new(redact.Error(err))
 	} else {
 		record.Checks, record.Kernel, record.Passed = report.Checks, report.Kernel, report.Passed()
 		if report.Sandbox != nil {

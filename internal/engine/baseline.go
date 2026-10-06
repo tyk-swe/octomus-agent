@@ -190,7 +190,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 		return
 	}
 	c := check.Config
-	limit := time.Duration(c.TaskTimeoutSeconds) * time.Second
+	limit := c.TaskTimeout()
 	workCtx, workCancel := context.WithCancel(ctx)
 	defer workCancel()
 	executionDone := make(chan struct{})
@@ -392,8 +392,7 @@ func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 	}
 	var cleanupError *string
 	if removeErr != nil {
-		message := redact.Error(removeErr)
-		cleanupError = &message
+		cleanupError = new(redact.Error(removeErr))
 	}
 	if removeErr == nil {
 		check.WorkspaceRemoved = true

@@ -10,6 +10,7 @@ import (
 	"math"
 	"mime"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -191,14 +192,7 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	matched := false
-	for _, method := range allowed {
-		if method == r.Method {
-			matched = true
-			break
-		}
-	}
-	if !matched {
+	if !slices.Contains(allowed, r.Method) {
 		w.Header().Set("Allow", strings.Join(allowed, ", "))
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -230,6 +224,14 @@ func apiStatus(err error) int {
 	default:
 		return http.StatusBadRequest
 	}
+}
+
+// acknowledged answers an action that returns nothing but its outcome.
+func acknowledged(err error) (int, any, error) {
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, map[string]any{"ok": true}, nil
 }
 
 func writeAPIError(w http.ResponseWriter, status int, message string) {
@@ -397,10 +399,7 @@ func (a *api) cycleEvidence(_ http.ResponseWriter, r *http.Request) (int, any, e
 }
 
 func (a *api) cycleAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := a.app.CycleAction(r.PathValue("id"), r.PathValue("action")); err != nil {
-		return 0, nil, err
-	}
-	return http.StatusOK, map[string]any{"ok": true}, nil
+	return acknowledged(a.app.CycleAction(r.PathValue("id"), r.PathValue("action")))
 }
 
 func (a *api) taskDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -429,10 +428,7 @@ func (a *api) taskDetail(_ http.ResponseWriter, r *http.Request) (int, any, erro
 }
 
 func (a *api) taskAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := a.app.TaskAction(r.PathValue("id"), r.PathValue("action")); err != nil {
-		return 0, nil, err
-	}
-	return http.StatusOK, map[string]any{"ok": true}, nil
+	return acknowledged(a.app.TaskAction(r.PathValue("id"), r.PathValue("action")))
 }
 
 func (a *api) getConfig(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
@@ -500,10 +496,7 @@ func (a *api) baselineDetail(_ http.ResponseWriter, r *http.Request) (int, any, 
 }
 
 func (a *api) baselineCancel(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := a.app.CancelBaseline(r.PathValue("id")); err != nil {
-		return 0, nil, err
-	}
-	return http.StatusOK, map[string]any{"ok": true}, nil
+	return acknowledged(a.app.CancelBaseline(r.PathValue("id")))
 }
 
 func (a *api) controlAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {

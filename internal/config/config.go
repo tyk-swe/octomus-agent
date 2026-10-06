@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -141,7 +142,9 @@ func (c Config) RoutesFor(audit bool) []NamedRoute {
 	return append(result, NamedRoute{"repair", c.RepairRoute.Clone()})
 }
 
-func (c Config) PlanningCost() uint64 { return c.DiscoveryAgents + 4 }
+func (c Config) PlanningCost() uint64       { return c.DiscoveryAgents + 4 }
+func (c Config) TaskTimeout() time.Duration { return time.Duration(c.TaskTimeoutSeconds) * time.Second }
+
 func EqualASCII(a, b string) bool {
 	if len(a) != len(b) {
 		return false
