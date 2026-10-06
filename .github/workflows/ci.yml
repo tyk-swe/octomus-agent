@@ -1,8 +1,8 @@
 name: Repository checks
-# Pushes cover pull requests too: a PR shows the checks of its head commit's push run.
 on:
   push:
     branches: ['**']
+  pull_request:
   workflow_call:
     inputs:
       ref:
@@ -10,6 +10,10 @@ on:
         required: false
 permissions:
   contents: read
+# Coalesce overlapping push/PR checks for the same repository and commit.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
 jobs:
   quality:
     runs-on: ubuntu-24.04

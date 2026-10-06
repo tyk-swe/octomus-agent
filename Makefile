@@ -8,8 +8,9 @@ E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
 # a failure prints its seed (-test.shuffle N) to reproduce.
 GO_TEST_FLAGS = -timeout 30m -shuffle=on
 
-# The dashboard rebuilds only when one of its inputs changes; vite also reads VERSION.
-DASHBOARD_INPUTS = $(shell find web/src web/static -type f) VERSION \
+# Directory timestamps also invalidate the build when inputs are added or removed.
+# Vite reads VERSION, and Makefile changes can alter the input list or build command.
+DASHBOARD_INPUTS = $(shell find web/src web/static -type f -o -type d) VERSION Makefile \
 	$(addprefix web/,package.json package-lock.json svelte.config.js vite.config.ts tsconfig.json)
 
 dashboard: web/build/200.html
