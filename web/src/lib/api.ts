@@ -74,11 +74,9 @@ function plainText(response: Response, text: string): string {
   const message = text.trim();
   return message.length > 500 ? `${message.slice(0, 500)}…` : message;
 }
+export function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  return api<T>(path, 'GET', undefined, signal);
+}
 export function fetchEvidence(cycle: string, signal?: AbortSignal) {
-  return api<RunEvidenceV1>(
-    `/cycles/${encodeURIComponent(cycle)}/evidence`,
-    'GET',
-    undefined,
-    signal
-  );
+  return get<RunEvidenceV1>(`/cycles/${encodeURIComponent(cycle)}/evidence`, signal);
 }

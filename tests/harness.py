@@ -33,6 +33,11 @@ def local_urlopen(request, *, timeout):
     return LOCAL_HTTP.open(request, timeout=timeout)
 
 
+def api_request(port, path, method='GET', value=None, api=True):
+    """An operator-authenticated request to the service on `port`; only a non-GET request carries `value` as JSON."""
+    return urllib.request.Request(f'http://127.0.0.1:{port}{"/api" if api else ""}{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
+
+
 def fixture_git_environment():
     """A child-only Git environment for the fixture's local repositories.
 
@@ -200,8 +205,7 @@ class Service:
     def _open(self, path, method, value, api, timeout):
         """Sends one authenticated request; `timeout` bounds each socket operation,
         so a response the service holds longer than that raises TimeoutError."""
-        request = urllib.request.Request(f'http://127.0.0.1:{self.port}{"/api" if api else ""}{path}', method=method, headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}, data=json.dumps(value or {}).encode() if method != 'GET' else None)
-        return local_urlopen(request, timeout=timeout)
+        return local_urlopen(api_request(self.port, path, method, value, api), timeout=timeout)
 
     def request(self, path, method='GET', value=None, api=True, timeout=5):
         """One request that must succeed: returns the JSON body, raises HTTPError otherwise."""

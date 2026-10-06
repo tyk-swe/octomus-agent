@@ -25,8 +25,13 @@ WEBHOOK_SECRET = 'synthetic-path-secret-9f27c1/query?key=synthetic-query-secret-
 PUBLICATION_SECRET = 'ghp_fixturePublicationSecret0001'
 
 
+def cli(root, *args):
+    """The service binary's command line for a one-shot mode over the scenario's data directory."""
+    return [str(BINARY), '--data-dir', str(root / '.octomus'), *args]
+
+
 def usage_report(root):
-    report = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--usage-report'], text=True, timeout=30))
+    report = json.loads(subprocess.check_output(cli(root, '--usage-report'), text=True, timeout=30))
     assert sum(d['admissions'] for d in report['daily']) == len(report['admissions'])
     assert all(d['unattributed_admissions'] == 0 for d in report['daily'])
     return report
@@ -140,7 +145,7 @@ def normal(executor='codex', **roles):
         assert PUBLICATION_SECRET in canonical['proposal']['title'] and TOKEN in canonical['proposal']['problem'], canonical['proposal']
         if 'codex' in backends:
             (root / 'version').write_text('0.0.0-fixture')
-            diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor'], env=service.env, capture_output=True, text=True, check=True, timeout=60)
+            diagnostic = subprocess.run(cli(root, '--doctor'), env=service.env, capture_output=True, text=True, check=True, timeout=60)
             assert json.loads(diagnostic.stdout)['warnings'] and 'mismatch' in diagnostic.stderr
 
 
@@ -201,7 +206,7 @@ def audit():
         assert not (root / 'publications.jsonl').exists()
         assert git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', cwd=root / 'remote.git') == baseline_refs
         service.stop()
-        diagnostic = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), '--doctor', '--audit'], env=service.env, capture_output=True, text=True, check=True, timeout=60)
+        diagnostic = subprocess.run(cli(root, '--doctor', '--audit'), env=service.env, capture_output=True, text=True, check=True, timeout=60)
         assert json.loads(diagnostic.stdout)['mode'] == 'audit'
 
 
@@ -421,7 +426,7 @@ def assert_no_url_leak(root, service):
         payloads += [service.request(f"/cycles/{cycle['id']}"), service.request(f"/cycles/{cycle['id']}/evidence")]
     assert not any(WEBHOOK_SECRET in json.dumps(payload) for payload in payloads), 'webhook URL leaked into the API'
     for args in [['--usage-report']] + [['--export-run', cycle['id']] for cycle in state['cycles']]:
-        result = subprocess.run([str(BINARY), '--data-dir', str(root / '.octomus'), *args], env=service.env, capture_output=True, text=True, check=True, timeout=30)
+        result = subprocess.run(cli(root, *args), env=service.env, capture_output=True, text=True, check=True, timeout=30)
         assert WEBHOOK_SECRET not in result.stdout and WEBHOOK_SECRET not in result.stderr
     db = sqlite3.connect(root / '.octomus/state.db')
     leaked = [table for table in ['records', 'events', 'notification_outbox', 'notification_policy']
@@ -542,7 +547,7 @@ def upgrade():
             evidence[row['id']] = service.request(f'/cycles/{row["id"]}/evidence')
         service.stop()
         for cycle_id, via_http in evidence.items():
-            exported = json.loads(subprocess.check_output([str(BINARY), '--data-dir', str(root / '.octomus'), '--export-run', cycle_id], text=True, timeout=30))
+            exported = json.loads(subprocess.check_output(cli(root, '--export-run', cycle_id), text=True, timeout=30))
             assert exported.pop('generated_at') and via_http.pop('generated_at')
             assert exported == via_http, cycle_id
         # TestMigrationUpgradesGolden checks the backup's contents; here the shipped binary must have written it.

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, ApiError, fetchEvidence } from './api';
+  import { api, get, ApiError, fetchEvidence } from './api';
   import Badge from './Badge.svelte';
   import { createCopyFeedback } from './copyFeedback.svelte';
   import {
@@ -141,10 +141,8 @@
     eventsRequest = controller;
     eventsLoading = true;
     try {
-      const nextEvents = await api<Event[]>(
+      const nextEvents = await get<Event[]>(
         `/events?entity=${encodeURIComponent(id)}`,
-        'GET',
-        undefined,
         controller.signal
       );
       if (eventsRequest === controller && !controller.signal.aborted) {
@@ -170,12 +168,7 @@
     loading = true;
     void loadEvents(force);
     try {
-      const nextTask = await api<Task>(
-        `/tasks/${encodeURIComponent(id)}`,
-        'GET',
-        undefined,
-        controller.signal
-      );
+      const nextTask = await get<Task>(`/tasks/${encodeURIComponent(id)}`, controller.signal);
       if (current === generation && !controller.signal.aborted) {
         task = nextTask;
         error = '';

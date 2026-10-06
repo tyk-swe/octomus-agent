@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { api, setToken, onUnauthorized } from '$lib/api';
+  import { api, get, setToken, onUnauthorized } from '$lib/api';
   import type { Snapshot, TaskRow, Page, ProposalRow, PRObservation } from '$lib/types';
   import Badge from '$lib/Badge.svelte';
   import FilterTabs from '$lib/FilterTabs.svelte';
@@ -214,10 +214,8 @@
         endpoint = 'prs';
         params.set('status', filter);
       }
-      const page = await api<Page<TaskRow | ProposalRow | PRObservation>>(
+      const page = await get<Page<TaskRow | ProposalRow | PRObservation>>(
         `/${endpoint}?${params}`,
-        'GET',
-        undefined,
         controller.signal
       );
       if (current !== listGeneration || controller.signal.aborted) return;

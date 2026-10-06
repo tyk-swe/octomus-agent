@@ -17,9 +17,8 @@ import sys
 import tempfile
 import threading
 import urllib.error
-import urllib.request
 
-from harness import FEATURE_CHECK, PROJECT, TOKEN, free_port, local_urlopen, poll, routes, run_selected, setup
+from harness import FEATURE_CHECK, PROJECT, TOKEN, api_request, free_port, local_urlopen, poll, routes, run_selected, setup
 
 COMPOSE = PROJECT / 'deploy/docker/compose.yaml'
 IMAGES = {'base': 'octomus-agent:e2e-base', 'control': 'octomus-agent:e2e', 'sandbox': 'octomus-sandbox:e2e'}
@@ -131,11 +130,8 @@ class Stack:
         return self.compose('logs', '--no-color', '--tail', '120', check=False).stdout
 
     def request(self, path, method='GET', value=None, timeout=120):
-        request = urllib.request.Request(f'http://127.0.0.1:{self.port}/api{path}', method=method,
-                                         headers={'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'},
-                                         data=json.dumps(value or {}).encode() if method != 'GET' else None)
         try:
-            with local_urlopen(request, timeout=timeout) as response:
+            with local_urlopen(api_request(self.port, path, method, value), timeout=timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             raise AssertionError(f'{method} {path}: HTTP {error.code} {error.read()[:2000].decode(errors="replace")}') from None

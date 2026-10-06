@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, ApiError, fetchEvidence } from './api';
+  import { get, ApiError, fetchEvidence } from './api';
   import Badge from './Badge.svelte';
+  import DecisionCounts from './DecisionCounts.svelte';
   import { createCopyFeedback } from './copyFeedback.svelte';
   import {
     checksVerdict,
     commandBadge,
     commandExplanation,
     cycleLabel,
-    decisionCounts,
     decisionTone,
     outcomeVerdict,
     planningVerdict,
@@ -79,7 +79,7 @@
     try {
       const [next, detail] = await Promise.all([
         fetchEvidence(cycle, controller.signal),
-        api<Cycle>(`/cycles/${encodeURIComponent(cycle)}`, 'GET', undefined, controller.signal)
+        get<Cycle>(`/cycles/${encodeURIComponent(cycle)}`, controller.signal)
           .then((c) => ({ cycle: c, error: '' }))
           .catch((e: unknown) => ({
             cycle: null,
@@ -210,11 +210,7 @@
           {plural(run.cycle.planning.proposal_count, 'proposal')} recorded. {planning.detail} Delivered
           work, if any, is shown per proposal below.
         </p>
-        <ul class="outcome-counts" aria-label="Proposal decisions">
-          {#each decisionCounts(run.cycle.planning.decisions) as entry (entry.decision)}<li>
-              <strong>{entry.count}</strong><Badge label={entry.decision} tone={entry.tone} />
-            </li>{:else}<li class="muted">No decisions recorded</li>{/each}
-        </ul>
+        <DecisionCounts decisions={run.cycle.planning.decisions} />
         <dl class="fact-row">
           <div>
             <dt>Grounding revision</dt>

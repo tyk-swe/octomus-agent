@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte';
-  import { api } from './api';
+  import { api, get } from './api';
   import Badge from './Badge.svelte';
   import { baselineStatusLabel, type Tone } from './evidence';
   import { relative } from './format';
@@ -73,12 +73,7 @@
     request = controller;
     loading = true;
     try {
-      const next = await api<BaselineView>(
-        '/baseline-checks/latest',
-        'GET',
-        undefined,
-        controller.signal
-      );
+      const next = await get<BaselineView>('/baseline-checks/latest', controller.signal);
       if (gen === generation && !controller.signal.aborted) {
         view = next;
         error = '';

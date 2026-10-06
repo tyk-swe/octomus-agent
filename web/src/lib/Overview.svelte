@@ -1,6 +1,7 @@
 <script lang="ts">
   import Badge from './Badge.svelte';
-  import { decisionCounts, modeLabel, planningVerdict, taskOutcomeCounts } from './evidence';
+  import DecisionCounts from './DecisionCounts.svelte';
+  import { modeLabel, planningVerdict, taskOutcomeCounts } from './evidence';
   import { bytesLabel, gb, relative, shortHash } from './format';
   import Icon, { type IconName } from './Icon.svelte';
   import { sandboxVerdict } from './sandbox';
@@ -169,11 +170,7 @@
     <div class="run-outcome">
       <div>
         <span class="eyebrow">PROPOSAL DECISIONS</span>
-        <ul class="outcome-counts" aria-label="Proposal decisions">
-          {#each decisionCounts(cycle.decisions) as entry (entry.decision)}<li>
-              <strong>{entry.count}</strong><Badge label={entry.decision} tone={entry.tone} />
-            </li>{:else}<li class="muted">No decisions recorded</li>{/each}
-        </ul>
+        <DecisionCounts decisions={cycle.decisions} />
         <small>{planning.detail}</small>
       </div>
       <div>
