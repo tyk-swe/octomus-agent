@@ -1,15 +1,10 @@
 # Releasing
 
-[v0.2.0 is published](https://github.com/tyk-swe/octomus-agent/releases/tag/v0.2.0)
-with x86_64 and aarch64 archives
-and `SHA256SUMS`, plus signed `octomus-agent` and `octomus-sandbox` images on
-GHCR. Local packages, fixture tests and workflow definitions do not prove
-public download availability; the release page, the green release workflow run
-and the installer's checksum verification do. LICENSE/NOTICE ownership facts
-remain owner-supplied: AGENTS.md defers those edits until the owner supplies
-cleared facts. Its [release workflow](https://github.com/tyk-swe/octomus-agent/actions/runs/37286084064)
-passed both native build/install checks; the upgrade rehearsal exercised the
-released-image schema-7-to-8 upgrade and restore-based rollback.
+Each release publishes x86_64 and aarch64 archives with `SHA256SUMS`, plus signed
+`octomus-agent` and `octomus-sandbox` images on GHCR; the [changelog](../CHANGELOG.md)
+records what each one shipped. Local packages, fixture tests and workflow definitions do
+not prove public download availability; the release page, the green release workflow run
+and the installer's checksum verification do.
 
 ## Version
 
@@ -108,10 +103,10 @@ fails when `schema.sql` drifts from a migrated golden.
 After tagging a release, generate its golden database:
 
 ```bash
-python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --expect-version 8 --output internal/store/testdata/state-vX.Y.Z.db
+python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --expect-version 8 --output internal/store/testdata/state-vX.Y.Z.db > internal/store/testdata/state-vX.Y.Z.json
 ```
 
-Use the release's actual schema version (`8` for v0.2.0). Check it in with its provenance (commit, scenario, sha256) and extend the golden tests so
+Use the release's actual schema version (`8` for v0.2.0). Check in the database and the provenance JSON the script prints (commit, scenario, sha256), and extend the golden tests so
 later releases keep opening every checked-in golden. Before tagging a schema change,
 rehearse the upgrade on a copy of real state with the released images, following
 [Backup and upgrade](deployment.md#backup-and-upgrade), and record the image

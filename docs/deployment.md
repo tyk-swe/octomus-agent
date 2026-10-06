@@ -3,8 +3,8 @@
 Octomus is a single-operator, single-repository service. The recommended deployment is
 Docker Compose on a Linux host you already run: every agent turn and verification command
 runs in its own [sandbox](sandbox.md), and the control plane holding your GitHub token never
-runs repository code. The older unsandboxed deployment on a
-[dedicated VM](#dedicated-vm-without-a-sandbox) remains available.
+runs repository code. An unsandboxed deployment on a
+[dedicated VM](#dedicated-vm-without-a-sandbox) is also available.
 
 ## Docker deployment
 
@@ -99,25 +99,80 @@ After rotating `secrets/operator_token`, sign in to the dashboard with the new t
 
 ## Dedicated VM without a sandbox
 
-This is the earlier deployment model: runner sessions and verification commands run with
-the service account's full host permissions, `--sandbox off`. Task clones separate mutable
-work but are not a sandbox, so keep unrelated production credentials and services off this
-host. The dashboard shows a permanent **Unsandboxed** warning.
+This deployment runs runner sessions and verification commands with the service account's
+full host permissions (`--sandbox off`). Task clones separate mutable work but are not a
+sandbox, so use a dedicated Ubuntu 24.04 VM that runs nothing else, never your workstation,
+and keep unrelated production credentials and services off it. The dashboard shows a
+permanent **Unsandboxed** warning.
 
 ### Install
 
-Build on the target architecture or another compatible Linux host. The build
-needs Go (per `go.mod`), Node and npm for the embedded dashboard; the produced
-executable is statically linked and needs none of them at runtime:
+As the administrator, install Git, gh and the runners your routes select, pinned to the
+tested protocol versions: Codex CLI **0.153.4** (through npm, with Node 22 from
+[NodeSource](https://github.com/nodesource/distributions)) and/or the OpenCode
+[1.18.30 release](https://github.com/anomalyco/opencode/releases/tag/v1.18.30) for your
+platform. Skip the Node and Codex lines for an OpenCode-only installation.
 
 ```bash
-npm ci --prefix web
-make package
+sudo apt-get update
+sudo apt-get install -y git gh curl ca-certificates openssl
+curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/octomus-node22.sh
+sudo bash /tmp/octomus-node22.sh
+sudo apt-get install -y nodejs
+sudo npm install -g @openai/codex@0.153.4
 ```
 
-Install `bin/octomus-agent` (or the executable from a checksum-verified release archive) as `/usr/local/bin/octomus-agent`. The dashboard is embedded. Release archives for x86_64 and aarch64 are published with each release; see [releasing](releasing.md). Create an `octomus` OS account with a home directory at `/var/lib/octomus`, and make its home and target repository writable by that account. The binary must remain administrator-owned. The supplied unit expects `/srv/projects/octomus-agent` to exist. If using another target path (including the `/srv/projects/project` example in [getting started](getting-started.md)), change `ReadWritePaths` in a systemd override before starting.
+Install the release with the checksum-verifying installer:
 
-Install `git`, `gh` and the runners your routes select for that account: Codex CLI pinned to **0.153.4** and/or OpenCode **1.18.30**, the tested protocol versions. Authenticate the runners and GitHub as that user, configure Git credentials, and verify it can fetch the target checkout's origin without prompting. Install the target project's build/test tools as well — Octomus itself is a static binary, but verification commands use the target project's tools. Add their locations to the unit's PATH with a systemd override; a service does not load the interactive shell's profile.
+```bash
+curl -fsSL https://raw.githubusercontent.com/tyk-swe/octomus-agent/main/install.sh | sh
+```
+
+It verifies the archive against the release's SHA-256 checksums and installs to
+`/usr/local/bin`. To select a version, download the script and run `sh install.sh v0.2.0`,
+or set `OCTOMUS_VERSION=v0.2.0` for the piped `sh`; `INSTALL_DIR` selects another writable
+absolute destination. Checksums detect corruption; they are not independent signatures
+against a compromised release account. Release archives for x86_64 and aarch64 are on the
+[releases page](https://github.com/tyk-swe/octomus-agent/releases).
+
+To build from source instead, on the target architecture or another compatible Linux host,
+you need Go (per `go.mod`), Node 22.12+ and npm for the embedded dashboard:
+
+```bash
+git clone https://github.com/tyk-swe/octomus-agent.git
+cd octomus-agent
+npm ci --prefix web
+make build
+sudo install -m 755 bin/octomus-agent /usr/local/bin/octomus-agent
+```
+
+The executable is statically linked and embeds the dashboard, so it needs no toolchain at
+runtime, and it must remain administrator-owned. Use a fresh data directory or state from
+v0.1.0 or later; the service upgrades older state at startup after writing a backup (see
+[Backup and upgrade](#backup-and-upgrade)).
+
+Create the service account without sudo access, sign in the runners and GitHub as that
+user, and clone the target repository where the supplied unit expects it:
+
+```bash
+sudo useradd --create-home --home-dir /var/lib/octomus --shell /bin/bash octomus
+sudo install -d -o octomus -g octomus /srv/projects
+sudo -iu octomus
+codex login            # or, for OpenCode routes: opencode auth login
+gh auth login
+gh auth setup-git
+git clone https://github.com/OWNER/REPOSITORY.git /srv/projects/octomus-agent
+```
+
+Use a dedicated identity with repository-restricted authentication, not an unrelated
+personal credential, and verify the account can fetch the checkout's origin without
+prompting. Configure OpenCode's providers in that user's OpenCode configuration; Octomus
+reads provider settings and credentials but never manages logins. For another checkout
+path, change `ReadWritePaths` in a systemd override before starting (below).
+
+Install the target project's build and test tools as well: verification commands use them.
+Add their locations to the unit's PATH with a systemd override; a service does not load the
+interactive shell's profile.
 
 Create `/etc/octomus/agent.env`, readable only by the administrator and service account, with a fresh random token:
 

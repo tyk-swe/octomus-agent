@@ -1,9 +1,8 @@
 # Getting started
 
-Octomus is a self-hosted preview for one operator and one repository. Install the
-published release with the checksum-verifying installer below, deploy the signed
-release images, or build from source; [releasing](releasing.md) describes how the
-release is built, packaged and verified.
+Octomus is a self-hosted preview for one operator and one repository.
+[Deployment](deployment.md) covers the Docker stack, the checksum-verifying release
+installer and building from source.
 
 Your first run has four explicit steps:
 
@@ -32,151 +31,21 @@ commands ahead of any model work and is separate from verifying a task's changes
   them (see [extending the sandbox image](sandbox.md#extend-the-sandbox-image)).
 
 You supply the host and provider access. Their charges depend on usage and your
-subscriptions; Octomus's session-admission limit is not a dollar budget. See [cost](cost.md)
-for what is measured and what remains unvalidated.
+subscriptions; Octomus's session-admission limit is not a dollar budget. Confirm paid
+overage is disabled for subscription-only operation. See [cost](cost.md) for what is
+measured and what remains unvalidated.
 
-## 1. Deploy with Docker
+## 1. Deploy
 
-```bash
-git clone https://github.com/tyk-swe/octomus-agent.git
-cd octomus-agent/deploy/docker
-./setup.sh
-```
+Follow [Docker deployment](deployment.md#docker-deployment): `setup.sh` builds and starts
+the stack and prints a new operator token once, which you should save in your password
+manager. Sign in a runner, open the dashboard through an [SSH tunnel](deployment.md#private-access)
+and enter the token. The service starts paused.
 
-The script:
-- checks Docker;
-- asks for `OWNER/REPOSITORY` and the GitHub token;
-- prints a new operator token once, which you should save in your password manager;
-- builds the images and starts the stack.
+Without Docker, a [dedicated VM without a sandbox](deployment.md#dedicated-vm-without-a-sandbox)
+runs runner and verification commands with the service user's permissions instead.
 
-The control plane clones the repository into its own data volume on first start. Then sign
-in a runner; the login lands in a volume only runner sandboxes mount, and it reaches out only
-through the egress gateway. For OpenCode routes, first add `models.opencode.ai` and your
-provider's sign-in host to `OCTOMUS_EGRESS_MODEL_HOSTS` in `.env` and run `docker compose up -d`.
-
-```bash
-docker compose run --rm login codex login --device-auth
-# or, for OpenCode routes:
-docker compose run --rm login opencode auth login
-```
-
-From your own computer, forward the dashboard port and open **http://127.0.0.1:4200**:
-
-```bash
-ssh -N -L 4200:127.0.0.1:4200 your-host
-```
-
-Enter the operator token. The service starts paused. [Deployment](deployment.md) covers
-host settings, upgrades and backups; continue with [the first run](#3-first-run-enter-save-check-then-choose).
-
-## Alternative: a dedicated VM without a sandbox
-
-The steps below install Octomus directly on a **dedicated Ubuntu 24.04 VM** that runs
-nothing else, with `--sandbox off`. Runner and verification commands then execute with the
-service user's permissions and are not sandboxed. Do not use your workstation, and keep
-unrelated credentials off the VM. You also need, on the VM:
-- the target repository, cloned to a persistent path writable by the service user;
-- its build and test tools;
-- Git, gh, curl, OpenSSL, Go (per `go.mod`), Node 22.12+ and npm to build Octomus.
-
-### Install the tools and application
-
-As the VM administrator, install Git, gh, curl and OpenSSL. This npm-based Codex
-installation uses Node 22 from [NodeSource](https://github.com/nodesource/distributions)
-and the pinned Codex npm package, version 0.153.4.
-Install the runners you intend to use. The Codex setup below is optional for an
-OpenCode-only installation. For OpenCode, install the pinned
-[1.18.30 release](https://github.com/anomalyco/opencode/releases/tag/v1.18.30)
-for your platform. Octomus's binary itself needs no build toolchain at runtime.
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git gh curl ca-certificates openssl
-curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/octomus-node22.sh
-sudo bash /tmp/octomus-node22.sh
-sudo apt-get install -y nodejs
-sudo npm install -g @openai/codex@0.153.4
-```
-
-Add the Go toolchain (per `go.mod`; from [go.dev](https://go.dev/dl/) or your
-distribution), then build the dashboard before the binary.
-Python is only needed for repository tests.
-
-```bash
-git clone https://github.com/tyk-swe/octomus-agent.git
-cd octomus-agent
-npm ci --prefix web
-make build
-sudo install -m 755 bin/octomus-agent /usr/local/bin/octomus-agent
-```
-
-**Release installer:** binary releases are published; the installer supports the
-following command:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tyk-swe/octomus-agent/main/install.sh | sh
-```
-
-The installer verifies the downloaded archive against release SHA-256 checksums
-and installs to `/usr/local/bin`. To select a version, download the script and run
-`sh install.sh v0.2.0`, or set `OCTOMUS_VERSION=v0.2.0` for the piped `sh`; an
-alternate writable absolute destination is supported through `INSTALL_DIR`.
-Checksums detect corruption; they are not independent signatures against a
-compromised release account.
-
-The executable is statically linked (`CGO_ENABLED=0`) and embeds the dashboard,
-so installation is a single administrator-owned file with no runtime toolchain.
-Use a fresh data directory, or state from v0.1.0 or later: the service upgrades an
-older release's database at startup after writing a backup beside it; see
-[Backup and upgrade](deployment.md#backup-and-upgrade). Preserve a separate backup of any
-older state.
-
-### Connect as the service user
-
-Create a dedicated account without sudo access and a persistent checkout location:
-
-```bash
-sudo useradd --create-home --home-dir /var/lib/octomus --shell /bin/bash octomus
-sudo install -d -o octomus -g octomus /srv/projects
-sudo -iu octomus
-codex login
-gh auth login
-gh auth setup-git
-```
-
-If using OpenCode, run `opencode auth login` as this same service user and configure
-its providers in the user-level OpenCode configuration. Skip `codex login` when no
-Codex routes are selected. Octomus reads those provider settings and credentials;
-it does not manage provider logins in the dashboard.
-
-Use the dedicated identity and repository-restricted authentication arrangement,
-not an unrelated personal credential. As this same user, replace the sample
-repository identity and clone it. Configure Git identity if your project requires it.
-
-```bash
-git clone https://github.com/OWNER/REPOSITORY.git /srv/projects/project
-export OCTOMUS_TOKEN="$(openssl rand -hex 32)"
-printf '%s\n' "$OCTOMUS_TOKEN"
-```
-
-Save this token in your password manager; it grants operator access. Confirm paid
-overage is disabled for subscription-only operation. Then start the service:
-
-```bash
-octomus-agent --data-dir /var/lib/octomus/.octomus --sandbox off
-```
-
-From your own computer, forward the dashboard port (replace `your-vm` with the
-VM's SSH destination):
-
-```bash
-ssh -N -L 4200:127.0.0.1:4200 your-vm
-```
-
-Open **http://127.0.0.1:4200**, enter your saved token, and keep the service running
-in the VM terminal. It starts paused. Refreshing the page requires the token again.
-
-## 3. First run: enter, save, check, then choose
+## 2. First run: enter, save, check, then choose
 
 Open **Configuration**. The **Setup checklist** at the top tracks seven steps (including
 the sandbox and an optional clean-baseline check) and labels

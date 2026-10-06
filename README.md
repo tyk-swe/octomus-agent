@@ -65,11 +65,6 @@ moves: enter the configuration, save it, check the connection (which runs the sa
 self-test), then choose **Run an audit** or **Run once**. Start with an audit to inspect
 recommendations without queuing code changes. A later execution run plans afresh.
 
-The service creates its state database in a fresh data directory and upgrades state from
-v0.1.0 or later at startup, after writing a backup beside it; see
-[Backup and upgrade](docs/deployment.md#backup-and-upgrade). An unsandboxed install on a
-dedicated VM remains available with `--sandbox off`.
-
 VM and provider costs depend on your setup. Session admissions are operating limits,
 not dollar caps; validated per-task and daily cost figures are not available yet.
 
@@ -79,18 +74,17 @@ not dollar caps; validated per-task and daily cost figures are not available yet
 
 | Document | What it covers |
 | --- | --- |
-| [Documentation overview](docs/index.md) | Find your path through the guides |
-| [Getting started](docs/getting-started.md) | Prerequisites, install, service user, first run |
+| [Getting started](docs/getting-started.md) | Prerequisites and the first run |
 | [Configuration](docs/configuration.md) | Repository, routes, checks, and operating limits |
 | [Architecture](docs/architecture.md) | Cycle, task and review contracts; storage and trust |
 | [Model routing](docs/model-routing.md) | Per-role Codex and OpenCode selection |
 | [Configuration example](docs/configuration.example.json) | Every saved policy field with its shipped default |
 | [Sandbox](docs/sandbox.md) | What isolation guarantees, how to prove it, what it does not cover |
-| [Deployment](docs/deployment.md) | Docker Compose, the unsandboxed VM, controls, limits, backup, HTTP API |
+| [Deployment](docs/deployment.md) | Docker Compose, the installer and unsandboxed VM, controls, limits, backup, HTTP API |
 | [Run evidence](docs/run-evidence.md) | What `RunEvidenceV1` reports, and what it never claims |
 | [Cost](docs/cost.md) | What a session admission is, and what is not measured |
 | [Threat model](docs/threat-model.md) | Trust boundaries, prompt injection, redaction limits |
-| [Releasing](docs/releasing.md) | Packaging and release workflow |
+| [Releasing](https://github.com/tyk-swe/octomus-agent/blob/main/docs/releasing.md) | Packaging and release workflow |
 
 ## Security
 
@@ -105,7 +99,8 @@ privately to **mail@mail.tyk.sh** using [SECURITY.md](SECURITY.md).
 ## Contributing
 
 Octomus runs on Codex or OpenCode, single-operator and single-repository. See
-[contributing](CONTRIBUTING.md), the [changelog](CHANGELOG.md) and the
-[configuration example](docs/configuration.example.json).
+[contributing](https://github.com/tyk-swe/octomus-agent/blob/main/CONTRIBUTING.md), the [changelog](CHANGELOG.md) and the
+[configuration example](docs/configuration.example.json). For questions and reproducible
+bugs, use [GitHub issues](https://github.com/tyk-swe/octomus-agent/issues).
 
 License: [Apache-2.0](LICENSE).

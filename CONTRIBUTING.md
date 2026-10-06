@@ -30,20 +30,11 @@ See [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md) for the code
 
 ## Meaningful evidence
 
-`make test` runs the Go suite under the race detector, then three checks against the
-freshly built binary: `tests/distribution.py` (the executable as shipped; CI also
-runs it on each extracted release archive), `tests/e2e.py` (the service scenarios against
-deterministic Codex, OpenCode and GitHub peers, without live model calls or network
-writes) and `npm test --prefix web` (the dashboard browser tests). AGENTS.md lists the
-suites, the fixtures and the shared test helpers.
-
-Focused targets run one stage each: `make test-go`, `make test-go-race`,
-`make test-integration` (the distribution smoke, then the scenarios; with `SCENARIOS`, for example
-`make test-integration SCENARIOS="chain pr-outcome"`) and `make test-browser` (with
-`PLAYWRIGHT_ARGS` such as `--project=desktop`). `tests/e2e.py` also takes scenario
-names directly and lists them on an unknown name; `OCTOMUS_TEST_JOBS` bounds its
-workers and `OCTOMUS_TEST_BINARY` points it at another executable. The Go suites run
-with `-shuffle=on`, and a failure prints the seed that reproduces its order.
+[Build and verify](AGENTS.md#build-and-verify) in AGENTS.md lists what `make test` runs,
+the one-stage targets with their `SCENARIOS` and `PLAYWRIGHT_ARGS` filters, and the suites,
+fixtures and shared test helpers. The fixture tests use deterministic Codex, OpenCode and
+GitHub peers, without live model calls or network writes. `OCTOMUS_TEST_JOBS` bounds the
+scenario workers.
 
 The Go and Python fixtures isolate inherited Git configuration and
 repository-locating environment variables, so personal signing settings, hooks and
@@ -74,8 +65,7 @@ checks; their screenshots are not live operating evidence. To refresh
 `npm run launch:assets --prefix web` and inspect the image before committing it.
 
 Run relevant behavior tests while editing and full `make check`/`make test` before
-delivery. `make audit` runs govulncheck and `npm audit` for dependency advisories; it
-needs module download access. CI retains browser failure traces.
+delivery. CI retains browser failure traces.
 
 ## A good pull request
 

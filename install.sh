@@ -62,7 +62,7 @@ pending=
 printf '\nInstalled %s to %s/octomus-agent\n' "$version" "$dest"
 cat <<'NEXT'
 Next, as the service user on your dedicated VM (prerequisites and full steps:
-https://github.com/tyk-swe/octomus-agent/blob/main/docs/getting-started.md):
+https://github.com/tyk-swe/octomus-agent/blob/main/docs/deployment.md#dedicated-vm-without-a-sandbox):
   codex login                 # or, for OpenCode routes: opencode auth login
   gh auth login && gh auth setup-git
   export OCTOMUS_TOKEN="$(openssl rand -hex 32)"
