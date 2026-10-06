@@ -24,7 +24,7 @@ BINARY = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(PROJECT / 'bin/octomus-a
 TOKEN = 'fixture-operator-token-with-at-least-32-characters'
 CODEX_ROUTE = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
 FEATURE_CHECK = 'for file in feature*.txt; do test "$(cat "$file")" = fixed || exit 1; done'
-HOLDS = ['audit-hold']
+HOLDS = ['audit-hold', 'publication-hold']
 LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -110,8 +110,9 @@ def run_selected(suite, scenarios, names, *, workers=None, output=None):
 
     def execute(name, run):
         print(f'RUN {suite} {name}', flush=True, file=output)
+        started = time.monotonic()
         run()
-        print(f'PASS {suite} {name}', flush=True, file=output)
+        print(f'PASS {suite} {name} ({time.monotonic() - started:.1f}s)', flush=True, file=output)
 
     if workers == 1 or len(selected) <= 1:
         for name, run in selected:

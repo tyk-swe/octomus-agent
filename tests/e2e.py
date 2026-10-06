@@ -146,10 +146,11 @@ def normal(executor='codex', **roles):
 
 def interrupt_publication():
     """A crash right after the PR is created recovers to a published task without a duplicate PR."""
-    with fixture_service('octomus-interrupt-', lambda root: (root / 'interrupt-publication').touch()) as (root, service):
+    with fixture_service('octomus-interrupt-', lambda root: (root / 'publication-hold').touch()) as (root, service):
         service.configure(routes())
         service.wait(lambda: (root / 'publication-created').exists(), 'publication side effect')
         service.stop(crash=True)
+        (root / 'publication-hold').unlink()
         service.start()
         task = service.wait(service.terminal_task, 'recovered publication')
         assert task['status'] == 'published', task['error']
@@ -573,18 +574,19 @@ def upgrade():
         assert list((root / '.octomus').glob('state.db.v*-backup-*')) == backups, 'reopen created another backup'
 
 
+# Longest first, so the workers finish together instead of waiting on a late long scenario.
 SCENARIOS = [
-    ('normal', normal),
-    ('normal-opencode', functools.partial(normal, 'opencode')),
-    ('normal-mixed', functools.partial(normal, 'opencode', planning='codex', reviewer='codex')),
-    ('interrupt-publication', interrupt_publication),
-    ('audit', audit),
-    ('chain', chain),
-    ('pr-outcome', pr_outcome),
-    ('baseline', baseline),
     ('notify', notify),
+    ('chain', chain),
+    ('interrupt-publication', interrupt_publication),
+    ('normal-mixed', functools.partial(normal, 'opencode', planning='codex', reviewer='codex')),
+    ('normal-opencode', functools.partial(normal, 'opencode')),
+    ('normal', normal),
+    ('pr-outcome', pr_outcome),
     ('pr-context', pr_context),
+    ('audit', audit),
     ('upgrade', upgrade),
+    ('baseline', baseline),
 ]
 
 if __name__ == '__main__':

@@ -65,9 +65,10 @@ elif args[:2] == ['pr', 'create']:
     save()
     with (root / 'publications.jsonl').open('a') as log:
         log.write(json.dumps({'action': 'create', 'number': number}) + '\n')
-    if (root / 'interrupt-publication').exists():
+    if (root / 'publication-hold').exists():
         (root / 'publication-created').touch()
-        time.sleep(3)
+        while (root / 'publication-hold').exists():
+            time.sleep(0.05)
     print(pr['html_url'])
 elif args[:2] == ['pr', 'comment']:
     number = int(args[2])
