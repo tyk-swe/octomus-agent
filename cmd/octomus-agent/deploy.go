@@ -49,6 +49,9 @@ func prepareDeployment(ctx context.Context, mode sandbox.Mode, data string, env 
 	deployment.Repository, deployment.GitHubRepo = checkout, repo
 	if _, err := os.Stat(filepath.Join(checkout, ".git")); err == nil {
 		if err := checkoutValid(ctx, checkout, repo); err != nil {
+			if errors.As(err, new(gitops.AuthError)) {
+				return engine.Deployment{}, fmt.Errorf("GitHub authentication failed for %s; check OCTOMUS_GITHUB_TOKEN_FILE and network access: %w", repo, err)
+			}
 			return engine.Deployment{}, fmt.Errorf("The trusted checkout is not %s; remove %s and restart: %w", repo, checkout, err)
 		}
 		return deployment, nil

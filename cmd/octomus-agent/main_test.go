@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +15,13 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
+
+func TestMain(m *testing.M) {
+	if err := testutil.IsolateGitEnvironment(); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
 
 func TestCurrentCLIContract(t *testing.T) {
 	env := func(string) (string, bool) { return "", false }
@@ -123,6 +131,70 @@ func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 	}
 	if _, err := os.Stat(empty); !os.IsNotExist(err) {
 		t.Fatal("read-only export created state", err)
+	}
+}
+
+// A reused trusted checkout is called foreign, with removal as the fix, only when its origin is another repository:
+// a gh sign-in failure on restart (an expired token, GitHub unreachable) is not fixed by deleting the checkout.
+func TestDockerStartupBlamesTheCheckoutOnlyForAForeignOrigin(t *testing.T) {
+	cleanup, err := testutil.InstallFixtureCommands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	env := func(key string) (string, bool) {
+		switch key {
+		case "OCTOMUS_GITHUB_REPO":
+			return "owner/repo", true
+		case githubTokenEnv:
+			return "expired-fixture-token", true
+		}
+		return "", false
+	}
+	// restart starts the Docker service over a checkout an earlier start cloned, with gh reporting the token invalid.
+	restart := func(origin string) (int, string, string) {
+		root := t.TempDir()
+		if err := testutil.MarkFixtureRoot(root); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(root, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gh := "#!/bin/sh\necho 'github.com: The token in GH_TOKEN is invalid.' >&2\nexit 1\n"
+		if err := testutil.WriteExecutable(filepath.Join(root, "bin", "gh"), []byte(gh)); err != nil {
+			t.Fatal(err)
+		}
+		data := filepath.Join(root, "data")
+		checkout := filepath.Join(data, "checkout")
+		for _, args := range [][]string{{"init", "-q", checkout}, {"-C", checkout, "remote", "add", "origin", origin}} {
+			if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				t.Fatal(args, err, string(output))
+			}
+		}
+		// Without .git, startup would take the first-start path and clone from github.com.
+		if _, err := os.Stat(filepath.Join(checkout, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		var out, errOut bytes.Buffer
+		code := run([]string{"--data-dir", data, "--sandbox", "docker"}, env, &out, &errOut)
+		canonical, err := canonicalDataDir(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return code, errOut.String(), filepath.Join(canonical, "checkout")
+	}
+
+	code, stderr, checkout := restart("https://github.com/other/repo.git")
+	if code != 1 || !strings.Contains(stderr, "is not owner/repo; remove "+checkout) {
+		t.Fatalf("foreign origin: code=%d stderr=%q; want the remove-and-restart refusal", code, stderr)
+	}
+	code, stderr, checkout = restart("https://github.com/owner/repo.git")
+	if code != 1 || !strings.Contains(stderr, "GitHub authentication failed for owner/repo") ||
+		!strings.Contains(stderr, "The token in GH_TOKEN is invalid") {
+		t.Fatalf("gh signed out: code=%d stderr=%q; want a GitHub authentication refusal naming gh's failure", code, stderr)
+	}
+	if strings.Contains(stderr, "is not owner/repo") || strings.Contains(stderr, "remove "+checkout) {
+		t.Fatalf("gh signed out over a checkout whose origin is owner/repo: stderr=%q; removing the checkout fixes nothing", stderr)
 	}
 }
 
