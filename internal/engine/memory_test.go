@@ -302,7 +302,7 @@ func TestPlanRejectsDecisionOutsidePromptWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cycle := waitCycle(t, f.state, id)
+	cycle := waitCycle(t, app, id)
 	if cycle.Status != model.CycleFailed || cycle.Error == nil || !strings.Contains(*cycle.Error, `decision "old-rejection"`) {
 		t.Fatalf("planning admitted current rejected work outside the prompt window: %+v", cycle)
 	}
