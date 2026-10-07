@@ -52,8 +52,8 @@ func (a *App) claimInventory(cfg config.Config, now time.Time) (*model.OpenPRInv
 	if observation.admissionConsumed {
 		return nil, "The pull request observation has already authorized an admission batch"
 	}
-	observedAt, err := time.Parse(time.RFC3339Nano, observation.inventory.ObservedAt)
-	if err != nil || now.Sub(observedAt) > prAdmissionLifetime {
+	// The window opens when the observation lands: ObservedAt precedes the owned-PR reads, which grow with the backlog.
+	if now.Sub(observation.fetchedAt) > prAdmissionLifetime {
 		return nil, "The pull request observation is stale"
 	}
 	observation.admissionConsumed = true
