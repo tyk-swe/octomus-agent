@@ -10,6 +10,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -171,12 +172,33 @@ func taskHistoryCounts(c *sql.Conn, counts map[string]int64) error {
 	return rows.Err()
 }
 
+// proposalTextLimit bounds the problem and reason of each listed proposal; ProposalDetail returns them whole.
+const proposalTextLimit = 2000
+
+// boundProposalText scrubs a listed proposal's complete problem and reason before cutting them to proposalTextLimit
+// characters, so the cut cannot leave part of a secret in a shape redaction no longer matches.
+func boundProposalText(item json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(item, &fields); err != nil {
+		return nil, err
+	}
+	for _, name := range []string{"problem", "reason"} {
+		var text *string
+		if json.Unmarshal(fields[name], &text) != nil || text == nil {
+			continue
+		}
+		bounded := []rune(redact.Secrets(*text))
+		fields[name], _ = json.Marshal(string(bounded[:min(len(bounded), proposalTextLimit)]))
+	}
+	return json.Marshal(fields)
+}
+
 func (s *Store) ProposalPage(q HistoryQuery) (Page, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	limit := q.limit()
 	rows, err := s.conn.QueryContext(background,
-		"SELECT json_set(json_remove(data,'$.prompt','$.evidence'),'$.content_revision',content_revision,'$.cycle',number,'$.cycle_id',cycle_id,'$.mode',mode,'$.prompt','','$.evidence',json('[]'),'$.problem',substr(json_extract(data,'$.problem'),1,2000),'$.reason',substr(json_extract(data,'$.reason'),1,2000)),seq,proposal_id FROM proposal_records WHERE seq<?1 AND (?2='' OR decision=?2) AND (?3='' OR cycle_id=?3) AND (?4='' OR instr(lower(title || ' ' || json_extract(data,'$.problem')),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
+		"SELECT json_set(json_remove(data,'$.prompt','$.evidence'),'$.content_revision',content_revision,'$.cycle',number,'$.cycle_id',cycle_id,'$.mode',mode,'$.prompt','','$.evidence',json('[]')),seq,proposal_id FROM proposal_records WHERE seq<?1 AND (?2='' OR decision=?2) AND (?3='' OR cycle_id=?3) AND (?4='' OR instr(lower(title || ' ' || json_extract(data,'$.problem')),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
 		q.before(), filterAll(q.Status), filterAll(q.Cycle), orEmpty(q.Q), int64(limit+1))
 	if err != nil {
 		return Page{}, err
@@ -186,6 +208,11 @@ func (s *Store) ProposalPage(q HistoryQuery) (Page, error) {
 		return Page{}, err
 	}
 	result := decodePage(collected, limit)
+	for i, item := range result.Items {
+		if result.Items[i], err = boundProposalText(item); err != nil {
+			return Page{}, err
+		}
+	}
 	counts, err := s.conn.QueryContext(background, "SELECT decision,count(*) FROM proposal_records WHERE (?1='' OR cycle_id=?1) GROUP BY decision", filterAll(q.Cycle))
 	if err != nil {
 		return Page{}, err
