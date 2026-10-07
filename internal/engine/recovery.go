@@ -44,10 +44,10 @@ func (a *App) Recover() error {
 	if err != nil {
 		return err
 	}
+	// Active tasks and unpublished output checkpoints keep their new-PR slot; a queued task
+	// whose blocked attempt released its reservation waits for admission again.
 	for _, task := range candidates {
-		initializedQueued := task.Status == model.StatusQueued && workspace.Initialized(task)
-		needsReservation := task.Status.Active() || initializedQueued || (task.Status != model.StatusPublished && task.OutputCommit != nil)
-		if task.Proposal.Target == task.Config.DefaultBranch && task.Status != model.StatusCancelled && needsReservation {
+		if task.Proposal.Target == task.Config.DefaultBranch && task.Status != model.StatusCancelled {
 			if err := a.Store.SeedPRReservation(task); err != nil {
 				return err
 			}
