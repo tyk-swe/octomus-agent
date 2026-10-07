@@ -494,85 +494,72 @@ func taskEvidence(task model.Task) TaskEvidence {
 	}
 }
 
+func proposalEvidence(proposal model.Proposal, linked []model.Task, batches []batch, execution bool) ProposalEvidence {
+	gaps := []string{}
+	if proposal.Decision == model.DecisionAccepted && len(linked) == 0 && execution {
+		gaps = append(gaps, "The proposal was accepted but no task is linked in this cycle; acceptance is not execution.")
+	}
+	if len(linked) > 1 {
+		gaps = append(gaps, fmt.Sprintf("%d tasks match this proposal in this cycle; every match is preserved and none is selected.", len(linked)))
+	}
+	if proposal.Decision != model.DecisionAccepted && len(linked) > 0 {
+		gaps = append(gaps, fmt.Sprintf("The proposal is recorded as %s yet %d task(s) are linked; the saved records are inconsistent.", proposal.Decision, len(linked)))
+	}
+	slots := model.ReviewerSlots()
+	verdicts := make([]ReviewerVerdict, 0, len(slots))
+	for slot := range slots {
+		verdicts = append(verdicts, verdict(batches, slot, proposal.ID))
+	}
+	linkedTasks := make([]TaskEvidence, 0, len(linked))
+	for _, t := range linked {
+		linkedTasks = append(linkedTasks, taskEvidence(t))
+	}
+	return ProposalEvidence{
+		ID:               proposal.ID,
+		Title:            proposal.Title,
+		Target:           proposal.Target,
+		Tier:             proposal.Tier,
+		Category:         proposal.Category,
+		Problem:          proposal.Problem,
+		Benefit:          proposal.Benefit,
+		Scope:            proposal.Scope,
+		Evidence:         append([]string{}, proposal.Evidence...),
+		FinalDecision:    proposal.Decision,
+		FinalReason:      proposal.Reason,
+		ReviewerVerdicts: verdicts,
+		LinkedTasks:      linkedTasks,
+		Gaps:             gaps,
+	}
+}
+
 func assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 	batches, gaps := normalizeBatches(cycle)
 	execution := cycle.Mode == model.CycleModeExecution
 	decisions := map[string]int{}
+	tasksByProposal := make(map[string][]model.Task, len(cycle.Proposals))
 	for _, p := range cycle.Proposals {
 		decisions[p.Decision]++
+		tasksByProposal[p.ID] = nil
 	}
-	foreign := 0
-	var owned []model.Task
+	foreign, unmatched := 0, 0
 	for _, t := range tasks {
 		if t.CycleID != cycle.ID {
 			foreign++
+		} else if _, known := tasksByProposal[t.Proposal.ID]; !known {
+			unmatched++
 		} else {
-			owned = append(owned, t)
+			tasksByProposal[t.Proposal.ID] = append(tasksByProposal[t.Proposal.ID], t)
 		}
 	}
 	if foreign > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d saved task records name a different cycle and are excluded from this run.", foreign))
 	}
-	unmatched := 0
-	for _, t := range owned {
-		matched := false
-		for _, p := range cycle.Proposals {
-			if p.ID == t.Proposal.ID {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			unmatched++
-		}
-	}
 	if unmatched > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d task records in this cycle have no matching saved proposal identity.", unmatched))
 	}
 	proposals := make([]ProposalEvidence, 0, len(cycle.Proposals))
-	slots := model.ReviewerSlots()
-	for _, proposal := range cycle.Proposals {
-		var linked []model.Task
-		for _, t := range owned {
-			if t.Proposal.ID == proposal.ID {
-				linked = append(linked, t)
-			}
-		}
-		proposalGaps := []string{}
-		if proposal.Decision == model.DecisionAccepted && len(linked) == 0 && execution {
-			proposalGaps = append(proposalGaps, "The proposal was accepted but no task is linked in this cycle; acceptance is not execution.")
-		}
-		if len(linked) > 1 {
-			proposalGaps = append(proposalGaps, fmt.Sprintf("%d tasks match this proposal in this cycle; every match is preserved and none is selected.", len(linked)))
-		}
-		if proposal.Decision != model.DecisionAccepted && len(linked) > 0 {
-			proposalGaps = append(proposalGaps, fmt.Sprintf("The proposal is recorded as %s yet %d task(s) are linked; the saved records are inconsistent.", proposal.Decision, len(linked)))
-		}
-		verdicts := make([]ReviewerVerdict, 0, len(slots))
-		for slot := range slots {
-			verdicts = append(verdicts, verdict(batches, slot, proposal.ID))
-		}
-		linkedTasks := make([]TaskEvidence, 0, len(linked))
-		for _, t := range linked {
-			linkedTasks = append(linkedTasks, taskEvidence(t))
-		}
-		evidence := append([]string{}, proposal.Evidence...)
-		proposals = append(proposals, ProposalEvidence{
-			ID:               proposal.ID,
-			Title:            proposal.Title,
-			Target:           proposal.Target,
-			Tier:             proposal.Tier,
-			Category:         proposal.Category,
-			Problem:          proposal.Problem,
-			Benefit:          proposal.Benefit,
-			Scope:            proposal.Scope,
-			Evidence:         evidence,
-			FinalDecision:    proposal.Decision,
-			FinalReason:      proposal.Reason,
-			ReviewerVerdicts: verdicts,
-			LinkedTasks:      linkedTasks,
-			Gaps:             proposalGaps,
-		})
+	for _, p := range cycle.Proposals {
+		proposals = append(proposals, proposalEvidence(p, tasksByProposal[p.ID], batches, execution))
 	}
 	if cycle.Status == model.CycleRunning {
 		gaps = append(gaps, "Planning is still recorded as running, so this run's evidence is incomplete.")

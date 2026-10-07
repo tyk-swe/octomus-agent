@@ -12,7 +12,7 @@
   import Proposals from '$lib/Proposals.svelte';
   import SearchBox from '$lib/SearchBox.svelte';
   import Settings from '$lib/Settings.svelte';
-  import { planningBlocker, type SetupStatus } from '$lib/setup';
+  import { controlEligibility, type ControlAction, type SetupStatus } from '$lib/setup';
   import TaskDetail from '$lib/TaskDetail.svelte';
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
@@ -105,37 +105,6 @@
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
   let latestCycle = $derived(data?.cycles[0]);
-  type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
-  const planningBlocked = $derived(!!planningBlocker(data?.planning_capacity));
-  // A planning preflight has no cycle yet; the service reports it only through active_cycle_mode.
-  const planningActive = $derived(!!data?.cycle_active || !!data?.active_cycle_mode);
-  const canControl = $derived({
-    resume:
-      !!data?.configured &&
-      !data.recovery_error &&
-      !controlStatePending &&
-      data.active_cycle_mode !== 'audit' &&
-      !data.baseline_active,
-    pause: !!data?.configured && (!!data.recovery_error || data.active_cycle_mode !== 'audit'),
-    cycle:
-      !!data?.configured &&
-      !data.recovery_error &&
-      !controlStatePending &&
-      !planningBlocked &&
-      data.control.paused &&
-      !planningActive &&
-      !data.active_tasks &&
-      !data.baseline_active,
-    audit:
-      !!data?.audit_configured &&
-      !data.recovery_error &&
-      !controlStatePending &&
-      !planningBlocked &&
-      data.control.paused &&
-      !planningActive &&
-      !data.active_tasks &&
-      !data.baseline_active
-  });
   const setupStatus = $derived<SetupStatus | null>(
     data
       ? {
@@ -158,6 +127,7 @@
         }
       : null
   );
+  const canControl = $derived(controlEligibility(setupStatus));
   async function chooseOnOverview(action: 'audit' | 'cycle') {
     await navigate('overview');
     document.getElementById(action === 'audit' ? 'run-audit-control' : 'run-once-control')?.focus();
@@ -721,7 +691,8 @@
               active={view === 'settings'}
               editable={data.control.paused &&
                 !data.active_tasks &&
-                !planningActive &&
+                !data.cycle_active &&
+                !data.active_cycle_mode &&
                 !data.baseline_active}
               status={setupStatus}
               onsaved={configSaved}

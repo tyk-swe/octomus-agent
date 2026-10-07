@@ -42,6 +42,7 @@ export type SetupStatus = {
   control_state_pending?: boolean;
   recovery_error?: string | null;
 };
+export type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
 
 const REPOSITORY_FIELDS = ['repository', 'github_repo', 'default_branch', 'branch_prefix'] as const;
 const filled = (value: unknown) => typeof value === 'string' && value.trim() !== '';
@@ -312,6 +313,31 @@ export function planningBlocker(capacity: PlanningCapacity | null | undefined): 
   }`;
 }
 
+export function controlEligibility(status: SetupStatus | null): Record<ControlAction, boolean> {
+  if (!status) return { resume: false, pause: false, cycle: false, audit: false };
+  // A planning preflight has no cycle yet; the service reports it only through active_cycle_mode.
+  const planningActive = !!status.cycle_active || !!status.active_cycle_mode;
+  const canPlan =
+    !status.recovery_error &&
+    !status.control_state_pending &&
+    !planningBlocker(status.planning_capacity) &&
+    status.paused &&
+    !planningActive &&
+    !status.active_tasks &&
+    !status.baseline_active;
+  return {
+    resume:
+      status.configured &&
+      !status.recovery_error &&
+      !status.control_state_pending &&
+      status.active_cycle_mode !== 'audit' &&
+      !status.baseline_active,
+    pause: status.configured && (!!status.recovery_error || status.active_cycle_mode !== 'audit'),
+    cycle: status.configured && canPlan,
+    audit: status.audit_configured && canPlan
+  };
+}
+
 export function chooseStep(status: SetupStatus | null): SetupStep {
   const contract =
     'An audit plans only: it records decisions and queues nothing, and no later cycle executes its recommendations. Run once drains the existing queue, plans one cycle, finishes accepted tasks and pauses. Continuous operation is a separate, explicit control.';
@@ -337,15 +363,12 @@ export function chooseStep(status: SetupStatus | null): SetupStep {
                 : 'A run-once cycle is in progress.'
               : '';
   const planning = planningBlocker(status.planning_capacity);
-  const actionAvailability = (configured: boolean) =>
-    !configured
-      ? 'saved configuration incomplete'
-      : planning || status.control_state_pending
-        ? 'unavailable'
-        : 'available';
+  const eligible = controlEligibility(status);
+  const actionAvailability = (configured: boolean, action: 'audit' | 'cycle') =>
+    !configured ? 'saved configuration incomplete' : eligible[action] ? 'available' : 'unavailable';
   const availability = blocker
     ? `Unavailable now: ${blocker}`
-    : `Audit: ${actionAvailability(status.audit_configured)}. Run once: ${actionAvailability(status.configured)}${
+    : `Audit: ${actionAvailability(status.audit_configured, 'audit')}. Run once: ${actionAvailability(status.configured, 'cycle')}${
         status.queued && !planning && !status.control_state_pending
           ? `, and ${plural(status.queued, 'queued task')} would be drained first`
           : ''

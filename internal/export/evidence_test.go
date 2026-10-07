@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -294,6 +295,110 @@ func TestCompleteCycleExport(t *testing.T) {
 	}
 	if !containsText(list(value, "limitations"), "Published is not merged") {
 		t.Fatalf("%v", value["limitations"])
+	}
+}
+
+func TestAssembleTaskMatching(t *testing.T) {
+	namedTask := func(id, cycleID, proposalID string) model.Task {
+		task := task(cycleID, proposalID)
+		task.ID = id
+		return task
+	}
+	const missingTask = "The proposal was accepted but no task is linked in this cycle; acceptance is not execution."
+	const multipleTasks = "2 tasks match this proposal in this cycle; every match is preserved and none is selected."
+	const rejectedTask = "The proposal is recorded as rejected yet 1 task(s) are linked; the saved records are inconsistent."
+	for _, tc := range []struct {
+		name         string
+		mode         string
+		proposals    []model.Proposal
+		tasks        []model.Task
+		linked       [][]string
+		proposalGaps [][]string
+		runGaps      []string
+	}{
+		{name: "empty cycle", mode: "execution"},
+		{
+			name: "accepted without execution", mode: "execution",
+			proposals: []model.Proposal{proposal("p1", "accepted")},
+			linked:    [][]string{{}}, proposalGaps: [][]string{{missingTask}},
+		},
+		{
+			name: "audit acceptance queues nothing", mode: "audit",
+			proposals: []model.Proposal{proposal("p1", "accepted")},
+			linked:    [][]string{{}}, proposalGaps: [][]string{{}},
+		},
+		{
+			name: "every match in input order", mode: "execution",
+			proposals: []model.Proposal{proposal("p1", "accepted")},
+			tasks: []model.Task{
+				namedTask("task-z", "cycle-a", "p1"),
+				namedTask("task-a", "cycle-a", "p1"),
+			},
+			linked: [][]string{{"task-z", "task-a"}}, proposalGaps: [][]string{{multipleTasks}},
+		},
+		{
+			name: "foreign tasks excluded before unmatched count", mode: "execution",
+			proposals: []model.Proposal{proposal("p1", "accepted")},
+			tasks: []model.Task{
+				namedTask("foreign-match", "cycle-b", "p1"),
+				namedTask("unmatched", "cycle-a", "unknown"),
+				namedTask("matched", "cycle-a", "p1"),
+				namedTask("foreign-unmatched", "cycle-b", "unknown"),
+			},
+			linked: [][]string{{"matched"}}, proposalGaps: [][]string{{}},
+			runGaps: []string{
+				"2 saved task records name a different cycle and are excluded from this run.",
+				"1 task records in this cycle have no matching saved proposal identity.",
+			},
+		},
+		{
+			name: "tasks without proposals", mode: "execution",
+			tasks:   []model.Task{namedTask("unmatched", "cycle-a", "unknown")},
+			runGaps: []string{"1 task records in this cycle have no matching saved proposal identity."},
+		},
+		{
+			name: "linked rejected proposal", mode: "execution",
+			proposals: []model.Proposal{proposal("p1", "rejected")},
+			tasks:     []model.Task{namedTask("matched", "cycle-a", "p1")},
+			linked:    [][]string{{"matched"}}, proposalGaps: [][]string{{rejectedTask}},
+		},
+		{
+			name: "duplicate proposal identities remain distinct", mode: "execution",
+			proposals: []model.Proposal{
+				proposal("p1", "accepted"), proposal("p2", "deferred"), proposal("p1", "rejected"),
+			},
+			tasks:  []model.Task{namedTask("matched", "cycle-a", "p1")},
+			linked: [][]string{{"matched"}, {}, {"matched"}}, proposalGaps: [][]string{{}, {}, {rejectedTask}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := assemble(cycle("cycle-a", tc.mode, tc.proposals, nil, nil), tc.tasks)
+			if result.Proposals == nil || len(result.Proposals) != len(tc.proposals) {
+				t.Fatalf("proposals = %+v; want %d recorded proposals", result.Proposals, len(tc.proposals))
+			}
+			for i, p := range result.Proposals {
+				if p.ID != tc.proposals[i].ID || p.FinalDecision != tc.proposals[i].Decision {
+					t.Fatalf("proposal %d identity or decision changed: %+v", i, p)
+				}
+				if p.Evidence == nil || p.ReviewerVerdicts == nil || p.LinkedTasks == nil || p.Gaps == nil {
+					t.Fatalf("proposal %d contains a null evidence array: %+v", i, p)
+				}
+				var ids []string
+				for _, task := range p.LinkedTasks {
+					ids = append(ids, task.ID)
+				}
+				if !slices.Equal(ids, tc.linked[i]) || !slices.Equal(p.Gaps, tc.proposalGaps[i]) {
+					t.Fatalf("proposal %d links/gaps = %v/%v; want %v/%v", i, ids, p.Gaps, tc.linked[i], tc.proposalGaps[i])
+				}
+			}
+			wantGaps := slices.Concat([]string{
+				"Reviewer adversary-a has neither a completed session nor a saved assessment batch.",
+				"Reviewer adversary-b has neither a completed session nor a saved assessment batch.",
+			}, tc.runGaps)
+			if !slices.Equal(result.Gaps, wantGaps) {
+				t.Fatalf("run gaps = %v; want %v", result.Gaps, wantGaps)
+			}
+		})
 	}
 }
 
