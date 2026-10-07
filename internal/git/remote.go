@@ -17,6 +17,13 @@ func ValidateRemote(ctx context.Context, c config.Config) error {
 	return err
 }
 
+// AuthError is a remote validation failure after the origin matched: gh is not signed in to GitHub or cannot reach it.
+// It reads as gh's own error; the checkout itself is not at fault.
+type AuthError struct{ Err error }
+
+func (e AuthError) Error() string { return e.Err.Error() }
+func (e AuthError) Unwrap() error { return e.Err }
+
 // validatedOrigin checks that the trusted checkout's origin is the configured GitHub repository and that gh is
 // signed in, and returns that origin URL: publication pushes to it by name, never to a work tree's own remote.
 func validatedOrigin(ctx context.Context, c config.Config) (string, error) {
@@ -41,7 +48,7 @@ func validatedOrigin(ctx context.Context, c config.Config) (string, error) {
 		return "", errors.New("Origin does not match configured GitHub repository")
 	}
 	if _, err := gh(ctx, c, []string{"auth", "status", "--hostname", "github.com"}); err != nil {
-		return "", err
+		return "", AuthError{err}
 	}
 	return remote, nil
 }
