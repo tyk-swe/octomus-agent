@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
 func refreshLive(app *App) error {
@@ -228,5 +231,73 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 	third, err := store.Get[model.Task](f.state, "task", "third")
 	if err != nil || third == nil || third.Status != model.StatusQueued || len(started) != 2 {
 		t.Fatalf("full inventory admitted a new PR: %+v, %v; started=%d", third, err, len(started))
+	}
+}
+
+// A retried task whose blocked attempt released its reservation is re-admitted against capacity, restart or not.
+func TestRestartKeepsRetriedTaskBehindCapacity(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.configure(t, func(cfg *config.Config) {
+		cfg.MaxOpenPRs = 1
+		cfg.MaxRepairRounds = 1
+		cfg.VerificationCommands = []string{"grep -q fixed feature.txt"}
+	})
+	routes, script := f.routes, f.script
+	script.Queue(routes.Executor, runnertest.Reply{Answer: "Drafted feature.txt", Effect: writeFile("feature.txt", "draft\n")})
+	script.Answer(routes.Reviewer, cleanReview("Draft"), cleanReview("Second draft"))
+	script.Queue(routes.Repair, runnertest.Reply{Answer: "Second draft", Effect: writeFile("feature.txt", "second draft\n")})
+	task := executionTask(t, f, f.cfg.DefaultBranch)
+	putTask(t, f, task)
+	first := f.newApp(t)
+	blocked := driveTask(t, f, first, task.ID)
+	if !blockedAs(blocked, model.BlockedVerificationFailed) || blocked.OutputCommit != nil || !workspace.Initialized(blocked) {
+		t.Fatalf("first attempt = %+v; want an initialized task blocked before its checkpoint", blocked)
+	}
+	if reserved, err := f.state.HasPRReservation(task.ID); err != nil || reserved {
+		t.Fatalf("blocked attempt kept its reservation: %t, %v", reserved, err)
+	}
+
+	// Another owned PR now fills max_open_prs=1.
+	branch := f.cfg.BranchPrefix + "other"
+	git(t, f.root, "--git-dir", filepath.Join(f.root, "remote.git"), "branch", branch, "main")
+	pr := `[{"number":7,"title":"Other owned work","body":"<!-- octomus:task:other -->","head":{"ref":"` + branch + `","sha":"","repo":{"full_name":"fixture/project"}},"base":{"ref":"main","repo":{"full_name":"fixture/project"}},"html_url":"https://github.com/fixture/project/pull/7","state":"open","merged_at":null,"additions":1,"deletions":0,"created_at":"2026-09-07T00:00:00Z"}]`
+	if err := os.WriteFile(filepath.Join(f.root, "prs.json"), []byte(pr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.TaskAction(task.ID, "retry"); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := first.tick(); err != nil {
+			t.Fatal(err)
+		}
+		first.wg.Wait()
+	}
+	capacity, err := first.prCapacity(f.cfg)
+	if saved := loadTask(t, f.state, task.ID); err != nil || saved.Status != model.StatusQueued || capacity.Status != "full" {
+		t.Fatalf("before restart: task %s, capacity %+v, %v; want it queued at full capacity", saved.Status, capacity, err)
+	}
+	first.Shutdown()
+
+	// After a restart the retried attempt's repair would complete it if it were admitted.
+	script.Answer(routes.Reviewer, cleanReview("Still a draft"), cleanReview("Fixed"))
+	script.Queue(routes.Repair, runnertest.Reply{Answer: "Fixed", Effect: writeFile("feature.txt", "fixed output\n")})
+	restarted := f.pausedApp(t)
+	if err := restarted.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if reserved, err := f.state.HasPRReservation(task.ID); err != nil || reserved {
+		t.Errorf("recovery reserved a new-PR slot for the retried task without admission: %t, %v", reserved, err)
+	}
+	for range 3 {
+		if err := restarted.tick(); err != nil {
+			t.Fatal(err)
+		}
+		restarted.wg.Wait()
+	}
+	saved := loadTask(t, f.state, task.ID)
+	if prs := prsJSON(t, f); saved.Status != model.StatusQueued || len(prs) != 1 {
+		t.Fatalf("restart admitted the retried task past max_open_prs=1: status=%s pr=%s open PRs=%d", saved.Status, optionalText(saved.PRURL), len(prs))
 	}
 }

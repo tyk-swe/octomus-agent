@@ -113,7 +113,6 @@ func (s *Store) ReservableTasks() ([]model.Task, error) {
 	return listRecords[model.Task](s, fmt.Sprintf(`SELECT r.data FROM `+fromMeta+`
                 WHERE m.kind='task' AND (
                     m.status IN (%s)
-                    OR (m.status='queued' AND json_extract(r.data,'$.execution_session') IS NOT NULL)
                     OR (m.status!='published' AND json_extract(r.data,'$.output_commit') IS NOT NULL)
                 )`, statusList(model.ActiveStatuses())))
 }
