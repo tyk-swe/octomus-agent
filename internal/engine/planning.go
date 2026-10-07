@@ -138,7 +138,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if err := validateProposals(cfg, proposals, *cycle.Grounding, history); err != nil {
 		return err
 	}
-	if err := validateDecisionMemory(proposals, memory); err != nil {
+	if err := a.enforceDecisionMemory(ctx, cfg, *cycle.Grounding, proposals, memory.requests); err != nil {
 		return err
 	}
 	if cycle.Mode == model.CycleModeExecution {

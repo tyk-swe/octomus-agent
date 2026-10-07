@@ -168,7 +168,7 @@ type outcome struct {
 func turnIn(client Adapter, session string, route config.Route, cwd, prompt string, schema schemas.Schema) chan outcome {
 	ch := make(chan outcome, 1)
 	go func() {
-		answer, err := client.Turn(session, route, cwd, prompt, schema)
+		answer, err := client.Turn(session, route, cwd, prompt, schema, nil)
 		ch <- outcome{answer, err}
 	}()
 	return ch

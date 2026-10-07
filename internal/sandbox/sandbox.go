@@ -39,7 +39,8 @@ type Spec struct {
 	// FreshHome gives a verification sandbox an empty home: set on the first command of each verification run.
 	FreshHome bool
 	// Timeout is a hard limit in seconds, beyond the caller's own graceful one. The Docker backend's broker enforces it,
-	// capped at and defaulting (zero) to its maximum; the host backend sets no limit beyond the caller's own.
+	// defaulting (zero) to its maximum and refusing larger requests. Internal probes may be capped to the maximum;
+	// the host backend sets no limit beyond the caller's own.
 	Timeout uint64
 	// Probe names the wire.KindProbe check to run.
 	Probe string
@@ -146,8 +147,8 @@ func EvidenceOf(child Child) *model.SandboxRecord {
 	return nil
 }
 
-// verifyGrace lets a verification command's own timeout and graceful termination act before the backend's hard limit.
-const verifyGrace = 60
+// VerificationGraceSeconds lets a command's own timeout and graceful termination act before the backend's hard limit.
+const VerificationGraceSeconds = 60
 
 // Verify starts one verification command in the backend's verify sandbox and bounds it like any captured command.
 // fresh starts the verification run's home empty.
@@ -155,7 +156,10 @@ func Verify(ctx context.Context, backend Backend, dir, command string, seconds u
 	if ctx.Err() != nil {
 		return nil, nil, process.ErrCancelled
 	}
-	child, err := backend.Start(ctx, Spec{Kind: wire.KindVerify, Dir: dir, Command: command, FreshHome: fresh, Timeout: seconds + verifyGrace})
+	if seconds > ^uint64(0)-VerificationGraceSeconds {
+		return nil, nil, errors.New("Verification timeout exceeds the supported range")
+	}
+	child, err := backend.Start(ctx, Spec{Kind: wire.KindVerify, Dir: dir, Command: command, FreshHome: fresh, Timeout: seconds + VerificationGraceSeconds})
 	if err != nil {
 		return nil, nil, err
 	}

@@ -1,0 +1,1 @@
+CREATE INDEX decision_identity ON records(json_extract(data,'$.repository') COLLATE NOCASE,json_extract(data,'$.target'),json_extract(data,'$.problem_key'),json_extract(data,'$.cycle_id'),json_extract(data,'$.decision')) WHERE kind='decision';

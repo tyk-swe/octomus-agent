@@ -207,17 +207,18 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 	return view, nil
 }
 
-func (a *App) Doctor(cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
-	if err := a.admitDiagnostic(); err != nil {
+func (a *App) Doctor(ctx context.Context, cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
+	ctx, done, err := a.beginDiagnostic(ctx)
+	if err != nil {
 		return nil, nil, err
 	}
-	defer a.wg.Done()
+	defer done()
 	// The containment self-test needs no configuration, so it runs first: a broken sandbox is reported even when the
 	// configuration or repository check fails too.
 	errs := []string{}
 	sandboxResult := map[string]any{"mode": a.sandbox.Mode().String()}
 	if a.sandbox.Mode() == sandbox.ModeDocker {
-		selfTest, err := a.SelfTest(a.ctx)
+		selfTest, err := a.SelfTest(ctx)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -241,7 +242,10 @@ func (a *App) Doctor(cfg config.Config, mode model.CycleMode) (map[string]any, [
 			return nil, nil, withSelfTest(err)
 		}
 	}
-	if err := gitops.ValidateRemote(a.ctx, cfg); err != nil {
+	if err := a.checkSandboxTimeouts(ctx, cfg); err != nil {
+		return nil, nil, withSelfTest(err)
+	}
+	if err := gitops.ValidateRemote(ctx, cfg); err != nil {
 		return nil, nil, withSelfTest(err)
 	}
 	routes := cfg.RoutesFor(mode == model.CycleModeAudit)
@@ -258,7 +262,10 @@ func (a *App) Doctor(cfg config.Config, mode model.CycleMode) (map[string]any, [
 	models := []runner.Model{}
 	warnings := []string{}
 	for _, backend := range backends {
-		checkErr := a.withScratchRunner(backend, cfg, func(client runner.Adapter, scratch string) error {
+		if err := ctx.Err(); err != nil {
+			return nil, warnings, err
+		}
+		checkErr := a.withScratchRunner(ctx, backend, cfg, func(client runner.Adapter, scratch string) error {
 			diagnostic, err := client.Diagnose(scratch)
 			if err != nil {
 				return err
@@ -286,6 +293,9 @@ func (a *App) Doctor(cfg config.Config, mode model.CycleMode) (map[string]any, [
 			errs = append(errs, backend.Display()+": "+checkErr.Error())
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, warnings, err
+	}
 	if len(errs) > 0 {
 		return nil, warnings, errors.New(strings.Join(errs, "; "))
 	}
@@ -311,11 +321,12 @@ func (a *App) Doctor(cfg config.Config, mode model.CycleMode) (map[string]any, [
 	return result, warnings, nil
 }
 
-func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Model, error) {
-	if err := a.admitDiagnostic(); err != nil {
+func (a *App) ModelCatalog(ctx context.Context, backend config.Backend, binary string) ([]runner.Model, error) {
+	ctx, done, err := a.beginDiagnostic(ctx)
+	if err != nil {
 		return nil, err
 	}
-	defer a.wg.Done()
+	defer done()
 	if err := config.ValidateBinary(binary); err != nil {
 		return nil, err
 	}
@@ -332,7 +343,7 @@ func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Mode
 		return nil, errors.New("Invalid backend")
 	}
 	var catalog []runner.Model
-	err = a.withScratchRunner(backend, cfg, func(client runner.Adapter, scratch string) error {
+	err = a.withScratchRunner(ctx, backend, cfg, func(client runner.Adapter, scratch string) error {
 		var err error
 		catalog, err = client.Models(scratch)
 		return err
@@ -342,22 +353,51 @@ func (a *App) ModelCatalog(backend config.Backend, binary string) ([]runner.Mode
 
 // withScratchRunner connects one runner from an empty owned root, hands it to fn and joins its cleanup, so a
 // sandboxed runner started for a diagnostic can see no repository, workspace or state.
-func (a *App) withScratchRunner(backend config.Backend, cfg config.Config, fn func(client runner.Adapter, scratch string) error) (err error) {
+func (a *App) withScratchRunner(ctx context.Context, backend config.Backend, cfg config.Config, fn func(client runner.Adapter, scratch string) error) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	scratch, discard, err := a.scratchWorkspace()
 	if err != nil {
 		return err
 	}
 	defer discard()
-	client, err := a.connect("system")(a.ctx, backend, cfg, scratch)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	client, err := a.connect("system")(ctx, backend, cfg, scratch)
 	if err != nil {
 		return err
 	}
 	defer func() {
+		cancel()
 		if closeErr := client.Close(); closeErr != nil {
 			err = errors.Join(err, fmt.Errorf("Runner cleanup failed: %s", redact.Error(closeErr)))
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return fn(client, scratch)
+}
+
+const diagnosticTimeout = 90 * time.Second
+
+// One deadline covers every step, including backend discovery and the containment probe.
+// Callers own cancellation; shutdown still joins runner cleanup before closing the store.
+func (a *App) beginDiagnostic(ctx context.Context) (context.Context, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if err := a.admitDiagnostic(); err != nil {
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, diagnosticTimeout)
+	stop := context.AfterFunc(a.ctx, cancel)
+	return ctx, func() {
+		cancel()
+		stop()
+		a.wg.Done()
+	}, nil
 }
 
 // Diagnostics own runner children and scratch roots even though they do not start
@@ -389,7 +429,7 @@ func (a *App) SandboxPosture() SandboxPosture {
 	if a.deployment.pinned() {
 		posture.PinnedRepository = new(a.deployment.GitHubRepo)
 	}
-	if remote, ok := a.sandbox.(*sandbox.Remote); ok {
+	if remote, ok := a.sandbox.(brokerReporter); ok {
 		ctx, cancel := context.WithTimeout(a.ctx, 3*time.Second)
 		info, err := remote.Info(ctx)
 		cancel()
@@ -397,12 +437,13 @@ func (a *App) SandboxPosture() SandboxPosture {
 			posture.Healthy, posture.Error = false, new(redact.Error(err))
 		} else {
 			posture.Broker = &info
+			if _, err := postureFingerprint(info, a.deployment); err != nil {
+				posture.Healthy, posture.Error = false, new(redact.Error(err))
+			}
 		}
 	}
 	if selfTest, err := store.Get[SandboxSelfTest](a.Store, "settings", selfTestRecord); err == nil && selfTest != nil {
-		// A saved proof only counts while it names the broker's current image and runtime; anything else predates
-		// a posture change and needs a fresh self-test.
-		if posture.Broker != nil && selfTest.ImageID == posture.Broker.ImageID && selfTest.Runtime == posture.Broker.Runtime {
+		if posture.Broker != nil && selfTest.matchesPosture(*posture.Broker, a.deployment) {
 			posture.SelfTest = selfTest
 		}
 	}
@@ -411,13 +452,14 @@ func (a *App) SandboxPosture() SandboxPosture {
 
 // SandboxSelfTest is the latest containment probe, kept for the dashboard.
 type SandboxSelfTest struct {
-	At      string               `json:"at"`
-	Passed  bool                 `json:"passed"`
-	Checks  []sandbox.ProbeCheck `json:"checks"`
-	Kernel  string               `json:"kernel"`
-	ImageID string               `json:"image_id"`
-	Runtime string               `json:"runtime,omitempty"`
-	Error   *string              `json:"error"`
+	At                 string               `json:"at"`
+	Passed             bool                 `json:"passed"`
+	Checks             []sandbox.ProbeCheck `json:"checks"`
+	Kernel             string               `json:"kernel"`
+	ImageID            string               `json:"image_id"`
+	Runtime            string               `json:"runtime,omitempty"`
+	PostureFingerprint *string              `json:"posture_fingerprint,omitempty"`
+	Error              *string              `json:"error"`
 }
 
 const selfTestRecord = "sandbox_self_test"
@@ -447,12 +489,17 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 		return record, err
 	}
 	remote, ok := a.sandbox.(*sandbox.Remote)
-	if !ok {
+	if !ok || a.sandbox.Mode() != sandbox.ModeDocker {
 		return record, conflictError("The sandbox is off; there is no containment to test")
 	}
-	if info, err := remote.Info(ctx); err == nil {
-		record.ImageID, record.Runtime = info.ImageID, info.Runtime
+	before, err := remote.RefreshInfo(ctx)
+	if err != nil {
+		return record, err
 	}
+	if _, err := postureFingerprint(before, a.deployment); err != nil {
+		return record, err
+	}
+	record.ImageID, record.Runtime = before.ImageID, before.Runtime
 	report, err := sandbox.Probe(ctx, remote)
 	if cancelErr := cancellation(); cancelErr != nil {
 		// A probe canceled by its caller or shutdown observed nothing about containment; the last result stands.
@@ -467,6 +514,21 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 			// was read: the proof belongs to the image it ran on.
 			record.ImageID, record.Runtime = report.Sandbox.ImageID, report.Sandbox.Runtime
 		}
+		if report.Sandbox == nil || report.Sandbox.ImageID == "" {
+			record.Passed = false
+			record.Error = new("Sandbox probe reported no image identity in its exit evidence")
+		}
+	}
+	after, postureErr := remote.RefreshInfo(ctx)
+	if postureErr == nil {
+		postureErr = record.bindPosture(before, after, a.deployment)
+	}
+	if postureErr != nil {
+		record.Passed = false
+		if record.Error != nil {
+			postureErr = errors.Join(errors.New(*record.Error), postureErr)
+		}
+		record.Error = new(redact.Error(postureErr))
 	}
 	if err := cancellation(); err != nil {
 		return record, err

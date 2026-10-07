@@ -1,7 +1,9 @@
 package workspace
 
 import (
+	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"maps"
 	"math"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"syscall"
+	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"golang.org/x/sys/unix"
@@ -57,6 +60,14 @@ const maxMeasuredDepth = 2048 + 64
 // larger than the depth limit, allowing ordinary branching without letting one owner force unbounded repeated work.
 const maxReopens = 64 * 1024
 
+// Entry budgets also bound wide trees of empty files, which consume no measured bytes.
+const (
+	readBatchSize   = 256
+	maxOwnerEntries = 1 << 20
+	maxScanEntries  = 4 << 20
+	measurementTime = 30 * time.Second
+)
+
 // maxAttempts lets transient file removals settle without trusting an incomplete snapshot. Every retry
 // starts over with fresh descriptors, accounting and traversal budgets; a final incomplete attempt keeps its owners
 // unknown. This is a bounded response to detected mutations, not a filesystem snapshot.
@@ -80,12 +91,22 @@ type Usage struct {
 // report grows with the directories at those levels, not with what a sandbox builds below one, and the walk never
 // spells out a deeper path. Below path, only what a sandbox can cause in a tree it writes leaves a subtree unmeasured:
 // a denied directory, one nested too deeply, one requiring too much repeated ancestor traversal, or an entry moved
-// or replaced while the walk runs. Entries disappearing before their first stat trigger a bounded fresh scan, so a
+// or replaced while the walk runs, or one exceeding the entry budget. Cancellation and a shared 30-second deadline
+// are checked between filesystem operations. Entries disappearing before their first stat trigger a bounded fresh scan, so a
 // settled temporary-file removal does not block its owner. Any other error, and any failure to read path itself,
 // fails the measurement.
-func Measure(path string, group int) (Usage, error) {
+func Measure(ctx context.Context, path string, group int) (Usage, error) {
+	ctx, cancel := context.WithTimeout(ctx, measurementTime)
+	defer cancel()
+	return measure(ctx, path, group, maxOwnerEntries, maxScanEntries)
+}
+
+func measure(ctx context.Context, path string, group, ownerLimit, scanLimit int) (Usage, error) {
 	var usage Usage
 	for range maxAttempts {
+		if err := ctx.Err(); err != nil {
+			return Usage{}, err
+		}
 		dir, err := os.Open(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			return Usage{}, nil
@@ -93,7 +114,8 @@ func Measure(path string, group int) (Usage, error) {
 		if err != nil {
 			return Usage{}, err
 		}
-		w := walker{root: dir, group: group, unmeasured: map[string]struct{}{}}
+		w := walker{ctx: ctx, root: dir, group: group, unmeasured: map[string]struct{}{},
+			entries: map[string]int{}, ownerLimit: ownerLimit, remaining: scanLimit}
 		err = w.walk(w.root, ".", nil, nil)
 		dir.Close()
 		if err != nil {
@@ -103,7 +125,7 @@ func Measure(path string, group int) (Usage, error) {
 		if len(w.unmeasured) > 0 {
 			usage.Unmeasured = slices.Sorted(maps.Keys(w.unmeasured))
 		}
-		if !w.retry {
+		if !w.retry || w.exhausted {
 			break
 		}
 	}
@@ -111,12 +133,17 @@ func Measure(path string, group int) (Usage, error) {
 }
 
 type walker struct {
+	ctx        context.Context
 	root       *os.File
 	group      int
 	bytes      uint64
 	unmeasured map[string]struct{}
 	retry      bool           // An entry vanished before its first stat; only a fresh scan can establish its bytes.
 	reopened   map[string]int // Component opens per owner; -1 means its budget was exhausted.
+	entries    map[string]int
+	ownerLimit int
+	remaining  int
+	exhausted  bool
 }
 
 // measuredDir identifies one component below root. Closed ancestors are reopened through these components rather
@@ -156,24 +183,39 @@ func (w *walker) walk(dir *os.File, prefix string, path []measuredDir, releasePa
 	}
 	defer closeDir()
 	depth := len(path)
-	names, err := dir.Readdirnames(-1)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		// Removed while the walk ran.
-		return nil
-	case err != nil && depth > 0 && unmeasurable(err):
-		w.unmeasured[prefix] = struct{}{}
-		return nil
-	case err != nil:
-		return err
-	}
-	directories, err := w.measureEntries(dir, prefix, depth, names)
-	if err != nil {
-		return err
+	var directories []measuredDir
+	for {
+		if err := w.ctx.Err(); err != nil {
+			return err
+		}
+		names, err := dir.Readdirnames(readBatchSize)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return nil
+		case err != nil && depth > 0 && unmeasurable(err):
+			w.unmeasured[prefix] = struct{}{}
+			return nil
+		case err != nil && !errors.Is(err, io.EOF):
+			return err
+		}
+		children, unreadable, measureErr := w.measureEntries(dir, prefix, depth, names)
+		if measureErr != nil {
+			return measureErr
+		}
+		directories = append(directories, children...)
+		if unreadable || w.exhausted || w.entries[prefix] < 0 {
+			return nil
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
 	}
 	for _, component := range directories {
+		if err := w.ctx.Err(); err != nil {
+			return err
+		}
 		name := component.name
-		if w.reopened[prefix] < 0 {
+		if w.exhausted || w.entries[prefix] < 0 || w.reopened[prefix] < 0 {
 			return nil
 		}
 		child := w.childPrefix(prefix, name, depth)
@@ -182,6 +224,7 @@ func (w *walker) walk(dir *os.File, prefix string, path []measuredDir, releasePa
 			continue
 		}
 		if dir == nil {
+			var err error
 			dir, err = w.reopen(path, prefix)
 			if err != nil || dir == nil {
 				return err
@@ -221,10 +264,31 @@ func (w *walker) walk(dir *os.File, prefix string, path []measuredDir, releasePa
 // measureEntries counts files before any descent, so a single-child chain needs no ancestor reopens. Directory
 // identities are captured here, before opening any child: a renamed directory may keep its bytes in an already
 // scanned part of the owner's tree, and a replacement at the old name must not hide that missing measurement.
-func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []string) ([]measuredDir, error) {
+func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []string) ([]measuredDir, bool, error) {
 	fd := int(dir.Fd())
 	var directories []measuredDir
 	for _, name := range names {
+		if err := w.ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		if w.remaining == 0 {
+			w.exhausted = true
+			w.unmeasured["."] = struct{}{}
+			return directories, false, nil
+		}
+		w.remaining--
+		owner := w.childPrefix(prefix, name, depth)
+		if depth+1 >= w.group {
+			if count := w.entries[owner]; count < 0 || count >= w.ownerLimit {
+				w.entries[owner] = -1
+				w.unmeasured[owner] = struct{}{}
+				if depth >= w.group {
+					return directories, false, nil
+				}
+				continue
+			}
+			w.entries[owner]++
+		}
 		var meta unix.Stat_t
 		if err := unix.Fstatat(fd, name, &meta, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			switch {
@@ -237,9 +301,9 @@ func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []
 			case depth > 0 && unmeasurable(err):
 				// A directory that denies search denies every name in it.
 				w.unmeasured[prefix] = struct{}{}
-				return nil, nil
+				return nil, true, nil
 			}
-			return nil, &fs.PathError{Op: "fstatat", Path: filepath.Join(dir.Name(), name), Err: err}
+			return nil, false, &fs.PathError{Op: "fstatat", Path: filepath.Join(dir.Name(), name), Err: err}
 		}
 		switch meta.Mode & unix.S_IFMT {
 		case unix.S_IFLNK:
@@ -254,7 +318,7 @@ func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []
 			}
 		}
 	}
-	return directories, nil
+	return directories, false, nil
 }
 
 // reopen returns an ancestor with pending children, closing each temporary descriptor before continuing. Verify
@@ -264,6 +328,12 @@ func (w *walker) reopen(path []measuredDir, prefix string) (*os.File, error) {
 	dir := w.root
 	limit := maxReopens
 	for _, component := range path {
+		if err := w.ctx.Err(); err != nil {
+			if dir != w.root {
+				dir.Close()
+			}
+			return nil, err
+		}
 		// Ancestors above the grouping level are shared by several owners. Reopening those must not spend a
 		// shared budget and incorrectly make healthy siblings unmeasured after visiting an expensive owner.
 		if len(path) >= w.group {

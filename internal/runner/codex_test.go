@@ -5,6 +5,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func TestCodexModelsAndPreResponseEvents(t *testing.T) {
 	if _, err := uuid.Parse(session); err != nil {
 		t.Fatalf("session identity is not a UUID: %v", err)
 	}
-	answer, err := client.Turn(session, codexRoute(), f.workspace, "Fixture prompt", nil)
+	answer, err := client.Turn(session, codexRoute(), f.workspace, "Fixture prompt", nil, nil)
 	if err != nil {
 		t.Fatalf("turn: %v", err)
 	}
@@ -60,7 +61,7 @@ func TestCodexStructuredOutput(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	f.mode("codex", "bad-structured")
-	_, err = clients.Turn(session, codexRoute(), f.workspace, "Fixture prompt", schemas.ReviewSchema())
+	_, err = clients.Turn(session, codexRoute(), f.workspace, "Fixture prompt", schemas.ReviewSchema(), nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid JSON") {
 		t.Fatalf("malformed structured output must fail: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestCodexStructuredOutput(t *testing.T) {
 	if err := os.WriteFile(f.workspace+"/feature.txt", []byte("fixed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	review, err := clients.Turn(session, codexRoute(), f.workspace, "Perform a fresh code review of the workspace.", schemas.ReviewSchema())
+	review, err := clients.Turn(session, codexRoute(), f.workspace, "Perform a fresh code review of the workspace.", schemas.ReviewSchema(), nil)
 	if err != nil {
 		t.Fatalf("review: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestCodexInteractiveRequest(t *testing.T) {
 	if err := os.WriteFile(f.path("interactive"), []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Turn(session, codexRoute(), f.workspace, "Implement this accepted task.", nil)
+	_, err = client.Turn(session, codexRoute(), f.workspace, "Implement this accepted task.", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "interactive input") {
 		t.Fatalf("interactive request must block the task: %v", err)
 	}
@@ -127,5 +128,70 @@ func TestCodexRequiresAuthentication(t *testing.T) {
 	defer client.Close()
 	if _, err := client.Diagnose(f.workspace); err == nil || !strings.Contains(err.Error(), "authentication") {
 		t.Fatalf("unauthenticated Codex passed diagnostics: %v", err)
+	}
+}
+
+func TestCodexFirstTurnLifecycle(t *testing.T) {
+	t.Parallel()
+	f := codexFixture(t)
+	client, err := f.connectCodex(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	session, err := client.Start(codexRoute(), f.workspace, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Start(codexRoute(), f.workspace, &session); !errors.Is(err, ErrSessionMissing) {
+		t.Fatalf("unstarted resume was not classified as missing: %v", err)
+	}
+	started := 0
+	checkpoint := func() error { started++; return nil }
+	if _, err := client.Turn(session, codexRoute(), f.workspace, "Fixture prompt", nil, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if started != 1 {
+		t.Fatalf("first-turn checkpoints = %d", started)
+	}
+	if _, err := client.Start(codexRoute(), f.workspace, &session); err != nil {
+		t.Fatalf("established thread cannot resume: %v", err)
+	}
+	f.mode("codex", "bad-structured")
+	if _, err := client.Turn(session, codexRoute(), f.workspace, "Fixture prompt", schemas.ReviewSchema(), checkpoint); err == nil {
+		t.Fatal("invalid structured answer was accepted")
+	}
+	if started != 2 {
+		t.Fatalf("failed accepted turn lost its checkpoint: %d", started)
+	}
+	checkpointErr := errors.New("checkpoint persistence failed")
+	answer, err := client.Turn(session, codexRoute(), f.workspace, "Fixture prompt", nil, func() error { return checkpointErr })
+	if !errors.Is(err, checkpointErr) || answer != "" {
+		t.Fatalf("checkpoint failure returned result: %q, %v", answer, err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("checkpoint failure did not shut down cleanly: %v", err)
+	}
+}
+
+func TestCodexMissingThreadClassification(t *testing.T) {
+	t.Parallel()
+	id := "a65c9f2e-cd5c-4d4d-a78c-56d0e43916ae"
+	for _, tc := range []struct {
+		name, method, code, message string
+		missing                     bool
+	}{
+		{"matching resume", "thread/resume", "-32600", "no rollout found for thread id " + id, true},
+		{"different thread", "thread/resume", "-32600", "no rollout found for thread id other", false},
+		{"different request", "turn/start", "-32600", "no rollout found for thread id " + id, false},
+		{"different code", "thread/resume", "-32000", "no rollout found for thread id " + id, false},
+		{"wrapped text", "thread/resume", "-32600", "upstream: no rollout found for thread id " + id, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := missingCodexThread(tc.method, map[string]any{"threadId": id}, map[string]any{"code": json.Number(tc.code), "message": tc.message})
+			if got != tc.missing {
+				t.Fatalf("missing = %v, want %v", got, tc.missing)
+			}
+		})
 	}
 }

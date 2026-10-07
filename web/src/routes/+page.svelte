@@ -75,7 +75,6 @@
   let filtered = $state<TaskRow[]>([]);
   let proposals = $state<ProposalRow[]>([]);
   let proposalCounts = $state<Record<string, number>>({});
-  let proposalsView = $state<ReturnType<typeof Proposals>>();
   let prRows = $state<PRObservation[]>([]);
   const prKey = (observed: PRObservation) =>
     `${observed.repository.toLowerCase()}#${observed.pr.number}`;
@@ -231,7 +230,6 @@
             data = snapshot;
             controlStatePending = false;
             if (!listLoading) listRefresh++;
-            if (view === 'proposals') await proposalsView?.loadCycles();
             connectionError = '';
             lastUpdated = clockTime();
           } catch (e) {
@@ -299,7 +297,6 @@
   });
   async function navigate(id: string) {
     navigationGeneration++;
-    const currentSession = sessionGeneration;
     view = id;
     if (id === 'settings') settingsVisited = true;
     search = '';
@@ -308,13 +305,6 @@
     await tick();
     document.getElementById('main-content')?.focus();
     window.scrollTo(0, 0);
-    if (id === 'proposals') {
-      try {
-        await proposalsView?.loadCycles();
-      } catch (e) {
-        if (currentSession === sessionGeneration) connectionError = (e as Error).message;
-      }
-    }
   }
   async function onWindowKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && mobileOpen) {
@@ -686,6 +676,7 @@
         {/if}
         <Proposals
           active={view === 'proposals'}
+          snapshots={data.cycles}
           rows={proposals}
           counts={proposalCounts}
           loaded={listLoaded}
@@ -695,7 +686,6 @@
           bind:busy
           bind:pendingAction
           bind:error
-          bind:this={proposalsView}
           onrefresh={refresh}
           oninspect={inspectRun}
           onintent={noteNavigationIntent}

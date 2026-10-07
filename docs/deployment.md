@@ -459,6 +459,17 @@ answer `{"items":[…],"counts":{…},"next_cursor":…}` newest first and accep
 `before=<next_cursor>`, `limit` (default 50, clamped to 1–100), `q` (case-insensitive
 text) and `status`: a status name or `all`, and for tasks also `active` or `attention`.
 For proposals, `status` is a decision and `cycle=<cycle id>` selects one cycle.
+Doctor and model-catalog checks have one 90-second execution deadline across all
+their steps. The HTTP request owns cancellation; disconnecting stops the check.
+Runner cleanup is joined before removing scratch roots, including after a deadline
+or service shutdown.
+These diagnostics do not become durable jobs.
+
+`GET /api/cycles?cycle=ID` returns only that cycle's summary. The dashboard refreshes
+the newest history page and the selected older cycle independently of live status.
+Loaded older pages remain available; **Load older cycles** fills any gap after new
+cycles arrive before continuing through the remaining history.
+
 `POST /api/doctor` takes `mode=execution` (the default) or `mode=audit`. Its answer,
 passing or failing, carries `checked_config` and `checked_revision`; a failing check
 answers with its error status and message instead of the result. The service never

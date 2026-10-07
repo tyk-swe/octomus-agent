@@ -450,8 +450,12 @@ func hostCounts(counts map[string]egress.HostCount) map[string]uint64 {
 }
 
 // runSandbox runs a plan to completion without a control-plane stream, for the broker's own probes.
-func (b *Broker) runSandbox(ctx context.Context, p plan, stdout, stderr func([]byte) error, controls <-chan control) (wire.ExitReport, error) {
-	prepared, err := b.prepare(ctx, ctx, p, func() {})
+func (b *Broker) runSandbox(ctx, base context.Context, p plan, stdout, stderr func([]byte) error, controls <-chan control) (wire.ExitReport, error) {
+	release, err := b.acquire(ctx)
+	if err != nil {
+		return wire.ExitReport{}, err
+	}
+	prepared, err := b.prepare(ctx, base, p, release)
 	if err != nil {
 		return wire.ExitReport{}, err
 	}

@@ -323,13 +323,19 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 	return id, nil
 }
 
-func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
+func (o *OpenCode) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema, started func() error) (string, error) {
 	if err := requireRoute(route, config.BackendOpencode); err != nil {
 		return "", err
 	}
 	seg, err := segment(session)
 	if err != nil {
 		return "", err
+	}
+	// OpenCode persists a resumable session at Start, before the first message.
+	if started != nil {
+		if err := started(); err != nil {
+			return "", err
+		}
 	}
 	path := "/session/" + seg
 	answer, err := process.Bounded(o.ctx, time.Now().Add(time.Duration(o.timeout)*time.Second), "OpenCode session time limit exceeded", func(wctx context.Context) (string, error) {

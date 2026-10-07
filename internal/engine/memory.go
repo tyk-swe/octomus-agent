@@ -49,63 +49,21 @@ func (m decisionMemory) promptEntries() ([]any, error) {
 }
 
 func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding model.Grounding) (decisionMemory, error) {
-	raw, err := a.Store.DecisionMemory(cfg.GitHubRepo)
+	targets := []string{cfg.DefaultBranch}
+	for _, pr := range grounding.PRs {
+		if _, err := resolveTarget(cfg, grounding.PRs, pr.Branch); err == nil && pr.Branch != cfg.DefaultBranch {
+			targets = append(targets, pr.Branch)
+		}
+	}
+	records, err := a.Store.DecisionMemory(cfg.GitHubRepo, targets)
 	if err != nil {
 		return decisionMemory{}, err
 	}
-	records := make([]model.DecisionRecord, 0, len(raw))
-	for _, value := range raw {
-		data, err := json.Marshal(value)
-		if err != nil {
-			return decisionMemory{}, err
-		}
-		var record model.DecisionRecord
-		if err := json.Unmarshal(data, &record); err != nil {
-			return decisionMemory{}, err
-		}
-		if record.ID == "" || record.Repository == "" || record.Target == "" || record.ProblemKey == "" {
-			continue
-		}
-		records = append(records, record)
+	decisions, err := currentDecisions(ctx, cfg, grounding, records)
+	if err != nil {
+		return decisionMemory{}, err
 	}
-	memory := decisionMemory{decisions: make([]model.DecisionRecord, 0, len(records)), requests: []rediscoveryRequest{}}
-	// Historical decisions often cover the same paths. Reuse successful tree
-	// fingerprints for this refresh only; still reevaluate each decision's date.
-	type fingerprintKey struct{ revision, paths string }
-	fingerprints := make(map[fingerprintKey]string)
-	for _, record := range records {
-		if decisionAbsorbed(record, records) {
-			continue
-		}
-		target, err := resolveTarget(cfg, grounding.PRs, record.Target)
-		if err != nil {
-			continue
-		}
-		revision := grounding.Revision
-		if target != nil {
-			revision = target.Head
-		}
-		paths, err := json.Marshal(record.RelevantPaths)
-		if err != nil {
-			return decisionMemory{}, err
-		}
-		key := fingerprintKey{revision, string(paths)}
-		fingerprint, found := fingerprints[key]
-		if !found || ctx.Err() != nil {
-			fingerprint, err = decisionFingerprint(ctx, cfg, revision, record.RelevantPaths)
-			if err != nil {
-				return decisionMemory{}, err
-			}
-			fingerprints[key] = fingerprint
-		}
-		due := fingerprint != record.ContextFingerprint
-		if until, err := time.Parse(time.RFC3339, record.ReconsiderAfter); err == nil && !time.Now().Before(until) {
-			due = true
-		}
-		record.Kind = "decision"
-		record.ReconsiderationDue = due
-		memory.decisions = append(memory.decisions, record)
-	}
+	memory := decisionMemory{decisions: decisions, requests: []rediscoveryRequest{}}
 	requests, err := a.Store.RediscoveryRequests(cfg.GitHubRepo)
 	if err != nil {
 		return decisionMemory{}, err
@@ -122,18 +80,73 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 	return memory, nil
 }
 
-func decisionAbsorbed(record model.DecisionRecord, records []model.DecisionRecord) bool {
-	if record.Decision == model.DecisionAccepted {
-		return false
+// Admission uses exact stored identities independently of the bounded prompt selection.
+func (a *App) enforceDecisionMemory(ctx context.Context, cfg config.Config, grounding model.Grounding, proposals []model.Proposal, requests []rediscoveryRequest) error {
+	memory := decisionMemory{requests: requests}
+	if err := validateDecisionMemory(proposals, memory); err != nil {
+		return err
 	}
-	for _, accepted := range records {
-		if accepted.Decision == model.DecisionAccepted && accepted.CycleID == record.CycleID &&
-			config.EqualASCII(accepted.Repository, record.Repository) && accepted.Target == record.Target &&
-			accepted.ProblemKey == record.ProblemKey {
-			return true
+	for _, proposal := range proposals {
+		if proposal.Decision != model.DecisionAccepted {
+			continue
+		}
+		records, err := a.Store.DecisionsForProblem(cfg.GitHubRepo, proposal.Target, proposal.ProblemIdentity())
+		if err != nil {
+			return err
+		}
+		memory.decisions, err = currentDecisions(ctx, cfg, grounding, records)
+		if err != nil {
+			return err
+		}
+		if err := validateDecisionMemory([]model.Proposal{proposal}, memory); err != nil {
+			return err
 		}
 	}
-	return false
+	return nil
+}
+
+func currentDecisions(ctx context.Context, cfg config.Config, grounding model.Grounding, records []model.DecisionRecord) ([]model.DecisionRecord, error) {
+	decisions := make([]model.DecisionRecord, 0, len(records))
+	// Historical decisions often cover the same paths. Cache only for this refresh;
+	// reconsideration is evaluated against the current grounding and time.
+	type fingerprintKey struct{ revision, paths string }
+	fingerprints := make(map[fingerprintKey]string)
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if record.ID == "" || record.Repository == "" || record.Target == "" || record.ProblemKey == "" {
+			continue
+		}
+		target, err := resolveTarget(cfg, grounding.PRs, record.Target)
+		if err != nil {
+			continue
+		}
+		revision := grounding.Revision
+		if target != nil {
+			revision = target.Head
+		}
+		paths, err := json.Marshal(record.RelevantPaths)
+		if err != nil {
+			return nil, err
+		}
+		key := fingerprintKey{revision, string(paths)}
+		fingerprint, found := fingerprints[key]
+		if !found {
+			fingerprint, err = decisionFingerprint(ctx, cfg, revision, record.RelevantPaths)
+			if err != nil {
+				return nil, err
+			}
+			fingerprints[key] = fingerprint
+		}
+		due := fingerprint != record.ContextFingerprint
+		if until, err := time.Parse(time.RFC3339, record.ReconsiderAfter); err == nil && !time.Now().Before(until) {
+			due = true
+		}
+		record.Kind, record.ReconsiderationDue = "decision", due
+		decisions = append(decisions, record)
+	}
+	return decisions, nil
 }
 
 // decisionFingerprint identifies the repository state a decision was made against: the revision itself when the decision

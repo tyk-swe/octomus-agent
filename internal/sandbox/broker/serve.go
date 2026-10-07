@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,8 +20,8 @@ func (b *Broker) Serve(ctx context.Context, listener net.Listener) error {
 	requests, cancelRequests := context.WithCancel(ctx)
 	defer cancelRequests()
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+wire.InfoPath, func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, b.Info())
+	mux.HandleFunc("GET "+wire.InfoPath, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, b.liveInfo(r.Context()))
 	})
 	mux.HandleFunc("POST "+wire.SandboxesPath, func(w http.ResponseWriter, r *http.Request) { b.handleSandbox(requests, w, r) })
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second,
@@ -99,18 +98,17 @@ func (b *Broker) handleSandbox(base context.Context, w http.ResponseWriter, r *h
 		refuse(http.StatusBadRequest, err.Error())
 		return
 	}
+	// Image probes own their own slots. Resolve before acquiring this request's slot so Max=1 can refresh an image
+	// and a probe whose removal failed keeps capacity unavailable to this request too.
+	if p.image, err = b.image(r.Context(), base); err != nil {
+		refuse(http.StatusInternalServerError, err.Error())
+		return
+	}
 	// A full broker makes the request wait for as long as the client does. The control plane keeps its own count of
 	// the same slots, but one can stay taken after it counts it free: a removal the broker is still retrying, or a
 	// teardown the client stopped waiting for.
-	select {
-	case b.slots <- struct{}{}:
-	case <-r.Context().Done():
-		return
-	}
-	release := sync.OnceFunc(func() { <-b.slots })
-	if p.image, err = b.image(r.Context()); err != nil {
-		release()
-		refuse(http.StatusInternalServerError, err.Error())
+	release, err := b.acquire(r.Context())
+	if err != nil {
 		return
 	}
 	prepared, err := b.prepare(r.Context(), base, p, release)

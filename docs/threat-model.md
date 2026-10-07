@@ -19,7 +19,7 @@ Octomus is a single-operator service with two deployment models:
 | Operator dashboard/API | A bearer token grants configuration changes, verification commands, task controls and model usage. In the Docker deployment it cannot turn the sandbox off, widen egress, raise limits, choose the image, or repoint the repository or runner programs. Unsandboxed, treat it as a host capability. |
 | Control plane (`octomus`) | Trusted. Holds state, the operator token and the GitHub token; runs only its own git and gh. No Docker socket. |
 | Sandbox broker (`sandboxd`) | Trusted and root-equivalent through the Docker socket. No network. Builds every container spec itself from a narrow, validated request. |
-| Egress gateway (`egress`) | Trusted. Opens HTTPS tunnels for sandboxes holding a live lease, to allowlisted hosts with public addresses only. |
+| Egress gateway (`egress`) | Trusted. Requires a live lease, an allowlisted CONNECT authority with a vetted public address, and matching initial plaintext TLS SNI. It cannot inspect encrypted HTTP authority or prevent allowed-endpoint misuse; see [Network](sandbox.md#network). |
 | Sandboxes | Untrusted. See their own root's work tree, read-only git metadata and home; runner sandboxes also see the runner login volume. |
 | Service account (unsandboxed) | Can read its credentials, change its state and checkouts, run programs and contact permitted network destinations. |
 | Repository, PRs, dependencies and model output | Untrusted input, including adversarial instructions and executable build scripts. |

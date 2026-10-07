@@ -92,6 +92,21 @@ func TestIndexedViews(t *testing.T) {
 		t.Fatal("blocked work should count as unresolved")
 	}
 
+	for _, selected := range []string{"cycle-running", "missing", "all"} {
+		result, err := s.HistoryPage("cycle", store.HistoryQuery{Cycle: &selected})
+		must(t, err)
+		want := map[string]int{"cycle-running": 1, "missing": 0, "all": 2}[selected]
+		if len(result.Items) != want || result.NextCursor != nil {
+			t.Fatalf("cycle summary %q: %+v", selected, result)
+		}
+		if selected == "cycle-running" {
+			summary := decodeMap(t, result.Items[0])
+			if summary["id"] != selected || summary["session_count"] != float64(0) {
+				t.Fatalf("cycle summary: %v", summary)
+			}
+		}
+	}
+
 	running, err := s.RunningCycles("")
 	must(t, err)
 	if len(running) != 1 || running[0].ID != "cycle-running" {

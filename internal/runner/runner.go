@@ -21,6 +21,10 @@ const WorkerInstructions = "You are a worker controlled by Octomus. The task pro
 
 const MaxMessage = 16_000_000
 
+// ErrSessionMissing is a definitive response to resuming the requested session.
+// Callers must not infer it from transport failures or arbitrary error text.
+var ErrSessionMissing = errors.New("Runner session does not exist")
+
 func VersionWarning(backend config.Backend, installed, expected string) string {
 	return fmt.Sprintf("%s version mismatch: installed %s; %s; protocol compatibility is unverified.", backend.Display(), installed, expected)
 }
@@ -101,7 +105,8 @@ func ValidateRoute(route config.Route, models []Model) error {
 type Adapter interface {
 	Models(cwd string) ([]Model, error)
 	Start(route config.Route, cwd string, resume *string) (string, error)
-	Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error)
+	// started checkpoints the accepted turn before its result is consumed; an error stops the turn.
+	Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema, started func() error) (string, error)
 	Diagnose(cwd string) (Diagnostics, error)
 	Close() error
 }
@@ -273,12 +278,24 @@ func (r *Runners) Start(route config.Route, cwd string, resume *string) (string,
 	return session, nil
 }
 
-func (r *Runners) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
+func (r *Runners) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema, started func() error) (string, error) {
 	client, err := r.Client(route.Backend, cwd)
 	if err != nil {
 		return "", unavailable(err)
 	}
-	answer, err := client.Turn(session, route, cwd, prompt, schema)
+	var checkpointErr error
+	checkpoint := started
+	if started != nil {
+		checkpoint = func() error {
+			checkpointErr = started()
+			return checkpointErr
+		}
+	}
+	answer, err := client.Turn(session, route, cwd, prompt, schema, checkpoint)
+	if checkpointErr != nil {
+		// Persistence failed in the caller, not in the runner's route or transport.
+		return "", errors.Join(checkpointErr, err)
+	}
 	if err != nil {
 		return "", unavailable(err)
 	}

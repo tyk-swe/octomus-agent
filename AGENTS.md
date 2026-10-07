@@ -168,8 +168,9 @@ race detector. Install dashboard dependencies with
   `GO_TEST_PACKAGES` (default `./...`), for example
   `make test-go GO_TEST_PACKAGES=./internal/engine`. Reproduce a seed with
   `GO_TEST_FLAGS='-timeout 30m -shuffle=12345'`.
-- `make test-ui-logic` / `npm run test:unit --prefix web`: seven page-free dashboard
-  rule tests, requiring only npm dependencies. They also remain in the full browser suite.
+- `make test-ui-logic` / `npm run test:unit --prefix web`: dashboard evidence,
+  control eligibility and history logic without a browser or service, requiring only
+  npm dependencies. They also remain in the full browser suite.
 - `make test-integration` (fixture startup behavior tests, `tests/distribution.py`, then
   `tests/e2e.py`) / `make test-browser`: one stage each. `test-integration` accepts
   `SCENARIOS` names; `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests

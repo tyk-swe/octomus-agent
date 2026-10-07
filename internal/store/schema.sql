@@ -44,6 +44,8 @@ CREATE TABLE usage (
 
 CREATE INDEX batch_status ON batch_members(run_id,status);
 
+CREATE INDEX decision_identity ON records(json_extract(data,'$.repository') COLLATE NOCASE,json_extract(data,'$.target'),json_extract(data,'$.problem_key'),json_extract(data,'$.cycle_id'),json_extract(data,'$.decision')) WHERE kind='decision';
+
 CREATE INDEX memory_repository ON records(kind,json_extract(data,'$.repository') COLLATE NOCASE);
 
 CREATE INDEX meta_attention ON record_meta(kind,seq DESC) WHERE status IN ('blocked','failed') AND archived IS NULL;

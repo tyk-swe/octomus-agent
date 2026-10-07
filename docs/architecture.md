@@ -156,7 +156,18 @@ SQLite uses full synchronous writes and WAL. Only one service may hold the state
 
 ## Usage records and state
 
-Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. State starts at schema version 7 (v0.1.0); v0.2.0 uses version 8 for the new notification triggers. Releases upgrade it at startup through ordered forward-only migrations after a verified backup. The version check runs before any schema or journal change, and pre-release or newer databases are refused untouched. Route snapshots record the selected backend, model, effort or variant.
+Every budget reservation commits its UTC day counter and admission metadata in one
+transaction. Failed starts still consume reservations; reused repair threads consume
+another admission for each turn. A definitively missing Codex thread is replaced
+only when no accepted first turn is recorded for a tracked session. Its failed
+evidence is retained and the replacement consumes a new admission. Legacy sessions
+with unknown lifecycle and established threads remain intact on resume failures.
+
+State starts at schema version 7 (v0.1.0); version 8 adds notification triggers and
+version 9 indexes exact decision identities. Releases upgrade it at startup through
+ordered forward-only migrations after a verified backup. The version check runs
+before any schema or journal change, and pre-release or newer databases are refused
+untouched. Route snapshots record the selected backend, model, effort or variant.
 
 Opt-in webhook events are inserted by SQLite triggers in the same transaction as
 the record transition: blocked/failed or published tasks, failed planning cycles,
@@ -227,7 +238,14 @@ roots refuses every admission until it is made readable or moved out of the data
 directory; a data directory at a filesystem's root has a `lost+found` the service
 usually cannot read, so use a subdirectory. Any other filesystem error except a
 vanished path, and failing to read the measured root itself, still fails the
-measurement, and measurement never changes permissions.
+measurement, and measurement never changes permissions. Directory entries are read in
+batches of 256, with at most 1,048,576 entries per owner and 4,194,304 per scan attempt.
+An owner that exceeds its budget remains unknown; exhausting the whole scan budget
+refuses all admissions because the remaining owners are unknown. Empty entries count
+against these budgets too. Cancellation and a shared 30-second measurement deadline
+are checked between filesystem operations, including across the at most three retries.
+This bounds traversal work without pretending to interrupt a stalled kernel filesystem
+operation. The existing descriptor, depth and repeated-ancestor limits still apply.
 
 Diagnostic subprocess output retains the first 256 KiB of each stream and
 truncation flags, and for a longer stream its last 64 KiB, kept in a rolling
@@ -271,9 +289,11 @@ on native Ubuntu 24.04 runners. Both package jobs gate the aggregate `verify` jo
 
 ## Decision memory and outcomes
 
-A bounded selection of repository-scoped decisions records problem identity,
-relevant paths, rationale, source context and reconsideration time. Matching
-problem identities are reused across wording changes. Relevant blob changes or
+Planning prompts include at most 100 decisions for the default branch and eligible
+open PR targets. Admission checks the complete stored history for each exact
+repository, target and problem identity independently of that prompt limit.
+Decisions record relevant paths, rationale, source context and reconsideration
+time. Matching problem identities are reused across wording changes. Relevant blob changes or
 30 elapsed days permit reconsideration; unresolved tasks continue to suppress
 duplication. Audit acceptance remains a recommendation and does not suppress
 subsequent execution. Explicit supersession requests receive their own fresh

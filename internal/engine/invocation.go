@@ -24,7 +24,7 @@ type invocation struct {
 	route       config.Route
 	workspace   string
 	resume      *string
-	keep        func(session string)
+	keep        func(session *string)
 	prompt      string
 	schema      schemas.Schema
 	reserved    bool
@@ -71,10 +71,9 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("Operation cancelled: %w", err)
 	}
-	session, err := clients.Start(inv.route, inv.workspace, resume)
+	session, resumed, err := a.startInvocation(ctx, clients, inv, resume)
 	if err != nil {
-		// A failed start has no turn to release the runner and retain its exit status.
-		return "", errors.Join(err, clients.Release())
+		return "", err
 	}
 
 	if inv.task == nil {
@@ -117,10 +116,12 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	}
 
 	task := inv.task
-	if resume == nil {
-		task.Sessions = append(task.Sessions, model.NewSession(session, inv.role, inv.route))
+	if !resumed {
+		record := model.NewSession(session, inv.role, inv.route)
+		record.FirstTurnStarted = new(false)
+		task.Sessions = append(task.Sessions, record)
 		if inv.keep != nil {
-			inv.keep(session)
+			inv.keep(&session)
 		}
 	} else {
 		record, err := findSession(task, session, inv.role)
@@ -128,6 +129,8 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 			return "", err
 		}
 		record.MarkRunning()
+		// A successful resume establishes that the runner retained this thread.
+		record.FirstTurnStarted = new(true)
 	}
 	if err := a.saveTask(task); err != nil {
 		return "", err
@@ -153,8 +156,60 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	return answer, a.saveTask(task)
 }
 
+// A missing, never-started thread has no runner state to resume. Retain its failed
+// evidence, clear only its active identity, and reserve a new start after cleanup.
+func (a *App) startInvocation(ctx context.Context, clients *runner.Runners, inv invocation, resume *string) (string, bool, error) {
+	session, err := clients.Start(inv.route, inv.workspace, resume)
+	if err == nil {
+		return session, resume != nil, nil
+	}
+	released := clients.Release()
+	if resume == nil || inv.task == nil {
+		return "", false, errors.Join(err, released)
+	}
+	record, recordErr := findSession(inv.task, *resume, inv.role)
+	if recordErr != nil {
+		return "", false, errors.Join(err, released, recordErr)
+	}
+	record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
+	if !errors.Is(err, runner.ErrSessionMissing) || inv.route.Backend != config.BackendCodex ||
+		record.FirstTurnStarted == nil || *record.FirstTurnStarted || record.Status == model.SessionCompleted || inv.keep == nil || released != nil || ctx.Err() != nil {
+		return "", false, errors.Join(err, released)
+	}
+	record.MarkFailed(redact.Text(strings.TrimSpace(record.Summary + "\nNever-started session is missing; a fresh session is required: " + err.Error())))
+	inv.keep(nil)
+	if saveErr := a.saveTask(inv.task); saveErr != nil {
+		return "", false, errors.Join(err, saveErr)
+	}
+	if err := a.admit(ctx, inv.cycleID, inv.task, inv.role, inv.route); err != nil {
+		return "", false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	session, err = clients.Start(inv.route, inv.workspace, nil)
+	if err != nil {
+		return "", false, errors.Join(err, clients.Release())
+	}
+	return session, false, nil
+}
+
 func (a *App) turn(clients *runner.Runners, inv invocation, session string) (answer, summary string, err error) {
-	answer, err = clients.Turn(session, inv.route, inv.workspace, inv.prompt, inv.schema)
+	var started func() error
+	if inv.task != nil {
+		started = func() error {
+			record, err := findSession(inv.task, session, inv.role)
+			if err != nil {
+				return err
+			}
+			if record.FirstTurnStarted != nil && *record.FirstTurnStarted {
+				return nil
+			}
+			record.FirstTurnStarted = new(true)
+			return a.saveTask(inv.task)
+		}
+	}
+	answer, err = clients.Turn(session, inv.route, inv.workspace, inv.prompt, inv.schema, started)
 	// Nothing a runner started may outlive its turn: the judge and the orchestrator's git read the work tree next.
 	released := clients.Release()
 	if err = errors.Join(err, released); err != nil {
@@ -205,7 +260,7 @@ func (a *App) measureLocked(ctx context.Context, owner string) (uint64, error) {
 	}
 	// Storage is a pre-turn snapshot, not a disk reservation. Exclude trusted filesystem changes only for the scan;
 	// the store independently serializes budget reservations and must not stall unrelated setup/status/cleanup.
-	return a.measure(owner)
+	return a.measure(ctx, owner)
 }
 
 // ownedRoots are the data directory's parents of owned roots, each <parent>/<id>, where sandboxes write.
@@ -218,8 +273,8 @@ const ownerDepth = 2
 // the walk could not measure, unreadable or too costly to traverse, holds unknown bytes: it puts its own owner over the
 // limit, and puts everyone over it when it lies outside any owned root. Another owner's unmeasured subtree does not
 // stop this admission; that owner can admit nothing more until its retained work is resolved.
-func (a *App) measure(owner string) (uint64, error) {
-	usage, err := workspace.Measure(a.dataDir, ownerDepth)
+func (a *App) measure(ctx context.Context, owner string) (uint64, error) {
+	usage, err := workspace.Measure(ctx, a.dataDir, ownerDepth)
 	if err != nil {
 		return 0, err
 	}

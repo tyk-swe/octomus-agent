@@ -4,11 +4,13 @@
 package broker
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
@@ -36,6 +38,7 @@ type Broker struct {
 func newBroker(cfg Config) *Broker {
 	b := &Broker{
 		cfg:     cfg,
+		info:    wire.BrokerInfo{InstanceID: model.ID()},
 		engine:  newDockerClient(cfg.DockerSocket),
 		slots:   make(chan struct{}, cfg.Max),
 		closing: make(chan struct{}),
@@ -55,6 +58,34 @@ func (b *Broker) Info() wire.BrokerInfo {
 	info := b.info
 	info.Live = len(b.live)
 	return info
+}
+
+// liveInfo includes a fresh collector read. The gateway can restart or change policy independently of the broker
+// and control plane; a missing report must never reuse the identity from an earlier successful read.
+func (b *Broker) liveInfo(ctx context.Context) wire.BrokerInfo {
+	info := b.Info()
+	info.Gateway = nil
+	if info.Egress {
+		if posture, err := egress.FetchGatewayPosture(ctx, b.cfg.EgressCollector); err == nil {
+			info.Gateway = &posture
+		}
+	}
+	return info
+}
+
+// acquire waits for capacity. Its release belongs to the container from prepare onward, including any reaper.
+func (b *Broker) acquire(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case b.slots <- struct{}{}:
+		return sync.OnceFunc(func() { <-b.slots }), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-b.closing:
+		return nil, context.Canceled
+	}
 }
 
 // logf reports what the broker could not do on its own, such as a removal it keeps retrying.

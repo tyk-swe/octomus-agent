@@ -168,7 +168,14 @@ func (a *App) withoutGate(fn func()) {
 }
 
 func (a *App) runners(ctx context.Context, cfg config.Config, entity string) *runner.Runners {
-	return runner.New(ctx, cfg, a.connect(entity))
+	connect := a.connect(entity)
+	return runner.New(ctx, cfg, func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (runner.Adapter, error) {
+		// A broker restart can lower its hard limit between turns of an already admitted task.
+		if err := a.checkSandboxTimeouts(ctx, cfg); err != nil {
+			return nil, err
+		}
+		return connect(ctx, backend, cfg, cwd)
+	})
 }
 
 func (a *App) connect(entity string) runner.Connector {

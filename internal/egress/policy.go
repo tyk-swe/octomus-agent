@@ -4,9 +4,13 @@
 package egress
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,6 +98,16 @@ func (p Policy) Describe() map[string][]string {
 		return out
 	}
 	return map[string][]string{"model": describe(p.Model), "build": describe(p.Build)}
+}
+
+func (p Policy) fingerprint() string {
+	hosts := p.Describe()
+	for kind, rules := range hosts {
+		hosts[kind] = slices.Compact(rules)
+	}
+	data, _ := json.Marshal(hosts) // A map of string slices has no unsupported JSON values.
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // ParseRules reads a comma- or space-separated allowlist such as "api.openai.com, *.npmjs.org, git.example.com:8443".

@@ -190,9 +190,25 @@ func TestPlanValidation(t *testing.T) {
 	if _, err := cfg.plan(wire.Request{Kind: "verify", Dir: link, Command: "true"}); err == nil {
 		t.Error("a symlinked verification home was accepted")
 	}
-	p, err := cfg.plan(wire.Request{Kind: "verify", Dir: taskDir, Command: "true", Timeout: 999999999})
+	for _, seconds := range []uint64{0, cfg.MaxSeconds - 1, cfg.MaxSeconds, cfg.MaxSeconds + 1, ^uint64(0)} {
+		p, err := cfg.plan(wire.Request{Kind: wire.KindVerify, Dir: taskDir, Command: "true", Timeout: seconds})
+		if seconds > cfg.MaxSeconds {
+			if err == nil || !strings.Contains(err.Error(), "exceeds sandbox hard limit") {
+				t.Fatalf("oversized timeout %d was not refused: %v", seconds, err)
+			}
+			continue
+		}
+		want := seconds
+		if want == 0 {
+			want = cfg.MaxSeconds
+		}
+		if err != nil || p.timeout.Seconds() != float64(want) {
+			t.Fatalf("timeout %d = %v, %v; want %d seconds", seconds, p.timeout, err, want)
+		}
+	}
+	p, err := cfg.plan(wire.Request{Kind: wire.KindProbe, Mode: wire.ProbeVersions, Timeout: ^uint64(0)})
 	if err != nil || p.timeout.Seconds() != float64(cfg.MaxSeconds) {
-		t.Fatalf("timeout = %v, %v; want the broker's cap", p.timeout, err)
+		t.Fatalf("probe timeout = %v, %v; want the broker's cap", p.timeout, err)
 	}
 }
 

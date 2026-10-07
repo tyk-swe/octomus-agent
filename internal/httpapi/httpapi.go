@@ -275,14 +275,22 @@ func writeRawJSON(w http.ResponseWriter, status int, value any) {
 	_, _ = w.Write(data)
 }
 
-func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			return &bodyError{http.StatusRequestEntityTooLarge, "Failed to buffer the request body: length limit exceeded"}
+			return nil, &bodyError{http.StatusRequestEntityTooLarge, "Failed to buffer the request body: length limit exceeded"}
 		}
-		return &bodyError{http.StatusBadRequest, fmt.Sprintf("Failed to read the request body: %v", err)}
+		return nil, &bodyError{http.StatusBadRequest, fmt.Sprintf("Failed to read the request body: %v", err)}
+	}
+	return data, nil
+}
+
+func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	data, err := readBody(w, r)
+	if err != nil {
+		return err
 	}
 	if err := json.Unmarshal(data, dst); err != nil {
 		var jc *wirejson.Error
@@ -504,7 +512,12 @@ func (a *api) controlAction(_ http.ResponseWriter, r *http.Request) (int, any, e
 	return http.StatusOK, body, err
 }
 
-func (a *api) doctor(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+func (a *api) doctor(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	// Consume the ignored body so net/http can detect a disconnected HTTP/1 caller
+	// while the diagnostic is running, rather than waiting for this handler to end.
+	if _, err := readBody(w, r); err != nil {
+		return 0, nil, err
+	}
 	mode := model.CycleModeExecution
 	if raw := first(r.URL.Query(), "mode"); raw != nil {
 		switch *raw {
@@ -519,7 +532,7 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	result, _, err := a.app.Doctor(cfg, mode)
+	result, _, err := a.app.Doctor(r.Context(), cfg, mode)
 	status := http.StatusOK
 	var body map[string]any
 	if err != nil {
@@ -542,7 +555,10 @@ func (a *api) doctor(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 }
 
 // sandboxSelfTest proves the sandbox from inside a real one; with the sandbox off there is nothing to prove.
-func (a *api) sandboxSelfTest(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+func (a *api) sandboxSelfTest(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	if _, err := readBody(w, r); err != nil {
+		return 0, nil, err
+	}
 	result, err := a.app.SelfTest(r.Context())
 	return http.StatusOK, result, err
 }
@@ -559,7 +575,7 @@ func (a *api) modelCatalog(w http.ResponseWriter, r *http.Request) (int, any, er
 	if err := decodeBody(w, r, &request); err != nil {
 		return 0, nil, err
 	}
-	catalog, err := a.app.ModelCatalog(request.Backend, request.Binary)
+	catalog, err := a.app.ModelCatalog(r.Context(), request.Backend, request.Binary)
 	return http.StatusOK, catalog, err
 }
 

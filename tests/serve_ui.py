@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Temporary, clearly synthetic data for browser tests; never used by the shipped app."""
 from http.server import BaseHTTPRequestHandler
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,22 @@ import time
 from datetime import datetime, timezone
 
 from harness import wait_service_ready
+
+
+def posture_fingerprint(info, hosts):
+    # Match engine.postureFingerprint's ordered JSON projection, including sorted map keys.
+    posture = {
+        'Instance': info['instance_id'], 'Version': info['version'],
+        'Docker': info['docker_version'], 'API': info['api_version'],
+        'Image': info['image_id'], 'Runtime': info['runtime'],
+        'Limits': {key: info['limits'][key] for key in ('nano_cpus', 'memory_bytes', 'pids', 'tmpfs_bytes', 'max_sandboxes', 'max_seconds')},
+        'Networks': {key: info['networks'][key] for key in ('runner', 'verify')},
+        'Egress': info['egress'],
+        'Gateway': info['gateway'],
+        'Hosts': {kind: sorted(set(names)) for kind, names in sorted(hosts.items())},
+        'Repository': '', 'Checkout': '',
+    }
+    return hashlib.sha256(json.dumps(posture, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
 
 project = Path(__file__).resolve().parents[1]
 binary = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(project / 'bin/octomus-agent'))).resolve()
@@ -54,10 +71,11 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     put('pr', 'fixture/project:31', observation(31, 'Adjust the retry backoff', 'contributor/backoff', False, 'c' * 40))
     put('pr', 'fixture/project:7', observation(7, 'Record the first delivered change', 'octomus/first-delivery', True, 'd' * 40, delivered='e' * 40))
     checks = [('non_root', 'Runs as an unprivileged user', 'uid 10001'), ('no_capabilities', 'Holds no Linux capabilities', 'effective 0000000000000000, bounding 0000000000000000'), ('no_new_privileges', 'Cannot gain privileges through setuid programs', 'no_new_privs 1'), ('seccomp', 'System calls are filtered by seccomp', 'seccomp mode 2'), ('read_only_image', 'The image filesystem is read-only', 'read-only'), ('no_orchestrator_state', 'Cannot see Octomus state, secrets or the Docker socket', 'none visible'), ('no_direct_egress', 'Has no direct route to the internet', 'no route'), ('no_external_dns', 'Cannot resolve internet names directly', 'lookup refused'), ('no_host_route', 'Has no gateway to the host or its neighbours', 'no default route'), ('resource_limits', 'Runs under memory and process limits', 'memory.max 4294967296, pids.max 1024'), ('egress_gateway', 'The egress gateway refuses unlisted, metadata and local targets', 'refused example.com:443, 169.254.169.254:80, localhost:4200')]
-    put('settings', 'sandbox_self_test', {'at': now, 'passed': True, 'checks': [{'id': i, 'label': label, 'passed': True, 'detail': detail} for i, label, detail in checks], 'kernel': 'synthetic', 'image_id': 'sha256:' + 'f' * 64, 'error': None})
+    broker_info = {'instance_id': 'synthetic-browser-broker', 'version': '0.1.0', 'docker_version': '29.0.0', 'api_version': '1.51', 'image': 'octomus-sandbox:local', 'image_id': 'sha256:' + 'f' * 64, 'image_digests': [], 'runtime': '', 'runners': {'codex': 'codex-cli 0.153.4', 'opencode': '1.18.30'}, 'limits': {'nano_cpus': 2000000000, 'memory_bytes': 4294967296, 'pids': 1024, 'tmpfs_bytes': 1073741824, 'max_sandboxes': 12, 'max_seconds': 21600}, 'networks': {'runner': 'octomus-sandbox-runner', 'verify': 'octomus-sandbox-verify'}, 'egress': True, 'gateway': {'instance_id': 'synthetic-egress-gateway', 'policy_fingerprint': 'a' * 64}, 'live': 0}
+    egress_hosts = {'model': ['chatgpt.com', 'auth.openai.com', 'api.openai.com'], 'build': ['proxy.golang.org', 'registry.npmjs.org']}
+    put('settings', 'sandbox_self_test', {'at': now, 'passed': True, 'checks': [{'id': i, 'label': label, 'passed': True, 'detail': detail} for i, label, detail in checks], 'kernel': 'synthetic', 'image_id': broker_info['image_id'], 'runtime': broker_info['runtime'], 'posture_fingerprint': posture_fingerprint(broker_info, egress_hosts), 'error': None})
     db.commit()
     db.close()
-    broker_info = {'version': '0.1.0', 'docker_version': '29.0.0', 'api_version': '1.51', 'image': 'octomus-sandbox:local', 'image_id': 'sha256:' + 'f' * 64, 'image_digests': [], 'runtime': '', 'runners': {'codex': 'codex-cli 0.153.4', 'opencode': '1.18.30'}, 'limits': {'nano_cpus': 2000000000, 'memory_bytes': 4294967296, 'pids': 1024, 'tmpfs_bytes': 1073741824, 'max_sandboxes': 12, 'max_seconds': 21600}, 'networks': {'runner': 'octomus-sandbox-runner', 'verify': 'octomus-sandbox-verify'}, 'egress': True, 'live': 0}
 
     class Broker(BaseHTTPRequestHandler):
         """Synthetic sandbox broker: reports its posture and runs nothing."""
@@ -77,7 +95,7 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
 
     broker = socketserver.ThreadingUnixStreamServer(str(data / 'sandboxd.sock'), Broker)
     threading.Thread(target=broker.serve_forever, daemon=True).start()
-    env.update(OCTOMUS_SANDBOX='docker', OCTOMUS_SANDBOXD_SOCKET=str(data / 'sandboxd.sock'), OCTOMUS_EGRESS_MODEL_HOSTS='chatgpt.com,auth.openai.com,api.openai.com', OCTOMUS_EGRESS_BUILD_HOSTS='proxy.golang.org,registry.npmjs.org')
+    env.update(OCTOMUS_SANDBOX='docker', OCTOMUS_SANDBOXD_SOCKET=str(data / 'sandboxd.sock'), OCTOMUS_EGRESS_MODEL_HOSTS=','.join(egress_hosts['model']), OCTOMUS_EGRESS_BUILD_HOSTS=','.join(egress_hosts['build']))
     broker.daemon_threads = True
     with (data / 'service.log').open('w') as log:
         process = None
