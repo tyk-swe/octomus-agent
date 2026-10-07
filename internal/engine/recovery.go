@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
@@ -15,6 +17,21 @@ func (a *App) Recover() error {
 	a.runtimeMu.Lock()
 	a.runtime.cancelScanDone = false
 	a.runtimeMu.Unlock()
+
+	// Store transactions check the saved configuration, so it must carry the identity this deployment pins even when
+	// OCTOMUS_GITHUB_REPO changed after the last save.
+	saved, err := store.Get[config.Config](a.Store, "settings", "config")
+	if err != nil {
+		return err
+	}
+	if saved != nil {
+		if pinned := a.deployment.pin(*saved); !wirejson.Equal(*saved, pinned) {
+			if err := a.Store.Put("settings", "config", pinned); err != nil {
+				return err
+			}
+			_ = a.Store.Event("system", "configuration", "Saved configuration now names the repository this deployment pins")
+		}
+	}
 
 	// Scratch roots only ever hold a check that died with the previous process.
 	if err := workspace.RemoveOwnedDir(a.dataDir, filepath.Join(a.dataDir, scratchDir)); err != nil {

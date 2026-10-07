@@ -187,6 +187,28 @@ func TestAuditPlansWithoutQueueing(t *testing.T) {
 	assertAdmissions(t, f.state, f.cfg.PlanningCost(), "audit")
 }
 
+func TestAuditStartsAfterDeploymentRepositoryChange(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	completePlan(t, f).queue(f)
+	// Saved while the deployment pinned the repository's former name; the restarted deployment pins its current one.
+	saved := f.cfg.Clone()
+	saved.GitHubRepo = "fixture/former-name"
+	if err := f.state.Put("settings", "config", saved); err != nil {
+		t.Fatal(err)
+	}
+	app := f.pausedApp(t, WithDeployment(Deployment{Repository: f.repo, GitHubRepo: f.cfg.GitHubRepo}))
+	if err := app.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if err := control(app, "audit"); err != nil {
+		t.Fatalf("audit after the deployment's repository changed: %v", err)
+	}
+	if cycle := waitOnlyCycle(t, f.state); cycle.Status != model.CycleCompleted || cycle.Repository != f.cfg.GitHubRepo {
+		t.Fatalf("audit cycle = %v for %q; want completed for %q", cycle.Status, cycle.Repository, f.cfg.GitHubRepo)
+	}
+}
+
 func TestRunOnceCommitsPlan(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
