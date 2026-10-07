@@ -329,7 +329,7 @@ export function chooseStep(status: SetupStatus | null): SetupStep {
         ? 'A baseline check is running.'
         : status.active_tasks
           ? `${plural(status.active_tasks, 'active task')} may still finish and publish.`
-          : status.cycle_active
+          : status.cycle_active || status.active_cycle_mode
             ? 'A cycle is planning.'
             : !status.paused
               ? status.mode === 'continuous'

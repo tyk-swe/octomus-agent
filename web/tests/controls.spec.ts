@@ -497,3 +497,36 @@ test('controls share eligibility, refuse duplicate pending actions, and an audit
   expect(accessibility.violations).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+// A planning preflight has no cycle yet: the service reports it only through active_cycle_mode and refuses
+// Run once, audits and configuration changes until it ends.
+for (const mode of ['execution', 'audit'] as const) {
+  test(`a paused ${mode} planning preflight keeps planning controls and configuration locked`, async ({
+    page,
+    isMobile
+  }) => {
+    await patchState(page, (snapshot) => {
+      idle(snapshot);
+      snapshot.status = mode === 'audit' ? 'auditing' : 'paused';
+      snapshot.active_cycle_mode = mode;
+      snapshot.tasks = [];
+      snapshot.attention_tasks = [];
+      snapshot.counts = {};
+      snapshot.planning_capacity.status = 'ready';
+    });
+    await login(page);
+    await expect(page.locator('.status-value')).toHaveText(
+      mode === 'audit' ? 'auditing' : 'paused'
+    );
+    for (const name of ['Run once', 'Run an audit', 'Discover opportunities'])
+      await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+    await openNavigation(page, 'Configuration', !!isMobile);
+    await expect(
+      page.getByText('Pause the service and wait for active work to finish to edit configuration.')
+    ).toBeVisible();
+    await expect(page.getByLabel('Default branch', { exact: true })).toBeDisabled();
+    await expect(page.locator('[data-step="choose"]')).toContainText(
+      `Unavailable now: ${mode === 'audit' ? 'An audit is in progress.' : 'A cycle is planning.'}`
+    );
+  });
+}
