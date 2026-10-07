@@ -43,8 +43,17 @@ func (r *Remote) dial(ctx context.Context) (net.Conn, error) {
 
 // Info reports the broker's posture, refreshed at most every few seconds.
 func (r *Remote) Info(ctx context.Context) (wire.BrokerInfo, error) {
+	return r.readInfo(ctx, false)
+}
+
+// RefreshInfo bypasses the display cache when binding a containment probe to its actual posture.
+func (r *Remote) RefreshInfo(ctx context.Context) (wire.BrokerInfo, error) {
+	return r.readInfo(ctx, true)
+}
+
+func (r *Remote) readInfo(ctx context.Context, refresh bool) (wire.BrokerInfo, error) {
 	r.mu.Lock()
-	if !r.infoAt.IsZero() && time.Since(r.infoAt) < infoTTL {
+	if !refresh && !r.infoAt.IsZero() && time.Since(r.infoAt) < infoTTL {
 		info := r.info
 		r.mu.Unlock()
 		return info, nil

@@ -203,6 +203,7 @@ func (f *FrameWriter) Data(kind byte, p []byte) (int, error) {
 
 // BrokerInfo is what a sandbox broker reports about the isolation it enforces.
 type BrokerInfo struct {
+	InstanceID    string            `json:"instance_id"`
 	Version       string            `json:"version"`
 	DockerVersion string            `json:"docker_version"`
 	APIVersion    string            `json:"api_version"`
@@ -217,7 +218,15 @@ type BrokerInfo struct {
 	Limits       BrokerLimits      `json:"limits"`
 	Networks     BrokerNetworks    `json:"networks"`
 	Egress       bool              `json:"egress"`
+	Gateway      *GatewayPosture   `json:"gateway"`
 	Live         int               `json:"live"`
+}
+
+// GatewayPosture identifies the live gateway process and its immutable effective allowlists. A missing gateway
+// report when egress is enabled means that a saved containment proof cannot be treated as current.
+type GatewayPosture struct {
+	InstanceID        string `json:"instance_id"`
+	PolicyFingerprint string `json:"policy_fingerprint"`
 }
 
 type BrokerLimits struct {

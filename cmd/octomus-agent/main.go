@@ -272,7 +272,7 @@ func runDoctor(ctx context.Context, app *engine.App, mode model.CycleMode, stdou
 	if err != nil {
 		return err
 	}
-	result, warnings, err := app.Doctor(cfg, mode)
+	result, warnings, err := app.Doctor(ctx, cfg, mode)
 	for _, warning := range warnings {
 		fmt.Fprintf(stderr, "WARN %s\n", warning)
 	}

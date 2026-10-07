@@ -1,14 +1,17 @@
 package egress
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +32,7 @@ type Dialer func(ctx context.Context, address netip.AddrPort) (net.Conn, error)
 
 type Gateway struct {
 	policy  Policy
+	posture wire.GatewayPosture
 	leases  Leases
 	resolve Resolver
 	dial    Dialer
@@ -73,8 +77,11 @@ const (
 
 func New(policy Policy, leaseDir string, log io.Writer) *Gateway {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	// The gateway's policy and its identity report describe the same immutable copy.
+	policy.Model, policy.Build = slices.Clone(policy.Model), slices.Clone(policy.Build)
 	return &Gateway{
 		policy:  policy,
+		posture: wire.GatewayPosture{InstanceID: model.ID(), PolicyFingerprint: policy.fingerprint()},
 		leases:  Leases{Dir: leaseDir},
 		resolve: net.DefaultResolver,
 		dial: func(ctx context.Context, address netip.AddrPort) (net.Conn, error) {
@@ -398,10 +405,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		settled = true
 		return g.count(d, leaseFile, pending)
 	}
-	refuse := func(decision string, status int, host string, port uint16, reason string) {
+	recordRefusal := func(decision, host string, port uint16, reason string) {
 		d := Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: port, Decision: decision, Reason: reason}
 		_, _, unnamed := count(d)
 		g.logRefusal(d, "sandbox "+lease.Sandbox, unnamed)
+	}
+	refuse := func(decision string, status int, host string, port uint16, reason string) {
+		recordRefusal(decision, host, port, reason)
 		http.Error(w, "Octomus egress blocked this connection: "+reason, status)
 	}
 	deny := func(status int, host string, port uint16, reason string) {
@@ -489,17 +499,42 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer g.untrack(t)
+	// A CONNECT client sends TLS only after the 200. Bound both that reply and the initial ClientHello; lease
+	// revocation and gateway shutdown also close these tracked sockets while inspection is waiting.
+	if err := client.SetDeadline(time.Now().Add(clientHelloTimeout)); err != nil {
+		recordRefusal("failed", host, uint16(port), "setting TLS inspection deadline failed")
+		return
+	}
+	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		recordRefusal("failed", host, uint16(port), "client went away")
+		return
+	}
+	hello, err := readClientHello(buffered, host)
+	if err != nil {
+		decision, reason := "failed", "TLS ClientHello was not completed"
+		var refusal helloRefusal
+		var timeout net.Error
+		switch {
+		case errors.As(err, &refusal):
+			decision, reason = "denied", refusal.Error()
+		case t.reason() != "":
+			reason = t.reason()
+		case errors.As(err, &timeout) && timeout.Timeout():
+			reason = "TLS ClientHello deadline exceeded"
+		}
+		recordRefusal(decision, host, uint16(port), reason)
+		return
+	}
+	if err := client.SetDeadline(time.Time{}); err != nil {
+		recordRefusal("failed", host, uint16(port), "clearing TLS inspection deadline failed")
+		return
+	}
 	decision := Decision{Sandbox: lease.Sandbox, Kind: lease.Kind, Host: host, Port: uint16(port), Decision: "allowed",
 		Tunnel: g.tunnelIDs.Add(1)}
 	_, _, unnamed := count(decision)
 	logged := g.logOpened(decision, unnamed)
 	started := time.Now()
-	var up, down int64
-	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		t.cut("client went away")
-	} else {
-		up, down = g.splice(t, buffered)
-	}
+	up, down := g.splice(t, io.MultiReader(bytes.NewReader(hello), buffered))
 	if logged {
 		closed := decision
 		closed.Decision, closed.Reason = "closed", t.reason()

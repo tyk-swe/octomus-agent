@@ -98,9 +98,14 @@ func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, e
 		from += " INDEXED BY meta_status"
 		filter = " AND status=?3"
 	}
+	args := []any{kind, query.before(), status, orEmpty(query.Q), int64(n)}
+	if kind == "cycle" && filterAll(query.Cycle) != "" {
+		filter += " AND id=?6"
+		args = append(args, *query.Cycle)
+	}
 	rows, err := c.QueryContext(background,
 		"SELECT summary,seq,id FROM "+from+" WHERE kind=?1 AND seq<?2"+filter+" AND (?4='' OR instr(lower(title || ' ' || target || ' ' || summary),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
-		kind, query.before(), status, orEmpty(query.Q), int64(n))
+		args...)
 	if err != nil {
 		return nil, err
 	}
@@ -675,8 +680,34 @@ func (s *Store) RecordPRObservation(repository string, p model.PullRequest, deli
 	return txPut(s.conn, "pr", recordID, observation)
 }
 
-func (s *Store) DecisionMemory(repository string) ([]any, error) {
-	return listRecords[any](s, "SELECT data FROM records WHERE kind='decision' AND json_extract(data,'$.repository')=?1 COLLATE NOCASE ORDER BY rowid DESC LIMIT 100", repository)
+// decisionRecords excludes alternatives absorbed by an accepted proposal in the same cycle,
+// including legacy records written before recordDecisions omitted those alternatives.
+const decisionRecords = ` WHERE d.kind='decision'
+	AND json_extract(d.data,'$.repository')=?1 COLLATE NOCASE
+	AND COALESCE(json_extract(d.data,'$.problem_key'),'')!=''
+	AND (json_extract(d.data,'$.decision')='accepted' OR NOT EXISTS (
+		SELECT 1 FROM records a WHERE a.kind='decision'
+		AND json_extract(a.data,'$.repository')=json_extract(d.data,'$.repository') COLLATE NOCASE
+		AND json_extract(a.data,'$.target')=json_extract(d.data,'$.target')
+		AND json_extract(a.data,'$.problem_key')=json_extract(d.data,'$.problem_key')
+		AND json_extract(a.data,'$.cycle_id')=json_extract(d.data,'$.cycle_id')
+		AND json_extract(a.data,'$.decision')='accepted'))`
+
+// DecisionMemory bounds prompt context after selecting targets planning can actually use.
+func (s *Store) DecisionMemory(repository string, targets []string) ([]model.DecisionRecord, error) {
+	encoded, err := wirejson.Marshal(targets)
+	if err != nil {
+		return nil, err
+	}
+	return listRecords[model.DecisionRecord](s, "SELECT d.data FROM records d"+decisionRecords+
+		" AND json_extract(d.data,'$.target') IN (SELECT value FROM json_each(?2)) ORDER BY d.rowid DESC LIMIT 100", repository, string(encoded))
+}
+
+// DecisionsForProblem is the authoritative history for admission; unrelated decisions
+// and prompt limits must not evict a still-current decision for this exact identity.
+func (s *Store) DecisionsForProblem(repository, target, problem string) ([]model.DecisionRecord, error) {
+	return listRecords[model.DecisionRecord](s, "SELECT d.data FROM records d INDEXED BY decision_identity"+decisionRecords+
+		" AND json_extract(d.data,'$.target')=?2 AND json_extract(d.data,'$.problem_key')=?3 ORDER BY d.rowid DESC", repository, target, problem)
 }
 
 func (s *Store) RediscoveryRequests(repository string) ([]any, error) {

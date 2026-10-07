@@ -57,7 +57,7 @@ func TestCreateWarnings(t *testing.T) {
 	b := e.broker(t, testConfig(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := b.runSandbox(ctx, plan{kind: wire.KindProbe, probe: wire.ProbeVersions, timeout: time.Minute}, discard, discard, nil)
+	_, err := b.runSandbox(ctx, ctx, plan{kind: wire.KindProbe, probe: wire.ProbeVersions, timeout: time.Minute}, discard, discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "swap limit") {
 		t.Fatalf("create with a dropped limit = %v; want a refusal naming the warning", err)
 	}
@@ -84,7 +84,7 @@ func TestKillReport(t *testing.T) {
 		}
 		done := make(chan ended, 1)
 		go func() {
-			report, err := b.runSandbox(context.Background(), probePlan(timeout), discard, discard, controls)
+			report, err := b.runSandbox(context.Background(), context.Background(), probePlan(timeout), discard, discard, controls)
 			done <- ended{report, err}
 		}()
 		<-e.WaitCreated(t, 1).Exited()
@@ -122,7 +122,7 @@ func TestWaitErrorFailsSandbox(t *testing.T) {
 	e.run = func(c *fakeContainer) { c.End(0) }
 	e.waitError = "daemon lost the container"
 	b := e.broker(t, testConfig(t))
-	report, err := b.runSandbox(context.Background(), probePlan(time.Minute), discard, discard, nil)
+	report, err := b.runSandbox(context.Background(), context.Background(), probePlan(time.Minute), discard, discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "daemon lost the container") {
 		t.Fatalf("wait error = %v, report %+v; want the sandbox to fail with the daemon's message", err, report)
 	}

@@ -38,7 +38,7 @@ func (b *Broker) inspectImage(ctx context.Context) (engineImage, error) {
 // image resolves the configured tag for a new sandbox. An image rebuilt under the same tag takes effect for the next
 // sandbox, with its runner versions probed again; a tag that no longer resolves fails clearly, rather than leaving
 // sandboxes on an image that may already be pruned. A rebuilt image whose probe failed is refused for probeRetry.
-func (b *Broker) image(ctx context.Context) (string, error) {
+func (b *Broker) image(ctx, base context.Context) (string, error) {
 	image, err := b.inspectImage(ctx)
 	if err != nil {
 		return "", err
@@ -63,7 +63,7 @@ func (b *Broker) image(ctx context.Context) (string, error) {
 	if b.failed.id == image.ID && time.Since(b.failed.at) < probeRetry {
 		return "", b.failed.err
 	}
-	versions, failures, err := b.probeVersions(ctx, image.ID)
+	versions, failures, err := b.probeVersions(ctx, base, image.ID)
 	if err != nil {
 		err = fmt.Errorf("Probing runner versions in the rebuilt sandbox image %s: %w", b.cfg.Image, err)
 		// A request that gave up says nothing about the image.
@@ -81,7 +81,7 @@ func (b *Broker) image(ctx context.Context) (string, error) {
 
 // probeVersions runs the version probe on image. It returns each installed runner's version, and why each runner that
 // is installed but did not answer failed (nil when none did), so the broker never reports that one as missing.
-func (b *Broker) probeVersions(ctx context.Context, image string) (map[string]string, map[string]string, error) {
+func (b *Broker) probeVersions(ctx, base context.Context, image string) (map[string]string, map[string]string, error) {
 	p, err := b.cfg.plan(wire.Request{Kind: wire.KindProbe, Mode: wire.ProbeVersions, Timeout: 120})
 	if err != nil {
 		return nil, nil, err
@@ -97,7 +97,7 @@ func (b *Broker) probeVersions(ctx context.Context, image string) (map[string]st
 			return nil
 		}
 	}
-	report, err := b.runSandbox(ctx, p, collect(&stdout), collect(&stderr), nil)
+	report, err := b.runSandbox(ctx, base, p, collect(&stdout), collect(&stderr), nil)
 	if err != nil {
 		return nil, nil, err
 	}

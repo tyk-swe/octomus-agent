@@ -293,7 +293,7 @@ func (c *client) Start(route config.Route, cwd string, resume *string) (string, 
 	return session, nil
 }
 
-func (c *client) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
+func (c *client) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema, started func() error) (string, error) {
 	reply, err := func() (Reply, error) {
 		c.script.mu.Lock()
 		defer c.script.mu.Unlock()
@@ -316,6 +316,11 @@ func (c *client) Turn(session string, route config.Route, cwd, prompt string, sc
 	}()
 	if err != nil {
 		return "", err
+	}
+	if started != nil {
+		if err := started(); err != nil {
+			return "", err
+		}
 	}
 	if reply.Gate != nil {
 		reply.Gate.enterOnce.Do(func() { close(reply.Gate.entered) })

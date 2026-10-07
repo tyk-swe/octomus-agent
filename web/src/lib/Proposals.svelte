@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type { CycleSummary, Page, ProposalDetail, ProposalRow } from './types';
+  import type { CycleSummary, ProposalDetail, ProposalRow } from './types';
   /** A proposal row with the full detail this view has requested for it. */
   export type ProposalEntry = ProposalRow & {
     detail?: ProposalDetail;
@@ -12,6 +12,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
+  import { CycleHistory, type CycleHistoryState } from './cycleHistory';
   import Badge from './Badge.svelte';
   import { DECISIONS, cycleLabel, decisionTone } from './evidence';
   import FilterTabs from './FilterTabs.svelte';
@@ -24,6 +25,7 @@
   // component mounted and renders it while `active`.
   let {
     active,
+    snapshots,
     rows,
     counts,
     loaded,
@@ -39,6 +41,7 @@
     navigationGeneration
   }: {
     active: boolean;
+    snapshots: CycleSummary[];
     rows: ProposalRow[];
     counts: Record<string, number>;
     loaded: boolean;
@@ -57,16 +60,22 @@
   } = $props();
   const PROPOSAL_FILTERS = ['all', ...DECISIONS];
   let entries = $state<ProposalEntry[]>([]);
-  let cycleRows = $state<CycleSummary[]>([]);
+  let historyState = $state<CycleHistoryState>({
+    rows: [],
+    cursor: null,
+    loading: false,
+    error: ''
+  });
+  const history = new CycleHistory((state) => (historyState = state));
+  let cycleRows = $derived(historyState.rows);
   let selectedCycle = $derived(cycle === 'all' ? undefined : cycleRows.find((c) => c.id === cycle));
-  let cycleCursor = $state<number | null>(null);
-  let cyclesLoading = $state(false);
+  let cycleCursor = $derived(historyState.cursor);
+  let cyclesLoading = $derived(historyState.loading);
   let refreshMessage = $state('');
-  let refreshError = $state('');
+  let refreshError = $derived(historyState.error);
   let retryButton = $state<HTMLButtonElement>();
   let cyclePicker = $state<HTMLSelectElement>();
   let retryNavigation = -1;
-  let cycleRequest = Promise.resolve();
   let disposed = false;
   let tabCounts = $derived({
     all: Object.values(counts).reduce((n, v) => n + v, 0),
@@ -74,10 +83,13 @@
   } as Record<string, number | undefined>);
   onDestroy(() => {
     disposed = true;
+    history.cancel();
   });
   $effect.pre(() => {
     if (
       !refreshMessage &&
+      !refreshError &&
+      !cyclesLoading &&
       active &&
       retryNavigation === navigationGeneration() &&
       retryButton &&
@@ -106,49 +118,33 @@
       });
     });
   });
-  export function loadCycles(more = false) {
-    const request = cycleRequest.then(async () => {
-      if (disposed) return;
-      if (more && cycleCursor === null) return;
-      const completedAction = refreshMessage;
-      let before = more ? cycleCursor : null;
-      const oldest = more ? undefined : cycleRows.at(-1)?.id;
-      const history: CycleSummary[] = [];
-      do {
-        const params = new URLSearchParams({ limit: '100' });
-        if (before !== null) params.set('before', String(before));
-        const page = await api<Page<CycleSummary>>(`/cycles?${params}`);
-        const boundary = oldest ? page.items.findIndex((c) => c.id === oldest) : -1;
-        history.push(...(boundary < 0 ? page.items : page.items.slice(0, boundary + 1)));
-        if (boundary >= 0) {
-          // The page may extend past the loaded history. Keep its existing opaque
-          // cursor so Load older resumes at the first row we have not retained.
-          before = cycleCursor;
-          break;
-        }
-        before = page.next_cursor;
-      } while (!more && before !== null && oldest);
-      cycleRows = more ? [...cycleRows, ...history] : history;
-      cycleCursor = before;
-      if (!more && completedAction && completedAction === refreshMessage) {
-        refreshMessage = '';
-        refreshError = '';
-      }
-    });
-    cycleRequest = request.catch(() => {});
-    return request;
-  }
-  async function loadOlderCycles() {
-    onintent();
-    cyclesLoading = true;
-    error = '';
-    try {
-      await loadCycles(true);
-    } catch (e) {
-      if (!disposed) error = `Could not load older cycles. ${(e as Error).message}`;
-    } finally {
-      if (!disposed) cyclesLoading = false;
+  $effect(() => {
+    if (!active) {
+      history.cancel();
+      return;
     }
+    const selected = cycle;
+    untrack(() => {
+      history.cancel();
+      void loadCycles(selected);
+    });
+    return () => history.cancel();
+  });
+  $effect(() => {
+    if (!active) return;
+    void snapshots;
+    untrack(() => void loadCycles(cycle));
+  });
+  async function loadCycles(selected = cycle) {
+    if (!active || disposed) return;
+    const completedAction = refreshMessage;
+    const loaded = await history.refresh(selected);
+    if (loaded && !disposed && completedAction && completedAction === refreshMessage)
+      refreshMessage = '';
+  }
+  function loadOlderCycles() {
+    onintent();
+    void history.older();
   }
   async function loadProposal(p: ProposalEntry) {
     p.detailRequested = true;
@@ -181,19 +177,17 @@
       if (disposed) return;
       applied = true;
       refreshMessage = value === 'archive' ? 'Cycle archived.' : 'Cycle workspaces discarded.';
-      refreshError = '';
       // History recovery guards duplicate cycle actions independently. The
       // accepted mutation must leave running work pausable during its reads.
       busy = false;
       pendingAction = '';
       ownsBusy = false;
-      await loadCycles();
-      if (disposed) return;
+      history.cancel();
+      void loadCycles();
       await onrefresh();
     } catch (e) {
       if (!disposed) {
-        if (applied) refreshError = (e as Error).message;
-        else error = `Cycle action failed. ${(e as Error).message}`;
+        if (!applied) error = `Cycle action failed. ${(e as Error).message}`;
       }
     } finally {
       if (ownsBusy && !disposed) {
@@ -202,18 +196,10 @@
       }
     }
   }
-  async function retryCycleHistory() {
+  function retryCycleHistory() {
     if (cyclesLoading) return;
-    cyclesLoading = true;
-    try {
-      await loadCycles();
-      if (disposed) return;
-      await onrefresh();
-    } catch (e) {
-      if (!disposed) refreshError = (e as Error).message;
-    } finally {
-      if (!disposed) cyclesLoading = false;
-    }
+    void loadCycles();
+    void onrefresh();
   }
 </script>
 
@@ -221,7 +207,7 @@
   <p class="muted">
     Audits record recommendations without queuing work. A later execution cycle plans afresh.
   </p>
-  {#if refreshMessage}<RecoveryNotice
+  {#if refreshMessage || refreshError}<RecoveryNotice
       message={refreshMessage}
       error={refreshError}
       loading={cyclesLoading}
@@ -231,6 +217,9 @@
       bind:button={retryButton}
     />{/if}
   <div class="actions">
+    {#if cyclesLoading && !cycleRows.length && !refreshMessage && !refreshError}
+      <span class="muted" role="status">Loading cycle history…</span>
+    {/if}
     {#if cycleCursor !== null}<button
         class="button"
         disabled={cyclesLoading}
@@ -255,7 +244,13 @@
   <div class="proposal-controls">
     <div class="cycle-picker">
       <label for="proposal-cycle">Cycle</label>
-      <select id="proposal-cycle" bind:this={cyclePicker} bind:value={cycle} onfocus={onintent}>
+      <select
+        id="proposal-cycle"
+        bind:this={cyclePicker}
+        bind:value={cycle}
+        onfocus={onintent}
+        aria-busy={cyclesLoading}
+      >
         <option value="all">All cycles</option>
         {#each cycleRows as row}<option value={row.id}
             >{cycleLabel(row)} · {row.status}{row.lifecycle.discarded_at

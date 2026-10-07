@@ -313,6 +313,9 @@ func requireDefaultRevision(ctx context.Context, cfg config.Config, want string)
 
 func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 	c := task.ExecutionConfig()
+	if err := a.checkSandboxTimeouts(ctx, c); err != nil {
+		return err
+	}
 	if task.Lifecycle.DiscardedAt != nil || task.Lifecycle.ArchivedAt != nil {
 		return model.BlockedWorkspaceInvalid
 	}
@@ -448,7 +451,7 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 	}
 	_, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
-		resume: task.ExecutionSession, keep: func(session string) { task.ExecutionSession = &session },
+		resume: task.ExecutionSession, keep: func(session *string) { task.ExecutionSession = session },
 		prompt: executorPrompt(task, cfg), reserved: admissionReserved,
 	})
 	return err
@@ -479,7 +482,7 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	}
 	_, err = a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "repair", route: cfg.RepairRoute, workspace: task.Workspace,
-		resume: task.RepairSession, keep: func(session string) { task.RepairSession = &session },
+		resume: task.RepairSession, keep: func(session *string) { task.RepairSession = session },
 		prompt: prompt,
 		completed: func() {
 			*task.RepairRounds++

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -191,8 +192,8 @@ var errStorageIncomplete = errors.New("Storage measurement is incomplete")
 
 // measuredBytes returns only complete observations. An unknown subtree must not turn a partial byte count into a
 // fresh measured total; application snapshots retain their previous timestamp and runner observations report error.
-func measuredBytes(path string) (uint64, error) {
-	usage, err := workspace.Measure(path, 0)
+func measuredBytes(ctx context.Context, path string) (uint64, error) {
+	usage, err := workspace.Measure(ctx, path, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -203,15 +204,15 @@ func measuredBytes(path string) (uint64, error) {
 }
 
 func (a *App) measureStorage(cfg config.Config) error {
-	application, err := measuredBytes(a.dataDir)
+	application, err := measuredBytes(a.ctx, a.dataDir)
 	if err != nil {
 		return err
 	}
-	tasks, err := measuredBytes(filepath.Join(a.dataDir, "tasks"))
+	tasks, err := measuredBytes(a.ctx, filepath.Join(a.dataDir, "tasks"))
 	if err != nil {
 		return err
 	}
-	planning, err := measuredBytes(filepath.Join(a.dataDir, "cycles"))
+	planning, err := measuredBytes(a.ctx, filepath.Join(a.dataDir, "cycles"))
 	if err != nil {
 		return err
 	}
@@ -227,7 +228,7 @@ func (a *App) measureStorage(cfg config.Config) error {
 			info, statErr := os.Stat(path)
 			if statErr != nil || !info.IsDir() {
 				entry.Status = "unavailable"
-			} else if bytes, sizeErr := measuredBytes(path); sizeErr != nil {
+			} else if bytes, sizeErr := measuredBytes(a.ctx, path); sizeErr != nil {
 				entry.Status = "error"
 			} else {
 				entry.Bytes = &bytes

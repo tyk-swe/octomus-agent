@@ -297,7 +297,11 @@ func (c *Codex) rpc(method string, params map[string]any, deadline time.Time, wh
 		if idMatches(v["id"], id) {
 			if e, hasErr := v["error"]; hasErr {
 				encoded, _ := marshal(e)
-				return nil, fmt.Errorf("Codex %s: %s", method, redact.Text(encoded))
+				callErr := fmt.Errorf("Codex %s: %s", method, redact.Text(encoded))
+				if missingCodexThread(method, params, e) {
+					return nil, errors.Join(callErr, ErrSessionMissing)
+				}
+				return nil, callErr
 			}
 			result, ok := v["result"]
 			if !ok {
@@ -309,6 +313,21 @@ func (c *Codex) rpc(method string, params map[string]any, deadline time.Time, wh
 			return nil, err
 		}
 	}
+}
+
+// The pinned protocol uses InvalidRequest and this exact identity-bearing message.
+// A different error, including an unrelated request mentioning rollout loss, is not proof.
+func missingCodexThread(method string, params map[string]any, value any) bool {
+	if method != "thread/resume" {
+		return false
+	}
+	id, ok := strAt(params, "threadId")
+	if !ok || id == "" {
+		return false
+	}
+	failure, _ := asObject(value)
+	code, _ := failure["code"].(json.Number)
+	return code.String() == "-32600" && failure["message"] == "no rollout found for thread id "+id
 }
 
 func idMatches(v any, id uint64) bool {
@@ -416,23 +435,29 @@ func (c *Codex) Start(route config.Route, cwd string, resume *string) (string, e
 	return identity, nil
 }
 
-func (c *Codex) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
+func (c *Codex) Turn(session string, route config.Route, cwd, prompt string, schema schemas.Schema, started func() error) (string, error) {
 	if err := requireRoute(route, config.BackendCodex); err != nil {
 		return "", err
 	}
-	answer, err := c.turn(session, route, cwd, prompt, schema)
+	answer, err := c.turn(session, route, cwd, prompt, schema, started)
 	if err != nil {
 		return "", err
 	}
 	return FinishTurn(answer, schema)
 }
 
-func (c *Codex) turn(thread string, route config.Route, cwd, prompt string, schema schemas.Schema) (string, error) {
+func (c *Codex) turn(thread string, route config.Route, cwd, prompt string, schema schemas.Schema, started func() error) (string, error) {
 	// Starting the turn and consuming pre-response notifications spend the same allowance as its completion.
 	deadline := time.Now().Add(time.Duration(c.timeout) * time.Second)
 	turn, err := c.startTurn(thread, route, cwd, prompt, schema, deadline)
 	if err != nil {
 		return "", err
+	}
+	if started != nil {
+		if err := started(); err != nil {
+			c.interrupt(thread, turn)
+			return "", err
+		}
 	}
 	answer, err := c.awaitTurn(thread, turn, deadline)
 	if err != nil {

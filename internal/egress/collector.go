@@ -2,14 +2,17 @@ package egress
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
 // Summary is what one sandbox did through the gateway, kept until the broker collects it. Denied holds policy
@@ -39,9 +42,15 @@ const summaryPath = "/v1/summary"
 // credentials or full policy, and is served only on the broker's local collector socket.
 const probeTargetPath = "/v1/probe-target"
 
+const posturePath = "/v1/posture"
+
 // ServeCollector answers the broker's request for a finished sandbox's summary on a local socket.
 func (g *Gateway) ServeCollector(ctx context.Context, listener net.Listener) error {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+posturePath, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(g.posture)
+	})
 	mux.HandleFunc("GET "+probeTargetPath, func(w http.ResponseWriter, r *http.Request) {
 		target, err := g.policy.probeTarget()
 		if err != nil {
@@ -61,6 +70,25 @@ func (g *Gateway) ServeCollector(ctx context.Context, listener net.Listener) err
 		_ = json.NewEncoder(w).Encode(g.collect(name))
 	})
 	return serveUntil(ctx, &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}, listener)
+}
+
+// FetchGatewayPosture reads the running gateway's identity and actual policy, not the control plane's environment
+// copy. An older or unreachable collector, or an invalid identity, leaves containment proof noncurrent.
+func FetchGatewayPosture(ctx context.Context, socket string) (wire.GatewayPosture, error) {
+	var posture wire.GatewayPosture
+	if err := fetch(ctx, socket, posturePath, 1024, &posture); err != nil {
+		return posture, err
+	}
+	if !validGatewayPosture(posture) {
+		return wire.GatewayPosture{}, errors.New("invalid egress gateway posture")
+	}
+	return posture, nil
+}
+
+func validGatewayPosture(posture wire.GatewayPosture) bool {
+	_, err := uuid.Parse(posture.InstanceID)
+	digest, digestErr := hex.DecodeString(posture.PolicyFingerprint)
+	return err == nil && digestErr == nil && len(digest) == 32
 }
 
 // fetch asks the collector on socket for path and decodes its JSON answer, of at most limit bytes, into out.

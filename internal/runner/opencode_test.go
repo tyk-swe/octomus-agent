@@ -27,7 +27,7 @@ func TestOpenCodeSessions(t *testing.T) {
 	if !strings.HasPrefix(session, "ses_") {
 		t.Fatalf("session identity: %q", session)
 	}
-	answer, err := client.Turn(session, route(), f.workspace, "Fixture prompt", nil)
+	answer, err := client.Turn(session, route(), f.workspace, "Fixture prompt", nil, nil)
 	if err != nil {
 		t.Fatalf("turn: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestOpenCodeSessions(t *testing.T) {
 	if fresh == session {
 		t.Fatal("a new session must have a new identity")
 	}
-	review, err := client.Turn(fresh, route(), f.workspace, "Fixture prompt", schemas.ReviewSchema())
+	review, err := client.Turn(fresh, route(), f.workspace, "Fixture prompt", schemas.ReviewSchema(), nil)
 	if err != nil {
 		t.Fatalf("structured turn: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestOpenCodeFailures(t *testing.T) {
 				t.Fatalf("start: %v", err)
 			}
 			f.mode("opencode", mode)
-			result, err := client.Turn(session, route(), f.workspace, "Fixture prompt", schemas.ReviewSchema())
+			result, err := client.Turn(session, route(), f.workspace, "Fixture prompt", schemas.ReviewSchema(), nil)
 			if err == nil {
 				t.Fatalf("%s unexpectedly succeeded: %q", mode, result)
 			}

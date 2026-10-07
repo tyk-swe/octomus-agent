@@ -32,7 +32,7 @@ func TestStructuredAnswerChecks(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = clients.Turn(session, reviewer, ws, "review", schemas.ReviewSchema())
+		_, err = clients.Turn(session, reviewer, ws, "review", schemas.ReviewSchema(), nil)
 		if !errors.Is(err, model.BlockedRunnerUnavailable) || !strings.Contains(err.Error(), want) {
 			t.Fatalf("got %v, want %q", err, want)
 		}

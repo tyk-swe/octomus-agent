@@ -172,6 +172,13 @@ Each sandbox receives proxy variables carrying its own random credential. The ga
   (including cloud metadata), carrier-grade NAT, documentation, benchmark, reserved or
   IPv4-embedding IPv6 addresses;
 - dials the address it checked, so DNS rebinding cannot redirect the tunnel;
+- inspects the initial TLS ClientHello before forwarding any client bytes and requires
+  its plaintext SNI name to match the `CONNECT` host. Missing, malformed, duplicate or
+  mismatched names and Encrypted ClientHello (ECH, including GREASE) are refused. Clients
+  must use plaintext SNI with ECH disabled;
+- bounds that inspection to 10 seconds, a 64 KiB ClientHello and 128 KiB of encoded TLS
+  records. It accepts fragmented records and TCP writes and replays the original bytes
+  unchanged after validation. A refusal after the `CONNECT` response closes the tunnel;
 - bounds open tunnels per sandbox and connections per source, closes every refused
   connection, and ends a sandbox's tunnels as soon as its lease is revoked;
 - logs each tunnel as a JSON line when it opens and again when it closes, and each refusal
@@ -193,6 +200,19 @@ gets the Codex hosts above. List only what the project needs. Every allowed host
 out for data, and an allowlist is not data-loss prevention: an allowed multi-tenant
 service, such as a package registry or a model API used with someone else's key, can still
 carry data to an account that is not yours.
+
+The gateway binds the initial [SNI](https://www.rfc-editor.org/rfc/rfc6066.html#section-3)
+to the allowlisted `CONNECT` authority and vets its resolved addresses. It does not
+terminate TLS, validate the upstream certificate, or inspect encrypted HTTP `Host` /
+`:authority` values. Clients remain responsible for certificate verification. A shared
+endpoint that accepts an allowed SNI but routes a different encrypted HTTP authority can
+still permit domain fronting; allowing a multi-tenant endpoint also allows its supported
+accounts and services. Tunnel audit names identify the `CONNECT` authority, confirmed
+against the initial plaintext SNI, and do not attest to every encrypted application
+destination. [ECH](https://www.rfc-editor.org/rfc/rfc9849.html) is refused because the
+visible outer name cannot establish the encrypted inner name. The inspection follows
+the [TLS record and handshake framing](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.1)
+without rewriting either.
 
 ## Signing in a runner
 
@@ -236,12 +256,24 @@ below), so keep your copy and install it again whenever in doubt.
 | `OCTOMUS_SANDBOX_PIDS` | `1024` | Processes per sandbox |
 | `OCTOMUS_SANDBOX_TMPFS` | `1g` | Size of `/tmp` |
 | `OCTOMUS_SANDBOX_MAX` | `12` | Live sandboxes at once; more requests wait for a slot |
+| `OCTOMUS_SANDBOX_MAX_SECONDS` | `21600` (6 hours) | Hard lifetime of each container, including runner startup; 60–604800 seconds |
 | `OCTOMUS_SANDBOX_RUNTIME` | Docker's default | Container runtime, for example `runsc` |
 
 The worst case is `OCTOMUS_SANDBOX_MAX` × `OCTOMUS_SANDBOX_MEMORY`. A planning pass starts
 eight to ten discovery agents at once, so size these for the host. Evidence of memory-limit
 kills depends on [Docker's OOM reporting](#what-each-session-recorded). Sandbox logs are
 never kept by Docker, so runner transcripts do not accumulate on the host's disk.
+
+The Overview displays the broker's hard lifetime. In Docker mode, saving settings,
+connection checks and execution preflights reject a session timeout above that limit,
+or a command timeout whose additional 60-second verification shutdown grace does not
+fit. Every new runner connection rechecks the live limit, including later turns of a
+task already in progress. A non-probe request above the limit is refused by the broker instead of silently
+shortened; internal diagnostic probes remain capped. Raise the host-owned value in
+`.env` and recreate `sandboxd`, or lower the saved timeout. Runner startup consumes part
+of a container's hard lifetime, so leave margin when choosing a session timeout.
+The task timeout may span several containers and need not fit one container's limit.
+Host mode retains the application's ordinary timeout range without a broker cap.
 
 Volumes have no disk quota. Octomus checks application storage before admitting work (see
 [configuration](configuration.md)); keep an eye on free space on a shared host.
@@ -283,6 +315,13 @@ Those settings are host-owned, and the dashboard shows them read-only.
 
 ## Prove it: the self-test
 
+Proof is tied to the live broker and egress gateway identities and their reported policy.
+Each broker info request reads the gateway's boot identity and actual allowlist fingerprint
+from its local collector. Recreating only the gateway therefore invalidates earlier proof,
+even if the control plane still displays its original deployment environment. If the
+collector is unavailable or too old to report its identity, networked proof is noncurrent;
+run the self-test again after the gateway is available.
+
 **Check connection** runs the containment self-test before anything else. You can also run
 it from the Sandbox panel on the Overview, or with `POST /api/sandbox/self-test`. A probe
 sandbox checks, from inside:
@@ -307,7 +346,13 @@ both allowlists. A networked self-test requires a reachable `OCTOMUS_EGRESS_COLL
 without the gateway's policy-selected target, it fails before starting the probe.
 
 A failed check fails the connection check, names what the probe saw, and appears on the
-Overview. The last result is kept with the image it ran on.
+Overview. The last result is kept with a fingerprint of the image, broker process,
+Docker/API versions, runtime, limits, networks, live gateway identity and policy, and
+deployment settings. The probe reads fresh posture before and after its run; a change
+during the check cannot produce current proof. A broker or gateway restart, changed
+settings, or unavailable gateway invalidates old proof and requires a new self-test.
+Legacy saved results without a fingerprint remain readable but do not count as current
+containment evidence.
 
 ## Extend the sandbox image
 

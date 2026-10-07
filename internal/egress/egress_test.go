@@ -5,6 +5,8 @@ package egress
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -117,6 +119,7 @@ type gatewayFixture struct {
 	dialed   chan netip.AddrPort
 	log      *testutil.SyncBuffer
 	leases   string
+	roots    *x509.CertPool
 }
 
 func newGatewayFixture(t *testing.T, kind string, configure ...func(*Gateway)) *gatewayFixture {
@@ -127,7 +130,8 @@ func newGatewayFixture(t *testing.T, kind string, configure ...func(*Gateway)) *
 	if err := os.WriteFile(filepath.Join(leases, leaseFile(token)), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	certificate, roots := gatewayCertificate(t)
+	echo, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{certificate}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +151,7 @@ func newGatewayFixture(t *testing.T, kind string, configure ...func(*Gateway)) *
 	model, _ := ParseRules("api.openai.com")
 	build, _ := ParseRules("registry.npmjs.org, internal.example.com")
 	f := &gatewayFixture{
-		token: token, dialed: make(chan netip.AddrPort, 8), log: &testutil.SyncBuffer{},
+		token: token, dialed: make(chan netip.AddrPort, 8), log: &testutil.SyncBuffer{}, roots: roots,
 		resolver: &recordingResolver{answers: map[string][]netip.Addr{
 			"api.openai.com":       {netip.MustParseAddr("10.9.9.9"), netip.MustParseAddr("93.184.216.34")},
 			"registry.npmjs.org":   {netip.MustParseAddr("104.16.0.35")},
@@ -233,6 +237,7 @@ func TestGatewayAllowlist(t *testing.T) {
 	if address := <-f.dialed; address != netip.MustParseAddrPort("93.184.216.34:443") {
 		t.Fatalf("dialed %s; want the vetted public address, skipping the private answer", address)
 	}
+	tunnel = tls.Client(tunnel, &tls.Config{ServerName: "api.openai.com", RootCAs: f.roots})
 	if _, err := io.WriteString(tunnel, "ping"); err != nil {
 		t.Fatal(err)
 	}

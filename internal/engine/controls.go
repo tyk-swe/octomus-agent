@@ -242,6 +242,9 @@ func (a *App) admitAuditPreflight() (config.Config, model.Control, error) {
 
 // preflight checks the repository remote and every planning or execution route before a cycle starts.
 func (a *App) preflight(ctx context.Context, cfg config.Config, audit bool) error {
+	if err := a.checkSandboxTimeouts(ctx, cfg); err != nil {
+		return err
+	}
 	if err := gitops.ValidateRemote(ctx, cfg); err != nil {
 		return fmt.Errorf("Repository remote preflight failed: %w", err)
 	}
@@ -403,6 +406,10 @@ func mergeConfigPatch(live config.Config, patch map[string]json.RawMessage) (con
 }
 
 func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessage) (*SettingsView, error) {
+	limit, err := a.sandboxTimeoutLimit(a.ctx)
+	if err != nil {
+		return nil, err
+	}
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	control, err := a.Control()
@@ -435,6 +442,9 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	}
 	c = a.deployment.pin(c)
 	if err := c.Validate(false); err != nil {
+		return nil, err
+	}
+	if err := validateSandboxTimeouts(c, limit); err != nil {
 		return nil, err
 	}
 	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix || old.DeliveryMode != c.DeliveryMode {

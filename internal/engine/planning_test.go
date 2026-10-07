@@ -299,7 +299,7 @@ func TestFailedPlanningCommitsNothing(t *testing.T) {
 			if err != nil || len(tasks) != 0 {
 				t.Fatalf("partial plan leaked tasks: %+v, %v", tasks, err)
 			}
-			memory, err := f.state.DecisionMemory(f.cfg.GitHubRepo)
+			memory, err := f.state.DecisionMemory(f.cfg.GitHubRepo, []string{f.cfg.DefaultBranch})
 			if err != nil || len(memory) != 0 {
 				t.Fatalf("partial plan leaked decision memory: %+v, %v", memory, err)
 			}
@@ -491,7 +491,7 @@ func TestPlanningRejectsMutatedWorkspace(t *testing.T) {
 			if err != nil || len(tasks) != 0 {
 				t.Fatalf("mutated planning workspace leaked executable work: %+v, %v", tasks, err)
 			}
-			memory, err := f.state.DecisionMemory(f.cfg.GitHubRepo)
+			memory, err := f.state.DecisionMemory(f.cfg.GitHubRepo, []string{f.cfg.DefaultBranch})
 			if err != nil || len(memory) != 0 {
 				t.Fatalf("mutated planning workspace leaked decision memory: %+v, %v", memory, err)
 			}

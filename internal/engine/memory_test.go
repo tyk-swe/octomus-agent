@@ -182,3 +182,152 @@ func TestDecisionMemoryAbsorbs(t *testing.T) {
 		t.Fatal("oversized decision metadata was accepted")
 	}
 }
+
+func savedDecision(cfgRepo, target, id, problem, revision string) model.DecisionRecord {
+	return model.DecisionRecord{
+		ID: id, CycleMode: model.CycleModeExecution, Repository: cfgRepo,
+		Target: target, ProblemKey: problem, RelevantPaths: []string{},
+		Decision: model.DecisionRejected, Reason: "Current rejection", SourceRevision: revision,
+		ContextFingerprint: revision, ReconsiderAfter: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), CycleID: id,
+	}
+}
+
+func TestDecisionAdmissionBeyondPromptWindow(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	ctx := context.Background()
+	grounding := model.Grounding{Revision: "same-revision"}
+	proposed := proposal("repeat", cfg.DefaultBranch)
+	proposed.ProblemKey = "unchanged-problem"
+	old := savedDecision(strings.ToUpper(cfg.GitHubRepo), cfg.DefaultBranch, "old", proposed.ProblemIdentity(), grounding.Revision)
+	if err := state.Put("decision", old.ID, old); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		id := fmt.Sprintf("unrelated-%d", i)
+		if err := state.Put("decision", id, savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, id, id, grounding.Revision)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memory, err := app.planningMemory(ctx, cfg, grounding)
+	if err != nil || len(memory.decisions) != 100 {
+		t.Fatalf("prompt memory: %d, %v", len(memory.decisions), err)
+	}
+	for _, record := range memory.decisions {
+		if record.ID == old.ID {
+			t.Fatal("old decision should be outside this prompt window")
+		}
+	}
+	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{proposed}, nil); err == nil || !strings.Contains(err.Error(), `decision "old"`) {
+		t.Fatalf("current rejection was evicted from admission: %v", err)
+	}
+	changed := grounding
+	changed.Revision = "new-revision"
+	if err := app.enforceDecisionMemory(ctx, cfg, changed, []model.Proposal{proposed}, nil); err != nil {
+		t.Fatalf("changed context did not allow reconsideration: %v", err)
+	}
+	request := rediscoveryRequest{ID: "rediscover", Target: cfg.DefaultBranch}
+	reconsidered := proposed.Clone()
+	reconsidered.Reconsiders = []string{request.ID}
+	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{reconsidered}, []rediscoveryRequest{request}); err != nil {
+		t.Fatalf("explicit rediscovery failed: %v", err)
+	}
+	old.ReconsiderAfter = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	if err := state.Put("decision", old.ID, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{proposed}, nil); err != nil {
+		t.Fatalf("expired decision blocked reconsideration: %v", err)
+	}
+}
+
+func TestDecisionPromptFiltersTargetsBeforeLimit(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	pr := ownedPR("octomus/open")
+	pr.Head = "pr-revision"
+	grounding := model.Grounding{Revision: "main-revision", PRs: []model.PullRequest{pr}}
+	for _, record := range []model.DecisionRecord{
+		savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, "main", "main", grounding.Revision),
+		savedDecision(cfg.GitHubRepo, pr.Branch, "open", "open", pr.Head),
+	} {
+		if err := state.Put("decision", record.ID, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 100 {
+		id := fmt.Sprintf("closed-%d", i)
+		if err := state.Put("decision", id, savedDecision(cfg.GitHubRepo, "octomus/closed", id, id, "closed")); err != nil {
+			t.Fatal(err)
+		}
+		id = fmt.Sprintf("other-repository-%d", i)
+		if err := state.Put("decision", id, savedDecision("another/repository", cfg.DefaultBranch, id, id, grounding.Revision)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memory, err := app.planningMemory(context.Background(), cfg, grounding)
+	if err != nil || len(memory.decisions) != 2 {
+		t.Fatalf("irrelevant targets evicted current prompt entries: %+v, %v", memory.decisions, err)
+	}
+	for _, record := range memory.decisions {
+		if record.ID != "main" && record.ID != "open" || record.ReconsiderationDue {
+			t.Fatalf("wrong target context: %+v", record)
+		}
+	}
+}
+
+func TestPlanRejectsDecisionOutsidePromptWindow(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	revision := git(t, f.repo, "rev-parse", "HEAD")
+	old := savedDecision(f.cfg.GitHubRepo, f.cfg.DefaultBranch, "old-rejection", model.ProblemIdentity("Complete the fixture feature", ""), revision)
+	if err := f.state.Put("decision", old.ID, old); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		id := fmt.Sprintf("unrelated-%d", i)
+		if err := f.state.Put("decision", id, savedDecision(f.cfg.GitHubRepo, f.cfg.DefaultBranch, id, id, revision)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	completePlan(t, f).queue(f)
+	app := f.pausedApp(t)
+	id, err := app.startAudit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle := waitCycle(t, app, id)
+	if cycle.Status != model.CycleFailed || cycle.Error == nil || !strings.Contains(*cycle.Error, `decision "old-rejection"`) {
+		t.Fatalf("planning admitted current rejected work outside the prompt window: %+v", cycle)
+	}
+}
+
+func TestDecisionAdmissionChecksAllExactHistory(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	cfg := testConfig(t.TempDir())
+	app := New(state, t.TempDir())
+	t.Cleanup(app.Shutdown)
+	grounding := model.Grounding{Revision: "current"}
+	proposed := proposal("repeat", cfg.DefaultBranch)
+	proposed.ProblemKey = "same-problem"
+	old := savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, "still-current", proposed.ProblemIdentity(), grounding.Revision)
+	if err := state.Put("decision", old.ID, old); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		id := fmt.Sprintf("different-context-%d", i)
+		if err := state.Put("decision", id, savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, id, proposed.ProblemIdentity(), id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := app.enforceDecisionMemory(context.Background(), cfg, grounding, []model.Proposal{proposed}, nil); err == nil || !strings.Contains(err.Error(), `decision "still-current"`) {
+		t.Fatalf("exact history was limited or newer context evicted a current decision: %v", err)
+	}
+}

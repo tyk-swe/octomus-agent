@@ -291,13 +291,15 @@ func (o DefaultBranchObservation) MarshalJSON() ([]byte, error) {
 }
 
 type Session struct {
-	ID        string         `json:"id"`
-	Role      string         `json:"role"`
-	Route     config.Route   `json:"route"`
-	Status    SessionStatus  `json:"status"`
-	StartedAt string         `json:"started_at"`
-	Summary   string         `json:"summary"`
-	Sandbox   *SandboxRecord `json:"sandbox"`
+	ID        string        `json:"id"`
+	Role      string        `json:"role"`
+	Route     config.Route  `json:"route"`
+	Status    SessionStatus `json:"status"`
+	StartedAt string        `json:"started_at"`
+	Summary   string        `json:"summary"`
+	// Nil means first-turn state was not tracked, including legacy records.
+	FirstTurnStarted *bool          `json:"first_turn_started"`
+	Sandbox          *SandboxRecord `json:"sandbox"`
 }
 
 func (s *Session) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, s) }

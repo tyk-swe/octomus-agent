@@ -211,7 +211,7 @@ func TestRemoteVerifyStreamsAndExit(t *testing.T) {
 		t.Fatalf("status = %v", out.Status)
 	}
 	req := <-f.requests
-	if req.Kind != "verify" || req.Dir != dir || req.Command != "streams" || !req.FreshHome || req.Timeout != 30+verifyGrace {
+	if req.Kind != "verify" || req.Dir != dir || req.Command != "streams" || !req.FreshHome || req.Timeout != 30+VerificationGraceSeconds {
 		t.Fatalf("request = %+v", req)
 	}
 	if info, err := os.Lstat(filepath.Join(filepath.Dir(dir), wire.VerifyHome)); err != nil || !info.IsDir() {

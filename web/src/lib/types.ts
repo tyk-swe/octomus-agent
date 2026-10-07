@@ -161,6 +161,7 @@ export type Session = {
   status: SessionStatus;
   started_at: string;
   summary: string;
+  first_turn_started?: boolean | null;
   sandbox: SandboxRecord | null;
 };
 export type ReviewRound = {
@@ -557,6 +558,7 @@ export type SandboxSelfTest = {
   kernel: string;
   image_id: string;
   runtime?: string;
+  posture_fingerprint?: string | null;
   error: string | null;
 };
 export type BrokerLimits = {
@@ -572,6 +574,7 @@ export type BrokerNetworks = {
   verify: string;
 };
 export type BrokerInfo = {
+  instance_id: string;
   version: string;
   docker_version: string;
   api_version: string;
@@ -584,7 +587,12 @@ export type BrokerInfo = {
   limits: BrokerLimits;
   networks: BrokerNetworks;
   egress: boolean;
+  gateway: GatewayPosture | null;
   live: number;
+};
+export type GatewayPosture = {
+  instance_id: string;
+  policy_fingerprint: string;
 };
 export type SandboxPosture = {
   mode: 'docker' | 'off';

@@ -30,10 +30,17 @@ var releaseMigrations = []migration{
 		_, err := c.ExecContext(ctx, notificationEventsV8)
 		return err
 	}},
+	{name: "v9-decision-identity", apply: func(ctx context.Context, c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, decisionIdentityV9)
+		return err
+	}},
 }
 
 //go:embed migrations/008-notifications.sql
 var notificationEventsV8 string
+
+//go:embed migrations/009-decision-identity.sql
+var decisionIdentityV9 string
 
 type schemaPlan struct {
 	ddl        string

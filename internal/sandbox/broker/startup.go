@@ -80,6 +80,7 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		return nil, fmt.Errorf("Installing the sandbox helper: %w", err)
 	}
 	b.info = wire.BrokerInfo{
+		InstanceID:    b.info.InstanceID,
 		Version:       octomus.Version,
 		DockerVersion: version.Version,
 		APIVersion:    version.APIVersion,
@@ -93,7 +94,7 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 		Networks: wire.BrokerNetworks{Runner: cfg.RunnerNetwork, Verify: cfg.VerifyNetwork},
 		Egress:   cfg.EgressProxy != "",
 	}
-	versions, failures, err := b.probeVersions(ctx, image.ID)
+	versions, failures, err := b.probeVersions(ctx, ctx, image.ID)
 	if err != nil {
 		return nil, fmt.Errorf("Probing runner versions in the sandbox image: %w", err)
 	}

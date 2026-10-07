@@ -5,6 +5,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -188,18 +189,18 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 		t.Fatalf("start: %v", err)
 	}
 	if backend == config.BackendCodex {
-		if _, err := client.Start(route, workspace, &session); err == nil || !strings.Contains(err.Error(), "no rollout found") {
+		if _, err := client.Start(route, workspace, &session); !errors.Is(err, ErrSessionMissing) {
 			t.Fatalf("pinned Codex unexpectedly resumed a thread before its first turn: %v", err)
 		}
 	}
-	answer, err := client.Turn(session, route, workspace, "Return the controlled contract result.", nil)
+	answer, err := client.Turn(session, route, workspace, "Return the controlled contract result.", nil, nil)
 	if err != nil {
 		t.Fatalf("turn: %v", err)
 	}
 	if !strings.Contains(answer, "Controlled contract result") {
 		t.Fatalf("missing completed turn result: %q", answer)
 	}
-	structured, err := client.Turn(session, route, workspace, "Return the controlled review result.", schemas.ReviewSchema())
+	structured, err := client.Turn(session, route, workspace, "Return the controlled review result.", schemas.ReviewSchema(), nil)
 	if err != nil {
 		t.Fatalf("structured turn: %v", err)
 	}

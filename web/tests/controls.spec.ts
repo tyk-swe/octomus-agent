@@ -530,3 +530,39 @@ for (const mode of ['execution', 'audit'] as const) {
     );
   });
 }
+
+test('slow proposal history cannot block state polling, controls, or navigation', async ({
+  page
+}) => {
+  const state = await controlFixture(page);
+  const history = deferred();
+  let reads = 0;
+  let canceled = 0;
+  page.on('requestfailed', (request) => {
+    if (new URL(request.url()).pathname === '/api/cycles') canceled++;
+  });
+  await page.route('**/api/cycles?*', async (route) => {
+    reads++;
+    await history.promise;
+    await route.fulfill({ json: { items: [], next_cursor: null, counts: {} } });
+  });
+  try {
+    await openNavigation(page, 'Proposals', false);
+    await expect.poll(() => reads).toBe(1);
+    const before = state.reads;
+    for (let i = 0; i < 3; i++) {
+      await page.clock.runFor(4000);
+      await expect.poll(() => state.reads).toBeGreaterThan(before + i);
+    }
+    expect(reads).toBe(1);
+    await openNavigation(page, 'Overview', false);
+    await expect.poll(() => canceled).toBe(1);
+    const after = state.reads;
+    await page.locator('#run-audit-control').click();
+    await expect.poll(() => state.writes).toEqual(['audit']);
+    await expect.poll(() => state.reads).toBeGreaterThan(after);
+    await expect(page.locator('#run-audit-control')).toHaveText('Run an audit');
+  } finally {
+    history.resolve();
+  }
+});

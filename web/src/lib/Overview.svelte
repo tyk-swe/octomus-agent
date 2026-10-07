@@ -263,7 +263,7 @@
         <dd>
           {broker.limits.nano_cpus / 1e9} CPU · {bytesLabel(broker.limits.memory_bytes)} memory, no swap
           · {broker.limits.pids} processes · up to {broker.limits.max_sandboxes} at once ({broker.live}
-          running)
+          running) · {broker.limits.max_seconds.toLocaleString()} seconds maximum lifetime
         </dd>
       </div>
       <div>

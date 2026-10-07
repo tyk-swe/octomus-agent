@@ -106,6 +106,9 @@ func (c Config) plan(req wire.Request) (plan, error) {
 		return plan{}, errors.New("Unknown sandbox kind")
 	}
 	seconds := c.MaxSeconds
+	if p.kind != wire.KindProbe && req.Timeout > seconds {
+		return plan{}, fmt.Errorf("Requested timeout of %d seconds exceeds sandbox hard limit of %d seconds", req.Timeout, seconds)
+	}
 	if req.Timeout > 0 && req.Timeout < seconds {
 		seconds = req.Timeout
 	}

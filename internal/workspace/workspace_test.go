@@ -3,6 +3,7 @@
 package workspace_test
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -133,14 +134,14 @@ func TestMeasure(t *testing.T) {
 	if err := os.Symlink(filepath.Dir(target), filepath.Join(root, "linked-dir")); err != nil {
 		t.Fatal(err)
 	}
-	usage, err := workspace.Measure(root, 0)
+	usage, err := workspace.Measure(context.Background(), root, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if usage.Bytes != 10 || len(usage.Unmeasured) != 0 {
 		t.Fatalf("usage = %+v; want 10 bytes (symlink targets excluded), all measured", usage)
 	}
-	if usage, err := workspace.Measure(filepath.Join(root, "missing"), 0); err != nil || usage.Bytes != 0 {
+	if usage, err := workspace.Measure(context.Background(), filepath.Join(root, "missing"), 0); err != nil || usage.Bytes != 0 {
 		t.Fatalf("missing tree = %+v, %v; want zero", usage, err)
 	}
 }

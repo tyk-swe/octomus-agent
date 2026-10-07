@@ -253,7 +253,10 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 
 func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (model.BaselineStatus, error) {
 	c := check.Config
-	measured, err := a.measure(filepath.Join("baselines", check.ID))
+	if err := a.checkSandboxTimeouts(ctx, c); err != nil {
+		return model.BaselineStatusRunning, err
+	}
+	measured, err := a.measure(ctx, filepath.Join("baselines", check.ID))
 	if err != nil {
 		return model.BaselineStatusRunning, err
 	}
