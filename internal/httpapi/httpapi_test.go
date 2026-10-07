@@ -376,3 +376,39 @@ func TestRequestErrorRedaction(t *testing.T) {
 		t.Fatalf("rejected requests started a baseline check: %v, %v", latest, err)
 	}
 }
+
+// TestProposalListRedactsBeforeBound places credentials across the proposal list's 2000-character bound on problem and
+// reason, and expects the list to scrub them as completely as the detail does.
+func TestProposalListRedactsBeforeBound(t *testing.T) {
+	app, state := testApp(t)
+	router := Router(app, token, "", "test")
+	const password, tokenHead = "Hunter2Secret99", "Q7rTk2Lm9"
+	proposal := queuedTask(config.Default()).Proposal
+	// The bound falls just before the URL's "@" and after nine characters of the token.
+	proposal.Problem = strings.Repeat("x", 2000-len(" postgres://admin:"+password)) + " postgres://admin:" + password + "@db.internal/app is hard-coded in settings.py"
+	proposal.Reason = strings.Repeat("y", 2000-len(" ghp_"+tokenHead)) + " ghp_" + tokenHead + "Zp4Wn8Bv3Cx6Dy1Fe5Gh0Jk2Lm7Np9Qr is committed in ci.yml"
+	cycle := model.Cycle{
+		Mode: model.CycleModeExecution, ID: "cycle-secret", Number: 1, Status: model.CycleCompleted,
+		StartedAt: model.Now(), CompletedAt: new(model.Now()), Proposals: []model.Proposal{proposal},
+		Assessments: []any{}, Sessions: []model.Session{},
+	}
+	if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/proposals/cycle-secret/p", "/api/proposals"} {
+		response := call(t, router, "GET", path, "")
+		body := response.Body.String()
+		if response.Code != http.StatusOK || !strings.Contains(body, "xxxxx") || !strings.Contains(body, "yyyyy") {
+			t.Fatalf("%s: %d %.200q", path, response.Code, body)
+		}
+		// The list cuts the scrubbed problem before its last words; the detail keeps them.
+		if strings.Contains(body, "settings.py") != (path != "/api/proposals") {
+			t.Errorf("%s did not bound the problem as expected", path)
+		}
+		for _, secret := range []string{password, tokenHead} {
+			if at := strings.Index(body, secret); at >= 0 {
+				t.Errorf("%s returned credential text: ...%s...", path, body[max(0, at-40):min(len(body), at+len(secret)+20)])
+			}
+		}
+	}
+}
