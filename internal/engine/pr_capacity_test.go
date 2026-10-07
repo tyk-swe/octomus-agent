@@ -163,6 +163,49 @@ func TestRefreshFailureRevokesCapacity(t *testing.T) {
 	}
 }
 
+// A refresh slower than prAdmissionLifetime lands an inventory whose ObservedAt, stamped before the list call, is already
+// outside the window. The window runs from when the observation landed, so it still authorizes the next batch.
+func TestSlowRefreshAuthorizesAdmission(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	putTask(t, f, queuedTask(f.cfg, "waiting", f.cfg.DefaultBranch, f.cfg.BranchPrefix+"waiting"))
+	started := make(chan string, 1)
+	app := New(f.state, f.dataDir)
+	app.supervise = func(_ context.Context, task model.Task) error {
+		started <- task.ID
+		task.Status = model.StatusPublished
+		return f.state.Put("task", task.ID, task)
+	}
+	t.Cleanup(app.Shutdown)
+	deferHousekeeping(app)
+	if err := control(app, "resume"); err != nil {
+		t.Fatal(err)
+	}
+	expired := time.Now().Add(-(prAdmissionLifetime + time.Second))
+	inventory := model.OpenPRInventory{Repository: f.cfg.GitHubRepo, ObservedAt: expired.UTC().Format(time.RFC3339Nano), PRs: []model.PullRequest{}}
+	if persisted, err := f.state.PersistPRInventory(inventory, nil); err != nil || !persisted {
+		t.Fatalf("persist inventory: %t, %v", persisted, err)
+	}
+
+	app.runtimeMu.Lock()
+	app.runtime.prObservation = &freshPRs{policy: f.cfg, inventory: inventory.Clone(), fetchedAt: expired}
+	app.runtimeMu.Unlock()
+	if claimed, reason := app.claimInventory(f.cfg, time.Now()); claimed != nil || reason != "The pull request observation is stale" {
+		t.Fatalf("an observation that landed outside the admission window was claimed: %+v, %q", claimed, reason)
+	}
+
+	app.runtimeMu.Lock()
+	app.runtime.prObservation = &freshPRs{policy: f.cfg, inventory: inventory.Clone(), fetchedAt: time.Now()}
+	app.runtimeMu.Unlock()
+	if err := app.tick(); err != nil {
+		t.Fatal(err)
+	}
+	app.wg.Wait()
+	if len(started) != 1 {
+		t.Fatal("a just-landed inventory whose ObservedAt is older than the admission window authorized nothing")
+	}
+}
+
 func TestInventoryAdmitsOneBatch(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
