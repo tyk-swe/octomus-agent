@@ -28,8 +28,20 @@ def proposals():
     first = proposal()
     if (root / 'proposal-override.json').exists():
         first.update(json.loads((root / 'proposal-override.json').read_text()))
+    if (root / 'maintenance').exists() and not (root / 'maintenance-feature').exists():
+        first.update(category='correctness', title='Restore documented fixture behavior',
+                     problem='The observed fixture output violates an existing documented contract.',
+                     benefit='Restores existing documented behavior.',
+                     scope='Restore documented existing behavior only; do not add capabilities.',
+                     prompt='Restore the documented fixture output without expanding behavior. fixture-file=feature.txt',
+                     reason='Both reviewers accept bounded maintenance of an existing contract.')
     if any((root / name).exists() for name in ['parallel', 'chain']):
         second = {**first, 'id': 'd0-followup', 'title': 'Complete the next fixture feature', 'problem': 'The next output capability is missing.', 'scope': 'Implement feature-next.txt only.', 'evidence': ['README.md: next feature output'], 'prompt': 'Implement the next fixture capability. fixture-file=feature-next.txt'}
+        if (root / 'maintenance').exists() and not (root / 'maintenance-feature').exists():
+            second.update(title='Repair the next documented fixture output',
+                          problem='The next documented output regressed.',
+                          scope='Restore only existing feature-next.txt output.',
+                          prompt='Restore the existing documented output without new capabilities. fixture-file=feature-next.txt')
         if (root / 'chain').exists():
             second['dependencies'] = [first['id']]
             third = {**second, 'id': 'd0-third', 'title': 'Complete the third fixture feature', 'prompt': 'Implement the third capability. fixture-file=feature-third.txt', 'dependencies': [second['id']]}
@@ -68,24 +80,43 @@ def respond(prompt, cwd, thread, file):
     elif prompt.startswith('Act as final orchestrator'):
         answer = {'proposals': proposals()}
     elif prompt.startswith('Implement this accepted task'):
-        (cwd / feature_file).write_text('needs repair\n')
+        if (root / 'maintenance-oversize').exists():
+            (cwd / 'feature.txt').write_text('fixed\n' + 'filler\n' * 600)
+        else:
+            (cwd / feature_file).write_text('needs repair\n')
+        if (root / 'maintenance-sensitive').exists() and feature_file == 'feature-next.txt':
+            (cwd / '.github' / 'workflows').mkdir(parents=True, exist_ok=True)
+            (cwd / '.github' / 'workflows' / 'checks.yml').write_text('name: checks\n')
         answer = 'Implemented feature.txt. Relevant verification is pending.'
     elif prompt.startswith('Perform a fresh code review'):
+        maintenance = 'Return the required maintenance review document' in prompt
         if (root / 'malformed-review').exists():
             answer = 'not valid review JSON'
-        elif (cwd / feature_file).read_text().strip() == 'fixed':
-            if (root / 'remote-conflict').exists():
-                import subprocess
-                remote = str(root / 'remote.git')
-                branch = (root / 'target').read_text().strip()
-                parent = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, 'rev-parse', branch], text=True).strip()
-                tree = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, 'rev-parse', f'{parent}^{{tree}}'], text=True).strip()
-                commit = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, '-c', 'user.name=External', '-c', 'user.email=external@example.com', 'commit-tree', tree, '-p', parent, '-m', 'External work'], text=True).strip()
-                subprocess.check_call(['/usr/bin/git', '--git-dir', remote, 'update-ref', f'refs/heads/{branch}', commit])
-                (root / 'external-revision').write_text(commit)
-            answer = {'completed': True, 'summary': 'Reviewed the complete diff; no actionable findings remain.', 'findings': []}
         else:
-            answer = {'completed': True, 'summary': 'The output contract is incomplete.', 'findings': [{'title': 'Complete the output', 'file': 'feature.txt:1', 'detail': 'Must contain fixed.', 'priority': 'P1'}]}
+            text = (cwd / feature_file).read_text()
+            if (maintenance and text.split('\n')[0] != 'fixed') or (not maintenance and text.strip() != 'fixed'):
+                review = {'completed': True, 'summary': 'The output contract is incomplete.', 'findings': [{'title': 'Complete the output', 'file': 'feature.txt:1', 'detail': 'Must contain fixed.', 'priority': 'P1'}]}
+                answer = {'review': review, 'maintenance': {'qualifies': True, 'manual_merge_required': False, 'reason': 'Still bounded non-feature maintenance.'}} if maintenance else review
+            else:
+                if (root / 'remote-conflict').exists():
+                    import subprocess
+                    remote = str(root / 'remote.git')
+                    branch = (root / 'target').read_text().strip()
+                    parent = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, 'rev-parse', branch], text=True).strip()
+                    tree = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, 'rev-parse', f'{parent}^{{tree}}'], text=True).strip()
+                    commit = subprocess.check_output(['/usr/bin/git', '--git-dir', remote, '-c', 'user.name=External', '-c', 'user.email=external@example.com', 'commit-tree', tree, '-p', parent, '-m', 'External work'], text=True).strip()
+                    subprocess.check_call(['/usr/bin/git', '--git-dir', remote, 'update-ref', f'refs/heads/{branch}', commit])
+                    (root / 'external-revision').write_text(commit)
+                review = {'completed': True, 'summary': 'Reviewed the complete diff; no actionable findings remain.', 'findings': []}
+                if maintenance:
+                    assessment = {
+                        'qualifies': not (root / 'maintenance-negative').exists(),
+                        'manual_merge_required': (root / 'maintenance-manual').exists(),
+                        'reason': 'A feature expansion hides in the accumulated change.' if (root / 'maintenance-negative').exists() else 'Fixes documented existing behavior without expanding scope.'
+                    }
+                    answer = {'review': review, 'maintenance': assessment}
+                else:
+                    answer = review
     elif prompt.startswith('Repair actionable findings'):
         thread['repairs'] += 1
         file.write_text(json.dumps(thread))

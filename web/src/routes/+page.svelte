@@ -599,7 +599,9 @@
         {:else if view === 'prs'}
           <div class="notice">
             <Icon name="shield" size={18} /><span
-              >Octomus publishes reviewed pull requests. Merge decisions stay with you.</span
+              >{data.delivery_mode === 'maintenance'
+                ? 'Octomus publishes reviewed pull requests; small verified maintenance work can merge itself. Everything else stays manual.'
+                : 'Octomus publishes reviewed pull requests. Merge decisions stay with you.'}</span
             >
           </div>
           <div class="list-toolbar" onfocusin={noteNavigationIntent}>
@@ -639,6 +641,19 @@
                         >· observed {relative(observed.observed_at)}</span
                       >{/if}
                   </p>
+                  {#if observed.auto_merge}
+                    {@const merge = observed.auto_merge}
+                    <p class="pr-merge">
+                      <span class="pr-observed"
+                        >automatic merge: {merge.status}{merge.result_source === 'confirmed' &&
+                        merge.status === 'merged'
+                          ? ' — squash merged by Octomus'
+                          : merge.result_source === 'observed' &&
+                              (merge.status === 'merged' || merge.status === 'closed')
+                            ? ` — ${merge.status} on GitHub (actor not confirmed)`
+                            : ''}{merge.reason ? ` — ${merge.reason}` : ''}</span
+                      >
+                    </p>{/if}
                 </div>
                 <Badge
                   label={pr.state +

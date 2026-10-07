@@ -317,7 +317,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		runID = new(next.Batch.ID)
 	}
 	cycle := model.Cycle{
-		Mode: mode, ID: id, Number: next.CycleNumber, Status: model.CycleRunning,
+		Mode: mode, DeliveryMode: cfg.DeliveryMode, ID: id, Number: next.CycleNumber, Status: model.CycleRunning,
 		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 		Repository: cfg.GitHubRepo, DecisionMemory: []model.DecisionRecord{}, RunID: runID,
 	}
@@ -437,13 +437,13 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	if err := c.Validate(false); err != nil {
 		return nil, err
 	}
-	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix {
+	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix || old.DeliveryMode != c.DeliveryMode {
 		unresolved, err := a.Store.HasUnresolvedTasks()
 		if err != nil {
 			return nil, err
 		}
 		if unresolved {
-			return nil, conflictError("Resolve or cancel existing tasks before changing repository identity or branch policy.")
+			return nil, conflictError("Resolve or cancel existing tasks before changing repository identity, branch policy or the delivery mode.")
 		}
 	}
 	if err := a.Store.Put("settings", "config", c); err != nil {

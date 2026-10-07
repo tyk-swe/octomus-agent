@@ -47,6 +47,20 @@
     unavailable: 'path unavailable',
     error: 'measurement error'
   };
+  const mergePending = $derived(
+    (data.auto_merge.counts.waiting ?? 0) +
+      (data.auto_merge.counts.merging ?? 0) +
+      (data.auto_merge.counts.uncertain ?? 0)
+  );
+  const mergeSettled = $derived(
+    (data.auto_merge.counts.merged ?? 0) + (data.auto_merge.counts.closed ?? 0)
+  );
+  const showMerges = $derived(
+    data.delivery_mode === 'maintenance' ||
+      mergePending > 0 ||
+      mergeSettled > 0 ||
+      (data.auto_merge.counts.manual ?? 0) > 0
+  );
   const sandbox = $derived(data.sandbox);
   const verdict = $derived(sandboxVerdict(sandbox));
   const broker = $derived(sandbox.broker);
@@ -133,6 +147,14 @@
     ><small>{attentionCount ? 'Work preserved for inspection' : 'No blocked or failed tasks'}</small
     >
   </article>
+  {#if showMerges}<article class="stat" id="auto-merge-stat">
+      <div class="stat-label">Merge outcomes<Icon name="prs" size={17} /></div>
+      <strong>{(data.auto_merge.counts.merged ?? 0).toString().padStart(2, '0')}</strong><small
+        >{mergePending} waiting on checks or protections{data.auto_merge.active
+          ? ' · checking now'
+          : ''}</small
+      >
+    </article>{/if}
 </div>
 <section class="panel cycle-panel" aria-labelledby="latest-run-heading">
   <div class="section-heading">

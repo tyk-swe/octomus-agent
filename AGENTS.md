@@ -201,7 +201,10 @@ checked-in golden database loadable when adding fields: a pointer, a
   task and cycle errors, CLI diagnostics) is a capitalised sentence fragment;
   errors that only wrap an internal mechanism stay lowercase Go style.
 - The service delivers PRs; it does not merge, deploy or migrate production systems.
-  Workers must not push or publish; the orchestrator owns publication.
+  The one exception is the opt-in maintenance delivery mode: when an operator enables it,
+  the orchestrator may squash-merge a small, clean-reviewed, verified maintenance PR only
+  after fresh GitHub checks, review state and protections allow it. Workers must not push,
+  publish or merge; the orchestrator owns publication and any merge.
 - Every untrusted child (runner, verification command, probe) starts through
   `internal/sandbox`; never add another path. Orchestrator git on a work tree goes
   through `gitops.WorkGit` and trusted `repo.git`. A change to a golden container

@@ -164,8 +164,15 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		if err != nil {
 			return err
 		}
+		qualified := review.Clean()
+		if qualified {
+			round := task.Reviews[len(task.Reviews)-1]
+			if round.Maintenance != nil && !round.Maintenance.Qualifies {
+				qualified = false
+			}
+		}
 		verificationErrors := []string{}
-		if review.Clean() {
+		if qualified {
 			verificationErrors, err = a.verifyRevision(ctx, task, revision)
 			if err != nil {
 				return err
@@ -197,6 +204,9 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 				return fmt.Errorf("Repairs made no progress on the reviewed revision (max_no_progress_rounds %d): %w", cfg.MaxNoProgressRounds, model.BlockedVerificationFailed)
 			}
 		}
+		if round := task.Reviews[len(task.Reviews)-1]; round.Maintenance != nil && !round.Maintenance.Qualifies && len(review.Findings) == 0 {
+			review.Findings = []model.Finding{{Title: "Maintenance scope assessment", Detail: round.Maintenance.Reason, Priority: "P1"}}
+		}
 		if err := a.repair(ctx, task, client, review, verificationErrors); err != nil {
 			return err
 		}
@@ -204,6 +214,19 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 }
 
 func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision string) error {
+	cfg := task.ExecutionConfig()
+	var footprint *model.MaintenanceFootprint
+	var footprintErr error
+	if cfg.DeliveryMode == config.DeliveryModeMaintenance {
+		if task.MaintenanceFootprint != nil && task.MaintenanceFootprint.Revision == revision &&
+			task.MaintenanceFootprint.ComparisonBase == task.ComparisonBase {
+			footprint = task.MaintenanceFootprint
+		} else {
+			frozen, err := gitops.ReadMaintenanceFootprint(ctx, cfg, task.Workspace, task.ComparisonBase, revision)
+			footprint = &frozen
+			footprintErr = err
+		}
+	}
 	// The checkpoint and operator eligibility share the gate. A successful
 	// cancellation must win before a fresh output commit authorizes publication;
 	// after the checkpoint, a refused cancellation must not stop the worker.
@@ -212,6 +235,23 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 		defer a.gate.Unlock()
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		live, err := a.Config()
+		if err != nil {
+			return err
+		}
+		if task.Config.DeliveryMode != live.DeliveryMode ||
+			!slices.Contains(task.Config.EffectiveCategories(), task.Proposal.Category) {
+			return fmt.Errorf("Task %s was planned under an incompatible delivery mode or category: %w", task.ID, model.BlockedInvalidPlan)
+		}
+		if task.Config.DeliveryMode == config.DeliveryModeMaintenance {
+			if footprintErr != nil {
+				_ = a.Store.Event(task.ID, "maintenance", "Footprint measurement is incomplete; the delivery can publish but stays manual: "+redact.Error(footprintErr))
+			}
+			task.MaintenanceFootprint = footprint
+		}
+		if !task.ReviewAuthorizes(revision) {
+			return fmt.Errorf("Publication requires a clean maintenance-qualified review at the output revision: %w", model.BlockedInvalidReview)
 		}
 		previousStatus, previousOutput, previousUpdated := task.Status, task.OutputCommit, task.UpdatedAt
 		task.OutputCommit = &revision
@@ -425,7 +465,7 @@ func executorPrompt(task *model.Task, cfg config.Config) string {
 		task.Proposal.Problem,
 		task.Proposal.Benefit,
 		task.Proposal.Scope,
-		quoteList(task.Proposal.Evidence))
+		quoteList(task.Proposal.Evidence)) + maintenancePolicy(task.Config)
 }
 
 func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runners, review model.Review, verificationErrors []string) error {
@@ -468,7 +508,7 @@ func repairPrompt(task *model.Task, cfg config.Config, review model.Review, veri
 		task.ComparisonBase,
 		task.Proposal.Prompt,
 		string(findingsJSON),
-		quoteList(verificationErrors)), nil
+		quoteList(verificationErrors)) + maintenanceRepairPolicy(task), nil
 }
 
 func (a *App) published(task *model.Task, p model.PullRequest) error {
@@ -476,10 +516,20 @@ func (a *App) published(task *model.Task, p model.PullRequest) error {
 	task.PRURL = &p.URL
 	task.Error = nil
 	task.BlockedReason = nil
-	if err := a.transition(task, model.StatusPublished); err != nil {
+	task.Status = model.StatusPublished
+	task.UpdatedAt = model.Now()
+	merge, err := a.initialMergeState(task)
+	if err != nil {
 		return err
 	}
-	return a.Store.RecordPRObservation(task.Config.GitHubRepo, p, true)
+	if err := a.Store.CompletePublication(*task, p, merge); err != nil {
+		return err
+	}
+	a.runtimeMu.Lock()
+	a.runtime.lastMergeCheck = time.Time{}
+	a.runtimeMu.Unlock()
+	a.notify()
+	return nil
 }
 
 func (a *App) saveTask(task *model.Task) error {

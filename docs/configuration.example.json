@@ -70,6 +70,10 @@
     "dependencies",
     "documentation"
   ],
+  "delivery_mode": "standard",
+  "auto_merge_max_lines": 500,
+  "auto_merge_max_files": 10,
+  "auto_merge_excluded_paths": [],
   "verification_commands": [],
   "discovery_agents": 9,
   "execution_concurrency": 2,

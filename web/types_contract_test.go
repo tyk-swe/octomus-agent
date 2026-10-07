@@ -150,6 +150,9 @@ func TestTypesMirrorGoJSON(t *testing.T) {
 		"PRReference":              export.PRReference{},
 		"SandboxPosture":           engine.SandboxPosture{},
 		"SandboxRecord":            model.SandboxRecord{},
+		"MaintenanceAssessment":    model.MaintenanceAssessment{},
+		"MaintenanceFootprint":     model.MaintenanceFootprint{},
+		"AutoMergeState":           model.AutoMergeState{},
 		"SandboxEgress":            model.SandboxEgress{},
 		"SandboxSelfTest":          engine.SandboxSelfTest{},
 		"ProbeCheck":               sandbox.ProbeCheck{},
@@ -177,12 +180,14 @@ func TestVocabulariesMirrorGo(t *testing.T) {
 		}
 	}
 	for name, want := range map[string][]string{
-		"CycleMode":      enumNames[model.CycleMode](),
-		"CycleStatus":    enumNames[model.CycleStatus](),
-		"SessionStatus":  enumNames[model.SessionStatus](),
-		"OperatingMode":  enumNames[model.OperatingMode](),
-		"TaskStatus":     enumNames[model.Status](),
-		"BaselineStatus": enumNames[model.BaselineStatus](),
+		"CycleMode":       enumNames[model.CycleMode](),
+		"CycleStatus":     enumNames[model.CycleStatus](),
+		"SessionStatus":   enumNames[model.SessionStatus](),
+		"OperatingMode":   enumNames[model.OperatingMode](),
+		"TaskStatus":      enumNames[model.Status](),
+		"BaselineStatus":  enumNames[model.BaselineStatus](),
+		"DeliveryMode":    enumNames[config.DeliveryMode](),
+		"AutoMergeStatus": enumNames[model.AutoMergeStatus](),
 	} {
 		got, found := unions[name]
 		if !found {

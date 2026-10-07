@@ -547,3 +547,79 @@ func TestRedactedValue(t *testing.T) {
 		})
 	}
 }
+
+func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
+	delivered := task("cycle-a", "p1")
+	delivered.Status = model.StatusPublished
+	delivered.Config.DeliveryMode = config.DeliveryModeMaintenance
+	output := "out00001"
+	delivered.OutputCommit = &output
+	number3 := uint64(3)
+	delivered.PRNumber = &number3
+	url := "https://github.com/fixture/project/pull/3"
+	delivered.PRURL = &url
+	delivered.Reviews = []model.ReviewRound{review("out00001", true, "Reviewed the complete change set")}
+	delivered.Verification = []model.Verification{check("make check", true, "out00001")}
+	c := cycle("cycle-a", "execution",
+		[]model.Proposal{proposal("p1", "accepted")},
+		[]any{savedBatch(savedEntry("p1", "accepted", "a accepts")), savedBatch(savedEntry("p1", "accepted", "b accepts"))},
+		[]model.Session{reviewerSession("adversary-a", model.SessionCompleted), reviewerSession("adversary-b", model.SessionCompleted)})
+	s, dbPath := fixture(t, []model.Cycle{c}, []model.Task{delivered})
+
+	merge := &model.AutoMergeState{
+		TaskID: delivered.ID, Head: "out00001", ComparisonBase: "source00",
+		HeadBranch: delivered.Branch, BaseBranch: delivered.Config.DefaultBranch,
+		PolicyRevision: "policy", Authorized: true, Status: model.AutoMergeMerged,
+		Reason: "Squash merged by Octomus", ObservedAt: model.Now(),
+		ResultSource: new("confirmed"), MergeCommit: new("merge01"),
+	}
+	observation := model.PRObservation{
+		Repository: "fixture/project", ObservedAt: model.Now(), DeliveredHead: &output,
+		PR: model.PullRequest{Number: 3, URL: url, State: "merged", Owned: true,
+			Head: "out00001", Branch: delivered.Branch, Base: "main",
+			HeadRepository: "fixture/project", BaseRepository: "fixture/project"},
+		AutoMerge: merge,
+	}
+	must(t, s.Put("pr", "fixture/project:3", observation))
+	value := exported(t, s, "cycle-a")
+	linked := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
+	evidence := linked["auto_merge"].(map[string]any)
+	if evidence["status"] != "merged" || evidence["result_source"] != "confirmed" ||
+		evidence["merge_commit"] != "merge01" || evidence["head"] != "out00001" ||
+		evidence["head_branch"] != delivered.Branch || evidence["base_branch"] != "main" {
+		t.Fatalf("exported merge evidence = %v", evidence)
+	}
+	full, err := Run(dbPath, "cycle-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if get(findProposal(t, full, "p1"), "linked_tasks", 0, "auto_merge", "status") != "merged" {
+		t.Fatal("the read-only run export lost the saved merge evidence")
+	}
+
+	for name, mutate := range map[string]func(*model.AutoMergeState){
+		"wrong-task":   func(m *model.AutoMergeState) { m.TaskID = "other-task" },
+		"wrong-head":   func(m *model.AutoMergeState) { m.Head = "other000" },
+		"wrong-base":   func(m *model.AutoMergeState) { m.ComparisonBase = "otherbase" },
+		"wrong-branch": func(m *model.AutoMergeState) { m.HeadBranch = "octomus/other" },
+		"unbound":      func(m *model.AutoMergeState) { m.HeadBranch = ""; m.BaseBranch = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			mutated := merge.Clone()
+			mutate(&mutated)
+			record := observation
+			record.AutoMerge = &mutated
+			must(t, s.Put("pr", "fixture/project:3", record))
+			value := exported(t, s, "cycle-a")
+			linked := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
+			if linked["auto_merge"] != nil {
+				t.Fatalf("%s leaked mismatched evidence: %v", name, linked["auto_merge"])
+			}
+		})
+	}
+	must(t, s.Put("pr", "fixture/project:3", observation))
+	value = exported(t, s, "cycle-a")
+	if get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge", "status") != "merged" {
+		t.Fatal("the exact-bound record did not restore the evidence")
+	}
+}

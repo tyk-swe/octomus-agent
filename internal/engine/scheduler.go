@@ -81,6 +81,10 @@ func (a *App) tick() error {
 	if baseline {
 		return nil
 	}
+	a.checkMerges(cfg, control)
+	if a.recoveryConflict() != nil {
+		return nil
+	}
 	if control.Mode == model.OperatingModePaused {
 		return nil
 	}
@@ -111,8 +115,9 @@ func (a *App) tick() error {
 		if err != nil {
 			return err
 		}
-		if pending == 0 && (control.Batch.Phase == model.BatchPhaseExecuting || unresolved > 0) {
-			return a.finishRunOnce(control, unresolved)
+		if pending == 0 && (control.Batch.Phase == model.BatchPhaseExecuting ||
+			control.Batch.Phase == model.BatchPhaseMerging || unresolved > 0) {
+			return a.settleRunOnce(control, unresolved)
 		}
 	}
 
@@ -123,7 +128,7 @@ func (a *App) tick() error {
 	if a.ctx.Err() != nil {
 		return nil
 	}
-	changed, err := a.validateQueuedCycles(tasks)
+	changed, err := a.validateQueuedCycles(cfg, tasks)
 	if err != nil {
 		return err
 	}
@@ -148,7 +153,7 @@ func (a *App) tick() error {
 			return err
 		}
 		if pending == 0 && unresolved > 0 {
-			return a.finishRunOnce(control, unresolved)
+			return a.settleRunOnce(control, unresolved)
 		}
 		if control.Batch.Phase != model.BatchPhaseDraining || pending != 0 {
 			return nil
@@ -171,6 +176,23 @@ func (a *App) pauseLocked(control *model.Control, message *string) error {
 	}
 	a.invalidatePRs()
 	return nil
+}
+
+func (a *App) settleRunOnce(control model.Control, unresolved uint64) error {
+	waits, err := a.Store.BatchMergeWait(control.Batch.ID)
+	if err != nil {
+		return err
+	}
+	if waits > 0 {
+		if control.Batch.Phase != model.BatchPhaseMerging {
+			control.Batch.Phase = model.BatchPhaseMerging
+			if err := a.Store.SaveControl(control); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return a.finishRunOnce(control, unresolved)
 }
 
 func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
@@ -270,7 +292,7 @@ func (a *App) waitForCapacity(control model.Control, capacity model.PlanningCapa
 	return a.Store.Event("system", "planning_capacity", message)
 }
 
-func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
+func (a *App) validateQueuedCycles(cfg config.Config, tasks []model.Task) (bool, error) {
 	visibleCycles := map[string]struct{}{}
 	for _, task := range tasks {
 		visibleCycles[task.CycleID] = struct{}{}
@@ -315,7 +337,7 @@ func (a *App) validateQueuedCycles(tasks []model.Task) (bool, error) {
 			continue
 		}
 		deferred := false
-		if err := validateTaskPlan(cycleTasks); err != nil {
+		if err := validateTaskPlan(cycleTasks, cfg); err != nil {
 			for i := range cycleTasks {
 				if a.ctx.Err() != nil {
 					return changed, nil
@@ -397,6 +419,9 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 			activeCount++
 		}
 		activeByBranch[task.branch] = struct{}{}
+	}
+	for branch := range a.runtime.merges {
+		activeByBranch[branch] = struct{}{}
 	}
 	a.runtimeMu.Unlock()
 	available := uint64(0)

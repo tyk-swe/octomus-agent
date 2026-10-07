@@ -40,6 +40,7 @@ func Default() Config {
 		DefaultBranch: "main", BranchPrefix: "octomus/", CodexBinary: "codex", OpencodeBinary: "opencode",
 		Roles: roles, Tiers: map[string]Route{"XS": NewRoute("", "xhigh"), "S": NewRoute("", "max"), "M": NewRoute("", "low"), "L": NewRoute("", "medium"), "XL": NewRoute("", "high")},
 		RepairRoute: DefaultRepairRoute(), Categories: Categories(), VerificationCommands: []string{},
+		DeliveryMode: DeliveryModeStandard, AutoMergeMaxLines: 500, AutoMergeMaxFiles: 10, AutoMergeExcludedPaths: []string{},
 		DiscoveryAgents: 9, ExecutionConcurrency: 2, CycleIntervalSeconds: 1800, MaintenanceEveryCycles: 3,
 		LargePRLines: 1000, LongLivedPRDays: 7, MaxTasksPerCycle: 5, MaxRepairRounds: 4, MaxNoProgressRounds: 2, MaxRetries: 2,
 		SessionTimeoutSeconds: 1800, TaskTimeoutSeconds: 14400, CommandTimeoutSeconds: 600,
@@ -142,6 +143,19 @@ func (c Config) RoutesFor(audit bool) []NamedRoute {
 	return append(result, NamedRoute{"repair", c.RepairRoute.Clone()})
 }
 
+func (c Config) EffectiveCategories() []string {
+	if c.DeliveryMode != DeliveryModeMaintenance {
+		return c.Categories
+	}
+	effective := make([]string, 0, len(c.Categories))
+	for _, category := range c.Categories {
+		if category != "features" {
+			effective = append(effective, category)
+		}
+	}
+	return effective
+}
+
 func (c Config) PlanningCost() uint64       { return c.DiscoveryAgents + 4 }
 func (c Config) TaskTimeout() time.Duration { return time.Duration(c.TaskTimeoutSeconds) * time.Second }
 
@@ -228,6 +242,24 @@ func (c Config) validateMode(ready, audit bool) error {
 			return fmt.Errorf("Select valid improvement categories")
 		}
 	}
+	switch c.DeliveryMode {
+	case DeliveryModeStandard:
+	case DeliveryModeMaintenance:
+		if len(c.EffectiveCategories()) == 0 {
+			return fmt.Errorf("Maintenance delivery requires at least one enabled non-feature category")
+		}
+	default:
+		return fmt.Errorf("Delivery mode must be standard or maintenance")
+	}
+	if !between(c.AutoMergeMaxLines, 1, 10000) {
+		return fmt.Errorf("Auto-merge line limit must be 1–10000")
+	}
+	if !between(c.AutoMergeMaxFiles, 1, 100) {
+		return fmt.Errorf("Auto-merge file limit must be 1–100")
+	}
+	if err := validExcludedPaths(c.AutoMergeExcludedPaths); err != nil {
+		return err
+	}
 	exact := func(routes map[string]Route, keys []string) bool {
 		if len(routes) != len(keys) {
 			return false
@@ -280,6 +312,42 @@ func (c Config) validateMode(ready, audit bool) error {
 	}
 	return nil
 }
+
+func validExcludedPaths(paths []string) error {
+	if len(paths) > 100 {
+		return fmt.Errorf("At most 100 additional manual-merge paths are supported")
+	}
+	seen := map[string]struct{}{}
+	for _, entry := range paths {
+		key := strings.TrimSuffix(entry, "/")
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("Duplicate manual-merge path %q", entry)
+		}
+		seen[key] = struct{}{}
+		if !validExcludedPath(entry) {
+			return fmt.Errorf("Manual-merge path %q must be a repository-relative name or subtree prefix without whitespace, control, traversal or expression characters", entry)
+		}
+	}
+	return nil
+}
+
+func validExcludedPath(entry string) bool {
+	if entry == "" || len(entry) > 4096 {
+		return false
+	}
+	if strings.HasPrefix(entry, "/") || strings.ContainsFunc(entry, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.IsSpace(r)
+	}) {
+		return false
+	}
+	for _, component := range strings.Split(strings.TrimSuffix(entry, "/"), "/") {
+		if component == "" || component == "." || component == ".." {
+			return false
+		}
+	}
+	return !strings.ContainsAny(entry, `*?[]{}()!&;|<>'"\\`+"`$~:^#@%")
+}
+
 func (c Config) ValidateBaseline() error {
 	if err := c.Validate(false); err != nil {
 		return err

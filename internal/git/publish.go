@@ -40,6 +40,10 @@ func Publish(ctx context.Context, task model.Task) (pr model.PullRequest, err er
 		return model.PullRequest{}, blocked(model.BlockedWorkspaceInvalid,
 			"Publication requires a clean review at the output revision")
 	}
+	if !task.ReviewAuthorizes(commit) {
+		return model.PullRequest{}, blocked(model.BlockedWorkspaceInvalid,
+			"Publication requires a clean maintenance-qualified review at the output revision")
+	}
 	for _, command := range c.VerificationCommands {
 		if v := latestVerification(task, command); v == nil || !v.Success || v.Revision != commit {
 			return model.PullRequest{}, blocked(model.BlockedWorkspaceInvalid,

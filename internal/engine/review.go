@@ -34,9 +34,25 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 	if err != nil {
 		return model.Review{}, err
 	}
+	maintenance := cfg.DeliveryMode == config.DeliveryModeMaintenance
+	schema := schemas.ReviewSchema()
+	if maintenance {
+		schema = schemas.MaintenanceReviewSchema()
+	}
 	var review model.Review
+	var assessment *model.MaintenanceAssessment
 	judge := func(thread, answer string) (string, error) {
-		if err := json.Unmarshal([]byte(answer), &review); err != nil {
+		if maintenance {
+			var document model.MaintenanceReviewDocument
+			if err := json.Unmarshal([]byte(answer), &document); err != nil {
+				return "", fmt.Errorf("%w: Unparseable maintenance review is not clean: %s", model.BlockedInvalidReview, redact.Text(err.Error()))
+			}
+			review = document.Review
+			if strings.TrimSpace(document.Maintenance.Reason) == "" {
+				return "", fmt.Errorf("%w: Maintenance assessment needs a reason", model.BlockedInvalidReview)
+			}
+			assessment = &document.Maintenance
+		} else if err := json.Unmarshal([]byte(answer), &review); err != nil {
 			return "", fmt.Errorf("%w: Unparseable review is not clean: %s", model.BlockedInvalidReview, redact.Text(err.Error()))
 		}
 		if !review.Valid() {
@@ -45,12 +61,12 @@ func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runn
 		if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
 			return "", err
 		}
-		task.Reviews = append(task.Reviews, model.ReviewRound{SessionID: thread, Revision: revision, ComparisonBase: task.ComparisonBase, Result: review, CreatedAt: model.Now()})
+		task.Reviews = append(task.Reviews, model.ReviewRound{SessionID: thread, Revision: revision, ComparisonBase: task.ComparisonBase, Result: review, CreatedAt: model.Now(), Maintenance: assessment, TrustedDiffComplete: len(trusted.omitted) == 0})
 		return review.Summary, nil
 	}
 	if _, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "reviewer", route: route, workspace: ws,
-		prompt: reviewPrompt(task, revision, trusted), schema: schemas.ReviewSchema(), judge: judge,
+		prompt: reviewPrompt(task, revision, trusted), schema: schema, judge: judge,
 	}); err != nil {
 		return model.Review{}, err
 	}
@@ -186,6 +202,7 @@ func reviewPrompt(task *model.Task, revision string, trusted changeSet) string {
 	prompt := fmt.Sprintf(
 		"Perform a fresh code review equivalent to /review of the COMPLETE change set: git diff %s HEAD. Recorded HEAD: %s. Include all accumulated PR changes and all repairs; do not only review the last commit. Task: %s. Scope: %s. Existing PR: %s. Inspect code and evidence, do not modify files. Report actionable correctness, regression, design or missing verification findings with file, priority and technical rationale. Do not invent findings. Set completed=true only after completing the review. A clean review must have an explanatory summary and zero findings.",
 		base, revision, task.Proposal.Prompt, task.Proposal.Scope, quoteOption(task.PRURL))
+	prompt += maintenanceReviewPolicy(task.Config)
 	prompt += fmt.Sprintf("\nThe orchestrator's own git computed the change set from %s to %s below. ", base, revision) +
 		"Git inside your sandbox reads configuration and shell startup files earlier turns could change, " +
 		"so where it shows other changes or other content, what follows is authoritative and the difference is itself a finding. " +

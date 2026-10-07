@@ -7,7 +7,9 @@
 
 Octomus finds useful improvements in your repository, challenges them with two independent
 reviewers, and turns accepted work into reviewed, verified pull requests through Codex or
-OpenCode. It can reject every proposal and do nothing. You decide what merges.
+OpenCode. It can reject every proposal and do nothing. You decide what merges — or opt in
+to maintenance mode, which can squash-merge a small reviewed maintenance PR itself only
+when GitHub checks and repository protections allow it.
 
 **Self-hosted preview · Sandboxed by default · One operator · One repository · Your Codex or OpenCode access**
 
@@ -91,7 +93,8 @@ not dollar caps; validated per-task and daily cost figures are not available yet
 Repository content and model output are untrusted, and prompt injection is not prevented by
 design. The [sandbox](docs/sandbox.md) keeps what it can do away from your credentials, your
 host and the rest of the internet; review, verification and your merge decision remain the
-gate on what ships. Keep the single-operator dashboard on loopback behind SSH, with a random
+gate on what ships (maintenance mode's narrow automatic squash merge is the only
+exception, and it is off by default). Keep the single-operator dashboard on loopback behind SSH, with a random
 private token and a repository-restricted GitHub token. Read the
 [threat model](docs/threat-model.md) before running work, and report vulnerabilities
 privately to **mail@mail.tyk.sh** using [SECURITY.md](SECURITY.md).

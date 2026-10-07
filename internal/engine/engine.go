@@ -68,7 +68,7 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 		ctx:     ctx,
 		cancel:  cancel,
 		wake:    make(chan struct{}, 1),
-		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}, retentionCursors: map[cleanupKind]string{}},
+		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, merges: map[string]struct{}{}, mergeRecoveryErrors: map[string]string{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}, retentionCursors: map[cleanupKind]string{}},
 	}
 	a.supervise = a.superviseTask
 	a.sandbox = sandbox.Host{}
@@ -120,6 +120,9 @@ func (a *App) Shutdown() {
 	}
 	if a.runtime.prRefresh != nil {
 		a.runtime.prRefresh.cancel()
+	}
+	if a.runtime.mergeWorker != nil {
+		a.runtime.mergeWorker.cancel()
 	}
 	if a.runtime.baseline != nil {
 		a.runtime.baseline.cancel()
@@ -219,7 +222,7 @@ func (a *App) Drained() bool {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	r := &a.runtime
-	return len(r.tasks) == 0 && !r.planning() && !r.housekeeping && r.prRefresh == nil && r.baseline == nil
+	return len(r.tasks) == 0 && !r.planning() && !r.housekeeping && r.prRefresh == nil && r.baseline == nil && r.mergeWorker == nil
 }
 
 func (a *App) Context() context.Context { return a.ctx }

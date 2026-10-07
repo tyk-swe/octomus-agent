@@ -76,6 +76,8 @@ func TestConfigValidation(t *testing.T) {
 		{"max_workspace_bytes", 1000000, 1000000000000000, "Workspace budget must be 1000000–1000000000000000 bytes"},
 		{"retain_completed_days", 1, 36500, "Workspace retention must be 1–36500 days"},
 		{"retain_events", 100, 100000, "Retained activity events must be 100–100000"},
+		{"auto_merge_max_lines", 1, 10000, "Auto-merge line limit must be 1–10000"},
+		{"auto_merge_max_files", 1, 100, "Auto-merge file limit must be 1–100"},
 	} {
 		values := []uint64{test.low, test.high, test.high + 1}
 		if test.low > 0 {
@@ -150,5 +152,86 @@ func TestConfigJSONContract(t *testing.T) {
 		if err := json.Unmarshal([]byte(raw), &cfg); err == nil {
 			t.Fatalf("accepted %s", raw)
 		}
+	}
+}
+
+func TestDeliveryModeDefaultsStandardAndEffectiveCategories(t *testing.T) {
+	cfg := Default()
+	if cfg.DeliveryMode != DeliveryModeStandard {
+		t.Fatalf("default delivery mode = %v", cfg.DeliveryMode)
+	}
+	if got := cfg.EffectiveCategories(); len(got) != len(cfg.Categories) {
+		t.Fatalf("standard effective categories = %v", got)
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"delivery_mode":"standard"`) ||
+		!strings.Contains(string(data), `"auto_merge_max_lines":500`) ||
+		!strings.Contains(string(data), `"auto_merge_max_files":10`) {
+		t.Fatalf("delivery defaults missing from %s", data)
+	}
+	cfg.DeliveryMode = DeliveryModeMaintenance
+	if err := cfg.Validate(false); err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.EffectiveCategories()
+	if slices.Contains(got, "features") || len(got) != len(cfg.Categories)-1 {
+		t.Fatalf("maintenance effective categories = %v", got)
+	}
+	data, err = json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"delivery_mode":"maintenance"`) {
+		t.Fatalf("maintenance mode missing from %s", data)
+	}
+	var decoded Config
+	if err := json.Unmarshal([]byte(`{"delivery_mode":"maintenance"}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.DeliveryMode != DeliveryModeMaintenance {
+		t.Fatalf("decoded mode = %v", decoded.DeliveryMode)
+	}
+	if err := json.Unmarshal([]byte(`{"delivery_mode":"turbo"}`), &decoded); err == nil {
+		t.Fatal("accepted an unknown delivery mode")
+	}
+	only := Default()
+	only.Categories = []string{"features"}
+	only.DeliveryMode = DeliveryModeMaintenance
+	if err := only.Validate(false); err == nil || !strings.Contains(err.Error(), "non-feature category") {
+		t.Fatalf("features-only maintenance = %v", err)
+	}
+	only.DeliveryMode = DeliveryModeStandard
+	if err := only.Validate(false); err != nil {
+		t.Fatalf("features-only standard must stay valid: %v", err)
+	}
+}
+
+func TestAutoMergeExcludedPathsValidation(t *testing.T) {
+	cfg := Default()
+	valid := []string{"internal/access/", "docs", "generated/bindings/", "dir.with.dots/", "a-b_c"}
+	for _, entry := range valid {
+		cfg.AutoMergeExcludedPaths = []string{entry}
+		if err := cfg.Validate(false); err != nil {
+			t.Fatalf("valid exclusion %q rejected: %v", entry, err)
+		}
+	}
+	for _, entry := range []string{"../up", "/abs/path", "has space", "has\ttab", "has\nline", "glob/*", "expr{a,b}", "x$var", "a\\b", "q?", "b[0]"} {
+		cfg.AutoMergeExcludedPaths = []string{entry}
+		if err := cfg.Validate(false); err == nil {
+			t.Fatalf("invalid exclusion %q accepted", entry)
+		}
+	}
+	for _, pair := range [][2]string{{"foo", "foo/"}, {"internal/", "internal/"}} {
+		cfg.AutoMergeExcludedPaths = []string{pair[0], pair[1]}
+		if err := cfg.Validate(false); err == nil {
+			t.Fatalf("duplicate normalized exclusions %v accepted", pair)
+		}
+	}
+	cfg.AutoMergeExcludedPaths = nil
+	if err := cfg.Validate(false); err != nil {
+		t.Fatal(err)
 	}
 }

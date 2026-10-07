@@ -101,6 +101,9 @@ func (a *App) TaskAction(id, action string) error {
 		}
 		task.Lifecycle.ArchivedAt = new(model.Now())
 		actionErr = a.saveTask(task)
+		if actionErr == nil {
+			actionErr = a.Store.RevokeTaskMerges(id, "The authorizing task was archived")
+		}
 	case "discard":
 		actionErr = a.discardTask(task)
 	}
@@ -202,6 +205,14 @@ func (a *App) eligibleTask(id, action string) (*model.Task, error) {
 	if !slices.Contains(task.AllowedActions(), action) {
 		return nil, conflictError("This action is not eligible for the task's recorded failure and workspace state")
 	}
+	if action != "cancel" {
+		a.runtimeMu.Lock()
+		_, merging := a.runtime.merges[task.Branch]
+		a.runtimeMu.Unlock()
+		if merging {
+			return nil, conflictError("An automatic merge check is in flight for this delivery; wait for it to finish")
+		}
+	}
 	if a.cleanupClaimed(cleanupTask, id) {
 		return nil, conflictError("Workspace cleanup is in progress for this task; wait for it to finish")
 	}
@@ -262,6 +273,14 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	}
 	if err := a.Store.ClearCancel(id); err != nil {
 		return err
+	}
+	live, err := a.Config()
+	if err != nil {
+		return err
+	}
+	if task.Config.DeliveryMode != live.DeliveryMode ||
+		!slices.Contains(task.Config.EffectiveCategories(), task.Proposal.Category) {
+		return invalidPlan(fmt.Sprintf("Task %s was planned under an incompatible delivery mode or category", id))
 	}
 	previousStatus := task.Status
 	if err := a.transition(task, model.StatusPublishing); err != nil {

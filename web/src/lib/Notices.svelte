@@ -22,10 +22,15 @@
   };
   function operatingStatus(snapshot: Snapshot): string {
     const mode = OPERATING_MODE_LABELS[snapshot.control.mode] ?? 'New work paused';
+    const phase = snapshot.control.batch?.phase === 'merging' ? ' · settling merges' : '';
     const publishing =
       snapshot.control.paused && snapshot.active_tasks > 0 ? ' · active workflows may publish' : '';
-    return `${mode} · ${snapshot.active_tasks} active tasks${publishing}`;
+    return `${mode}${phase} · ${snapshot.active_tasks} active tasks${publishing}`;
   }
+  const mergePending = (snapshot: Snapshot): number =>
+    (snapshot.auto_merge.counts.waiting ?? 0) +
+    (snapshot.auto_merge.counts.merging ?? 0) +
+    (snapshot.auto_merge.counts.uncertain ?? 0);
 </script>
 
 {#if error}<div class="notice error" role="alert">
@@ -101,6 +106,16 @@
       {#if data.pr_capacity.observed_at}Observed {relative(
           data.pr_capacity.observed_at
         )}.{/if}</span
+    >
+  </div>
+{/if}
+{#if data.delivery_mode === 'maintenance' && mergePending(data) > 0}
+  <div class="notice" role="status" aria-label="Automatic merges" aria-live="polite">
+    <Icon name="prs" size={18} /><span
+      >{mergePending(data)} pull {mergePending(data) === 1 ? 'request waits' : 'requests wait'} on GitHub
+      checks or protections for an automatic squash merge{data.auto_merge.active
+        ? ' — checking now'
+        : ''}.</span
     >
   </div>
 {/if}

@@ -18,7 +18,7 @@ var limitations = [9]string{
 	"Recorded review and check evidence only. No live HEAD, workspace, remote, authorization or current pull-request checks were performed while producing this export.",
 	"Planning completion is not task completion: a completed cycle records decisions, not delivered work.",
 	"Deferred is not rejected.",
-	"A recorded pull request describes delivery, not merge. Published is not merged.",
+	"A recorded pull request describes delivery, not merge. Published is not merged. Automatic merge evidence is the saved durable record: confirmed means the service's own squash merge response; observed records the remote outcome without naming an actor.",
 	"Audit acceptance is a recommendation. Audit cycles never create an execution queue, so an accepted audit proposal has no linked task by design.",
 	"Saved session routes are requested routes. Runtime model identity is not independently reported here.",
 	"Costs, delivery time and any replay timeline are not inferred from these records.",
@@ -41,15 +41,16 @@ type RunEvidenceV1 struct {
 }
 
 type CycleEvidence struct {
-	ID                string            `json:"id"`
-	Number            uint64            `json:"number"`
-	Mode              model.CycleMode   `json:"mode"`
-	Status            model.CycleStatus `json:"status"`
-	StartedAt         string            `json:"started_at"`
-	CompletedAt       *string           `json:"completed_at"`
-	Repository        string            `json:"repository"`
-	GroundingRevision *string           `json:"grounding_revision"`
-	Planning          PlanningOutcome   `json:"planning"`
+	ID                string              `json:"id"`
+	Number            uint64              `json:"number"`
+	Mode              model.CycleMode     `json:"mode"`
+	DeliveryMode      config.DeliveryMode `json:"delivery_mode"`
+	Status            model.CycleStatus   `json:"status"`
+	StartedAt         string              `json:"started_at"`
+	CompletedAt       *string             `json:"completed_at"`
+	Repository        string              `json:"repository"`
+	GroundingRevision *string             `json:"grounding_revision"`
+	Planning          PlanningOutcome     `json:"planning"`
 }
 
 type PlanningOutcome struct {
@@ -97,22 +98,25 @@ type ReviewerVerdict struct {
 }
 
 type TaskEvidence struct {
-	ID               string          `json:"id"`
-	CycleID          string          `json:"cycle_id"`
-	ProposalID       string          `json:"proposal_id"`
-	Status           model.Status    `json:"status"`
-	Branch           string          `json:"branch"`
-	Attempts         uint64          `json:"attempts"`
-	BlockedReason    *string         `json:"blocked_reason"`
-	ErrorRecorded    bool            `json:"error_recorded"`
-	CreatedAt        string          `json:"created_at"`
-	UpdatedAt        string          `json:"updated_at"`
-	Revisions        Revisions       `json:"revisions"`
-	Sessions         []SessionRoute  `json:"sessions"`
-	LatestReview     ReviewEvidence  `json:"latest_review"`
-	RequiredCommands CommandEvidence `json:"required_commands"`
-	PullRequest      *PRReference    `json:"pull_request"`
-	Gaps             []string        `json:"gaps"`
+	ID                   string                      `json:"id"`
+	CycleID              string                      `json:"cycle_id"`
+	ProposalID           string                      `json:"proposal_id"`
+	Status               model.Status                `json:"status"`
+	Branch               string                      `json:"branch"`
+	Attempts             uint64                      `json:"attempts"`
+	BlockedReason        *string                     `json:"blocked_reason"`
+	ErrorRecorded        bool                        `json:"error_recorded"`
+	CreatedAt            string                      `json:"created_at"`
+	UpdatedAt            string                      `json:"updated_at"`
+	DeliveryMode         config.DeliveryMode         `json:"delivery_mode"`
+	MaintenanceFootprint *model.MaintenanceFootprint `json:"maintenance_footprint"`
+	AutoMerge            *model.AutoMergeState       `json:"auto_merge"`
+	Revisions            Revisions                   `json:"revisions"`
+	Sessions             []SessionRoute              `json:"sessions"`
+	LatestReview         ReviewEvidence              `json:"latest_review"`
+	RequiredCommands     CommandEvidence             `json:"required_commands"`
+	PullRequest          *PRReference                `json:"pull_request"`
+	Gaps                 []string                    `json:"gaps"`
 }
 
 type Revisions struct {
@@ -138,14 +142,16 @@ type ReviewEvidence struct {
 }
 
 type ReviewRoundEvidence struct {
-	SessionID      string            `json:"session_id"`
-	Revision       string            `json:"revision"`
-	ComparisonBase string            `json:"comparison_base"`
-	CreatedAt      string            `json:"created_at"`
-	Completed      bool              `json:"completed"`
-	SummaryPresent bool              `json:"summary_present"`
-	AtOutput       *bool             `json:"matches_output_revision"`
-	Findings       []FindingEvidence `json:"findings"`
+	SessionID           string                       `json:"session_id"`
+	Revision            string                       `json:"revision"`
+	ComparisonBase      string                       `json:"comparison_base"`
+	CreatedAt           string                       `json:"created_at"`
+	Completed           bool                         `json:"completed"`
+	SummaryPresent      bool                         `json:"summary_present"`
+	AtOutput            *bool                        `json:"matches_output_revision"`
+	Maintenance         *model.MaintenanceAssessment `json:"maintenance"`
+	TrustedDiffComplete bool                         `json:"trusted_diff_complete"`
+	Findings            []FindingEvidence            `json:"findings"`
 }
 
 type FindingEvidence struct {
@@ -360,14 +366,16 @@ func reviewEvidence(task model.Task) ReviewEvidence {
 			matches = new(*task.OutputCommit == round.Revision)
 		}
 		latest = &ReviewRoundEvidence{
-			SessionID:      round.SessionID,
-			Revision:       round.Revision,
-			ComparisonBase: round.ComparisonBase,
-			CreatedAt:      round.CreatedAt,
-			Completed:      round.Result.Completed,
-			SummaryPresent: strings.TrimSpace(round.Result.Summary) != "",
-			AtOutput:       matches,
-			Findings:       findings,
+			SessionID:           round.SessionID,
+			Revision:            round.Revision,
+			ComparisonBase:      round.ComparisonBase,
+			CreatedAt:           round.CreatedAt,
+			Completed:           round.Result.Completed,
+			SummaryPresent:      strings.TrimSpace(round.Result.Summary) != "",
+			AtOutput:            matches,
+			Maintenance:         round.Maintenance,
+			TrustedDiffComplete: round.TrustedDiffComplete,
+			Findings:            findings,
 		}
 		clean = round.Result.Clean()
 	}
@@ -470,16 +478,18 @@ func taskEvidence(task model.Task) TaskEvidence {
 		pr = &PRReference{Number: new(*task.PRNumber), URL: wirejson.Clone(task.PRURL), Source: "recorded_task_reference"}
 	}
 	return TaskEvidence{
-		ID:            task.ID,
-		CycleID:       task.CycleID,
-		ProposalID:    task.Proposal.ID,
-		Status:        task.Status,
-		Branch:        task.Branch,
-		Attempts:      task.Attempts,
-		BlockedReason: blocked,
-		ErrorRecorded: task.Error != nil,
-		CreatedAt:     task.CreatedAt,
-		UpdatedAt:     task.UpdatedAt,
+		ID:                   task.ID,
+		CycleID:              task.CycleID,
+		ProposalID:           task.Proposal.ID,
+		Status:               task.Status,
+		Branch:               task.Branch,
+		Attempts:             task.Attempts,
+		BlockedReason:        blocked,
+		ErrorRecorded:        task.Error != nil,
+		CreatedAt:            task.CreatedAt,
+		UpdatedAt:            task.UpdatedAt,
+		DeliveryMode:         task.Config.DeliveryMode,
+		MaintenanceFootprint: task.MaintenanceFootprint,
 		Revisions: Revisions{
 			Source:         task.SourceRevision,
 			ComparisonBase: comparison,
@@ -585,6 +595,7 @@ func assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 			ID:                cycle.ID,
 			Number:            cycle.Number,
 			Mode:              cycle.Mode,
+			DeliveryMode:      cycle.DeliveryMode,
 			Status:            cycle.Status,
 			StartedAt:         cycle.StartedAt,
 			CompletedAt:       wirejson.Clone(cycle.CompletedAt),
@@ -626,14 +637,19 @@ func runRecords(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, error)
 func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
 	var cycle *model.Cycle
 	var tasks []model.Task
+	var merges map[string]*model.AutoMergeState
 	err := s.Snapshot(func(c *sql.Conn) (err error) {
 		cycle, tasks, err = runRecords(c, cycleID)
+		if err != nil {
+			return err
+		}
+		merges, err = maintenanceEvidenceAt(c, tasks)
 		return err
 	})
 	if err != nil || cycle == nil {
 		return nil, err
 	}
-	return redacted(assemble(*cycle, tasks))
+	return redacted(withMaintenanceEvidence(assemble(*cycle, tasks), merges))
 }
 
 // Run exports one cycle's run evidence from the state database at stateDB,
@@ -647,6 +663,10 @@ func Run(stateDB, cycleID string) (map[string]any, error) {
 		if cycle == nil {
 			return RunEvidenceV1{}, fmt.Errorf("No saved cycle %s in this state database", cycleID)
 		}
-		return assemble(*cycle, tasks), nil
+		merges, err := maintenanceEvidenceAt(c, tasks)
+		if err != nil {
+			return RunEvidenceV1{}, err
+		}
+		return withMaintenanceEvidence(assemble(*cycle, tasks), merges), nil
 	})
 }
