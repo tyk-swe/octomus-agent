@@ -107,6 +107,8 @@
   let latestCycle = $derived(data?.cycles[0]);
   type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
   const planningBlocked = $derived(!!planningBlocker(data?.planning_capacity));
+  // A planning preflight has no cycle yet; the service reports it only through active_cycle_mode.
+  const planningActive = $derived(!!data?.cycle_active || !!data?.active_cycle_mode);
   const canControl = $derived({
     resume:
       !!data?.configured &&
@@ -121,7 +123,7 @@
       !controlStatePending &&
       !planningBlocked &&
       data.control.paused &&
-      !data.cycle_active &&
+      !planningActive &&
       !data.active_tasks &&
       !data.baseline_active,
     audit:
@@ -130,7 +132,7 @@
       !controlStatePending &&
       !planningBlocked &&
       data.control.paused &&
-      !data.cycle_active &&
+      !planningActive &&
       !data.active_tasks &&
       !data.baseline_active
   });
@@ -719,7 +721,7 @@
               active={view === 'settings'}
               editable={data.control.paused &&
                 !data.active_tasks &&
-                !data.cycle_active &&
+                !planningActive &&
                 !data.baseline_active}
               status={setupStatus}
               onsaved={configSaved}
