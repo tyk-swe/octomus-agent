@@ -67,5 +67,5 @@ https://github.com/tyk-swe/octomus-agent/blob/main/docs/deployment.md#dedicated-
   gh auth login && gh auth setup-git
   export OCTOMUS_TOKEN="$(openssl rand -hex 32)"
   printf '%s\n' "$OCTOMUS_TOKEN"  # save it in your password manager
-  octomus-agent --data-dir /var/lib/octomus/.octomus
+  octomus-agent --data-dir /var/lib/octomus/.octomus --sandbox off
 NEXT
