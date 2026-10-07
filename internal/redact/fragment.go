@@ -162,8 +162,11 @@ func afterWord(text string) string {
 
 func tailTwoWordsStart(text string, values []string) string {
 	var rest string
-	if _, after, found := strings.Cut(text, "\n"); found {
+	if dropped, after, found := strings.Cut(text, "\n"); found {
 		rest = after
+		if mayEndBearerPrefix(strings.TrimRightFunc(dropped, unicode.IsSpace)) {
+			rest = afterWord(strings.TrimLeftFunc(rest, unicode.IsSpace))
+		}
 	} else {
 		rest = afterWord(strings.TrimLeftFunc(afterWord(text), unicode.IsSpace))
 	}

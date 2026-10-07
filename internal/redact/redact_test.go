@@ -73,6 +73,7 @@ func TestFragmentScrubsCutBoundaries(t *testing.T) {
 		{name: "head word", input: "denied for ghp_abcdefghijklmnop", kind: redact.HeadWordCut, want: "denied for"},
 		{name: "tail line", input: "xx Bearer abcdefghijklmnop kept", kind: redact.TailLineCut, want: "[redacted] kept"},
 		{name: "tail two words", input: "cut\nBearer abcdefghijklmnop kept", kind: redact.TailTwoWordsCut, want: "[redacted] kept"},
+		{name: "tail two words after a cut bearer line", input: "arer\nabcdefghijklmnop kept", kind: redact.TailTwoWordsCut, want: "kept"},
 		{name: "environment value cut", input: "before " + operatorToken + "\npartial", kind: redact.HeadLineCut, want: "before [redacted]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
