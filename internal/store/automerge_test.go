@@ -657,3 +657,104 @@ func TestMergeEvidenceRequiresImmutableBinding(t *testing.T) {
 		t.Fatalf("an unbound intent kept authority: %+v", recorded)
 	}
 }
+
+func TestCompletePublicationSnapshotsSupersededEvidence(t *testing.T) {
+	t.Parallel()
+	s := open(t, statePath(t))
+	taskA, pA, mergeA := mergeFixture(70, true)
+	publishAtCheckpoint(t, s, taskA, pA, mergeA)
+	applied, err := s.SettleMerge("fixture/project", 70, *mergeA, model.AutoMergeManual, "The diff touches a sensitive path", "", nil, true)
+	must(t, err)
+	if !applied {
+		t.Fatal("the manual sensitive settle did not apply")
+	}
+
+	taskB, pB, mergeB := mergeFixture(70, true)
+	publishAtCheckpoint(t, s, taskB, pB, mergeB)
+	current := prMerge(t, s, 70)
+	if current == nil || current.TaskID != taskB.ID || current.Head != mergeB.Head {
+		t.Fatalf("the superseding delivery did not take the PR record: %+v", current)
+	}
+	old, err := store.Get[model.Task](s, "task", taskA.ID)
+	must(t, err)
+	if old == nil || old.AutoMergeSnapshot == nil {
+		t.Fatal("the superseded task lost its merge evidence")
+	}
+	snap := old.AutoMergeSnapshot
+	if snap.Repository != "fixture/project" || snap.PRNumber != 70 {
+		t.Fatalf("snapshot binding = %+v", snap)
+	}
+	state := snap.State
+	if state.TaskID != taskA.ID || state.Head != mergeA.Head ||
+		state.ComparisonBase != mergeA.ComparisonBase ||
+		state.HeadBranch != taskA.Branch || state.BaseBranch != taskA.Config.DefaultBranch ||
+		state.Status != model.AutoMergeManual || state.Reason != "The diff touches a sensitive path" ||
+		state.PolicyRevision != mergeA.PolicyRevision || state.Authorized {
+		t.Fatalf("snapshot lost the exact evidence: %+v", state)
+	}
+	newest, err := store.Get[model.Task](s, "task", taskB.ID)
+	must(t, err)
+	if newest.AutoMergeSnapshot != nil {
+		t.Fatalf("the superseding task recorded a snapshot: %+v", newest.AutoMergeSnapshot)
+	}
+}
+
+func TestCompletePublicationSnapshotRollsBackWithFailure(t *testing.T) {
+	t.Parallel()
+	s, err := store.OpenPlan(statePath(t), store.SchemaDDL()+`
+		CREATE TRIGGER fail_pr_update BEFORE UPDATE ON records
+		WHEN NEW.kind='pr' AND EXISTS (SELECT 1 FROM records WHERE kind='sentinel' AND id='fail-publish' AND data != 'null')
+		BEGIN SELECT RAISE(FAIL, 'injected publication failure'); END;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	taskA, pA, mergeA := mergeFixture(71, true)
+	publishAtCheckpoint(t, s, taskA, pA, mergeA)
+	applied, err := s.SettleMerge("fixture/project", 71, *mergeA, model.AutoMergeManual, "manual outcome", "", nil, true)
+	must(t, err)
+	if !applied {
+		t.Fatal("settle failed")
+	}
+	must(t, s.Put("sentinel", "fail-publish", true))
+	taskB, pB, mergeB := mergeFixture(71, true)
+	checkpoint := taskB.Clone()
+	checkpoint.Status = model.StatusPublishing
+	must(t, s.Put("task", taskB.ID, checkpoint))
+	published := taskB.Clone()
+	published.Status = model.StatusPublished
+	if err := s.CompletePublication(published, pB, mergeB); err == nil {
+		t.Fatal("the injected failure did not roll back")
+	}
+	old, err := store.Get[model.Task](s, "task", taskA.ID)
+	must(t, err)
+	if old.AutoMergeSnapshot != nil {
+		t.Fatalf("the rolled-back snapshot survived: %+v", old.AutoMergeSnapshot)
+	}
+	current := prMerge(t, s, 71)
+	if current.TaskID != taskA.ID || current.Status != model.AutoMergeManual {
+		t.Fatalf("the failed publication corrupted the record: %+v", current)
+	}
+}
+
+func TestUnfinishedBranchWorkCancelledReleases(t *testing.T) {
+	t.Parallel()
+	s := open(t, statePath(t))
+	cancelled := task()
+	cancelled.Branch = "octomus/work"
+	cancelled.Status = model.StatusCancelled
+	must(t, s.Put("task", cancelled.ID, cancelled))
+	pending, err := s.UnfinishedBranchWork("fixture/project", "octomus/work", "other")
+	must(t, err)
+	if pending {
+		t.Fatal("a cancelled sibling still holds the branch")
+	}
+	queued := task()
+	queued.Branch = "octomus/work"
+	must(t, s.Put("task", queued.ID, queued))
+	pending, err = s.UnfinishedBranchWork("fixture/project", "octomus/work", "other")
+	must(t, err)
+	if !pending {
+		t.Fatal("a queued replacement did not hold the branch")
+	}
+}

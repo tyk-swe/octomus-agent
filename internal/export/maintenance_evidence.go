@@ -30,23 +30,35 @@ func maintenanceEvidenceAt(c *sql.Conn, tasks []model.Task) (map[string]*model.A
 		if len(observations) > 1 {
 			return nil, fmt.Errorf("Multiple saved observations identify maintenance pull request %d", *task.PRNumber)
 		}
-		if len(observations) == 0 {
-			continue
+		var merge *model.AutoMergeState
+		if snapshot := task.AutoMergeSnapshot; snapshot != nil &&
+			config.EqualASCII(snapshot.Repository, task.Config.GitHubRepo) &&
+			snapshot.PRNumber == *task.PRNumber &&
+			maintenanceStateMatchesTask(&snapshot.State, task) {
+			merge = &snapshot.State
 		}
-		observation := observations[0]
-		merge := observation.AutoMerge
-		if merge == nil || merge.TaskID != task.ID || merge.Head != *task.OutputCommit ||
-			merge.ComparisonBase != task.ComparisonBase || merge.HeadBranch != task.Branch ||
-			merge.BaseBranch != task.Config.DefaultBranch {
-			continue
+		if len(observations) == 1 {
+			observation := observations[0]
+			current := observation.AutoMerge
+			if maintenanceStateMatchesTask(current, task) &&
+				(current.Status != model.AutoMergeMerged || observation.PR.Head == current.Head) {
+				merge = current
+			}
 		}
-		if merge.Status == model.AutoMergeMerged && observation.PR.Head != merge.Head {
+		if merge == nil {
 			continue
 		}
 		captured := merge.Clone()
 		saved[task.ID] = &captured
 	}
 	return saved, nil
+}
+
+func maintenanceStateMatchesTask(merge *model.AutoMergeState, task model.Task) bool {
+	return merge != nil && task.OutputCommit != nil &&
+		merge.TaskID == task.ID && merge.Head == *task.OutputCommit &&
+		merge.ComparisonBase == task.ComparisonBase &&
+		merge.HeadBranch == task.Branch && merge.BaseBranch == task.Config.DefaultBranch
 }
 
 func withMaintenanceEvidence(run RunEvidenceV1, saved map[string]*model.AutoMergeState) RunEvidenceV1 {

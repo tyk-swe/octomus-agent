@@ -24,7 +24,7 @@ const maintenanceUnfinishedBranchQuery = `SELECT EXISTS(
     WHERE m.kind='task' AND m.repository=?1 COLLATE NOCASE AND m.id!=?3
         AND m.archived IS NULL AND json_extract(r.data,'$.branch')=?2
         AND m.status IN ('queued','executing','reviewing','repairing','verifying',
-            'publishing','blocked','failed','cancelled')
+            'publishing','blocked','failed')
 )`
 
 const maintenanceCountsQuery = `SELECT json_extract(r.data,'$.auto_merge.status'),count(*)

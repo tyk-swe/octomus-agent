@@ -623,3 +623,122 @@ func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
 		t.Fatal("the exact-bound record did not restore the evidence")
 	}
 }
+
+func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
+	t.Parallel()
+	delivered := task("cycle-a", "p1")
+	delivered.Status = model.StatusPublished
+	delivered.Config.DeliveryMode = config.DeliveryModeMaintenance
+	output := "out00001"
+	delivered.OutputCommit = &output
+	number5 := uint64(5)
+	delivered.PRNumber = &number5
+	url := "https://github.com/fixture/project/pull/5"
+	delivered.PRURL = &url
+	delivered.Reviews = []model.ReviewRound{review("out00001", true, "Reviewed the complete change set")}
+	delivered.Verification = []model.Verification{check("make check", true, "out00001")}
+	c := cycle("cycle-a", "execution",
+		[]model.Proposal{proposal("p1", "accepted")},
+		[]any{savedBatch(savedEntry("p1", "accepted", "a accepts")), savedBatch(savedEntry("p1", "accepted", "b accepts"))},
+		[]model.Session{reviewerSession("adversary-a", model.SessionCompleted), reviewerSession("adversary-b", model.SessionCompleted)})
+	s, _ := fixture(t, []model.Cycle{c}, []model.Task{delivered})
+
+	pr := model.PullRequest{Number: 5, Title: "A", Branch: delivered.Branch, Head: "out00001",
+		Base: "main", URL: url, State: "open", Owned: true,
+		HeadRepository: "fixture/project", BaseRepository: "fixture/project"}
+	mergeA := &model.AutoMergeState{
+		TaskID: delivered.ID, Head: "out00001", ComparisonBase: "source00",
+		HeadBranch: delivered.Branch, BaseBranch: "main", PolicyRevision: "policy",
+		Authorized: true, Status: model.AutoMergeWaiting, Reason: "Waiting for checks",
+		ObservedAt: model.Now(),
+	}
+	checkpoint := delivered.Clone()
+	checkpoint.Status = model.StatusPublishing
+	must(t, s.Put("task", delivered.ID, checkpoint))
+	must(t, s.CompletePublication(func() model.Task { p := delivered.Clone(); p.Status = model.StatusPublished; return p }(), pr, mergeA))
+	applied, err := s.SettleMerge("fixture/project", 5, *mergeA, model.AutoMergeManual, "The diff touches a sensitive path", "", nil, true)
+	if err != nil || !applied {
+		t.Fatalf("manual settle = %v, %v", applied, err)
+	}
+
+	superseding := task("cycle-b", "p9")
+	superseding.Config.DeliveryMode = config.DeliveryModeMaintenance
+	outB := "out00002"
+	superseding.OutputCommit = &outB
+	superseding.PRNumber = &number5
+	mergeB := &model.AutoMergeState{
+		TaskID: superseding.ID, Head: "out00002", ComparisonBase: "source01",
+		HeadBranch: superseding.Branch, BaseBranch: "main", PolicyRevision: "policy-b",
+		Authorized: true, Status: model.AutoMergeWaiting, Reason: "Waiting for checks",
+		ObservedAt: model.Now(),
+	}
+	superseding.ComparisonBase = "source01"
+	prB := pr
+	prB.Head = "out00002"
+	must(t, s.Put("task", superseding.ID, func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublishing; return p }()))
+	must(t, s.CompletePublication(func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublished; return p }(), prB, mergeB))
+
+	value := exported(t, s, "cycle-a")
+	evidence := get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge")
+	if evidence == nil {
+		t.Fatal("the superseded task lost its merge evidence")
+	}
+	snap := evidence.(map[string]any)
+	if snap["reason"] != "The diff touches a sensitive path" || snap["head"] != "out00001" ||
+		snap["task_id"] != delivered.ID || snap["status"] != "manual" {
+		t.Fatalf("the superseding delivery substituted its evidence: %v", snap)
+	}
+
+	pristine, err := store.Get[model.Task](s, "task", delivered.ID)
+	must(t, err)
+	for name, mutate := range map[string]func(*model.Task){
+		"repository":  func(m *model.Task) { m.AutoMergeSnapshot.Repository = "other/repo" },
+		"pr-number":   func(m *model.Task) { m.AutoMergeSnapshot.PRNumber = 99 },
+		"task-id":     func(m *model.Task) { m.AutoMergeSnapshot.State.TaskID = "other" },
+		"head":        func(m *model.Task) { m.AutoMergeSnapshot.State.Head = "other000" },
+		"base":        func(m *model.Task) { m.AutoMergeSnapshot.State.ComparisonBase = "other00" },
+		"head-branch": func(m *model.Task) { m.AutoMergeSnapshot.State.HeadBranch = "octomus/other" },
+		"base-branch": func(m *model.Task) { m.AutoMergeSnapshot.State.BaseBranch = "release" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			mutated := delivered.Clone()
+			snap := *pristine.AutoMergeSnapshot
+			snap.State = pristine.AutoMergeSnapshot.State.Clone()
+			mutated.AutoMergeSnapshot = &snap
+			mutate(&mutated)
+			must(t, s.Put("task", delivered.ID, mutated))
+			value := exported(t, s, "cycle-a")
+			if get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge") != nil {
+				t.Fatalf("%s leaked mismatched snapshot evidence", name)
+			}
+		})
+	}
+
+	must(t, s.Put("task", delivered.ID, *pristine))
+	value = exported(t, s, "cycle-a")
+	if get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge", "reason") != "The diff touches a sensitive path" {
+		t.Fatal("restored snapshot did not export")
+	}
+
+	current := mergeA.Clone()
+	current.Status = model.AutoMergeMerged
+	current.Reason = "Squash merged by Octomus"
+	current.ResultSource = new("confirmed")
+	observation := model.PRObservation{
+		Repository: "fixture/project", ObservedAt: model.Now(), DeliveredHead: &output,
+		PR: pr, AutoMerge: &current,
+	}
+	must(t, s.Put("pr", "fixture/project:5", observation))
+	value = exported(t, s, "cycle-a")
+	if got := get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge", "reason"); got != "Squash merged by Octomus" {
+		t.Fatalf("the current matching record did not take precedence: %v", got)
+	}
+
+	empty := observation
+	empty.AutoMerge = nil
+	must(t, s.Put("pr", "fixture/project:5", empty))
+	value = exported(t, s, "cycle-a")
+	if got := get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge", "reason"); got != "The diff touches a sensitive path" {
+		t.Fatalf("the snapshot did not stand alone without the current record: %v", got)
+	}
+}

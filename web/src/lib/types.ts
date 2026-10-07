@@ -57,6 +57,11 @@ export type AutoMergeState = {
   merge_commit: string | null;
   result_source: string | null;
 };
+export type AutoMergeSnapshot = {
+  repository: string;
+  pr_number: number;
+  state: AutoMergeState;
+};
 export type Config = {
   repository: string;
   github_repo: string;
@@ -218,6 +223,7 @@ export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   comparison_base: string;
   default_revision: string;
   maintenance_footprint: MaintenanceFootprint | null;
+  auto_merge_snapshot: AutoMergeSnapshot | null;
   run_id: string | null;
   attempt_policy: AttemptPolicy | null;
   workspace: string;

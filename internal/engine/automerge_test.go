@@ -1416,3 +1416,103 @@ func TestMergeRecoveryErrorShownInStateView(t *testing.T) {
 		t.Fatal("a settled key still reports unhealthy")
 	}
 }
+
+func TestMergeWaitsForInFlightBranchOwner(t *testing.T) {
+	f := maintenanceFixture(t)
+	saved, observation := publishedMaintenanceTask(t, f)
+	app := f.pausedApp(t)
+	control, err := app.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.SetMode(model.OperatingModeContinuous)
+	must0(t, f.state.SaveControl(control))
+
+	sibling := executionTask(t, f, f.cfg.DefaultBranch)
+	sibling.Branch = saved.Branch
+	sibling.Status = model.StatusCancelled
+	putTask(t, f, sibling)
+	app.runtimeMu.Lock()
+	app.runtime.tasks[sibling.ID] = taskJob{branch: saved.Branch, cancel: func() {}}
+	app.runtimeMu.Unlock()
+	app.mergeCandidate(t.Context(), f.cfg, false, false, true, nil, observation)
+	if len(mergeAttempts(t, f)) != 0 {
+		t.Fatal("an in-flight cancelled sibling's branch was merged under it")
+	}
+	if recorded := prObservation(t, f, *saved.PRNumber).AutoMerge; recorded.Status != model.AutoMergeWaiting {
+		t.Fatalf("the waiting record settled while a sibling still owns the branch: %+v", recorded)
+	}
+	app.runtimeMu.Lock()
+	delete(app.runtime.tasks, sibling.ID)
+	app.runtimeMu.Unlock()
+	app.mergeCandidate(t.Context(), f.cfg, false, false, true, nil, prObservation(t, f, *saved.PRNumber))
+	recorded := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if recorded.Status != model.AutoMergeMerged {
+		t.Fatalf("the joined sibling still blocks the branch: %+v", recorded)
+	}
+	if len(mergeAttempts(t, f)) != 1 {
+		t.Fatalf("attempts = %+v; want exactly one merge", mergeAttempts(t, f))
+	}
+}
+
+func TestMergeFinalGateRejectsLateBranchOwner(t *testing.T) {
+	f := maintenanceFixture(t)
+	saved, observation := publishedMaintenanceTask(t, f)
+	app := f.pausedApp(t)
+	control, err := app.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.SetMode(model.OperatingModeContinuous)
+	must0(t, f.state.SaveControl(control))
+
+	original := unfinishedBranchWork
+	unfinishedBranchWork = func(s *store.Store, repository, branch, taskID string) (bool, error) {
+		app.runtimeMu.Lock()
+		app.runtime.tasks["late-sibling"] = taskJob{branch: saved.Branch, cancel: func() {}}
+		app.runtimeMu.Unlock()
+		return s.UnfinishedBranchWork(repository, branch, taskID)
+	}
+	defer func() { unfinishedBranchWork = original }()
+	app.mergeCandidate(t.Context(), f.cfg, false, false, true, nil, observation)
+	if len(mergeAttempts(t, f)) != 0 {
+		t.Fatal("a branch owner arriving after preflight reached the mutation")
+	}
+	if recorded := prObservation(t, f, *saved.PRNumber).AutoMerge; recorded.Status != model.AutoMergeWaiting {
+		t.Fatalf("the late-owner refusal mutated the record: %+v", recorded)
+	}
+	app.runtimeMu.Lock()
+	delete(app.runtime.tasks, "late-sibling")
+	app.runtimeMu.Unlock()
+}
+
+func TestMergeRunOnceCancelledSiblingReleases(t *testing.T) {
+	t.Parallel()
+	f := maintenanceFixture(t)
+	saved, observation := publishedMaintenanceTask(t, f)
+	app := f.pausedApp(t)
+	control, err := app.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.SetMode(model.OperatingModeRunOnce)
+	control.Batch = &model.RunBatch{ID: "run-once-merge"}
+	must0(t, f.state.SaveControl(control))
+	runTask := saved.Clone()
+	runTask.RunID = new(control.Batch.ID)
+	must0(t, f.state.Put("task", saved.ID, runTask))
+
+	sibling := executionTask(t, f, f.cfg.DefaultBranch)
+	sibling.Branch = saved.Branch
+	sibling.Status = model.StatusCancelled
+	putTask(t, f, sibling)
+	batch := new(control.Batch.ID)
+	app.mergeCandidate(t.Context(), f.cfg, false, false, false, batch, observation)
+	recorded := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if recorded.Status != model.AutoMergeMerged {
+		t.Fatalf("a joined cancelled sibling blocked the run-once merge: %+v", recorded)
+	}
+	if len(mergeAttempts(t, f)) != 1 {
+		t.Fatalf("attempts = %+v; want exactly one merge", mergeAttempts(t, f))
+	}
+}

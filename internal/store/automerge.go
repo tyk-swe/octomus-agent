@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
@@ -35,6 +36,33 @@ func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge 
 			(previous.AutoMerge.Status == model.AutoMergeMerging ||
 				previous.AutoMerge.Status == model.AutoMergeUncertain) {
 			return fmt.Errorf("Pull request %d still carries an unresolved merge intent", p.Number)
+		}
+		if task.AutoMergeSnapshot == nil {
+			task.AutoMergeSnapshot = stored.AutoMergeSnapshot
+		}
+		if previous != nil && previous.AutoMerge != nil && previous.AutoMerge.TaskID != task.ID {
+			state := previous.AutoMerge.Clone()
+			var old model.Task
+			oldFound, err := txGet(c, "task", previous.AutoMerge.TaskID, &old)
+			if err != nil {
+				return err
+			}
+			if oldFound && config.EqualASCII(old.Config.GitHubRepo, repository) &&
+				old.PRNumber != nil && *old.PRNumber == p.Number &&
+				old.OutputCommit != nil && *old.OutputCommit == previous.AutoMerge.Head &&
+				old.ID == previous.AutoMerge.TaskID &&
+				old.ComparisonBase == state.ComparisonBase &&
+				old.Branch == state.HeadBranch &&
+				old.Config.DefaultBranch == state.BaseBranch {
+				old.AutoMergeSnapshot = &model.AutoMergeSnapshot{
+					Repository: previous.Repository,
+					PRNumber:   previous.PR.Number,
+					State:      state,
+				}
+				if err := txPut(c, "task", old.ID, old); err != nil {
+					return err
+				}
+			}
 		}
 		recordID := previousID
 		if previous == nil {

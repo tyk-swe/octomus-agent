@@ -153,6 +153,7 @@ func TestTypesMirrorGoJSON(t *testing.T) {
 		"MaintenanceAssessment":    model.MaintenanceAssessment{},
 		"MaintenanceFootprint":     model.MaintenanceFootprint{},
 		"AutoMergeState":           model.AutoMergeState{},
+		"AutoMergeSnapshot":        model.AutoMergeSnapshot{},
 		"SandboxEgress":            model.SandboxEgress{},
 		"SandboxSelfTest":          engine.SandboxSelfTest{},
 		"ProbeCheck":               sandbox.ProbeCheck{},

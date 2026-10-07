@@ -10,13 +10,20 @@ var manualMergeNames = []string{
 	"jenkinsfile", "azure-pipelines.yml", "makefile",
 	"agents.md", "security.md", "codeowners", ".devin", ".agents", ".claude", ".cursor",
 	"deploy", "deployment", "deployments", "migrations", "migration", "schema.sql",
+	"dockerfile", "containerfile", ".dockerignore", "compose.yml", "compose.yaml",
+	"docker-compose.yml", "docker-compose.yaml",
 	".gitmodules", ".gitattributes",
 }
 
 func ManualMergePath(name string, excluded []string) bool {
 	components := strings.Split(name, "/")
 	for _, component := range components {
-		if slices.Contains(manualMergeNames, strings.ToLower(component)) {
+		lower := strings.ToLower(component)
+		if slices.Contains(manualMergeNames, lower) ||
+			strings.HasPrefix(lower, "dockerfile.") || strings.HasSuffix(lower, ".dockerfile") ||
+			strings.HasPrefix(lower, "containerfile.") || strings.HasSuffix(lower, ".containerfile") ||
+			((strings.HasPrefix(lower, "compose.") || strings.HasPrefix(lower, "docker-compose.")) &&
+				(strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml"))) {
 			return true
 		}
 	}

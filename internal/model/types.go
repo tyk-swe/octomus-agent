@@ -197,6 +197,18 @@ func (v AutoMergeState) MarshalJSON() ([]byte, error) {
 }
 func (v AutoMergeState) Clone() AutoMergeState { return wirejson.Clone(v) }
 
+type AutoMergeSnapshot struct {
+	Repository string         `json:"repository"`
+	PRNumber   uint64         `json:"pr_number"`
+	State      AutoMergeState `json:"state"`
+}
+
+func (v *AutoMergeSnapshot) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v AutoMergeSnapshot) MarshalJSON() ([]byte, error) {
+	type plain AutoMergeSnapshot
+	return wirejson.Record(plain(v))
+}
+
 type ReviewRound struct {
 	SessionID           string                 `json:"session_id"`
 	Revision            string                 `json:"revision"`
@@ -345,6 +357,7 @@ type Task struct {
 	RediscoveryResult    *string               `json:"rediscovery_result"`
 	Lifecycle            WorkspaceLifecycle    `json:"lifecycle"`
 	MaintenanceFootprint *MaintenanceFootprint `json:"maintenance_footprint" wire:"default"`
+	AutoMergeSnapshot    *AutoMergeSnapshot    `json:"auto_merge_snapshot" wire:"default"`
 }
 
 func (t *Task) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, t) }

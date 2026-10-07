@@ -27,6 +27,22 @@ var unfinishedBranchWork = func(s *store.Store, repository, branch, taskID strin
 	return s.UnfinishedBranchWork(repository, branch, taskID)
 }
 
+func (a *App) branchHasUnfinishedWork(repository, branch, exceptID string) (bool, error) {
+	a.runtimeMu.Lock()
+	running := false
+	for id, job := range a.runtime.tasks {
+		if id != exceptID && job.branch == branch {
+			running = true
+			break
+		}
+	}
+	a.runtimeMu.Unlock()
+	if running {
+		return true, nil
+	}
+	return unfinishedBranchWork(a.Store, repository, branch, exceptID)
+}
+
 var settleMergeRecord = func(s *store.Store, repository string, number uint64, expected model.AutoMergeState, status model.AutoMergeStatus, reason, source string, commit *string, revoke bool) (bool, error) {
 	return s.SettleMerge(repository, number, expected, status, reason, source, commit, revoke)
 }
@@ -249,7 +265,7 @@ func (a *App) mergeBlocked(ctx context.Context, cfg config.Config, task model.Ta
 	case !task.MaintenanceMergeAuthorized(cfg):
 		return manualMergeReason(task, cfg), false, false, true
 	}
-	if unfinished, err := unfinishedBranchWork(a.Store, cfg.GitHubRepo, task.Branch, task.ID); err != nil {
+	if unfinished, err := a.branchHasUnfinishedWork(cfg.GitHubRepo, task.Branch, task.ID); err != nil {
 		return "Waiting for the same-branch work check: " + redact.Error(err), true, false, false
 	} else if unfinished {
 		return "Waiting for same-branch work to finish", true, false, false
@@ -437,7 +453,7 @@ func (a *App) mergeAttempt(ctx context.Context, task model.Task, observation mod
 	if err != nil || cancelled {
 		return
 	}
-	if unfinished, err := unfinishedBranchWork(a.Store, live.GitHubRepo, current.Branch, current.ID); err != nil || unfinished {
+	if unfinished, err := a.branchHasUnfinishedWork(live.GitHubRepo, current.Branch, current.ID); err != nil || unfinished {
 		return
 	}
 	intent := merge.Clone()
