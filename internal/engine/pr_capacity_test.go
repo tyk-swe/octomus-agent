@@ -32,7 +32,7 @@ func TestPRCapacityFreshness(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
 	a := New(state, t.TempDir())
-	t.Cleanup(a.Shutdown)
+	cleanupApp(t, a)
 	prs := []model.PullRequest{}
 	for n := uint64(1); n <= 3; n++ {
 		pr := ownedPR(fmt.Sprintf("octomus/open-%d", n))
@@ -116,7 +116,7 @@ func TestRefreshFailureRevokesCapacity(t *testing.T) {
 	queued := queuedTask(f.cfg, "waiting-for-capacity", f.cfg.DefaultBranch, f.cfg.BranchPrefix+"waiting")
 	putTask(t, f, queued)
 	app := New(f.state, f.dataDir)
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	if err := control(app, "resume"); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestSlowRefreshAuthorizesAdmission(t *testing.T) {
 		task.Status = model.StatusPublished
 		return f.state.Put("task", task.ID, task)
 	}
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	deferHousekeeping(app)
 	if err := control(app, "resume"); err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestSlowRefreshAuthorizesAdmission(t *testing.T) {
 	if err := app.tick(); err != nil {
 		t.Fatal(err)
 	}
-	app.wg.Wait()
+	waitApp(t, app)
 	if len(started) != 1 {
 		t.Fatal("a just-landed inventory whose ObservedAt is older than the admission window authorized nothing")
 	}
@@ -227,7 +227,7 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 		task.Status = model.StatusPublished
 		return f.state.Put("task", task.ID, task)
 	}
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	deferHousekeeping(app)
 	if err := control(app, "resume"); err != nil {
 		t.Fatal(err)
@@ -235,14 +235,14 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 	if err := app.tick(); err != nil {
 		t.Fatal(err)
 	}
-	app.wg.Wait()
+	waitApp(t, app)
 	if len(started) != 0 {
 		t.Fatal("tasks started before a complete inventory was available")
 	}
 	if err := app.tick(); err != nil {
 		t.Fatal(err)
 	}
-	app.wg.Wait()
+	waitApp(t, app)
 	if len(started) != 2 {
 		t.Fatalf("one inventory admitted %d tasks; want both slots in the same batch", len(started))
 	}
@@ -259,7 +259,7 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 	if err := app.tick(); err != nil {
 		t.Fatal(err)
 	}
-	app.wg.Wait()
+	waitApp(t, app)
 	if len(started) != 2 {
 		t.Fatal("the previous inventory authorized a second admission batch")
 	}
@@ -270,7 +270,7 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 	if err := app.tick(); err != nil {
 		t.Fatal(err)
 	}
-	app.wg.Wait()
+	waitApp(t, app)
 	third, err := store.Get[model.Task](f.state, "task", "third")
 	if err != nil || third == nil || third.Status != model.StatusQueued || len(started) != 2 {
 		t.Fatalf("full inventory admitted a new PR: %+v, %v; started=%d", third, err, len(started))
@@ -315,13 +315,13 @@ func TestRestartKeepsRetriedTaskBehindCapacity(t *testing.T) {
 		if err := first.tick(); err != nil {
 			t.Fatal(err)
 		}
-		first.wg.Wait()
+		waitApp(t, first)
 	}
 	capacity, err := first.prCapacity(f.cfg)
 	if saved := loadTask(t, f.state, task.ID); err != nil || saved.Status != model.StatusQueued || capacity.Status != "full" {
 		t.Fatalf("before restart: task %s, capacity %+v, %v; want it queued at full capacity", saved.Status, capacity, err)
 	}
-	first.Shutdown()
+	shutdownApp(t, first)
 
 	// After a restart the retried attempt's repair would complete it if it were admitted.
 	script.Answer(routes.Reviewer, cleanReview("Still a draft"), cleanReview("Fixed"))
@@ -337,7 +337,7 @@ func TestRestartKeepsRetriedTaskBehindCapacity(t *testing.T) {
 		if err := restarted.tick(); err != nil {
 			t.Fatal(err)
 		}
-		restarted.wg.Wait()
+		waitApp(t, restarted)
 	}
 	saved := loadTask(t, f.state, task.ID)
 	if prs := prsJSON(t, f); saved.Status != model.StatusQueued || len(prs) != 1 {

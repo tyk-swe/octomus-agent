@@ -221,7 +221,7 @@ func TestObserveDefaultBranch(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	app := New(f.state, f.dataDir)
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	if err := app.observeRemote(context.Background(), f.cfg); err != nil {
 		t.Fatal(err)
 	}

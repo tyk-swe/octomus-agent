@@ -19,7 +19,7 @@ func heldPreflightFixture(t *testing.T) (*fixture, *App, model.Task) {
 	task.Status = model.StatusBlocked
 	putTask(t, f, task)
 	app := New(f.state, f.dataDir)
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	return f, app, task
 }
 
@@ -59,7 +59,7 @@ func TestTaskActions(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	app := New(f.state, f.dataDir)
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 
 	stale := executionTask(t, f, f.cfg.DefaultBranch)
 	stale.Status = model.StatusBlocked
@@ -106,7 +106,7 @@ func TestRetryOnStaleBaseBlocks(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	app := New(f.state, f.dataDir)
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	task := executionTask(t, f, f.cfg.DefaultBranch)
 	task.Status = model.StatusBlocked
 	putTask(t, f, task)

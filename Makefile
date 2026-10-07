@@ -1,4 +1,4 @@
-.PHONY: dashboard build check test test-go test-go-race test-integration test-browser test-sandbox package audit
+.PHONY: dashboard build check test test-go test-go-race test-ui-logic test-integration test-browser test-sandbox package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
 # Scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
@@ -7,6 +7,7 @@ E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
 # -shuffle=on randomizes test and package order to catch order-dependent state;
 # a failure prints its seed (-test.shuffle N) to reproduce.
 GO_TEST_FLAGS = -timeout 30m -shuffle=on
+GO_TEST_PACKAGES ?= ./...
 
 # Directory timestamps also invalidate the build when inputs are added or removed.
 # Vite reads VERSION, and Makefile changes can alter the input list or build command.
@@ -29,17 +30,25 @@ check: dashboard
 	npm run format:check --prefix web
 
 # The race suite runs the same tests as test-go, with the race detector; test-go is the quick local loop.
-test: test-go-race test-integration test-browser
+test:
+	$(MAKE) test-go-race
+	$(MAKE) test-integration
+	$(MAKE) test-browser
 
 test-go: dashboard
-	go test $(GO_TEST_FLAGS) ./...
+	go test $(GO_TEST_FLAGS) $(GO_TEST_PACKAGES)
 
 # -race also turns on checkptr, which spends most of its time in the pure-Go SQLite driver's
 # unsafe code; this module has none of its own.
 test-go-race: dashboard
-	CGO_ENABLED=1 go test -race -gcflags='modernc.org/...=-d=checkptr=0' $(GO_TEST_FLAGS) ./...
+	CGO_ENABLED=1 go test -race -gcflags='modernc.org/...=-d=checkptr=0' $(GO_TEST_FLAGS) $(GO_TEST_PACKAGES)
+
+# Pure dashboard rules: needs npm dependencies, but no dashboard build, service or browser.
+test-ui-logic:
+	npm run test:unit --prefix web -- $(PLAYWRIGHT_ARGS)
 
 test-integration: build
+	$(E2E_ENV) python3 -m unittest discover -s tests -p 'test_harness.py'
 	$(E2E_ENV) python3 tests/distribution.py
 	$(E2E_ENV) python3 tests/e2e.py $(SCENARIOS)
 

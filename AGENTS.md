@@ -143,9 +143,9 @@ strict typed JSON boundaries for saved records and API requests.
   `configuration.spec.ts` (revision conflicts, drafts, the setup checklist),
   `controls.spec.ts` (planning capacity, queued state refreshes, control eligibility
   and an audit), `recovery.spec.ts` (list retries and refused actions),
-  `run-evidence.spec.ts`, `sandbox.spec.ts`, `evidence.spec.ts`, which checks
-  the evidence and sandbox verdict rules without a page, and `launch-assets.spec.ts`,
-  which captures `docs/dashboard.png` only under `npm run launch:assets`.
+  `run-evidence.spec.ts`, `sandbox.spec.ts`, `evidence.spec.ts` and
+  `control-eligibility.spec.ts`, which check dashboard rules without a page, and
+  `launch-assets.spec.ts`, which captures `docs/dashboard.png` only under `npm run launch:assets`.
 - `docs/architecture.md` describes the operating contract.
 
 ## Build and verify
@@ -156,16 +156,26 @@ race detector. Install dashboard dependencies with
 `npx --prefix web playwright install --with-deps chromium`.
 
 - `make check`: gofmt/`go vet`, Svelte/TypeScript and Prettier checks.
-- `make test`: the stage targets in order: the `-race` Go suite, then against
-  the production binary and dashboard build `tests/distribution.py`,
-  `tests/e2e.py` and the browser tests.
+- `make test`: the stage targets in order: the `-race` Go suite, fixture
+  startup behavior checks, then service and browser tests against the production
+  binary and dashboard build (`tests/distribution.py`, `tests/e2e.py` and Playwright).
+  Ordering also holds under parallel Make. CI runs service and browser tests in
+  separate required matrix entries.
 - `make build`: production binary (`bin/octomus-agent`) and dashboard.
 - `make test-go`: the regular Go suite, the quick local loop.
   `make test-go-race`: the same tests under the race detector. Both run with
-  `-shuffle=on`; a failure prints its seed to reproduce. `make test-integration` (`tests/distribution.py`, then
+  `-shuffle=on`; a failure prints its seed to reproduce. Both accept
+  `GO_TEST_PACKAGES` (default `./...`), for example
+  `make test-go GO_TEST_PACKAGES=./internal/engine`. Reproduce a seed with
+  `GO_TEST_FLAGS='-timeout 30m -shuffle=12345'`.
+- `make test-ui-logic` / `npm run test:unit --prefix web`: seven page-free dashboard
+  rule tests, requiring only npm dependencies. They also remain in the full browser suite.
+- `make test-integration` (fixture startup behavior tests, `tests/distribution.py`, then
   `tests/e2e.py`) / `make test-browser`: one stage each. `test-integration` accepts
   `SCENARIOS` names; `test-browser` accepts `PLAYWRIGHT_ARGS`. Browser tests
   run four workers; the `mobile` project reruns only specs tagged `@responsive`.
+  Host service, distribution and browser fixtures bind an OS-allocated port and
+  discover it from that process's listening announcement before checking health.
 - `make test-sandbox` (opt-in, needs Docker Engine 28+): the broker against the real
   daemon (`OCTOMUS_DOCKER_TEST=1`) and `tests/e2e_sandbox.py` against the compose stack.
 - `make audit` (govulncheck and `npm audit`; needs module downloads) and `make package`

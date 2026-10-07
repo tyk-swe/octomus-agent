@@ -63,6 +63,10 @@ jobs:
       - run: make test-go-race
 
   e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [integration, browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -82,19 +86,21 @@ jobs:
       - run: npm ci --prefix web
       # Browsers are cached per Playwright version; a cache hit still installs their system packages.
       - id: playwright
+        if: matrix.suite == 'browser'
         run: echo "version=$(node -p "require('./web/package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
       - id: playwright-cache
+        if: matrix.suite == 'browser'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}-chromium
-      - if: steps.playwright-cache.outputs.cache-hit != 'true'
+      - if: matrix.suite == 'browser' && steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx --prefix web playwright install --with-deps chromium
-      - if: steps.playwright-cache.outputs.cache-hit == 'true'
+      - if: matrix.suite == 'browser' && steps.playwright-cache.outputs.cache-hit == 'true'
         run: npx --prefix web playwright install-deps chromium
-      - run: make test-integration test-browser
+      - run: make test-${{ matrix.suite }}
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() && matrix.suite == 'browser'
         with:
           name: browser-test-evidence
           path: web/test-results

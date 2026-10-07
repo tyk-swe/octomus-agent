@@ -171,7 +171,7 @@ func TestAuditPlansWithoutQueueing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cycle := waitCycle(t, f.state, cycleID)
+	cycle := waitCycle(t, app, cycleID)
 	assertPlanningPass(t, f, cycle)
 	if len(cycle.Proposals) != 1 || cycle.Proposals[0].ID != "d0-feature" || cycle.Proposals[0].Decision != model.DecisionAccepted {
 		t.Fatalf("audit did not record the consolidated decision: %+v", cycle.Proposals)
@@ -204,7 +204,7 @@ func TestAuditStartsAfterDeploymentRepositoryChange(t *testing.T) {
 	if err := control(app, "audit"); err != nil {
 		t.Fatalf("audit after the deployment's repository changed: %v", err)
 	}
-	if cycle := waitOnlyCycle(t, f.state); cycle.Status != model.CycleCompleted || cycle.Repository != f.cfg.GitHubRepo {
+	if cycle := waitOnlyCycle(t, app); cycle.Status != model.CycleCompleted || cycle.Repository != f.cfg.GitHubRepo {
 		t.Fatalf("audit cycle = %v for %q; want completed for %q", cycle.Status, cycle.Repository, f.cfg.GitHubRepo)
 	}
 }
@@ -220,7 +220,7 @@ func TestRunOnceCommitsPlan(t *testing.T) {
 	if err := app.tick(); err != nil {
 		t.Fatal(err)
 	}
-	cycle := waitOnlyCycle(t, f.state)
+	cycle := waitOnlyCycle(t, app)
 	assertPlanningPass(t, f, cycle)
 	tasks, err := store.List[model.Task](f.state, "task")
 	if err != nil || len(tasks) != 1 {
@@ -279,8 +279,8 @@ func TestFailedPlanningCommitsNothing(t *testing.T) {
 			if err := app.tick(); err != nil {
 				t.Fatal(err)
 			}
-			failed := waitOnlyCycle(t, f.state)
-			app.wg.Wait()
+			failed := waitOnlyCycle(t, app)
+			waitApp(t, app)
 			after := time.Now().Unix()
 			if failed.Status != model.CycleFailed || failed.Error == nil || !strings.Contains(*failed.Error, "invalid JSON") {
 				t.Fatalf("malformed discovery was accepted: %+v", failed)
@@ -335,7 +335,7 @@ func TestConsolidationCoversEveryProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cycle := waitCycle(t, f.state, cycleID)
+	cycle := waitCycle(t, app, cycleID)
 	if cycle.Status != model.CycleFailed || cycle.Error == nil || !strings.Contains(*cycle.Error, "omitted or invented") || !strings.Contains(*cycle.Error, `omitted "d0-feature"`) {
 		t.Fatalf("incomplete consolidation was accepted or its error does not name the omitted proposal: %+v", cycle)
 	}
@@ -343,7 +343,7 @@ func TestConsolidationCoversEveryProposal(t *testing.T) {
 	if err != nil || len(tasks) != 0 {
 		t.Fatalf("incomplete consolidation leaked executable work: %+v, %v", tasks, err)
 	}
-	app.wg.Wait()
+	waitApp(t, app)
 	control, err := app.Control()
 	if err != nil || control.Mode != model.OperatingModePaused || control.Error == nil || !strings.Contains(*control.Error, "omitted or invented") {
 		t.Fatalf("failed audit did not retain durable control evidence: %+v, %v", control, err)
@@ -443,8 +443,8 @@ func TestPlanningRejectsMutatedWorkspace(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cycle := waitCycle(t, f.state, cycleID)
-			app.wg.Wait()
+			cycle := waitCycle(t, app, cycleID)
+			waitApp(t, app)
 			if cycle.Status != model.CycleFailed || cycle.Error == nil || !strings.Contains(*cycle.Error, "modified its source snapshot") {
 				t.Fatalf("mutated planning workspace was accepted: %+v", cycle)
 			}
@@ -508,7 +508,7 @@ func TestCommitTasksQueuesAccepted(t *testing.T) {
 	cfg.TaskTimeoutSeconds, cfg.SessionTimeoutSeconds, cfg.CommandTimeoutSeconds = 14400, 1800, 600
 	saveSettings(t, state, cfg, model.DefaultControl())
 	app := New(state, t.TempDir())
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 
 	pr := ownedPR("octomus/existing")
 	pr.Head = "pr-head"
@@ -596,7 +596,7 @@ func TestCommitTasksIdleWithoutWork(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	saveSettings(t, state, cfg, model.DefaultControl())
 	app := New(state, t.TempDir())
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	rejected := proposal("rejected", cfg.DefaultBranch)
 	rejected.Decision = model.DecisionRejected
 	cycle := model.Cycle{
@@ -644,7 +644,7 @@ func TestDiscoveryAgentBound(t *testing.T) {
 	}
 
 	app := New(testStore(t), t.TempDir())
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	cfg.DiscoveryAgents = scopes + 1
 	cycle := model.Cycle{ID: model.ID(), Mode: model.CycleModeAudit, Grounding: &model.Grounding{Revision: "revision"}}
 	want := fmt.Sprintf("Discovery supports at most %d agents", scopes)
@@ -700,7 +700,7 @@ func TestUnaffordableAuditChangesNothing(t *testing.T) {
 	original := model.DefaultControl()
 	saveSettings(t, state, cfg, original)
 	a := New(state, t.TempDir())
-	t.Cleanup(a.Shutdown)
+	cleanupApp(t, a)
 	if _, err := a.startAudit(context.Background()); err == nil {
 		t.Fatal("unaffordable audit started")
 	}

@@ -132,7 +132,7 @@ func (f *fixture) configure(t *testing.T, adjust func(*config.Config)) {
 func (f *fixture) pausedApp(t *testing.T, options ...Option) *App {
 	t.Helper()
 	app := New(f.state, f.dataDir, append([]Option{WithRunnerConnector(f.script.Connector())}, options...)...)
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	deferHousekeeping(app)
 	return app
 }
@@ -297,65 +297,56 @@ func loadTask(t *testing.T, state *store.Store, id string) model.Task {
 // driveTask ticks the scheduler until the task reaches a terminal status.
 func driveTask(t *testing.T, f *fixture, app *App, taskID string) model.Task {
 	t.Helper()
-	task, err := driveTaskResult(f, app, taskID)
+	ctx, cancel := fixtureContext(t, taskWaitTimeout)
+	defer cancel()
+	task, err := driveTaskResult(ctx, f, app, taskID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return task
 }
 
-func driveTaskResult(f *fixture, app *App, taskID string) (model.Task, error) {
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := app.tick(); err != nil {
-			return model.Task{}, err
+func driveTaskResult(ctx context.Context, f *fixture, app *App, taskID string) (model.Task, error) {
+	ctx, cancel := context.WithTimeout(ctx, taskWaitTimeout)
+	defer cancel()
+	var result model.Task
+	err := waitFixture(ctx, app, "task "+taskID+" did not finish", func() error {
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := app.tick(); err != nil {
+				return err
+			}
+			app.wg.Wait()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			task, err := store.Get[model.Task](f.state, "task", taskID)
+			if err != nil {
+				return err
+			}
+			if task == nil {
+				return errors.New("task vanished")
+			}
+			switch task.Status {
+			case model.StatusPublished, model.StatusBlocked, model.StatusFailed, model.StatusCancelled:
+				result = *task
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+			}
 		}
-		app.wg.Wait()
-		task, err := store.Get[model.Task](f.state, "task", taskID)
-		if err != nil {
-			return model.Task{}, err
-		}
-		if task == nil {
-			return model.Task{}, errors.New("task vanished")
-		}
-		switch task.Status {
-		case model.StatusPublished, model.StatusBlocked, model.StatusFailed, model.StatusCancelled:
-			return *task, nil
-		}
-		time.Sleep(25 * time.Millisecond)
+	})
+	if err != nil {
+		return model.Task{}, err
 	}
-	current, _ := store.Get[model.Task](f.state, "task", taskID)
-	return model.Task{}, fmt.Errorf("task %s did not finish: %+v", taskID, current)
-}
-
-func waitCycle(t *testing.T, state *store.Store, id string) model.Cycle {
-	t.Helper()
-	var cycle *model.Cycle
-	if !testutil.WaitUntil(30*time.Second, func() bool {
-		var err error
-		if cycle, err = store.Get[model.Cycle](state, "cycle", id); err != nil {
-			t.Fatal(err)
-		}
-		return cycle != nil && cycle.Status != model.CycleRunning
-	}) {
-		t.Fatalf("cycle %s did not finish", id)
-	}
-	return *cycle
-}
-
-func waitOnlyCycle(t *testing.T, state *store.Store) model.Cycle {
-	t.Helper()
-	var cycles []model.Cycle
-	if !testutil.WaitUntil(30*time.Second, func() bool {
-		var err error
-		if cycles, err = store.List[model.Cycle](state, "cycle"); err != nil {
-			t.Fatal(err)
-		}
-		return len(cycles) == 1 && cycles[0].Status != model.CycleRunning
-	}) {
-		t.Fatal("planning cycle did not finish")
-	}
-	return cycles[0]
+	return result, nil
 }
 
 func sessionByRole(task model.Task, role string) []model.Session {

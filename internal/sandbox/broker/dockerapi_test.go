@@ -1,8 +1,10 @@
 package broker
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -12,23 +14,38 @@ import (
 func TestAttachHandshakeHonoursCancellation(t *testing.T) {
 	listener, socket := testutil.ListenUnix(t, "docker.sock")
 	defer listener.Close()
-	// A daemon that accepts the attach connection and never answers the upgrade.
+	received := make(chan error, 1)
+	// A daemon that reads the attach request and never answers the upgrade.
 	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			t.Cleanup(func() { conn.Close() })
+		conn, err := listener.Accept()
+		if err != nil {
+			received <- err
+			return
+		}
+		defer conn.Close()
+		_, err = http.ReadRequest(bufio.NewReader(conn))
+		received <- err
+		if err == nil {
+			buffer := make([]byte, 1)
+			_, _ = conn.Read(buffer)
 		}
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(100*time.Millisecond, cancel)
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		_, err := newDockerClient(socket).containerAttach(ctx, "silent", true)
 		done <- err
 	}()
+	select {
+	case err := <-received:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("attach request was never received")
+	}
+	cancel()
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {

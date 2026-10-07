@@ -39,7 +39,7 @@ func verificationFixture(t *testing.T, commands []string) (*App, model.Task, str
 	task.ComparisonBase = revision
 	putTask(t, f, task)
 	app := New(f.state, f.dataDir)
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	return app, task, revision
 }
 
@@ -168,7 +168,7 @@ func TestEvidenceRedactsAdjacentSecrets(t *testing.T) {
 				t.Parallel()
 				f := newFixture(t)
 				app := New(f.state, f.dataDir)
-				t.Cleanup(app.Shutdown)
+				cleanupApp(t, app)
 				check := makeCheck(f.cfg, model.BaselineStatusRunning)
 				check.Config.VerificationCommands = []string{"printf 'STDOUT-HEAD\\n'; " + boundary.emit}
 				if status, err := app.executeBaseline(context.Background(), &check); err != nil || status != model.BaselineStatusFailed {

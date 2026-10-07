@@ -18,7 +18,7 @@ import subprocess
 import sys
 import threading
 
-from harness import BINARY, FEATURE_CHECK, PROJECT, TOKEN, fixture_service, git, poll, routes, run_selected
+from harness import BINARY, FEATURE_CHECK, PROJECT, TOKEN, fixture_service, git, poll, process_gone, routes, run_selected
 
 WEBHOOK_ENV = 'OCTOMUS_NOTIFICATION_WEBHOOK_URL'
 WEBHOOK_SECRET = 'synthetic-path-secret-9f27c1/query?key=synthetic-query-secret-4d80'
@@ -349,9 +349,9 @@ def baseline():
         assert 'exit status: 1' in failed['commands'][1]['output'] and failed['workspace_removed'], failed['commands'][1]
 
         marker = root / 'baseline-entered'
-        held = service.configure(routes(), [f'touch {marker}; sleep 31338 & sleep 60'], start=False, command_timeout_seconds=60)
+        held = service.configure(routes(), [f'sleep 31338 & printf "%s\\n" "$!" > {marker}; sleep 60'], start=False, command_timeout_seconds=60)
         check = start_check(service, held['revision'])
-        service.wait(lambda: marker.exists(), 'command entry')
+        descendant = service.wait(lambda: marker.read_text().strip() if marker.exists() else None, 'command entry')
         start_check(service, held['revision'], expected=409)
         for path in ['/control/cycle', '/control/resume', '/control/audit']:
             assert service.expect(path, 'POST')[0] == 409, path
@@ -363,7 +363,7 @@ def baseline():
         code, ack = service.expect(f'/baseline-checks/{check["id"]}/cancel', 'POST')
         assert code == 200 and ack['ok'], ack
         cancelled = wait_check(service, ['cancelled'])
-        assert poll(lambda: subprocess.run(['pgrep', '-f', 'sleep 31338'], capture_output=True).returncode != 0, 10, interval=0.2), 'descendant still running'
+        assert poll(lambda: process_gone(int(descendant)), 10, interval=0.2), f'descendant {descendant} still running'
         assert cancelled['commands'] and cancelled['commands'][0]['success'] is False and cancelled['workspace_removed'], cancelled
         assert service.expect(f'/baseline-checks/{check["id"]}/cancel', 'POST')[0] == 409
         report = usage_report(root)

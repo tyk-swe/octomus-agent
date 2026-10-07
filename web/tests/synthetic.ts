@@ -19,6 +19,10 @@ import type {
 // the request or its fetched response already disposed; the client is gone, so
 // there is nothing to fulfill and the error is noise, not a test failure.
 export const test = base.extend({
+  baseURL: async ({}, use) => {
+    const port = process.env.OCTOMUS_BROWSER_PORT;
+    await use(port ? 'http://127.0.0.1:' + port : undefined);
+  },
   page: async ({ page }, use) => {
     const register = page.route.bind(page);
     page.route = (url, handler, options) =>

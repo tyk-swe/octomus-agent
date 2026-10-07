@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -58,7 +59,56 @@ def free_port():
 
 
 def git(*args, cwd):
-    return subprocess.check_output(['/usr/bin/git', *args], cwd=cwd, env=fixture_git_environment(), stderr=subprocess.DEVNULL, text=True).strip()
+    return subprocess.check_output(['/usr/bin/git', *args], cwd=cwd, env=fixture_git_environment(), stderr=subprocess.PIPE, text=True, timeout=30).strip()
+
+
+def process_gone(pid):
+    """A fixture-owned descendant has exited, including an unreaped zombie."""
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return True
+    return stat[stat.rfind(')') + 2:].split()[0] in ('Z', 'X')
+
+
+def wait_service_ready(process, log_path, *, deadline, offset=0, label='Service startup'):
+    """Discover this launch's bound port and health within one monotonic deadline."""
+    port = None
+    last_error = None
+
+    def log_text():
+        with log_path.open() as log:
+            log.seek(offset)
+            return log.read()
+
+    def exited():
+        if process.poll() is not None:
+            raise AssertionError(f'{label}: service exited with status {process.returncode}\n{log_text()}')
+
+    def ready():
+        nonlocal port, last_error
+        exited()
+        if port is None:
+            match = re.search(r'^Octomus listening on http://[^\s]+:(\d+)\s*$', log_text(), re.MULTILINE)
+            if not match:
+                return None
+            port = int(match[1])
+            assert 0 < port < 65536, f'{label}: invalid listening port {port}'
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            with local_urlopen(f'http://127.0.0.1:{port}/healthz', timeout=min(1, remaining)) as response:
+                return port if json.load(response)['ok'] else None
+        except (OSError, urllib.error.URLError) as error:
+            last_error = repr(error)
+            raise
+
+    result = poll(ready, max(0, deadline - time.monotonic()), interval=0.05, tick=exited)
+    if result:
+        return result
+    tail = '\n'.join(log_text().splitlines()[-100:])
+    raise AssertionError(f'{label} did not become healthy before its deadline; last error: {last_error}\nservice.log tail:\n{tail}')
 
 
 def poll(predicate, seconds, interval=0.1, tick=None):
@@ -168,15 +218,19 @@ class Service:
         self.process = None
         self.stopped_process = None
         self.log = (root / 'service.log').open('a')
-        self.port = free_port()
+        self.port = None
         self.env = fixture_git_environment()
         self.env.pop('OCTOMUS_NOTIFICATION_WEBHOOK_URL', None)
         # Fixture runners are host scripts; tests/e2e_sandbox.py covers the Docker sandbox.
         self.env.update({'OCTOMUS_TOKEN': TOKEN, 'OCTOMUS_FIXTURE': str(root), 'OCTOMUS_SANDBOX': 'off', 'PATH': f'{root / "bin"}:{os.environ["PATH"]}'})
 
     def start(self):
-        self.process = subprocess.Popen([str(BINARY), '--data-dir', str(self.root / '.octomus'), '--listen', f'127.0.0.1:{self.port}', '--assets', str(PROJECT / 'web/build')], env=self.env, stdout=self.log, stderr=self.log)
-        self.wait(lambda: self.request('/healthz', api=False), 'service startup')
+        deadline = time.monotonic() + 45
+        log_path = self.root / 'service.log'
+        offset = log_path.stat().st_size
+        self.port = None
+        self.process = subprocess.Popen([str(BINARY), '--data-dir', str(self.root / '.octomus'), '--listen', '127.0.0.1:0', '--assets', str(PROJECT / 'web/build')], env=self.env, stdout=self.log, stderr=self.log)
+        self.port = wait_service_ready(self.process, log_path, deadline=deadline, offset=offset)
 
     def stop(self, crash=False):
         process = self.process

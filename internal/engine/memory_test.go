@@ -68,7 +68,7 @@ func TestDecisionMemoryReconsideration(t *testing.T) {
 	putTask(t, f, cancelled)
 
 	app := New(f.state, f.dataDir)
-	t.Cleanup(app.Shutdown)
+	cleanupApp(t, app)
 	pr := ownedPR("octomus/open")
 	pr.Head = recorded
 	check := func(label, revision string, wantDue map[string]bool) {
@@ -115,7 +115,7 @@ func TestDecisionMemoryAbsorbs(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	a := New(state, t.TempDir())
-	t.Cleanup(a.Shutdown)
+	cleanupApp(t, a)
 	accepted := proposal("accepted", cfg.DefaultBranch)
 	accepted.ProblemKey = "stable-problem"
 	accepted.RelevantPaths = nil

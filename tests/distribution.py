@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """The executable as shipped (OCTOMUS_TEST_BINARY, or an extracted release archive's): an HTTP smoke test with lock release."""
-import json
 import os
 from pathlib import Path
 import re
@@ -8,9 +7,9 @@ import shutil
 import signal
 import subprocess
 import tempfile
-import urllib.error
+import time
 
-from harness import BINARY, free_port, local_urlopen, poll
+from harness import BINARY, local_urlopen, wait_service_ready
 
 TOKEN = 'distribution-fixture-token-at-least-32-characters'
 
@@ -32,22 +31,12 @@ def smoke(binary):
         env.update(OCTOMUS_TOKEN=TOKEN, PATH=str(root / 'empty-bin'))
         subprocess.run([str(executable), '--version'], cwd=root, env=env, check=True, timeout=15)
         for listen in ['127.0.0.1', '0.0.0.0']:
-            port = free_port()
             with (root / 'service.log').open('w+') as log:
-                process = subprocess.Popen([str(executable), '--listen', f'{listen}:{port}'], cwd=root, env=env, stdout=subprocess.PIPE, stderr=log)
+                deadline = time.monotonic() + 5
+                process = subprocess.Popen([str(executable), '--listen', f'{listen}:0'], cwd=root, env=env, stdout=subprocess.PIPE, stderr=log)
                 try:
+                    port = wait_service_ready(process, root / 'service.log', deadline=deadline, label='Packaged service startup')
                     base = f'http://127.0.0.1:{port}'
-
-                    def healthy():
-                        try:
-                            with local_urlopen(base + '/healthz', timeout=1) as response:
-                                return json.load(response)['ok']
-                        except (OSError, urllib.error.URLError):
-                            assert process.poll() is None, 'Packaged service exited'
-                            return False
-
-                    if not poll(healthy, 5, interval=0.05):
-                        raise AssertionError('Embedded service did not start')
                     with local_urlopen(base + '/', timeout=15) as response:
                         html = response.read().decode()
                         assert response.headers['Content-Type'].startswith('text/html')
@@ -58,7 +47,7 @@ def smoke(binary):
                         assert response.read()
                     with local_urlopen(base + '/proposals', timeout=15) as response:
                         assert response.read().decode() == html
-                    blocked = subprocess.run([str(executable), '--listen', f'127.0.0.1:{free_port()}'], cwd=root, env=env, capture_output=True, text=True, timeout=15)
+                    blocked = subprocess.run([str(executable), '--listen', '127.0.0.1:0'], cwd=root, env=env, capture_output=True, text=True, timeout=15)
                     assert blocked.returncode == 1 and 'Another Octomus service' in blocked.stderr, blocked
                     process.send_signal(signal.SIGTERM)
                     stdout, _ = process.communicate(timeout=15)

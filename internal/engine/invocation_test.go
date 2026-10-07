@@ -199,7 +199,7 @@ func TestSummariesAreRedacted(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cycle := waitCycle(t, f.state, cycleID)
+		cycle := waitCycle(t, app, cycleID)
 		if cycle.Status == model.CycleFailed || cycle.Status == model.CycleRunning {
 			t.Fatalf("scripted audit did not finish cleanly: %+v", cycle)
 		}

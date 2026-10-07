@@ -9,13 +9,16 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
+
+from harness import wait_service_ready
 
 project = Path(__file__).resolve().parents[1]
 binary = Path(os.environ.get('OCTOMUS_TEST_BINARY', str(project / 'bin/octomus-agent'))).resolve()
 with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     data = Path(directory)
-    config = json.loads(subprocess.check_output([str(binary), '--print-config']))
+    config = json.loads(subprocess.check_output([str(binary), '--print-config'], timeout=15))
     for role in config['roles']:
         config['roles'][role] = {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}
     for tier, effort in [('XS', 'xhigh'), ('S', 'max'), ('M', 'low'), ('L', 'medium'), ('XL', 'high')]:
@@ -75,13 +78,25 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     broker = socketserver.ThreadingUnixStreamServer(str(data / 'sandboxd.sock'), Broker)
     threading.Thread(target=broker.serve_forever, daemon=True).start()
     env.update(OCTOMUS_SANDBOX='docker', OCTOMUS_SANDBOXD_SOCKET=str(data / 'sandboxd.sock'), OCTOMUS_EGRESS_MODEL_HOSTS='chatgpt.com,auth.openai.com,api.openai.com', OCTOMUS_EGRESS_BUILD_HOSTS='proxy.golang.org,registry.npmjs.org')
-    process = subprocess.Popen([str(binary), '--listen', '127.0.0.1:4299', '--data-dir', directory, '--assets', str(project / 'web/build')], env=env)
-    try:
-        process.wait()
-    except KeyboardInterrupt:
-        process.terminate()
+    broker.daemon_threads = True
+    with (data / 'service.log').open('w') as log:
+        process = None
         try:
-            process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
+            process = subprocess.Popen([str(binary), '--listen', '127.0.0.1:0', '--data-dir', directory, '--assets', str(project / 'web/build')], env=env, stdout=log, stderr=log)
+            port = wait_service_ready(process, data / 'service.log', deadline=time.monotonic() + 45, label='Browser service startup')
+            print(f'Browser fixture ready on port {port}', flush=True)
             process.wait()
+            if process.returncode:
+                raise AssertionError(f'Browser service exited with status {process.returncode}\n{(data / "service.log").read_text()}')
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            broker.shutdown()
+            broker.server_close()

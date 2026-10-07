@@ -337,8 +337,10 @@ func TestTaskTimeout(t *testing.T) {
 		err  error
 	}
 	done := make(chan outcome, 1)
+	ctx, cancel := fixtureContext(t, taskWaitTimeout)
+	defer cancel()
 	go func() {
-		saved, err := driveTaskResult(f, app, task.ID)
+		saved, err := driveTaskResult(ctx, f, app, task.ID)
 		done <- outcome{saved, err}
 	}()
 	select {
@@ -346,7 +348,13 @@ func TestTaskTimeout(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the executor turn was never reached before the deadline")
 	}
-	finished := <-done
+	var finished outcome
+	select {
+	case finished = <-done:
+	case <-ctx.Done():
+		app.cancel()
+		t.Fatalf("task timeout test did not finish: %v\n%s", ctx.Err(), fixtureDiagnostics(app))
+	}
 	if finished.err != nil {
 		t.Fatal(finished.err)
 	}

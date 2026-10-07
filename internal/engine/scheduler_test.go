@@ -44,7 +44,7 @@ func TestRunOnceAcceptsPublishedDependency(t *testing.T) {
 				task.Status = model.StatusPublished
 				return state.Put("task", task.ID, task)
 			}
-			t.Cleanup(app.Shutdown)
+			cleanupApp(t, app)
 			deferHousekeeping(app)
 			if err := control(app, "cycle"); err != nil {
 				t.Fatal(err)
@@ -52,7 +52,7 @@ func TestRunOnceAcceptsPublishedDependency(t *testing.T) {
 			if err := app.tick(); err != nil {
 				t.Fatal(err)
 			}
-			app.wg.Wait()
+			waitApp(t, app)
 			saved, err := store.Get[model.Task](state, "task", dependent.ID)
 			if err != nil || saved == nil || saved.Status != model.StatusPublished {
 				t.Fatalf("published prerequisite blocked its RunOnce successor: %+v, %v", saved, err)
@@ -88,7 +88,7 @@ func TestPreflightRefusesNoAuth(t *testing.T) {
 				if err := app.tick(); err != nil {
 					t.Fatal(err)
 				}
-				app.wg.Wait()
+				waitApp(t, app)
 				control, err := app.Control()
 				if err != nil || control.Error == nil || !strings.Contains(*control.Error, "authentication") {
 					t.Fatalf("missing durable preflight authentication error: %+v, %v", control, err)
@@ -105,7 +105,7 @@ func TestPreflightRefusesNoAuth(t *testing.T) {
 				t.Fatalf("unauthenticated preflight created cycles: %d, %v", len(cycles), err)
 			}
 			assertAdmissions(t, f.state, 0, "unauthenticated preflight")
-			app.wg.Wait()
+			waitApp(t, app)
 			if !app.Drained() {
 				t.Fatal("failed preflight retained runtime work")
 			}
@@ -151,7 +151,7 @@ func TestOneWriterPerBranch(t *testing.T) {
 	}
 	a := New(state, t.TempDir())
 	a.supervise = runner
-	t.Cleanup(a.Shutdown)
+	cleanupApp(t, a)
 	deferHousekeeping(a)
 	if err := a.tick(); err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestOneWriterPerBranch(t *testing.T) {
 	default:
 	}
 	close(release)
-	a.wg.Wait()
+	waitApp(t, a)
 	if err := a.tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -184,5 +184,5 @@ func TestOneWriterPerBranch(t *testing.T) {
 		t.Fatalf("did not start dependent after publication: %s", id)
 	}
 	<-published
-	a.wg.Wait()
+	waitApp(t, a)
 }

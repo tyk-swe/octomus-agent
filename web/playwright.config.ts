@@ -3,10 +3,10 @@ export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
   workers: 4,
-  use: { baseURL: 'http://127.0.0.1:4299', trace: 'retain-on-failure' },
+  use: { trace: 'retain-on-failure' },
   webServer: {
     command: 'python3 ../tests/serve_ui.py',
-    url: 'http://127.0.0.1:4299/healthz',
+    wait: { stdout: /Browser fixture ready on port (?<octomus_browser_port>\d+)/ },
     reuseExistingServer: false,
     timeout: 120000,
     gracefulShutdown: { signal: 'SIGINT', timeout: 10000 }
